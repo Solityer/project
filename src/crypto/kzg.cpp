@@ -41,7 +41,7 @@ namespace gatzk::crypto
         using algebra::FieldElement;
         using Clock = std::chrono::steady_clock;
 
-        std::string bytes_to_hex(const unsigned char* bytes, std::size_t size)
+        std::string bytes_to_hex(const unsigned char *bytes, std::size_t size)
         {
             std::ostringstream out;
             out << std::hex << std::setfill('0');
@@ -52,14 +52,14 @@ namespace gatzk::crypto
             return out.str();
         }
 
-        std::string sha256_hex(const std::string& data)
+        std::string sha256_hex(const std::string &data)
         {
             unsigned char digest[SHA256_DIGEST_LENGTH];
-            SHA256(reinterpret_cast<const unsigned char*>(data.data()), data.size(), digest);
+            SHA256(reinterpret_cast<const unsigned char *>(data.data()), data.size(), digest);
             return bytes_to_hex(digest, sizeof(digest));
         }
 
-        std::string sha256_bytes_hex(const std::vector<std::uint8_t>& data)
+        std::string sha256_bytes_hex(const std::vector<std::uint8_t> &data)
         {
             unsigned char digest[SHA256_DIGEST_LENGTH];
             SHA256(data.data(), data.size(), digest);
@@ -77,7 +77,7 @@ namespace gatzk::crypto
             return value.substr(begin, end - begin + 1);
         }
 
-        std::string manifest_scalar(const std::string& text, const std::string& key)
+        std::string manifest_scalar(const std::string &text, const std::string &key)
         {
             const auto quoted_key = "\"" + key + "\"";
             const auto pos = text.find(quoted_key);
@@ -94,7 +94,7 @@ namespace gatzk::crypto
             return trim(text.substr(colon + 1, line_end == std::string::npos ? std::string::npos : line_end - colon - 1));
         }
 
-        std::string manifest_object(const std::string& text, const std::string& key)
+        std::string manifest_object(const std::string &text, const std::string &key)
         {
             const auto quoted_key = "\"" + key + "\"";
             const auto pos = text.find(quoted_key);
@@ -126,7 +126,7 @@ namespace gatzk::crypto
             throw std::runtime_error("unterminated SRS manifest object: " + key);
         }
 
-        std::unordered_map<std::string, std::string> parse_string_map(const std::string& object)
+        std::unordered_map<std::string, std::string> parse_string_map(const std::string &object)
         {
             std::unordered_map<std::string, std::string> out;
             std::size_t pos = 0;
@@ -151,7 +151,7 @@ namespace gatzk::crypto
             return out;
         }
 
-        std::unordered_map<std::string, std::size_t> parse_size_map(const std::string& object)
+        std::unordered_map<std::string, std::size_t> parse_size_map(const std::string &object)
         {
             std::unordered_map<std::string, std::size_t> out;
             std::size_t pos = 0;
@@ -182,21 +182,21 @@ namespace gatzk::crypto
         }
 
         std::string canonical_domain_catalog_hash(
-            const std::unordered_map<std::string, std::size_t>& domains)
+            const std::unordered_map<std::string, std::size_t> &domains)
         {
             std::vector<std::pair<std::string, std::size_t>> ordered(
                 domains.begin(), domains.end());
             std::sort(ordered.begin(), ordered.end());
             std::ostringstream canonical;
             canonical << "zkgat:domain-size-catalog:v1";
-            for (const auto& [name, size] : ordered)
+            for (const auto &[name, size] : ordered)
             {
                 canonical << '|' << name << '=' << size;
             }
             return sha256_hex(canonical.str());
         }
 
-        std::string bytes_to_lower_hex(const std::uint8_t* bytes, std::size_t size)
+        std::string bytes_to_lower_hex(const std::uint8_t *bytes, std::size_t size)
         {
             static constexpr char alphabet[] = "0123456789abcdef";
             std::string out(size * 2, '0');
@@ -208,7 +208,7 @@ namespace gatzk::crypto
             return out;
         }
 
-        std::string canonical_field_hex(const FieldElement& value)
+        std::string canonical_field_hex(const FieldElement &value)
         {
             std::array<std::uint8_t, 32> bytes{};
             value.write_little_endian(bytes.data(), bytes.size());
@@ -216,10 +216,10 @@ namespace gatzk::crypto
         }
 
         std::string canonical_domain_generator_catalog_hash(
-            const std::unordered_map<std::string, std::size_t>& domains,
-            const std::unordered_map<std::string, std::string>& generators,
-            const std::string& root_derivation_id,
-            const std::string& row_order)
+            const std::unordered_map<std::string, std::size_t> &domains,
+            const std::unordered_map<std::string, std::string> &generators,
+            const std::string &root_derivation_id,
+            const std::string &row_order)
         {
             std::vector<std::pair<std::string, std::size_t>> ordered(
                 domains.begin(), domains.end());
@@ -228,7 +228,7 @@ namespace gatzk::crypto
             canonical << "zkgat:domain-generator-catalog:v1"
                       << "|root_derivation_id=" << root_derivation_id
                       << "|row_order=" << row_order;
-            for (const auto& [name, size] : ordered)
+            for (const auto &[name, size] : ordered)
             {
                 const auto generator = generators.find(name);
                 if (generator == generators.end())
@@ -241,14 +241,14 @@ namespace gatzk::crypto
             return sha256_hex(canonical.str());
         }
 
-        std::string read_text_file(const std::filesystem::path& path);
+        std::string read_text_file(const std::filesystem::path &path);
 
         std::vector<std::string> ordered_domain_names(
-            const std::unordered_map<std::string, std::size_t>& domains)
+            const std::unordered_map<std::string, std::size_t> &domains)
         {
             std::vector<std::string> names;
             names.reserve(domains.size());
-            for (const auto& [name, _] : domains)
+            for (const auto &[name, _] : domains)
             {
                 (void)_;
                 names.push_back(name);
@@ -258,12 +258,12 @@ namespace gatzk::crypto
         }
 
         std::string canonical_vanishing_g2_catalog_hash(
-            const SRSManifest& manifest,
-            const std::unordered_map<std::string, G2Point>& domain_zero_g2)
+            const SRSManifest &manifest,
+            const std::unordered_map<std::string, G2Point> &domain_zero_g2)
         {
             std::ostringstream canonical;
             canonical << "zkgat:vanishing-g2-catalog:v1";
-            for (const auto& name :
+            for (const auto &name :
                  ordered_domain_names(manifest.domain_sizes))
             {
                 const auto point = domain_zero_g2.find(name);
@@ -280,7 +280,7 @@ namespace gatzk::crypto
         }
 
         std::string canonical_srs_audit_report(
-            const SRSManifest& manifest)
+            const SRSManifest &manifest)
         {
             std::ostringstream report;
             report << "GATZK-SRS-CONSISTENCY-AUDIT-v1\n";
@@ -295,7 +295,8 @@ namespace gatzk::crypto
                    << manifest.degree_bound << '\n';
             report << "domain_size_catalog_hash="
                    << canonical_domain_catalog_hash(
-                          manifest.domain_sizes) << '\n';
+                          manifest.domain_sizes)
+                   << '\n';
             report << "domain_generator_catalog_hash="
                    << canonical_domain_generator_catalog_hash(
                           manifest.domain_sizes,
@@ -309,15 +310,14 @@ namespace gatzk::crypto
                    << manifest.protocol_compiler_artifact_hash << '\n';
             report << "vanishing_g2_hash="
                    << manifest.vanishing_g2_hash << '\n';
-            for (const auto& name :
+            for (const auto &name :
                  ordered_domain_names(manifest.domain_sizes))
             {
                 const auto hash =
                     manifest.pk_lagrange_hashes.find(name);
                 if (hash == manifest.pk_lagrange_hashes.end())
                     throw std::runtime_error(
-                        "SRS audit report lacks Lagrange hash: "
-                        + name);
+                        "SRS audit report lacks Lagrange hash: " + name);
                 report << "domain." << name << '='
                        << manifest.domain_sizes.at(name) << ','
                        << hash->second << ','
@@ -327,23 +327,21 @@ namespace gatzk::crypto
         }
 
         void validate_srs_audit_report_material(
-            const std::filesystem::path& srs_root,
-            const SRSManifest& manifest)
+            const std::filesystem::path &srs_root,
+            const SRSManifest &manifest)
         {
             const auto report = read_text_file(
                 srs_root / manifest.srs_audit_report_path);
             const auto expected = canonical_srs_audit_report(manifest);
             const auto actual_hash = sha256_hex(report);
-            if (report != expected
-                || actual_hash != manifest.srs_audit_report_hash
-                || actual_hash != manifest.srs_consistency_hash)
+            if (report != expected || actual_hash != manifest.srs_audit_report_hash || actual_hash != manifest.srs_consistency_hash)
             {
                 throw std::runtime_error(
                     "SRS consistency audit report binding mismatch");
             }
         }
 
-        std::string read_text_file(const std::filesystem::path& path)
+        std::string read_text_file(const std::filesystem::path &path)
         {
             std::ifstream input(path);
             if (!input)
@@ -356,8 +354,8 @@ namespace gatzk::crypto
         }
 
         std::string compiler_artifact_scalar(
-            const std::string& text,
-            const std::string& key)
+            const std::string &text,
+            const std::string &key)
         {
             const auto prefix = key + "=";
             const auto begin = text.find(prefix);
@@ -374,8 +372,10 @@ namespace gatzk::crypto
             if (value.empty() || (value.size() & 1U) != 0U)
                 throw std::runtime_error(
                     "protocol compiler artifact hex field is malformed");
-            auto nibble = [](char c) -> unsigned {
-                if (c >= '0' && c <= '9') return static_cast<unsigned>(c - '0');
+            auto nibble = [](char c) -> unsigned
+            {
+                if (c >= '0' && c <= '9')
+                    return static_cast<unsigned>(c - '0');
                 if (c >= 'a' && c <= 'f')
                     return 10U + static_cast<unsigned>(c - 'a');
                 throw std::runtime_error(
@@ -383,12 +383,11 @@ namespace gatzk::crypto
             };
             std::string out(value.size() / 2, '\0');
             for (std::size_t i = 0; i < out.size(); ++i)
-                out[i] = static_cast<char>((nibble(value[2 * i]) << 4U)
-                    | nibble(value[2 * i + 1]));
+                out[i] = static_cast<char>((nibble(value[2 * i]) << 4U) | nibble(value[2 * i + 1]));
             return out;
         }
 
-        SRSManifest load_manifest_file(const std::string& srs_path)
+        SRSManifest load_manifest_file(const std::string &srs_path)
         {
             const auto manifest_path = std::filesystem::path(srs_path) / "srs_manifest.json";
             const auto text = read_text_file(manifest_path);
@@ -448,8 +447,7 @@ namespace gatzk::crypto
                 manifest_scalar(text, "domain_generator_catalog_hash");
             const auto declared_manifest_hash = manifest_scalar(text, "manifest_hash");
             const auto manifest_hash_field = text.rfind("  \"manifest_hash\"");
-            if (declared_manifest_hash.empty() || manifest_hash_field == std::string::npos
-                || sha256_hex(text.substr(0, manifest_hash_field)) != declared_manifest_hash)
+            if (declared_manifest_hash.empty() || manifest_hash_field == std::string::npos || sha256_hex(text.substr(0, manifest_hash_field)) != declared_manifest_hash)
             {
                 throw std::runtime_error("SRS manifest canonical hash mismatch");
             }
@@ -471,16 +469,7 @@ namespace gatzk::crypto
                 manifest.kzg_assumption_security_bits =
                     static_cast<std::size_t>(std::stoull(assumption_security_bits));
             }
-            if (manifest.manifest_format.empty() || manifest.srs_id.empty()
-                || manifest.srs_type.empty() || manifest.degree_bound == 0
-                || manifest.pk_coef_path.empty() || manifest.pk_lagrange_paths.empty()
-                || manifest.vk_path.empty()
-                || manifest.vanishing_g2_hash.empty()
-                || manifest.srs_audit_report_path.empty()
-                || manifest.srs_audit_report_hash.empty()
-                || manifest.srs_consistency_hash.empty()
-                || manifest.protocol_compiler_artifact_path.empty()
-                || manifest.protocol_compiler_artifact_hash.empty())
+            if (manifest.manifest_format.empty() || manifest.srs_id.empty() || manifest.srs_type.empty() || manifest.degree_bound == 0 || manifest.pk_coef_path.empty() || manifest.pk_lagrange_paths.empty() || manifest.vk_path.empty() || manifest.vanishing_g2_hash.empty() || manifest.srs_audit_report_path.empty() || manifest.srs_audit_report_hash.empty() || manifest.srs_consistency_hash.empty() || manifest.protocol_compiler_artifact_path.empty() || manifest.protocol_compiler_artifact_hash.empty())
             {
                 throw std::runtime_error("SRS manifest is missing required material fields");
             }
@@ -488,8 +477,8 @@ namespace gatzk::crypto
         }
 
         void validate_protocol_compiler_artifact_material(
-            const std::filesystem::path& srs_root,
-            const SRSManifest& manifest)
+            const std::filesystem::path &srs_root,
+            const SRSManifest &manifest)
         {
             const auto artifact = read_text_file(
                 srs_root / manifest.protocol_compiler_artifact_path);
@@ -501,9 +490,7 @@ namespace gatzk::crypto
             if (!artifact.starts_with(magic))
                 throw std::runtime_error("protocol compiler artifact magic mismatch");
             const auto hash_field = artifact.rfind("artifact_hash=");
-            if (hash_field == std::string::npos
-                || compiler_artifact_scalar(artifact, "artifact_hash")
-                    != sha256_hex(artifact.substr(0, hash_field)))
+            if (hash_field == std::string::npos || compiler_artifact_scalar(artifact, "artifact_hash") != sha256_hex(artifact.substr(0, hash_field)))
                 throw std::runtime_error(
                     "protocol compiler artifact canonical hash mismatch");
             const auto protocol_template_hex =
@@ -520,39 +507,7 @@ namespace gatzk::crypto
                 compiler_artifact_scalar(artifact, "max_instance_envelope_hex");
             const auto max_instance_envelope_hash =
                 compiler_artifact_scalar(artifact, "max_instance_envelope_hash");
-            if (protocol_template_hex.empty()
-                || proof_schema_template_hex.empty()
-                || observation_ledger_template_hex.empty()
-                || random_identity_ledger_template_hex.empty()
-                || security_budget_ledger_template_hex.empty()
-                || max_instance_envelope_hex.empty()
-                || max_instance_envelope_hash.empty()
-                || compiler_artifact_scalar(artifact, "protocol_schema_id")
-                    != manifest.protocol_schema_id
-                || sha256_hex(decode_canonical_hex(protocol_template_hex))
-                    != manifest.protocol_schema_id
-                || compiler_artifact_scalar(artifact, "max_instance_envelope_id")
-                    != manifest.max_instance_envelope_id
-                || max_instance_envelope_hash
-                    != manifest.max_instance_envelope_hash
-                || max_instance_envelope_hash
-                    != sha256_hex(decode_canonical_hex(
-                        max_instance_envelope_hex))
-                || static_cast<std::size_t>(std::stoull(
-                       compiler_artifact_scalar(artifact, "degree_bound")))
-                    != manifest.degree_bound
-                || compiler_artifact_scalar(artifact, "domain_size_catalog_hash")
-                    != manifest.kzg_assumption_domain_catalog_hash
-                || compiler_artifact_scalar(artifact, "domain_generator_catalog_hash")
-                    != manifest.domain_generator_catalog_hash
-                || compiler_artifact_scalar(artifact, "proof_schema_template_hash")
-                    != manifest.proof_schema_template_hash
-                || compiler_artifact_scalar(artifact, "observation_ledger_hash")
-                    != manifest.observation_ledger_hash
-                || compiler_artifact_scalar(artifact, "random_identity_ledger_hash")
-                    != manifest.random_identity_ledger_hash
-                || compiler_artifact_scalar(artifact, "security_budget_ledger_hash")
-                    != manifest.security_budget_ledger_hash)
+            if (protocol_template_hex.empty() || proof_schema_template_hex.empty() || observation_ledger_template_hex.empty() || random_identity_ledger_template_hex.empty() || security_budget_ledger_template_hex.empty() || max_instance_envelope_hex.empty() || max_instance_envelope_hash.empty() || compiler_artifact_scalar(artifact, "protocol_schema_id") != manifest.protocol_schema_id || sha256_hex(decode_canonical_hex(protocol_template_hex)) != manifest.protocol_schema_id || compiler_artifact_scalar(artifact, "max_instance_envelope_id") != manifest.max_instance_envelope_id || max_instance_envelope_hash != manifest.max_instance_envelope_hash || max_instance_envelope_hash != sha256_hex(decode_canonical_hex(max_instance_envelope_hex)) || static_cast<std::size_t>(std::stoull(compiler_artifact_scalar(artifact, "degree_bound"))) != manifest.degree_bound || compiler_artifact_scalar(artifact, "domain_size_catalog_hash") != manifest.kzg_assumption_domain_catalog_hash || compiler_artifact_scalar(artifact, "domain_generator_catalog_hash") != manifest.domain_generator_catalog_hash || compiler_artifact_scalar(artifact, "proof_schema_template_hash") != manifest.proof_schema_template_hash || compiler_artifact_scalar(artifact, "observation_ledger_hash") != manifest.observation_ledger_hash || compiler_artifact_scalar(artifact, "random_identity_ledger_hash") != manifest.random_identity_ledger_hash || compiler_artifact_scalar(artifact, "security_budget_ledger_hash") != manifest.security_budget_ledger_hash)
                 throw std::runtime_error(
                     "protocol compiler artifact registries do not match the SRS manifest");
             const auto envelope = decode_canonical_hex(max_instance_envelope_hex);
@@ -576,87 +531,28 @@ namespace gatzk::crypto
                             "protocol compiler max envelope format mismatch");
                     continue;
                 }
-                if (value.empty()
-                    || (value.size() > 1 && value.front() == '0')
-                    || !std::all_of(value.begin(), value.end(), [](unsigned char ch)
-                       { return ch >= '0' && ch <= '9'; }))
+                if (value.empty() || (value.size() > 1 && value.front() == '0') || !std::all_of(value.begin(), value.end(), [](unsigned char ch)
+                                                                                                { return ch >= '0' && ch <= '9'; }))
                     throw std::runtime_error(
                         "protocol compiler max envelope integer mismatch: " + key);
                 const auto parsed = static_cast<std::size_t>(std::stoull(value));
-                if (parsed == 0) throw std::runtime_error(
-                    "protocol compiler max envelope has zero bound: " + key);
+                if (parsed == 0)
+                    throw std::runtime_error(
+                        "protocol compiler max envelope has zero bound: " + key);
                 envelope_sizes.emplace(key, parsed);
             }
-            if (canonical_envelope != envelope
-                || envelope_sizes != manifest.max_instance_envelope
-                || envelope_sizes.at("security_target_bits") != 120
-                || envelope_sizes.at("max_nodes") > manifest.domain_sizes.at("N")
-                || envelope_sizes.at("max_edges") > manifest.domain_sizes.at("edge")
-                || envelope_sizes.at("max_nodes")
-                    > std::numeric_limits<std::size_t>::max()
-                        / envelope_sizes.at("max_hidden_head_dim")
-                || envelope_sizes.at("max_nodes")
-                        * envelope_sizes.at("max_hidden_head_dim")
-                    > manifest.domain_sizes.at("edge")
-                || envelope_sizes.at("max_nodes")
-                    > std::numeric_limits<std::size_t>::max()
-                        / envelope_sizes.at("max_classes")
-                || envelope_sizes.at("max_nodes")
-                        * envelope_sizes.at("max_classes")
-                    > manifest.domain_sizes.at("edge")
-                || envelope_sizes.at("max_input_dim") > manifest.domain_sizes.at("in")
-                || envelope_sizes.at("max_hidden_head_dim") > manifest.domain_sizes.at("d")
-                || envelope_sizes.at("max_classes") > manifest.domain_sizes.at("C")
-                || envelope_sizes.at("max_concat_dim") > manifest.domain_sizes.at("cat")
-                || envelope_sizes.at("max_graphs") > envelope_sizes.at("max_nodes")
-                || envelope_sizes.at("max_total_nodes")
-                    < envelope_sizes.at("max_nodes")
-                || envelope_sizes.at("max_concat_dim")
-                    < envelope_sizes.at("max_hidden_head_dim")
-                || envelope_sizes.at("max_range_bits")
-                    >= std::numeric_limits<std::size_t>::digits
-                || manifest.domain_sizes.at("edge") < 3
-                || (std::size_t{1}
-                        << envelope_sizes.at("max_range_bits"))
-                    > (manifest.domain_sizes.at("edge") - 3) / 2
-                || envelope_sizes.at("max_coefficient_chunks")
-                    > std::numeric_limits<std::size_t>::max()
-                        / (manifest.domain_sizes.at("edge") - 1)
-                || envelope_sizes.at("max_coefficient_object_length")
-                    > envelope_sizes.at("max_coefficient_chunks")
-                        * (manifest.domain_sizes.at("edge") - 1)
-                || envelope_sizes.at("max_nodes")
-                    > std::numeric_limits<std::size_t>::max()
-                        / envelope_sizes.at("max_input_dim")
-                || envelope_sizes.at("max_nodes")
-                        * envelope_sizes.at("max_input_dim")
-                    > manifest.domain_sizes.at("FH"))
+            if (canonical_envelope != envelope || envelope_sizes != manifest.max_instance_envelope || envelope_sizes.at("security_target_bits") != 120 || envelope_sizes.at("max_nodes") > manifest.domain_sizes.at("N") || envelope_sizes.at("max_edges") > manifest.domain_sizes.at("edge") || envelope_sizes.at("max_nodes") > std::numeric_limits<std::size_t>::max() / envelope_sizes.at("max_hidden_head_dim") || envelope_sizes.at("max_nodes") * envelope_sizes.at("max_hidden_head_dim") > manifest.domain_sizes.at("edge") || envelope_sizes.at("max_nodes") > std::numeric_limits<std::size_t>::max() / envelope_sizes.at("max_classes") || envelope_sizes.at("max_nodes") * envelope_sizes.at("max_classes") > manifest.domain_sizes.at("edge") || envelope_sizes.at("max_input_dim") > manifest.domain_sizes.at("in") || envelope_sizes.at("max_hidden_head_dim") > manifest.domain_sizes.at("d") || envelope_sizes.at("max_classes") > manifest.domain_sizes.at("C") || envelope_sizes.at("max_concat_dim") > manifest.domain_sizes.at("cat") || envelope_sizes.at("max_graphs") > envelope_sizes.at("max_nodes") || envelope_sizes.at("max_total_nodes") < envelope_sizes.at("max_nodes") || envelope_sizes.at("max_concat_dim") < envelope_sizes.at("max_hidden_head_dim") || envelope_sizes.at("max_range_bits") >= std::numeric_limits<std::size_t>::digits || manifest.domain_sizes.at("edge") < 3 || (std::size_t{1} << envelope_sizes.at("max_range_bits")) > (manifest.domain_sizes.at("edge") - 3) / 2 || envelope_sizes.at("max_coefficient_chunks") > std::numeric_limits<std::size_t>::max() / (manifest.domain_sizes.at("edge") - 1) || envelope_sizes.at("max_coefficient_object_length") > envelope_sizes.at("max_coefficient_chunks") * (manifest.domain_sizes.at("edge") - 1) || envelope_sizes.at("max_nodes") > std::numeric_limits<std::size_t>::max() / envelope_sizes.at("max_input_dim") || envelope_sizes.at("max_nodes") * envelope_sizes.at("max_input_dim") > manifest.domain_sizes.at("FH"))
                 throw std::runtime_error(
                     "protocol compiler max envelope exceeds the SRS domain catalogue");
-            if (decode_canonical_hex(proof_schema_template_hex)
-                    != ::gatzk::protocol::protocol_proof_schema_template_canonical_bytes()
-                || decode_canonical_hex(observation_ledger_template_hex)
-                    != ::gatzk::protocol::protocol_observation_ledger_template_canonical_bytes()
-                || decode_canonical_hex(random_identity_ledger_template_hex)
-                    != ::gatzk::protocol::protocol_random_identity_ledger_template_canonical_bytes()
-                || decode_canonical_hex(security_budget_ledger_template_hex)
-                    != ::gatzk::protocol::protocol_security_budget_ledger_template_canonical_bytes()
-                || sha256_hex(decode_canonical_hex(proof_schema_template_hex))
-                    != manifest.proof_schema_template_hash
-                || sha256_hex(decode_canonical_hex(observation_ledger_template_hex))
-                    != manifest.observation_ledger_hash
-                || sha256_hex(decode_canonical_hex(random_identity_ledger_template_hex))
-                    != manifest.random_identity_ledger_hash
-                || sha256_hex(decode_canonical_hex(security_budget_ledger_template_hex))
-                    != manifest.security_budget_ledger_hash)
+            if (decode_canonical_hex(proof_schema_template_hex) != ::gatzk::protocol::protocol_proof_schema_template_canonical_bytes() || decode_canonical_hex(observation_ledger_template_hex) != ::gatzk::protocol::protocol_observation_ledger_template_canonical_bytes() || decode_canonical_hex(random_identity_ledger_template_hex) != ::gatzk::protocol::protocol_random_identity_ledger_template_canonical_bytes() || decode_canonical_hex(security_budget_ledger_template_hex) != ::gatzk::protocol::protocol_security_budget_ledger_template_canonical_bytes() || sha256_hex(decode_canonical_hex(proof_schema_template_hex)) != manifest.proof_schema_template_hash || sha256_hex(decode_canonical_hex(observation_ledger_template_hex)) != manifest.observation_ledger_hash || sha256_hex(decode_canonical_hex(random_identity_ledger_template_hex)) != manifest.random_identity_ledger_hash || sha256_hex(decode_canonical_hex(security_budget_ledger_template_hex)) != manifest.security_budget_ledger_hash)
                 throw std::runtime_error(
                     "protocol compiler artifact embedded registry bytes mismatch");
         }
 
         void validate_material_hash_value(
-            const std::string& actual_hash,
-            const std::string& expected_hash,
-            const std::string& label)
+            const std::string &actual_hash,
+            const std::string &expected_hash,
+            const std::string &label)
         {
             if (expected_hash.empty())
             {
@@ -668,11 +564,10 @@ namespace gatzk::crypto
             }
         }
 
-
-        std::uint64_t read_u64_le(std::istream& input, const std::string& label)
+        std::uint64_t read_u64_le(std::istream &input, const std::string &label)
         {
             std::array<std::uint8_t, 8> bytes{};
-            input.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+            input.read(reinterpret_cast<char *>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
             if (input.gcount() != static_cast<std::streamsize>(bytes.size()))
             {
                 throw std::runtime_error("truncated SRS file while reading " + label);
@@ -686,9 +581,9 @@ namespace gatzk::crypto
         }
 
         std::uint64_t read_u64_le_bytes(
-            const std::vector<std::uint8_t>& bytes,
-            std::size_t& offset,
-            const std::string& label)
+            const std::vector<std::uint8_t> &bytes,
+            std::size_t &offset,
+            const std::string &label)
         {
             if (offset + 8 > bytes.size())
             {
@@ -703,7 +598,7 @@ namespace gatzk::crypto
             return out;
         }
 
-        std::uint64_t parse_u64_le_bytes(const std::array<std::uint8_t, 8>& bytes)
+        std::uint64_t parse_u64_le_bytes(const std::array<std::uint8_t, 8> &bytes)
         {
             std::uint64_t out = 0;
             for (std::size_t i = 0; i < bytes.size(); ++i)
@@ -714,8 +609,8 @@ namespace gatzk::crypto
         }
 
         std::vector<G1Point> load_g1_vector_file(
-            const std::filesystem::path& path,
-            std::string* actual_hash,
+            const std::filesystem::path &path,
+            std::string *actual_hash,
             std::size_t max_points);
 
         void validate_raw_loaded_srs_g1(
@@ -750,10 +645,10 @@ namespace gatzk::crypto
         }
 
         std::vector<G1Point> load_fixed_or_raw_g1_vector_file_prefix(
-            const std::filesystem::path& path,
+            const std::filesystem::path &path,
             std::streamoff file_size,
             std::size_t max_points,
-            std::string* actual_hash)
+            std::string *actual_hash)
         {
             algebra::ensure_mcl_field_ready();
             std::ifstream input(path, std::ios::binary);
@@ -763,7 +658,8 @@ namespace gatzk::crypto
             }
             SHA256_CTX ctx;
             SHA256_Init(&ctx);
-            auto read_hashed = [&](char* out, std::size_t size, const std::string& label) {
+            auto read_hashed = [&](char *out, std::size_t size, const std::string &label)
+            {
                 input.read(out, static_cast<std::streamsize>(size));
                 if (input.gcount() != static_cast<std::streamsize>(size))
                 {
@@ -776,13 +672,12 @@ namespace gatzk::crypto
             read_hashed(magic.data(), magic.size(), "G1 magic");
             const std::array<char, 8> expected_raw_magic{{'G', 'A', 'T', 'Z', 'K', 'G', '1', 'R'}};
             const std::array<char, 8> expected_canonical_magic{{'G', 'A', 'T', 'Z', 'K', 'G', '1', 'C'}};
-            if (magic != expected_raw_magic
-                && magic != expected_canonical_magic)
+            if (magic != expected_raw_magic && magic != expected_canonical_magic)
             {
                 return load_g1_vector_file(path, actual_hash, 0);
             }
             std::array<std::uint8_t, 8> count_bytes{};
-            read_hashed(reinterpret_cast<char*>(count_bytes.data()), count_bytes.size(), "G1 point count");
+            read_hashed(reinterpret_cast<char *>(count_bytes.data()), count_bytes.size(), "G1 point count");
             const auto count = parse_u64_le_bytes(count_bytes);
             if (count > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max()))
             {
@@ -790,31 +685,26 @@ namespace gatzk::crypto
             }
             std::array<std::uint8_t, 8> point_size_bytes{};
             read_hashed(
-                reinterpret_cast<char*>(point_size_bytes.data()),
+                reinterpret_cast<char *>(point_size_bytes.data()),
                 point_size_bytes.size(),
                 "G1 point size");
             const auto point_size_u64 =
                 parse_u64_le_bytes(point_size_bytes);
-            if (point_size_u64 == 0
-                || point_size_u64
-                    > static_cast<std::uint64_t>(
-                        std::numeric_limits<std::size_t>::max()))
+            if (point_size_u64 == 0 || point_size_u64 > static_cast<std::uint64_t>(
+                                                            std::numeric_limits<std::size_t>::max()))
             {
                 throw std::runtime_error(
                     "invalid fixed SRS G1 point size");
             }
             const auto point_size =
                 static_cast<std::size_t>(point_size_u64);
-            if (magic == expected_raw_magic
-                && point_size != sizeof(mcl::G1))
+            if (magic == expected_raw_magic && point_size != sizeof(mcl::G1))
                 throw std::runtime_error(
                     "raw SRS G1 material was generated for an incompatible mcl layout");
 
             const auto point_count = static_cast<std::size_t>(count);
             const auto header_size = static_cast<std::size_t>(24);
-            if (point_count
-                    > (std::numeric_limits<std::size_t>::max()
-                        - header_size) / point_size)
+            if (point_count > (std::numeric_limits<std::size_t>::max() - header_size) / point_size)
                 throw std::runtime_error(
                     "fixed SRS G1 material size overflows this platform");
             const auto expected_size =
@@ -822,13 +712,146 @@ namespace gatzk::crypto
             if (expected_size != static_cast<std::size_t>(file_size))
             {
                 throw std::runtime_error(
-                    "fixed SRS G1 material size mismatch: "
-                    + path.string());
+                    "fixed SRS G1 material size mismatch: " + path.string());
             }
-            const auto load_count = max_points == 0 ? point_count : std::min(point_count, max_points);
+
+            const auto load_count =
+                max_points == 0
+                    ? point_count
+                    : std::min(point_count, max_points);
+
             std::vector<G1Point> out(load_count);
+
             if (load_count != 0)
             {
+                enum class G1LoadWorkerFailure : unsigned
+                {
+                    None = 0,
+                    RawValidation,
+                    CanonicalDeserialize,
+                    CanonicalIdentity,
+                    CanonicalSerialize,
+                    CanonicalEncoding,
+                    UnexpectedCanonical,
+                };
+
+                std::atomic<unsigned>
+                    worker_failure_kind{
+                        static_cast<unsigned>(
+                            G1LoadWorkerFailure::None)};
+
+                std::atomic<std::size_t>
+                    worker_failure_index{
+                        std::numeric_limits<
+                            std::size_t>::max()};
+
+                auto record_worker_failure =
+                    [&](G1LoadWorkerFailure kind,
+                        std::size_t index) noexcept
+                {
+                    auto expected =
+                        static_cast<unsigned>(
+                            G1LoadWorkerFailure::None);
+
+                    if (worker_failure_kind
+                            .compare_exchange_strong(
+                                expected,
+                                static_cast<unsigned>(
+                                    kind),
+                                std::memory_order_acq_rel,
+                                std::memory_order_acquire))
+                    {
+                        worker_failure_index.store(
+                            index,
+                            std::memory_order_release);
+                    }
+                };
+
+                auto worker_failed =
+                    [&]() noexcept
+                {
+                    return worker_failure_kind.load(
+                               std::memory_order_acquire) != static_cast<unsigned>(G1LoadWorkerFailure::
+                                                                                       None);
+                };
+
+                auto throw_worker_failure =
+                    [&]()
+                {
+                    const auto raw_kind =
+                        worker_failure_kind.load(
+                            std::memory_order_acquire);
+
+                    const auto kind =
+                        static_cast<
+                            G1LoadWorkerFailure>(
+                            raw_kind);
+
+                    if (kind == G1LoadWorkerFailure::None)
+                    {
+                        return;
+                    }
+
+                    const auto index =
+                        worker_failure_index.load(
+                            std::memory_order_acquire);
+
+                    switch (kind)
+                    {
+                    case G1LoadWorkerFailure::
+                        RawValidation:
+                        throw std::runtime_error(
+                            "invalid, non-subgroup, or "
+                            "identity SRS G1 point at "
+                            "index " +
+                            std::to_string(index) + ": " + path.string());
+
+                    case G1LoadWorkerFailure::
+                        CanonicalDeserialize:
+                        throw std::runtime_error(
+                            "failed to deserialize SRS "
+                            "G1 point at index " +
+                            std::to_string(index) + ": " + path.string());
+
+                    case G1LoadWorkerFailure::
+                        CanonicalIdentity:
+                        throw std::runtime_error(
+                            "identity SRS G1 point at "
+                            "index " +
+                            std::to_string(index) + ": " + path.string());
+
+                    case G1LoadWorkerFailure::
+                        CanonicalSerialize:
+                        throw std::runtime_error(
+                            "failed to serialize SRS G1 "
+                            "point at index " +
+                            std::to_string(index) + ": " + path.string());
+
+                    case G1LoadWorkerFailure::
+                        CanonicalEncoding:
+                        throw std::runtime_error(
+                            "non-canonical SRS G1 "
+                            "encoding at index " +
+                            std::to_string(index) + ": " + path.string());
+
+                    case G1LoadWorkerFailure::
+                        UnexpectedCanonical:
+                        throw std::runtime_error(
+                            "unexpected exception while "
+                            "validating canonical SRS G1 "
+                            "point near index " +
+                            std::to_string(index) + ": " + path.string());
+
+                    case G1LoadWorkerFailure::None:
+                        break;
+                    }
+
+                    throw std::runtime_error(
+                        "unknown parallel SRS G1 "
+                        "validation failure: " +
+                        path.string());
+                };
+
                 const auto load_bytes =
                     load_count * point_size;
 
@@ -851,7 +874,8 @@ namespace gatzk::crypto
                     const auto chunk_size =
                         (load_count + worker_count - 1) / worker_count;
 
-                    std::vector<std::future<void>>
+                    std::vector<
+                        std::future<void>>
                         futures;
 
                     futures.reserve(worker_count);
@@ -878,23 +902,45 @@ namespace gatzk::crypto
                                 std::launch::async,
                                 [&, begin, end]()
                                 {
-                                    for (std::size_t i =
-                                             begin;
-                                         i < end;
-                                         ++i)
+                                    try
                                     {
-                                        validate_raw_loaded_srs_g1(
-                                            out[i],
-                                            path,
-                                            i);
+                                        for (std::size_t i =
+                                                 begin;
+                                             i < end;
+                                             ++i)
+                                        {
+                                            if (worker_failed())
+                                            {
+                                                return;
+                                            }
+
+                                            validate_raw_loaded_srs_g1(
+                                                out[i],
+                                                path,
+                                                i);
+                                        }
+                                    }
+                                    catch (...)
+                                    {
+                                        record_worker_failure(
+                                            G1LoadWorkerFailure::
+                                                RawValidation,
+                                            begin);
                                     }
                                 }));
                     }
 
+                    // Workers never propagate validation
+                    // exceptions through std::future.
+                    // Their failure state is converted back
+                    // into the canonical loader exception on
+                    // this calling thread below.
                     for (auto &future : futures)
                     {
-                        future.get();
+                        future.wait();
                     }
+
+                    throw_worker_failure();
                 }
                 else
                 {
@@ -918,12 +964,14 @@ namespace gatzk::crypto
                                 cpu_count,
                                 chunk_count));
 
-                    std::deque<std::future<void>>
+                    std::deque<
+                        std::future<void>>
                         inflight;
 
-                    auto reap_one = [&]()
+                    auto reap_one =
+                        [&]()
                     {
-                        inflight.front().get();
+                        inflight.front().wait();
                         inflight.pop_front();
                     };
 
@@ -959,67 +1007,99 @@ namespace gatzk::crypto
                                  begin,
                                  current_count]()
                                 {
-                                    std::vector<
-                                        std::uint8_t>
-                                        canonical_bytes(
-                                            point_size);
-
-                                    for (std::size_t local = 0;
-                                         local < current_count;
-                                         ++local)
+                                    try
                                     {
-                                        const auto index =
-                                            begin + local;
+                                        std::vector<
+                                            std::uint8_t>
+                                            canonical_bytes(
+                                                point_size);
 
-                                        const auto *
-                                            point_begin =
-                                                payload->data() + local * point_size;
-
-                                        const auto consumed =
-                                            out[index]
-                                                .value
-                                                .deserialize(
-                                                    point_begin,
-                                                    point_size);
-
-                                        if (consumed != point_size)
+                                        for (std::size_t local =
+                                                 0;
+                                             local < current_count;
+                                             ++local)
                                         {
-                                            throw std::runtime_error(
-                                                "failed to deserialize SRS G1 point at index " + std::to_string(index) + ": " + path.string());
-                                        }
+                                            if (worker_failed())
+                                            {
+                                                return;
+                                            }
 
-                                        if (out[index]
-                                                .value
-                                                .isZero())
-                                        {
-                                            throw std::runtime_error(
-                                                "identity SRS G1 point at index " + std::to_string(index) + ": " + path.string());
-                                        }
+                                            const auto index =
+                                                begin + local;
 
-                                        const auto written =
-                                            out[index]
-                                                .value
-                                                .serialize(
-                                                    canonical_bytes
-                                                        .data(),
-                                                    canonical_bytes
-                                                        .size());
+                                            const auto *
+                                                point_begin =
+                                                    payload
+                                                        ->data() +
+                                                    local * point_size;
 
-                                        if (written == 0)
-                                        {
-                                            throw std::runtime_error(
-                                                "failed to serialize SRS G1 point at index " + std::to_string(index) + ": " + path.string());
-                                        }
+                                            const auto
+                                                consumed =
+                                                    out[index]
+                                                        .value
+                                                        .deserialize(
+                                                            point_begin,
+                                                            point_size);
 
-                                        if (written != point_size || std::memcmp(
-                                                                         canonical_bytes
-                                                                             .data(),
-                                                                         point_begin,
-                                                                         point_size) != 0)
-                                        {
-                                            throw std::runtime_error(
-                                                "non-canonical SRS G1 encoding at index " + std::to_string(index) + ": " + path.string());
+                                            if (consumed != point_size)
+                                            {
+                                                record_worker_failure(
+                                                    G1LoadWorkerFailure::
+                                                        CanonicalDeserialize,
+                                                    index);
+                                                return;
+                                            }
+
+                                            if (out[index]
+                                                    .value
+                                                    .isZero())
+                                            {
+                                                record_worker_failure(
+                                                    G1LoadWorkerFailure::
+                                                        CanonicalIdentity,
+                                                    index);
+                                                return;
+                                            }
+
+                                            const auto
+                                                written =
+                                                    out[index]
+                                                        .value
+                                                        .serialize(
+                                                            canonical_bytes
+                                                                .data(),
+                                                            canonical_bytes
+                                                                .size());
+
+                                            if (written == 0)
+                                            {
+                                                record_worker_failure(
+                                                    G1LoadWorkerFailure::
+                                                        CanonicalSerialize,
+                                                    index);
+                                                return;
+                                            }
+
+                                            if (written != point_size || std::memcmp(
+                                                                             canonical_bytes
+                                                                                 .data(),
+                                                                             point_begin,
+                                                                             point_size) != 0)
+                                            {
+                                                record_worker_failure(
+                                                    G1LoadWorkerFailure::
+                                                        CanonicalEncoding,
+                                                    index);
+                                                return;
+                                            }
                                         }
+                                    }
+                                    catch (...)
+                                    {
+                                        record_worker_failure(
+                                            G1LoadWorkerFailure::
+                                                UnexpectedCanonical,
+                                            begin);
                                     }
                                 }));
 
@@ -1033,6 +1113,8 @@ namespace gatzk::crypto
                     {
                         reap_one();
                     }
+
+                    throw_worker_failure();
                 }
             }
 
@@ -1055,8 +1137,8 @@ namespace gatzk::crypto
         }
 
         std::vector<G1Point> load_g1_vector_file(
-            const std::filesystem::path& path,
-            std::string* actual_hash = nullptr,
+            const std::filesystem::path &path,
+            std::string *actual_hash = nullptr,
             std::size_t max_points = 0)
         {
             std::ifstream input(path, std::ios::binary | std::ios::ate);
@@ -1078,16 +1160,14 @@ namespace gatzk::crypto
             }
             const std::array<char, 8> expected_raw_magic{{'G', 'A', 'T', 'Z', 'K', 'G', '1', 'R'}};
             const std::array<char, 8> expected_canonical_magic{{'G', 'A', 'T', 'Z', 'K', 'G', '1', 'C'}};
-            if (max_points != 0
-                || magic_probe == expected_raw_magic
-                || magic_probe == expected_canonical_magic)
+            if (max_points != 0 || magic_probe == expected_raw_magic || magic_probe == expected_canonical_magic)
             {
                 return load_fixed_or_raw_g1_vector_file_prefix(
                     path, file_size, max_points, actual_hash);
             }
             input.seekg(0);
             std::vector<std::uint8_t> file_bytes(static_cast<std::size_t>(file_size));
-            input.read(reinterpret_cast<char*>(file_bytes.data()), file_size);
+            input.read(reinterpret_cast<char *>(file_bytes.data()), file_size);
             if (input.gcount() != file_size)
             {
                 throw std::runtime_error("failed to read SRS G1 material: " + path.string());
@@ -1098,7 +1178,7 @@ namespace gatzk::crypto
             }
             const std::array<char, 8> expected_magic{{'G', 'A', 'T', 'Z', 'K', 'G', '1', '\0'}};
             std::array<char, 8> magic{};
-            std::copy_n(reinterpret_cast<const char*>(file_bytes.data()), magic.size(), magic.data());
+            std::copy_n(reinterpret_cast<const char *>(file_bytes.data()), magic.size(), magic.data());
             if (magic != expected_magic && magic != expected_raw_magic)
             {
                 throw std::runtime_error("invalid SRS G1 material header: " + path.string());
@@ -1146,8 +1226,7 @@ namespace gatzk::crypto
             for (std::uint64_t i = 0; i < count; ++i)
             {
                 const auto size = read_u64_le_bytes(file_bytes, offset, "G1 point size");
-                if (size > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max())
-                    || offset + static_cast<std::size_t>(size) > file_bytes.size())
+                if (size > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max()) || offset + static_cast<std::size_t>(size) > file_bytes.size())
                 {
                     throw std::runtime_error("truncated SRS G1 point payload");
                 }
@@ -1169,7 +1248,8 @@ namespace gatzk::crypto
                 {
                     break;
                 }
-                futures.push_back(std::async(std::launch::async, [&file_bytes, &payloads, &out, &path, begin, end]() {
+                futures.push_back(std::async(std::launch::async, [&file_bytes, &payloads, &out, &path, begin, end]()
+                                             {
                     for (std::size_t i = begin; i < end; ++i)
                     {
                         const auto [payload_offset, payload_size] = payloads[i];
@@ -1182,10 +1262,9 @@ namespace gatzk::crypto
                                 "non-canonical SRS G1 encoding at index "
                                 + std::to_string(i));
                         validate_deserialized_srs_g1_identity(out[i], path, i);
-                    }
-                }));
+                    } }));
             }
-            for (auto& future : futures)
+            for (auto &future : futures)
             {
                 future.get();
             }
@@ -1199,7 +1278,7 @@ namespace gatzk::crypto
             std::unordered_map<std::string, G2Point> domain_zero_g2;
         };
 
-        LoadedVerifierKey load_vk_file(const std::filesystem::path& path, std::string* actual_hash = nullptr)
+        LoadedVerifierKey load_vk_file(const std::filesystem::path &path, std::string *actual_hash = nullptr)
         {
             std::ifstream file(path, std::ios::binary | std::ios::ate);
             if (!file)
@@ -1229,10 +1308,11 @@ namespace gatzk::crypto
             {
                 throw std::runtime_error("invalid verifier key header: " + path.string());
             }
-            auto read_g2 = [&]() {
+            auto read_g2 = [&]()
+            {
                 const auto size = read_u64_le(input, "G2 point size");
                 std::vector<std::uint8_t> bytes(static_cast<std::size_t>(size));
-                input.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+                input.read(reinterpret_cast<char *>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
                 if (input.gcount() != static_cast<std::streamsize>(bytes.size()))
                 {
                     throw std::runtime_error("truncated SRS G2 point payload");
@@ -1283,13 +1363,11 @@ namespace gatzk::crypto
         }
 
         void validate_manifest(
-            const SRSManifest& manifest,
-            const std::string& expected_srs_type,
-            const std::string& expected_srs_id)
+            const SRSManifest &manifest,
+            const std::string &expected_srs_type,
+            const std::string &expected_srs_id)
         {
-            if (manifest.manifest_format != "zkgat_srs_manifest_v8"
-                || manifest.generator_id != "zkgat_srs_setup_tool_v8"
-                || manifest.generator_version != "zkgat_srs_setup_tool_v8")
+            if (manifest.manifest_format != "zkgat_srs_manifest_v8" || manifest.generator_id != "zkgat_srs_setup_tool_v8" || manifest.generator_version != "zkgat_srs_setup_tool_v8")
             {
                 throw std::runtime_error("unsupported or legacy SRS manifest format");
             }
@@ -1309,36 +1387,15 @@ namespace gatzk::crypto
             {
                 throw std::runtime_error("SRS id mismatch");
             }
-            if (manifest.kzg_assumption_profile_id != "shifted_kzg_divisibility_v1"
-                || manifest.kzg_assumption_degree_bound != manifest.degree_bound
-                || manifest.kzg_assumption_security_bits != 128
-                || manifest.kzg_assumption_domain_catalog_hash
-                    != canonical_domain_catalog_hash(manifest.domain_sizes))
+            if (manifest.kzg_assumption_profile_id != "shifted_kzg_divisibility_v1" || manifest.kzg_assumption_degree_bound != manifest.degree_bound || manifest.kzg_assumption_security_bits != 128 || manifest.kzg_assumption_domain_catalog_hash != canonical_domain_catalog_hash(manifest.domain_sizes))
             {
                 throw std::runtime_error("SRS shifted-KZG assumption profile is missing or inconsistent");
             }
-            if (manifest.root_derivation_id != "bls12_381_fr_generator_5_v1"
-                || manifest.row_order != "ascending_powers_from_one"
-                || manifest.domain_generators.size() != manifest.domain_sizes.size()
-                || manifest.domain_generator_catalog_hash
-                    != canonical_domain_generator_catalog_hash(
-                        manifest.domain_sizes,
-                        manifest.domain_generators,
-                        manifest.root_derivation_id,
-                        manifest.row_order))
+            if (manifest.root_derivation_id != "bls12_381_fr_generator_5_v1" || manifest.row_order != "ascending_powers_from_one" || manifest.domain_generators.size() != manifest.domain_sizes.size() || manifest.domain_generator_catalog_hash != canonical_domain_generator_catalog_hash(manifest.domain_sizes, manifest.domain_generators, manifest.root_derivation_id, manifest.row_order))
             {
                 throw std::runtime_error("SRS domain generator catalogue is missing or inconsistent");
             }
-            if (manifest.protocol_schema_id.empty()
-                || manifest.max_instance_envelope_id.empty()
-                || manifest.max_instance_envelope_hash.empty()
-                || manifest.max_instance_envelope_id
-                    != manifest.max_instance_envelope_hash
-                || manifest.max_instance_envelope.empty()
-                || manifest.proof_schema_template_hash.empty()
-                || manifest.observation_ledger_hash.empty()
-                || manifest.random_identity_ledger_hash.empty()
-                || manifest.security_budget_ledger_hash.empty())
+            if (manifest.protocol_schema_id.empty() || manifest.max_instance_envelope_id.empty() || manifest.max_instance_envelope_hash.empty() || manifest.max_instance_envelope_id != manifest.max_instance_envelope_hash || manifest.max_instance_envelope.empty() || manifest.proof_schema_template_hash.empty() || manifest.observation_ledger_hash.empty() || manifest.random_identity_ledger_hash.empty() || manifest.security_budget_ledger_hash.empty())
             {
                 throw std::runtime_error(
                     "SRS protocol compiler artifact binding is incomplete");
@@ -1346,41 +1403,32 @@ namespace gatzk::crypto
             if (manifest.security_level != "120-bit")
                 throw std::runtime_error(
                     "SRS manifest security target does not match compiler target");
-            if (manifest.encoding
-                    != "canonical_mcl_bls12_381_fixed_v1"
-                || manifest.srs_audit_report_hash.empty()
-                || manifest.srs_consistency_hash.empty()
-                || manifest.srs_audit_report_hash
-                    != manifest.srs_consistency_hash
-                || manifest.vanishing_g2_hash.empty())
+            if (manifest.encoding != "canonical_mcl_bls12_381_fixed_v1" || manifest.srs_audit_report_hash.empty() || manifest.srs_consistency_hash.empty() || manifest.srs_audit_report_hash != manifest.srs_consistency_hash || manifest.vanishing_g2_hash.empty())
             {
                 throw std::runtime_error(
                     "SRS canonical encoding or consistency audit binding is missing");
             }
-            for (const auto& [domain_name, domain_size] : manifest.domain_sizes)
+            for (const auto &[domain_name, domain_size] : manifest.domain_sizes)
             {
                 if (domain_size == 0 || domain_size > manifest.degree_bound)
                 {
                     throw std::runtime_error("SRS assumption profile does not cover a registered domain size");
                 }
                 const auto generator = manifest.domain_generators.find(domain_name);
-                if (generator == manifest.domain_generators.end()
-                    || generator->second
-                        != canonical_field_hex(FieldElement::root_of_unity(domain_size)))
+                if (generator == manifest.domain_generators.end() || generator->second != canonical_field_hex(FieldElement::root_of_unity(domain_size)))
                 {
                     throw std::runtime_error(
-                        "SRS domain generator does not match canonical root derivation: "
-                        + domain_name);
+                        "SRS domain generator does not match canonical root derivation: " + domain_name);
                 }
             }
         }
 
-        double elapsed_ms(const Clock::time_point& start, const Clock::time_point& end)
+        double elapsed_ms(const Clock::time_point &start, const Clock::time_point &end)
         {
             return std::chrono::duration<double, std::milli>(end - start).count();
         }
 
-        std::vector<FieldElement> folding_powers(const FieldElement& challenge, std::size_t count)
+        std::vector<FieldElement> folding_powers(const FieldElement &challenge, std::size_t count)
         {
             std::vector<FieldElement> out(count, FieldElement::one());
             for (std::size_t i = 1; i < count; ++i)
@@ -1395,7 +1443,7 @@ namespace gatzk::crypto
             std::size_t count,
             std::size_t min_parallel_count,
             std::size_t max_worker_count,
-            Fn&& fn)
+            Fn &&fn)
         {
             const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
             const auto available_workers =
@@ -1419,23 +1467,22 @@ namespace gatzk::crypto
                 {
                     break;
                 }
-                futures.push_back(std::async(std::launch::async, [&, begin, end]() {
-                    fn(begin, end);
-                }));
+                futures.push_back(std::async(std::launch::async, [&, begin, end]()
+                                             { fn(begin, end); }));
             }
-            for (auto& future : futures)
+            for (auto &future : futures)
             {
                 future.get();
             }
         }
 
         template <class Fn>
-        void parallel_for_chunks(std::size_t count, std::size_t min_parallel_count, Fn&& fn)
+        void parallel_for_chunks(std::size_t count, std::size_t min_parallel_count, Fn &&fn)
         {
             parallel_for_chunks_capped(count, min_parallel_count, 0, std::forward<Fn>(fn));
         }
 
-        std::string srs_domain_name(const std::string& domain_name)
+        std::string srs_domain_name(const std::string &domain_name)
         {
             // The manifest key is the authenticated entry_id.  Quotient and
             // transcript labels use `d_h`, but the canonical SRS catalogue
@@ -1444,17 +1491,17 @@ namespace gatzk::crypto
             return domain_name;
         }
 
-        std::string srs_exact_domain_name(const std::string& domain_name, std::size_t domain_size)
+        std::string srs_exact_domain_name(const std::string &domain_name, std::size_t domain_size)
         {
             return srs_domain_name(domain_name) + "_" + std::to_string(domain_size);
         }
 
-        std::string polynomial_basis_name(const algebra::Polynomial& polynomial)
+        std::string polynomial_basis_name(const algebra::Polynomial &polynomial)
         {
             return polynomial.basis == algebra::PolynomialBasis::Coefficient ? "coefficient" : "evaluation";
         }
 
-        std::string polynomial_domain_name(const algebra::Polynomial& polynomial)
+        std::string polynomial_domain_name(const algebra::Polynomial &polynomial)
         {
             if (polynomial.domain == nullptr)
             {
@@ -1468,7 +1515,7 @@ namespace gatzk::crypto
             return std::getenv("GATZK_RUN_PROGRESS") != nullptr;
         }
 
-        void progress_note(const std::string& label)
+        void progress_note(const std::string &label)
         {
             if (progress_enabled())
             {
@@ -1482,9 +1529,7 @@ namespace gatzk::crypto
             std::size_t max_scalar_count,
             std::size_t cpu_count)
         {
-            if (!util::route2_options().fast_msm
-                || object_count <= 1
-                || cpu_count < 4)
+            if (!util::route2_options().fast_msm || object_count <= 1 || cpu_count < 4)
             {
                 return 1;
             }
@@ -1506,10 +1551,7 @@ namespace gatzk::crypto
             // idle once the N-domain work finishes.  Two outer workers keep
             // both edge MSMs concurrent while allowing each to use half the
             // machine; the smaller objects are picked up by the same workers.
-            if (object_count == 4
-                && max_scalar_count >= (1ULL << 13)
-                && max_scalar_count <= (1ULL << 15)
-                && total_scalar_count <= max_scalar_count * 3)
+            if (object_count == 4 && max_scalar_count >= (1ULL << 13) && max_scalar_count <= (1ULL << 15) && total_scalar_count <= max_scalar_count * 3)
             {
                 return std::min<std::size_t>(2, cpu_count / 2);
             }
@@ -1531,22 +1573,20 @@ namespace gatzk::crypto
         }
 
         std::vector<std::size_t> commitment_work_order(
-            const std::vector<std::pair<std::string, const algebra::Polynomial*>>& named_polynomials)
+            const std::vector<std::pair<std::string, const algebra::Polynomial *>> &named_polynomials)
         {
             std::vector<std::size_t> work_order(named_polynomials.size());
             std::iota(work_order.begin(), work_order.end(), std::size_t{0});
-            auto group_key = [&](std::size_t index) {
-                const auto* polynomial = named_polynomials[index].second;
-                return std::string(polynomial_basis_name(*polynomial))
-                    + "|"
-                    + polynomial_domain_name(*polynomial)
-                    + "|"
-                    + std::to_string(polynomial->domain != nullptr ? polynomial->domain->size : 0);
+            auto group_key = [&](std::size_t index)
+            {
+                const auto *polynomial = named_polynomials[index].second;
+                return std::string(polynomial_basis_name(*polynomial)) + "|" + polynomial_domain_name(*polynomial) + "|" + std::to_string(polynomial->domain != nullptr ? polynomial->domain->size : 0);
             };
             std::stable_sort(
                 work_order.begin(),
                 work_order.end(),
-                [&](std::size_t lhs, std::size_t rhs) {
+                [&](std::size_t lhs, std::size_t rhs)
+                {
                     const auto lhs_key = group_key(lhs);
                     const auto rhs_key = group_key(rhs);
                     if (lhs_key != rhs_key)
@@ -1569,20 +1609,18 @@ namespace gatzk::crypto
             return tail_length >= min_tail_length;
         }
 
-        std::size_t estimated_commitment_msm_work(const algebra::Polynomial& polynomial)
+        std::size_t estimated_commitment_msm_work(const algebra::Polynomial &polynomial)
         {
-            const auto& values = polynomial.values();
+            const auto &values = polynomial.values();
             if (values.empty())
             {
                 return 0;
             }
 
-            if (polynomial.basis == algebra::PolynomialBasis::Evaluation
-                && polynomial.domain != nullptr
-                && values.size() == polynomial.domain->size)
+            if (polynomial.basis == algebra::PolynomialBasis::Evaluation && polynomial.domain != nullptr && values.size() == polynomial.domain->size)
             {
                 std::size_t tail_start = values.size();
-                const auto& tail_value = values.back();
+                const auto &tail_value = values.back();
                 while (tail_start > 0 && values[tail_start - 1] == tail_value)
                 {
                     --tail_start;
@@ -1601,13 +1639,14 @@ namespace gatzk::crypto
             return static_cast<std::size_t>(std::count_if(
                 values.begin(),
                 values.end(),
-                [](const FieldElement& value) { return !value.is_zero(); }));
+                [](const FieldElement &value)
+                { return !value.is_zero(); }));
         }
 
         bool should_compact_lagrange_prefix_delta(
-            const std::vector<FieldElement>& values,
+            const std::vector<FieldElement> &values,
             std::size_t prefix_size,
-            const FieldElement& tail_value)
+            const FieldElement &tail_value)
         {
             if (prefix_size < 4096)
             {
@@ -1617,7 +1656,7 @@ namespace gatzk::crypto
             const auto stride = std::max<std::size_t>(1, prefix_size / kTargetSamples);
             std::size_t sampled = 0;
             std::size_t sampled_nonzero = 0;
-            const auto& tail_native = tail_value.native();
+            const auto &tail_native = tail_value.native();
             for (std::size_t i = 0; i < prefix_size && sampled < kTargetSamples; i += stride)
             {
                 mcl::Fr delta;
@@ -1629,17 +1668,17 @@ namespace gatzk::crypto
         }
 
         G1Point commit_lagrange_prefix_delta_dense(
-            const std::vector<G1Point>& lagrange_srs,
-            const std::vector<FieldElement>& values,
+            const std::vector<G1Point> &lagrange_srs,
+            const std::vector<FieldElement> &values,
             std::size_t prefix_size,
-            const FieldElement& tail_value,
-            G1MSMProfile* profile,
-            const G1MSMExecutionOptions* msm_options = nullptr)
+            const FieldElement &tail_value,
+            G1MSMProfile *profile,
+            const G1MSMExecutionOptions *msm_options = nullptr)
         {
             thread_local std::vector<FieldElement> prefix_delta_scratch;
             prefix_delta_scratch.resize(prefix_size);
-            const auto& tail_native = tail_value.native();
-            auto* scratch_native = FieldElement::mutable_native_array_data(prefix_delta_scratch.data());
+            const auto &tail_native = tail_value.native();
+            auto *scratch_native = FieldElement::mutable_native_array_data(prefix_delta_scratch.data());
             for (std::size_t i = 0; i < prefix_size; ++i)
             {
                 mcl::Fr::sub(scratch_native[i], values[i].native(), tail_native);
@@ -1653,12 +1692,12 @@ namespace gatzk::crypto
         }
 
         G1Point commit_lagrange_prefix_delta(
-            const std::vector<G1Point>& lagrange_srs,
-            const std::vector<FieldElement>& values,
+            const std::vector<G1Point> &lagrange_srs,
+            const std::vector<FieldElement> &values,
             std::size_t prefix_size,
-            const FieldElement& tail_value,
-            G1MSMProfile* profile,
-            const G1MSMExecutionOptions* msm_options = nullptr)
+            const FieldElement &tail_value,
+            G1MSMProfile *profile,
+            const G1MSMExecutionOptions *msm_options = nullptr)
         {
             if (!should_compact_lagrange_prefix_delta(values, prefix_size, tail_value))
             {
@@ -1679,7 +1718,7 @@ namespace gatzk::crypto
             compact_points.reserve(reserve_hint);
             compact_scalars.reserve(reserve_hint);
 
-            const auto& tail_native = tail_value.native();
+            const auto &tail_native = tail_value.native();
             for (std::size_t i = 0; i < prefix_size; ++i)
             {
                 mcl::Fr delta;
@@ -1737,17 +1776,14 @@ namespace gatzk::crypto
 
         G1Point commit_zero_domain_multiple_point(
             std::size_t domain_size,
-            const std::vector<FieldElement>& multiplier,
-            const KZGProverKey& pk,
+            const std::vector<FieldElement> &multiplier,
+            const KZGProverKey &pk,
             std::string_view label)
         {
-            if (pk.powers_g1 == nullptr
-                || domain_size + multiplier.size() > pk.powers_g1->size()
-                || domain_size + multiplier.size() > pk.degree_bound + 1)
+            if (pk.powers_g1 == nullptr || domain_size + multiplier.size() > pk.powers_g1->size() || domain_size + multiplier.size() > pk.degree_bound + 1)
             {
                 throw std::runtime_error(
-                    "zero-domain multiple exceeds coefficient SRS degree bound: "
-                    + std::string(label));
+                    "zero-domain multiple exceeds coefficient SRS degree bound: " + std::string(label));
             }
             auto out = g1_zero();
             for (std::size_t i = 0; i < multiplier.size(); ++i)
@@ -1764,15 +1800,14 @@ namespace gatzk::crypto
             return out;
         }
 
-        const std::vector<G1Point>* evaluation_srs_points(
-            const algebra::Polynomial& polynomial,
-            const KZGProverKey& pk)
+        const std::vector<G1Point> *evaluation_srs_points(
+            const algebra::Polynomial &polynomial,
+            const KZGProverKey &pk)
         {
             if (polynomial.domain == nullptr)
             {
                 throw std::runtime_error(
-                    "evaluation polynomial is missing its domain: "
-                    + polynomial.name);
+                    "evaluation polynomial is missing its domain: " + polynomial.name);
             }
             const auto base_key =
                 srs_domain_name(polynomial.domain->name);
@@ -1784,9 +1819,7 @@ namespace gatzk::crypto
             if (it == pk.lagrange_srs_by_domain.end())
             {
                 it = pk.lagrange_srs_by_domain.find(base_key);
-                if (it != pk.lagrange_srs_by_domain.end()
-                    && it->second != nullptr
-                    && it->second->size() != polynomial.domain->size)
+                if (it != pk.lagrange_srs_by_domain.end() && it->second != nullptr && it->second->size() != polynomial.domain->size)
                 {
                     it = pk.lagrange_srs_by_domain.end();
                 }
@@ -1794,27 +1827,23 @@ namespace gatzk::crypto
             if (it == pk.lagrange_srs_by_domain.end())
             {
                 throw std::runtime_error(
-                    "missing exact Lagrange SRS for domain: "
-                    + base_key
-                    + ":"
-                    + std::to_string(polynomial.domain->size));
+                    "missing exact Lagrange SRS for domain: " + base_key + ":" + std::to_string(polynomial.domain->size));
             }
             if (it->second == nullptr)
             {
                 throw std::runtime_error(
-                    "missing Lagrange proving SRS material for domain: "
-                    + exact_key);
+                    "missing Lagrange proving SRS material for domain: " + exact_key);
             }
             return it->second.get();
         }
 
         // KZG多项式承诺主函数
         G1Point commit_polynomial_point(
-            const algebra::Polynomial& polynomial,
-            const KZGProverKey& pk,
-            CommitObjectProfile* profile = nullptr,
-            const G1MSMExecutionOptions* msm_options = nullptr,
-            EvaluationCommitmentCache* reuse_cache = nullptr)
+            const algebra::Polynomial &polynomial,
+            const KZGProverKey &pk,
+            CommitObjectProfile *profile = nullptr,
+            const G1MSMExecutionOptions *msm_options = nullptr,
+            EvaluationCommitmentCache *reuse_cache = nullptr)
         {
             G1MSMProfile msm_profile;
             const auto msm_start = Clock::now();
@@ -1855,7 +1884,7 @@ namespace gatzk::crypto
             else
             {
                 // 评估多项式采用 拉格朗日SRS + MSM
-                const auto* lagrange_srs =
+                const auto *lagrange_srs =
                     evaluation_srs_points(polynomial, pk);
                 stable_msm_options.stable_srs_capacity =
                     lagrange_srs->size();
@@ -1863,14 +1892,8 @@ namespace gatzk::crypto
                 {
                     throw std::runtime_error("evaluation polynomial exceeds Lagrange SRS domain size: " + polynomial.name);
                 }
-                const auto& values = polynomial.values();
-                if (reuse_cache != nullptr
-                    && polynomial.shared_data != nullptr
-                    && reuse_cache->lookup_semantic(
-                        polynomial.domain.get(),
-                        lagrange_srs,
-                        polynomial.shared_data,
-                        &point))
+                const auto &values = polynomial.values();
+                if (reuse_cache != nullptr && polynomial.shared_data != nullptr && reuse_cache->lookup_semantic(polynomial.domain.get(), lagrange_srs, polynomial.shared_data, &point))
                 {
                     semantic_commitment_reuse = true;
                     if (profile != nullptr)
@@ -1891,22 +1914,20 @@ namespace gatzk::crypto
                     std::size_t tail_start = values.size();
                     if (can_fold_tail && !values.empty())
                     {
-                        const auto& tail_value = values.back();
-                        while (tail_start > 0
-                               && values[tail_start - 1] == tail_value)
+                        const auto &tail_value = values.back();
+                        while (tail_start > 0 && values[tail_start - 1] == tail_value)
                         {
                             --tail_start;
                         }
                     }
-                    if (can_fold_tail
-                        && should_fold_constant_evaluation_tail(
-                            values.size(), tail_start))
+                    if (can_fold_tail && should_fold_constant_evaluation_tail(
+                                             values.size(), tail_start))
                     {
                         constant_tail_folding = true;
-                        const auto& tail_value = values.back();
+                        const auto &tail_value = values.back();
                         const auto tail_commitment = tail_value.is_zero()
-                            ? g1_zero()
-                            : g1_mul(pk.g1_generator, tail_value);
+                                                         ? g1_zero()
+                                                         : g1_mul(pk.g1_generator, tail_value);
                         if (tail_start == 0)
                         {
                             point = tail_commitment;
@@ -1925,20 +1946,22 @@ namespace gatzk::crypto
                             const auto folded_prefix_commitment =
                                 tail_value.is_zero()
                                     ? g1_multi_scalar_mul_profiled(
-                                    lagrange_srs->data(),
-                                    values.data(),
-                                    tail_start,
-                                    profile != nullptr
-                                        ? &msm_profile : nullptr,
-                                    &stable_msm_options)
-                                : commit_lagrange_prefix_delta(
-                                    *lagrange_srs,
-                                    values,
-                                    tail_start,
-                                    tail_value,
-                                    profile != nullptr
-                                        ? &msm_profile : nullptr,
-                                    &stable_msm_options);
+                                          lagrange_srs->data(),
+                                          values.data(),
+                                          tail_start,
+                                          profile != nullptr
+                                              ? &msm_profile
+                                              : nullptr,
+                                          &stable_msm_options)
+                                    : commit_lagrange_prefix_delta(
+                                          *lagrange_srs,
+                                          values,
+                                          tail_start,
+                                          tail_value,
+                                          profile != nullptr
+                                              ? &msm_profile
+                                              : nullptr,
+                                          &stable_msm_options);
                             if (profile != nullptr)
                             {
                                 msm_profile.input_count = polynomial.size();
@@ -1957,8 +1980,7 @@ namespace gatzk::crypto
                             profile != nullptr ? &msm_profile : nullptr,
                             &stable_msm_options);
                     }
-                    if (reuse_cache != nullptr
-                        && polynomial.shared_data != nullptr)
+                    if (reuse_cache != nullptr && polynomial.shared_data != nullptr)
                     {
                         reuse_cache->store_semantic(
                             polynomial.domain.get(),
@@ -1998,12 +2020,12 @@ namespace gatzk::crypto
         }
 
         Commitment make_commitment(
-            const std::string& name,
+            const std::string &name,
             algebra::Polynomial polynomial,
-            const KZGProverKey& pk,
-            CommitObjectProfile* profile = nullptr,
-            const G1MSMExecutionOptions* msm_options = nullptr,
-            EvaluationCommitmentCache* reuse_cache = nullptr)
+            const KZGProverKey &pk,
+            CommitObjectProfile *profile = nullptr,
+            const G1MSMExecutionOptions *msm_options = nullptr,
+            EvaluationCommitmentCache *reuse_cache = nullptr)
         {
             polynomial.name = name;
             auto material = std::make_shared<algebra::Polynomial>(std::move(polynomial));
@@ -2015,26 +2037,23 @@ namespace gatzk::crypto
             };
         }
 
-        algebra::Polynomial constant_polynomial(const std::string& name, const FieldElement& value)
+        algebra::Polynomial constant_polynomial(const std::string &name, const FieldElement &value)
         {
             return algebra::Polynomial::from_coefficients(name, {value});
         }
 
-
         bool coefficient_single_point_quotient_coefficients(
-            std::vector<FieldElement>* quotient,
-            const std::vector<FieldElement>& coefficients,
-            const FieldElement& point,
-            const FieldElement& value,
+            std::vector<FieldElement> *quotient,
+            const std::vector<FieldElement> &coefficients,
+            const FieldElement &point,
+            const FieldElement &value,
             std::size_t worker_cap = 0);
 
-
-
         bool coefficient_single_point_quotient_coefficients(
-            std::vector<FieldElement>* quotient,
-            const std::vector<FieldElement>& coefficients,
-            const FieldElement& point,
-            const FieldElement& value,
+            std::vector<FieldElement> *quotient,
+            const std::vector<FieldElement> &coefficients,
+            const FieldElement &point,
+            const FieldElement &value,
             std::size_t worker_cap)
         {
             quotient->clear();
@@ -2060,15 +2079,15 @@ namespace gatzk::crypto
                 return false;
             }
             quotient->resize(coefficient_count - 1);
-            const auto* coefficients_native = FieldElement::native_array_data(coefficients.data());
-            auto* quotient_native = FieldElement::mutable_native_array_data(quotient->data());
-            const auto& point_native = point.native();
+            const auto *coefficients_native = FieldElement::native_array_data(coefficients.data());
+            auto *quotient_native = FieldElement::mutable_native_array_data(quotient->data());
+            const auto &point_native = point.native();
             const auto quotient_size = coefficient_count - 1;
             const auto available_workers = worker_cap == 0
-                ? std::max<std::size_t>(1, std::thread::hardware_concurrency())
-                : std::min<std::size_t>(
-                    std::max<std::size_t>(1, std::thread::hardware_concurrency()),
-                    worker_cap);
+                                               ? std::max<std::size_t>(1, std::thread::hardware_concurrency())
+                                               : std::min<std::size_t>(
+                                                     std::max<std::size_t>(1, std::thread::hardware_concurrency()),
+                                                     worker_cap);
             constexpr std::size_t kParallelThreshold = 1ULL << 18;
             if (quotient_size < kParallelThreshold || available_workers <= 1)
             {
@@ -2089,8 +2108,7 @@ namespace gatzk::crypto
                     std::max<std::size_t>(
                         2, quotient_size / (1ULL << 17)));
                 const auto block_size =
-                    (quotient_size + requested_task_count - 1)
-                    / requested_task_count;
+                    (quotient_size + requested_task_count - 1) / requested_task_count;
                 const auto task_count =
                     (quotient_size + block_size - 1) / block_size;
                 std::vector<mcl::Fr> block_constants(task_count);
@@ -2118,10 +2136,11 @@ namespace gatzk::crypto
                             }
                             block_constants[task] = accumulated;
                             block_multipliers[task] = point.pow(
-                                static_cast<std::uint64_t>(end - begin)).native();
+                                                               static_cast<std::uint64_t>(end - begin))
+                                                          .native();
                         }));
                 }
-                for (auto& future : futures)
+                for (auto &future : futures)
                 {
                     future.get();
                 }
@@ -2161,7 +2180,7 @@ namespace gatzk::crypto
                             }
                         }));
                 }
-                for (auto& future : futures)
+                for (auto &future : futures)
                 {
                     future.get();
                 }
@@ -2179,12 +2198,12 @@ namespace gatzk::crypto
         }
 
         G1Point commit_coefficient_single_point_quotient(
-            const std::vector<FieldElement>& coefficients,
-            const FieldElement& point,
-            const FieldElement& value,
-            const KZGProverKey& pk,
+            const std::vector<FieldElement> &coefficients,
+            const FieldElement &point,
+            const FieldElement &value,
+            const KZGProverKey &pk,
             std::size_t worker_cap,
-            const G1MSMExecutionOptions* msm_options = nullptr)
+            const G1MSMExecutionOptions *msm_options = nullptr)
         {
             if (pk.powers_g1 == nullptr)
             {
@@ -2216,11 +2235,10 @@ namespace gatzk::crypto
                 &stable_msm_options);
         }
 
-
         void accumulate_scaled_coefficients(
-            std::vector<FieldElement>* target,
-            const std::vector<FieldElement>& source,
-            const FieldElement& scale,
+            std::vector<FieldElement> *target,
+            const std::vector<FieldElement> &source,
+            const FieldElement &scale,
             std::size_t worker_cap)
         {
             if (scale.is_zero())
@@ -2236,27 +2254,26 @@ namespace gatzk::crypto
             {
                 target->resize(source.size(), FieldElement::zero());
             }
-            auto* target_native = FieldElement::mutable_native_array_data(target->data());
-            const auto* source_native = FieldElement::native_array_data(source.data());
-            const auto& scale_native = scale.native();
-            parallel_for_chunks_capped(source.size(), 1ULL << 15, worker_cap, [&](std::size_t begin, std::size_t end) {
+            auto *target_native = FieldElement::mutable_native_array_data(target->data());
+            const auto *source_native = FieldElement::native_array_data(source.data());
+            const auto &scale_native = scale.native();
+            parallel_for_chunks_capped(source.size(), 1ULL << 15, worker_cap, [&](std::size_t begin, std::size_t end)
+                                       {
                 for (std::size_t i = begin; i < end; ++i)
                 {
                     mcl::Fr product;
                     mcl::Fr::mul(product, source_native[i], scale_native);
                     mcl::Fr::add(target_native[i], target_native[i], product);
-                }
-            });
+                } });
         }
 
-        bool all_zero(const std::vector<FieldElement>& values)
+        bool all_zero(const std::vector<FieldElement> &values)
         {
-            return std::all_of(values.begin(), values.end(), [](const FieldElement& value) {
-                return value == FieldElement::zero();
-            });
+            return std::all_of(values.begin(), values.end(), [](const FieldElement &value)
+                               { return value == FieldElement::zero(); });
         }
 
-        void trim_zero_coefficients(std::vector<FieldElement>* coefficients)
+        void trim_zero_coefficients(std::vector<FieldElement> *coefficients)
         {
             while (coefficients->size() > 1 && coefficients->back() == FieldElement::zero())
             {
@@ -2270,8 +2287,8 @@ namespace gatzk::crypto
 
         struct FoldedEvaluationTerm
         {
-            const std::vector<FieldElement>* values = nullptr;
-            const std::vector<FieldElement>* zero_domain_blinder = nullptr;
+            const std::vector<FieldElement> *values = nullptr;
+            const std::vector<FieldElement> *zero_domain_blinder = nullptr;
             std::size_t value_count = 0;
             FieldElement scale = FieldElement::zero();
         };
@@ -2293,17 +2310,16 @@ namespace gatzk::crypto
         };
 
         FieldElement evaluate_with_shared_domain_weights(
-            const algebra::Polynomial& polynomial,
-            const FieldElement& point,
-            const algebra::DomainEvaluationWeights& weights)
+            const algebra::Polynomial &polynomial,
+            const FieldElement &point,
+            const algebra::DomainEvaluationWeights &weights)
         {
-            if (polynomial.basis != algebra::PolynomialBasis::Evaluation
-                || polynomial.domain == nullptr)
+            if (polynomial.basis != algebra::PolynomialBasis::Evaluation || polynomial.domain == nullptr)
             {
                 throw std::runtime_error(
                     "shared domain-weight evaluation requires an evaluation polynomial");
             }
-            const auto& values = polynomial.values();
+            const auto &values = polynomial.values();
             FieldElement value = FieldElement::zero();
             if (weights.direct_index.has_value())
             {
@@ -2331,21 +2347,20 @@ namespace gatzk::crypto
             }
             if (polynomial.is_zero_domain_blinded())
             {
-                value += polynomial.domain->zero_polynomial_eval(point)
-                    * algebra::horner(polynomial.zero_domain_blinder, point);
+                value += polynomial.domain->zero_polynomial_eval(point) * algebra::horner(polynomial.zero_domain_blinder, point);
             }
             return value;
         }
 
-        FoldedEvaluationGroup& folded_evaluation_group(
-            FoldedOpeningPlan* plan,
-            const std::shared_ptr<algebra::RootOfUnityDomain>& domain,
+        FoldedEvaluationGroup &folded_evaluation_group(
+            FoldedOpeningPlan *plan,
+            const std::shared_ptr<algebra::RootOfUnityDomain> &domain,
             std::size_t point_count)
         {
             auto it = std::find_if(
                 plan->evaluation_groups.begin(),
                 plan->evaluation_groups.end(),
-                [&](const FoldedEvaluationGroup& group)
+                [&](const FoldedEvaluationGroup &group)
                 {
                     return group.domain.get() == domain.get();
                 });
@@ -2361,10 +2376,10 @@ namespace gatzk::crypto
         }
 
         FoldedOpeningPlan build_folded_opening_plan(
-            const std::vector<Commitment>& commitments,
-            const std::vector<std::vector<FieldElement>>& claimed_values,
-            const std::vector<FieldElement>& powers,
-            const std::vector<FieldElement>& points,
+            const std::vector<Commitment> &commitments,
+            const std::vector<std::vector<FieldElement>> &claimed_values,
+            const std::vector<FieldElement> &powers,
+            const std::vector<FieldElement> &points,
             std::size_t worker_cap,
             bool validate_claims = true)
         {
@@ -2372,14 +2387,14 @@ namespace gatzk::crypto
             algebra::DomainEvaluationWeightCache claim_weight_cache;
             struct FoldedOpeningTerm
             {
-                const Commitment* commitment = nullptr;
+                const Commitment *commitment = nullptr;
                 FieldElement scale = FieldElement::zero();
                 std::vector<FieldElement> scaled_claims;
             };
 
             std::vector<FoldedOpeningTerm> folded_terms;
             folded_terms.reserve(commitments.size());
-            std::unordered_map<const algebra::Polynomial*, std::size_t>
+            std::unordered_map<const algebra::Polynomial *, std::size_t>
                 folded_term_index;
             folded_term_index.reserve(commitments.size());
             for (std::size_t i = 0; i < commitments.size(); ++i)
@@ -2428,22 +2443,19 @@ namespace gatzk::crypto
                         for (std::size_t term_index = begin;
                              term_index < end; ++term_index)
                         {
-                            const auto& term = folded_terms[term_index];
-                            if (term.commitment == nullptr
-                                || term.commitment->opening_polynomial == nullptr
-                                || term.scale.is_zero())
+                            const auto &term = folded_terms[term_index];
+                            if (term.commitment == nullptr || term.commitment->opening_polynomial == nullptr || term.scale.is_zero())
                             {
                                 continue;
                             }
-                            const auto& polynomial =
+                            const auto &polynomial =
                                 *term.commitment->opening_polynomial;
                             for (std::size_t point_index = 0;
                                  point_index < point_count;
                                  ++point_index)
                             {
                                 FieldElement expected = FieldElement::zero();
-                                if (polynomial.basis
-                                    == algebra::PolynomialBasis::Coefficient)
+                                if (polynomial.basis == algebra::PolynomialBasis::Coefficient)
                                 {
                                     expected = polynomial.evaluate(
                                         points[point_index]);
@@ -2453,10 +2465,9 @@ namespace gatzk::crypto
                                     if (polynomial.domain == nullptr)
                                     {
                                         throw std::runtime_error(
-                                            "evaluation polynomial is missing its domain: "
-                                            + term.commitment->name);
+                                            "evaluation polynomial is missing its domain: " + term.commitment->name);
                                     }
-                                    const auto& weights = claim_weight_cache.get(
+                                    const auto &weights = claim_weight_cache.get(
                                         polynomial.domain,
                                         points[point_index]);
                                     expected = evaluate_with_shared_domain_weights(
@@ -2469,13 +2480,10 @@ namespace gatzk::crypto
                                 if (expected != claimed)
                                 {
                                     throw std::runtime_error(
-                                        (polynomial.basis
-                                                == algebra::PolynomialBasis::Coefficient
+                                        (polynomial.basis == algebra::PolynomialBasis::Coefficient
                                              ? "coefficient opening claim mismatch for "
-                                             : "evaluation opening claim mismatch for ")
-                                        + term.commitment->name
-                                        + " at point index "
-                                        + std::to_string(point_index));
+                                             : "evaluation opening claim mismatch for ") +
+                                        term.commitment->name + " at point index " + std::to_string(point_index));
                                 }
                             }
                         }
@@ -2484,7 +2492,7 @@ namespace gatzk::crypto
 
             FoldedOpeningPlan plan;
             plan.coefficient_scaled_claim_sums.assign(point_count, FieldElement::zero());
-            for (const auto& term : folded_terms)
+            for (const auto &term : folded_terms)
             {
                 if (term.commitment == nullptr || term.commitment->opening_polynomial == nullptr)
                 {
@@ -2494,7 +2502,7 @@ namespace gatzk::crypto
                 {
                     continue;
                 }
-                const auto& polynomial = *term.commitment->opening_polynomial;
+                const auto &polynomial = *term.commitment->opening_polynomial;
                 if (polynomial.basis == algebra::PolynomialBasis::Coefficient)
                 {
                     if (!term.scale.is_zero())
@@ -2511,15 +2519,15 @@ namespace gatzk::crypto
                 {
                     throw std::runtime_error("evaluation polynomial is missing its domain: " + term.commitment->name);
                 }
-                auto& group = folded_evaluation_group(&plan, polynomial.domain, point_count);
-                const auto& source_values = polynomial.values();
+                auto &group = folded_evaluation_group(&plan, polynomial.domain, point_count);
+                const auto &source_values = polynomial.values();
                 if (!term.scale.is_zero())
                 {
                     group.terms.push_back(FoldedEvaluationTerm{
                         .values = &source_values,
                         .zero_domain_blinder = polynomial.is_zero_domain_blinded()
-                            ? &polynomial.zero_domain_blinder
-                            : nullptr,
+                                                   ? &polynomial.zero_domain_blinder
+                                                   : nullptr,
                         .value_count = source_values.size(),
                         .scale = term.scale,
                     });
@@ -2529,20 +2537,20 @@ namespace gatzk::crypto
                     group.scaled_claim_sums[point_index] += term.scaled_claims[point_index];
                 }
             }
-            for (auto& group : plan.evaluation_groups)
+            for (auto &group : plan.evaluation_groups)
             {
                 group.folded_values.assign(group.domain->size, FieldElement::zero());
-                auto* folded_values_native =
+                auto *folded_values_native =
                     FieldElement::mutable_native_array_data(group.folded_values.data());
                 struct NativeTerm
                 {
-                    const std::vector<FieldElement>* values = nullptr;
+                    const std::vector<FieldElement> *values = nullptr;
                     std::size_t value_count = 0;
                     mcl::Fr scale;
                 };
                 std::vector<NativeTerm> native_terms;
                 native_terms.reserve(group.terms.size());
-                for (const auto& term : group.terms)
+                for (const auto &term : group.terms)
                 {
                     native_terms.push_back(NativeTerm{
                         .values = term.values,
@@ -2552,15 +2560,14 @@ namespace gatzk::crypto
                 }
                 const auto min_rows_per_task = std::max<std::size_t>(
                     256,
-                    (1ULL << 18)
-                        / std::max<std::size_t>(1, native_terms.size()));
+                    (1ULL << 18) / std::max<std::size_t>(1, native_terms.size()));
                 parallel_for_chunks_capped(
                     group.domain->size,
                     min_rows_per_task,
                     worker_cap,
                     [&](std::size_t begin, std::size_t end)
                     {
-                        for (const auto& term : native_terms)
+                        for (const auto &term : native_terms)
                         {
                             const auto term_end = std::min(end, term.value_count);
                             for (std::size_t row = begin; row < term_end; ++row)
@@ -2583,630 +2590,556 @@ namespace gatzk::crypto
         }
 
         FoldedOpeningPlan build_streamed_folded_opening_plan(
-    const std::vector<Commitment>& commitments,
-    const std::vector<std::vector<FieldElement>>& claimed_values,
-    const std::vector<FieldElement>& powers,
-    const std::vector<FieldElement>& points,
-    std::size_t worker_cap,
-    bool validate_claims,
-    const OpeningPolynomialResolver& opening_resolver,
-    const OpeningSemanticSourceResolver* semantic_source_resolver)
-{
-    if (commitments.size() != claimed_values.size()
-        || commitments.size() != powers.size())
-    {
-        throw std::runtime_error(
-            "streamed folded opening input shape mismatch");
-    }
-
-    FoldedOpeningPlan plan;
-    plan.coefficient_scaled_claim_sums.assign(
-        points.size(), FieldElement::zero());
-
-    algebra::DomainEvaluationWeightCache claim_weight_cache;
-
-    struct SemanticFold
-    {
-        OpeningSemanticSourceInfo info;
-        std::size_t representative_index = 0;
-        FieldElement source_scale = FieldElement::zero();
-        std::vector<FieldElement> folded_zero_domain_blinder;
-        std::vector<FieldElement> scaled_claim_sums;
-        std::vector<std::size_t> members;
-    };
-
-    std::vector<std::optional<std::size_t>>
-        semantic_fold_for_commitment(commitments.size());
-
-    std::vector<SemanticFold> semantic_folds;
-    std::unordered_map<std::string, std::size_t>
-        semantic_fold_index;
-
-    // Production opening claims have already been computed from the exact
-    // formal opening polynomials.  In that mode we may combine several
-    // independently blinded evaluation polynomials that share one immutable
-    // semantic source:
-    //
-    //   sum_i a_i (S + Z_D R_i)
-    //     = (sum_i a_i) S + Z_D (sum_i a_i R_i).
-    //
-    // VerifyAgainstOpeningPolynomials deliberately retains the former
-    // per-polynomial path so focused claim-validation tests remain unchanged.
-    if (!validate_claims
-        && semantic_source_resolver != nullptr)
-    {
-        semantic_folds.reserve(commitments.size());
-
-        for (std::size_t i = 0;
-             i < commitments.size();
-             ++i)
+            const std::vector<Commitment> &commitments,
+            const std::vector<std::vector<FieldElement>> &claimed_values,
+            const std::vector<FieldElement> &powers,
+            const std::vector<FieldElement> &points,
+            std::size_t worker_cap,
+            bool validate_claims,
+            const OpeningPolynomialResolver &opening_resolver,
+            const OpeningSemanticSourceResolver *semantic_source_resolver)
         {
-            if (claimed_values[i].size() != points.size())
+            if (commitments.size() != claimed_values.size() || commitments.size() != powers.size())
             {
                 throw std::runtime_error(
-                    "streamed folded opening claim shape mismatch: "
-                    + commitments[i].name);
+                    "streamed folded opening input shape mismatch");
             }
 
-            // In-memory opening material retains the existing path.  This
-            // optimization is intentionally limited to file-backed evaluation
-            // material carrying explicit semantic-source metadata.
-            if (commitments[i].opening_polynomial != nullptr)
+            FoldedOpeningPlan plan;
+            plan.coefficient_scaled_claim_sums.assign(
+                points.size(), FieldElement::zero());
+
+            algebra::DomainEvaluationWeightCache claim_weight_cache;
+
+            struct SemanticFold
             {
-                continue;
+                OpeningSemanticSourceInfo info;
+                std::size_t representative_index = 0;
+                FieldElement source_scale = FieldElement::zero();
+                std::vector<FieldElement> folded_zero_domain_blinder;
+                std::vector<FieldElement> scaled_claim_sums;
+                std::vector<std::size_t> members;
+            };
+
+            std::vector<std::optional<std::size_t>>
+                semantic_fold_for_commitment(commitments.size());
+
+            std::vector<SemanticFold> semantic_folds;
+            std::unordered_map<std::string, std::size_t>
+                semantic_fold_index;
+
+            // Production opening claims have already been computed from the exact
+            // formal opening polynomials.  In that mode we may combine several
+            // independently blinded evaluation polynomials that share one immutable
+            // semantic source:
+            //
+            //   sum_i a_i (S + Z_D R_i)
+            //     = (sum_i a_i) S + Z_D (sum_i a_i R_i).
+            //
+            // VerifyAgainstOpeningPolynomials deliberately retains the former
+            // per-polynomial path so focused claim-validation tests remain unchanged.
+            if (!validate_claims && semantic_source_resolver != nullptr)
+            {
+                semantic_folds.reserve(commitments.size());
+
+                for (std::size_t i = 0;
+                     i < commitments.size();
+                     ++i)
+                {
+                    if (claimed_values[i].size() != points.size())
+                    {
+                        throw std::runtime_error(
+                            "streamed folded opening claim shape mismatch: " + commitments[i].name);
+                    }
+
+                    // In-memory opening material retains the existing path.  This
+                    // optimization is intentionally limited to file-backed evaluation
+                    // material carrying explicit semantic-source metadata.
+                    if (commitments[i].opening_polynomial != nullptr)
+                    {
+                        continue;
+                    }
+
+                    const auto semantic_info =
+                        (*semantic_source_resolver)(
+                            commitments[i]);
+
+                    if (!semantic_info.has_value())
+                    {
+                        continue;
+                    }
+
+                    if (semantic_info->key.empty() || semantic_info->domain == nullptr || semantic_info->value_count > semantic_info->domain->size)
+                    {
+                        throw std::runtime_error(
+                            "invalid streamed opening semantic source metadata: " + commitments[i].name);
+                    }
+
+                    const auto [existing, inserted] =
+                        semantic_fold_index.emplace(
+                            semantic_info->key,
+                            semantic_folds.size());
+
+                    std::size_t fold_index = 0;
+
+                    if (inserted)
+                    {
+                        fold_index = semantic_folds.size();
+
+                        SemanticFold fold;
+                        fold.info = *semantic_info;
+                        fold.representative_index = i;
+                        fold.scaled_claim_sums.assign(
+                            points.size(),
+                            FieldElement::zero());
+
+                        semantic_folds.push_back(
+                            std::move(fold));
+                    }
+                    else
+                    {
+                        fold_index = existing->second;
+
+                        const auto &existing_info =
+                            semantic_folds[fold_index].info;
+
+                        if (existing_info.domain == nullptr || existing_info.domain->name != semantic_info->domain->name || existing_info.domain->size != semantic_info->domain->size || !(existing_info.domain->omega == semantic_info->domain->omega) || existing_info.value_count != semantic_info->value_count)
+                        {
+                            throw std::runtime_error(
+                                "conflicting streamed opening semantic source metadata: " + commitments[i].name);
+                        }
+                    }
+
+                    semantic_fold_for_commitment[i] =
+                        fold_index;
+
+                    auto &fold =
+                        semantic_folds[fold_index];
+
+                    fold.members.push_back(i);
+                    fold.source_scale += powers[i];
+
+                    if (!semantic_info
+                             ->zero_domain_blinder.empty())
+                    {
+                        if (fold.folded_zero_domain_blinder.size() < semantic_info
+                                                                         ->zero_domain_blinder.size())
+                        {
+                            fold.folded_zero_domain_blinder.resize(
+                                semantic_info
+                                    ->zero_domain_blinder.size(),
+                                FieldElement::zero());
+                        }
+
+                        for (std::size_t coefficient = 0;
+                             coefficient < semantic_info
+                                               ->zero_domain_blinder.size();
+                             ++coefficient)
+                        {
+                            fold.folded_zero_domain_blinder[coefficient] += semantic_info
+                                                                                ->zero_domain_blinder[coefficient] *
+                                                                            powers[i];
+                        }
+                    }
+
+                    for (std::size_t point_index = 0;
+                         point_index < points.size();
+                         ++point_index)
+                    {
+                        fold.scaled_claim_sums[point_index] += claimed_values[i][point_index] * powers[i];
+                    }
+                }
+
+                // A singleton source has nothing to deduplicate.  Keep it on the
+                // original streamed path so this optimization changes execution only
+                // where an actual shared semantic source exists.
+                std::size_t shared_source_count = 0;
+                std::size_t shared_member_count = 0;
+
+                for (std::size_t fold_index = 0;
+                     fold_index < semantic_folds.size();
+                     ++fold_index)
+                {
+                    auto &fold =
+                        semantic_folds[fold_index];
+
+                    if (fold.members.size() < 2)
+                    {
+                        for (const auto member :
+                             fold.members)
+                        {
+                            semantic_fold_for_commitment[member] = std::nullopt;
+                        }
+
+                        continue;
+                    }
+
+                    ++shared_source_count;
+                    shared_member_count +=
+                        fold.members.size();
+                }
+
+                if (shared_source_count != 0)
+                {
+                    progress_note(
+                        "kzg:opening:semantic_fold:"
+                        "sources=" +
+                        std::to_string(
+                            shared_source_count) +
+                        ":members=" + std::to_string(shared_member_count));
+                }
             }
 
-            const auto semantic_info =
-                (*semantic_source_resolver)(
-                    commitments[i]);
-
-            if (!semantic_info.has_value())
+            const auto accumulate_evaluation_source =
+                [&](auto &group,
+                    const std::vector<FieldElement> &source_values,
+                    const FieldElement &scale,
+                    const std::string &label)
             {
-                continue;
-            }
-
-            if (semantic_info->key.empty()
-                || semantic_info->domain == nullptr
-                || semantic_info->value_count
-                    > semantic_info->domain->size)
-            {
-                throw std::runtime_error(
-                    "invalid streamed opening semantic source metadata: "
-                    + commitments[i].name);
-            }
-
-            const auto [existing, inserted] =
-                semantic_fold_index.emplace(
-                    semantic_info->key,
-                    semantic_folds.size());
-
-            std::size_t fold_index = 0;
-
-            if (inserted)
-            {
-                fold_index = semantic_folds.size();
-
-                SemanticFold fold;
-                fold.info = *semantic_info;
-                fold.representative_index = i;
-                fold.scaled_claim_sums.assign(
-                    points.size(),
-                    FieldElement::zero());
-
-                semantic_folds.push_back(
-                    std::move(fold));
-            }
-            else
-            {
-                fold_index = existing->second;
-
-                const auto& existing_info =
-                    semantic_folds[fold_index].info;
-
-                if (existing_info.domain == nullptr
-                    || existing_info.domain->name
-                        != semantic_info->domain->name
-                    || existing_info.domain->size
-                        != semantic_info->domain->size
-                    || !(existing_info.domain->omega
-                         == semantic_info->domain->omega)
-                    || existing_info.value_count
-                        != semantic_info->value_count)
+                if (source_values.size() > group.folded_values.size())
                 {
                     throw std::runtime_error(
-                        "conflicting streamed opening semantic source metadata: "
-                        + commitments[i].name);
+                        "streamed evaluation polynomial exceeds its domain: " + label);
                 }
-            }
 
-            semantic_fold_for_commitment[i] =
-                fold_index;
-
-            auto& fold =
-                semantic_folds[fold_index];
-
-            fold.members.push_back(i);
-            fold.source_scale += powers[i];
-
-            if (!semantic_info
-                     ->zero_domain_blinder.empty())
-            {
-                if (fold.folded_zero_domain_blinder.size()
-                    < semantic_info
-                          ->zero_domain_blinder.size())
+                if (scale.is_zero())
                 {
-                    fold.folded_zero_domain_blinder.resize(
-                        semantic_info
-                            ->zero_domain_blinder.size(),
-                        FieldElement::zero());
+                    return;
                 }
 
-                for (std::size_t coefficient = 0;
-                     coefficient
-                         < semantic_info
-                               ->zero_domain_blinder.size();
-                     ++coefficient)
+                auto *folded_native =
+                    FieldElement::mutable_native_array_data(
+                        group.folded_values.data());
+
+                const auto *source_native =
+                    FieldElement::native_array_data(
+                        source_values.data());
+
+                const auto scale_native =
+                    scale.native();
+
+                if (!algebra::try_cuda_scaled_accumulate_native(
+                        folded_native,
+                        source_native,
+                        scale_native,
+                        source_values.size()))
                 {
-                    fold.folded_zero_domain_blinder[
-                        coefficient]
-                        += semantic_info
-                               ->zero_domain_blinder[
-                                   coefficient]
-                           * powers[i];
-                }
-            }
-
-            for (std::size_t point_index = 0;
-                 point_index < points.size();
-                 ++point_index)
-            {
-                fold.scaled_claim_sums[point_index]
-                    += claimed_values[i][point_index]
-                       * powers[i];
-            }
-        }
-
-        // A singleton source has nothing to deduplicate.  Keep it on the
-        // original streamed path so this optimization changes execution only
-        // where an actual shared semantic source exists.
-        std::size_t shared_source_count = 0;
-        std::size_t shared_member_count = 0;
-
-        for (std::size_t fold_index = 0;
-             fold_index < semantic_folds.size();
-             ++fold_index)
-        {
-            auto& fold =
-                semantic_folds[fold_index];
-
-            if (fold.members.size() < 2)
-            {
-                for (const auto member :
-                     fold.members)
-                {
-                    semantic_fold_for_commitment[
-                        member] = std::nullopt;
-                }
-
-                continue;
-            }
-
-            ++shared_source_count;
-            shared_member_count +=
-                fold.members.size();
-        }
-
-        if (shared_source_count != 0)
-        {
-            progress_note(
-                "kzg:opening:semantic_fold:"
-                "sources="
-                + std::to_string(
-                    shared_source_count)
-                + ":members="
-                + std::to_string(
-                    shared_member_count));
-        }
-    }
-
-    const auto accumulate_evaluation_source =
-        [&](auto& group,
-            const std::vector<FieldElement>& source_values,
-            const FieldElement& scale,
-            const std::string& label)
-        {
-            if (source_values.size()
-                > group.folded_values.size())
-            {
-                throw std::runtime_error(
-                    "streamed evaluation polynomial exceeds its domain: "
-                    + label);
-            }
-
-            if (scale.is_zero())
-            {
-                return;
-            }
-
-            auto* folded_native =
-                FieldElement::mutable_native_array_data(
-                    group.folded_values.data());
-
-            const auto* source_native =
-                FieldElement::native_array_data(
-                    source_values.data());
-
-            const auto scale_native =
-                scale.native();
-
-            if (!algebra::try_cuda_scaled_accumulate_native(
-                    folded_native,
-                    source_native,
-                    scale_native,
-                    source_values.size()))
-            {
-                parallel_for_chunks_capped(
-                    source_values.size(),
-                    1ULL << 15,
-                    worker_cap,
-                    [&](std::size_t begin,
-                        std::size_t end)
-                    {
-                        for (std::size_t row = begin;
-                             row < end;
-                             ++row)
+                    parallel_for_chunks_capped(
+                        source_values.size(),
+                        1ULL << 15,
+                        worker_cap,
+                        [&](std::size_t begin,
+                            std::size_t end)
                         {
-                            mcl::Fr product;
+                            for (std::size_t row = begin;
+                                 row < end;
+                                 ++row)
+                            {
+                                mcl::Fr product;
 
-                            mcl::Fr::mul(
-                                product,
-                                source_native[row],
-                                scale_native);
+                                mcl::Fr::mul(
+                                    product,
+                                    source_native[row],
+                                    scale_native);
 
-                            mcl::Fr::add(
-                                folded_native[row],
-                                folded_native[row],
-                                product);
+                                mcl::Fr::add(
+                                    folded_native[row],
+                                    folded_native[row],
+                                    product);
+                            }
+                        });
+                }
+            };
+
+            for (std::size_t i = 0;
+                 i < commitments.size();
+                 ++i)
+            {
+                if (claimed_values[i].size() != points.size())
+                {
+                    throw std::runtime_error(
+                        "streamed folded opening claim shape mismatch: " + commitments[i].name);
+                }
+
+                if (semantic_fold_for_commitment[i]
+                        .has_value())
+                {
+                    auto &semantic_fold =
+                        semantic_folds[*semantic_fold_for_commitment[i]];
+
+                    if (semantic_fold.representative_index != i)
+                    {
+                        continue;
+                    }
+
+                    auto &group =
+                        folded_evaluation_group(
+                            &plan,
+                            semantic_fold.info.domain,
+                            points.size());
+
+                    if (group.folded_values.empty())
+                    {
+                        group.folded_values.assign(
+                            group.domain->size,
+                            FieldElement::zero());
+                    }
+
+                    if (semantic_fold.info.value_count > group.folded_values.size())
+                    {
+                        throw std::runtime_error(
+                            "streamed semantic evaluation source exceeds its domain: " + commitments[i].name);
+                    }
+
+                    if (!semantic_fold.source_scale
+                             .is_zero())
+                    {
+                        auto material =
+                            opening_resolver(
+                                commitments[i]);
+
+                        if (material == nullptr)
+                        {
+                            throw std::runtime_error(
+                                "commitment is missing prover-side opening polynomial: " + commitments[i].name);
                         }
-                    });
-            }
-        };
 
-    for (std::size_t i = 0;
-         i < commitments.size();
-         ++i)
-    {
-        if (claimed_values[i].size()
-            != points.size())
-        {
-            throw std::runtime_error(
-                "streamed folded opening claim shape mismatch: "
-                + commitments[i].name);
-        }
+                        if (material->basis != algebra::PolynomialBasis::Evaluation || material->domain == nullptr)
+                        {
+                            throw std::runtime_error(
+                                "streamed semantic opening source is not an evaluation polynomial: " + commitments[i].name);
+                        }
 
-        if (semantic_fold_for_commitment[i]
-                .has_value())
-        {
-            auto& semantic_fold =
-                semantic_folds[
-                    *semantic_fold_for_commitment[i]];
+                        if (material->domain->name != semantic_fold
+                                                          .info.domain->name ||
+                            material->domain->size != semantic_fold
+                                                          .info.domain->size ||
+                            !(material->domain->omega == semantic_fold
+                                                             .info.domain->omega))
+                        {
+                            throw std::runtime_error(
+                                "streamed semantic opening source domain mismatch: " + commitments[i].name);
+                        }
 
-            if (semantic_fold.representative_index
-                != i)
-            {
-                continue;
-            }
+                        const auto &source_values =
+                            material->values();
 
-            auto& group =
-                folded_evaluation_group(
-                    &plan,
-                    semantic_fold.info.domain,
-                    points.size());
+                        if (source_values.size() != semantic_fold
+                                                        .info.value_count)
+                        {
+                            throw std::runtime_error(
+                                "streamed semantic opening source size mismatch: " + commitments[i].name);
+                        }
 
-            if (group.folded_values.empty())
-            {
-                group.folded_values.assign(
-                    group.domain->size,
-                    FieldElement::zero());
-            }
+                        if (material
+                                ->zero_domain_blinder != semantic_fold
+                                                             .info.zero_domain_blinder)
+                        {
+                            throw std::runtime_error(
+                                "streamed semantic opening representative blinder mismatch: " + commitments[i].name);
+                        }
 
-            if (semantic_fold.info.value_count
-                > group.folded_values.size())
-            {
-                throw std::runtime_error(
-                    "streamed semantic evaluation source exceeds its domain: "
-                    + commitments[i].name);
-            }
+                        accumulate_evaluation_source(
+                            group,
+                            source_values,
+                            semantic_fold.source_scale,
+                            commitments[i].name);
+                    }
 
-            if (!semantic_fold.source_scale
-                     .is_zero())
-            {
+                    if (!semantic_fold
+                             .folded_zero_domain_blinder
+                             .empty())
+                    {
+                        if (group
+                                .folded_zero_domain_blinder
+                                .size() < semantic_fold
+                                              .folded_zero_domain_blinder
+                                              .size())
+                        {
+                            group
+                                .folded_zero_domain_blinder
+                                .resize(
+                                    semantic_fold
+                                        .folded_zero_domain_blinder
+                                        .size(),
+                                    FieldElement::zero());
+                        }
+
+                        for (std::size_t coefficient = 0;
+                             coefficient < semantic_fold
+                                               .folded_zero_domain_blinder
+                                               .size();
+                             ++coefficient)
+                        {
+                            group.folded_zero_domain_blinder[coefficient] += semantic_fold
+                                                                                 .folded_zero_domain_blinder[coefficient];
+                        }
+                    }
+
+                    for (std::size_t point_index = 0;
+                         point_index < points.size();
+                         ++point_index)
+                    {
+                        group.scaled_claim_sums[point_index] += semantic_fold
+                                                                    .scaled_claim_sums[point_index];
+                    }
+
+                    continue;
+                }
+
                 auto material =
-                    opening_resolver(
-                        commitments[i]);
+                    commitments[i].opening_polynomial;
+
+                if (material == nullptr)
+                {
+                    material =
+                        opening_resolver(
+                            commitments[i]);
+                }
 
                 if (material == nullptr)
                 {
                     throw std::runtime_error(
-                        "commitment is missing prover-side opening polynomial: "
-                        + commitments[i].name);
+                        "commitment is missing prover-side opening polynomial: " + commitments[i].name);
                 }
 
-                if (material->basis
-                    != algebra::PolynomialBasis::Evaluation
-                    || material->domain == nullptr)
+                if (validate_claims)
+                {
+                    for (std::size_t point_index = 0;
+                         point_index < points.size();
+                         ++point_index)
+                    {
+                        FieldElement expected =
+                            FieldElement::zero();
+
+                        if (material->basis == algebra::PolynomialBasis::Coefficient)
+                        {
+                            expected =
+                                material->evaluate(
+                                    points[point_index]);
+                        }
+                        else
+                        {
+                            if (material->domain == nullptr)
+                            {
+                                throw std::runtime_error(
+                                    "evaluation polynomial is missing its domain: " + commitments[i].name);
+                            }
+
+                            expected =
+                                evaluate_with_shared_domain_weights(
+                                    *material,
+                                    points[point_index],
+                                    claim_weight_cache.get(
+                                        material->domain,
+                                        points[point_index]));
+                        }
+
+                        if (expected != claimed_values[i][point_index])
+                        {
+                            throw std::runtime_error(
+                                "streamed opening claim mismatch for " + commitments[i].name + " at point index " + std::to_string(point_index));
+                        }
+                    }
+                }
+
+                const auto &scale =
+                    powers[i];
+
+                if (material->basis == algebra::PolynomialBasis::Coefficient)
+                {
+                    if (!scale.is_zero())
+                    {
+                        accumulate_scaled_coefficients(
+                            &plan.coefficient_fold,
+                            material->values(),
+                            scale,
+                            worker_cap);
+                    }
+
+                    for (std::size_t point_index = 0;
+                         point_index < points.size();
+                         ++point_index)
+                    {
+                        plan.coefficient_scaled_claim_sums[point_index] += claimed_values[i][point_index] * scale;
+                    }
+
+                    continue;
+                }
+
+                if (material->domain == nullptr)
                 {
                     throw std::runtime_error(
-                        "streamed semantic opening source is not an evaluation polynomial: "
-                        + commitments[i].name);
+                        "evaluation polynomial is missing its domain: " + commitments[i].name);
                 }
 
-                if (material->domain->name
-                        != semantic_fold
-                               .info.domain->name
-                    || material->domain->size
-                        != semantic_fold
-                               .info.domain->size
-                    || !(material->domain->omega
-                         == semantic_fold
-                                .info.domain->omega))
+                auto &group =
+                    folded_evaluation_group(
+                        &plan,
+                        material->domain,
+                        points.size());
+
+                if (group.folded_values.empty())
                 {
-                    throw std::runtime_error(
-                        "streamed semantic opening source domain mismatch: "
-                        + commitments[i].name);
+                    group.folded_values.assign(
+                        group.domain->size,
+                        FieldElement::zero());
                 }
 
-                const auto& source_values =
+                const auto &source_values =
                     material->values();
-
-                if (source_values.size()
-                    != semantic_fold
-                           .info.value_count)
-                {
-                    throw std::runtime_error(
-                        "streamed semantic opening source size mismatch: "
-                        + commitments[i].name);
-                }
-
-                if (material
-                        ->zero_domain_blinder
-                    != semantic_fold
-                           .info.zero_domain_blinder)
-                {
-                    throw std::runtime_error(
-                        "streamed semantic opening representative blinder mismatch: "
-                        + commitments[i].name);
-                }
 
                 accumulate_evaluation_source(
                     group,
                     source_values,
-                    semantic_fold.source_scale,
-                    commitments[i].name);
-            }
-
-            if (!semantic_fold
-                     .folded_zero_domain_blinder
-                     .empty())
-            {
-                if (group
-                        .folded_zero_domain_blinder
-                        .size()
-                    < semantic_fold
-                          .folded_zero_domain_blinder
-                          .size())
-                {
-                    group
-                        .folded_zero_domain_blinder
-                        .resize(
-                            semantic_fold
-                                .folded_zero_domain_blinder
-                                .size(),
-                            FieldElement::zero());
-                }
-
-                for (std::size_t coefficient = 0;
-                     coefficient
-                         < semantic_fold
-                               .folded_zero_domain_blinder
-                               .size();
-                     ++coefficient)
-                {
-                    group.folded_zero_domain_blinder[
-                        coefficient]
-                        += semantic_fold
-                               .folded_zero_domain_blinder[
-                                   coefficient];
-                }
-            }
-
-            for (std::size_t point_index = 0;
-                 point_index < points.size();
-                 ++point_index)
-            {
-                group.scaled_claim_sums[
-                    point_index]
-                    += semantic_fold
-                           .scaled_claim_sums[
-                               point_index];
-            }
-
-            continue;
-        }
-
-        auto material =
-            commitments[i].opening_polynomial;
-
-        if (material == nullptr)
-        {
-            material =
-                opening_resolver(
-                    commitments[i]);
-        }
-
-        if (material == nullptr)
-        {
-            throw std::runtime_error(
-                "commitment is missing prover-side opening polynomial: "
-                + commitments[i].name);
-        }
-
-        if (validate_claims)
-        {
-            for (std::size_t point_index = 0;
-                 point_index < points.size();
-                 ++point_index)
-            {
-                FieldElement expected =
-                    FieldElement::zero();
-
-                if (material->basis
-                    == algebra::PolynomialBasis::Coefficient)
-                {
-                    expected =
-                        material->evaluate(
-                            points[point_index]);
-                }
-                else
-                {
-                    if (material->domain == nullptr)
-                    {
-                        throw std::runtime_error(
-                            "evaluation polynomial is missing its domain: "
-                            + commitments[i].name);
-                    }
-
-                    expected =
-                        evaluate_with_shared_domain_weights(
-                            *material,
-                            points[point_index],
-                            claim_weight_cache.get(
-                                material->domain,
-                                points[point_index]));
-                }
-
-                if (expected
-                    != claimed_values[i][
-                        point_index])
-                {
-                    throw std::runtime_error(
-                        "streamed opening claim mismatch for "
-                        + commitments[i].name
-                        + " at point index "
-                        + std::to_string(
-                            point_index));
-                }
-            }
-        }
-
-        const auto& scale =
-            powers[i];
-
-        if (material->basis
-            == algebra::PolynomialBasis::Coefficient)
-        {
-            if (!scale.is_zero())
-            {
-                accumulate_scaled_coefficients(
-                    &plan.coefficient_fold,
-                    material->values(),
                     scale,
-                    worker_cap);
+                    commitments[i].name);
+
+                if (!scale.is_zero() && material
+                                            ->is_zero_domain_blinded())
+                {
+                    accumulate_scaled_coefficients(
+                        &group
+                             .folded_zero_domain_blinder,
+                        material
+                            ->zero_domain_blinder,
+                        scale,
+                        worker_cap);
+                }
+
+                for (std::size_t point_index = 0;
+                     point_index < points.size();
+                     ++point_index)
+                {
+                    group.scaled_claim_sums[point_index] += claimed_values[i][point_index] * scale;
+                }
             }
 
-            for (std::size_t point_index = 0;
-                 point_index < points.size();
-                 ++point_index)
+            trim_zero_coefficients(
+                &plan.coefficient_fold);
+
+            for (auto &group :
+                 plan.evaluation_groups)
             {
-                plan.coefficient_scaled_claim_sums[
-                    point_index]
-                    += claimed_values[i][
-                           point_index]
-                       * scale;
+                trim_zero_coefficients(
+                    &group
+                         .folded_zero_domain_blinder);
             }
 
-            continue;
+            return plan;
         }
-
-        if (material->domain == nullptr)
-        {
-            throw std::runtime_error(
-                "evaluation polynomial is missing its domain: "
-                + commitments[i].name);
-        }
-
-        auto& group =
-            folded_evaluation_group(
-                &plan,
-                material->domain,
-                points.size());
-
-        if (group.folded_values.empty())
-        {
-            group.folded_values.assign(
-                group.domain->size,
-                FieldElement::zero());
-        }
-
-        const auto& source_values =
-            material->values();
-
-        accumulate_evaluation_source(
-            group,
-            source_values,
-            scale,
-            commitments[i].name);
-
-        if (!scale.is_zero()
-            && material
-                   ->is_zero_domain_blinded())
-        {
-            accumulate_scaled_coefficients(
-                &group
-                     .folded_zero_domain_blinder,
-                material
-                    ->zero_domain_blinder,
-                scale,
-                worker_cap);
-        }
-
-        for (std::size_t point_index = 0;
-             point_index < points.size();
-             ++point_index)
-        {
-            group.scaled_claim_sums[
-                point_index]
-                += claimed_values[i][
-                       point_index]
-                   * scale;
-        }
-    }
-
-    trim_zero_coefficients(
-        &plan.coefficient_fold);
-
-    for (auto& group :
-         plan.evaluation_groups)
-    {
-        trim_zero_coefficients(
-            &group
-                 .folded_zero_domain_blinder);
-    }
-
-    return plan;
-}
 
         G1Point open_single_point_fold(
-            const FoldedOpeningPlan& plan,
+            const FoldedOpeningPlan &plan,
             std::size_t point_index,
-            const FieldElement& point,
-            const KZGProverKey& pk,
-            BatchOpeningProfile* profile = nullptr,
+            const FieldElement &point,
+            const KZGProverKey &pk,
+            BatchOpeningProfile *profile = nullptr,
             std::size_t worker_cap = 0,
-            const G1MSMExecutionOptions* msm_options = nullptr)
+            const G1MSMExecutionOptions *msm_options = nullptr)
         {
             auto out = g1_zero();
-            const auto& coefficient_scaled_claim_sum = plan.coefficient_scaled_claim_sums[point_index];
+            const auto &coefficient_scaled_claim_sum = plan.coefficient_scaled_claim_sums[point_index];
             if (!plan.coefficient_fold.empty() || !(coefficient_scaled_claim_sum == FieldElement::zero()))
             {
                 const auto coefficient_msm_start = Clock::now();
@@ -3222,7 +3155,7 @@ namespace gatzk::crypto
                             worker_cap,
                             msm_options));
                 }
-                catch (const std::exception& ex)
+                catch (const std::exception &ex)
                 {
                     throw std::runtime_error("opening mismatch for folded coefficient group: " + std::string(ex.what()));
                 }
@@ -3232,13 +3165,14 @@ namespace gatzk::crypto
                         coefficient_msm_start, Clock::now());
                 }
             }
-            for (const auto& group : plan.evaluation_groups)
+            for (const auto &group : plan.evaluation_groups)
             {
                 const auto inverse_start = Clock::now();
                 std::vector<FieldElement> inverse_denominators(
                     group.domain->size,
                     FieldElement::zero());
-                parallel_for_chunks_capped(group.domain->size, 1ULL << 15, worker_cap, [&](std::size_t begin, std::size_t end) {
+                parallel_for_chunks_capped(group.domain->size, 1ULL << 15, worker_cap, [&](std::size_t begin, std::size_t end)
+                                           {
                     for (std::size_t row = begin; row < end; ++row)
                     {
                         const auto domain_point = group.domain->point_at(row);
@@ -3247,8 +3181,7 @@ namespace gatzk::crypto
                             throw std::runtime_error("opening point overlaps evaluation domain; derivative witness path is not implemented");
                         }
                         inverse_denominators[row] = domain_point - point;
-                    }
-                });
+                    } });
                 algebra::batch_invert_in_place(&inverse_denominators);
                 if (profile != nullptr)
                 {
@@ -3259,14 +3192,15 @@ namespace gatzk::crypto
 
                 const auto quotient_assembly_start = Clock::now();
                 std::vector<FieldElement> quotient_values(group.domain->size, FieldElement::zero());
-                auto* quotient_values_native = FieldElement::mutable_native_array_data(quotient_values.data());
+                auto *quotient_values_native = FieldElement::mutable_native_array_data(quotient_values.data());
                 mcl::Fr zero;
                 zero.clear();
                 mcl::Fr base_numerator;
                 mcl::Fr::sub(base_numerator, zero, group.scaled_claim_sums[point_index].native());
-                const auto* folded_values_native =
+                const auto *folded_values_native =
                     FieldElement::native_array_data(group.folded_values.data());
-                parallel_for_chunks_capped(group.domain->size, 1ULL << 15, worker_cap, [&](std::size_t begin, std::size_t end) {
+                parallel_for_chunks_capped(group.domain->size, 1ULL << 15, worker_cap, [&](std::size_t begin, std::size_t end)
+                                           {
                     for (std::size_t row = begin; row < end; ++row)
                     {
                         mcl::Fr native_numerator = base_numerator;
@@ -3278,8 +3212,7 @@ namespace gatzk::crypto
                             quotient_values_native[row],
                             native_numerator,
                             inverse_denominators[row].native());
-                    }
-                });
+                    } });
                 if (profile != nullptr)
                 {
                     profile->quotient_assembly_ms += elapsed_ms(
@@ -3302,28 +3235,7 @@ namespace gatzk::crypto
                 if (profile != nullptr && progress_enabled())
                 {
                     progress_note(
-                        "kzg:opening_witness_msm:domain="
-                        + group.domain->name
-                        + ":input="
-                        + std::to_string(
-                            witness_commit_profile.vector_length)
-                        + ":nonzero="
-                        + std::to_string(
-                            witness_commit_profile.nonzero_scalar_count)
-                        + ":effective="
-                        + std::to_string(
-                            witness_commit_profile.effective_scalar_count)
-                        + ":sparse="
-                        + std::string(
-                            witness_commit_profile.sparse_compaction
-                                ? "true" : "false")
-                        + ":tail="
-                        + std::string(
-                            witness_commit_profile.constant_tail_folding
-                                ? "true" : "false")
-                        + ":ms="
-                        + std::to_string(
-                            witness_commit_profile.msm_ms));
+                        "kzg:opening_witness_msm:domain=" + group.domain->name + ":input=" + std::to_string(witness_commit_profile.vector_length) + ":nonzero=" + std::to_string(witness_commit_profile.nonzero_scalar_count) + ":effective=" + std::to_string(witness_commit_profile.effective_scalar_count) + ":sparse=" + std::string(witness_commit_profile.sparse_compaction ? "true" : "false") + ":tail=" + std::string(witness_commit_profile.constant_tail_folding ? "true" : "false") + ":ms=" + std::to_string(witness_commit_profile.msm_ms));
                 }
                 if (profile != nullptr)
                 {
@@ -3349,31 +3261,30 @@ namespace gatzk::crypto
                         point,
                         blinder_value);
                 }
-                else for (const auto &term : group.terms)
-                {
-                    if (term.zero_domain_blinder == nullptr
-                        || term.zero_domain_blinder->empty()
-                        || term.scale.is_zero())
+                else
+                    for (const auto &term : group.terms)
                     {
-                        continue;
-                    }
-                    std::vector<FieldElement> quotient;
-                    const auto blinder_value = algebra::horner(
-                        *term.zero_domain_blinder,
-                        point);
-                    if (coefficient_single_point_quotient_coefficients(
-                            &quotient,
+                        if (term.zero_domain_blinder == nullptr || term.zero_domain_blinder->empty() || term.scale.is_zero())
+                        {
+                            continue;
+                        }
+                        std::vector<FieldElement> quotient;
+                        const auto blinder_value = algebra::horner(
                             *term.zero_domain_blinder,
-                            point,
-                            blinder_value))
-                    {
-                        accumulate_scaled_coefficients(
-                            &blinder_quotient_fold,
-                            quotient,
-                            term.scale,
-                            worker_cap);
+                            point);
+                        if (coefficient_single_point_quotient_coefficients(
+                                &quotient,
+                                *term.zero_domain_blinder,
+                                point,
+                                blinder_value))
+                        {
+                            accumulate_scaled_coefficients(
+                                &blinder_quotient_fold,
+                                quotient,
+                                term.scale,
+                                worker_cap);
+                        }
                     }
-                }
                 trim_zero_coefficients(&blinder_quotient_fold);
                 if (!blinder_quotient_fold.empty())
                 {
@@ -3395,8 +3306,8 @@ namespace gatzk::crypto
         }
 
         G1Point folded_commitment_points(
-            const std::vector<Commitment>& commitments,
-            const std::vector<FieldElement>& powers)
+            const std::vector<Commitment> &commitments,
+            const std::vector<FieldElement> &powers)
         {
             if (powers.size() != commitments.size())
             {
@@ -3408,7 +3319,7 @@ namespace gatzk::crypto
             }
             std::vector<G1Point> points;
             points.reserve(commitments.size());
-            for (const auto& commitment : commitments)
+            for (const auto &commitment : commitments)
             {
                 points.push_back(commitment.point);
             }
@@ -3417,10 +3328,10 @@ namespace gatzk::crypto
         }
 
         bool verify_pairing_equation(
-            const G1Point& numerator,
-            const G1Point& witness,
-            const FieldElement& point,
-            const KZGVerifierKey& vk)
+            const G1Point &numerator,
+            const G1Point &witness,
+            const FieldElement &point,
+            const KZGVerifierKey &vk)
         {
             const auto rhs = g2_sub(vk.g2_tau, g2_mul(vk.g2_one, point));
             if (rhs == g2_zero())
@@ -3451,46 +3362,44 @@ namespace gatzk::crypto
     {
         struct PointerKey
         {
-            const algebra::RootOfUnityDomain* domain = nullptr;
-            const std::vector<G1Point>* lagrange_srs = nullptr;
-            const std::vector<algebra::FieldElement>* values = nullptr;
+            const algebra::RootOfUnityDomain *domain = nullptr;
+            const std::vector<G1Point> *lagrange_srs = nullptr;
+            const std::vector<algebra::FieldElement> *values = nullptr;
 
-            bool operator==(const PointerKey& other) const
+            bool operator==(const PointerKey &other) const
             {
-                return domain == other.domain
-                    && lagrange_srs == other.lagrange_srs
-                    && values == other.values;
+                return domain == other.domain && lagrange_srs == other.lagrange_srs && values == other.values;
             }
         };
 
         struct PointerKeyHash
         {
-            std::size_t operator()(const PointerKey& key) const
+            std::size_t operator()(const PointerKey &key) const
             {
                 auto hash = static_cast<std::size_t>(
                     reinterpret_cast<std::uintptr_t>(key.domain));
                 hash ^= static_cast<std::size_t>(
-                    reinterpret_cast<std::uintptr_t>(key.lagrange_srs))
-                    + 0x9e3779b9U + (hash << 6U) + (hash >> 2U);
+                            reinterpret_cast<std::uintptr_t>(key.lagrange_srs)) +
+                        0x9e3779b9U + (hash << 6U) + (hash >> 2U);
                 hash ^= static_cast<std::size_t>(
-                    reinterpret_cast<std::uintptr_t>(key.values))
-                    + 0x9e3779b9U + (hash << 6U) + (hash >> 2U);
+                            reinterpret_cast<std::uintptr_t>(key.values)) +
+                        0x9e3779b9U + (hash << 6U) + (hash >> 2U);
                 return hash;
             }
         };
 
         struct Entry
         {
-            const algebra::RootOfUnityDomain* domain = nullptr;
-            const std::vector<G1Point>* lagrange_srs = nullptr;
+            const algebra::RootOfUnityDomain *domain = nullptr;
+            const std::vector<G1Point> *lagrange_srs = nullptr;
             std::weak_ptr<const std::vector<algebra::FieldElement>> values;
             G1Point point;
         };
 
         struct ScaledEntry
         {
-            const algebra::RootOfUnityDomain* domain = nullptr;
-            const std::vector<G1Point>* lagrange_srs = nullptr;
+            const algebra::RootOfUnityDomain *domain = nullptr;
+            const std::vector<G1Point> *lagrange_srs = nullptr;
             std::weak_ptr<const std::vector<algebra::FieldElement>> values;
             std::size_t anchor_index = 0;
             algebra::FieldElement anchor_inverse =
@@ -3530,9 +3439,9 @@ namespace gatzk::crypto
     namespace
     {
         std::uint64_t evaluation_commitment_cache_key(
-            const algebra::RootOfUnityDomain* domain,
-            const std::vector<G1Point>* lagrange_srs,
-            const std::vector<algebra::FieldElement>& values)
+            const algebra::RootOfUnityDomain *domain,
+            const std::vector<G1Point> *lagrange_srs,
+            const std::vector<algebra::FieldElement> &values)
         {
             std::uint64_t hash = 1469598103934665603ULL;
             auto absorb = [&](std::uint64_t word)
@@ -3543,9 +3452,9 @@ namespace gatzk::crypto
             absorb(reinterpret_cast<std::uintptr_t>(domain));
             absorb(reinterpret_cast<std::uintptr_t>(lagrange_srs));
             absorb(values.size());
-            for (const auto& value : values)
+            for (const auto &value : values)
             {
-                const auto* units = value.native().getUnit();
+                const auto *units = value.native().getUnit();
                 for (std::size_t unit = 0;
                      unit < mcl::Fr::getUnitSize(); ++unit)
                 {
@@ -3565,9 +3474,9 @@ namespace gatzk::crypto
 
         std::optional<ScaledEvaluationFingerprint>
         scaled_evaluation_fingerprint(
-            const algebra::RootOfUnityDomain* domain,
-            const std::vector<G1Point>* lagrange_srs,
-            const std::vector<algebra::FieldElement>& values)
+            const algebra::RootOfUnityDomain *domain,
+            const std::vector<G1Point> *lagrange_srs,
+            const std::vector<algebra::FieldElement> &values)
         {
             constexpr std::size_t kMinScaledReuseLength = 8192;
             constexpr std::size_t kMinScaledReuseSupport = 512;
@@ -3577,8 +3486,7 @@ namespace gatzk::crypto
             }
 
             std::size_t first_nonzero = 0;
-            while (first_nonzero < values.size()
-                   && values[first_nonzero].is_zero())
+            while (first_nonzero < values.size() && values[first_nonzero].is_zero())
             {
                 ++first_nonzero;
             }
@@ -3587,15 +3495,13 @@ namespace gatzk::crypto
                 return std::nullopt;
             }
             std::size_t last_nonzero = values.size() - 1;
-            while (last_nonzero > first_nonzero
-                   && values[last_nonzero].is_zero())
+            while (last_nonzero > first_nonzero && values[last_nonzero].is_zero())
             {
                 --last_nonzero;
             }
             const auto support_length =
                 last_nonzero - first_nonzero + 1;
-            if (support_length < kMinScaledReuseSupport
-                || support_length > values.size() - values.size() / 4)
+            if (support_length < kMinScaledReuseSupport || support_length > values.size() - values.size() / 4)
             {
                 return std::nullopt;
             }
@@ -3620,7 +3526,7 @@ namespace gatzk::crypto
                     return std::nullopt;
                 }
                 const auto normalized = values[i] * normalizer;
-                const auto* units = normalized.native().getUnit();
+                const auto *units = normalized.native().getUnit();
                 for (std::size_t unit = 0;
                      unit < mcl::Fr::getUnitSize(); ++unit)
                 {
@@ -3635,15 +3541,13 @@ namespace gatzk::crypto
         }
 
         bool scaled_evaluation_values_match(
-            const std::vector<algebra::FieldElement>& candidate,
-            const std::vector<algebra::FieldElement>& reference,
+            const std::vector<algebra::FieldElement> &candidate,
+            const std::vector<algebra::FieldElement> &reference,
             std::size_t anchor_index,
-            const algebra::FieldElement& reference_anchor_inverse,
-            algebra::FieldElement* scale)
+            const algebra::FieldElement &reference_anchor_inverse,
+            algebra::FieldElement *scale)
         {
-            if (candidate.size() != reference.size()
-                || anchor_index >= candidate.size()
-                || candidate[anchor_index].is_zero())
+            if (candidate.size() != reference.size() || anchor_index >= candidate.size() || candidate[anchor_index].is_zero())
             {
                 return false;
             }
@@ -3664,23 +3568,20 @@ namespace gatzk::crypto
         }
 
         bool same_shared_owner(
-            const std::shared_ptr<const std::vector<algebra::FieldElement>>&
+            const std::shared_ptr<const std::vector<algebra::FieldElement>> &
                 left,
-            const std::shared_ptr<const std::vector<algebra::FieldElement>>&
+            const std::shared_ptr<const std::vector<algebra::FieldElement>> &
                 right)
         {
-            return left != nullptr
-                && right != nullptr
-                && !left.owner_before(right)
-                && !right.owner_before(left);
+            return left != nullptr && right != nullptr && !left.owner_before(right) && !right.owner_before(left);
         }
     }
 
     bool EvaluationCommitmentCache::lookup_semantic(
-        const algebra::RootOfUnityDomain* domain,
-        const std::vector<G1Point>* lagrange_srs,
-        const std::shared_ptr<const std::vector<algebra::FieldElement>>& values,
-        G1Point* point)
+        const algebra::RootOfUnityDomain *domain,
+        const std::vector<G1Point> *lagrange_srs,
+        const std::shared_ptr<const std::vector<algebra::FieldElement>> &values,
+        G1Point *point)
     {
         if (domain == nullptr || lagrange_srs == nullptr || values == nullptr)
         {
@@ -3698,9 +3599,7 @@ namespace gatzk::crypto
                 it != impl_->pointer_entries.end())
             {
                 const auto retained = it->second.values.lock();
-                if (retained != nullptr
-                    && retained.get() == values.get()
-                    && same_shared_owner(retained, values))
+                if (retained != nullptr && retained.get() == values.get() && same_shared_owner(retained, values))
                 {
                     if (point != nullptr)
                     {
@@ -3714,9 +3613,7 @@ namespace gatzk::crypto
                 it != impl_->pointer_hashes.end())
             {
                 const auto retained = it->second.values.lock();
-                if (retained != nullptr
-                    && retained.get() == values.get()
-                    && same_shared_owner(retained, values))
+                if (retained != nullptr && retained.get() == values.get() && same_shared_owner(retained, values))
                 {
                     cached_hash = it->second.hash;
                 }
@@ -3727,8 +3624,8 @@ namespace gatzk::crypto
             }
         }
         const auto key = cached_hash.has_value()
-            ? *cached_hash
-            : evaluation_commitment_cache_key(domain, lagrange_srs, *values);
+                             ? *cached_hash
+                             : evaluation_commitment_cache_key(domain, lagrange_srs, *values);
         {
             std::lock_guard<std::mutex> lock(impl_->mutex);
             impl_->pointer_hashes.insert_or_assign(
@@ -3741,9 +3638,7 @@ namespace gatzk::crypto
                 it != impl_->pointer_entries.end())
             {
                 const auto retained = it->second.values.lock();
-                if (retained != nullptr
-                    && retained.get() == values.get()
-                    && same_shared_owner(retained, values))
+                if (retained != nullptr && retained.get() == values.get() && same_shared_owner(retained, values))
                 {
                     if (point != nullptr)
                     {
@@ -3756,7 +3651,7 @@ namespace gatzk::crypto
             auto bucket = impl_->entries.find(key);
             if (bucket != impl_->entries.end())
             {
-                auto& candidates = bucket->second;
+                auto &candidates = bucket->second;
                 for (auto it = candidates.begin();
                      it != candidates.end();)
                 {
@@ -3766,9 +3661,7 @@ namespace gatzk::crypto
                         it = candidates.erase(it);
                         continue;
                     }
-                    if (it->domain == domain
-                        && it->lagrange_srs == lagrange_srs
-                        && *retained == *values)
+                    if (it->domain == domain && it->lagrange_srs == lagrange_srs && *retained == *values)
                     {
                         if (point != nullptr)
                         {
@@ -3806,7 +3699,7 @@ namespace gatzk::crypto
                 impl_->scaled_entries.find(scaled_fingerprint->key);
             if (bucket != impl_->scaled_entries.end())
             {
-                auto& candidates = bucket->second;
+                auto &candidates = bucket->second;
                 for (auto it = candidates.begin();
                      it != candidates.end();)
                 {
@@ -3816,14 +3709,7 @@ namespace gatzk::crypto
                         it = candidates.erase(it);
                         continue;
                     }
-                    if (it->domain == domain
-                        && it->lagrange_srs == lagrange_srs
-                        && scaled_evaluation_values_match(
-                            *values,
-                            *retained,
-                            it->anchor_index,
-                            it->anchor_inverse,
-                            &scale))
+                    if (it->domain == domain && it->lagrange_srs == lagrange_srs && scaled_evaluation_values_match(*values, *retained, it->anchor_index, it->anchor_inverse, &scale))
                     {
                         reference_point = it->point;
                         scaled_hit = true;
@@ -3865,10 +3751,10 @@ namespace gatzk::crypto
     }
 
     void EvaluationCommitmentCache::store_semantic(
-        const algebra::RootOfUnityDomain* domain,
-        const std::vector<G1Point>* lagrange_srs,
+        const algebra::RootOfUnityDomain *domain,
+        const std::vector<G1Point> *lagrange_srs,
         std::shared_ptr<const std::vector<algebra::FieldElement>> values,
-        const G1Point& point)
+        const G1Point &point)
     {
         if (domain == nullptr || lagrange_srs == nullptr || values == nullptr)
         {
@@ -3886,9 +3772,7 @@ namespace gatzk::crypto
                 it != impl_->pointer_entries.end())
             {
                 const auto retained = it->second.values.lock();
-                if (retained != nullptr
-                    && retained.get() == values.get()
-                    && same_shared_owner(retained, values))
+                if (retained != nullptr && retained.get() == values.get() && same_shared_owner(retained, values))
                 {
                     return;
                 }
@@ -3898,9 +3782,7 @@ namespace gatzk::crypto
                 it != impl_->pointer_hashes.end())
             {
                 const auto retained = it->second.values.lock();
-                if (retained != nullptr
-                    && retained.get() == values.get()
-                    && same_shared_owner(retained, values))
+                if (retained != nullptr && retained.get() == values.get() && same_shared_owner(retained, values))
                 {
                     cached_hash = it->second.hash;
                 }
@@ -3911,8 +3793,8 @@ namespace gatzk::crypto
             }
         }
         const auto key = cached_hash.has_value()
-            ? *cached_hash
-            : evaluation_commitment_cache_key(domain, lagrange_srs, *values);
+                             ? *cached_hash
+                             : evaluation_commitment_cache_key(domain, lagrange_srs, *values);
         const auto scaled_fingerprint =
             scaled_evaluation_fingerprint(domain, lagrange_srs, *values);
         std::lock_guard<std::mutex> lock(impl_->mutex);
@@ -3926,15 +3808,13 @@ namespace gatzk::crypto
             it != impl_->pointer_entries.end())
         {
             const auto retained = it->second.values.lock();
-            if (retained != nullptr
-                && retained.get() == values.get()
-                && same_shared_owner(retained, values))
+            if (retained != nullptr && retained.get() == values.get() && same_shared_owner(retained, values))
             {
                 return;
             }
             impl_->pointer_entries.erase(it);
         }
-        auto& bucket = impl_->entries[key];
+        auto &bucket = impl_->entries[key];
         for (auto it = bucket.begin(); it != bucket.end();)
         {
             const auto retained = it->values.lock();
@@ -3943,9 +3823,7 @@ namespace gatzk::crypto
                 it = bucket.erase(it);
                 continue;
             }
-            if (it->domain == domain
-                && it->lagrange_srs == lagrange_srs
-                && *retained == *values)
+            if (it->domain == domain && it->lagrange_srs == lagrange_srs && *retained == *values)
             {
                 impl_->pointer_entries.insert_or_assign(
                     pointer_key,
@@ -3965,7 +3843,7 @@ namespace gatzk::crypto
         });
         if (scaled_fingerprint.has_value())
         {
-            auto& scaled_bucket =
+            auto &scaled_bucket =
                 impl_->scaled_entries[scaled_fingerprint->key];
             bool has_scaled_entry = false;
             for (auto it = scaled_bucket.begin();
@@ -3978,14 +3856,7 @@ namespace gatzk::crypto
                     continue;
                 }
                 algebra::FieldElement scale;
-                if (it->domain == domain
-                    && it->lagrange_srs == lagrange_srs
-                    && scaled_evaluation_values_match(
-                        *values,
-                        *retained,
-                        it->anchor_index,
-                        it->anchor_inverse,
-                        &scale))
+                if (it->domain == domain && it->lagrange_srs == lagrange_srs && scaled_evaluation_values_match(*values, *retained, it->anchor_index, it->anchor_inverse, &scale))
                 {
                     has_scaled_entry = true;
                     break;
@@ -4014,117 +3885,106 @@ namespace gatzk::crypto
             });
     }
 
-    std::size_t serialized_size(const Commitment& commitment)
+    std::size_t serialized_size(const Commitment &commitment)
     {
         return serialized_size(commitment.point);
     }
 
-        std::string required_lagrange_cache_fragment(
-            const std::vector<std::pair<std::string, std::size_t>>& required_lagrange_domains)
+    std::string required_lagrange_cache_fragment(
+        const std::vector<std::pair<std::string, std::size_t>> &required_lagrange_domains)
+    {
+        if (required_lagrange_domains.empty())
         {
-            if (required_lagrange_domains.empty())
+            return "all";
+        }
+        std::vector<std::string> parts;
+        parts.reserve(required_lagrange_domains.size());
+        for (const auto &[domain, size] : required_lagrange_domains)
+        {
+            parts.push_back(srs_domain_name(domain) + ":" + std::to_string(size));
+        }
+        std::sort(parts.begin(), parts.end());
+        std::ostringstream out;
+        for (const auto &part : parts)
+        {
+            out << '|' << part;
+        }
+        return out.str();
+    }
+
+    void add_unique_domain(std::vector<std::string> *domains, const std::string &domain)
+    {
+        if (domains == nullptr || domain.empty())
+        {
+            return;
+        }
+        if (std::find(domains->begin(), domains->end(), domain) == domains->end())
+        {
+            domains->push_back(domain);
+        }
+    }
+
+    std::vector<std::string> select_lagrange_srs_domains(
+        const SRSManifest &manifest,
+        const std::vector<std::pair<std::string, std::size_t>> &required_lagrange_domains)
+    {
+        if (required_lagrange_domains.empty())
+        {
+            std::vector<std::string> all_domains;
+            all_domains.reserve(manifest.pk_lagrange_paths.size());
+            for (const auto &[domain, _] : manifest.pk_lagrange_paths)
             {
-                return "all";
+                all_domains.push_back(domain);
             }
-            std::vector<std::string> parts;
-            parts.reserve(required_lagrange_domains.size());
-            for (const auto& [domain, size] : required_lagrange_domains)
-            {
-                parts.push_back(srs_domain_name(domain) + ":" + std::to_string(size));
-            }
-            std::sort(parts.begin(), parts.end());
-            std::ostringstream out;
-            for (const auto& part : parts)
-            {
-                out << '|' << part;
-            }
-            return out.str();
+            std::sort(all_domains.begin(), all_domains.end());
+            return all_domains;
         }
 
-        void add_unique_domain(std::vector<std::string>* domains, const std::string& domain)
+        std::vector<std::string> selected;
+        for (const auto &[domain_name, domain_size] : required_lagrange_domains)
         {
-            if (domains == nullptr || domain.empty())
+            const auto base_key = srs_domain_name(domain_name);
+            const auto exact_key = srs_exact_domain_name(domain_name, domain_size);
+            if (manifest.pk_lagrange_paths.contains(exact_key))
             {
-                return;
+                add_unique_domain(&selected, exact_key);
+                continue;
             }
-            if (std::find(domains->begin(), domains->end(), domain) == domains->end())
+            if (manifest.pk_lagrange_paths.contains(base_key))
             {
-                domains->push_back(domain);
-            }
-        }
-
-        std::vector<std::string> select_lagrange_srs_domains(
-            const SRSManifest& manifest,
-            const std::vector<std::pair<std::string, std::size_t>>& required_lagrange_domains)
-        {
-            if (required_lagrange_domains.empty())
-            {
-                std::vector<std::string> all_domains;
-                all_domains.reserve(manifest.pk_lagrange_paths.size());
-                for (const auto& [domain, _] : manifest.pk_lagrange_paths)
+                const auto size_it = manifest.domain_sizes.find(base_key);
+                if (size_it != manifest.domain_sizes.end() && size_it->second == domain_size)
                 {
-                    all_domains.push_back(domain);
-                }
-                std::sort(all_domains.begin(), all_domains.end());
-                return all_domains;
-            }
-
-            std::vector<std::string> selected;
-            for (const auto& [domain_name, domain_size] : required_lagrange_domains)
-            {
-                const auto base_key = srs_domain_name(domain_name);
-                const auto exact_key = srs_exact_domain_name(domain_name, domain_size);
-                if (manifest.pk_lagrange_paths.contains(exact_key))
-                {
-                    add_unique_domain(&selected, exact_key);
+                    add_unique_domain(&selected, base_key);
                     continue;
                 }
-                if (manifest.pk_lagrange_paths.contains(base_key))
-                {
-                    const auto size_it = manifest.domain_sizes.find(base_key);
-                    if (size_it != manifest.domain_sizes.end() && size_it->second == domain_size)
-                    {
-                        add_unique_domain(&selected, base_key);
-                        continue;
-                    }
-                }
-                throw std::runtime_error(
-                    "SRS manifest lacks Lagrange material for domain "
-                    + domain_name
-                    + ":"
-                    + std::to_string(domain_size));
             }
-            std::sort(selected.begin(), selected.end());
-            return selected;
+            throw std::runtime_error(
+                "SRS manifest lacks Lagrange material for domain " + domain_name + ":" + std::to_string(domain_size));
         }
+        std::sort(selected.begin(), selected.end());
+        return selected;
+    }
 
     KZGKeyPair KZG::load_keys(
-        const std::string& srs_path,
-        const std::string& expected_srs_type,
-        const std::string& expected_srs_id)
+        const std::string &srs_path,
+        const std::string &expected_srs_type,
+        const std::string &expected_srs_id)
     {
         return load_keys_for_domains(srs_path, expected_srs_type, expected_srs_id, {});
     }
 
     KZGKeyPair KZG::load_keys_for_domains(
-        const std::string& srs_path,
-        const std::string& expected_srs_type,
-        const std::string& expected_srs_id,
-        const std::vector<std::pair<std::string, std::size_t>>& required_lagrange_domains,
+        const std::string &srs_path,
+        const std::string &expected_srs_type,
+        const std::string &expected_srs_id,
+        const std::vector<std::pair<std::string, std::size_t>> &required_lagrange_domains,
         std::size_t required_coefficient_count)
     {
         static std::mutex cache_mutex;
         static std::unordered_map<std::string, KZGKeyPair> cache;
         const auto cache_key =
-            srs_path
-            + "|"
-            + expected_srs_type
-            + "|"
-            + expected_srs_id
-            + "|coef="
-            + std::to_string(required_coefficient_count)
-            + "|lagrange="
-            + required_lagrange_cache_fragment(required_lagrange_domains);
+            srs_path + "|" + expected_srs_type + "|" + expected_srs_id + "|coef=" + std::to_string(required_coefficient_count) + "|lagrange=" + required_lagrange_cache_fragment(required_lagrange_domains);
         {
             std::lock_guard<std::mutex> lock(cache_mutex);
             if (const auto it = cache.find(cache_key); it != cache.end())
@@ -4167,7 +4027,7 @@ namespace gatzk::crypto
                                                  Clock::now())));
 
         std::unordered_map<std::string, std::shared_ptr<const std::vector<G1Point>>> lagrange_srs;
-        for (const auto& domain : selected_lagrange_domains)
+        for (const auto &domain : selected_lagrange_domains)
         {
             progress_note("kzg:srs:lagrange:" + domain + ":start");
             const auto lagrange_load_start = Clock::now();
@@ -4220,12 +4080,10 @@ namespace gatzk::crypto
             const auto hash = manifest.pk_lagrange_hashes.find(domain);
             if (hash == manifest.pk_lagrange_hashes.end())
                 throw std::runtime_error(
-                    "SRS public transcript is missing a Lagrange material hash: "
-                    + domain);
+                    "SRS public transcript is missing a Lagrange material hash: " + domain);
             public_transcript << '|' << domain << '=' << hash->second;
         }
-        if (sha256_hex(public_transcript.str())
-            != manifest.ceremony_transcript_hash)
+        if (sha256_hex(public_transcript.str()) != manifest.ceremony_transcript_hash)
             throw std::runtime_error(
                 "SRS public ceremony transcript binding mismatch");
         if (loaded_vk.domain_zero_g2.size() != manifest.domain_sizes.size())
@@ -4241,8 +4099,7 @@ namespace gatzk::crypto
             }
         }
         if (canonical_vanishing_g2_catalog_hash(
-                manifest, loaded_vk.domain_zero_g2)
-            != manifest.vanishing_g2_hash)
+                manifest, loaded_vk.domain_zero_g2) != manifest.vanishing_g2_hash)
         {
             throw std::runtime_error(
                 "SRS vanishing G2 catalogue hash mismatch");
@@ -4252,8 +4109,7 @@ namespace gatzk::crypto
         // coefficient PK and the G2 verifier catalogue were generated from the
         // same toxic-waste scalar.  Audit the relations needed by ordinary KZG
         // and by proof-local model divisibility before exposing either key.
-        if (powers_g1.size() < 2
-            || !pairing_equal(powers_g1[1], g2_one, powers_g1[0], g2_tau))
+        if (powers_g1.size() < 2 || !pairing_equal(powers_g1[1], g2_one, powers_g1[0], g2_tau))
         {
             throw std::runtime_error("SRS coefficient/G2 tau consistency audit failed");
         }
@@ -4261,20 +4117,16 @@ namespace gatzk::crypto
         {
             const auto size_it = manifest.domain_sizes.find(domain_name);
             const auto zero_it = loaded_vk.domain_zero_g2.find(domain_name);
-            if (size_it == manifest.domain_sizes.end()
-                || zero_it == loaded_vk.domain_zero_g2.end()
-                || size_it->second >= powers_g1.size())
+            if (size_it == manifest.domain_sizes.end() || zero_it == loaded_vk.domain_zero_g2.end() || size_it->second >= powers_g1.size())
             {
                 throw std::runtime_error(
-                    "SRS zero-polynomial consistency audit lacks coefficient material for domain: "
-                    + domain_name);
+                    "SRS zero-polynomial consistency audit lacks coefficient material for domain: " + domain_name);
             }
             const auto zero_g1 = g1_sub(powers_g1[size_it->second], powers_g1[0]);
             if (!pairing_equal(zero_g1, g2_one, powers_g1[0], zero_it->second))
             {
                 throw std::runtime_error(
-                    "SRS zero-polynomial G2 consistency audit failed for domain: "
-                    + domain_name);
+                    "SRS zero-polynomial G2 consistency audit failed for domain: " + domain_name);
             }
         }
         progress_note("kzg:srs:vk:done");
@@ -4330,29 +4182,29 @@ namespace gatzk::crypto
     }
 
     Commitment KZG::commit_constant(
-        const std::string& name,
-        const FieldElement& value,
-        const KZGKeyPair& key)
+        const std::string &name,
+        const FieldElement &value,
+        const KZGKeyPair &key)
     {
         return make_commitment(name, constant_polynomial(name, value), key.pk);
     }
 
     Commitment KZG::commit(
-        const std::string& name,
-        const algebra::Polynomial& polynomial,
-        const KZGKeyPair& key,
-        CommitObjectProfile* profile)
+        const std::string &name,
+        const algebra::Polynomial &polynomial,
+        const KZGKeyPair &key,
+        CommitObjectProfile *profile)
     {
         return make_commitment(name, polynomial, key.pk, profile);
     }
 
     Commitment KZG::commit_taylor_shifted(
-        const Commitment& source,
-        const std::string& shifted_name,
+        const Commitment &source,
+        const std::string &shifted_name,
         std::size_t configured_degree,
-        const FieldElement& delta,
-        const KZGKeyPair& key,
-        CommitObjectProfile* profile)
+        const FieldElement &delta,
+        const KZGKeyPair &key,
+        CommitObjectProfile *profile)
     {
         if (source.opening_polynomial == nullptr)
         {
@@ -4377,14 +4229,14 @@ namespace gatzk::crypto
     }
 
     std::vector<Commitment> KZG::commit_constant_batch(
-        const std::vector<std::pair<std::string, FieldElement>>& named_values,
-        const KZGKeyPair& key,
-        CommitBatchProfile* profile)
+        const std::vector<std::pair<std::string, FieldElement>> &named_values,
+        const KZGKeyPair &key,
+        CommitBatchProfile *profile)
     {
         std::vector<Commitment> out;
         out.reserve(named_values.size());
         const auto msm_start = Clock::now();
-        for (const auto& [name, value] : named_values)
+        for (const auto &[name, value] : named_values)
         {
             out.push_back(commit_constant(name, value, key));
         }
@@ -4396,10 +4248,10 @@ namespace gatzk::crypto
     }
 
     std::vector<Commitment> KZG::commit_batch(
-        const std::vector<std::pair<std::string, const algebra::Polynomial*>>& named_polynomials,
-        const KZGKeyPair& key,
-        CommitBatchProfile* profile,
-        EvaluationCommitmentCache* reuse_cache)
+        const std::vector<std::pair<std::string, const algebra::Polynomial *>> &named_polynomials,
+        const KZGKeyPair &key,
+        CommitBatchProfile *profile,
+        EvaluationCommitmentCache *reuse_cache)
     {
         std::vector<Commitment> out(named_polynomials.size());
         std::vector<CommitObjectProfile> object_profiles(named_polynomials.size());
@@ -4408,7 +4260,7 @@ namespace gatzk::crypto
         std::size_t total_scalar_count = 0;
         std::size_t max_scalar_count = 0;
         std::size_t uncached_msm_count = 0;
-        for (const auto& [name, polynomial] : named_polynomials)
+        for (const auto &[name, polynomial] : named_polynomials)
         {
             if (polynomial == nullptr)
             {
@@ -4418,12 +4270,9 @@ namespace gatzk::crypto
             total_scalar_count += estimated_work;
             max_scalar_count = std::max(max_scalar_count, estimated_work);
             bool cache_hit = false;
-            if (reuse_cache != nullptr
-                && polynomial->basis
-                    == algebra::PolynomialBasis::Evaluation
-                && polynomial->shared_data != nullptr)
+            if (reuse_cache != nullptr && polynomial->basis == algebra::PolynomialBasis::Evaluation && polynomial->shared_data != nullptr)
             {
-                const auto* lagrange_srs =
+                const auto *lagrange_srs =
                     evaluation_srs_points(*polynomial, key.pk);
                 G1Point cached_point;
                 cache_hit = reuse_cache->lookup_semantic(
@@ -4444,18 +4293,18 @@ namespace gatzk::crypto
             cpu_count);
         const G1MSMExecutionOptions msm_options{
             .max_worker_count = outer_worker_count > 1
-                ? std::max<std::size_t>(
-                    1,
-                    cpu_count
-                        / std::max<std::size_t>(
-                            1,
-                            std::min(
-                                outer_worker_count,
-                                uncached_msm_count)))
-                : 0,
+                                    ? std::max<std::size_t>(
+                                          1,
+                                          cpu_count / std::max<std::size_t>(
+                                                          1,
+                                                          std::min(
+                                                              outer_worker_count,
+                                                              uncached_msm_count)))
+                                    : 0,
         };
-        auto commit_one = [&](std::size_t index) {
-            const auto& [name, polynomial] = named_polynomials[index];
+        auto commit_one = [&](std::size_t index)
+        {
+            const auto &[name, polynomial] = named_polynomials[index];
             CommitObjectProfile object_profile;
             out[index] = make_commitment(
                 name,
@@ -4476,7 +4325,8 @@ namespace gatzk::crypto
             std::atomic<std::size_t> next{0};
             g1_parallel_msm_batch_workers(
                 outer_worker_count,
-                [&](std::size_t) {
+                [&](std::size_t)
+                {
                     while (true)
                     {
                         const auto index = next.fetch_add(1);
@@ -4498,7 +4348,7 @@ namespace gatzk::crypto
         if (profile != nullptr)
         {
             profile->msm_ms += elapsed_ms(msm_start, Clock::now());
-            for (auto& object_profile : object_profiles)
+            for (auto &object_profile : object_profiles)
             {
                 if (!object_profile.name.empty())
                 {
@@ -4510,30 +4360,26 @@ namespace gatzk::crypto
     }
 
     G1Point KZG::evaluation_commitment_component(
-        const Commitment& commitment,
-        const KZGKeyPair& key)
+        const Commitment &commitment,
+        const KZGKeyPair &key)
     {
         if (commitment.opening_polynomial == nullptr)
         {
             throw std::runtime_error(
-                "missing opening material for evaluation commitment component: "
-                + commitment.name);
+                "missing opening material for evaluation commitment component: " + commitment.name);
         }
-        const auto& polynomial = *commitment.opening_polynomial;
-        if (polynomial.basis != algebra::PolynomialBasis::Evaluation
-            || polynomial.domain == nullptr)
+        const auto &polynomial = *commitment.opening_polynomial;
+        if (polynomial.basis != algebra::PolynomialBasis::Evaluation || polynomial.domain == nullptr)
         {
             throw std::runtime_error(
-                "linear evaluation commitment dependency is not an evaluation polynomial: "
-                + commitment.name);
+                "linear evaluation commitment dependency is not an evaluation polynomial: " + commitment.name);
         }
-        const auto* lagrange_srs =
+        const auto *lagrange_srs =
             evaluation_srs_points(polynomial, key.pk);
         if (polynomial.size() > lagrange_srs->size())
         {
             throw std::runtime_error(
-                "linear evaluation commitment dependency exceeds its exact Lagrange SRS: "
-                + commitment.name);
+                "linear evaluation commitment dependency exceeds its exact Lagrange SRS: " + commitment.name);
         }
         if (!polynomial.is_zero_domain_blinded())
         {
@@ -4549,25 +4395,22 @@ namespace gatzk::crypto
     }
 
     Commitment KZG::commit_evaluation_from_component(
-        const std::string& name,
-        const algebra::Polynomial& polynomial,
-        const G1Point& evaluation_component,
-        const KZGKeyPair& key)
+        const std::string &name,
+        const algebra::Polynomial &polynomial,
+        const G1Point &evaluation_component,
+        const KZGKeyPair &key)
     {
-        if (polynomial.basis != algebra::PolynomialBasis::Evaluation
-            || polynomial.domain == nullptr)
+        if (polynomial.basis != algebra::PolynomialBasis::Evaluation || polynomial.domain == nullptr)
         {
             throw std::runtime_error(
-                "linear evaluation commitment target is not an evaluation polynomial: "
-                + name);
+                "linear evaluation commitment target is not an evaluation polynomial: " + name);
         }
-        const auto* lagrange_srs =
+        const auto *lagrange_srs =
             evaluation_srs_points(polynomial, key.pk);
         if (polynomial.size() > lagrange_srs->size())
         {
             throw std::runtime_error(
-                "linear evaluation commitment target exceeds its exact Lagrange SRS: "
-                + name);
+                "linear evaluation commitment target exceeds its exact Lagrange SRS: " + name);
         }
         auto point = evaluation_component;
         if (polynomial.is_zero_domain_blinded())
@@ -4591,10 +4434,10 @@ namespace gatzk::crypto
     }
 
     std::vector<Commitment> KZG::commit_owned_batch(
-        std::vector<std::pair<std::string, algebra::Polynomial>>&& named_polynomials,
-        const KZGKeyPair& key,
-        CommitBatchProfile* profile,
-        const std::string& progress_prefix)
+        std::vector<std::pair<std::string, algebra::Polynomial>> &&named_polynomials,
+        const KZGKeyPair &key,
+        CommitBatchProfile *profile,
+        const std::string &progress_prefix)
     {
         std::vector<Commitment> out(named_polynomials.size());
         std::vector<CommitObjectProfile> object_profiles(named_polynomials.size());
@@ -4602,9 +4445,9 @@ namespace gatzk::crypto
         const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
         std::size_t total_scalar_count = 0;
         std::size_t max_scalar_count = 0;
-        std::vector<std::pair<std::string, const algebra::Polynomial*>> view;
+        std::vector<std::pair<std::string, const algebra::Polynomial *>> view;
         view.reserve(named_polynomials.size());
-        for (const auto& [name, polynomial] : named_polynomials)
+        for (const auto &[name, polynomial] : named_polynomials)
         {
             const auto estimated_work = estimated_commitment_msm_work(polynomial);
             total_scalar_count += estimated_work;
@@ -4619,12 +4462,13 @@ namespace gatzk::crypto
             cpu_count);
         const G1MSMExecutionOptions msm_options{
             .max_worker_count = outer_worker_count > 1
-                ? std::max<std::size_t>(1, cpu_count / outer_worker_count)
-                : 0,
+                                    ? std::max<std::size_t>(1, cpu_count / outer_worker_count)
+                                    : 0,
         };
         const auto work_order = outer_worker_count > 1 ? commitment_work_order(view) : std::vector<std::size_t>{};
-        auto commit_one = [&](std::size_t index) {
-            auto& [name, polynomial] = named_polynomials[index];
+        auto commit_one = [&](std::size_t index)
+        {
+            auto &[name, polynomial] = named_polynomials[index];
             if (!progress_prefix.empty())
             {
                 progress_note(progress_prefix + ":" + name + ":start");
@@ -4656,7 +4500,8 @@ namespace gatzk::crypto
             std::atomic<std::size_t> next{0};
             g1_parallel_msm_batch_workers(
                 outer_worker_count,
-                [&](std::size_t) {
+                [&](std::size_t)
+                {
                     while (true)
                     {
                         const auto order_index = next.fetch_add(1);
@@ -4679,7 +4524,7 @@ namespace gatzk::crypto
         if (profile != nullptr)
         {
             profile->msm_ms += elapsed_ms(msm_start, Clock::now());
-            for (auto& object_profile : object_profiles)
+            for (auto &object_profile : object_profiles)
             {
                 if (!object_profile.name.empty())
                 {
@@ -4691,29 +4536,24 @@ namespace gatzk::crypto
     }
 
     std::pair<Commitment, Commitment> KZG::reblind_domain_polynomial(
-        const Commitment& long_term_anchor,
-        const std::string& proof_local_name,
-        const std::string& blinder_name,
-        const std::string& domain_name,
+        const Commitment &long_term_anchor,
+        const std::string &proof_local_name,
+        const std::string &blinder_name,
+        const std::string &domain_name,
         std::size_t domain_size,
         std::size_t blinder_coefficient_count,
-        const KZGKeyPair& key)
+        const KZGKeyPair &key)
     {
-        if (long_term_anchor.opening_polynomial == nullptr
-            || long_term_anchor.opening_polynomial->basis != algebra::PolynomialBasis::Coefficient)
+        if (long_term_anchor.opening_polynomial == nullptr || long_term_anchor.opening_polynomial->basis != algebra::PolynomialBasis::Coefficient)
         {
             throw std::runtime_error("model reblinding requires a coefficient-basis anchor polynomial");
         }
-        if (domain_size == 0 || blinder_coefficient_count == 0
-            || domain_size > key.pk.degree_bound
-            || blinder_coefficient_count - 1 > key.pk.degree_bound - domain_size)
+        if (domain_size == 0 || blinder_coefficient_count == 0 || domain_size > key.pk.degree_bound || blinder_coefficient_count - 1 > key.pk.degree_bound - domain_size)
         {
             throw std::runtime_error("model reblinding exceeds the configured shifted-KZG degree bound");
         }
         const auto manifest_domain = key.manifest.domain_sizes.find(domain_name);
-        if (manifest_domain == key.manifest.domain_sizes.end()
-            || manifest_domain->second != domain_size
-            || !key.vk.domain_zero_g2.contains(domain_name))
+        if (manifest_domain == key.manifest.domain_sizes.end() || manifest_domain->second != domain_size || !key.vk.domain_zero_g2.contains(domain_name))
         {
             throw std::runtime_error("model reblinding domain is absent or inconsistent in the SRS manifest");
         }
@@ -4721,7 +4561,7 @@ namespace gatzk::crypto
         std::vector<FieldElement> blinder_coefficients(blinder_coefficient_count);
         std::array<std::uint8_t, 64> random_bytes{};
         bool any_nonzero = false;
-        for (auto& coefficient : blinder_coefficients)
+        for (auto &coefficient : blinder_coefficients)
         {
             if (RAND_bytes(random_bytes.data(), static_cast<int>(random_bytes.size())) != 1)
             {
@@ -4760,20 +4600,19 @@ namespace gatzk::crypto
         auto commitments = commit_owned_batch(
             {
                 {proof_local_name, algebra::Polynomial::from_coefficients(
-                    proof_local_name,
-                    std::move(proof_local_coefficients))},
+                                       proof_local_name,
+                                       std::move(proof_local_coefficients))},
                 {blinder_name, algebra::Polynomial::from_coefficients(
-                    blinder_name,
-                    std::move(blinder_coefficients))},
+                                   blinder_name,
+                                   std::move(blinder_coefficients))},
             },
             key);
-        if (commitments.size() != 2
-            || !verify_domain_divisibility(
-                commitments[0],
-                long_term_anchor,
-                commitments[1],
-                domain_name,
-                key.vk))
+        if (commitments.size() != 2 || !verify_domain_divisibility(
+                                           commitments[0],
+                                           long_term_anchor,
+                                           commitments[1],
+                                           domain_name,
+                                           key.vk))
         {
             throw std::runtime_error("locally generated model reblinding failed its divisibility check");
         }
@@ -4781,16 +4620,16 @@ namespace gatzk::crypto
     }
 
     G1Point KZG::open_point_group(
-        const std::vector<Commitment>& commitments,
-        const FieldElement& point,
-        const std::vector<FieldElement>& claimed_values,
-        const FieldElement& folding_challenge,
-        const KZGKeyPair& key,
-        BatchOpeningProfile* profile,
+        const std::vector<Commitment> &commitments,
+        const FieldElement &point,
+        const std::vector<FieldElement> &claimed_values,
+        const FieldElement &folding_challenge,
+        const KZGKeyPair &key,
+        BatchOpeningProfile *profile,
         BatchOpeningClaimValidation claim_validation,
-        const PointGroupOpeningExecutionOptions* execution_options,
-        const OpeningPolynomialResolver* opening_resolver,
-        const OpeningSemanticSourceResolver* semantic_source_resolver)
+        const PointGroupOpeningExecutionOptions *execution_options,
+        const OpeningPolynomialResolver *opening_resolver,
+        const OpeningSemanticSourceResolver *semantic_source_resolver)
     {
         if (commitments.empty() || commitments.size() != claimed_values.size())
         {
@@ -4803,45 +4642,43 @@ namespace gatzk::crypto
                 "point-group opening folding challenge must be non-zero");
         }
         const auto field_worker_cap = execution_options != nullptr
-            ? execution_options->max_field_worker_count
-            : 0;
-        const auto* msm_options = execution_options != nullptr
-            ? &execution_options->msm
-            : nullptr;
+                                          ? execution_options->max_field_worker_count
+                                          : 0;
+        const auto *msm_options = execution_options != nullptr
+                                      ? &execution_options->msm
+                                      : nullptr;
         std::vector<std::vector<FieldElement>> value_columns;
         value_columns.reserve(claimed_values.size());
-        for (const auto& value : claimed_values)
+        for (const auto &value : claimed_values)
         {
             value_columns.push_back({value});
         }
         const auto precompute_start = Clock::now();
         const auto powers = folding_powers(folding_challenge, commitments.size());
         const auto folded_plan = opening_resolver == nullptr
-            ? build_folded_opening_plan(
-                commitments,
-                value_columns,
-                powers,
-                std::vector<FieldElement>{point},
-                field_worker_cap,
-                claim_validation
-                    == BatchOpeningClaimValidation::VerifyAgainstOpeningPolynomials)
-            : build_streamed_folded_opening_plan(
-    commitments,
-    value_columns,
-    powers,
-    std::vector<FieldElement>{point},
-    field_worker_cap,
-    claim_validation
-        == BatchOpeningClaimValidation::VerifyAgainstOpeningPolynomials,
-    *opening_resolver,
-    semantic_source_resolver);
+                                     ? build_folded_opening_plan(
+                                           commitments,
+                                           value_columns,
+                                           powers,
+                                           std::vector<FieldElement>{point},
+                                           field_worker_cap,
+                                           claim_validation == BatchOpeningClaimValidation::VerifyAgainstOpeningPolynomials)
+                                     : build_streamed_folded_opening_plan(
+                                           commitments,
+                                           value_columns,
+                                           powers,
+                                           std::vector<FieldElement>{point},
+                                           field_worker_cap,
+                                           claim_validation == BatchOpeningClaimValidation::VerifyAgainstOpeningPolynomials,
+                                           *opening_resolver,
+                                           semantic_source_resolver);
         if (profile != nullptr)
         {
             profile->precompute_ms += elapsed_ms(precompute_start, Clock::now());
             profile->point_msm_worker_cap =
                 msm_options != nullptr
-                ? msm_options->max_worker_count
-                : 0;
+                    ? msm_options->max_worker_count
+                    : 0;
         }
 
         const auto witness_start = Clock::now();
@@ -4861,12 +4698,12 @@ namespace gatzk::crypto
     }
 
     bool KZG::verify_point_group(
-        const std::vector<Commitment>& commitments,
-        const FieldElement& point,
-        const std::vector<FieldElement>& claimed_values,
-        const FieldElement& folding_challenge,
-        const G1Point& witness,
-        const KZGVerifierKey& vk)
+        const std::vector<Commitment> &commitments,
+        const FieldElement &point,
+        const std::vector<FieldElement> &claimed_values,
+        const FieldElement &folding_challenge,
+        const G1Point &witness,
+        const KZGVerifierKey &vk)
     {
         if (commitments.empty() || commitments.size() != claimed_values.size())
         {
@@ -4900,11 +4737,11 @@ namespace gatzk::crypto
     }
 
     bool KZG::verify_domain_divisibility(
-        const Commitment& proof_local,
-        const Commitment& long_term_anchor,
-        const Commitment& blinder,
-        const std::string& domain_name,
-        const KZGVerifierKey& vk)
+        const Commitment &proof_local,
+        const Commitment &long_term_anchor,
+        const Commitment &blinder,
+        const std::string &domain_name,
+        const KZGVerifierKey &vk)
     {
         const auto zero_it = vk.domain_zero_g2.find(domain_name);
         if (zero_it == vk.domain_zero_g2.end() || blinder.point == g1_zero())
@@ -4915,8 +4752,7 @@ namespace gatzk::crypto
         const auto shifted = g1_add(
             g1_sub(proof_local.point, long_term_anchor.point),
             blinder.point);
-        if (util::route2_options().fast_verify_pairing
-            && vk.g2_one_prepared != nullptr)
+        if (util::route2_options().fast_verify_pairing && vk.g2_one_prepared != nullptr)
         {
             return pairing_product_is_one_mixed_prepared(
                 blinder.point,
