@@ -78,19 +78,6 @@ namespace gatzk::crypto
         constexpr std::size_t kIntegratedHostSafetyReserveBytes =
             16ULL << 30;
 
-        // Oversized or memory-constrained MSMs remain on CUDA and are decomposed
-        // into bounded independent MSM chunks.
-        constexpr std::size_t kPreferredStreamMsmChunkSize = 1ULL << 20;
-        constexpr std::size_t kMinimumStreamMsmChunkSize = 1ULL << 16;
-
-        // Preserve the existing resident SRS cache capacity.
-        constexpr std::size_t kDeviceBaseCacheLimitBytes = 24ULL << 30;
-
-        // Leave headroom for ICICLE workspace, CUDA runtime allocations and the
-        // simultaneously-live prover working set.
-        constexpr std::size_t kCudaSafetyReserveBytes = 8ULL << 30;
-        constexpr std::size_t kHostSafetyReserveBytes = 8ULL << 30;
-
         [[noreturn]] void throw_cuda_error(
             const char *operation,
             cudaError_t status)
