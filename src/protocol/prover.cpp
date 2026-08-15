@@ -4815,6 +4815,31 @@ namespace gatzk::protocol
                     in_memory_coset_budget_bytes_ =
                         memory_budget.budget_bytes;
 
+                    // Large CUDA t_edge already carries several GiB of
+                    // transform scratch plus the CUDA NTT workspace on UMA.
+                    // Do not consume the full generic 24 GiB coset allowance:
+                    // leave headroom for transform staging and kernel/page-cache
+                    // activity while retaining a bounded hot coset set.
+                    if (label_ == "t_edge" &&
+                        target_size_ >= (std::size_t{1} << 25) &&
+                        util::route2_options().cuda_field_hotspots)
+                    {
+                        constexpr std::size_t
+                            kLargeCudaEdgeCosetBudgetBytes =
+                                std::size_t{8} << 30;
+
+                        in_memory_coset_budget_bytes_ =
+                            std::min(
+                                in_memory_coset_budget_bytes_,
+                                kLargeCudaEdgeCosetBudgetBytes);
+
+                        progress_note(
+                            "prove:quotient:t_edge:"
+                            "large_cuda_coset_budget_bytes=" +
+                            std::to_string(
+                                in_memory_coset_budget_bytes_));
+                    }
+
                     spill_arena_ =
                         std::make_shared<
                             QuotientCosetSpillArena>();
@@ -6957,13 +6982,37 @@ namespace gatzk::protocol
                     }
                     progress_note(
                         "prove:quotient:" + label_ + ":coset_prewarm:" + std::string(wave_name) + ":start:size=" + std::to_string(wave.size()));
-                    const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
+                    const auto cpu_count =
+                        std::max<std::size_t>(
+                            1,
+                            std::thread::hardware_concurrency());
+
+                    const bool large_cuda_edge_prewarm =
+                        label_ == "t_edge" &&
+                        target_size_ >= (std::size_t{1} << 25) &&
+                        util::route2_options().cuda_field_hotspots;
+
                     std::size_t worker_cap = 4;
-                    if (label_ == "t_edge" && target_size_ <= (1ULL << 22) && cpu_count >= 8)
+
+                    if (large_cuda_edge_prewarm)
                     {
-                        worker_cap = std::min<std::size_t>(
-                            24,
-                            std::max<std::size_t>(8, cpu_count));
+                        // CUDA quotient NTT execution is globally serialized.
+                        // Two outer workers preserve one-transform preparation /
+                        // publication pipeline without retaining four independent
+                        // multi-GiB transform working sets.
+                        worker_cap = 2;
+                    }
+                    else if (
+                        label_ == "t_edge" &&
+                        target_size_ <= (std::size_t{1} << 22) &&
+                        cpu_count >= 8)
+                    {
+                        worker_cap =
+                            std::min<std::size_t>(
+                                24,
+                                std::max<std::size_t>(
+                                    8,
+                                    cpu_count));
                     }
                     auto worker_count =
                         std::min<std::size_t>(
@@ -7018,6 +7067,14 @@ namespace gatzk::protocol
                         !(label_ == "t_edge" && wave_name == std::string_view("base") && wave.size() > 64 && std::getenv("GATZK_VERBOSE_T_EDGE_PREWARM") == nullptr);
                     progress_note(
                         "prove:quotient:" + label_ + ":coset_prewarm:" + std::string(wave_name) + ":workers=" + std::to_string(worker_count));
+                    if (large_cuda_edge_prewarm)
+                    {
+                        progress_note(
+                            "prove:quotient:t_edge:"
+                            "coset_prewarm:worker_policy="
+                            "cuda_serial_ntt_pipeline:"
+                            "outer_cap=2");
+                    }
                     std::atomic<std::size_t> next{0};
                     std::vector<std::future<void>> futures;
                     futures.reserve(worker_count);
