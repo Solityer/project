@@ -3778,7 +3778,7 @@ namespace gatzk::protocol
                 return;
             }
 
-            if (shift_powers != nullptr)
+            if (usable_shift_powers != nullptr)
             {
                 for (std::size_t i = 0;
                      i < coefficient_count;
@@ -3787,7 +3787,7 @@ namespace gatzk::protocol
                     mcl::Fr::mul(
                         work[i],
                         coefficients[i],
-                        (*shift_powers)[i]);
+                        (*usable_shift_powers)[i]);
                 }
             }
             else
@@ -3879,7 +3879,8 @@ namespace gatzk::protocol
                     shift,
                     label,
                     shift_powers,
-                    output);
+                    output,
+                    preserve_even_odd_split_output);
 
                 return;
             }
@@ -3967,7 +3968,8 @@ namespace gatzk::protocol
                 shift,
                 label,
                 shift_powers,
-                output);
+                output,
+                preserve_even_odd_split_output);
         }
 
         std::vector<FieldElement> coefficients_from_coset_evaluations_in_place(
@@ -4388,8 +4390,7 @@ namespace gatzk::protocol
                         .data;
 
                 auto *elements =
-                    static_cast<FieldElement *>(
-                        mapping_);
+                    static_cast<FieldElement *>(mapping_);
 
                 std::uninitialized_default_construct_n(
                     elements,
@@ -6104,7 +6105,6 @@ namespace gatzk::protocol
                     byte_count,
                     std::memory_order_relaxed);
             }
-
             QuotientCosetValuesPtr retain_coset_values(
                 std::vector<FieldElement> values,
                 const std::string &label)
@@ -6119,13 +6119,13 @@ namespace gatzk::protocol
                         byte_count);
 
                 auto retained =
-                    std::make_shared<QuotientCosetValues>(
-                        element_count,
+                    std::make_shared<
+                        const QuotientCosetValues>(
+                        std::move(values),
                         file_backed
                             ? spill_arena_
                             : nullptr,
-                        label,
-                        even_odd_split_layout);
+                        label);
 
                 if (file_backed)
                 {
@@ -6154,13 +6154,13 @@ namespace gatzk::protocol
                         byte_count);
 
                 auto retained =
-                    std::make_shared<
-                        QuotientCosetValues>(
+                    std::make_shared<QuotientCosetValues>(
                         element_count,
                         file_backed
                             ? spill_arena_
                             : nullptr,
-                        label);
+                        label,
+                        even_odd_split_layout);
 
                 fill(retained->mutable_data());
 
