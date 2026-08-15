@@ -6987,22 +6987,9 @@ namespace gatzk::protocol
                             1,
                             std::thread::hardware_concurrency());
 
-                    const bool large_cuda_edge_prewarm =
-                        label_ == "t_edge" &&
-                        target_size_ >= (std::size_t{1} << 25) &&
-                        util::route2_options().cuda_field_hotspots;
-
                     std::size_t worker_cap = 4;
 
-                    if (large_cuda_edge_prewarm)
-                    {
-                        // CUDA quotient NTT execution is globally serialized.
-                        // Two outer workers preserve one-transform preparation /
-                        // publication pipeline without retaining four independent
-                        // multi-GiB transform working sets.
-                        worker_cap = 2;
-                    }
-                    else if (
+                    if (
                         label_ == "t_edge" &&
                         target_size_ <= (std::size_t{1} << 22) &&
                         cpu_count >= 8)
@@ -7067,14 +7054,6 @@ namespace gatzk::protocol
                         !(label_ == "t_edge" && wave_name == std::string_view("base") && wave.size() > 64 && std::getenv("GATZK_VERBOSE_T_EDGE_PREWARM") == nullptr);
                     progress_note(
                         "prove:quotient:" + label_ + ":coset_prewarm:" + std::string(wave_name) + ":workers=" + std::to_string(worker_count));
-                    if (large_cuda_edge_prewarm)
-                    {
-                        progress_note(
-                            "prove:quotient:t_edge:"
-                            "coset_prewarm:worker_policy="
-                            "cuda_serial_ntt_pipeline:"
-                            "outer_cap=2");
-                    }
                     std::atomic<std::size_t> next{0};
                     std::vector<std::future<void>> futures;
                     futures.reserve(worker_count);
