@@ -3778,6 +3778,13 @@ namespace gatzk::protocol
                 return;
             }
 
+            if (preserve_even_odd_split_output)
+            {
+                throw std::runtime_error(
+                    "split-lane quotient output did not enter the paired transform path: " +
+                    label);
+            }
+
             if (usable_shift_powers != nullptr)
             {
                 for (std::size_t i = 0;
@@ -4341,6 +4348,57 @@ namespace gatzk::protocol
             struct PureZeroSemanticTag
             {
             };
+
+            QuotientCosetValues(
+                std::vector<FieldElement> values,
+                std::shared_ptr<QuotientCosetSpillArena> spill_arena,
+                const std::string &label)
+                : spill_arena_(std::move(spill_arena)),
+                  size_(values.size())
+            {
+                static_assert(
+                    std::is_standard_layout_v<FieldElement>,
+                    "file-backed quotient cosets require standard-layout field elements");
+
+                static_assert(
+                    std::is_trivially_destructible_v<FieldElement>,
+                    "file-backed quotient cosets require trivially destructible field elements");
+
+                if (spill_arena_ == nullptr || values.empty())
+                {
+                    memory_ = std::move(values);
+                    return;
+                }
+
+                const auto byte_count =
+                    size_ * sizeof(FieldElement);
+
+                mapping_ =
+                    spill_arena_->allocate(
+                                    byte_count,
+                                    label)
+                        .data;
+
+                std::uninitialized_copy(
+                    values.begin(),
+                    values.end(),
+                    static_cast<FieldElement *>(mapping_));
+
+                // Keep freshly produced pages eligible for the kernel's
+                // adaptive file-cache policy. A synchronous flush followed
+                // by MADV_DONTNEED forced every quotient dependency through
+                // storage even when the complete working set fit in RAM.
+                // Large instances remain bounded because these are unlinked
+                // MAP_SHARED pages: the kernel can write back and reclaim
+                // them under pressure, and the point loop explicitly drops
+                // each consumed prefix.
+                (void)::madvise(
+                    mapping_,
+                    byte_count,
+                    MADV_SEQUENTIAL);
+
+                std::vector<FieldElement>().swap(values);
+            }
 
             QuotientCosetValues(
                 std::size_t size,
