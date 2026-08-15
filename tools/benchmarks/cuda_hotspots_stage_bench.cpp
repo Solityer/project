@@ -675,6 +675,21 @@ int main(int argc, char **argv)
             kRepeats);
 
         bench_histogram(
+            1ULL << 21,
+            1ULL << 12,
+            kRepeats);
+
+        bench_histogram(
+            1ULL << 21,
+            1ULL << 13,
+            kRepeats);
+
+        bench_histogram(
+            1ULL << 22,
+            1ULL << 12,
+            kRepeats);
+
+        bench_histogram(
             1ULL << 22,
             1ULL << 14,
             kRepeats);
