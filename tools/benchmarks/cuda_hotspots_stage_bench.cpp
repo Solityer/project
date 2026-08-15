@@ -12,6 +12,7 @@
 #include "gatzk/algebra/polynomial.hpp"
 #include "gatzk/algebra/vector_ops.hpp"
 #include "gatzk/util/route2.hpp"
+#include "gatzk/protocol/prover.hpp"
 
 namespace gatzk::protocol
 {
@@ -619,6 +620,40 @@ int main(int argc, char **argv)
         bench_scaled_accumulate_pair(
             1ULL << 22,
             3);
+        const auto split_lane_profile =
+            gatzk::protocol::
+                benchmark_quotient_split_lane_materialization_stage(
+                    1ULL << 22,
+                    1ULL << 24,
+                    3);
+
+        if (!split_lane_profile.exact)
+        {
+            throw std::runtime_error(
+                "CUDA split-lane quotient materialization mismatch");
+        }
+
+        const auto contiguous_ms =
+            median(
+                split_lane_profile.contiguous_ms);
+
+        const auto split_lane_ms =
+            median(
+                split_lane_profile.split_lane_ms);
+
+        std::cout
+            << "case=quotient_split_lane_materialization"
+            << " coefficients="
+            << split_lane_profile.coefficient_count
+            << " target_size="
+            << split_lane_profile.target_size
+            << " contiguous_median_ms="
+            << contiguous_ms
+            << " split_lane_median_ms="
+            << split_lane_ms
+            << " speedup="
+            << contiguous_ms / split_lane_ms
+            << " exact_match=true\n";
         if (gatzk::algebra::should_use_cuda_lookup_histogram(
                 1ULL << 16, 1ULL << 12) ||
             !gatzk::algebra::should_use_cuda_lookup_histogram(

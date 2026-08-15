@@ -3624,7 +3624,8 @@ namespace gatzk::protocol
             const FieldElement &shift,
             const std::string &label,
             const std::vector<mcl::Fr> *shift_powers,
-            FieldElement *output)
+            FieldElement *output,
+            bool preserve_even_odd_split_output = false)
         {
             if (coefficient_count > target_size)
             {
@@ -3661,31 +3662,49 @@ namespace gatzk::protocol
                     "quotient coset evaluation received null coefficients: " + label);
             }
 
-            if (shift_powers != nullptr && shift_powers->size() < coefficient_count)
-            {
-                throw std::runtime_error(
-                    "insufficient quotient coset shift powers for " + label);
-            }
+            const auto *usable_shift_powers =
+                shift_powers != nullptr &&
+                        shift_powers->size() >= coefficient_count
+                    ? shift_powers
+                    : nullptr;
 
             if (target_size >= 2 && coefficient_count <= target_size / 2)
             {
                 const auto half_size = target_size / 2;
 
-                std::vector<mcl::Fr> even_work(half_size);
-                std::vector<mcl::Fr> odd_work(half_size);
+                std::vector<mcl::Fr> even_storage;
+                std::vector<mcl::Fr> odd_storage;
 
-                if (shift_powers != nullptr)
+                mcl::Fr *even_work = nullptr;
+                mcl::Fr *odd_work = nullptr;
+
+                if (preserve_even_odd_split_output)
+                {
+                    even_work = work;
+                    odd_work = work + half_size;
+                }
+                else
+                {
+                    even_storage.resize(half_size);
+                    odd_storage.resize(half_size);
+
+                    even_work = even_storage.data();
+                    odd_work = odd_storage.data();
+                }
+
+                if (usable_shift_powers != nullptr)
                 {
                     const auto root =
-                        FieldElement::root_of_unity(target_size);
+                        FieldElement::root_of_unity(
+                            target_size);
 
                     algebra::split_coset_coefficients_native(
                         coefficients,
-                        shift_powers->data(),
+                        usable_shift_powers->data(),
                         coefficient_count,
                         root,
-                        even_work.data(),
-                        odd_work.data(),
+                        even_work,
+                        odd_work,
                         quotient_transform_worker_cap);
                 }
                 else
@@ -3697,7 +3716,8 @@ namespace gatzk::protocol
                     odd_shift_power = 1;
 
                     const auto root =
-                        FieldElement::root_of_unity(target_size);
+                        FieldElement::root_of_unity(
+                            target_size);
 
                     const auto even_shift_native =
                         shift.native();
@@ -3740,17 +3760,20 @@ namespace gatzk::protocol
                 }
 
                 algebra::ntt_pair_in_place(
-                    even_work.data(),
-                    odd_work.data(),
+                    even_work,
+                    odd_work,
                     half_size,
                     quotient_transform_worker_cap);
 
-                algebra::interleave_native_lanes(
-                    even_work.data(),
-                    odd_work.data(),
-                    half_size,
-                    work,
-                    quotient_transform_worker_cap);
+                if (!preserve_even_odd_split_output)
+                {
+                    algebra::interleave_native_lanes(
+                        even_work,
+                        odd_work,
+                        half_size,
+                        work,
+                        quotient_transform_worker_cap);
+                }
 
                 return;
             }
@@ -3807,7 +3830,8 @@ namespace gatzk::protocol
             const FieldElement &shift,
             const std::string &label,
             const std::vector<mcl::Fr> *shift_powers,
-            FieldElement *output)
+            FieldElement *output,
+            bool preserve_even_odd_split_output = false)
         {
             thread_local std::vector<mcl::Fr>
                 coefficient_work;
@@ -4317,43 +4341,64 @@ namespace gatzk::protocol
             };
 
             QuotientCosetValues(
-                std::vector<FieldElement> values,
+                std::size_t size,
                 std::shared_ptr<QuotientCosetSpillArena> spill_arena,
-                const std::string &label)
+                const std::string &label,
+                bool even_odd_split_layout = false)
                 : spill_arena_(std::move(spill_arena)),
-                  size_(values.size())
+                  size_(size),
+                  split_lane_size_(
+                      even_odd_split_layout
+                          ? size / 2
+                          : 0)
             {
+                if (even_odd_split_layout &&
+                    (size_ < 2 || (size_ & 1U) != 0U))
+                {
+                    throw std::runtime_error(
+                        "split-lane quotient coset requires an even non-zero size");
+                }
+
                 static_assert(
                     std::is_standard_layout_v<FieldElement>,
                     "file-backed quotient cosets require standard-layout field elements");
+
                 static_assert(
                     std::is_trivially_destructible_v<FieldElement>,
                     "file-backed quotient cosets require trivially destructible field elements");
-                if (spill_arena_ == nullptr || values.empty())
+
+                if (size_ == 0)
                 {
-                    memory_ = std::move(values);
                     return;
                 }
 
-                const auto byte_count = size_ * sizeof(FieldElement);
-                mapping_ = spill_arena_->allocate(
-                                           byte_count, label)
-                               .data;
-                std::uninitialized_copy(
-                    values.begin(),
-                    values.end(),
-                    static_cast<FieldElement *>(mapping_));
-                // Keep freshly produced pages eligible for the kernel's
-                // adaptive file-cache policy.  A synchronous flush followed
-                // by MADV_DONTNEED forced every quotient dependency through
-                // storage even when the complete working set fit in RAM.
-                // Large instances remain bounded because these are unlinked
-                // MAP_SHARED pages: the kernel can write back and reclaim
-                // them under pressure, and the point loop explicitly drops
-                // each consumed prefix.
+                if (spill_arena_ == nullptr)
+                {
+                    memory_.resize(size_);
+                    return;
+                }
+
+                const auto byte_count =
+                    size_ * sizeof(FieldElement);
+
+                mapping_ =
+                    spill_arena_->allocate(
+                                    byte_count,
+                                    label)
+                        .data;
+
+                auto *elements =
+                    static_cast<FieldElement *>(
+                        mapping_);
+
+                std::uninitialized_default_construct_n(
+                    elements,
+                    size_);
+
                 (void)::madvise(
-                    mapping_, byte_count, MADV_SEQUENTIAL);
-                std::vector<FieldElement>().swap(values);
+                    mapping_,
+                    byte_count,
+                    MADV_SEQUENTIAL);
             }
 
             QuotientCosetValues(
@@ -4541,22 +4586,48 @@ namespace gatzk::protocol
 
             const FieldElement *data() const
             {
-                if (pure_zero_semantic_ || semantic_values_ != nullptr || !linear_terms_.empty())
+                if (pure_zero_semantic_ ||
+                    semantic_values_ != nullptr ||
+                    !linear_terms_.empty())
                 {
                     throw std::runtime_error(
                         "lazy quotient coset view has no contiguous data");
                 }
+
+                if (split_lane_size_ != 0)
+                {
+                    throw std::runtime_error(
+                        "split-lane quotient coset has no logical contiguous data");
+                }
+
                 return mapping_ != nullptr
                            ? static_cast<const FieldElement *>(mapping_)
                            : memory_.data();
             }
-
             FieldElement operator[](
                 std::size_t index) const
             {
-                if (!pure_zero_semantic_ && semantic_values_ == nullptr && linear_terms_.empty())
+                if (!pure_zero_semantic_ &&
+                    semantic_values_ == nullptr &&
+                    linear_terms_.empty())
                 {
-                    return data()[index];
+                    const auto *physical =
+                        mapping_ != nullptr
+                            ? static_cast<const FieldElement *>(mapping_)
+                            : memory_.data();
+
+                    if (split_lane_size_ != 0)
+                    {
+                        const auto physical_index =
+                            index / 2 +
+                            ((index & 1U) != 0U
+                                 ? split_lane_size_
+                                 : 0);
+
+                        return physical[physical_index];
+                    }
+
+                    return physical[index];
                 }
                 FieldElement value = FieldElement::zero();
                 if (semantic_values_ != nullptr)
@@ -4639,7 +4710,10 @@ namespace gatzk::protocol
 
             std::vector<FieldElement> copy_values() const
             {
-                if (!pure_zero_semantic_ && semantic_values_ == nullptr && linear_terms_.empty())
+                if (!pure_zero_semantic_ &&
+                    semantic_values_ == nullptr &&
+                    linear_terms_.empty() &&
+                    split_lane_size_ == 0)
                 {
                     return std::vector<FieldElement>(
                         data(), data() + size_);
@@ -4705,6 +4779,62 @@ namespace gatzk::protocol
                 }
                 const auto page_size =
                     static_cast<std::size_t>(page_size_raw);
+                if (split_lane_size_ != 0)
+                {
+                    const auto logical_end =
+                        std::min(end_index, size_);
+
+                    const std::array<std::size_t, 2>
+                        consumed_elements{
+                            (logical_end + 1) / 2,
+                            logical_end / 2,
+                        };
+
+                    const auto lane_bytes =
+                        split_lane_size_ * sizeof(FieldElement);
+
+                    if (lane_bytes % page_size != 0)
+                    {
+                        // MADV_DONTNEED is only an execution-side memory-pressure hint.
+                        // Never discard a partially shared page.
+                        return;
+                    }
+
+                    for (std::size_t lane = 0;
+                         lane < 2;
+                         ++lane)
+                    {
+                        const auto consumed_bytes =
+                            consumed_elements[lane] *
+                            sizeof(FieldElement);
+
+                        const auto aligned_end =
+                            consumed_bytes -
+                            (consumed_bytes % page_size);
+
+                        if (aligned_end <=
+                            discarded_split_lane_bytes_[lane])
+                        {
+                            continue;
+                        }
+
+                        auto *begin =
+                            static_cast<std::uint8_t *>(mapping_) +
+                            lane * lane_bytes +
+                            discarded_split_lane_bytes_[lane];
+
+                        (void)::madvise(
+                            begin,
+                            aligned_end -
+                                discarded_split_lane_bytes_[lane],
+                            MADV_DONTNEED);
+
+                        discarded_split_lane_bytes_[lane] =
+                            aligned_end;
+                    }
+
+                    return;
+                }
                 const auto end_bytes =
                     std::min(end_index, size_) * sizeof(FieldElement);
                 const auto aligned_end =
@@ -4739,7 +4869,15 @@ namespace gatzk::protocol
             std::vector<FieldElement> zero_cycle_;
             void *mapping_ = nullptr;
             std::size_t size_ = 0;
+
+            // Non-zero only for the large CUDA t_edge physical layout:
+            // [even lane][odd lane].
+            std::size_t split_lane_size_ = 0;
+
             mutable std::size_t discarded_bytes_ = 0;
+
+            mutable std::array<std::size_t, 2>
+                discarded_split_lane_bytes_{0, 0};
         };
 
         using QuotientCosetValuesPtr =
@@ -5520,7 +5658,19 @@ namespace gatzk::protocol
                     if (use_file_backed_coset_storage())
                     {
                         progress_note(
-                            "prove:quotient:" + label_ + ":coset_storage:tiered" + ":memory_bytes=" + std::to_string(in_memory_coset_bytes_.load(std::memory_order_relaxed)) + ":memory_budget=" + std::to_string(in_memory_coset_budget_bytes_) + ":host_total_at_start=" + std::to_string(coset_host_total_bytes_) + ":host_available_at_start=" + std::to_string(coset_host_available_at_start_bytes_) + ":host_reserve=" + std::to_string(coset_host_reserve_bytes_) + ":files=" + std::to_string(file_backed_coset_count_.load(std::memory_order_relaxed)) + ":bytes=" + std::to_string(file_backed_coset_bytes_.load(std::memory_order_relaxed)) + ":lazy_blinder_views=" + std::to_string(lazy_blinder_coset_count_.load(std::memory_order_relaxed)) + ":lazy_blinder_bytes_avoided=" + std::to_string(lazy_blinder_coset_bytes_avoided_.load(std::memory_order_relaxed)) + ":evaluation_block=" + std::to_string(evaluation_block_size));
+                            "prove:quotient:" + label_ + ":coset_storage:tiered" + ":memory_bytes=" + std::to_string(in_memory_coset_bytes_.load(std::memory_order_relaxed)) + ":memory_budget=" + std::to_string(in_memory_coset_budget_bytes_) + ":host_total_at_start=" + std::to_string(coset_host_total_bytes_) + ":host_available_at_start=" + std::to_string(coset_host_available_at_start_bytes_) + ":host_reserve=" + std::to_string(coset_host_reserve_bytes_) + ":files=" + std::to_string(file_backed_coset_count_.load(std::memory_order_relaxed)) + ":bytes=" + std::to_string(file_backed_coset_bytes_.load(std::memory_order_relaxed)) + ":lazy_blinder_views=" + std::to_string(lazy_blinder_coset_count_.load(std::memory_order_relaxed)) + ":lazy_blinder_bytes_avoided=" + std::to_string(lazy_blinder_coset_bytes_avoided_.load(std::memory_order_relaxed)) + ":split_lane_cosets=" +
+                            std::to_string(
+                                split_lane_coset_count_.load(
+                                    std::memory_order_relaxed)) +
+                            ":split_lane_temp_bytes_avoided=" +
+                            std::to_string(
+                                split_lane_temporary_bytes_avoided_.load(
+                                    std::memory_order_relaxed)) +
+                            ":split_lane_interleave_bytes_avoided=" +
+                            std::to_string(
+                                split_lane_interleave_bytes_avoided_.load(
+                                    std::memory_order_relaxed)) +
+                            ":evaluation_block=" + std::to_string(evaluation_block_size));
                     }
 
                     const auto min_points_per_task =
@@ -5969,13 +6119,13 @@ namespace gatzk::protocol
                         byte_count);
 
                 auto retained =
-                    std::make_shared<
-                        const QuotientCosetValues>(
-                        std::move(values),
+                    std::make_shared<QuotientCosetValues>(
+                        element_count,
                         file_backed
                             ? spill_arena_
                             : nullptr,
-                        label);
+                        label,
+                        even_odd_split_layout);
 
                 if (file_backed)
                 {
@@ -5991,7 +6141,8 @@ namespace gatzk::protocol
             materialize_coset_values(
                 std::size_t element_count,
                 const std::string &label,
-                FillFn &&fill)
+                FillFn &&fill,
+                bool even_odd_split_layout = false)
             {
                 const auto byte_count =
                     coset_byte_count(
@@ -6022,26 +6173,110 @@ namespace gatzk::protocol
                 return retained;
             }
 
+            bool large_cuda_split_lane_route_enabled() const
+            {
+                if (label_ != "t_edge" ||
+                    target_size_ < (std::size_t{1} << 25) ||
+                    (target_size_ & 1U) != 0U ||
+                    !util::route2_options().cuda_field_hotspots)
+                {
+                    return false;
+                }
+
+                return algebra::should_use_cuda_ntt_pair(
+                    target_size_ / 2);
+            }
+
+            bool can_preserve_split_lane_output(
+                const algebra::Polynomial &polynomial) const
+            {
+                if (!large_cuda_split_lane_route_enabled())
+                {
+                    return false;
+                }
+
+                const auto lane_size =
+                    target_size_ / 2;
+
+                std::size_t maximum_coefficient_count = 0;
+
+                if (polynomial.basis ==
+                    algebra::PolynomialBasis::Coefficient)
+                {
+                    maximum_coefficient_count =
+                        polynomial.size();
+                }
+                else
+                {
+                    if (polynomial.domain == nullptr)
+                    {
+                        return false;
+                    }
+
+                    if (polynomial.zero_domain_blinder.size() >
+                        std::numeric_limits<std::size_t>::max() -
+                            polynomial.domain->size)
+                    {
+                        return false;
+                    }
+
+                    maximum_coefficient_count =
+                        polynomial.domain->size +
+                        polynomial.zero_domain_blinder.size();
+                }
+
+                return maximum_coefficient_count <=
+                       lane_size;
+            }
+
             QuotientCosetValuesPtr
             materialize_polynomial_coset(
                 const algebra::Polynomial &polynomial,
                 const std::string &label)
             {
-                return materialize_coset_values(
-                    target_size_,
-                    label,
-                    [&](FieldElement *output)
-                    {
-                        coset_evaluate_polynomial_into(
-                            polynomial,
-                            target_size_,
-                            shift_,
-                            label,
-                            &shift_powers(),
-                            output);
-                    });
-            }
+                const bool preserve_split_lane =
+                    can_preserve_split_lane_output(
+                        polynomial);
 
+                auto retained =
+                    materialize_coset_values(
+                        target_size_,
+                        label,
+                        [&](FieldElement *output)
+                        {
+                            coset_evaluate_polynomial_into(
+                                polynomial,
+                                target_size_,
+                                shift_,
+                                label,
+                                &shift_powers(),
+                                output,
+                                preserve_split_lane);
+                        },
+                        preserve_split_lane);
+
+                if (preserve_split_lane)
+                {
+                    const auto byte_count =
+                        coset_byte_count(
+                            target_size_,
+                            label);
+
+                    split_lane_coset_count_.fetch_add(
+                        1,
+                        std::memory_order_relaxed);
+
+                    split_lane_temporary_bytes_avoided_.fetch_add(
+                        byte_count,
+                        std::memory_order_relaxed);
+
+                    split_lane_interleave_bytes_avoided_.fetch_add(
+                        byte_count,
+                        std::memory_order_relaxed);
+                }
+
+                return retained;
+            }
             QuotientCosetValuesPtr
             materialize_coefficient_coset(
                 const std::vector<mcl::Fr>
@@ -8163,8 +8398,13 @@ namespace gatzk::protocol
                     shift_powers_once_,
                     [&]()
                     {
+                        const auto power_count =
+                            large_cuda_split_lane_route_enabled()
+                                ? target_size_ / 2
+                                : target_size_;
+
                         shift_powers_.resize(
-                            target_size_);
+                            power_count);
 
                         if (target_size_ == 0)
                         {
@@ -8232,6 +8472,14 @@ namespace gatzk::protocol
             std::atomic<std::size_t> lazy_blinder_coset_count_{0};
             std::atomic<std::size_t>
                 lazy_blinder_coset_bytes_avoided_{0};
+            std::atomic<std::size_t>
+                split_lane_coset_count_{0};
+
+            std::atomic<std::size_t>
+                split_lane_temporary_bytes_avoided_{0};
+
+            std::atomic<std::size_t>
+                split_lane_interleave_bytes_avoided_{0};
         };
 
         TEdgeAccessPlanStageProfile
@@ -9335,6 +9583,132 @@ namespace gatzk::protocol
         QuotientPolynomialMaterializer materializer(
             context, trace, challenges, "t_edge");
         return materializer.benchmark_t_edge_access_plan_stage(repeats);
+    }
+
+    QuotientSplitLaneStageProfile
+    benchmark_quotient_split_lane_materialization_stage(
+        std::size_t coefficient_count,
+        std::size_t target_size,
+        std::size_t repeats)
+    {
+        if (repeats == 0 ||
+            target_size < 2 ||
+            (target_size &
+             (target_size - 1U)) != 0U ||
+            coefficient_count == 0 ||
+            coefficient_count > target_size / 2)
+        {
+            throw std::runtime_error(
+                "invalid split-lane quotient stage shape");
+        }
+
+        QuotientSplitLaneStageProfile profile;
+        profile.coefficient_count =
+            coefficient_count;
+        profile.target_size =
+            target_size;
+        profile.exact = true;
+
+        profile.contiguous_ms.reserve(repeats);
+        profile.split_lane_ms.reserve(repeats);
+
+        std::vector<mcl::Fr> coefficients(
+            coefficient_count);
+
+        for (std::size_t index = 0;
+             index < coefficient_count;
+             ++index)
+        {
+            coefficients[index] =
+                FieldElement(
+                    17 +
+                    ((index * 1315423911ULL) %
+                     104729ULL))
+                    .native();
+        }
+
+        const FieldElement shift(7);
+
+        std::vector<mcl::Fr> powers(
+            coefficient_count);
+
+        algebra::geometric_powers_native(
+            powers.data(),
+            powers.size(),
+            shift);
+
+        for (std::size_t repeat = 0;
+             repeat < repeats;
+             ++repeat)
+        {
+            auto contiguous =
+                std::make_shared<QuotientCosetValues>(
+                    target_size,
+                    nullptr,
+                    "split_lane_stage_contiguous",
+                    false);
+
+            auto start = Clock::now();
+
+            coset_evaluate_coefficients_into(
+                coefficients.data(),
+                coefficient_count,
+                target_size,
+                shift,
+                "split_lane_stage_contiguous",
+                &powers,
+                contiguous->mutable_data(),
+                false);
+
+            profile.contiguous_ms.push_back(
+                elapsed_ms(
+                    start,
+                    Clock::now()));
+
+            auto split =
+                std::make_shared<QuotientCosetValues>(
+                    target_size,
+                    nullptr,
+                    "split_lane_stage_split",
+                    true);
+
+            start = Clock::now();
+
+            coset_evaluate_coefficients_into(
+                coefficients.data(),
+                coefficient_count,
+                target_size,
+                shift,
+                "split_lane_stage_split",
+                &powers,
+                split->mutable_data(),
+                true);
+
+            profile.split_lane_ms.push_back(
+                elapsed_ms(
+                    start,
+                    Clock::now()));
+
+            for (std::size_t index = 0;
+                 index < target_size;
+                 ++index)
+            {
+                if ((*contiguous)[index] !=
+                    (*split)[index])
+                {
+                    profile.exact = false;
+                    break;
+                }
+            }
+
+            if (split->copy_values() !=
+                contiguous->copy_values())
+            {
+                profile.exact = false;
+            }
+        }
+
+        return profile;
     }
 
     std::vector<algebra::FieldElement>

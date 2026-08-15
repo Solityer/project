@@ -4952,6 +4952,22 @@ int main()
         test_logup_inverse_accumulator_reuse_equivalence();
         std::cerr << "running test_parallel_split_intt_equivalence\n";
         test_parallel_split_intt_equivalence();
+        std::cerr
+            << "running test_quotient_split_lane_materialization_equivalence\n";
+        test_quotient_split_lane_materialization_equivalence();
+        void test_quotient_split_lane_materialization_equivalence()
+        {
+            const auto profile =
+                gatzk::protocol::
+                    benchmark_quotient_split_lane_materialization_stage(
+                        64,
+                        256,
+                        1);
+
+            require(
+                profile.exact,
+                "split-lane quotient materialization changed logical coset order");
+        }
         const bool skip_srs_tests = std::getenv("GATZK_SKIP_SRS_TESTS") != nullptr;
         if (!skip_srs_tests)
         {
