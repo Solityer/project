@@ -5307,13 +5307,6 @@ namespace gatzk::crypto
             std::to_string(
                 precompute_ms));
 
-        if (folded
-                .fused_semantic_source_count == 0)
-        {
-            throw std::runtime_error(
-                "paired streamed point-group route was selected without a fused semantic source");
-        }
-
         if (profiles != nullptr)
         {
             for (std::size_t group = 0;
