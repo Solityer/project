@@ -1021,25 +1021,41 @@ namespace gatzk::algebra
         std::size_t index_count,
         std::size_t bucket_count)
     {
-        if (!cuda_trace_route_enabled() || index_count == 0 || bucket_count == 0)
+        if (!cuda_trace_route_enabled() ||
+            index_count == 0 ||
+            bucket_count == 0)
         {
             return false;
         }
 
-        const bool unified =
+        const bool direct_pageable_host_access =
             cuda_backend_unified_addressing_available();
 
         const auto min_index_count =
-            unified ? (1ULL << 20) : (1ULL << 22);
+            direct_pageable_host_access
+                ? (1ULL << 20)
+                : (1ULL << 22);
 
         const auto min_bucket_count =
-            unified ? 1024ULL : 4096ULL;
+            direct_pageable_host_access
+                ? 1024ULL
+                : 4096ULL;
 
-        // Histogram CUDA work includes an O(bucket_count) counter
-        // buffer reset/download cost. Sparse bucket spaces do not
-        // amortize that cost even when index_count itself is large.
         const auto min_indices_per_bucket =
-            unified ? 256ULL : 1024ULL;
+            direct_pageable_host_access
+                ? 256ULL
+                : 1024ULL;
+
+        // On pageable-host-page-table devices the current explicit
+        // host conversion / allocation / transfer implementation is
+        // empirically faster through 2^21 indices, but slower at 2^22
+        // even with only 2^12 buckets. Do not extrapolate CUDA past
+        // the largest measured-fast workload on that execution path.
+        if (direct_pageable_host_access &&
+            index_count > (1ULL << 21))
+        {
+            return false;
+        }
 
         return index_count >= min_index_count &&
                bucket_count >= min_bucket_count &&

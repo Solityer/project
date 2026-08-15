@@ -654,17 +654,41 @@ int main(int argc, char **argv)
             << " speedup="
             << contiguous_ms / split_lane_ms
             << " exact_match=true\n";
-        if (gatzk::algebra::should_use_cuda_lookup_histogram(
-                1ULL << 16, 1ULL << 12) ||
-            !gatzk::algebra::should_use_cuda_lookup_histogram(
-                1ULL << 20, 1ULL << 12) ||
-            !gatzk::algebra::should_use_cuda_lookup_histogram(
-                1ULL << 22, 1ULL << 14) ||
-            gatzk::algebra::should_use_cuda_lookup_histogram(
-                1ULL << 22, 1ULL << 16))
+        if (gatzk::algebra::cuda_backend_unified_addressing_available())
         {
-            throw std::runtime_error(
-                "CUDA histogram dispatch thresholds are inconsistent");
+            if (gatzk::algebra::should_use_cuda_lookup_histogram(
+                    1ULL << 16, 1ULL << 12) ||
+                !gatzk::algebra::should_use_cuda_lookup_histogram(
+                    1ULL << 20, 1ULL << 12) ||
+                !gatzk::algebra::should_use_cuda_lookup_histogram(
+                    1ULL << 21, 1ULL << 12) ||
+                !gatzk::algebra::should_use_cuda_lookup_histogram(
+                    1ULL << 21, 1ULL << 13) ||
+                gatzk::algebra::should_use_cuda_lookup_histogram(
+                    1ULL << 22, 1ULL << 12) ||
+                gatzk::algebra::should_use_cuda_lookup_histogram(
+                    1ULL << 22, 1ULL << 14) ||
+                gatzk::algebra::should_use_cuda_lookup_histogram(
+                    1ULL << 22, 1ULL << 16))
+            {
+                throw std::runtime_error(
+                    "CUDA histogram dispatch thresholds are inconsistent");
+            }
+        }
+        else
+        {
+            if (gatzk::algebra::should_use_cuda_lookup_histogram(
+                    1ULL << 20, 1ULL << 12) ||
+                !gatzk::algebra::should_use_cuda_lookup_histogram(
+                    1ULL << 22, 1ULL << 12) ||
+                gatzk::algebra::should_use_cuda_lookup_histogram(
+                    1ULL << 22, 1ULL << 14) ||
+                gatzk::algebra::should_use_cuda_lookup_histogram(
+                    1ULL << 22, 1ULL << 16))
+            {
+                throw std::runtime_error(
+                    "CUDA histogram dispatch thresholds are inconsistent");
+            }
         }
         bench_histogram(1ULL << 12, 1ULL << 10, kRepeats);
         bench_histogram(1ULL << 14, 1ULL << 10, kRepeats);
