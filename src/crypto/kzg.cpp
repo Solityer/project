@@ -2326,6 +2326,304 @@ namespace gatzk::crypto
             std::vector<FoldedEvaluationGroup> evaluation_groups;
         };
 
+        struct DeferredStreamedSemanticSource
+        {
+            OpeningSemanticSourceInfo info;
+            Commitment representative;
+            FieldElement scale =
+                FieldElement::zero();
+        };
+
+        using StreamedSemanticSourceDefer =
+            std::function<void(
+                const DeferredStreamedSemanticSource &)>;
+
+        struct PairedStreamedFoldBuild
+        {
+            std::array<FoldedOpeningPlan, 2> plans;
+            std::size_t fused_semantic_source_count = 0;
+            std::array<std::size_t, 2>
+                deferred_source_count{0, 0};
+        };
+
+        FoldedEvaluationGroup &
+        require_folded_evaluation_group(
+            FoldedOpeningPlan *plan,
+            const std::shared_ptr<
+                algebra::RootOfUnityDomain> &domain)
+        {
+            if (plan == nullptr || domain == nullptr)
+            {
+                throw std::runtime_error(
+                    "streamed opening is missing its folded evaluation group");
+            }
+
+            const auto it =
+                std::find_if(
+                    plan->evaluation_groups.begin(),
+                    plan->evaluation_groups.end(),
+                    [&](const FoldedEvaluationGroup &group)
+                    {
+                        return group.domain != nullptr &&
+                               group.domain->name ==
+                                   domain->name &&
+                               group.domain->size ==
+                                   domain->size &&
+                               group.domain->omega ==
+                                   domain->omega;
+                    });
+
+            if (it == plan->evaluation_groups.end())
+            {
+                throw std::runtime_error(
+                    "streamed semantic source is missing its folded domain group: " +
+                    domain->name);
+            }
+
+            return *it;
+        }
+
+        std::shared_ptr<const algebra::Polynomial>
+        resolve_streamed_semantic_source_material(
+            const OpeningPolynomialResolver &resolver,
+            const Commitment &commitment,
+            const OpeningSemanticSourceInfo &info)
+        {
+            auto material =
+                resolver(commitment);
+
+            if (material == nullptr)
+            {
+                throw std::runtime_error(
+                    "commitment is missing prover-side opening polynomial: " +
+                    commitment.name);
+            }
+
+            if (material->basis !=
+                    algebra::PolynomialBasis::Evaluation ||
+                material->domain == nullptr)
+            {
+                throw std::runtime_error(
+                    "streamed semantic opening source is not an evaluation polynomial: " +
+                    commitment.name);
+            }
+
+            if (info.domain == nullptr ||
+                material->domain->name !=
+                    info.domain->name ||
+                material->domain->size !=
+                    info.domain->size ||
+                !(material->domain->omega ==
+                  info.domain->omega))
+            {
+                throw std::runtime_error(
+                    "streamed semantic opening source domain mismatch: " +
+                    commitment.name);
+            }
+
+            if (material->values().size() !=
+                info.value_count)
+            {
+                throw std::runtime_error(
+                    "streamed semantic opening source size mismatch: " +
+                    commitment.name);
+            }
+
+            if (material->zero_domain_blinder !=
+                info.zero_domain_blinder)
+            {
+                throw std::runtime_error(
+                    "streamed semantic opening representative blinder mismatch: " +
+                    commitment.name);
+            }
+
+            return material;
+        }
+
+        void accumulate_streamed_evaluation_source(
+            FoldedEvaluationGroup *group,
+            const std::vector<FieldElement> &source_values,
+            const FieldElement &scale,
+            const std::string &label,
+            std::size_t worker_cap)
+        {
+            if (group == nullptr ||
+                source_values.size() >
+                    group->folded_values.size())
+            {
+                throw std::runtime_error(
+                    "streamed evaluation polynomial exceeds its domain: " +
+                    label);
+            }
+
+            if (scale.is_zero())
+            {
+                return;
+            }
+
+            auto *folded_native =
+                FieldElement::mutable_native_array_data(
+                    group->folded_values.data());
+
+            const auto *source_native =
+                FieldElement::native_array_data(
+                    source_values.data());
+
+            const auto scale_native =
+                scale.native();
+
+            if (!algebra::try_cuda_scaled_accumulate_native(
+                    folded_native,
+                    source_native,
+                    scale_native,
+                    source_values.size()))
+            {
+                parallel_for_chunks_capped(
+                    source_values.size(),
+                    1ULL << 15,
+                    worker_cap,
+                    [&](std::size_t begin,
+                        std::size_t end)
+                    {
+                        for (std::size_t row = begin;
+                             row < end;
+                             ++row)
+                        {
+                            mcl::Fr product;
+
+                            mcl::Fr::mul(
+                                product,
+                                source_native[row],
+                                scale_native);
+
+                            mcl::Fr::add(
+                                folded_native[row],
+                                folded_native[row],
+                                product);
+                        }
+                    });
+            }
+        }
+
+        void accumulate_streamed_evaluation_source_pair(
+            FoldedEvaluationGroup *first_group,
+            FoldedEvaluationGroup *second_group,
+            const std::vector<FieldElement> &source_values,
+            const FieldElement &first_scale,
+            const FieldElement &second_scale,
+            const std::string &label,
+            std::size_t worker_cap)
+        {
+            if (first_group == nullptr ||
+                second_group == nullptr ||
+                first_group == second_group)
+            {
+                throw std::runtime_error(
+                    "paired streamed opening requires two distinct folded groups");
+            }
+
+            if (source_values.size() >
+                    first_group->folded_values.size() ||
+                source_values.size() >
+                    second_group->folded_values.size())
+            {
+                throw std::runtime_error(
+                    "paired streamed evaluation source exceeds its domain: " +
+                    label);
+            }
+
+            if (first_scale.is_zero())
+            {
+                accumulate_streamed_evaluation_source(
+                    second_group,
+                    source_values,
+                    second_scale,
+                    label,
+                    worker_cap);
+
+                return;
+            }
+
+            if (second_scale.is_zero())
+            {
+                accumulate_streamed_evaluation_source(
+                    first_group,
+                    source_values,
+                    first_scale,
+                    label,
+                    worker_cap);
+
+                return;
+            }
+
+            auto *first_native =
+                FieldElement::mutable_native_array_data(
+                    first_group->folded_values.data());
+
+            auto *second_native =
+                FieldElement::mutable_native_array_data(
+                    second_group->folded_values.data());
+
+            const auto *source_native =
+                FieldElement::native_array_data(
+                    source_values.data());
+
+            const auto first_scale_native =
+                first_scale.native();
+
+            const auto second_scale_native =
+                second_scale.native();
+
+            if (!algebra::
+                    try_cuda_scaled_accumulate_pair_native(
+                        first_native,
+                        second_native,
+                        source_native,
+                        first_scale_native,
+                        second_scale_native,
+                        source_values.size()))
+            {
+                parallel_for_chunks_capped(
+                    source_values.size(),
+                    1ULL << 15,
+                    worker_cap,
+                    [&](std::size_t begin,
+                        std::size_t end)
+                    {
+                        for (std::size_t row = begin;
+                             row < end;
+                             ++row)
+                        {
+                            const auto source =
+                                source_native[row];
+
+                            mcl::Fr first_product;
+                            mcl::Fr second_product;
+
+                            mcl::Fr::mul(
+                                first_product,
+                                source,
+                                first_scale_native);
+
+                            mcl::Fr::mul(
+                                second_product,
+                                source,
+                                second_scale_native);
+
+                            mcl::Fr::add(
+                                first_native[row],
+                                first_native[row],
+                                first_product);
+
+                            mcl::Fr::add(
+                                second_native[row],
+                                second_native[row],
+                                second_product);
+                        }
+                    });
+            }
+        }
+
         FieldElement evaluate_with_shared_domain_weights(
             const algebra::Polynomial &polynomial,
             const FieldElement &point,
@@ -2614,7 +2912,9 @@ namespace gatzk::crypto
             std::size_t worker_cap,
             bool validate_claims,
             const OpeningPolynomialResolver &opening_resolver,
-            const OpeningSemanticSourceResolver *semantic_source_resolver)
+            const OpeningSemanticSourceResolver *semantic_source_resolver,
+            const StreamedSemanticSourceDefer
+                *defer_semantic_source)
         {
             if (commitments.size() != claimed_values.size() || commitments.size() != powers.size())
             {
@@ -2782,18 +3082,24 @@ namespace gatzk::crypto
 
                     if (fold.members.size() < 2)
                     {
-                        for (const auto member :
-                             fold.members)
+                        if (defer_semantic_source == nullptr)
                         {
-                            semantic_fold_for_commitment[member] = std::nullopt;
+                            for (const auto member :
+                                 fold.members)
+                            {
+                                semantic_fold_for_commitment[member] =
+                                    std::nullopt;
+                            }
+
+                            continue;
                         }
-
-                        continue;
                     }
-
-                    ++shared_source_count;
-                    shared_member_count +=
-                        fold.members.size();
+                    else
+                    {
+                        ++shared_source_count;
+                        shared_member_count +=
+                            fold.members.size();
+                    }
                 }
 
                 if (shared_source_count != 0)
@@ -2806,67 +3112,6 @@ namespace gatzk::crypto
                         ":members=" + std::to_string(shared_member_count));
                 }
             }
-
-            const auto accumulate_evaluation_source =
-                [&](auto &group,
-                    const std::vector<FieldElement> &source_values,
-                    const FieldElement &scale,
-                    const std::string &label)
-            {
-                if (source_values.size() > group.folded_values.size())
-                {
-                    throw std::runtime_error(
-                        "streamed evaluation polynomial exceeds its domain: " + label);
-                }
-
-                if (scale.is_zero())
-                {
-                    return;
-                }
-
-                auto *folded_native =
-                    FieldElement::mutable_native_array_data(
-                        group.folded_values.data());
-
-                const auto *source_native =
-                    FieldElement::native_array_data(
-                        source_values.data());
-
-                const auto scale_native =
-                    scale.native();
-
-                if (!algebra::try_cuda_scaled_accumulate_native(
-                        folded_native,
-                        source_native,
-                        scale_native,
-                        source_values.size()))
-                {
-                    parallel_for_chunks_capped(
-                        source_values.size(),
-                        1ULL << 15,
-                        worker_cap,
-                        [&](std::size_t begin,
-                            std::size_t end)
-                        {
-                            for (std::size_t row = begin;
-                                 row < end;
-                                 ++row)
-                            {
-                                mcl::Fr product;
-
-                                mcl::Fr::mul(
-                                    product,
-                                    source_native[row],
-                                    scale_native);
-
-                                mcl::Fr::add(
-                                    folded_native[row],
-                                    folded_native[row],
-                                    product);
-                            }
-                        });
-                }
-            };
 
             for (std::size_t i = 0;
                  i < commitments.size();
@@ -2911,56 +3156,33 @@ namespace gatzk::crypto
                     if (!semantic_fold.source_scale
                              .is_zero())
                     {
-                        auto material =
-                            opening_resolver(
-                                commitments[i]);
-
-                        if (material == nullptr)
+                        if (defer_semantic_source != nullptr)
                         {
-                            throw std::runtime_error(
-                                "commitment is missing prover-side opening polynomial: " + commitments[i].name);
+                            (*defer_semantic_source)(
+                                DeferredStreamedSemanticSource{
+                                    .info =
+                                        semantic_fold.info,
+                                    .representative =
+                                        commitments[i],
+                                    .scale =
+                                        semantic_fold.source_scale,
+                                });
                         }
-
-                        if (material->basis != algebra::PolynomialBasis::Evaluation || material->domain == nullptr)
+                        else
                         {
-                            throw std::runtime_error(
-                                "streamed semantic opening source is not an evaluation polynomial: " + commitments[i].name);
+                            const auto material =
+                                resolve_streamed_semantic_source_material(
+                                    opening_resolver,
+                                    commitments[i],
+                                    semantic_fold.info);
+
+                            accumulate_streamed_evaluation_source(
+                                &group,
+                                material->values(),
+                                semantic_fold.source_scale,
+                                commitments[i].name,
+                                worker_cap);
                         }
-
-                        if (material->domain->name != semantic_fold
-                                                          .info.domain->name ||
-                            material->domain->size != semantic_fold
-                                                          .info.domain->size ||
-                            !(material->domain->omega == semantic_fold
-                                                             .info.domain->omega))
-                        {
-                            throw std::runtime_error(
-                                "streamed semantic opening source domain mismatch: " + commitments[i].name);
-                        }
-
-                        const auto &source_values =
-                            material->values();
-
-                        if (source_values.size() != semantic_fold
-                                                        .info.value_count)
-                        {
-                            throw std::runtime_error(
-                                "streamed semantic opening source size mismatch: " + commitments[i].name);
-                        }
-
-                        if (material
-                                ->zero_domain_blinder != semantic_fold
-                                                             .info.zero_domain_blinder)
-                        {
-                            throw std::runtime_error(
-                                "streamed semantic opening representative blinder mismatch: " + commitments[i].name);
-                        }
-
-                        accumulate_evaluation_source(
-                            group,
-                            source_values,
-                            semantic_fold.source_scale,
-                            commitments[i].name);
                     }
 
                     if (!semantic_fold
@@ -3106,11 +3328,12 @@ namespace gatzk::crypto
                 const auto &source_values =
                     material->values();
 
-                accumulate_evaluation_source(
-                    group,
+                accumulate_streamed_evaluation_source(
+                    &group,
                     source_values,
                     scale,
-                    commitments[i].name);
+                    commitments[i].name,
+                    worker_cap);
 
                 if (!scale.is_zero() && material
                                             ->is_zero_domain_blinded())
@@ -3144,6 +3367,249 @@ namespace gatzk::crypto
             }
 
             return plan;
+        }
+
+        PairedStreamedFoldBuild
+        build_streamed_folded_opening_plan_pair(
+            const std::array<
+                std::vector<Commitment>,
+                2> &commitments,
+            const std::array<
+                std::vector<std::vector<FieldElement>>,
+                2> &claimed_values,
+            const std::array<
+                std::vector<FieldElement>,
+                2> &powers,
+            const std::array<FieldElement, 2> &points,
+            const std::array<std::size_t, 2> &worker_caps,
+            const OpeningPolynomialResolver &opening_resolver,
+            const OpeningSemanticSourceResolver
+                &semantic_source_resolver)
+        {
+            PairedStreamedFoldBuild result;
+
+            std::array<
+                std::vector<DeferredStreamedSemanticSource>,
+                2>
+                deferred;
+
+            const auto build_one =
+                [&](std::size_t index)
+            {
+                const StreamedSemanticSourceDefer
+                    defer =
+                        [&](const DeferredStreamedSemanticSource
+                                &source)
+                {
+                    deferred[index].push_back(
+                        source);
+                };
+
+                result.plans[index] =
+                    build_streamed_folded_opening_plan(
+                        commitments[index],
+                        claimed_values[index],
+                        powers[index],
+                        std::vector<FieldElement>{
+                            points[index]},
+                        worker_caps[index],
+                        false,
+                        opening_resolver,
+                        &semantic_source_resolver,
+                        &defer);
+            };
+
+            auto first_future =
+                std::async(
+                    std::launch::async,
+                    [&]()
+                    {
+                        build_one(0);
+                    });
+
+            auto second_future =
+                std::async(
+                    std::launch::async,
+                    [&]()
+                    {
+                        build_one(1);
+                    });
+
+            first_future.get();
+            second_future.get();
+
+            result.deferred_source_count = {
+                deferred[0].size(),
+                deferred[1].size(),
+            };
+
+            std::unordered_map<
+                std::string,
+                std::size_t>
+                second_by_key;
+
+            second_by_key.reserve(
+                deferred[1].size());
+
+            for (std::size_t index = 0;
+                 index < deferred[1].size();
+                 ++index)
+            {
+                const auto [_, inserted] =
+                    second_by_key.emplace(
+                        deferred[1][index].info.key,
+                        index);
+
+                if (!inserted)
+                {
+                    throw std::runtime_error(
+                        "paired streamed opening received duplicate deferred semantic source");
+                }
+            }
+
+            std::vector<bool> second_consumed(
+                deferred[1].size(),
+                false);
+
+            const auto shared_worker_cap =
+                [&]()
+            {
+                if (worker_caps[0] == 0)
+                {
+                    return worker_caps[1];
+                }
+
+                if (worker_caps[1] == 0)
+                {
+                    return worker_caps[0];
+                }
+
+                return std::min(
+                    worker_caps[0],
+                    worker_caps[1]);
+            }();
+
+            const auto process_single =
+                [&](std::size_t plan_index,
+                    const DeferredStreamedSemanticSource
+                        &source)
+            {
+                const auto material =
+                    resolve_streamed_semantic_source_material(
+                        opening_resolver,
+                        source.representative,
+                        source.info);
+
+                auto &group =
+                    require_folded_evaluation_group(
+                        &result.plans[plan_index],
+                        source.info.domain);
+
+                accumulate_streamed_evaluation_source(
+                    &group,
+                    material->values(),
+                    source.scale,
+                    source.representative.name,
+                    worker_caps[plan_index]);
+            };
+
+            for (const auto &first :
+                 deferred[0])
+            {
+                const auto second_it =
+                    second_by_key.find(
+                        first.info.key);
+
+                if (second_it ==
+                    second_by_key.end())
+                {
+                    process_single(
+                        0,
+                        first);
+
+                    continue;
+                }
+
+                const auto second_index =
+                    second_it->second;
+
+                const auto &second =
+                    deferred[1][second_index];
+
+                const bool same_source =
+                    first.representative.name ==
+                        second.representative.name &&
+                    first.representative.point ==
+                        second.representative.point &&
+                    first.info.domain != nullptr &&
+                    second.info.domain != nullptr &&
+                    first.info.domain->name ==
+                        second.info.domain->name &&
+                    first.info.domain->size ==
+                        second.info.domain->size &&
+                    first.info.domain->omega ==
+                        second.info.domain->omega &&
+                    first.info.value_count ==
+                        second.info.value_count &&
+                    first.info.zero_domain_blinder ==
+                        second.info.zero_domain_blinder;
+
+                if (!same_source)
+                {
+                    process_single(
+                        0,
+                        first);
+
+                    continue;
+                }
+
+                const auto material =
+                    resolve_streamed_semantic_source_material(
+                        opening_resolver,
+                        first.representative,
+                        first.info);
+
+                auto &first_group =
+                    require_folded_evaluation_group(
+                        &result.plans[0],
+                        first.info.domain);
+
+                auto &second_group =
+                    require_folded_evaluation_group(
+                        &result.plans[1],
+                        second.info.domain);
+
+                accumulate_streamed_evaluation_source_pair(
+                    &first_group,
+                    &second_group,
+                    material->values(),
+                    first.scale,
+                    second.scale,
+                    first.representative.name,
+                    shared_worker_cap);
+
+                second_consumed[second_index] =
+                    true;
+
+                ++result
+                      .fused_semantic_source_count;
+            }
+
+            for (std::size_t index = 0;
+                 index < deferred[1].size();
+                 ++index)
+            {
+                if (second_consumed[index])
+                {
+                    continue;
+                }
+
+                process_single(
+                    1,
+                    deferred[1][index]);
+            }
+
+            return result;
         }
 
         G1Point open_single_point_fold(
@@ -4688,7 +5154,8 @@ namespace gatzk::crypto
                                            field_worker_cap,
                                            claim_validation == BatchOpeningClaimValidation::VerifyAgainstOpeningPolynomials,
                                            *opening_resolver,
-                                           semantic_source_resolver);
+                                           semantic_source_resolver,
+                                           nullptr);
         if (profile != nullptr)
         {
             profile->precompute_ms += elapsed_ms(precompute_start, Clock::now());
@@ -4712,6 +5179,221 @@ namespace gatzk::crypto
             profile->finalize_ms += elapsed_ms(witness_start, Clock::now());
         }
         return witness;
+    }
+
+    std::array<G1Point, 2>
+    KZG::open_point_group_pair_shared_stream(
+        const std::array<
+            std::vector<Commitment>,
+            2> &commitments,
+        const std::array<FieldElement, 2> &points,
+        const std::array<
+            std::vector<FieldElement>,
+            2> &claimed_values,
+        const std::array<FieldElement, 2>
+            &folding_challenges,
+        const KZGKeyPair &key,
+        std::array<BatchOpeningProfile, 2> *profiles,
+        BatchOpeningClaimValidation claim_validation,
+        const std::array<
+            PointGroupOpeningExecutionOptions,
+            2> *execution_options,
+        const OpeningPolynomialResolver *opening_resolver,
+        const OpeningSemanticSourceResolver
+            *semantic_source_resolver)
+    {
+        for (std::size_t index = 0;
+             index < 2;
+             ++index)
+        {
+            if (commitments[index].empty() ||
+                commitments[index].size() !=
+                    claimed_values[index].size())
+            {
+                throw std::runtime_error(
+                    "paired point-group opening input shape mismatch");
+            }
+
+            if (folding_challenges[index].is_zero())
+            {
+                throw std::runtime_error(
+                    "paired point-group opening folding challenge must be non-zero");
+            }
+        }
+
+        if (claim_validation !=
+                BatchOpeningClaimValidation::
+                    AlreadyComputedFromOpeningPolynomials ||
+            opening_resolver == nullptr ||
+            semantic_source_resolver == nullptr)
+        {
+            throw std::runtime_error(
+                "paired streamed point-group opening requires prevalidated claims and streamed resolvers");
+        }
+
+        std::array<
+            std::vector<std::vector<FieldElement>>,
+            2>
+            value_columns;
+
+        std::array<
+            std::vector<FieldElement>,
+            2>
+            powers;
+
+        std::array<std::size_t, 2>
+            field_worker_caps{0, 0};
+
+        for (std::size_t group = 0;
+             group < 2;
+             ++group)
+        {
+            value_columns[group].reserve(
+                claimed_values[group].size());
+
+            for (const auto &value :
+                 claimed_values[group])
+            {
+                value_columns[group].push_back(
+                    {value});
+            }
+
+            powers[group] =
+                folding_powers(
+                    folding_challenges[group],
+                    commitments[group].size());
+
+            if (execution_options != nullptr)
+            {
+                field_worker_caps[group] =
+                    (*execution_options)[group]
+                        .max_field_worker_count;
+            }
+        }
+
+        const auto precompute_start =
+            Clock::now();
+
+        auto folded =
+            build_streamed_folded_opening_plan_pair(
+                commitments,
+                value_columns,
+                powers,
+                points,
+                field_worker_caps,
+                *opening_resolver,
+                *semantic_source_resolver);
+
+        const auto precompute_ms =
+            elapsed_ms(
+                precompute_start,
+                Clock::now());
+
+        progress_note(
+            "kzg:opening:paired_semantic_scan:"
+            "fused_sources=" +
+            std::to_string(
+                folded
+                    .fused_semantic_source_count) +
+            ":first_sources=" +
+            std::to_string(
+                folded
+                    .deferred_source_count[0]) +
+            ":second_sources=" +
+            std::to_string(
+                folded
+                    .deferred_source_count[1]) +
+            ":wall_ms=" +
+            std::to_string(
+                precompute_ms));
+
+        if (folded
+                .fused_semantic_source_count == 0)
+        {
+            throw std::runtime_error(
+                "paired streamed point-group route was selected without a fused semantic source");
+        }
+
+        if (profiles != nullptr)
+        {
+            for (std::size_t group = 0;
+                 group < 2;
+                 ++group)
+            {
+                (*profiles)[group]
+                    .precompute_ms +=
+                    precompute_ms / 2.0;
+
+                if (execution_options != nullptr)
+                {
+                    (*profiles)[group]
+                        .point_msm_worker_cap =
+                        (*execution_options)[group]
+                            .msm.max_worker_count;
+                }
+            }
+        }
+
+        std::array<G1Point, 2> witnesses{
+            g1_zero(),
+            g1_zero(),
+        };
+
+        const auto open_one =
+            [&](std::size_t group)
+        {
+            const auto local_start =
+                Clock::now();
+
+            const auto *msm_options =
+                execution_options != nullptr
+                    ? &(*execution_options)[group].msm
+                    : nullptr;
+
+            auto *profile =
+                profiles != nullptr
+                    ? &(*profiles)[group]
+                    : nullptr;
+
+            witnesses[group] =
+                open_single_point_fold(
+                    folded.plans[group],
+                    0,
+                    points[group],
+                    key.pk,
+                    profile,
+                    field_worker_caps[group],
+                    msm_options);
+
+            if (profile != nullptr)
+            {
+                profile->finalize_ms +=
+                    elapsed_ms(
+                        local_start,
+                        Clock::now());
+            }
+        };
+
+        auto first_future =
+            std::async(
+                std::launch::async,
+                [&]()
+                {
+                    open_one(0);
+                });
+
+        auto second_future =
+            std::async(
+                std::launch::async,
+                [&]()
+                {
+                    open_one(1);
+                });
+
+        first_future.get();
+        second_future.get();
+
+        return witnesses;
     }
 
     bool KZG::verify_point_group(

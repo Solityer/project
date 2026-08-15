@@ -11468,6 +11468,164 @@ namespace gatzk::protocol
                 };
             };
 
+            const auto estimate_point_group_work =
+                [&](std::size_t index)
+            {
+                std::size_t total = 0;
+
+                for (const auto &claim :
+                     point_groups[index].claims)
+                {
+                    if (claim.commitment
+                            .opening_polynomial !=
+                        nullptr)
+                    {
+                        total +=
+                            claim.commitment
+                                .opening_polynomial
+                                ->size();
+                    }
+                    else if (
+                        const auto spilled_it =
+                            trace.spilled_polynomials
+                                .find(
+                                    claim.commitment.name);
+                        spilled_it !=
+                        trace.spilled_polynomials
+                            .end())
+                    {
+                        total +=
+                            spilled_it->second.size;
+                    }
+                }
+
+                return total;
+            };
+
+            const auto
+                shared_file_backed_semantic_source_count =
+                    [&](std::size_t first_index,
+                        std::size_t second_index)
+            {
+                // Keep small/medium resident opening paths unchanged.
+                // The paired source scan is reserved for genuinely large
+                // streamed sources where memory traffic dominates.
+                constexpr std::size_t
+                    kMinimumSharedStreamSourceValues =
+                        1ULL << 22;
+
+                std::unordered_map<
+                    std::string,
+                    std::string>
+                    first_sources;
+
+                for (const auto &claim :
+                     point_groups[first_index].claims)
+                {
+                    if (claim.commitment
+                            .opening_polynomial !=
+                        nullptr)
+                    {
+                        continue;
+                    }
+
+                    const auto spilled_it =
+                        trace.spilled_polynomials.find(
+                            claim.commitment.name);
+
+                    if (spilled_it ==
+                        trace.spilled_polynomials.end())
+                    {
+                        continue;
+                    }
+
+                    const auto &spilled =
+                        spilled_it->second;
+
+                    if (spilled.semantic_source_id == 0 ||
+                        spilled.size <
+                            kMinimumSharedStreamSourceValues)
+                    {
+                        continue;
+                    }
+
+                    const auto key =
+                        spilled.domain_name + ":" +
+                        std::to_string(spilled.size) + ":" +
+                        std::to_string(
+                            spilled.semantic_source_id);
+
+                    first_sources.try_emplace(
+                        key,
+                        claim.commitment.name);
+                }
+
+                std::size_t shared = 0;
+
+                std::unordered_map<
+                    std::string,
+                    bool>
+                    counted;
+
+                for (const auto &claim :
+                     point_groups[second_index].claims)
+                {
+                    if (claim.commitment
+                            .opening_polynomial !=
+                        nullptr)
+                    {
+                        continue;
+                    }
+
+                    const auto spilled_it =
+                        trace.spilled_polynomials.find(
+                            claim.commitment.name);
+
+                    if (spilled_it ==
+                        trace.spilled_polynomials.end())
+                    {
+                        continue;
+                    }
+
+                    const auto &spilled =
+                        spilled_it->second;
+
+                    if (spilled.semantic_source_id == 0 ||
+                        spilled.size <
+                            kMinimumSharedStreamSourceValues)
+                    {
+                        continue;
+                    }
+
+                    const auto key =
+                        spilled.domain_name + ":" +
+                        std::to_string(spilled.size) + ":" +
+                        std::to_string(
+                            spilled.semantic_source_id);
+
+                    const auto first =
+                        first_sources.find(key);
+
+                    if (first ==
+                            first_sources.end() ||
+                        first->second !=
+                            claim.commitment.name)
+                    {
+                        continue;
+                    }
+
+                    if (counted.emplace(
+                                   key,
+                                   true)
+                            .second)
+                    {
+                        ++shared;
+                    }
+                }
+
+                return shared;
+            };
+
             const auto open_group_indices = [&](const std::vector<std::size_t> &indices)
             {
                 if (indices.empty())
@@ -11733,10 +11891,275 @@ namespace gatzk::protocol
                      : domain_group_indices)
                     .push_back(i);
             }
-            const auto external_claim_assembly_ms = elapsed_ms(
-                stage_start, Clock::now());
-            const auto domain_witness_wall_ms = open_group_indices(
-                domain_group_indices);
+            std::optional<
+                std::array<std::size_t, 2>>
+                shared_stream_domain_pair;
+
+            std::size_t
+                shared_stream_source_count = 0;
+
+            if (util::route2_options()
+                    .cuda_field_hotspots)
+            {
+                std::unordered_map<
+                    std::string,
+                    std::vector<std::size_t>>
+                    groups_by_owner;
+
+                for (const auto index :
+                     domain_group_indices)
+                {
+                    groups_by_owner[point_groups[index]
+                                        .owner_block]
+                        .push_back(index);
+                }
+
+                std::size_t best_work = 0;
+
+                for (const auto &[owner, indices] :
+                     groups_by_owner)
+                {
+                    (void)owner;
+
+                    if (indices.size() != 2)
+                    {
+                        continue;
+                    }
+
+                    const auto shared =
+                        shared_file_backed_semantic_source_count(
+                            indices[0],
+                            indices[1]);
+
+                    if (shared == 0)
+                    {
+                        continue;
+                    }
+
+                    const auto work =
+                        estimate_point_group_work(
+                            indices[0]) +
+                        estimate_point_group_work(
+                            indices[1]);
+
+                    if (!shared_stream_domain_pair
+                             .has_value() ||
+                        work > best_work)
+                    {
+                        shared_stream_domain_pair =
+                            std::array<std::size_t, 2>{
+                                indices[0],
+                                indices[1],
+                            };
+
+                        shared_stream_source_count =
+                            shared;
+
+                        best_work = work;
+                    }
+                }
+            }
+
+            const auto external_claim_assembly_ms =
+                elapsed_ms(
+                    stage_start,
+                    Clock::now());
+
+            const auto domain_witness_start =
+                Clock::now();
+
+            auto remaining_domain_group_indices =
+                domain_group_indices;
+
+            if (shared_stream_domain_pair.has_value())
+            {
+                const auto pair =
+                    *shared_stream_domain_pair;
+
+                std::array<
+                    std::vector<Commitment>,
+                    2>
+                    pair_commitments;
+
+                std::array<
+                    std::vector<FieldElement>,
+                    2>
+                    pair_values;
+
+                std::array<FieldElement, 2>
+                    pair_points{
+                        point_groups[pair[0]].point,
+                        point_groups[pair[1]].point,
+                    };
+
+                std::array<FieldElement, 2>
+                    pair_challenges{
+                        derive_point_group_challenge(
+                            proof.public_metadata,
+                            point_groups[pair[0]]),
+                        derive_point_group_challenge(
+                            proof.public_metadata,
+                            point_groups[pair[1]]),
+                    };
+
+                for (std::size_t slot = 0;
+                     slot < 2;
+                     ++slot)
+                {
+                    const auto &group =
+                        point_groups[pair[slot]];
+
+                    pair_commitments[slot].reserve(
+                        group.claims.size());
+
+                    pair_values[slot].reserve(
+                        group.claims.size());
+
+                    for (const auto &claim :
+                         group.claims)
+                    {
+                        pair_commitments[slot]
+                            .push_back(
+                                claim.commitment);
+
+                        pair_values[slot]
+                            .push_back(
+                                claim.value);
+                    }
+                }
+
+                const auto hardware_workers =
+                    std::max<unsigned>(
+                        1,
+                        std::thread::
+                            hardware_concurrency());
+
+                const auto inner_worker_count =
+                    std::min<std::size_t>(
+                        16,
+                        hardware_workers);
+
+                const std::array<
+                    crypto::
+                        PointGroupOpeningExecutionOptions,
+                    2>
+                    pair_execution_options{
+                        crypto::
+                            PointGroupOpeningExecutionOptions{
+                                .max_field_worker_count =
+                                    inner_worker_count,
+                                .msm = {
+                                    .max_worker_count =
+                                        inner_worker_count,
+                                },
+                            },
+                        crypto::PointGroupOpeningExecutionOptions{
+                            .max_field_worker_count = inner_worker_count,
+                            .msm = {
+                                .max_worker_count = inner_worker_count,
+                            },
+                        },
+                    };
+
+                std::array<
+                    crypto::BatchOpeningProfile,
+                    2>
+                    pair_profiles;
+
+                const auto pair_start =
+                    Clock::now();
+
+                const auto witnesses =
+                    crypto::KZG::
+                        open_point_group_pair_shared_stream(
+                            pair_commitments,
+                            pair_points,
+                            pair_values,
+                            pair_challenges,
+                            context.kzg,
+                            &pair_profiles,
+                            crypto::
+                                BatchOpeningClaimValidation::
+                                    AlreadyComputedFromOpeningPolynomials,
+                            &pair_execution_options,
+                            trace.spilled_polynomials
+                                    .empty()
+                                ? nullptr
+                                : &file_backed_opening_resolver,
+                            trace.spilled_polynomials
+                                    .empty()
+                                ? nullptr
+                                : &file_backed_opening_semantic_source_resolver);
+
+                const auto pair_wall_ms =
+                    elapsed_ms(
+                        pair_start,
+                        Clock::now());
+
+                for (std::size_t slot = 0;
+                     slot < 2;
+                     ++slot)
+                {
+                    const auto index =
+                        pair[slot];
+
+                    pair_profiles[slot]
+                        .point_parallel_batches = 1;
+
+                    pair_profiles[slot]
+                        .point_parallel_workers = 2;
+
+                    opening_results[index]
+                        .witness =
+                        witnesses[slot];
+
+                    opening_results[index]
+                        .profile =
+                        pair_profiles[slot];
+
+                    opening_results[index]
+                        .elapsed_ms =
+                        pair_profiles[slot]
+                            .precompute_ms +
+                        pair_profiles[slot]
+                            .finalize_ms;
+                }
+
+                remaining_domain_group_indices.erase(
+                    std::remove_if(
+                        remaining_domain_group_indices
+                            .begin(),
+                        remaining_domain_group_indices
+                            .end(),
+                        [&](std::size_t index)
+                        {
+                            return index == pair[0] ||
+                                   index == pair[1];
+                        }),
+                    remaining_domain_group_indices
+                        .end());
+
+                progress_note(
+                    "prove:opening:"
+                    "shared_stream_pair:"
+                    "owner=" +
+                    point_groups[pair[0]]
+                        .owner_block +
+                    ":shared_sources=" +
+                    std::to_string(
+                        shared_stream_source_count) +
+                    ":ms=" +
+                    std::to_string(
+                        pair_wall_ms));
+            }
+
+            (void)open_group_indices(
+                remaining_domain_group_indices);
+
+            const auto domain_witness_wall_ms =
+                elapsed_ms(
+                    domain_witness_start,
+                    Clock::now());
             for (const auto group_index : domain_group_indices)
             {
                 const auto &group = point_groups[group_index];

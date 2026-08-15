@@ -29,14 +29,13 @@ namespace gatzk::algebra
     namespace
     {
         __global__ void scaled_accumulate_kernel(
-            gpu::GpuFr* target,
-            const gpu::GpuFr* source,
+            gpu::GpuFr *target,
+            const gpu::GpuFr *source,
             gpu::GpuFr scale,
             std::size_t element_count)
         {
             const auto index =
-                static_cast<std::size_t>(blockIdx.x) * blockDim.x
-                + threadIdx.x;
+                static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
             if (index >= element_count)
             {
                 return;
@@ -45,19 +44,53 @@ namespace gatzk::algebra
                 target[index], gpu::fr_mul(source[index], scale));
         }
 
+        __global__ void scaled_accumulate_pair_kernel(
+            gpu::GpuFr *first_target,
+            gpu::GpuFr *second_target,
+            const gpu::GpuFr *source,
+            gpu::GpuFr first_scale,
+            gpu::GpuFr second_scale,
+            std::size_t element_count)
+        {
+            const auto index =
+                static_cast<std::size_t>(blockIdx.x) * blockDim.x +
+                threadIdx.x;
+
+            if (index >= element_count)
+            {
+                return;
+            }
+
+            const auto source_value =
+                source[index];
+
+            first_target[index] =
+                gpu::fr_add(
+                    first_target[index],
+                    gpu::fr_mul(
+                        source_value,
+                        first_scale));
+
+            second_target[index] =
+                gpu::fr_add(
+                    second_target[index],
+                    gpu::fr_mul(
+                        source_value,
+                        second_scale));
+        }
+
         [[noreturn]] void throw_scaled_accumulate_cuda_error(
-            const char* operation,
+            const char *operation,
             cudaError_t status)
         {
             throw std::runtime_error(
-                std::string("CUDA scaled accumulate ") + operation
-                + " failed: " + cudaGetErrorString(status));
+                std::string("CUDA scaled accumulate ") + operation + " failed: " + cudaGetErrorString(status));
         }
     }
 
     void scaled_accumulate_cuda(
-        uint64_t* target_limbs,
-        const uint64_t* source_limbs,
+        uint64_t *target_limbs,
+        const uint64_t *source_limbs,
         const uint64_t scale_limbs[4],
         std::size_t element_count)
     {
@@ -65,8 +98,7 @@ namespace gatzk::algebra
         {
             return;
         }
-        if (target_limbs == nullptr || source_limbs == nullptr
-            || scale_limbs == nullptr)
+        if (target_limbs == nullptr || source_limbs == nullptr || scale_limbs == nullptr)
         {
             throw std::runtime_error(
                 "CUDA scaled accumulate received a null limb buffer");
@@ -101,10 +133,10 @@ namespace gatzk::algebra
         const auto block_count = static_cast<unsigned>(block_count_size);
         scaled_accumulate_kernel<<<
             block_count, kBlockSize, 0, stream>>>(
-                reinterpret_cast<gpu::GpuFr*>(target_limbs),
-                reinterpret_cast<const gpu::GpuFr*>(source_limbs),
-                scale,
-                element_count);
+            reinterpret_cast<gpu::GpuFr *>(target_limbs),
+            reinterpret_cast<const gpu::GpuFr *>(source_limbs),
+            scale,
+            element_count);
         status = cudaGetLastError();
         if (status != cudaSuccess)
         {
@@ -123,6 +155,138 @@ namespace gatzk::algebra
         {
             throw_scaled_accumulate_cuda_error("stream destruction", status);
         }
+        record_cuda_kernel_invocations(1);
+    }
+
+    void scaled_accumulate_pair_cuda(
+        uint64_t *first_target_limbs,
+        uint64_t *second_target_limbs,
+        const uint64_t *source_limbs,
+        const uint64_t first_scale_limbs[4],
+        const uint64_t second_scale_limbs[4],
+        std::size_t element_count)
+    {
+        if (element_count == 0)
+        {
+            return;
+        }
+
+        if (first_target_limbs == nullptr ||
+            second_target_limbs == nullptr ||
+            source_limbs == nullptr ||
+            first_scale_limbs == nullptr ||
+            second_scale_limbs == nullptr)
+        {
+            throw std::runtime_error(
+                "CUDA paired scaled accumulate received a null limb buffer");
+        }
+
+        if (first_target_limbs == second_target_limbs ||
+            first_target_limbs == source_limbs ||
+            second_target_limbs == source_limbs)
+        {
+            throw std::runtime_error(
+                "CUDA paired scaled accumulate requires distinct source and targets");
+        }
+
+        static_assert(
+            sizeof(gpu::GpuFr) == 4 * sizeof(uint64_t),
+            "CUDA paired scaled accumulate requires four-limb GpuFr storage");
+
+        gpu::GpuFr first_scale{};
+        gpu::GpuFr second_scale{};
+
+        std::memcpy(
+            first_scale.d,
+            first_scale_limbs,
+            sizeof(first_scale.d));
+
+        std::memcpy(
+            second_scale.d,
+            second_scale_limbs,
+            sizeof(second_scale.d));
+
+        cudaStream_t stream = nullptr;
+
+        auto status =
+            cudaStreamCreateWithFlags(
+                &stream,
+                cudaStreamNonBlocking);
+
+        if (status != cudaSuccess)
+        {
+            throw_scaled_accumulate_cuda_error(
+                "paired stream creation",
+                status);
+        }
+
+        constexpr unsigned kBlockSize = 256;
+
+        const auto block_count_size =
+            (element_count + kBlockSize - 1) /
+            kBlockSize;
+
+        if (block_count_size >
+            std::numeric_limits<unsigned>::max())
+        {
+            (void)cudaStreamDestroy(stream);
+
+            throw std::runtime_error(
+                "CUDA paired scaled accumulate grid exceeds CUDA launch limits");
+        }
+
+        const auto block_count =
+            static_cast<unsigned>(
+                block_count_size);
+
+        scaled_accumulate_pair_kernel<<<
+            block_count,
+            kBlockSize,
+            0,
+            stream>>>(
+            reinterpret_cast<gpu::GpuFr *>(
+                first_target_limbs),
+            reinterpret_cast<gpu::GpuFr *>(
+                second_target_limbs),
+            reinterpret_cast<const gpu::GpuFr *>(
+                source_limbs),
+            first_scale,
+            second_scale,
+            element_count);
+
+        status = cudaGetLastError();
+
+        if (status != cudaSuccess)
+        {
+            (void)cudaStreamDestroy(stream);
+
+            throw_scaled_accumulate_cuda_error(
+                "paired kernel launch",
+                status);
+        }
+
+        status =
+            cudaStreamSynchronize(stream);
+
+        if (status != cudaSuccess)
+        {
+            (void)cudaStreamDestroy(stream);
+
+            throw_scaled_accumulate_cuda_error(
+                "paired kernel synchronization",
+                status);
+        }
+
+        status =
+            cudaStreamDestroy(stream);
+
+        if (status != cudaSuccess)
+        {
+            throw_scaled_accumulate_cuda_error(
+                "paired stream destruction",
+                status);
+        }
+
         record_cuda_kernel_invocations(1);
     }
 
@@ -372,10 +536,10 @@ namespace gatzk::algebra
         // 每个线程处理一个域元素，对每个多项式累加 `w[col] * values[row][col]`，
         // 再在 block 内用共享内存做归约。
         __global__ void weighted_eval_columnar_kernel(
-            const gpu::GpuFr *__restrict__ weights,        // 主机/统一地址空间中的 `[domain_size]`
-            const gpu::GpuFr *const *__restrict__ columns, // 每列一个指针，均指向 `[domain_size]`
-            const std::size_t *__restrict__ column_lengths,// 可选的每列真实长度，尾部按零处理
-            gpu::GpuFr *__restrict__ partial_results,      // `[num_blocks * row_count]`
+            const gpu::GpuFr *__restrict__ weights,         // 主机/统一地址空间中的 `[domain_size]`
+            const gpu::GpuFr *const *__restrict__ columns,  // 每列一个指针，均指向 `[domain_size]`
+            const std::size_t *__restrict__ column_lengths, // 可选的每列真实长度，尾部按零处理
+            gpu::GpuFr *__restrict__ partial_results,       // `[num_blocks * row_count]`
             std::size_t domain_size,
             std::size_t row_count,
             std::size_t weight_rotation)
@@ -389,13 +553,12 @@ namespace gatzk::algebra
                 return;
 
             gpu::GpuFr acc = gpu::fr_zero();
-            if (col < domain_size
-                && (column_lengths == nullptr || col < column_lengths[row]))
+            if (col < domain_size && (column_lengths == nullptr || col < column_lengths[row]))
             {
                 const auto weight_index =
                     col >= weight_rotation
-                    ? col - weight_rotation
-                    : domain_size - (weight_rotation - col);
+                        ? col - weight_rotation
+                        : domain_size - (weight_rotation - col);
                 acc = gpu::fr_mul(
                     weights[weight_index], columns[row][col]);
             }
@@ -438,14 +601,13 @@ namespace gatzk::algebra
                 return;
 
             gpu::GpuFr acc = gpu::fr_zero();
-            if (col < domain_size
-                && (column_lengths == nullptr || col < column_lengths[row]))
+            if (col < domain_size && (column_lengths == nullptr || col < column_lengths[row]))
             {
                 const auto rotation = rotations[point];
                 const auto weight_index =
                     col >= rotation
-                    ? col - rotation
-                    : domain_size - (rotation - col);
+                        ? col - rotation
+                        : domain_size - (rotation - col);
                 acc = gpu::fr_mul(
                     weights[weight_index], columns[row][col]);
             }
@@ -466,11 +628,7 @@ namespace gatzk::algebra
             }
             if (tid == 0)
             {
-                partial_results[
-                    (point * num_blocks
-                     + static_cast<std::size_t>(blockIdx.x))
-                        * row_count
-                    + row] = smem[0];
+                partial_results[(point * num_blocks + static_cast<std::size_t>(blockIdx.x)) * row_count + row] = smem[0];
             }
         }
 
@@ -482,8 +640,7 @@ namespace gatzk::algebra
             std::size_t rotation_count)
         {
             const auto output_index =
-                static_cast<std::size_t>(blockIdx.x) * blockDim.x
-                + threadIdx.x;
+                static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
             const auto output_count = row_count * rotation_count;
             if (output_index >= output_count)
                 return;
@@ -494,8 +651,7 @@ namespace gatzk::algebra
             {
                 sum = gpu::fr_add(
                     sum,
-                    partial_results[
-                        (point * num_blocks + block) * row_count + row]);
+                    partial_results[(point * num_blocks + block) * row_count + row]);
             }
             final_results[output_index] = sum;
         }
@@ -904,8 +1060,8 @@ namespace gatzk::algebra
         for (std::size_t p = 0; p < poly_count; ++p)
         {
             const auto column_size = column_lengths == nullptr
-                ? domain_size
-                : std::min(domain_size, column_lengths[p]);
+                                         ? domain_size
+                                         : std::min(domain_size, column_lengths[p]);
             if (column_size < domain_size)
             {
                 cudaMemset(d_values, 0, single_val_bytes);
@@ -958,9 +1114,7 @@ namespace gatzk::algebra
     {
         if (domain_size == 0 || poly_count == 0 || rotation_count == 0)
             return true;
-        if (!cuda_backend_unified_addressing_available()
-            || poly_count > 65535
-            || rotation_count > 65535)
+        if (!cuda_backend_unified_addressing_available() || poly_count > 65535 || rotation_count > 65535)
             return false;
 
         constexpr unsigned kBlockDim = 256;
@@ -973,7 +1127,8 @@ namespace gatzk::algebra
         const auto ptr_bytes = poly_count * sizeof(const gpu::GpuFr *);
         if (cudaMalloc(&d_columns, ptr_bytes) != cudaSuccess)
             return false;
-        auto cleanup_columns = [&]() {
+        auto cleanup_columns = [&]()
+        {
             cudaFree(d_columns);
         };
         std::vector<const gpu::GpuFr *> h_columns(poly_count);
@@ -996,12 +1151,11 @@ namespace gatzk::algebra
         if (column_lengths != nullptr)
         {
             const auto length_bytes = poly_count * sizeof(std::size_t);
-            if (cudaMalloc(&d_column_lengths, length_bytes) != cudaSuccess
-                || cudaMemcpy(
-                       d_column_lengths,
-                       column_lengths,
-                       length_bytes,
-                       cudaMemcpyHostToDevice) != cudaSuccess)
+            if (cudaMalloc(&d_column_lengths, length_bytes) != cudaSuccess || cudaMemcpy(
+                                                                                  d_column_lengths,
+                                                                                  column_lengths,
+                                                                                  length_bytes,
+                                                                                  cudaMemcpyHostToDevice) != cudaSuccess)
             {
                 cudaFree(d_column_lengths);
                 cleanup_columns();
@@ -1016,12 +1170,11 @@ namespace gatzk::algebra
         }
         std::size_t *d_rotations = nullptr;
         const auto rotation_bytes = rotation_count * sizeof(std::size_t);
-        if (cudaMalloc(&d_rotations, rotation_bytes) != cudaSuccess
-            || cudaMemcpy(
-                   d_rotations,
-                   normalized_rotations.data(),
-                   rotation_bytes,
-                   cudaMemcpyHostToDevice) != cudaSuccess)
+        if (cudaMalloc(&d_rotations, rotation_bytes) != cudaSuccess || cudaMemcpy(
+                                                                           d_rotations,
+                                                                           normalized_rotations.data(),
+                                                                           rotation_bytes,
+                                                                           cudaMemcpyHostToDevice) != cudaSuccess)
         {
             cudaFree(d_rotations);
             cudaFree(d_column_lengths);
@@ -1030,9 +1183,7 @@ namespace gatzk::algebra
         }
 
         const auto partial_count =
-            static_cast<std::size_t>(num_blocks)
-            * poly_count
-            * rotation_count;
+            static_cast<std::size_t>(num_blocks) * poly_count * rotation_count;
         gpu::GpuFr *d_partials = nullptr;
         if (cudaMalloc(
                 &d_partials,
@@ -1080,12 +1231,11 @@ namespace gatzk::algebra
             rotation_count);
 
         const bool ok =
-            cudaDeviceSynchronize() == cudaSuccess
-            && cudaMemcpy(
-                   output_limbs,
-                   d_final,
-                   output_count * sizeof(gpu::GpuFr),
-                   cudaMemcpyDeviceToHost) == cudaSuccess;
+            cudaDeviceSynchronize() == cudaSuccess && cudaMemcpy(
+                                                          output_limbs,
+                                                          d_final,
+                                                          output_count * sizeof(gpu::GpuFr),
+                                                          cudaMemcpyDeviceToHost) == cudaSuccess;
         cudaFree(d_final);
         cudaFree(d_partials);
         cudaFree(d_rotations);

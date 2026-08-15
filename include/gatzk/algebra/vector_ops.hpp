@@ -65,6 +65,17 @@ namespace gatzk::algebra
         const mcl::Fr &scale,
         std::size_t element_count);
 
+    // One-pass two-target variant used when two independent opening point
+    // groups fold the same immutable semantic source.  The two scales and
+    // targets remain independent; only the source traversal is shared.
+    bool try_cuda_scaled_accumulate_pair_native(
+        mcl::Fr *first_target,
+        mcl::Fr *second_target,
+        const mcl::Fr *source,
+        const mcl::Fr &first_scale,
+        const mcl::Fr &second_scale,
+        std::size_t element_count);
+
     // 在 GPU 上构造重心权重，供 domain opening 与大列求值热点复用。
     bool barycentric_weights_gpu(
         const uint64_t omega_limbs[4],

@@ -32,6 +32,14 @@ namespace gatzk::algebra
         const uint64_t scale_limbs[4],
         std::size_t element_count);
 
+    void scaled_accumulate_pair_cuda(
+        uint64_t *first_target_limbs,
+        uint64_t *second_target_limbs,
+        const uint64_t *source_limbs,
+        const uint64_t first_scale_limbs[4],
+        const uint64_t second_scale_limbs[4],
+        std::size_t element_count);
+
     bool cuda_intt_in_place_exact(
         mcl::Fr *values,
         std::size_t size);
@@ -1089,6 +1097,61 @@ namespace gatzk::algebra
 #else
         // cuda_field_route_enabled() is false in non-CUDA builds.
         (void)scale;
+        return false;
+#endif
+    }
+
+    bool try_cuda_scaled_accumulate_pair_native(
+        mcl::Fr *first_target,
+        mcl::Fr *second_target,
+        const mcl::Fr *source,
+        const mcl::Fr &first_scale,
+        const mcl::Fr &second_scale,
+        std::size_t element_count)
+    {
+        constexpr std::size_t kMinCudaElements =
+            1ULL << 20;
+
+        if (element_count < kMinCudaElements ||
+            !cuda_field_route_enabled() ||
+            !cuda_backend_unified_addressing_available())
+        {
+            return false;
+        }
+
+        if (first_target == nullptr ||
+            second_target == nullptr ||
+            source == nullptr)
+        {
+            throw std::runtime_error(
+                "CUDA paired scaled accumulate received a null native buffer");
+        }
+
+        if (first_target == second_target ||
+            first_target == source ||
+            second_target == source)
+        {
+            throw std::runtime_error(
+                "CUDA paired scaled accumulate requires distinct source and targets");
+        }
+
+#if GATZK_ENABLE_CUDA_BACKEND
+        static_assert(
+            sizeof(mcl::Fr) == 4 * sizeof(uint64_t),
+            "CUDA paired scaled accumulate requires four-limb mcl::Fr storage");
+
+        scaled_accumulate_pair_cuda(
+            reinterpret_cast<uint64_t *>(first_target),
+            reinterpret_cast<uint64_t *>(second_target),
+            reinterpret_cast<const uint64_t *>(source),
+            reinterpret_cast<const uint64_t *>(&first_scale),
+            reinterpret_cast<const uint64_t *>(&second_scale),
+            element_count);
+
+        return true;
+#else
+        (void)first_scale;
+        (void)second_scale;
         return false;
 #endif
     }
