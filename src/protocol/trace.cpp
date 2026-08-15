@@ -1377,6 +1377,74 @@ namespace gatzk::protocol
             return budget;
         }
 
+        std::size_t dynamic_commitment_prepared_budget_bytes(
+            const std::vector<DynamicCommitmentSpec> &specs)
+        {
+            // A full 2^23 edge-domain FieldElement column is approximately
+            // 256 MiB. For this workload class, retaining three or four such
+            // objects in one prepared family creates an unnecessarily large
+            // host/UMA working set before KZG execution.
+            //
+            // Keep at most roughly two full large-edge columns prepared
+            // together. Smaller edge workloads and FH workloads retain the
+            // broader host-adaptive window from the no-argument helper.
+            constexpr std::size_t kLargeEdgeDomainSize =
+                1ULL << 23;
+
+            constexpr std::size_t kLargeEdgeFamilyBudgetBytes =
+                512ULL * 1024ULL * 1024ULL;
+
+            const auto host_budget =
+                dynamic_commitment_prepared_budget_bytes();
+
+            if (specs.size() <= 1)
+            {
+                return host_budget;
+            }
+
+            bool large_edge_family = false;
+            std::size_t total_payload_bytes = 0;
+
+            for (const auto &spec : specs)
+            {
+                if (spec.domain != nullptr &&
+                    spec.domain->name == "edge" &&
+                    spec.domain->size >= kLargeEdgeDomainSize)
+                {
+                    large_edge_family = true;
+                }
+
+                const auto spec_bytes =
+                    estimated_dynamic_commitment_payload_bytes(
+                        spec);
+
+                if (spec_bytes >
+                    std::numeric_limits<
+                        std::size_t>::max() -
+                        total_payload_bytes)
+                {
+                    total_payload_bytes =
+                        std::numeric_limits<
+                            std::size_t>::max();
+                }
+                else
+                {
+                    total_payload_bytes +=
+                        spec_bytes;
+                }
+            }
+
+            if (!large_edge_family ||
+                total_payload_bytes <=
+                    kLargeEdgeFamilyBudgetBytes)
+            {
+                return host_budget;
+            }
+
+            return std::min(
+                host_budget,
+                kLargeEdgeFamilyBudgetBytes);
+        }
         std::size_t
         dynamic_commitment_materialization_worker_count(
             const std::vector<DynamicCommitmentSpec> &specs,
@@ -2293,7 +2361,8 @@ namespace gatzk::protocol
             progress_note(batch_progress_label + ":start");
 
             const auto prepared_payload_budget =
-                dynamic_commitment_prepared_budget_bytes();
+                dynamic_commitment_prepared_budget_bytes(
+                    specs);
 
             if (specs.size() > 1)
             {

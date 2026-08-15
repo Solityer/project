@@ -1249,6 +1249,21 @@ namespace gatzk::crypto
             *output = total;
         }
     }
+    void release_cuda_g1_msm_resident_cache()
+    {
+        if (!util::route2_options().cuda_field_hotspots)
+        {
+            return;
+        }
+
+        std::lock_guard<std::mutex> execution_lock(
+            cuda_msm_execution_mutex());
+
+        DeviceBaseCache::instance().clear();
+
+        util::info(
+            "cuda_msm resident base cache released before large quotient");
+    }
 
     bool try_cuda_g1_msm(
         G1Point *output,

@@ -39,4 +39,13 @@ namespace gatzk::crypto
         std::size_t count,
         std::size_t batch_size,
         std::size_t stable_srs_capacity);
+
+    // Execution-only phase boundary hook.
+    //
+    // Large quotient construction needs the unified host-memory working set
+    // that may otherwise remain occupied by immutable SRS bases cached by
+    // earlier CUDA MSMs. Releasing this cache changes only CUDA resource
+    // residency; all SRS material remains available in the canonical host key
+    // and can be uploaded again by a later CUDA MSM.
+    void release_cuda_g1_msm_resident_cache();
 }

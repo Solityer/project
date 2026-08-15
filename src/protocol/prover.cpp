@@ -42,6 +42,7 @@
 #include "gatzk/algebra/field_io.hpp"
 #include "gatzk/algebra/polynomial.hpp"
 #include "gatzk/algebra/vector_ops.hpp"
+#include "gatzk/crypto/cuda_msm.hpp"
 #include "gatzk/data/loader.hpp"
 #include "gatzk/model/gat.hpp"
 #include "gatzk/protocol/challenges.hpp"
@@ -10517,6 +10518,31 @@ namespace gatzk::protocol
             auto proof_domain_weight_cache = shared_proof_domain_weight_cache();
             const std::vector<std::string> quotient_labels = {"t_FH", "t_edge", "t_in", "t_d_h", "t_cat", "t_C", "t_N"};
             append_note(metrics, "quotient_cache=miss");
+
+            // On integrated-memory CUDA systems a large resident SRS cache
+            // competes directly with the file-backed quotient working set.
+            //
+            // Keep the cache across phases for ordinary workloads, where its
+            // reuse is beneficial. Release it only for quotient shapes that
+            // already enter the large edge/FH working-set class.
+            const bool large_quotient_working_set =
+                (context.domains.edge != nullptr &&
+                 context.domains.edge->size >= (1ULL << 23)) ||
+                (context.domains.fh != nullptr &&
+                 context.domains.fh->size >= (1ULL << 25));
+
+            if (route2.cuda_field_hotspots &&
+                large_quotient_working_set)
+            {
+                progress_note(
+                    "prove:quotient:release_cuda_msm_cache:start");
+
+                crypto::release_cuda_g1_msm_resident_cache();
+
+                progress_note(
+                    "prove:quotient:release_cuda_msm_cache:done");
+            }
+
             auto named_quotient_polynomials = materialize_quotient_polynomials(
                 context,
                 trace,

@@ -23,4 +23,8 @@ namespace gatzk::crypto
     {
         return false;
     }
+
+    void release_cuda_g1_msm_resident_cache()
+    {
+    }
 }
