@@ -616,6 +616,9 @@ int main(int argc, char **argv)
         cuda_route.cuda_trace_hotspots = true;
         cuda_route.cuda_field_hotspots = true;
         gatzk::util::set_route2_options(cuda_route);
+        bench_scaled_accumulate_pair(
+            1ULL << 22,
+            3);
         if (gatzk::algebra::should_use_cuda_lookup_histogram(
                 1ULL << 16, 1ULL << 12) ||
             !gatzk::algebra::should_use_cuda_lookup_histogram(
