@@ -8,47 +8,48 @@
 
 #include "gatzk/algebra/field.hpp"
 #include "gatzk/algebra/vector_ops.hpp"
+#include "gatzk/util/route2.hpp"
 
 namespace
 {
-using Clock = std::chrono::steady_clock;
+    using Clock = std::chrono::steady_clock;
 
-double elapsed_ms(
-    Clock::time_point begin)
-{
-    return std::chrono::duration<double, std::milli>(
-        Clock::now() - begin)
-        .count();
-}
-
-std::vector<mcl::Fr> make_input(
-    std::size_t size,
-    std::uint64_t seed)
-{
-    std::vector<mcl::Fr> values(size);
-
-    mcl::Fr current;
-    current = seed;
-
-    mcl::Fr step;
-    step = 17;
-
-    for (std::size_t i = 0; i < size; ++i)
+    double elapsed_ms(
+        Clock::time_point begin)
     {
-        values[i] = current;
-        mcl::Fr::add(
-            current,
-            current,
-            step);
+        return std::chrono::duration<double, std::milli>(
+                   Clock::now() - begin)
+            .count();
     }
 
-    return values;
-}
+    std::vector<mcl::Fr> make_input(
+        std::size_t size,
+        std::uint64_t seed)
+    {
+        std::vector<mcl::Fr> values(size);
+
+        mcl::Fr current;
+        current = seed;
+
+        mcl::Fr step;
+        step = 17;
+
+        for (std::size_t i = 0; i < size; ++i)
+        {
+            values[i] = current;
+            mcl::Fr::add(
+                current,
+                current,
+                step);
+        }
+
+        return values;
+    }
 }
 
 int main(
     int argc,
-    char** argv)
+    char **argv)
 {
     try
     {
@@ -139,6 +140,11 @@ int main(
             << " warmup_exact=true\n";
 
         std::cout
+            << "cuda_device_summary="
+            << gatzk::algebra::cuda_device_summary()
+            << '\n';
+
+        std::cout
             << "intt_size,pair_size,repeat,"
             << "cpu_pair_ms,gpu_pair_ms,pair_speedup,"
             << "cpu_intt_ms,gpu_intt_ms,intt_speedup,"
@@ -185,8 +191,7 @@ int main(
                     elapsed_ms(start);
 
                 pair_exact =
-                    cpu_first == gpu_first
-                    && cpu_second == gpu_second;
+                    cpu_first == gpu_first && cpu_second == gpu_second;
             }
 
             double cpu_intt_ms = 0.0;
@@ -251,8 +256,71 @@ int main(
                     "from exact MCL output");
             }
         }
+        // Build the exact CPU reference before enabling the production CUDA
+        // route.  This keeps the direct CPU/GPU measurements above unchanged.
+        auto reference_first =
+            first_input;
+
+        auto reference_second =
+            second_input;
+
+        gatzk::algebra::ntt_pair_in_place(
+            reference_first.data(),
+            reference_second.data(),
+            pair_size);
+
+        auto production_options =
+            gatzk::util::route2_options();
+
+        production_options.cuda_field_hotspots =
+            true;
+
+        gatzk::util::set_route2_options(
+            production_options);
+
+        const bool production_uses_cuda =
+            gatzk::algebra::should_use_cuda_ntt_pair(
+                pair_size);
+
+        auto production_first =
+            first_input;
+
+        auto production_second =
+            second_input;
+
+        start = Clock::now();
+
+        gatzk::algebra::ntt_pair_in_place(
+            production_first.data(),
+            production_second.data(),
+            pair_size);
+
+        const auto production_pair_ms =
+            elapsed_ms(start);
+
+        const bool production_exact =
+            production_first == reference_first &&
+            production_second == reference_second;
+
+        std::cout
+            << "production_pair_size="
+            << pair_size
+            << " production_pair_route="
+            << (production_uses_cuda ? "cuda" : "cpu")
+            << " production_pair_ms="
+            << production_pair_ms
+            << " production_pair_exact="
+            << (production_exact ? "true" : "false")
+            << '\n';
+
+        if (!production_exact)
+        {
+            throw std::runtime_error(
+                "production paired NTT route differs "
+                "from the exact CPU result");
+        }
     }
-    catch (const std::exception& error)
+    catch (const std::exception &error)
     {
         std::cerr
             << "fatal: "

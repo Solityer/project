@@ -694,13 +694,7 @@ namespace gatzk::algebra
                 "paired NTT requires two distinct non-null power-of-two vectors");
         }
 
-        constexpr std::size_t kCudaPairMinimumSize =
-            std::size_t{1} << 23;
-
-        constexpr std::size_t kCudaPairMaximumSize =
-            std::size_t{1} << 24;
-
-        if (util::route2_options().cuda_field_hotspots && size >= kCudaPairMinimumSize && size <= kCudaPairMaximumSize)
+        if (should_use_cuda_ntt_pair(size))
         {
             if (!try_cuda_ntt_pair_in_place(
                     first,
@@ -941,7 +935,18 @@ namespace gatzk::algebra
             &host_page_tables,
             cudaDevAttrPageableMemoryAccessUsesHostPageTables,
             device);
-        return "cuda_build=true; cuda_runtime=true; cuda_device=" + std::string(props.name) + "; cuda_device_count=" + std::to_string(device_count) + "; cuda_unified_addressing=" + std::string(props.unifiedAddressing ? "true" : "false") + "; cuda_pageable_memory_access=" + std::string(pageable_access != 0 ? "true" : "false") + "; cuda_pageable_host_page_tables=" + std::string(host_page_tables != 0 ? "true" : "false");
+        return "cuda_build=true; cuda_runtime=true; cuda_device=" +
+               std::string(props.name) +
+               "; cuda_device_count=" +
+               std::to_string(device_count) +
+               "; cuda_integrated=" +
+               std::string(props.integrated ? "true" : "false") +
+               "; cuda_unified_addressing=" +
+               std::string(props.unifiedAddressing ? "true" : "false") +
+               "; cuda_pageable_memory_access=" +
+               std::string(pageable_access != 0 ? "true" : "false") +
+               "; cuda_pageable_host_page_tables=" +
+               std::string(host_page_tables != 0 ? "true" : "false");
 #else
         return "cuda_build=false; cuda_runtime=false; cuda_device=unavailable";
 #endif
@@ -1017,6 +1022,81 @@ namespace gatzk::algebra
         const auto min_index_count = unified ? (1ULL << 20) : (1ULL << 22);
         const auto min_bucket_count = unified ? 1024ULL : 4096ULL;
         return index_count >= min_index_count && bucket_count >= min_bucket_count;
+    }
+
+    bool should_use_cuda_ntt_pair(
+        std::size_t size)
+    {
+        constexpr std::size_t kCudaPairMinimumSize =
+            std::size_t{1} << 23;
+
+        constexpr std::size_t kCudaPairMaximumSize =
+            std::size_t{1} << 24;
+
+        if (!util::route2_options().cuda_field_hotspots ||
+            size < kCudaPairMinimumSize ||
+            size > kCudaPairMaximumSize)
+        {
+            return false;
+        }
+
+#if GATZK_ENABLE_CUDA_BACKEND
+        if (!cuda_field_hotspots_available())
+        {
+            throw std::runtime_error(
+                "CUDA production paired NTT route was requested "
+                "but CUDA field hotspots are unavailable");
+        }
+
+        static const bool integrated_device = []()
+        {
+            int device = 0;
+
+            auto status =
+                cudaGetDevice(&device);
+
+            if (status != cudaSuccess)
+            {
+                throw std::runtime_error(
+                    "CUDA production paired NTT device lookup failed: " +
+                    std::string(cudaGetErrorString(status)));
+            }
+
+            cudaDeviceProp properties{};
+
+            status =
+                cudaGetDeviceProperties(
+                    &properties,
+                    device);
+
+            if (status != cudaSuccess)
+            {
+                throw std::runtime_error(
+                    "CUDA production paired NTT topology query failed: " +
+                    std::string(cudaGetErrorString(status)));
+            }
+
+            return properties.integrated != 0;
+        }();
+
+        // The production t_edge coset of size 2^25 is evaluated as two
+        // independent 2^24 forward NTT lanes.  On integrated/UMA devices the
+        // current CUDA implementation allocates separate device input/output
+        // buffers and copies both complete lanes through the shared memory
+        // fabric while holding the global CUDA-NTT execution lock.  Keep this
+        // exact production shape on the existing parallel CPU implementation.
+        if (integrated_device &&
+            size == kCudaPairMaximumSize)
+        {
+            return false;
+        }
+
+        return true;
+#else
+        throw std::runtime_error(
+            "CUDA production paired NTT route was requested "
+            "in a non-CUDA build");
+#endif
     }
 
     bool try_cuda_scaled_accumulate_native(

@@ -47,14 +47,22 @@ namespace gatzk::algebra
         std::size_t index_count,
         std::size_t bucket_count);
 
+    // Production paired-NTT routing.  CUDA remains eligible for the existing
+    // large transform range, except that the 2^24 quotient-coset pair stays on
+    // the CPU implementation on integrated/UMA devices, where explicit
+    // host/device staging duplicates shared-memory traffic and serializes
+    // concurrent prewarm work.
+    bool should_use_cuda_ntt_pair(
+        std::size_t size);
+
     // Exact Montgomery-limb update `target[i] += source[i] * scale`.  Returns
     // true only when the active route executed the update on CUDA; false means
     // that the caller must retain its canonical CPU path.  Once CUDA is
     // selected, launch/synchronization errors are reported fail-closed.
     bool try_cuda_scaled_accumulate_native(
-        mcl::Fr* target,
-        const mcl::Fr* source,
-        const mcl::Fr& scale,
+        mcl::Fr *target,
+        const mcl::Fr *source,
+        const mcl::Fr &scale,
         std::size_t element_count);
 
     // 在 GPU 上构造重心权重，供 domain opening 与大列求值热点复用。
@@ -63,53 +71,53 @@ namespace gatzk::algebra
         const uint64_t x_limbs[4],
         const uint64_t zero_eval_limbs[4],
         const uint64_t inv_n_limbs[4],
-        uint64_t* output_weight_limbs,
+        uint64_t *output_weight_limbs,
         std::size_t domain_size);
 
     // 使用共享权重对打包列做 GPU 加权求值，是 partial CUDA PackedEvaluationBackend 的加速入口。
     bool weighted_poly_eval_gpu(
-        const uint64_t* weight_limbs,
-        const uint64_t* interleaved_value_limbs,
-        uint64_t* output_limbs,
+        const uint64_t *weight_limbs,
+        const uint64_t *interleaved_value_limbs,
+        uint64_t *output_limbs,
         std::size_t domain_size,
         std::size_t row_count);
 
     // 列式布局版本，适合统一内存或零拷贝场景下的大列评估。
     bool weighted_poly_eval_gpu_columnar(
-        const uint64_t* weight_limbs,
-        const uint64_t* const* column_ptrs,
-        uint64_t* output_limbs,
+        const uint64_t *weight_limbs,
+        const uint64_t *const *column_ptrs,
+        uint64_t *output_limbs,
         std::size_t domain_size,
         std::size_t row_count,
-        const std::size_t* column_lengths = nullptr,
+        const std::size_t *column_lengths = nullptr,
         std::size_t weight_rotation = 0);
 
     // 多列共享一次权重上传，减少 prove / verify 热路径中的重复设备传输。
     bool weighted_poly_eval_gpu_multi(
-        const uint64_t* weight_limbs,
-        const uint64_t* const* column_value_ptrs,
-        uint64_t* output_limbs,
+        const uint64_t *weight_limbs,
+        const uint64_t *const *column_value_ptrs,
+        uint64_t *output_limbs,
         std::size_t domain_size,
         std::size_t poly_count,
-        const std::size_t* column_lengths = nullptr,
+        const std::size_t *column_lengths = nullptr,
         std::size_t weight_rotation = 0);
 
     // 在统一地址空间设备上批量执行多个旋转点的同列求值，输出按
     // `[rotation][polynomial]` 排列。
     bool weighted_poly_eval_gpu_multi_rotations(
-        const uint64_t* weight_limbs,
-        const uint64_t* const* column_value_ptrs,
-        uint64_t* output_limbs,
+        const uint64_t *weight_limbs,
+        const uint64_t *const *column_value_ptrs,
+        uint64_t *output_limbs,
         std::size_t domain_size,
         std::size_t poly_count,
-        const std::size_t* rotations,
+        const std::size_t *rotations,
         std::size_t rotation_count,
-        const std::size_t* column_lengths = nullptr);
+        const std::size_t *column_lengths = nullptr);
 
     // CPU 侧域元素点积，是小规模 fallback 和校验路径的通用原语。
     FieldElement dot_product(
-        const std::vector<FieldElement>& lhs,
-        const std::vector<FieldElement>& rhs);
+        const std::vector<FieldElement> &lhs,
+        const std::vector<FieldElement> &rhs);
 
     // 共享 NTT plan 缓存，供 quotient materialization 与可复用 prover-side material 转换使用。
     std::shared_ptr<const mcl::Ntt<mcl::Fr>> ntt_plan(std::size_t size);
@@ -118,66 +126,66 @@ namespace gatzk::algebra
     // Large quotient coset transforms reuse this execution helper for their
     // forward and inverse shift scalings.
     void geometric_powers_native(
-        mcl::Fr* output,
+        mcl::Fr *output,
         std::size_t size,
-        const FieldElement& base);
+        const FieldElement &base);
 
     // Prepare the two half-size NTT lanes used to evaluate a coefficient
-// polynomial on the even and odd points of a doubled quotient coset.
-void split_coset_coefficients_native(
-    const mcl::Fr* coefficients,
-    const mcl::Fr* shift_powers,
-    std::size_t coefficient_count,
-    const FieldElement& odd_root,
-    mcl::Fr* even_output,
-    mcl::Fr* odd_output,
-    std::size_t max_worker_count = 0);
+    // polynomial on the even and odd points of a doubled quotient coset.
+    void split_coset_coefficients_native(
+        const mcl::Fr *coefficients,
+        const mcl::Fr *shift_powers,
+        std::size_t coefficient_count,
+        const FieldElement &odd_root,
+        mcl::Fr *even_output,
+        mcl::Fr *odd_output,
+        std::size_t max_worker_count = 0);
 
-// Restore canonical [even_0, odd_0, ...] point order after the paired
-// quotient-coset transforms.
-void interleave_native_lanes(
-    const mcl::Fr* even_values,
-    const mcl::Fr* odd_values,
-    std::size_t lane_size,
-    mcl::Fr* output,
-    std::size_t max_worker_count = 0);
+    // Restore canonical [even_0, odd_0, ...] point order after the paired
+    // quotient-coset transforms.
+    void interleave_native_lanes(
+        const mcl::Fr *even_values,
+        const mcl::Fr *odd_values,
+        std::size_t lane_size,
+        mcl::Fr *output,
+        std::size_t max_worker_count = 0);
 
-// 大型逆变换按偶/奇频点拆成两个独立半长 INTT；结果与标准
-// `ntt_plan(size)->intt` 逐元素一致，小规模保持标准实现。
-void intt_in_place(
-    mcl::Fr* values,
-    std::size_t size,
-    std::size_t max_worker_count = 0);
+    // 大型逆变换按偶/奇频点拆成两个独立半长 INTT；结果与标准
+    // `ntt_plan(size)->intt` 逐元素一致，小规模保持标准实现。
+    void intt_in_place(
+        mcl::Fr *values,
+        std::size_t size,
+        std::size_t max_worker_count = 0);
 
-// Execute two independent same-size forward NTTs concurrently at formal
-// transform sizes.  Small inputs retain the canonical serial plan calls.
-void ntt_pair_in_place(
-    mcl::Fr* first,
-    mcl::Fr* second,
-    std::size_t size,
-    std::size_t max_worker_count = 0);
+    // Execute two independent same-size forward NTTs concurrently at formal
+    // transform sizes.  Small inputs retain the canonical serial plan calls.
+    void ntt_pair_in_place(
+        mcl::Fr *first,
+        mcl::Fr *second,
+        std::size_t size,
+        std::size_t max_worker_count = 0);
 
-// Explicit CUDA quotient-transform probes.
-//
-// These functions do not change production routing by themselves.  They are
-// used first by the exact NTT benchmark; production intt_in_place /
-// ntt_pair_in_place remain on their existing CPU implementation until the
-// CUDA backend has passed exact-equivalence and production-size benchmarks.
-//
-// false means that the CUDA route is unavailable or cannot be admitted under
-// the current resource envelope.  Once CUDA execution starts, CUDA/ICICLE
-// failures are reported fail-closed by exception.
-bool try_cuda_intt_in_place(
-    mcl::Fr *values,
-    std::size_t size);
+    // Explicit CUDA quotient-transform probes.
+    //
+    // These functions bypass the production size/topology policy and directly
+    // exercise the CUDA implementation for exact-equivalence and stage
+    // benchmarking.  Production intt_in_place / ntt_pair_in_place apply their own
+    // execution-routing policy before calling these probes.
+    //
+    // false means that the CUDA route is unavailable or cannot be admitted under
+    // the current resource envelope.  Once CUDA execution starts, CUDA/ICICLE
+    // failures are reported fail-closed by exception.
+    bool try_cuda_intt_in_place(
+        mcl::Fr *values,
+        std::size_t size);
 
-bool try_cuda_ntt_pair_in_place(
-    mcl::Fr *first,
-    mcl::Fr *second,
-    std::size_t size);
+    bool try_cuda_ntt_pair_in_place(
+        mcl::Fr *first,
+        mcl::Fr *second,
+        std::size_t size);
 
-// 直接消费原生权重，避免 barycentric 热路径中反复包装 `FieldElement`。
-FieldElement dot_product_native_weights(
-    const std::vector<FieldElement> &lhs,
-    const std::vector<mcl::Fr> &rhs);
+    // 直接消费原生权重，避免 barycentric 热路径中反复包装 `FieldElement`。
+    FieldElement dot_product_native_weights(
+        const std::vector<FieldElement> &lhs,
+        const std::vector<mcl::Fr> &rhs);
 }
