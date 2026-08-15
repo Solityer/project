@@ -1,4 +1,0 @@
-nodes,edges,hidden_heads,output_heads,repeat,reference_ms,optimized_ms,speedup,exact
-16384,131072,8,4,0,213.097,97.501,2.186,true
-16384,131072,8,4,1,230.577,90.755,2.541,true
-16384,131072,8,4,2,232.487,89.797,2.589,true

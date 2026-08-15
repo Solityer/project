@@ -1249,10 +1249,16 @@ namespace gatzk::protocol
             return std::filesystem::path(project_root) / path;
         }
 
-        std::shared_ptr<algebra::DomainEvaluationWeightCache> shared_proof_domain_weight_cache()
+        std::shared_ptr<algebra::DomainEvaluationWeightCache>
+        shared_proof_domain_weight_cache()
         {
-            static auto cache = std::make_shared<algebra::DomainEvaluationWeightCache>();
-            return cache;
+            // Share one cache across all EvaluationMemoization instances belonging
+            // to this prove() invocation, but never retain challenge-point weights
+            // across proofs. Large FH/edge weights are proof-specific and keeping
+            // them in a process-static cache unnecessarily extends their lifetime
+            // into later opening working sets.
+            return std::make_shared<
+                algebra::DomainEvaluationWeightCache>();
         }
 
         class SharedFeatureMatrixEvaluationCache
@@ -10839,6 +10845,18 @@ namespace gatzk::protocol
             progress_note(
                 "prove:domain_opening:done:ms=" + std::to_string(domain_bundle_wall_ms));
 
+            // Every domain-opening scalar value has now been gathered into
+            // proof.domain_openings. The barycentric weight vectors are not
+            // needed by point-group witness construction below.
+            //
+            // In particular, large FH/edge instances can retain multiple
+            // GiB of challenge-specific weight vectors. Release them before
+            // folded opening plans allocate their own full-domain buffers.
+            proof_domain_weight_cache.reset();
+
+            progress_note(
+                "prove:domain_opening:weight_cache:released");
+
             // Eval_bind owns every Pi_bind claim value.  The same claims remain
             // inside the in-memory domain bundle solely so Open_dom can fold one
             // global point group; the wire codec omits them from Eval_dom.
@@ -11508,10 +11526,15 @@ namespace gatzk::protocol
                     {
                         return estimated_work(lhs) > estimated_work(rhs);
                     });
-                const auto hardware_workers = std::max<unsigned>(
-                    1, std::thread::hardware_concurrency());
+                const auto hardware_workers =
+                    std::max<unsigned>(
+                        1,
+                        std::thread::hardware_concurrency());
+
                 const bool external_phase =
-                    point_groups[work_order.front()].owner_block == "W_ext";
+                    point_groups[work_order.front()]
+                        .owner_block == "W_ext";
+
                 const bool has_file_backed_openings =
                     std::any_of(
                         work_order.begin(),
@@ -11524,28 +11547,73 @@ namespace gatzk::protocol
                                 [&](const auto &claim)
                                 {
                                     return claim.commitment
-                                                   .opening_polynomial == nullptr &&
+                                                   .opening_polynomial ==
+                                               nullptr &&
                                            trace.spilled_polynomials
                                                .contains(
                                                    claim.commitment.name);
                                 });
                         });
-                const auto outer_worker_limit = external_phase
-                                                    ? std::min<std::size_t>(
-                                                          20, hardware_workers)
-                                                    : std::min<std::size_t>(
-                                                          8, std::max<unsigned>(
-                                                                 1, hardware_workers / 4));
-                const auto worker_count = std::min<std::size_t>(
-                    work_order.size(),
-                    has_file_backed_openings
+
+                // A 2^25-or-larger CPU file-backed group already needs
+                // several full-domain vectors while folding and constructing
+                // its witness. Do not overlap another point group with that
+                // working set. Smaller/PPI-sized file-backed phases retain
+                // the existing two-group pipeline.
+                const bool
+                    has_large_cpu_file_backed_opening =
+                        !util::route2_options()
+                             .cuda_field_hotspots &&
+                        std::any_of(
+                            work_order.begin(),
+                            work_order.end(),
+                            [&](std::size_t index)
+                            {
+                                return largest_file_backed_value_count(
+                                           index) >=
+                                       kLargeCpuFileBackedOpeningValueCount;
+                            });
+
+                const auto outer_worker_limit =
+                    external_phase
                         ? std::min<std::size_t>(
-                              2, outer_worker_limit)
-                        : outer_worker_limit);
-                const auto base_inner_worker_count = worker_count > 1
-                                                         ? std::max<std::size_t>(
-                                                               1, hardware_workers / worker_count)
-                                                         : 0;
+                              20,
+                              hardware_workers)
+                        : std::min<std::size_t>(
+                              8,
+                              std::max<unsigned>(
+                                  1,
+                                  hardware_workers / 4));
+
+                const auto worker_count =
+                    std::min<std::size_t>(
+                        work_order.size(),
+                        has_large_cpu_file_backed_opening
+                            ? std::size_t{1}
+                        : has_file_backed_openings
+                            ? std::min<std::size_t>(
+                                  2,
+                                  outer_worker_limit)
+                            : outer_worker_limit);
+
+                const auto base_inner_worker_count =
+                    worker_count > 1
+                        ? std::max<std::size_t>(
+                              1,
+                              hardware_workers /
+                                  worker_count)
+                        : std::size_t{0};
+
+                if (has_large_cpu_file_backed_opening)
+                {
+                    progress_note(
+                        "prove:opening:"
+                        "phase_policy="
+                        "large_cpu_file_backed_outer_serial:"
+                        "groups=" +
+                        std::to_string(
+                            work_order.size()));
+                }
                 std::atomic<std::size_t> next{0};
                 crypto::g1_parallel_msm_batch_workers(
                     worker_count,
@@ -11567,20 +11635,6 @@ namespace gatzk::protocol
                                 commitments.push_back(claim.commitment);
                                 values.push_back(claim.value);
                             }
-                            const auto inner_worker_count =
-                                worker_count > 1 && !external_phase && estimated_work(group_index) >= (1ULL << 18)
-                                    ? std::min<std::size_t>(
-                                          16, hardware_workers)
-                                    : base_inner_worker_count;
-                            const crypto::PointGroupOpeningExecutionOptions
-                                execution_options{
-                                    .max_field_worker_count =
-                                        inner_worker_count,
-                                    .msm = {
-                                        .max_worker_count =
-                                            inner_worker_count,
-                                    },
-                                };
                             const auto largest_file_backed_count =
                                 largest_file_backed_value_count(
                                     group_index);
@@ -11589,8 +11643,39 @@ namespace gatzk::protocol
                                 serialize_large_cpu_file_backed_opening =
                                     !util::route2_options()
                                          .cuda_field_hotspots &&
-                                    largest_file_backed_count >= kLargeCpuFileBackedOpeningValueCount;
+                                    largest_file_backed_count >=
+                                        kLargeCpuFileBackedOpeningValueCount;
 
+                            // Preserve bounded inner parallelism even when the
+                            // phase itself is outer-serial. Otherwise worker_count
+                            // == 1 would drop execution_options entirely and the
+                            // largest opening could fall back to an unconstrained
+                            // inner worker policy.
+                            const auto inner_worker_count =
+                                serialize_large_cpu_file_backed_opening
+                                    ? std::min<std::size_t>(
+                                          16,
+                                          hardware_workers)
+                                : worker_count > 1 &&
+                                        !external_phase &&
+                                        estimated_work(
+                                            group_index) >=
+                                            (1ULL << 18)
+                                    ? std::min<std::size_t>(
+                                          16,
+                                          hardware_workers)
+                                    : base_inner_worker_count;
+
+                            const crypto::
+                                PointGroupOpeningExecutionOptions
+                                    execution_options{
+                                        .max_field_worker_count =
+                                            inner_worker_count,
+                                        .msm = {
+                                            .max_worker_count =
+                                                inner_worker_count,
+                                        },
+                                    };
                             std::unique_lock<std::mutex>
                                 large_cpu_file_backed_opening_guard;
 
@@ -11618,7 +11703,7 @@ namespace gatzk::protocol
                                     &opening_results[group_index].profile,
                                     crypto::BatchOpeningClaimValidation::
                                         AlreadyComputedFromOpeningPolynomials,
-                                    worker_count > 1
+                                    inner_worker_count != 0
                                         ? &execution_options
                                         : nullptr,
                                     trace.spilled_polynomials.empty()
