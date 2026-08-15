@@ -1026,10 +1026,25 @@ namespace gatzk::algebra
             return false;
         }
 
-        const bool unified = cuda_backend_unified_addressing_available();
-        const auto min_index_count = unified ? (1ULL << 20) : (1ULL << 22);
-        const auto min_bucket_count = unified ? 1024ULL : 4096ULL;
-        return index_count >= min_index_count && bucket_count >= min_bucket_count;
+        const bool unified =
+            cuda_backend_unified_addressing_available();
+
+        const auto min_index_count =
+            unified ? (1ULL << 20) : (1ULL << 22);
+
+        const auto min_bucket_count =
+            unified ? 1024ULL : 4096ULL;
+
+        // Histogram CUDA work includes an O(bucket_count) counter
+        // buffer reset/download cost. Sparse bucket spaces do not
+        // amortize that cost even when index_count itself is large.
+        const auto min_indices_per_bucket =
+            unified ? 256ULL : 1024ULL;
+
+        return index_count >= min_index_count &&
+               bucket_count >= min_bucket_count &&
+               index_count / bucket_count >=
+                   min_indices_per_bucket;
     }
 
     bool should_use_cuda_ntt_pair(

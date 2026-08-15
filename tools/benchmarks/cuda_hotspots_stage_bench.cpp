@@ -659,15 +659,30 @@ int main(int argc, char **argv)
             !gatzk::algebra::should_use_cuda_lookup_histogram(
                 1ULL << 20, 1ULL << 12) ||
             !gatzk::algebra::should_use_cuda_lookup_histogram(
+                1ULL << 22, 1ULL << 14) ||
+            gatzk::algebra::should_use_cuda_lookup_histogram(
                 1ULL << 22, 1ULL << 16))
         {
-            throw std::runtime_error("CUDA histogram dispatch thresholds are inconsistent");
+            throw std::runtime_error(
+                "CUDA histogram dispatch thresholds are inconsistent");
         }
         bench_histogram(1ULL << 12, 1ULL << 10, kRepeats);
         bench_histogram(1ULL << 14, 1ULL << 10, kRepeats);
         bench_histogram(kDomainSize, 1ULL << 12, kRepeats);
-        bench_histogram(1ULL << 20, 1ULL << 12, kRepeats);
-        bench_histogram(1ULL << 22, 1ULL << 16, kRepeats);
+        bench_histogram(
+            1ULL << 20,
+            1ULL << 12,
+            kRepeats);
+
+        bench_histogram(
+            1ULL << 22,
+            1ULL << 14,
+            kRepeats);
+
+        bench_histogram(
+            1ULL << 22,
+            1ULL << 16,
+            kRepeats);
         std::cout << "kernel_invocations="
                   << (gatzk::algebra::cuda_kernel_invocation_count() - kernels_before)
                   << '\n';

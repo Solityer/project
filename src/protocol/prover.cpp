@@ -4461,63 +4461,6 @@ namespace gatzk::protocol
             }
 
             QuotientCosetValues(
-                std::size_t size,
-                std::shared_ptr<
-                    QuotientCosetSpillArena>
-                    spill_arena,
-                const std::string &label)
-                : spill_arena_(
-                      std::move(spill_arena)),
-                  size_(size)
-            {
-                static_assert(
-                    std::is_standard_layout_v<
-                        FieldElement>,
-                    "file-backed quotient cosets "
-                    "require standard-layout field elements");
-
-                static_assert(
-                    std::is_trivially_destructible_v<
-                        FieldElement>,
-                    "file-backed quotient cosets "
-                    "require trivially destructible "
-                    "field elements");
-
-                if (size_ == 0)
-                {
-                    return;
-                }
-
-                if (spill_arena_ == nullptr)
-                {
-                    memory_.resize(size_);
-                    return;
-                }
-
-                const auto byte_count =
-                    size_ * sizeof(FieldElement);
-
-                mapping_ =
-                    spill_arena_->allocate(
-                                    byte_count,
-                                    label)
-                        .data;
-
-                auto *elements =
-                    static_cast<FieldElement *>(
-                        mapping_);
-
-                std::uninitialized_default_construct_n(
-                    elements,
-                    size_);
-
-                (void)::madvise(
-                    mapping_,
-                    byte_count,
-                    MADV_SEQUENTIAL);
-            }
-
-            QuotientCosetValues(
                 std::shared_ptr<const QuotientCosetValues> semantic_values,
                 std::vector<FieldElement> zero_domain_blinder,
                 std::shared_ptr<const std::vector<FieldElement>> coset_points,
