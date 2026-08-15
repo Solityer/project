@@ -206,6 +206,12 @@ namespace gatzk::crypto
 
     // 序列化大小直接参与proof_size_bytes统计
     std::size_t serialized_size(const Commitment &commitment);
+    std::vector<algebra::FieldElement>
+    opening_inverse_denominators_for_stage_benchmark(
+        const std::shared_ptr<algebra::RootOfUnityDomain> &domain,
+        const algebra::FieldElement &point,
+        std::size_t worker_cap = 0);
+        
 
     class KZG
     {
