@@ -3875,11 +3875,6 @@ namespace gatzk::crypto
                     }
                 });
         }
-        void build_opening_inverse_denominators(
-            std::vector<FieldElement> *inverse_denominators,
-            const std::shared_ptr<algebra::RootOfUnityDomain> &domain,
-            const FieldElement &point,
-            std::size_t worker_cap)
         {
             if (inverse_denominators == nullptr ||
                 domain == nullptr ||
