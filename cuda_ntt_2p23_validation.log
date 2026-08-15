@@ -1,0 +1,30 @@
+cuda_domain_init_ms=421.164 warmup_exact=true
+cuda_device_summary=cuda_build=true; cuda_runtime=true; cuda_device=NVIDIA GB10; cuda_device_count=1; cuda_integrated=true; cuda_unified_addressing=true; cuda_pageable_memory_access=true; cuda_pageable_host_page_tables=true
+intt_size,pair_size,repeat,cpu_pair_ms,gpu_pair_ms,pair_speedup,cpu_intt_ms,gpu_intt_ms,intt_speedup,exact
+8388608,8388608,0,505.750,128.342,3.941,445.163,63.766,6.981,true
+8388608,8388608,1,449.410,128.409,3.500,423.863,62.619,6.769,true
+8388608,8388608,2,453.342,123.778,3.663,404.528,65.798,6.148,true
+production_pair_size=8388608 production_pair_route=cuda production_pair_ms=124.097 production_pair_exact=true
+	Command being timed: "build_cuda/gatzk_cuda_ntt_stage_bench 8388608 8388608 3"
+	User time (seconds): 32.06
+	System time (seconds): 7.41
+	Percent of CPU this job got: 490%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:08.04
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 2933768
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 3
+	Minor (reclaiming a frame) page faults: 3087603
+	Voluntary context switches: 994
+	Involuntary context switches: 2230
+	Swaps: 0
+	File system inputs: 440
+	File system outputs: 0
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0

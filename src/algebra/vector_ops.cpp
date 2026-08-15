@@ -1048,49 +1048,6 @@ namespace gatzk::algebra
                 "but CUDA field hotspots are unavailable");
         }
 
-        static const bool integrated_device = []()
-        {
-            int device = 0;
-
-            auto status =
-                cudaGetDevice(&device);
-
-            if (status != cudaSuccess)
-            {
-                throw std::runtime_error(
-                    "CUDA production paired NTT device lookup failed: " +
-                    std::string(cudaGetErrorString(status)));
-            }
-
-            cudaDeviceProp properties{};
-
-            status =
-                cudaGetDeviceProperties(
-                    &properties,
-                    device);
-
-            if (status != cudaSuccess)
-            {
-                throw std::runtime_error(
-                    "CUDA production paired NTT topology query failed: " +
-                    std::string(cudaGetErrorString(status)));
-            }
-
-            return properties.integrated != 0;
-        }();
-
-        // The production t_edge coset of size 2^25 is evaluated as two
-        // independent 2^24 forward NTT lanes.  On integrated/UMA devices the
-        // current CUDA implementation allocates separate device input/output
-        // buffers and copies both complete lanes through the shared memory
-        // fabric while holding the global CUDA-NTT execution lock.  Keep this
-        // exact production shape on the existing parallel CPU implementation.
-        if (integrated_device &&
-            size == kCudaPairMaximumSize)
-        {
-            return false;
-        }
-
         return true;
 #else
         throw std::runtime_error(
