@@ -7,7 +7,7 @@
 
 namespace gatzk::protocol
 {
-
+    struct CudaTEdgeExecutionProfile;
     // Execution-only diagnostics for file-backed evaluation-polynomial reads.
     // These counters are not serialized and do not affect proof construction.
     struct SpilledEvaluationProfile
@@ -69,7 +69,11 @@ namespace gatzk::protocol
         const TraceArtifacts &trace,
         const std::map<std::string, algebra::FieldElement> &challenges,
         std::size_t repeats);
-
+    bool benchmark_cuda_t_edge_materialization_stage(
+        const ProtocolContext &context,
+        const TraceArtifacts &trace,
+        const std::map<std::string, algebra::FieldElement> &challenges,
+        CudaTEdgeExecutionProfile *profile);
     struct QuotientSplitLaneStageProfile
     {
         std::vector<double> contiguous_ms;

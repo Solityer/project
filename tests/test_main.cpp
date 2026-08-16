@@ -2251,6 +2251,88 @@ namespace
             "quotient-download byte count "
             "mismatch");
     }
+    void test_cuda_t_edge_production_cache_equivalence()
+    {
+        if (!gatzk::protocol::
+                cuda_t_edge_executor_available())
+        {
+            return;
+        }
+
+        const auto config =
+            gatzk::util::load_config(
+                (repo_root() /
+                 "configs/unit_security_regression.cfg")
+                    .string());
+
+        const auto context =
+            gatzk::protocol::build_context(
+                config);
+
+        const auto trace =
+            gatzk::protocol::build_trace(
+                context);
+
+        const auto challenges =
+            gatzk::protocol::replay_challenges(
+                context,
+                trace.commitments,
+                {},
+                &trace.public_metadata);
+
+        gatzk::protocol::
+            CudaTEdgeExecutionProfile
+                profile;
+
+        const bool exact =
+            gatzk::protocol::
+                benchmark_cuda_t_edge_materialization_stage(
+                    context,
+                    trace,
+                    challenges,
+                    &profile);
+
+        gatzk::protocol::
+            release_cuda_t_edge_executor_cache();
+
+        require(
+            exact,
+            "production CUDA t_edge materialization "
+            "differs from canonical CPU quotient");
+
+        require(
+            profile.leaf_cache_slot_count == 8,
+            "production CUDA t_edge must use "
+            "exactly eight leaf-cache slots");
+
+        require(
+            profile.unique_leaf_count >
+                profile.leaf_cache_slot_count,
+            "CUDA t_edge cache regression did not "
+            "exceed eight unique leaves");
+
+        require(
+            profile.leaf_cache_hit_count > 0,
+            "CUDA t_edge production cache regression "
+            "did not exercise a cache hit");
+
+        require(
+            profile.leaf_eviction_count > 0,
+            "CUDA t_edge production cache regression "
+            "did not exercise an eviction");
+
+        require(
+            profile.leaf_materialization_count >=
+                profile.unique_leaf_count,
+            "CUDA t_edge leaf materialization "
+            "profile is inconsistent");
+
+        require(
+            profile.source_bytes_uploaded > 0 &&
+                profile.quotient_bytes_downloaded > 0,
+            "CUDA t_edge production cache regression "
+            "did not execute device data movement");
+    }
     void test_paired_streamed_point_group_equivalence()
     {
         const auto keys = gatzk::crypto::KZG::load_keys(
@@ -5999,6 +6081,10 @@ int main()
             std::cerr
                 << "running test_cuda_t_edge_executor_equivalence\n";
             test_cuda_t_edge_executor_equivalence();
+
+            std::cerr
+                << "running test_cuda_t_edge_production_cache_equivalence\n";
+            test_cuda_t_edge_production_cache_equivalence();
 
             std::cerr
                 << "running test_paired_streamed_point_group_equivalence\n";

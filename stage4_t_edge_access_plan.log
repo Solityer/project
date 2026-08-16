@@ -1,4 +1,0 @@
-quotient_points=16384 access_plan_entries=1126 late_bound_dependencies=49 repeats=3 legacy_median_ms=2505.217 bound_median_ms=2050.509 speedup=1.222 exact=1
-repeat=0 legacy_ms=2500.426 bound_ms=2051.137
-repeat=1 legacy_ms=2505.217 bound_ms=2048.306
-repeat=2 legacy_ms=2506.927 bound_ms=2050.509

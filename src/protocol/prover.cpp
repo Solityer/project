@@ -5212,7 +5212,9 @@ namespace gatzk::protocol
                 const ProtocolContext &context,
                 const TraceArtifacts &trace,
                 const std::map<std::string, FieldElement> &challenges,
-                std::string label)
+                std::string label,
+                bool force_cuda_t_edge_stage = false,
+                CudaTEdgeExecutionProfile *cuda_t_edge_profile_out = nullptr)
                 : context_(context),
                   trace_(trace),
                   challenges_(challenges),
@@ -5220,7 +5222,9 @@ namespace gatzk::protocol
                   domain_(quotient_domain(context_, label_)),
                   target_size_(domain_->size * quotient_coset_multiplier(label_)),
                   rotation_step_(target_size_ / domain_->size),
-                  shift_(quotient_coset_shift(*domain_))
+                  shift_(quotient_coset_shift(*domain_)),
+                  force_cuda_t_edge_stage_(force_cuda_t_edge_stage),
+                  cuda_t_edge_profile_out_(cuda_t_edge_profile_out)
             {
                 if (domain_ == nullptr)
                 {
@@ -5323,11 +5327,15 @@ namespace gatzk::protocol
                 constexpr std::size_t
                     kCudaTEdgeLeafCacheSlots = 8;
 
+                const bool route_requested =
+                    force_cuda_t_edge_stage_ ||
+                    (target_size_ >=
+                         (std::size_t{1} << 25) &&
+                     util::route2_options()
+                         .cuda_field_hotspots);
+
                 return label_ == "t_edge" &&
-                       target_size_ >=
-                           (std::size_t{1} << 25) &&
-                       util::route2_options()
-                           .cuda_field_hotspots &&
+                       route_requested &&
                        algebra::
                            cuda_field_hotspots_available() &&
                        cuda_t_edge_executor_available() &&
@@ -5839,6 +5847,12 @@ namespace gatzk::protocol
                             profile
                                 .leaf_eviction_count));
 
+                    if (cuda_t_edge_profile_out_ !=
+                        nullptr)
+                    {
+                        *cuda_t_edge_profile_out_ =
+                            profile;
+                    }
                     return output;
                 }
                 catch (...)
@@ -9354,6 +9368,11 @@ namespace gatzk::protocol
                 split_lane_interleave_bytes_avoided_{0};
 
             bool cuda_t_edge_transient_leaf_mode_ = false;
+
+            bool force_cuda_t_edge_stage_ = false;
+
+            CudaTEdgeExecutionProfile
+                *cuda_t_edge_profile_out_ = nullptr;
         };
 
         TEdgeAccessPlanStageProfile
@@ -10457,6 +10476,62 @@ namespace gatzk::protocol
         QuotientPolynomialMaterializer materializer(
             context, trace, challenges, "t_edge");
         return materializer.benchmark_t_edge_access_plan_stage(repeats);
+    }
+    bool benchmark_cuda_t_edge_materialization_stage(
+        const ProtocolContext &context,
+        const TraceArtifacts &trace,
+        const std::map<std::string, algebra::FieldElement> &challenges,
+        CudaTEdgeExecutionProfile *profile)
+    {
+        if (profile == nullptr)
+        {
+            throw std::runtime_error(
+                "CUDA t_edge stage profile is null");
+        }
+
+        constexpr std::size_t kMaxNodes = 1024;
+        constexpr std::size_t kMaxEdges = 16384;
+
+        if (context.local.num_nodes > kMaxNodes ||
+            context.local.edges.size() > kMaxEdges)
+        {
+            throw std::runtime_error(
+                "CUDA t_edge materialization stage "
+                "refuses non-small inputs");
+        }
+
+        *profile = {};
+
+        const auto expected = [&]
+        {
+            QuotientPolynomialMaterializer
+                materializer(
+                    context,
+                    trace,
+                    challenges,
+                    "t_edge");
+
+            return materializer.materialize(
+                context.kzg);
+        }();
+
+        const auto actual = [&]
+        {
+            QuotientPolynomialMaterializer
+                materializer(
+                    context,
+                    trace,
+                    challenges,
+                    "t_edge",
+                    true,
+                    profile);
+
+            return materializer.materialize(
+                context.kzg);
+        }();
+
+        return actual.basis == expected.basis &&
+               actual.values() == expected.values();
     }
 
     QuotientSplitLaneStageProfile

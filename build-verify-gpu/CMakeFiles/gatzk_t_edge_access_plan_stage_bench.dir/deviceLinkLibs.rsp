@@ -1,1 +1,0 @@
-  -L"/usr/local/cuda/targets/sbsa-linux/lib/stubs"  -L"/usr/local/cuda/targets/sbsa-linux/lib"  libgatzkml.a /home/pzh/project/third_party/mcl/lib/libmcl.a  libgatzk_icicle_bls12_381_msm.a libgatzk_icicle_bls12_381_ntt.a -lcudadevrt -lcudart_static -lrt -lpthread -ldl 

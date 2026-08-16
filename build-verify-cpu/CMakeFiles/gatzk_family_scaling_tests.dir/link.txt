@@ -1,1 +1,0 @@
-/usr/bin/c++ -O3 -DNDEBUG CMakeFiles/gatzk_family_scaling_tests.dir/tests/test_family_scaling.cpp.o -o gatzk_family_scaling_tests  libgatzkml.a /home/pzh/project/third_party/mcl/lib/libmcl.a /usr/lib/aarch64-linux-gnu/libcrypto.so 

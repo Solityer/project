@@ -1,1 +1,0 @@
-/usr/bin/c++ -O3 -DNDEBUG CMakeFiles/gatzk_output_hash_stage_bench.dir/tools/benchmarks/output_hash_stage_bench.cpp.o -o gatzk_output_hash_stage_bench  libgatzkml.a /home/pzh/project/third_party/mcl/lib/libmcl.a /usr/lib/aarch64-linux-gnu/libcrypto.so 

@@ -1,4 +1,0 @@
-[  3%] Built target gatzk_mcl_build
-[  6%] Building CXX object CMakeFiles/gatzkml.dir/src/protocol/prover.cpp.o
-[ 10%] Linking CXX static library libgatzkml.a
-[100%] Built target gatzkml

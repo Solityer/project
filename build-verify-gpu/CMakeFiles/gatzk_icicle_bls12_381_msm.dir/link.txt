@@ -1,2 +1,0 @@
-/usr/bin/ar qc libgatzk_icicle_bls12_381_msm.a CMakeFiles/gatzk_icicle_bls12_381_msm.dir/third_party/icicle/icicle/src/msm/extern.cu.o
-/usr/bin/ranlib libgatzk_icicle_bls12_381_msm.a

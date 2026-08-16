@@ -1,2 +1,0 @@
-/usr/bin/ar qc libgatzk_icicle_bls12_381_ntt.a CMakeFiles/gatzk_icicle_bls12_381_ntt.dir/third_party/icicle/icicle/src/ntt/extern.cu.o CMakeFiles/gatzk_icicle_bls12_381_ntt.dir/third_party/icicle/icicle/src/ntt/kernel_ntt.cu.o
-/usr/bin/ranlib libgatzk_icicle_bls12_381_ntt.a
