@@ -75,6 +75,7 @@ set(GATZK_SOURCES
     src/util/config.cpp
     src/util/logging.cpp
     src/util/route2.cpp
+    src/protocol/cuda_t_edge_stub.cpp
 )
 
 if(GATZK_ENABLE_CUDA_BACKEND)

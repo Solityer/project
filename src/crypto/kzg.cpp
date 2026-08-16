@@ -2439,6 +2439,84 @@ namespace gatzk::crypto
 
             return material;
         }
+        void accumulate_file_backed_semantic_source(
+            FoldedEvaluationGroup *group,
+            const OpeningSemanticSourceInfo &info,
+            const FieldElement &scale,
+            std::size_t worker_cap)
+        {
+            if (!info.file_backed ||
+                info.file_path.empty())
+            {
+                throw std::runtime_error(
+                    "file-backed semantic source metadata is incomplete");
+            }
+
+            constexpr std::size_t kChunkSize =
+                std::size_t{1} << 20;
+
+            std::ifstream stream(
+                info.file_path,
+                std::ios::binary);
+
+            if (!stream)
+            {
+                throw std::runtime_error(
+                    "failed to open semantic source: " +
+                    info.file_path);
+            }
+
+            std::vector<FieldElement>
+                chunk(kChunkSize);
+
+            std::array<std::uint8_t, 32>
+                bytes{};
+
+            for (std::size_t offset = 0;
+                 offset < info.value_count;)
+            {
+                const auto count =
+                    std::min(
+                        kChunkSize,
+                        info.value_count - offset);
+
+                for (std::size_t local = 0;
+                     local < count;
+                     ++local)
+                {
+                    stream.read(
+                        reinterpret_cast<char *>(
+                            bytes.data()),
+                        static_cast<std::streamsize>(
+                            bytes.size()));
+
+                    if (!stream)
+                    {
+                        throw std::runtime_error(
+                            "failed to read semantic source: " +
+                            info.file_path);
+                    }
+
+                    chunk[local] =
+                        FieldElement::
+                            from_little_endian_mod(
+                                bytes.data(),
+                                bytes.size());
+                }
+
+                accumulate_streamed_evaluation_source(
+                    group,
+                    std::vector<FieldElement>(
+                        chunk.begin(),
+                        chunk.begin() + count),
+                    scale,
+                    info.file_path,
+                    worker_cap,
+                    offset);
+
+                offset += count;
+            }
+        }
 
         void accumulate_streamed_evaluation_source(
             FoldedEvaluationGroup *group,

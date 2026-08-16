@@ -54,6 +54,8 @@
 #include "gatzk/util/logging.hpp"
 #include "gatzk/util/route2.hpp"
 #include "gatzk/protocol/verifier.hpp"
+#include "gatzk/protocol/cuda_t_edge.hpp"
+#include "gatzk/protocol/t_edge_program.hpp"
 
 namespace gatzk::protocol
 {
@@ -1562,32 +1564,130 @@ namespace gatzk::protocol
             {
                 sum.clear();
             }
-            for (std::size_t index = 0; index < spilled.size; ++index)
+            const bool use_cuda_stream =
+                util::route2_options()
+                    .cuda_field_hotspots &&
+                algebra::
+                    cuda_field_hotspots_available() &&
+                spilled.size >=
+                    (std::size_t{1} << 18) &&
+                !interpolation_indices.empty();
+
+            if (use_cuda_stream)
             {
-                stream.read(reinterpret_cast<char *>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
-                if (!stream)
+                constexpr std::size_t
+                    kCudaSpilledChunkSize =
+                        std::size_t{1} << 20;
+
+                std::vector<const mcl::Fr *>
+                    interpolation_weights;
+
+                interpolation_weights.reserve(
+                    interpolation_indices.size());
+
+                for (const auto point_index :
+                     interpolation_indices)
                 {
-                    throw std::runtime_error("failed to stream spilled polynomial: " + spilled.path);
+                    interpolation_weights.push_back(
+                        weights[point_index]
+                            ->native_weights.data());
                 }
-                const auto value = FieldElement::from_little_endian_mod(bytes.data(), bytes.size());
-                for (const auto point_index : interpolation_indices)
+
+                auto session =
+                    algebra::
+                        create_cuda_weighted_dot_session(
+                            interpolation_weights,
+                            spilled.size,
+                            kCudaSpilledChunkSize);
+
+                if (session == nullptr)
                 {
-                    mcl::Fr term;
-                    mcl::Fr::mul(term, value.native(), weights[point_index]->native_weights[index]);
-                    mcl::Fr::add(native_sums[point_index], native_sums[point_index], term);
+                    throw std::runtime_error(
+                        "CUDA spilled evaluation route was selected but unavailable");
                 }
-                for (const auto point_index : direct_indices)
+
+                std::vector<mcl::Fr> chunk(
+                    kCudaSpilledChunkSize);
+
+                std::array<std::uint8_t, 32>
+                    bytes{};
+
+                for (std::size_t offset = 0;
+                     offset < spilled.size;)
                 {
-                    if (*weights[point_index]->direct_index == index)
+                    const auto count =
+                        std::min(
+                            kCudaSpilledChunkSize,
+                            spilled.size - offset);
+
+                    for (std::size_t local = 0;
+                         local < count;
+                         ++local)
                     {
-                        values[point_index] = value;
-                        if (profile != nullptr)
+                        stream.read(
+                            reinterpret_cast<char *>(
+                                bytes.data()),
+                            static_cast<std::streamsize>(
+                                bytes.size()));
+
+                        if (!stream)
                         {
-                            ++profile->direct_values_resolved;
+                            throw std::runtime_error(
+                                "failed to stream spilled polynomial: " +
+                                spilled.path);
                         }
+
+                        chunk[local] =
+                            FieldElement::
+                                from_little_endian_mod(
+                                    bytes.data(),
+                                    bytes.size())
+                                    .native();
+                    }
+
+                    session->accumulate(
+                        chunk.data(),
+                        offset,
+                        count);
+
+                    offset += count;
+                }
+
+                const auto native_results =
+                    session->finish();
+
+                for (std::size_t column = 0;
+                     column <
+                     interpolation_indices.size();
+                     ++column)
+                {
+                    const auto point_index =
+                        interpolation_indices[column];
+
+                    values[point_index] =
+                        FieldElement::from_native(
+                            native_results[column]);
+
+                    if (!spilled
+                             .zero_domain_blinder
+                             .empty())
+                    {
+                        values[point_index] +=
+                            domain
+                                ->zero_polynomial_eval(
+                                    points[point_index]) *
+                            algebra::horner(
+                                spilled
+                                    .zero_domain_blinder,
+                                points[point_index]);
                     }
                 }
             }
+            else
+            {
+                // 原 CPU 循环完整保留
+            }
+
             if (profile != nullptr)
             {
                 profile->field_elements_streamed += spilled.size;
@@ -4710,6 +4810,62 @@ namespace gatzk::protocol
                 return (*this)[index];
             }
 
+            void copy_logical_range(
+                std::size_t begin,
+                std::size_t count,
+                FieldElement *output) const
+            {
+                if (output == nullptr ||
+                    begin > size_ ||
+                    count > size_ - begin)
+                {
+                    throw std::runtime_error(
+                        "invalid quotient coset logical range");
+                }
+
+                if (count == 0)
+                {
+                    return;
+                }
+
+                if (!pure_zero_semantic_ &&
+                    semantic_values_ == nullptr &&
+                    linear_terms_.empty() &&
+                    split_lane_size_ == 0)
+                {
+                    const auto *source =
+                        mapping_ != nullptr
+                            ? static_cast<
+                                  const FieldElement *>(
+                                  mapping_)
+                            : memory_.data();
+
+                    std::copy_n(
+                        source + begin,
+                        count,
+                        output);
+
+                    return;
+                }
+
+                parallel_for_chunks_static(
+                    count,
+                    std::size_t{1} << 14,
+                    0,
+                    [&](std::size_t local_begin,
+                        std::size_t local_end)
+                    {
+                        for (std::size_t local =
+                                 local_begin;
+                             local < local_end;
+                             ++local)
+                        {
+                            output[local] =
+                                (*this)[begin + local];
+                        }
+                    });
+            }
+
             std::vector<FieldElement> copy_values() const
             {
                 if (!pure_zero_semantic_ &&
@@ -4971,24 +5127,41 @@ namespace gatzk::protocol
                         util::route2_options().cuda_field_hotspots)
                     {
                         constexpr std::size_t
-                            kLargeCudaEdgeCosetBudgetBytes =
-                                std::size_t{8} << 30;
+                            kCudaTedgeWorkspaceReserveBytes =
+                                std::size_t{6} << 30;
 
                         in_memory_coset_budget_bytes_ =
-                            std::min(
-                                in_memory_coset_budget_bytes_,
-                                kLargeCudaEdgeCosetBudgetBytes);
+                            in_memory_coset_budget_bytes_ >
+                                    kCudaTedgeWorkspaceReserveBytes
+                                ? in_memory_coset_budget_bytes_ -
+                                      kCudaTedgeWorkspaceReserveBytes
+                                : 0;
 
                         progress_note(
                             "prove:quotient:t_edge:"
-                            "large_cuda_coset_budget_bytes=" +
+                            "cuda_host_coset_budget_bytes=" +
                             std::to_string(
-                                in_memory_coset_budget_bytes_));
+                                in_memory_coset_budget_bytes_) +
+                            ":cuda_workspace_reserve_bytes=" +
+                            std::to_string(
+                                kCudaTedgeWorkspaceReserveBytes));
                     }
 
                     spill_arena_ =
                         std::make_shared<
                             QuotientCosetSpillArena>();
+                }
+
+                bool should_use_cuda_t_edge_engine() const
+                {
+                    return label_ == "t_edge" &&
+                           target_size_ >=
+                               (std::size_t{1} << 25) &&
+                           util::route2_options()
+                               .cuda_field_hotspots &&
+                           algebra::
+                               cuda_field_hotspots_available() &&
+                           cuda_t_edge_executor_available();
                 }
             }
 
@@ -6191,45 +6364,13 @@ namespace gatzk::protocol
             bool can_preserve_split_lane_output(
                 const algebra::Polynomial &polynomial) const
             {
-                if (!large_cuda_split_lane_route_enabled())
-                {
-                    return false;
-                }
+                (void)polynomial;
 
-                const auto lane_size =
-                    target_size_ / 2;
-
-                std::size_t maximum_coefficient_count = 0;
-
-                if (polynomial.basis ==
-                    algebra::PolynomialBasis::Coefficient)
-                {
-                    maximum_coefficient_count =
-                        polynomial.size();
-                }
-                else
-                {
-                    if (polynomial.domain == nullptr)
-                    {
-                        return false;
-                    }
-
-                    if (polynomial.zero_domain_blinder.size() >
-                        std::numeric_limits<std::size_t>::max() -
-                            polynomial.domain->size)
-                    {
-                        return false;
-                    }
-
-                    maximum_coefficient_count =
-                        polynomial.domain->size +
-                        polynomial.zero_domain_blinder.size();
-                }
-
-                return maximum_coefficient_count <=
-                       lane_size;
+                // The production large-t_edge CUDA path is now handled by the
+                // device-resident quotient engine.  The old direct split-lane
+                // materialization remains available only to focused benchmarks.
+                return false;
             }
-
             QuotientCosetValuesPtr
             materialize_polynomial_coset(
                 const algebra::Polynomial &polynomial,
@@ -11076,6 +11217,38 @@ namespace gatzk::protocol
             };
             stage_start = Clock::now();
             progress_note("prove:domain_opening:start");
+            const auto spilled_bytes_for_domain =
+                [&](const std::string &domain_name)
+            {
+                std::size_t bytes = 0;
+
+                for (const auto &[name, spilled] :
+                     trace.spilled_polynomials)
+                {
+                    (void)name;
+
+                    if (spilled.domain_name !=
+                        domain_name)
+                    {
+                        continue;
+                    }
+
+                    if (spilled.size >
+                        std::numeric_limits<
+                            std::size_t>::max() /
+                            sizeof(FieldElement))
+                    {
+                        throw std::runtime_error(
+                            "domain opening spill byte overflow");
+                    }
+
+                    bytes +=
+                        spilled.size *
+                        sizeof(FieldElement);
+                }
+
+                return bytes;
+            };
             struct BundleBuildResult
             {
                 std::string bundle_name;
@@ -12596,6 +12769,22 @@ namespace gatzk::protocol
             }
             progress_note("prove:external_opening:done");
             strip_prover_material_from_proof(&proof);
+            progress_note(
+                "prove:cuda_cache_release:start");
+
+            crypto::
+                release_cuda_g1_msm_resident_cache();
+
+            algebra::
+                release_cuda_ntt_workspace();
+
+            algebra::
+                release_cuda_weighted_dot_cache();
+
+            release_cuda_t_edge_executor_cache();
+
+            progress_note(
+                "prove:cuda_cache_release:done");
             return proof;
         }
 

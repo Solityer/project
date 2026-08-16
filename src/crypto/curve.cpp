@@ -1154,6 +1154,18 @@ namespace gatzk::crypto
             nullptr;
     };
 
+    bool should_use_cuda_msm_shape(
+        std::size_t count,
+        bool stable_srs_bases)
+    {
+        const auto minimum_count =
+            stable_srs_bases
+                ? (std::size_t{1} << 12)
+                : (std::size_t{1} << 14);
+
+        return count >= minimum_count;
+    }
+
     bool execute_cuda_msm_when_requested(
         G1Point *output,
         const G1Point *points,

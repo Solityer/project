@@ -18,6 +18,7 @@ namespace gatzk::algebra
         Cpu,
         Cuda,
     };
+    void release_cuda_ntt_workspace();
 
     // 返回当前构建与运行环境解析出的代数后端信息。
     AlgebraBackend configured_algebra_backend();

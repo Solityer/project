@@ -115,9 +115,20 @@ namespace gatzk::crypto
     struct OpeningSemanticSourceInfo
     {
         std::string key;
-        std::shared_ptr<algebra::RootOfUnityDomain> domain;
+
+        std::shared_ptr<
+            algebra::RootOfUnityDomain>
+            domain;
+
         std::size_t value_count = 0;
-        std::vector<algebra::FieldElement> zero_domain_blinder;
+
+        std::vector<
+            algebra::FieldElement>
+            zero_domain_blinder;
+
+        // Prover-local execution metadata.
+        std::string file_path;
+        bool file_backed = false;
     };
 
     using OpeningSemanticSourceResolver = std::function<
@@ -211,7 +222,6 @@ namespace gatzk::crypto
         const std::shared_ptr<algebra::RootOfUnityDomain> &domain,
         const algebra::FieldElement &point,
         std::size_t worker_cap = 0);
-        
 
     class KZG
     {
