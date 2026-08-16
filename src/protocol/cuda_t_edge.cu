@@ -1139,6 +1139,86 @@ namespace gatzk::protocol
             cuda_field_hotspots_available();
     }
 
+    bool cuda_t_edge_executor_can_admit(
+        std::size_t target_size,
+        std::size_t cache_slot_count)
+    {
+        if (!cuda_t_edge_executor_available() ||
+            target_size == 0 ||
+            cache_slot_count == 0)
+        {
+            return false;
+        }
+
+        if (target_size >
+            std::numeric_limits<
+                std::size_t>::max() /
+                sizeof(GpuFr))
+        {
+            return false;
+        }
+
+        const auto leaf_bytes =
+            target_size *
+            sizeof(GpuFr);
+
+        if (cache_slot_count >
+            std::numeric_limits<
+                std::size_t>::max() /
+                leaf_bytes)
+        {
+            return false;
+        }
+
+        const auto leaf_cache_bytes =
+            cache_slot_count *
+            leaf_bytes;
+
+        if (leaf_cache_bytes >
+            std::numeric_limits<
+                std::size_t>::max() -
+                leaf_bytes)
+        {
+            return false;
+        }
+
+        const auto required_bytes =
+            leaf_cache_bytes +
+            leaf_bytes;
+
+        std::size_t free_bytes = 0;
+        std::size_t total_bytes = 0;
+
+        const auto status =
+            cudaMemGetInfo(
+                &free_bytes,
+                &total_bytes);
+
+        if (status != cudaSuccess)
+        {
+            (void)cudaGetLastError();
+            return false;
+        }
+
+        constexpr std::size_t
+            kMinimumCudaReserveBytes =
+                std::size_t{4} << 30;
+
+        const auto reserve_bytes =
+            std::max(
+                kMinimumCudaReserveBytes,
+                total_bytes / 8);
+
+        if (free_bytes <= reserve_bytes)
+        {
+            return false;
+        }
+
+        return required_bytes <=
+               free_bytes -
+                   reserve_bytes;
+    }
+
     void release_cuda_t_edge_executor_cache()
     {
     }

@@ -19,6 +19,13 @@ namespace gatzk::protocol
         return false;
     }
 
+    bool cuda_t_edge_executor_can_admit(
+        std::size_t,
+        std::size_t)
+    {
+        return false;
+    }
+
     void release_cuda_t_edge_executor_cache()
     {
     }

@@ -5320,6 +5320,9 @@ namespace gatzk::protocol
             bool should_use_cuda_t_edge_engine()
                 const
             {
+                constexpr std::size_t
+                    kCudaTEdgeLeafCacheSlots = 8;
+
                 return label_ == "t_edge" &&
                        target_size_ >=
                            (std::size_t{1} << 25) &&
@@ -5327,7 +5330,10 @@ namespace gatzk::protocol
                            .cuda_field_hotspots &&
                        algebra::
                            cuda_field_hotspots_available() &&
-                       cuda_t_edge_executor_available();
+                       cuda_t_edge_executor_available() &&
+                       cuda_t_edge_executor_can_admit(
+                           target_size_,
+                           kCudaTEdgeLeafCacheSlots);
             }
 
             void reset_cuda_t_edge_transient_leaf_state()

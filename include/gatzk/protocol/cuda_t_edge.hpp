@@ -68,8 +68,12 @@ namespace gatzk::protocol
         const algebra::FieldElement &omega,
         std::size_t cache_slot_count,
         CudaTEdgeExecutionProfile *profile);
-
+        
     bool cuda_t_edge_executor_available();
+
+    bool cuda_t_edge_executor_can_admit(
+        std::size_t target_size,
+        std::size_t cache_slot_count);
 
     void release_cuda_t_edge_executor_cache();
 }
