@@ -1,11 +1,13 @@
 #include "gatzk/protocol/quotients.hpp"
-
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cctype>
 #include <cstdint>
 #include <optional>
 #include <string_view>
+#include <type_traits>
+#include <unordered_map>
 #include <vector>
 
 #include "gatzk/protocol/challenges.hpp"
@@ -419,49 +421,77 @@ namespace gatzk::protocol
 
         using QuotientAccumulator = BasicQuotientAccumulator<false>;
 
-        FieldElement route_node_step(
-            const FieldElement &next_value,
-            const FieldElement &current_value,
-            const FieldElement &table_value,
+        template <class Scalar>
+        Scalar route_node_step(
+            const Scalar &next_value,
+            const Scalar &current_value,
+            const Scalar &table_value,
             const FieldElement &beta,
-            const FieldElement &q_valid,
-            const FieldElement &multiplicity)
+            const Scalar &q_valid,
+            const Scalar &multiplicity)
         {
-            return (next_value - current_value) * (table_value + beta) - q_valid * multiplicity;
+            return (next_value - current_value) *
+                       (table_value + beta) -
+                   q_valid * multiplicity;
         }
 
-        FieldElement route_edge_step(
-            const FieldElement &next_value,
-            const FieldElement &current_value,
-            const FieldElement &query_value,
+        template <class Scalar>
+        Scalar route_edge_step(
+            const Scalar &next_value,
+            const Scalar &current_value,
+            const Scalar &query_value,
             const FieldElement &beta,
-            const FieldElement &q_edge_valid)
+            const Scalar &q_edge_valid)
         {
-            return (next_value - current_value) * (query_value + beta) - q_edge_valid;
+            return (next_value - current_value) *
+                       (query_value + beta) -
+                   q_edge_valid;
         }
 
-        FieldElement acc_step(
-            const FieldElement &next_value,
-            const FieldElement &current_value,
-            const FieldElement &a_value,
-            const FieldElement &b_value)
+        template <class Scalar>
+        Scalar acc_step(
+            const Scalar &next_value,
+            const Scalar &current_value,
+            const Scalar &a_value,
+            const Scalar &b_value)
         {
-            return next_value - current_value - a_value * b_value;
+            return next_value -
+                   current_value -
+                   a_value * b_value;
         }
 
-        FieldElement psq_step(
-            const FieldElement &psq_next,
-            const FieldElement &psq_current,
-            const FieldElement &w_next,
-            const FieldElement &q_valid_next,
-            const FieldElement &q_new_next)
+        template <class Scalar>
+        Scalar psq_step(
+            const Scalar &psq_next,
+            const Scalar &psq_current,
+            const Scalar &w_next,
+            const Scalar &q_valid_next,
+            const Scalar &q_new_next)
         {
-            return psq_next - ((FieldElement::one() - q_valid_next) * psq_current + q_valid_next * (q_new_next * w_next + (FieldElement::one() - q_new_next) * (psq_current + w_next)));
+            const Scalar one =
+                FieldElement::one();
+
+            return psq_next -
+                   ((one - q_valid_next) *
+                        psq_current +
+                    q_valid_next *
+                        (q_new_next *
+                             w_next +
+                         (one - q_new_next) *
+                             (psq_current +
+                              w_next)));
         }
 
-        FieldElement zero_on_unselected(const FieldElement &selector, const FieldElement &value)
+        template <class Scalar>
+        Scalar zero_on_unselected(
+            const Scalar &selector,
+            const Scalar &value)
         {
-            return (FieldElement::one() - selector) * value;
+            const Scalar one =
+                FieldElement::one();
+
+            return (one - selector) *
+                   value;
         }
 
         struct SignedDivisionLimbLabelPlan
@@ -587,26 +617,684 @@ namespace gatzk::protocol
 
             return out;
         }
+        class TEdgeProgramBuilder;
 
-        struct FieldElementProgramOps
+        thread_local TEdgeProgramBuilder
+            *active_t_edge_program_builder =
+                nullptr;
+
+        class TEdgeProgramScalar
         {
-            using Scalar = FieldElement;
+        public:
+            TEdgeProgramScalar() =
+                default;
 
-            static Scalar zero()
+            TEdgeProgramScalar(
+                TEdgeProgramBuilder *builder,
+                std::uint32_t node)
+                : builder_(builder),
+                  node_(node)
+            {
+            }
+
+            TEdgeProgramScalar(
+                const FieldElement &value);
+
+            std::uint32_t node() const
+            {
+                return node_;
+            }
+
+            TEdgeProgramBuilder *builder()
+                const
+            {
+                return builder_;
+            }
+
+            TEdgeProgramScalar &operator+=(
+                const TEdgeProgramScalar &rhs);
+
+            TEdgeProgramScalar &operator-=(
+                const TEdgeProgramScalar &rhs);
+
+            TEdgeProgramScalar &operator*=(
+                const TEdgeProgramScalar &rhs);
+
+        private:
+            TEdgeProgramBuilder *builder_ =
+                nullptr;
+
+            std::uint32_t node_ = 0;
+        };
+
+        class TEdgeProgramBuilder
+        {
+        public:
+            TEdgeProgramScalar constant(
+                const FieldElement &value)
+            {
+                if (program_.constants.size() >
+                    std::numeric_limits<
+                        std::uint32_t>::max())
+                {
+                    throw std::runtime_error(
+                        "t_edge program constant "
+                        "index overflow");
+                }
+
+                const auto constant_index =
+                    static_cast<std::uint32_t>(
+                        program_.constants
+                            .size());
+
+                program_.constants.push_back(
+                    value);
+
+                return make_node(
+                    TEdgeProgramOpcode::
+                        LoadConstant,
+                    0,
+                    0,
+                    constant_index);
+            }
+
+            TEdgeProgramScalar access(
+                const std::string &label,
+                bool rotated)
+            {
+                const auto key =
+                    label +
+                    (rotated
+                         ? "#rotated"
+                         : "#current");
+
+                std::uint32_t access_index = 0;
+
+                if (const auto found =
+                        access_indices_.find(
+                            key);
+                    found !=
+                    access_indices_.end())
+                {
+                    access_index =
+                        found->second;
+                }
+                else
+                {
+                    if (program_.accesses.size() >
+                        std::numeric_limits<
+                            std::uint32_t>::max())
+                    {
+                        throw std::runtime_error(
+                            "t_edge program access "
+                            "index overflow");
+                    }
+
+                    access_index =
+                        static_cast<
+                            std::uint32_t>(
+                            program_.accesses
+                                .size());
+
+                    program_.accesses.push_back(
+                        TEdgeProgramAccess{
+                            .label = label,
+                            .rotated =
+                                rotated,
+                        });
+
+                    access_indices_.emplace(
+                        key,
+                        access_index);
+                }
+
+                return make_node(
+                    TEdgeProgramOpcode::
+                        LoadAccess,
+                    0,
+                    0,
+                    access_index);
+            }
+
+            TEdgeProgramScalar
+            boundary_first()
+            {
+                return access(
+                    "__t_edge_boundary_l0",
+                    false);
+            }
+
+            TEdgeProgramScalar
+            boundary_last()
+            {
+                return access(
+                    "__t_edge_boundary_l0",
+                    true);
+            }
+
+            TEdgeProgramScalar add(
+                const TEdgeProgramScalar &lhs,
+                const TEdgeProgramScalar &rhs)
+            {
+                require_same_builder(
+                    lhs,
+                    rhs);
+
+                return make_node(
+                    TEdgeProgramOpcode::Add,
+                    lhs.node(),
+                    rhs.node(),
+                    0);
+            }
+
+            TEdgeProgramScalar subtract(
+                const TEdgeProgramScalar &lhs,
+                const TEdgeProgramScalar &rhs)
+            {
+                require_same_builder(
+                    lhs,
+                    rhs);
+
+                return make_node(
+                    TEdgeProgramOpcode::
+                        Subtract,
+                    lhs.node(),
+                    rhs.node(),
+                    0);
+            }
+
+            TEdgeProgramScalar multiply(
+                const TEdgeProgramScalar &lhs,
+                const TEdgeProgramScalar &rhs)
+            {
+                require_same_builder(
+                    lhs,
+                    rhs);
+
+                return make_node(
+                    TEdgeProgramOpcode::
+                        Multiply,
+                    lhs.node(),
+                    rhs.node(),
+                    0);
+            }
+
+            TEdgeProgramScalar negate(
+                const TEdgeProgramScalar &value)
+            {
+                require_builder(value);
+
+                return make_node(
+                    TEdgeProgramOpcode::Negate,
+                    value.node(),
+                    0,
+                    0);
+            }
+
+            void append_term(
+                const TEdgeProgramScalar &term,
+                const FieldElement
+                    &alpha_scale)
+            {
+                require_builder(term);
+
+                TEdgeProgramTerm output;
+
+                output.instruction_begin =
+                    program_.instructions
+                        .size();
+
+                std::size_t stack_depth = 0;
+                std::size_t maximum_depth = 0;
+
+                emit_node(
+                    term.node(),
+                    &output.required_accesses,
+                    &stack_depth,
+                    &maximum_depth);
+
+                if (stack_depth != 1)
+                {
+                    throw std::runtime_error(
+                        "invalid t_edge postfix "
+                        "program stack");
+                }
+
+                std::sort(
+                    output.required_accesses
+                        .begin(),
+                    output.required_accesses
+                        .end());
+
+                output.required_accesses.erase(
+                    std::unique(
+                        output.required_accesses
+                            .begin(),
+                        output.required_accesses
+                            .end()),
+                    output.required_accesses
+                        .end());
+
+                output.instruction_end =
+                    program_.instructions
+                        .size();
+
+                output.maximum_stack_depth =
+                    maximum_depth;
+
+                output.alpha_scale =
+                    alpha_scale;
+
+                program_.maximum_stack_depth =
+                    std::max(
+                        program_
+                            .maximum_stack_depth,
+                        maximum_depth);
+
+                program_.terms.push_back(
+                    std::move(output));
+            }
+
+            TEdgeBoundProgram finish()
+            {
+                if (program_.terms.empty())
+                {
+                    throw std::runtime_error(
+                        "t_edge program has no "
+                        "constraint terms");
+                }
+
+                return std::move(program_);
+            }
+
+        private:
+            struct Node
+            {
+                TEdgeProgramOpcode opcode =
+                    TEdgeProgramOpcode::
+                        LoadConstant;
+
+                std::uint32_t lhs = 0;
+                std::uint32_t rhs = 0;
+                std::uint32_t operand = 0;
+            };
+
+            TEdgeProgramScalar make_node(
+                TEdgeProgramOpcode opcode,
+                std::uint32_t lhs,
+                std::uint32_t rhs,
+                std::uint32_t operand)
+            {
+                if (nodes_.size() >
+                    std::numeric_limits<
+                        std::uint32_t>::max())
+                {
+                    throw std::runtime_error(
+                        "t_edge program node "
+                        "index overflow");
+                }
+
+                const auto index =
+                    static_cast<std::uint32_t>(
+                        nodes_.size());
+
+                nodes_.push_back(
+                    Node{
+                        .opcode = opcode,
+                        .lhs = lhs,
+                        .rhs = rhs,
+                        .operand = operand,
+                    });
+
+                return TEdgeProgramScalar(
+                    this,
+                    index);
+            }
+
+            void require_builder(
+                const TEdgeProgramScalar &value)
+                const
+            {
+                if (value.builder() != this)
+                {
+                    throw std::runtime_error(
+                        "t_edge program mixed "
+                        "different builders");
+                }
+            }
+
+            void require_same_builder(
+                const TEdgeProgramScalar &lhs,
+                const TEdgeProgramScalar &rhs)
+                const
+            {
+                require_builder(lhs);
+                require_builder(rhs);
+            }
+
+            void emit_node(
+                std::uint32_t node_index,
+                std::vector<std::uint32_t>
+                    *required_accesses,
+                std::size_t *stack_depth,
+                std::size_t *maximum_depth)
+            {
+                if (node_index >=
+                    nodes_.size())
+                {
+                    throw std::runtime_error(
+                        "t_edge program node "
+                        "out of range");
+                }
+
+                const auto &node =
+                    nodes_[node_index];
+
+                switch (node.opcode)
+                {
+                case TEdgeProgramOpcode::
+                    LoadAccess:
+                {
+                    program_.instructions
+                        .push_back(
+                            TEdgeProgramInstruction{
+                                .opcode =
+                                    node.opcode,
+                                .operand =
+                                    node.operand,
+                            });
+
+                    required_accesses->push_back(
+                        node.operand);
+
+                    ++*stack_depth;
+
+                    *maximum_depth =
+                        std::max(
+                            *maximum_depth,
+                            *stack_depth);
+
+                    return;
+                }
+
+                case TEdgeProgramOpcode::
+                    LoadConstant:
+                {
+                    program_.instructions
+                        .push_back(
+                            TEdgeProgramInstruction{
+                                .opcode =
+                                    node.opcode,
+                                .operand =
+                                    node.operand,
+                            });
+
+                    ++*stack_depth;
+
+                    *maximum_depth =
+                        std::max(
+                            *maximum_depth,
+                            *stack_depth);
+
+                    return;
+                }
+
+                case TEdgeProgramOpcode::
+                    Negate:
+                {
+                    emit_node(
+                        node.lhs,
+                        required_accesses,
+                        stack_depth,
+                        maximum_depth);
+
+                    program_.instructions
+                        .push_back(
+                            TEdgeProgramInstruction{
+                                .opcode =
+                                    node.opcode,
+                                .operand = 0,
+                            });
+
+                    return;
+                }
+
+                case TEdgeProgramOpcode::Add:
+                case TEdgeProgramOpcode::
+                    Subtract:
+                case TEdgeProgramOpcode::
+                    Multiply:
+                {
+                    emit_node(
+                        node.lhs,
+                        required_accesses,
+                        stack_depth,
+                        maximum_depth);
+
+                    emit_node(
+                        node.rhs,
+                        required_accesses,
+                        stack_depth,
+                        maximum_depth);
+
+                    if (*stack_depth < 2)
+                    {
+                        throw std::runtime_error(
+                            "invalid t_edge "
+                            "binary expression "
+                            "stack");
+                    }
+
+                    --*stack_depth;
+
+                    program_.instructions
+                        .push_back(
+                            TEdgeProgramInstruction{
+                                .opcode =
+                                    node.opcode,
+                                .operand = 0,
+                            });
+
+                    return;
+                }
+                }
+            }
+
+            std::vector<Node> nodes_;
+
+            std::unordered_map<
+                std::string,
+                std::uint32_t>
+                access_indices_;
+
+            TEdgeBoundProgram program_;
+        };
+
+        TEdgeProgramScalar::
+            TEdgeProgramScalar(
+                const FieldElement &value)
+        {
+            if (active_t_edge_program_builder ==
+                nullptr)
+            {
+                throw std::runtime_error(
+                    "t_edge symbolic constant "
+                    "created without builder");
+            }
+
+            *this =
+                active_t_edge_program_builder
+                    ->constant(value);
+        }
+
+        TEdgeProgramScalar operator+(
+            const TEdgeProgramScalar &lhs,
+            const TEdgeProgramScalar &rhs)
+        {
+            return lhs.builder()->add(
+                lhs,
+                rhs);
+        }
+
+        TEdgeProgramScalar operator-(
+            const TEdgeProgramScalar &lhs,
+            const TEdgeProgramScalar &rhs)
+        {
+            return lhs.builder()->subtract(
+                lhs,
+                rhs);
+        }
+
+        TEdgeProgramScalar operator*(
+            const TEdgeProgramScalar &lhs,
+            const TEdgeProgramScalar &rhs)
+        {
+            return lhs.builder()->multiply(
+                lhs,
+                rhs);
+        }
+
+        TEdgeProgramScalar operator-(
+            const TEdgeProgramScalar &value)
+        {
+            return value.builder()->negate(
+                value);
+        }
+
+        TEdgeProgramScalar operator+(
+            const TEdgeProgramScalar &lhs,
+            const FieldElement &rhs)
+        {
+            return lhs +
+                   TEdgeProgramScalar(rhs);
+        }
+
+        TEdgeProgramScalar operator+(
+            const FieldElement &lhs,
+            const TEdgeProgramScalar &rhs)
+        {
+            return TEdgeProgramScalar(lhs) +
+                   rhs;
+        }
+
+        TEdgeProgramScalar operator-(
+            const TEdgeProgramScalar &lhs,
+            const FieldElement &rhs)
+        {
+            return lhs -
+                   TEdgeProgramScalar(rhs);
+        }
+
+        TEdgeProgramScalar operator-(
+            const FieldElement &lhs,
+            const TEdgeProgramScalar &rhs)
+        {
+            return TEdgeProgramScalar(lhs) -
+                   rhs;
+        }
+
+        TEdgeProgramScalar operator*(
+            const TEdgeProgramScalar &lhs,
+            const FieldElement &rhs)
+        {
+            return lhs *
+                   TEdgeProgramScalar(rhs);
+        }
+
+        TEdgeProgramScalar operator*(
+            const FieldElement &lhs,
+            const TEdgeProgramScalar &rhs)
+        {
+            return TEdgeProgramScalar(lhs) *
+                   rhs;
+        }
+
+        TEdgeProgramScalar &
+        TEdgeProgramScalar::operator+=(
+            const TEdgeProgramScalar &rhs)
+        {
+            *this = *this + rhs;
+            return *this;
+        }
+
+        TEdgeProgramScalar &
+        TEdgeProgramScalar::operator-=(
+            const TEdgeProgramScalar &rhs)
+        {
+            *this = *this - rhs;
+            return *this;
+        }
+
+        TEdgeProgramScalar &
+        TEdgeProgramScalar::operator*=(
+            const TEdgeProgramScalar &rhs)
+        {
+            *this = *this * rhs;
+            return *this;
+        }
+
+        class TEdgeProgramQuotientAccumulator
+        {
+        public:
+            explicit TEdgeProgramQuotientAccumulator(
+                const FieldElement &alpha,
+                bool,
+                const std::vector<
+                    FieldElement> *)
+                : builder_(
+                      active_t_edge_program_builder),
+                  alpha_(alpha),
+                  alpha_power_(
+                      FieldElement::one())
+            {
+                if (builder_ == nullptr)
+                {
+                    throw std::runtime_error(
+                        "t_edge symbolic "
+                        "accumulator has no "
+                        "builder");
+                }
+            }
+
+            void add(
+                const TEdgeProgramScalar &term)
+            {
+                builder_->append_term(
+                    term,
+                    alpha_power_);
+
+                alpha_power_ *= alpha_;
+
+                ++term_count_;
+            }
+
+            TEdgeProgramScalar value() const
+            {
+                return TEdgeProgramScalar(
+                    FieldElement::zero());
+            }
+
+            std::optional<std::size_t>
+            first_nonzero_term() const
+            {
+                return std::nullopt;
+            }
+
+            FieldElement
+            first_nonzero_value() const
             {
                 return FieldElement::zero();
             }
 
-            static Scalar one()
-            {
-                return FieldElement::one();
-            }
+        private:
+            TEdgeProgramBuilder *builder_ =
+                nullptr;
 
-            static Scalar from_u64(
-                std::uint64_t value)
-            {
-                return FieldElement(value);
-            }
+            FieldElement alpha_;
+
+            FieldElement alpha_power_;
+
+            std::size_t term_count_ = 0;
         };
 
     }
@@ -772,119 +1460,6 @@ namespace gatzk::protocol
 
         return plan;
     }
-
-    TEdgeBoundProgram
-    build_t_edge_bound_program(
-        const ProtocolContext &context,
-        const std::map<
-            std::string,
-            FieldElement> &challenges,
-        const TEdgeEvaluationPlan &plan)
-    {
-        TEdgeProgramBuilder builder;
-
-        const auto first =
-            builder.boundary_first();
-
-        const auto last =
-            builder.boundary_last();
-
-        const auto eval_z =
-            [&](const std::string &label)
-        {
-            return builder.access(
-                label,
-                false);
-        };
-
-        const auto eval_omega =
-            [&](const std::string &label)
-        {
-            return builder.access(
-                label,
-                true);
-        };
-
-        auto alpha_power =
-            FieldElement::one();
-
-        const auto alpha =
-            challenges.at(
-                "alpha_quot");
-
-        evaluate_t_edge_constraint_core(
-            context,
-            challenges,
-            {},
-            &plan,
-            first,
-            last,
-            eval_z,
-            eval_omega,
-            [&](const TEdgeProgramScalar &term)
-            {
-                builder.append_term(
-                    term,
-                    alpha_power);
-
-                alpha_power *= alpha;
-            });
-
-        return builder.finish();
-    }
-
-    class TEdgeProgramBuilder;
-    class TEdgeProgramScalar;
-    class TEdgeProgramBuilder
-    {
-    public:
-        TEdgeProgramScalar constant(
-            const FieldElement &value);
-
-        TEdgeProgramScalar access(
-            const std::string &label,
-            bool rotated);
-
-        TEdgeProgramScalar boundary_first();
-
-        TEdgeProgramScalar boundary_last();
-
-        TEdgeProgramScalar add(
-            const TEdgeProgramScalar &lhs,
-            const TEdgeProgramScalar &rhs);
-
-        TEdgeProgramScalar subtract(
-            const TEdgeProgramScalar &lhs,
-            const TEdgeProgramScalar &rhs);
-
-        TEdgeProgramScalar multiply(
-            const TEdgeProgramScalar &lhs,
-            const TEdgeProgramScalar &rhs);
-
-        TEdgeProgramScalar negate(
-            const TEdgeProgramScalar &value);
-
-        void append_term(
-            const TEdgeProgramScalar &term,
-            const FieldElement &alpha_scale);
-
-        TEdgeBoundProgram finish();
-
-    private:
-        struct Node
-        {
-            TEdgeProgramOpcode opcode =
-                TEdgeProgramOpcode::LoadConstant;
-
-            std::uint32_t lhs = 0;
-            std::uint32_t rhs = 0;
-            std::uint32_t operand = 0;
-        };
-
-        std::vector<Node> nodes_;
-
-        TEdgeBoundProgram program_;
-    };
 
     std::optional<std::string> dynamic_commitment_domain_name(
         const ProtocolContext &context,
@@ -1166,19 +1741,34 @@ namespace gatzk::protocol
         return result;
     }
 
-    template <bool UsePrecomputedAlphaPowers>
-    FieldElement evaluate_t_edge_impl(
+    template <
+        bool UsePrecomputedAlphaPowers,
+        class Scalar,
+        class EvalCallable>
+    Scalar evaluate_t_edge_impl(
         const ProtocolContext &context,
-        const std::map<std::string, FieldElement> &challenges,
-        const std::map<std::string, FieldElement> &external_evaluations,
-        const EvalFn &eval,
+        const std::map<
+            std::string,
+            FieldElement> &challenges,
+        const std::map<
+            std::string,
+            FieldElement>
+            &external_evaluations,
+        const EvalCallable &eval,
         const FieldElement &z,
         bool return_numerator,
         std::size_t *first_nonzero_term,
         FieldElement *first_nonzero_value,
-        const std::vector<FieldElement> *precomputed_alpha_powers,
-        const TEdgeEvaluationPlan *evaluation_plan,
-        const QuotientBoundaryValues *boundary_values)
+        const std::vector<FieldElement>
+            *precomputed_alpha_powers,
+        const TEdgeEvaluationPlan
+            *evaluation_plan,
+        const QuotientBoundaryValues
+            *boundary_values,
+        const Scalar *symbolic_first =
+            nullptr,
+        const Scalar *symbolic_last =
+            nullptr)
     {
         if (context.model.has_real_multihead)
         {
@@ -1187,12 +1777,29 @@ namespace gatzk::protocol
             const auto boundary = boundary_values != nullptr
                                       ? *boundary_values
                                       : boundary_lagrange_values(*context.domains.edge, z);
-            const auto first = boundary.first;
-            const auto last = boundary.last;
-            const auto not_last = FieldElement::one() - last;
-            const auto zero_eval = boundary.zero;
-            const auto one = FieldElement::one();
-            const auto two = FieldElement(2);
+            const Scalar first =
+                symbolic_first != nullptr
+                    ? *symbolic_first
+                    : Scalar(
+                          boundary.first);
+
+            const Scalar last =
+                symbolic_last != nullptr
+                    ? *symbolic_last
+                    : Scalar(
+                          boundary.last);
+
+            const Scalar one =
+                FieldElement::one();
+
+            const Scalar two =
+                FieldElement(2);
+
+            const auto not_last =
+                one - last;
+
+            const auto zero_eval =
+                boundary.zero;
             const auto alpha_quot =
                 evaluation_plan != nullptr
                     ? evaluation_plan->alpha_quot
@@ -1234,7 +1841,16 @@ namespace gatzk::protocol
             const auto t_exp_y_z = eval_z("P_T_exp_y");
             const auto t_elu_x_z = eval_z("P_T_ELU_x");
             const auto t_elu_y_z = eval_z("P_T_ELU_y");
-            BasicQuotientAccumulator<UsePrecomputedAlphaPowers> acc(
+            using ActiveAccumulator =
+                std::conditional_t<
+                    std::is_same_v<
+                        Scalar,
+                        FieldElement>,
+                    BasicQuotientAccumulator<
+                        UsePrecomputedAlphaPowers>,
+                    TEdgeProgramQuotientAccumulator>;
+
+            ActiveAccumulator acc(
                 alpha_quot,
                 return_numerator,
                 precomputed_alpha_powers);
@@ -1284,13 +1900,14 @@ namespace gatzk::protocol
                 for (std::size_t value_index = 0;
                      value_index < labels.decompositions.size(); ++value_index)
                 {
-                    const FieldElement source =
+                    const auto source =
                         value_index == 0   ? a
                         : value_index == 1 ? d - one
                         : value_index == 2 ? q
                         : value_index == 3 ? r
                                            : delta;
-                    auto reconstructed = FieldElement::zero();
+                    Scalar reconstructed =
+                        FieldElement::zero();
                     auto place = FieldElement::one();
                     for (std::size_t limb_index = 0;
                          limb_index < labels.decompositions[value_index].size();
@@ -1334,8 +1951,8 @@ namespace gatzk::protocol
             auto add_logup_constraints = [&](
                                              const std::string &prefix,
                                              const std::string &suffix,
-                                             const FieldElement &q_table,
-                                             const FieldElement &q_query,
+                                             const Scalar &q_table,
+                                             const Scalar &q_query,
                                              const FieldElement &beta)
             {
                 const auto table = eval_z(prefix + "Table_" + suffix);
@@ -1996,7 +2613,8 @@ namespace gatzk::protocol
                     : nullptr);
             {
                 const auto q_avg = eval_z("P_Q_div_avg");
-                auto summed_heads = FieldElement::zero();
+                Scalar summed_heads =
+                    FieldElement::zero();
                 for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
                 {
                     summed_heads += eval_z(
@@ -2018,20 +2636,130 @@ namespace gatzk::protocol
                 if (first_nonzero_value != nullptr)
                     *first_nonzero_value = acc.first_nonzero_value();
             }
-            const auto numerator = acc.value();
+            const auto numerator =
+                acc.value();
+
             if (return_numerator)
             {
                 return numerator;
             }
-            return boundary.zero_inverse.has_value()
-                       ? numerator * *boundary.zero_inverse
-                       : numerator / zero_eval;
+
+            if constexpr (
+                std::is_same_v<
+                    Scalar,
+                    FieldElement>)
+            {
+                return boundary
+                               .zero_inverse
+                               .has_value()
+                           ? numerator *
+                                 *boundary
+                                      .zero_inverse
+                           : numerator /
+                                 zero_eval;
+            }
+            else
+            {
+                throw std::runtime_error(
+                    "symbolic t_edge "
+                    "evaluation requested "
+                    "quotient division");
+            }
         }
 
         throw std::runtime_error(
             "t_edge reached the removed single-output compatibility protocol");
     }
+    TEdgeBoundProgram
+    build_t_edge_bound_program(
+        const ProtocolContext &context,
+        const std::map<
+            std::string,
+            FieldElement> &challenges,
+        const std::map<
+            std::string,
+            FieldElement>
+            &external_evaluations,
+        const TEdgeEvaluationPlan &plan)
+    {
+        TEdgeProgramBuilder builder;
 
+        auto *previous_builder =
+            active_t_edge_program_builder;
+
+        active_t_edge_program_builder =
+            &builder;
+
+        try
+        {
+            const auto first =
+                builder.boundary_first();
+
+            const auto last =
+                builder.boundary_last();
+
+            const auto z =
+                FieldElement(7);
+
+            const auto omega_z =
+                z *
+                context.domains.edge->omega;
+
+            const auto symbolic_eval =
+                [&](const std::string &label,
+                    const FieldElement &point)
+                -> TEdgeProgramScalar
+            {
+                if (point == z)
+                {
+                    return builder.access(
+                        label,
+                        false);
+                }
+
+                if (point == omega_z)
+                {
+                    return builder.access(
+                        label,
+                        true);
+                }
+
+                throw std::runtime_error(
+                    "symbolic t_edge "
+                    "received unsupported "
+                    "evaluation point");
+            };
+
+            (void)evaluate_t_edge_impl<
+                false,
+                TEdgeProgramScalar>(
+                context,
+                challenges,
+                external_evaluations,
+                symbolic_eval,
+                z,
+                true,
+                nullptr,
+                nullptr,
+                nullptr,
+                &plan,
+                nullptr,
+                &first,
+                &last);
+        }
+        catch (...)
+        {
+            active_t_edge_program_builder =
+                previous_builder;
+
+            throw;
+        }
+
+        active_t_edge_program_builder =
+            previous_builder;
+
+        return builder.finish();
+    }
     FieldElement evaluate_t_edge(
         const ProtocolContext &context,
         const std::map<std::string, FieldElement> &challenges,
@@ -2047,7 +2775,9 @@ namespace gatzk::protocol
     {
         if (precomputed_alpha_powers != nullptr)
         {
-            return evaluate_t_edge_impl<true>(
+            return evaluate_t_edge_impl<
+                true,
+                FieldElement>(
                 context,
                 challenges,
                 external_evaluations,
@@ -2060,7 +2790,9 @@ namespace gatzk::protocol
                 evaluation_plan,
                 boundary_values);
         }
-        return evaluate_t_edge_impl<false>(
+        return evaluate_t_edge_impl<
+            false,
+            FieldElement>(
             context,
             challenges,
             external_evaluations,

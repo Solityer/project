@@ -1264,7 +1264,257 @@ namespace gatzk::crypto
             const algebra::FieldElement *const *scalar_vectors,
             std::size_t count,
             std::size_t batch_size)
-    }
+        {
+            if (outputs == nullptr ||
+                points == nullptr ||
+                scalar_vectors == nullptr ||
+                batch_size == 0)
+            {
+                throw std::runtime_error(
+                    "CUDA streamed MSM batch "
+                    "received invalid input");
+            }
+
+            if (batch_size >
+                static_cast<std::size_t>(
+                    std::numeric_limits<
+                        int>::max()))
+            {
+                throw std::runtime_error(
+                    "CUDA streamed MSM batch "
+                    "size exceeds int");
+            }
+
+            for (std::size_t batch = 0;
+                 batch < batch_size;
+                 ++batch)
+            {
+                if (outputs[batch] ==
+                        nullptr ||
+                    scalar_vectors[batch] ==
+                        nullptr)
+                {
+                    throw std::runtime_error(
+                        "CUDA streamed MSM batch "
+                        "contains null member");
+                }
+            }
+
+            if (count == 0)
+            {
+                for (std::size_t batch = 0;
+                     batch < batch_size;
+                     ++batch)
+                {
+                    *outputs[batch] =
+                        g1_zero();
+                }
+
+                return;
+            }
+
+            const auto minimum_chunk =
+                std::min(
+                    count,
+                    kMinimumStreamMsmChunkSize);
+
+            auto chunk_size =
+                std::min(
+                    count,
+                    kPreferredStreamMsmChunkSize);
+
+            StreamMsmBuffers buffers;
+
+            while (!buffers.prepare(
+                chunk_size,
+                batch_size))
+            {
+                if (chunk_size <=
+                    minimum_chunk)
+                {
+                    throw CudaMsmResourcePressure(
+                        "CUDA G1 MSM cannot "
+                        "establish minimum "
+                        "streamed batch "
+                        "working set");
+                }
+
+                chunk_size =
+                    std::max(
+                        minimum_chunk,
+                        chunk_size / 2);
+            }
+
+            util::info(
+                "cuda_msm route=streamed_batch"
+                " count=" +
+                std::to_string(count) +
+                " batch=" +
+                std::to_string(batch_size) +
+                " chunk=" +
+                std::to_string(chunk_size));
+
+            std::vector<G1Point>
+                totals(
+                    batch_size,
+                    g1_zero());
+
+            std::size_t offset = 0;
+
+            while (offset < count)
+            {
+                const auto current_count =
+                    std::min(
+                        chunk_size,
+                        count - offset);
+
+                upload_stream_msm_points(
+                    buffers,
+                    points + offset,
+                    current_count);
+
+                for (std::size_t batch = 0;
+                     batch < batch_size;
+                     ++batch)
+                {
+                    copy_mcl_montgomery_scalars_to_icicle(
+                        buffers
+                                .converted_scalars
+                                .data() +
+                            batch *
+                                current_count,
+                        scalar_vectors[batch] +
+                            offset,
+                        current_count);
+                }
+
+                auto config =
+                    msm::default_msm_config();
+
+                config.points_size =
+                    static_cast<int>(
+                        current_count);
+
+                config.batch_size =
+                    static_cast<int>(
+                        batch_size);
+
+                config.are_points_on_device =
+                    true;
+
+                config.are_points_montgomery_form =
+                    false;
+
+                config.are_scalars_on_device =
+                    false;
+
+                config.are_scalars_montgomery_form =
+                    true;
+
+                config.are_results_on_device =
+                    false;
+
+                std::vector<
+                    bls12_381::projective_t>
+                    results(
+                        batch_size);
+
+                const auto status =
+                    bls12_381_msm_cuda(
+                        buffers
+                            .converted_scalars
+                            .data(),
+                        buffers.device_points,
+                        static_cast<int>(
+                            current_count),
+                        config,
+                        results.data());
+
+                if (status ==
+                    cudaErrorMemoryAllocation)
+                {
+                    (void)cudaGetLastError();
+
+                    while (true)
+                    {
+                        if (chunk_size <=
+                            minimum_chunk)
+                        {
+                            throw CudaMsmResourcePressure(
+                                "CUDA G1 MSM "
+                                "minimum streamed "
+                                "batch chunk still "
+                                "exceeds resources");
+                        }
+
+                        chunk_size =
+                            std::max(
+                                minimum_chunk,
+                                chunk_size / 2);
+
+                        if (buffers.prepare(
+                                chunk_size,
+                                batch_size))
+                        {
+                            break;
+                        }
+                    }
+
+                    util::info(
+                        "cuda_msm "
+                        "route=streamed_batch_retry"
+                        " count=" +
+                        std::to_string(count) +
+                        " batch=" +
+                        std::to_string(
+                            batch_size) +
+                        " chunk=" +
+                        std::to_string(
+                            chunk_size));
+
+                    continue;
+                }
+
+                if (status !=
+                    cudaSuccess)
+                {
+                    throw_cuda_error(
+                        "streamed batch ICICLE "
+                        "execution",
+                        status);
+                }
+
+                for (std::size_t batch = 0;
+                     batch < batch_size;
+                     ++batch)
+                {
+                    const auto partial =
+                        to_mcl_point(
+                            results[batch]);
+
+                    mcl::G1::add(
+                        totals[batch].value,
+                        totals[batch].value,
+                        partial.value);
+                }
+
+                algebra::
+                    record_cuda_kernel_invocations(
+                        1);
+
+                offset += current_count;
+            }
+
+            for (std::size_t batch = 0;
+                 batch < batch_size;
+                 ++batch)
+            {
+                *outputs[batch] =
+                    totals[batch];
+            }
+        }
+
+    } // namespace
     void release_cuda_g1_msm_resident_cache()
     {
         if (!util::route2_options().cuda_field_hotspots)

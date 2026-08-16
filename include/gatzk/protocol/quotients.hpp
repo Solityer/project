@@ -73,12 +73,15 @@ namespace gatzk::protocol
 
     struct TEdgeBoundProgram;
     struct TEdgeEvaluationPlan;
-
     TEdgeBoundProgram build_t_edge_bound_program(
         const ProtocolContext &context,
         const std::map<
             std::string,
             algebra::FieldElement> &challenges,
+        const std::map<
+            std::string,
+            algebra::FieldElement>
+            &external_evaluations,
         const TEdgeEvaluationPlan &plan);
 
     // Evaluate the exact formal `t_FH` alpha-slot sequence from already resolved

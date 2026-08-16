@@ -3,22 +3,15 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
-#include <string>
 #include <vector>
+
+#include <mcl/bn.hpp>
 
 #include "gatzk/algebra/field.hpp"
 #include "gatzk/protocol/t_edge_program.hpp"
 
 namespace gatzk::protocol
 {
-    struct CudaTEdgeLinearTerm
-    {
-        std::size_t source_slot = 0;
-
-        algebra::FieldElement scale =
-            algebra::FieldElement::zero();
-    };
-
     struct CudaTEdgeExecutionProfile
     {
         std::size_t term_count = 0;
@@ -45,32 +38,19 @@ namespace gatzk::protocol
 
         virtual std::size_t cache_slot_count() const = 0;
 
-        virtual void load_evaluation_leaf(
+        virtual void prepare_program(
+            const TEdgeBoundProgram &program) = 0;
+
+        virtual void upload_leaf_chunk(
             std::size_t slot,
+            std::size_t logical_offset,
             const mcl::Fr *values,
-            std::size_t value_count,
-            const std::vector<
-                algebra::FieldElement>
-                &zero_domain_blinder) = 0;
-
-        virtual void load_coefficient_leaf(
-            std::size_t slot,
-            const mcl::Fr *coefficients,
-            std::size_t coefficient_count) = 0;
-
-        virtual void build_linear_leaf(
-            std::size_t destination_slot,
-            const std::vector<
-                CudaTEdgeLinearTerm> &terms,
-            const std::vector<
-                algebra::FieldElement>
-                &blinder_correction) = 0;
+            std::size_t count) = 0;
 
         virtual void accumulate_term(
-            const TEdgeBoundProgram &program,
             std::size_t term_index,
-            const std::vector<
-                std::uint32_t> &access_slots) = 0;
+            const std::vector<std::uint32_t>
+                &access_slots) = 0;
 
         virtual void release_leaf(
             std::size_t slot) = 0;

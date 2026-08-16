@@ -5,6 +5,8 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <cstdint>
+#include <sstream>
 #include <vector>
 #include <memory>
 #include <mutex>
@@ -1399,16 +1401,532 @@ namespace gatzk::algebra
                     sum);
         }
 
+        std::string weighted_dot_cache_key(
+            const std::vector<
+                const mcl::Fr *> &columns,
+            std::size_t total_count)
+        {
+            std::ostringstream out;
+
+            out << total_count
+                << ':'
+                << columns.size();
+
+            for (const auto *column :
+                 columns)
+            {
+                out << ':'
+                    << static_cast<
+                           unsigned long long>(
+                           reinterpret_cast<
+                               std::uintptr_t>(
+                               column));
+            }
+
+            return out.str();
+        }
+
+        std::shared_ptr<
+            WeightedDotWeightCacheEntry>
+        acquire_weighted_dot_weights(
+            const std::vector<
+                const mcl::Fr *> &columns,
+            std::size_t total_count)
+        {
+            for (const auto *column :
+                 columns)
+            {
+                if (column == nullptr)
+                {
+                    throw std::runtime_error(
+                        "CUDA weighted-dot "
+                        "received a null "
+                        "weight column");
+                }
+            }
+
+            const auto key =
+                weighted_dot_cache_key(
+                    columns,
+                    total_count);
+
+            std::lock_guard<std::mutex> lock(
+                weighted_dot_cache_mutex());
+
+            auto &cache =
+                weighted_dot_cache();
+
+            if (const auto found =
+                    cache.find(key);
+                found != cache.end())
+            {
+                return found->second;
+            }
+
+            if (columns.size() >
+                std::numeric_limits<
+                    std::size_t>::max() /
+                    total_count /
+                    sizeof(gpu::GpuFr))
+            {
+                throw std::runtime_error(
+                    "CUDA weighted-dot "
+                    "weight byte overflow");
+            }
+
+            auto entry =
+                std::make_shared<
+                    WeightedDotWeightCacheEntry>();
+
+            entry->domain_size =
+                total_count;
+
+            entry->column_count =
+                columns.size();
+
+            entry->byte_count =
+                total_count *
+                columns.size() *
+                sizeof(gpu::GpuFr);
+
+            auto status =
+                cudaMalloc(
+                    reinterpret_cast<void **>(
+                        &entry->device_weights),
+                    entry->byte_count);
+
+            if (status != cudaSuccess)
+            {
+                throw std::runtime_error(
+                    std::string(
+                        "CUDA weighted-dot "
+                        "weight allocation "
+                        "failed: ") +
+                    cudaGetErrorString(
+                        status));
+            }
+
+            for (std::size_t column = 0;
+                 column < columns.size();
+                 ++column)
+            {
+                status =
+                    cudaMemcpy(
+                        entry->device_weights +
+                            column *
+                                total_count,
+                        columns[column],
+                        total_count *
+                            sizeof(
+                                gpu::GpuFr),
+                        cudaMemcpyHostToDevice);
+
+                if (status !=
+                    cudaSuccess)
+                {
+                    throw std::runtime_error(
+                        std::string(
+                            "CUDA weighted-dot "
+                            "weight upload "
+                            "failed: ") +
+                        cudaGetErrorString(
+                            status));
+                }
+            }
+
+            cache.emplace(
+                key,
+                entry);
+
+            return entry;
+        }
+
         class CudaWeightedDotSessionImpl final
             : public CudaWeightedDotSession
         {
-            // 这里完成：
-            // 1. weights 只上传一次；
-            // 2. device_values_ 复用；
-            // 3. device_partials_ 复用；
-            // 4. device_accumulators_ 常驻；
-            // 5. accumulate() 只上传 value chunk；
-            // 6. finish() 只下载 column_count 个 Fr。
+        public:
+            CudaWeightedDotSessionImpl(
+                const std::vector<
+                    const mcl::Fr *>
+                    &weight_columns,
+                std::size_t total_count,
+                std::size_t
+                    maximum_chunk_size)
+                : total_count_(
+                      total_count),
+                  column_count_(
+                      weight_columns.size()),
+                  maximum_chunk_size_(
+                      std::min(
+                          total_count,
+                          maximum_chunk_size)),
+                  weights_(
+                      acquire_weighted_dot_weights(
+                          weight_columns,
+                          total_count))
+            {
+                static_assert(
+                    sizeof(gpu::GpuFr) ==
+                    sizeof(mcl::Fr));
+
+                if (column_count_ == 0 ||
+                    maximum_chunk_size_ == 0)
+                {
+                    throw std::runtime_error(
+                        "invalid CUDA weighted-dot "
+                        "session shape");
+                }
+
+                constexpr std::size_t
+                    kBlockSize = 256;
+
+                partial_capacity_ =
+                    (maximum_chunk_size_ +
+                     kBlockSize - 1) /
+                    kBlockSize;
+
+                try
+                {
+                    auto status =
+                        cudaMalloc(
+                            reinterpret_cast<
+                                void **>(
+                                &device_values_),
+                            maximum_chunk_size_ *
+                                sizeof(
+                                    gpu::GpuFr));
+
+                    if (status !=
+                        cudaSuccess)
+                    {
+                        throw std::runtime_error(
+                            std::string(
+                                "CUDA weighted-dot "
+                                "value allocation "
+                                "failed: ") +
+                            cudaGetErrorString(
+                                status));
+                    }
+
+                    if (column_count_ >
+                        std::numeric_limits<
+                            std::size_t>::max() /
+                            partial_capacity_ /
+                            sizeof(
+                                gpu::GpuFr))
+                    {
+                        throw std::runtime_error(
+                            "CUDA weighted-dot "
+                            "partial byte overflow");
+                    }
+
+                    status =
+                        cudaMalloc(
+                            reinterpret_cast<
+                                void **>(
+                                &device_partials_),
+                            column_count_ *
+                                partial_capacity_ *
+                                sizeof(
+                                    gpu::GpuFr));
+
+                    if (status !=
+                        cudaSuccess)
+                    {
+                        throw std::runtime_error(
+                            std::string(
+                                "CUDA weighted-dot "
+                                "partial allocation "
+                                "failed: ") +
+                            cudaGetErrorString(
+                                status));
+                    }
+
+                    status =
+                        cudaMalloc(
+                            reinterpret_cast<
+                                void **>(
+                                &device_accumulators_),
+                            column_count_ *
+                                sizeof(
+                                    gpu::GpuFr));
+
+                    if (status !=
+                        cudaSuccess)
+                    {
+                        throw std::runtime_error(
+                            std::string(
+                                "CUDA weighted-dot "
+                                "accumulator "
+                                "allocation failed: ") +
+                            cudaGetErrorString(
+                                status));
+                    }
+
+                    status =
+                        cudaMemset(
+                            device_accumulators_,
+                            0,
+                            column_count_ *
+                                sizeof(
+                                    gpu::GpuFr));
+
+                    if (status !=
+                        cudaSuccess)
+                    {
+                        throw std::runtime_error(
+                            std::string(
+                                "CUDA weighted-dot "
+                                "accumulator clear "
+                                "failed: ") +
+                            cudaGetErrorString(
+                                status));
+                    }
+                }
+                catch (...)
+                {
+                    release_noexcept();
+                    throw;
+                }
+            }
+
+            ~CudaWeightedDotSessionImpl()
+                override
+            {
+                release_noexcept();
+            }
+
+            void accumulate(
+                const mcl::Fr *values,
+                std::size_t offset,
+                std::size_t count)
+                override
+            {
+                if (finished_)
+                {
+                    throw std::runtime_error(
+                        "CUDA weighted-dot "
+                        "session was already "
+                        "finished");
+                }
+
+                if (count == 0)
+                {
+                    return;
+                }
+
+                if (values == nullptr ||
+                    offset >
+                        total_count_ ||
+                    count >
+                        total_count_ -
+                            offset ||
+                    count >
+                        maximum_chunk_size_)
+                {
+                    throw std::runtime_error(
+                        "invalid CUDA weighted-dot "
+                        "chunk");
+                }
+
+                auto status =
+                    cudaMemcpy(
+                        device_values_,
+                        values,
+                        count *
+                            sizeof(
+                                gpu::GpuFr),
+                        cudaMemcpyHostToDevice);
+
+                if (status != cudaSuccess)
+                {
+                    throw std::runtime_error(
+                        std::string(
+                            "CUDA weighted-dot "
+                            "value upload failed: ") +
+                        cudaGetErrorString(
+                            status));
+                }
+
+                constexpr unsigned
+                    kBlockSize = 256;
+
+                const auto partial_count =
+                    (count +
+                     kBlockSize - 1) /
+                    kBlockSize;
+
+                if (partial_count >
+                        std::numeric_limits<
+                            unsigned>::max() ||
+                    column_count_ >
+                        65535)
+                {
+                    throw std::runtime_error(
+                        "CUDA weighted-dot grid "
+                        "overflow");
+                }
+
+                const dim3 grid(
+                    static_cast<unsigned>(
+                        partial_count),
+                    static_cast<unsigned>(
+                        column_count_),
+                    1);
+
+                weighted_dot_chunk_kernel<<<
+                    grid,
+                    kBlockSize,
+                    kBlockSize *
+                        sizeof(
+                            gpu::GpuFr)>>>(
+                    weights_->device_weights,
+                    device_values_,
+                    device_partials_,
+                    total_count_,
+                    offset,
+                    count,
+                    column_count_);
+
+                status =
+                    cudaGetLastError();
+
+                if (status !=
+                    cudaSuccess)
+                {
+                    throw std::runtime_error(
+                        std::string(
+                            "CUDA weighted-dot "
+                            "chunk kernel failed: ") +
+                        cudaGetErrorString(
+                            status));
+                }
+
+                weighted_dot_reduce_kernel<<<
+                    static_cast<unsigned>(
+                        column_count_),
+                    1>>>(
+                    device_partials_,
+                    device_accumulators_,
+                    partial_count,
+                    column_count_);
+
+                status =
+                    cudaGetLastError();
+
+                if (status !=
+                    cudaSuccess)
+                {
+                    throw std::runtime_error(
+                        std::string(
+                            "CUDA weighted-dot "
+                            "reduce kernel failed: ") +
+                        cudaGetErrorString(
+                            status));
+                }
+
+                record_cuda_kernel_invocations(
+                    2);
+            }
+
+            std::vector<mcl::Fr>
+            finish() override
+            {
+                if (finished_)
+                {
+                    throw std::runtime_error(
+                        "CUDA weighted-dot "
+                        "session was already "
+                        "finished");
+                }
+
+                std::vector<mcl::Fr>
+                    output(
+                        column_count_);
+
+                const auto status =
+                    cudaMemcpy(
+                        output.data(),
+                        device_accumulators_,
+                        column_count_ *
+                            sizeof(
+                                gpu::GpuFr),
+                        cudaMemcpyDeviceToHost);
+
+                if (status != cudaSuccess)
+                {
+                    throw std::runtime_error(
+                        std::string(
+                            "CUDA weighted-dot "
+                            "result download "
+                            "failed: ") +
+                        cudaGetErrorString(
+                            status));
+                }
+
+                finished_ = true;
+
+                return output;
+            }
+
+        private:
+            void release_noexcept() noexcept
+            {
+                if (device_values_ !=
+                    nullptr)
+                {
+                    (void)cudaFree(
+                        device_values_);
+                }
+
+                if (device_partials_ !=
+                    nullptr)
+                {
+                    (void)cudaFree(
+                        device_partials_);
+                }
+
+                if (device_accumulators_ !=
+                    nullptr)
+                {
+                    (void)cudaFree(
+                        device_accumulators_);
+                }
+
+                device_values_ =
+                    nullptr;
+
+                device_partials_ =
+                    nullptr;
+
+                device_accumulators_ =
+                    nullptr;
+            }
+
+            std::size_t total_count_ = 0;
+            std::size_t column_count_ = 0;
+
+            std::size_t
+                maximum_chunk_size_ = 0;
+
+            std::size_t
+                partial_capacity_ = 0;
+
+            std::shared_ptr<
+                WeightedDotWeightCacheEntry>
+                weights_;
+
+            gpu::GpuFr *device_values_ =
+                nullptr;
+
+            gpu::GpuFr *device_partials_ =
+                nullptr;
+
+            gpu::GpuFr
+                *device_accumulators_ =
+                    nullptr;
+
+            bool finished_ = false;
         };
     }
 

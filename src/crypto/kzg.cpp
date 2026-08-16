@@ -2534,16 +2534,26 @@ namespace gatzk::crypto
                 first_group == second_group)
             {
                 throw std::runtime_error(
-                    "paired streamed opening requires two distinct folded groups");
+                    "paired streamed opening "
+                    "requires two distinct "
+                    "folded groups");
             }
 
-            if (source_values.size() >
+            if (target_offset >
                     first_group->folded_values.size() ||
+                target_offset >
+                    second_group->folded_values.size() ||
                 source_values.size() >
-                    second_group->folded_values.size())
+                    first_group->folded_values.size() -
+                        target_offset ||
+                source_values.size() >
+                    second_group->folded_values.size() -
+                        target_offset)
             {
                 throw std::runtime_error(
-                    "paired streamed evaluation source exceeds its domain: " +
+                    "paired streamed evaluation "
+                    "source exceeds its target "
+                    "range: " +
                     label);
             }
 
@@ -2554,7 +2564,8 @@ namespace gatzk::crypto
                     source_values,
                     second_scale,
                     label,
-                    worker_cap);
+                    worker_cap,
+                    target_offset);
 
                 return;
             }
@@ -2566,22 +2577,30 @@ namespace gatzk::crypto
                     source_values,
                     first_scale,
                     label,
-                    worker_cap);
+                    worker_cap,
+                    target_offset);
 
                 return;
             }
 
             auto *first_native =
-                FieldElement::mutable_native_array_data(
-                    first_group->folded_values.data());
+                FieldElement::
+                    mutable_native_array_data(
+                        first_group->folded_values
+                            .data()) +
+                target_offset;
 
             auto *second_native =
-                FieldElement::mutable_native_array_data(
-                    second_group->folded_values.data());
+                FieldElement::
+                    mutable_native_array_data(
+                        second_group->folded_values
+                            .data()) +
+                target_offset;
 
             const auto *source_native =
-                FieldElement::native_array_data(
-                    source_values.data());
+                FieldElement::
+                    native_array_data(
+                        source_values.data());
 
             const auto first_scale_native =
                 first_scale.native();
@@ -2605,15 +2624,19 @@ namespace gatzk::crypto
                     [&](std::size_t begin,
                         std::size_t end)
                     {
-                        for (std::size_t row = begin;
+                        for (std::size_t row =
+                                 begin;
                              row < end;
                              ++row)
                         {
                             const auto source =
                                 source_native[row];
 
-                            mcl::Fr first_product;
-                            mcl::Fr second_product;
+                            mcl::Fr
+                                first_product;
+
+                            mcl::Fr
+                                second_product;
 
                             mcl::Fr::mul(
                                 first_product,
@@ -3702,16 +3725,27 @@ const auto material =
                     const DeferredStreamedSemanticSource
                         &source)
             {
+                auto &group =
+                    require_folded_evaluation_group(
+                        &result.plans[plan_index],
+                        source.info.domain);
+
+                if (source.info.file_backed)
+                {
+                    accumulate_file_backed_semantic_source(
+                        &group,
+                        source.info,
+                        source.scale,
+                        worker_caps[plan_index]);
+
+                    return;
+                }
+
                 const auto material =
                     resolve_streamed_semantic_source_material(
                         opening_resolver,
                         source.representative,
                         source.info);
-
-                auto &group =
-                    require_folded_evaluation_group(
-                        &result.plans[plan_index],
-                        source.info.domain);
 
                 accumulate_streamed_evaluation_source(
                     &group,
@@ -3770,12 +3804,6 @@ const auto material =
 
                     continue;
                 }
-
-                const auto material =
-                    resolve_streamed_semantic_source_material(
-                        opening_resolver,
-                        first.representative,
-                        first.info);
 
                 auto &first_group =
                     require_folded_evaluation_group(

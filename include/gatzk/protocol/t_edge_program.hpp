@@ -13,10 +13,6 @@ namespace gatzk::protocol
     {
         LoadAccess,
         LoadConstant,
-        LoadBoundaryFirst,
-        LoadBoundaryLast,
-        LoadZeroPolynomial,
-        LoadZeroPolynomialInverse,
         Add,
         Subtract,
         Multiply,
@@ -42,7 +38,6 @@ namespace gatzk::protocol
         std::size_t instruction_begin = 0;
         std::size_t instruction_end = 0;
 
-        // Exact alpha_quot power used by the canonical accumulator.
         algebra::FieldElement alpha_scale =
             algebra::FieldElement::one();
 
