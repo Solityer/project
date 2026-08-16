@@ -3388,31 +3388,29 @@ namespace gatzk::crypto
                         }
                         else
                         {
-                            if (source.info.file_backed)
+                            if (semantic_fold.info.file_backed)
                             {
-                                auto &group =
-                                    require_folded_evaluation_group(
-                                        &result.plans[plan_index],
-                                        source.info.domain);
-
                                 accumulate_file_backed_semantic_source(
                                     &group,
-                                    source.info,
-                                    source.scale,
-                                    worker_caps[plan_index]);
-
-                                return;
+                                    semantic_fold.info,
+                                    semantic_fold.source_scale,
+                                    worker_cap);
                             }
+                            else
+                            {
+                                const auto material =
+                                    resolve_streamed_semantic_source_material(
+                                        opening_resolver,
+                                        commitments[i],
+                                        semantic_fold.info);
 
-const auto material =
-    resolve_streamed_semantic_source_material(
-
-                            accumulate_streamed_evaluation_source(
-                                &group,
-                                material->values(),
-                                semantic_fold.source_scale,
-                                commitments[i].name,
-                                worker_cap);
+                                accumulate_streamed_evaluation_source(
+                                    &group,
+                                    material->values(),
+                                    semantic_fold.source_scale,
+                                    commitments[i].name,
+                                    worker_cap);
+                            }
                         }
                     }
 

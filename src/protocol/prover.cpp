@@ -1485,13 +1485,20 @@ namespace gatzk::protocol
         {
             if (domain == nullptr)
             {
-                throw std::runtime_error("spilled polynomial is missing its domain");
+                throw std::runtime_error(
+                    "spilled polynomial is missing its domain");
             }
+
             if (points.size() != weights.size())
             {
-                throw std::runtime_error("spilled polynomial point/weight count mismatch");
+                throw std::runtime_error(
+                    "spilled polynomial point/weight count mismatch");
             }
-            std::vector<FieldElement> values(points.size(), FieldElement::zero());
+
+            std::vector<FieldElement> values(
+                points.size(),
+                FieldElement::zero());
+
             if (points.empty())
             {
                 return values;
@@ -1499,33 +1506,61 @@ namespace gatzk::protocol
 
             std::vector<std::size_t> interpolation_indices;
             std::vector<std::size_t> direct_indices;
-            interpolation_indices.reserve(points.size());
-            direct_indices.reserve(points.size());
-            for (std::size_t point_index = 0; point_index < points.size(); ++point_index)
+
+            interpolation_indices.reserve(
+                points.size());
+
+            direct_indices.reserve(
+                points.size());
+
+            for (std::size_t point_index = 0;
+                 point_index < points.size();
+                 ++point_index)
             {
                 if (weights[point_index] == nullptr)
                 {
-                    throw std::runtime_error("spilled polynomial received null domain weights");
+                    throw std::runtime_error(
+                        "spilled polynomial received null domain weights");
                 }
-                if (weights[point_index]->direct_index.has_value())
+
+                if (weights[point_index]
+                        ->direct_index
+                        .has_value())
                 {
-                    direct_indices.push_back(point_index);
+                    direct_indices.push_back(
+                        point_index);
+
                     continue;
                 }
-                if (weights[point_index]->native_weights.size() < spilled.size)
+
+                if (weights[point_index]
+                        ->native_weights.size() <
+                    spilled.size)
                 {
-                    throw std::runtime_error("spilled polynomial exceeds its domain weights");
+                    throw std::runtime_error(
+                        "spilled polynomial exceeds its domain weights");
                 }
-                interpolation_indices.push_back(point_index);
+
+                interpolation_indices.push_back(
+                    point_index);
             }
 
             constexpr std::size_t kFieldBytes = 32;
-            std::array<std::uint8_t, kFieldBytes> bytes{};
-            std::ifstream stream(spilled.path, std::ios::binary);
+
+            std::array<std::uint8_t, kFieldBytes>
+                bytes{};
+
+            std::ifstream stream(
+                spilled.path,
+                std::ios::binary);
+
             if (!stream)
             {
-                throw std::runtime_error("failed to open spilled polynomial file: " + spilled.path);
+                throw std::runtime_error(
+                    "failed to open spilled polynomial file: " +
+                    spilled.path);
             }
+
             if (profile != nullptr)
             {
                 ++profile->file_open_count;
@@ -1533,26 +1568,50 @@ namespace gatzk::protocol
 
             if (interpolation_indices.empty())
             {
-                for (const auto point_index : direct_indices)
+                for (const auto point_index :
+                     direct_indices)
                 {
-                    const auto direct_index = *weights[point_index]->direct_index;
+                    const auto direct_index =
+                        *weights[point_index]
+                             ->direct_index;
+
                     if (direct_index >= spilled.size)
                     {
                         continue;
                     }
-                    const auto offset = static_cast<std::streamoff>(direct_index * kFieldBytes);
+
+                    const auto offset =
+                        static_cast<std::streamoff>(
+                            direct_index *
+                            kFieldBytes);
+
                     stream.seekg(offset);
-                    stream.read(reinterpret_cast<char *>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+
+                    stream.read(
+                        reinterpret_cast<char *>(
+                            bytes.data()),
+                        static_cast<std::streamsize>(
+                            bytes.size()));
+
                     if (!stream)
                     {
-                        throw std::runtime_error("failed to read direct spilled polynomial entry: " + spilled.path);
+                        throw std::runtime_error(
+                            "failed to read direct spilled polynomial entry: " +
+                            spilled.path);
                     }
-                    values[point_index] = FieldElement::from_little_endian_mod(bytes.data(), bytes.size());
+
+                    values[point_index] =
+                        FieldElement::
+                            from_little_endian_mod(
+                                bytes.data(),
+                                bytes.size());
+
                     if (profile != nullptr)
                     {
                         ++profile->direct_values_resolved;
                     }
                 }
+
                 return values;
             }
 
@@ -1560,19 +1619,14 @@ namespace gatzk::protocol
             {
                 ++profile->sequential_pass_count;
             }
-            std::vector<mcl::Fr> native_sums(points.size());
-            for (auto &sum : native_sums)
-            {
-                sum.clear();
-            }
+
             const bool use_cuda_stream =
                 util::route2_options()
                     .cuda_field_hotspots &&
                 algebra::
                     cuda_field_hotspots_available() &&
                 spilled.size >=
-                    (std::size_t{1} << 18) &&
-                !interpolation_indices.empty();
+                    (std::size_t{1} << 18);
 
             if (use_cuda_stream)
             {
@@ -1610,9 +1664,6 @@ namespace gatzk::protocol
                 std::vector<mcl::Fr> chunk(
                     kCudaSpilledChunkSize);
 
-                std::array<std::uint8_t, 32>
-                    bytes{};
-
                 for (std::size_t offset = 0;
                      offset < spilled.size;)
                 {
@@ -1638,12 +1689,34 @@ namespace gatzk::protocol
                                 spilled.path);
                         }
 
-                        chunk[local] =
+                        const auto value =
                             FieldElement::
                                 from_little_endian_mod(
                                     bytes.data(),
-                                    bytes.size())
-                                    .native();
+                                    bytes.size());
+
+                        chunk[local] =
+                            value.native();
+
+                        const auto index =
+                            offset + local;
+
+                        for (const auto point_index :
+                             direct_indices)
+                        {
+                            if (*weights[point_index]
+                                     ->direct_index ==
+                                index)
+                            {
+                                values[point_index] =
+                                    value;
+
+                                if (profile != nullptr)
+                                {
+                                    ++profile->direct_values_resolved;
+                                }
+                            }
+                        }
                     }
 
                     session->accumulate(
@@ -1656,6 +1729,13 @@ namespace gatzk::protocol
 
                 const auto native_results =
                     session->finish();
+
+                if (native_results.size() !=
+                    interpolation_indices.size())
+                {
+                    throw std::runtime_error(
+                        "CUDA spilled evaluation result count mismatch");
+                }
 
                 for (std::size_t column = 0;
                      column <
@@ -1674,36 +1754,119 @@ namespace gatzk::protocol
                              .empty())
                     {
                         values[point_index] +=
-                            domain
-                                ->zero_polynomial_eval(
-                                    points[point_index]) *
+                            domain->zero_polynomial_eval(
+                                points[point_index]) *
                             algebra::horner(
                                 spilled
                                     .zero_domain_blinder,
                                 points[point_index]);
                     }
                 }
+
+                if (profile != nullptr)
+                {
+                    profile->field_elements_streamed +=
+                        spilled.size;
+                }
+
+                return values;
             }
-            else
+
+            std::vector<mcl::Fr> native_sums(
+                points.size());
+
+            for (auto &sum : native_sums)
             {
-                // 原 CPU 循环完整保留
+                sum.clear();
+            }
+
+            for (std::size_t index = 0;
+                 index < spilled.size;
+                 ++index)
+            {
+                stream.read(
+                    reinterpret_cast<char *>(
+                        bytes.data()),
+                    static_cast<std::streamsize>(
+                        bytes.size()));
+
+                if (!stream)
+                {
+                    throw std::runtime_error(
+                        "failed to stream spilled polynomial: " +
+                        spilled.path);
+                }
+
+                const auto value =
+                    FieldElement::
+                        from_little_endian_mod(
+                            bytes.data(),
+                            bytes.size());
+
+                for (const auto point_index :
+                     interpolation_indices)
+                {
+                    mcl::Fr term;
+
+                    mcl::Fr::mul(
+                        term,
+                        value.native(),
+                        weights[point_index]
+                            ->native_weights[index]);
+
+                    mcl::Fr::add(
+                        native_sums[point_index],
+                        native_sums[point_index],
+                        term);
+                }
+
+                for (const auto point_index :
+                     direct_indices)
+                {
+                    if (*weights[point_index]
+                             ->direct_index ==
+                        index)
+                    {
+                        values[point_index] =
+                            value;
+
+                        if (profile != nullptr)
+                        {
+                            ++profile->direct_values_resolved;
+                        }
+                    }
+                }
             }
 
             if (profile != nullptr)
             {
-                profile->field_elements_streamed += spilled.size;
+                profile->field_elements_streamed +=
+                    spilled.size;
             }
-            for (const auto point_index : interpolation_indices)
+
+            for (const auto point_index :
+                 interpolation_indices)
             {
-                values[point_index] = FieldElement::from_native(native_sums[point_index]);
-                if (!spilled.zero_domain_blinder.empty())
+                values[point_index] =
+                    FieldElement::from_native(
+                        native_sums[point_index]);
+
+                if (!spilled
+                         .zero_domain_blinder
+                         .empty())
                 {
-                    values[point_index] += domain->zero_polynomial_eval(points[point_index]) * algebra::horner(spilled.zero_domain_blinder, points[point_index]);
+                    values[point_index] +=
+                        domain->zero_polynomial_eval(
+                            points[point_index]) *
+                        algebra::horner(
+                            spilled
+                                .zero_domain_blinder,
+                            points[point_index]);
                 }
             }
+
             return values;
         }
-
         // proof 级 memoization 只缓存“当前 trace + 当前 Fiat-Shamir 挑战”派生出的值。
         // 这样既能避免同一点重复求值，又不会把不同 proof 实例的状态混在一起。
         class EvaluationMemoization
