@@ -523,6 +523,92 @@ namespace
                     domain_size,
             "CUDA spilled weighted route "
             "changed streamed element count");
+
+            const std::vector<FieldElement>
+            mixed_points{
+                domain->point_at(17),
+                point,
+            };
+
+        std::vector<
+            const gatzk::algebra::
+                DomainEvaluationWeights *>
+            mixed_weights;
+
+        mixed_weights.reserve(
+            mixed_points.size());
+
+        for (const auto &mixed_point :
+             mixed_points)
+        {
+            mixed_weights.push_back(
+                &weight_cache.get(
+                    domain,
+                    mixed_point));
+        }
+
+        gatzk::util::
+            set_route2_options(
+                gpu_route);
+
+        const auto mixed_cuda_before =
+            gatzk::algebra::
+                cuda_kernel_invocation_count();
+
+        gatzk::protocol::
+            SpilledEvaluationProfile
+                mixed_profile;
+
+        const auto mixed_actual =
+            gatzk::protocol::
+                evaluate_spilled_evaluation_polynomial_points(
+                    spilled,
+                    domain,
+                    mixed_points,
+                    mixed_weights,
+                    &mixed_profile);
+
+        const auto mixed_cuda_after =
+            gatzk::algebra::
+                cuda_kernel_invocation_count();
+
+        gatzk::util::
+            set_route2_options(
+                saved_route);
+
+        gatzk::algebra::
+            release_cuda_weighted_dot_cache();
+
+        require(
+            mixed_actual.size() == 2 &&
+                mixed_actual[0] ==
+                    values[17] &&
+                mixed_actual[1] ==
+                    polynomial.evaluate(point),
+            "CUDA spilled weighted mixed "
+            "direct/interpolated request "
+            "changed exact values");
+
+        require(
+            mixed_profile
+                    .direct_values_resolved ==
+                1 &&
+                mixed_profile
+                    .sequential_pass_count ==
+                1 &&
+                mixed_profile
+                    .field_elements_streamed ==
+                domain_size,
+            "CUDA spilled weighted mixed "
+            "request changed direct or "
+            "one-pass semantics");
+
+        require(
+            mixed_cuda_after >
+                mixed_cuda_before,
+            "CUDA spilled weighted mixed "
+            "request did not enter CUDA "
+            "for the interpolated point");
     }
     void test_fh_precomputed_boundary_equivalence()
     {
