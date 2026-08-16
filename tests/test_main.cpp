@@ -20,6 +20,7 @@
 #include <openssl/sha.h>
 
 #include "gatzk/algebra/domain_evaluation.hpp"
+#include "gatzk/algebra/cuda_weighted_session.hpp"
 #include "gatzk/algebra/eval_backend.hpp"
 #include "gatzk/algebra/field_io.hpp"
 #include "gatzk/algebra/polynomial.hpp"
@@ -39,6 +40,7 @@
 #include "gatzk/protocol/trace.hpp"
 #include "gatzk/protocol/verifier.hpp"
 #include "gatzk/util/config.hpp"
+#include "gatzk/util/route2.hpp"
 
 namespace
 {
@@ -252,6 +254,276 @@ namespace
             "small spill batches must remain serial and preserve request order");
     }
 
+    void test_cuda_spilled_weighted_session_equivalence()
+    {
+        if (!gatzk::algebra::
+                cuda_field_hotspots_available())
+        {
+            return;
+        }
+
+        constexpr std::size_t domain_size =
+            std::size_t{1} << 18;
+
+        const auto domain =
+            gatzk::algebra::
+                RootOfUnityDomain::create(
+                    "cuda_spilled_weighted_regression",
+                    domain_size);
+
+        std::vector<FieldElement> values(
+            domain_size,
+            FieldElement::zero());
+
+        for (std::size_t index = 0;
+             index < values.size();
+             ++index)
+        {
+            values[index] =
+                FieldElement(
+                    static_cast<std::uint64_t>(
+                        index * 17U +
+                        index * index +
+                        31U));
+        }
+
+        auto polynomial =
+            gatzk::algebra::Polynomial::
+                from_evaluations(
+                    "P_cuda_spilled_weighted",
+                    values,
+                    domain);
+
+        polynomial.set_zero_domain_blinder(
+            {
+                FieldElement(43),
+                FieldElement(47),
+                FieldElement(53),
+            });
+
+        const auto spill_path =
+            std::filesystem::path(
+                GATZK_TEST_BINARY_DIR) /
+            "cuda_spilled_weighted_regression.bin";
+
+        struct Cleanup
+        {
+            std::filesystem::path path;
+
+            ~Cleanup()
+            {
+                std::error_code ignored;
+
+                std::filesystem::remove(
+                    path,
+                    ignored);
+            }
+        } cleanup{spill_path};
+
+        {
+            std::ofstream output(
+                spill_path,
+                std::ios::binary |
+                    std::ios::trunc);
+
+            require(
+                static_cast<bool>(output),
+                "failed to create CUDA "
+                "spilled weighted fixture");
+
+            std::array<std::uint8_t, 32>
+                bytes{};
+
+            for (const auto &value : values)
+            {
+                value.write_little_endian(
+                    bytes.data(),
+                    bytes.size());
+
+                output.write(
+                    reinterpret_cast<
+                        const char *>(
+                        bytes.data()),
+                    static_cast<
+                        std::streamsize>(
+                        bytes.size()));
+            }
+
+            require(
+                static_cast<bool>(output),
+                "failed to write CUDA "
+                "spilled weighted fixture");
+        }
+
+        const gatzk::protocol::
+            TraceArtifacts::
+                SpilledEvaluationPolynomial
+                    spilled{
+                        .path =
+                            spill_path.string(),
+                        .domain_name =
+                            domain->name,
+                        .size =
+                            domain_size,
+                        .zero_domain_blinder =
+                            polynomial
+                                .zero_domain_blinder,
+                    };
+
+        const auto point =
+            choose_non_domain_point(
+                *domain);
+
+        const std::vector<FieldElement>
+            points{
+                point,
+                point * domain->omega,
+            };
+
+        gatzk::algebra::
+            DomainEvaluationWeightCache
+                weight_cache;
+
+        std::vector<
+            const gatzk::algebra::
+                DomainEvaluationWeights *>
+            weights;
+
+        weights.reserve(
+            points.size());
+
+        for (const auto &current_point :
+             points)
+        {
+            weights.push_back(
+                &weight_cache.get(
+                    domain,
+                    current_point));
+        }
+
+        const auto saved_route =
+            gatzk::util::
+                route2_options();
+
+        auto cpu_route =
+            saved_route;
+
+        cpu_route.cuda_field_hotspots =
+            false;
+
+        gatzk::util::
+            set_route2_options(
+                cpu_route);
+
+        const auto cpu_kernels_before =
+            gatzk::algebra::
+                cuda_kernel_invocation_count();
+
+        gatzk::protocol::
+            SpilledEvaluationProfile
+                cpu_profile;
+
+        const auto expected =
+            gatzk::protocol::
+                evaluate_spilled_evaluation_polynomial_points(
+                    spilled,
+                    domain,
+                    points,
+                    weights,
+                    &cpu_profile);
+
+        const auto cpu_kernels_after =
+            gatzk::algebra::
+                cuda_kernel_invocation_count();
+
+        require(
+            cpu_kernels_after ==
+                cpu_kernels_before,
+            "CPU spilled weighted route "
+            "launched CUDA kernels");
+
+        auto gpu_route =
+            saved_route;
+
+        gpu_route.cuda_field_hotspots =
+            true;
+
+        gatzk::util::
+            set_route2_options(
+                gpu_route);
+
+        const auto gpu_kernels_before =
+            gatzk::algebra::
+                cuda_kernel_invocation_count();
+
+        gatzk::protocol::
+            SpilledEvaluationProfile
+                gpu_profile;
+
+        const auto actual =
+            gatzk::protocol::
+                evaluate_spilled_evaluation_polynomial_points(
+                    spilled,
+                    domain,
+                    points,
+                    weights,
+                    &gpu_profile);
+
+        const auto gpu_kernels_after =
+            gatzk::algebra::
+                cuda_kernel_invocation_count();
+
+        gatzk::util::
+            set_route2_options(
+                saved_route);
+
+        gatzk::algebra::
+            release_cuda_weighted_dot_cache();
+
+        require(
+            actual == expected,
+            "CUDA spilled weighted session "
+            "differs from CPU reference");
+
+        for (std::size_t index = 0;
+             index < points.size();
+             ++index)
+        {
+            require(
+                actual[index] ==
+                    polynomial.evaluate(
+                        points[index]),
+                "CUDA spilled weighted session "
+                "changed exact polynomial "
+                "evaluation");
+        }
+
+        require(
+            gpu_kernels_after >
+                gpu_kernels_before,
+            "CUDA spilled weighted test "
+            "did not enter CUDA session");
+
+        require(
+            cpu_profile
+                        .sequential_pass_count ==
+                    1 &&
+                gpu_profile
+                        .sequential_pass_count ==
+                    1,
+            "CUDA spilled weighted route "
+            "changed one-pass semantics");
+
+        require(
+            cpu_profile
+                        .field_elements_streamed ==
+                    domain_size &&
+                gpu_profile
+                        .field_elements_streamed ==
+                    domain_size,
+            "CUDA spilled weighted route "
+            "changed streamed element count");
+    }
     void test_fh_precomputed_boundary_equivalence()
     {
         gatzk::protocol::ProtocolContext context;
@@ -1348,7 +1620,308 @@ namespace
                 keys.vk),
             "independently challenged point groups must verify");
     }
+    void test_t_edge_bound_program_equivalence()
+    {
+        const auto &fixture =
+            unit_security_fixture();
 
+        const auto &context =
+            fixture.context;
+
+        const auto &trace =
+            fixture.trace;
+
+        const auto challenges =
+            gatzk::protocol::
+                replay_challenges(
+                    context,
+                    trace.commitments,
+                    {},
+                    &trace.public_metadata);
+
+        const auto evaluation_plan =
+            gatzk::protocol::
+                build_t_edge_evaluation_plan(
+                    context,
+                    challenges);
+
+        require(
+            evaluation_plan != nullptr,
+            "t_edge bound-program test "
+            "did not build evaluation plan");
+
+        const auto program =
+            gatzk::protocol::
+                build_t_edge_bound_program(
+                    context,
+                    challenges,
+                    trace.external_evaluations,
+                    *evaluation_plan);
+
+        require(
+            !program.terms.empty(),
+            "t_edge bound program "
+            "contains no terms");
+
+        require(
+            !program.instructions.empty(),
+            "t_edge bound program "
+            "contains no instructions");
+
+        const auto z =
+            choose_non_domain_point(
+                *context.domains.edge);
+
+        const auto omega_z =
+            z *
+            context.domains.edge->omega;
+
+        const gatzk::protocol::EvalFn
+            synthetic_eval =
+                [&](const std::string &label,
+                    const FieldElement &point)
+        {
+            std::uint64_t seed =
+                1469598103934665603ULL;
+
+            for (const auto ch : label)
+            {
+                seed ^=
+                    static_cast<
+                        unsigned char>(
+                        ch);
+
+                seed *=
+                    1099511628211ULL;
+            }
+
+            return FieldElement(
+                       1 +
+                       seed %
+                           104729ULL) +
+                   point *
+                       FieldElement(
+                           3 +
+                           seed %
+                               257ULL);
+        };
+
+        const auto expected_numerator =
+            gatzk::protocol::
+                evaluate_t_edge(
+                    context,
+                    challenges,
+                    trace.external_evaluations,
+                    synthetic_eval,
+                    z,
+                    true,
+                    nullptr,
+                    nullptr,
+                    nullptr,
+                    evaluation_plan.get());
+
+        const auto access_value =
+            [&](std::uint32_t access_index)
+        {
+            require(
+                access_index <
+                    program.accesses.size(),
+                "t_edge bound program "
+                "access index overflow");
+
+            const auto &access =
+                program.accesses[access_index];
+
+            if (access.label ==
+                "__t_edge_boundary_l0")
+            {
+                if (access.rotated)
+                {
+                    return context.domains.edge->lagrange_basis_eval(
+                        context
+                                .domains
+                                .edge
+                                ->size -
+                            1,
+                        z);
+                }
+
+                return context.domains.edge->lagrange_basis_eval(
+                    0,
+                    z);
+            }
+
+            return synthetic_eval(
+                access.label,
+                access.rotated
+                    ? omega_z
+                    : z);
+        };
+
+        auto actual_numerator =
+            FieldElement::zero();
+
+        for (const auto &term :
+             program.terms)
+        {
+            require(
+                term.instruction_begin <=
+                        term.instruction_end &&
+                    term.instruction_end <=
+                        program.instructions
+                            .size(),
+                "t_edge bound program "
+                "instruction range invalid");
+
+            std::vector<FieldElement>
+                stack;
+
+            stack.reserve(
+                std::max<std::size_t>(
+                    1,
+                    term.maximum_stack_depth));
+
+            for (std::size_t index =
+                     term.instruction_begin;
+                 index <
+                 term.instruction_end;
+                 ++index)
+            {
+                const auto instruction =
+                    program.instructions[index];
+
+                switch (
+                    instruction.opcode)
+                {
+                case gatzk::protocol::
+                    TEdgeProgramOpcode::
+                        LoadAccess:
+                    stack.push_back(
+                        access_value(
+                            instruction
+                                .operand));
+                    break;
+
+                case gatzk::protocol::
+                    TEdgeProgramOpcode::
+                        LoadConstant:
+                    require(
+                        instruction.operand <
+                            program.constants
+                                .size(),
+                        "t_edge bound program "
+                        "constant index "
+                        "overflow");
+
+                    stack.push_back(
+                        program.constants[instruction
+                                              .operand]);
+                    break;
+
+                case gatzk::protocol::
+                    TEdgeProgramOpcode::Add:
+                {
+                    require(
+                        stack.size() >= 2,
+                        "t_edge bound program "
+                        "add stack underflow");
+
+                    const auto rhs =
+                        stack.back();
+
+                    stack.pop_back();
+
+                    const auto lhs =
+                        stack.back();
+
+                    stack.back() =
+                        lhs + rhs;
+
+                    break;
+                }
+
+                case gatzk::protocol::
+                    TEdgeProgramOpcode::
+                        Subtract:
+                {
+                    require(
+                        stack.size() >= 2,
+                        "t_edge bound program "
+                        "subtract stack "
+                        "underflow");
+
+                    const auto rhs =
+                        stack.back();
+
+                    stack.pop_back();
+
+                    const auto lhs =
+                        stack.back();
+
+                    stack.back() =
+                        lhs - rhs;
+
+                    break;
+                }
+
+                case gatzk::protocol::
+                    TEdgeProgramOpcode::
+                        Multiply:
+                {
+                    require(
+                        stack.size() >= 2,
+                        "t_edge bound program "
+                        "multiply stack "
+                        "underflow");
+
+                    const auto rhs =
+                        stack.back();
+
+                    stack.pop_back();
+
+                    const auto lhs =
+                        stack.back();
+
+                    stack.back() =
+                        lhs * rhs;
+
+                    break;
+                }
+
+                case gatzk::protocol::
+                    TEdgeProgramOpcode::
+                        Negate:
+                    require(
+                        !stack.empty(),
+                        "t_edge bound program "
+                        "negate stack underflow");
+
+                    stack.back() =
+                        FieldElement::zero() -
+                        stack.back();
+
+                    break;
+                }
+            }
+
+            require(
+                stack.size() == 1,
+                "t_edge bound program "
+                "term did not reduce to "
+                "one value");
+
+            actual_numerator +=
+                stack.back() *
+                term.alpha_scale;
+        }
+
+        require(
+            actual_numerator ==
+                expected_numerator,
+            "t_edge bound program differs "
+            "from canonical evaluate_t_edge "
+            "numerator");
+    }
     void test_cuda_t_edge_executor_equivalence()
     {
         if (!gatzk::protocol::
@@ -5402,6 +5975,9 @@ int main()
             << "running test_spilled_multi_point_evaluation_equivalence\n";
         test_spilled_multi_point_evaluation_equivalence();
         std::cerr
+            << "running test_cuda_spilled_weighted_session_equivalence\n";
+        test_cuda_spilled_weighted_session_equivalence();
+        std::cerr
             << "running test_fh_precomputed_boundary_equivalence\n";
         test_fh_precomputed_boundary_equivalence();
         std::cerr << "running test_logup_inverse_accumulator_reuse_equivalence\n";
@@ -5416,6 +5992,10 @@ int main()
         {
             std::cerr << "running test_kzg_opening_selftest\n";
             test_kzg_opening_selftest();
+            std::cerr
+                << "running test_t_edge_bound_program_equivalence\n";
+            test_t_edge_bound_program_equivalence();
+
             std::cerr
                 << "running test_cuda_t_edge_executor_equivalence\n";
             test_cuda_t_edge_executor_equivalence();
