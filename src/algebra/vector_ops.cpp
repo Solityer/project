@@ -1,4 +1,5 @@
 #include "gatzk/algebra/vector_ops.hpp"
+#include "gatzk/algebra/cuda_weighted_session.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -848,6 +849,27 @@ namespace gatzk::algebra
     {
         cuda_kernel_counter().fetch_add(count, std::memory_order_relaxed);
     }
+#if !GATZK_ENABLE_CUDA_BACKEND
+
+    void release_cuda_ntt_workspace()
+    {
+    }
+
+    std::unique_ptr<CudaWeightedDotSession>
+    create_cuda_weighted_dot_session(
+        const std::vector<
+            const mcl::Fr *> &,
+        std::size_t,
+        std::size_t)
+    {
+        return nullptr;
+    }
+
+    void release_cuda_weighted_dot_cache()
+    {
+    }
+
+#endif
 
     bool cuda_backend_build_enabled()
     {

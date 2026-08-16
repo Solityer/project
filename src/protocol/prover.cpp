@@ -42,6 +42,7 @@
 #include "gatzk/algebra/field_io.hpp"
 #include "gatzk/algebra/polynomial.hpp"
 #include "gatzk/algebra/vector_ops.hpp"
+#include "gatzk/algebra/cuda_weighted_session.hpp"
 #include "gatzk/crypto/cuda_msm.hpp"
 #include "gatzk/data/loader.hpp"
 #include "gatzk/model/gat.hpp"
@@ -11310,34 +11311,158 @@ namespace gatzk::protocol
             bundle_results.reserve(bundle_specs.size());
             // 并行构造 opening bundle 之前先预热 barycentric 权重和 FH 公开值缓存。
             // 大域权重向量体量极大，若在多个 bundle 中同时构造，会明显放大缺页和带宽争抢。
-            if (std::thread::hardware_concurrency() > 1)
+
+            const auto spilled_bytes_for_domain =
+                [&](const std::string &domain_name)
             {
-                // 只预热最重的 FH / edge 两个域，并且只针对正式 opening 用到的挑战点。
-                for (const auto &spec : bundle_specs)
+                std::size_t bytes = 0;
+
+                for (const auto &[name, spilled] :
+                     trace.spilled_polynomials)
                 {
-                    if (spec.bundle_name == "FH" || spec.bundle_name == "edge")
+                    (void)name;
+
+                    if (spilled.domain_name !=
+                        domain_name)
                     {
-                        const auto z = challenges.at(spec.z_name);
-                        proof_domain_weight_cache->get(spec.domain, z);
-                        proof_domain_weight_cache->get(spec.domain, z * spec.domain->omega);
+                        continue;
                     }
+
+                    if (spilled.size >
+                        std::numeric_limits<
+                            std::size_t>::max() /
+                            sizeof(FieldElement))
+                    {
+                        throw std::runtime_error(
+                            "domain opening spill "
+                            "byte overflow");
+                    }
+
+                    const auto added =
+                        spilled.size *
+                        sizeof(FieldElement);
+
+                    if (bytes >
+                        std::numeric_limits<
+                            std::size_t>::max() -
+                            added)
+                    {
+                        throw std::runtime_error(
+                            "domain opening spill "
+                            "byte overflow");
+                    }
+
+                    bytes += added;
                 }
-                std::vector<std::future<BundleBuildResult>> futures;
-                futures.reserve(bundle_specs.size());
-                for (const auto &spec : bundle_specs)
+
+                return bytes;
+            };
+
+            constexpr std::size_t
+                kLargeOpeningSpillBytes =
+                    std::size_t{2} << 30;
+
+            std::vector<std::size_t>
+                large_indices;
+
+            std::vector<std::size_t>
+                small_indices;
+
+            for (std::size_t index = 0;
+                 index < bundle_specs.size();
+                 ++index)
+            {
+                const auto spill_bytes =
+                    spilled_bytes_for_domain(
+                        bundle_specs[index]
+                            .trace_domain_name);
+
+                if (route2.cuda_field_hotspots &&
+                    spill_bytes >=
+                        kLargeOpeningSpillBytes)
                 {
-                    futures.push_back(std::async(std::launch::async, build_bundle, spec));
+                    large_indices.push_back(
+                        index);
                 }
-                for (auto &future : futures)
+                else
                 {
-                    bundle_results.push_back(future.get());
+                    small_indices.push_back(
+                        index);
+                }
+            }
+
+            std::sort(
+                large_indices.begin(),
+                large_indices.end(),
+                [&](std::size_t lhs,
+                    std::size_t rhs)
+                {
+                    return spilled_bytes_for_domain(
+                               bundle_specs[lhs]
+                                   .trace_domain_name) >
+                           spilled_bytes_for_domain(
+                               bundle_specs[rhs]
+                                   .trace_domain_name);
+                });
+
+            for (const auto index :
+                 large_indices)
+            {
+                const auto &spec =
+                    bundle_specs[index];
+
+                const auto z =
+                    challenges.at(
+                        spec.z_name);
+
+                proof_domain_weight_cache->get(
+                    spec.domain,
+                    z);
+
+                proof_domain_weight_cache->get(
+                    spec.domain,
+                    z * spec.domain->omega);
+
+                bundle_results.push_back(
+                    build_bundle(spec));
+            }
+
+            if (std::thread::hardware_concurrency() >
+                1)
+            {
+                std::vector<
+                    std::future<
+                        BundleBuildResult>>
+                    futures;
+
+                futures.reserve(
+                    small_indices.size());
+
+                for (const auto index :
+                     small_indices)
+                {
+                    futures.push_back(
+                        std::async(
+                            std::launch::async,
+                            build_bundle,
+                            bundle_specs[index]));
+                }
+
+                for (auto &future :
+                     futures)
+                {
+                    bundle_results.push_back(
+                        future.get());
                 }
             }
             else
             {
-                for (const auto &spec : bundle_specs)
+                for (const auto index :
+                     small_indices)
                 {
-                    bundle_results.push_back(build_bundle(spec));
+                    bundle_results.push_back(
+                        build_bundle(
+                            bundle_specs[index]));
                 }
             }
             for (const auto &spec : bundle_specs)
@@ -12010,9 +12135,15 @@ namespace gatzk::protocol
                         spilled.domain_name + ":" + std::to_string(spilled.size) + ":" + std::to_string(spilled.semantic_source_id),
                     .domain = domain,
                     .value_count = spilled.size,
+
                     .zero_domain_blinder =
-                        spilled
-                            .zero_domain_blinder,
+                        spilled.zero_domain_blinder,
+
+                    .file_path =
+                        spilled.path,
+
+                    .file_backed =
+                        true,
                 };
             };
 

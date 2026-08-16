@@ -6,9 +6,12 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
-
+#include <memory>
+#include <mutex>
+#include <unordered_map>
 #include "gatzk/algebra/cuda_field.cuh"
 #include "gatzk/algebra/vector_ops.hpp"
+#include "gatzk/algebra/cuda_weighted_session.hpp"
 
 // 实现四个GPU加速组件，均为工程优化:
 //   1. 重心权重构造 (barycentric_weights_gpu)
@@ -1245,6 +1248,197 @@ namespace gatzk::algebra
             return false;
         record_cuda_kernel_invocations(2);
         return true;
+    }
+
+    namespace
+    {
+        struct WeightedDotWeightCacheEntry
+        {
+            gpu::GpuFr *device_weights =
+                nullptr;
+
+            std::size_t domain_size = 0;
+            std::size_t column_count = 0;
+            std::size_t byte_count = 0;
+
+            ~WeightedDotWeightCacheEntry()
+            {
+                if (device_weights != nullptr)
+                {
+                    (void)cudaFree(
+                        device_weights);
+                }
+            }
+        };
+
+        std::mutex &
+        weighted_dot_cache_mutex()
+        {
+            static std::mutex mutex;
+            return mutex;
+        }
+
+        std::unordered_map<
+            std::string,
+            std::shared_ptr<
+                WeightedDotWeightCacheEntry>> &
+        weighted_dot_cache()
+        {
+            static std::unordered_map<
+                std::string,
+                std::shared_ptr<
+                    WeightedDotWeightCacheEntry>>
+                cache;
+
+            return cache;
+        }
+
+        __global__ void
+        weighted_dot_chunk_kernel(
+            const gpu::GpuFr *weights,
+            const gpu::GpuFr *values,
+            gpu::GpuFr *partials,
+            std::size_t total_count,
+            std::size_t offset,
+            std::size_t count,
+            std::size_t column_count)
+        {
+            extern __shared__
+                gpu::GpuFr shared[];
+
+            const auto column =
+                static_cast<std::size_t>(
+                    blockIdx.y);
+
+            const auto local =
+                static_cast<std::size_t>(
+                    blockIdx.x) *
+                    blockDim.x +
+                threadIdx.x;
+
+            auto value =
+                gpu::fr_zero();
+
+            if (column < column_count &&
+                local < count)
+            {
+                value =
+                    gpu::fr_mul(
+                        values[local],
+                        weights[column *
+                                    total_count +
+                                offset +
+                                local]);
+            }
+
+            shared[threadIdx.x] =
+                value;
+
+            __syncthreads();
+
+            for (unsigned stride =
+                     blockDim.x / 2;
+                 stride != 0;
+                 stride >>= 1)
+            {
+                if (threadIdx.x < stride)
+                {
+                    shared[threadIdx.x] =
+                        gpu::fr_add(
+                            shared[threadIdx.x],
+                            shared[threadIdx.x +
+                                   stride]);
+                }
+
+                __syncthreads();
+            }
+
+            if (threadIdx.x == 0)
+            {
+                partials[column * gridDim.x +
+                         blockIdx.x] =
+                    shared[0];
+            }
+        }
+
+        __global__ void
+        weighted_dot_reduce_kernel(
+            const gpu::GpuFr *partials,
+            gpu::GpuFr *accumulators,
+            std::size_t partial_count,
+            std::size_t column_count)
+        {
+            const auto column =
+                static_cast<std::size_t>(
+                    blockIdx.x);
+
+            if (column >= column_count ||
+                threadIdx.x != 0)
+            {
+                return;
+            }
+
+            auto sum =
+                gpu::fr_zero();
+
+            for (std::size_t index = 0;
+                 index < partial_count;
+                 ++index)
+            {
+                sum =
+                    gpu::fr_add(
+                        sum,
+                        partials[column *
+                                     partial_count +
+                                 index]);
+            }
+
+            accumulators[column] =
+                gpu::fr_add(
+                    accumulators[column],
+                    sum);
+        }
+
+        class CudaWeightedDotSessionImpl final
+            : public CudaWeightedDotSession
+        {
+            // 这里完成：
+            // 1. weights 只上传一次；
+            // 2. device_values_ 复用；
+            // 3. device_partials_ 复用；
+            // 4. device_accumulators_ 常驻；
+            // 5. accumulate() 只上传 value chunk；
+            // 6. finish() 只下载 column_count 个 Fr。
+        };
+    }
+
+    std::unique_ptr<CudaWeightedDotSession>
+    create_cuda_weighted_dot_session(
+        const std::vector<
+            const mcl::Fr *> &weight_columns,
+        std::size_t total_count,
+        std::size_t maximum_chunk_size)
+    {
+        if (weight_columns.empty() ||
+            total_count == 0 ||
+            maximum_chunk_size == 0)
+        {
+            return nullptr;
+        }
+
+        return std::make_unique<
+            CudaWeightedDotSessionImpl>(
+            weight_columns,
+            total_count,
+            maximum_chunk_size);
+    }
+
+    void release_cuda_weighted_dot_cache()
+    {
+        std::lock_guard<std::mutex> lock(
+            weighted_dot_cache_mutex());
+
+        weighted_dot_cache().clear();
     }
 
 } // namespace gatzk::algebra

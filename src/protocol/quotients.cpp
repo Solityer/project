@@ -10,6 +10,7 @@
 
 #include "gatzk/protocol/challenges.hpp"
 #include "gatzk/protocol/schema.hpp"
+#include "gatzk/protocol/t_edge_program.hpp"
 
 namespace gatzk::protocol
 {
@@ -771,34 +772,118 @@ namespace gatzk::protocol
 
         return plan;
     }
-    class TEdgeProgramBuilder;
 
-    class TEdgeProgramScalar
+    TEdgeBoundProgram
+    build_t_edge_bound_program(
+        const ProtocolContext &context,
+        const std::map<
+            std::string,
+            FieldElement> &challenges,
+        const TEdgeEvaluationPlan &plan)
+    {
+        TEdgeProgramBuilder builder;
+
+        const auto first =
+            builder.boundary_first();
+
+        const auto last =
+            builder.boundary_last();
+
+        const auto eval_z =
+            [&](const std::string &label)
+        {
+            return builder.access(
+                label,
+                false);
+        };
+
+        const auto eval_omega =
+            [&](const std::string &label)
+        {
+            return builder.access(
+                label,
+                true);
+        };
+
+        auto alpha_power =
+            FieldElement::one();
+
+        const auto alpha =
+            challenges.at(
+                "alpha_quot");
+
+        evaluate_t_edge_constraint_core(
+            context,
+            challenges,
+            {},
+            &plan,
+            first,
+            last,
+            eval_z,
+            eval_omega,
+            [&](const TEdgeProgramScalar &term)
+            {
+                builder.append_term(
+                    term,
+                    alpha_power);
+
+                alpha_power *= alpha;
+            });
+
+        return builder.finish();
+    }
+
+    class TEdgeProgramBuilder;
+    class TEdgeProgramScalar;
+    class TEdgeProgramBuilder
     {
     public:
-        TEdgeProgramScalar() = default;
+        TEdgeProgramScalar constant(
+            const FieldElement &value);
 
-        TEdgeProgramScalar(
-            TEdgeProgramBuilder *builder,
-            std::uint32_t node)
-            : builder_(builder),
-              node_(node)
-        {
-        }
+        TEdgeProgramScalar access(
+            const std::string &label,
+            bool rotated);
 
-        std::uint32_t node() const
-        {
-            return node_;
-        }
+        TEdgeProgramScalar boundary_first();
 
-        TEdgeProgramBuilder *builder() const
-        {
-            return builder_;
-        }
+        TEdgeProgramScalar boundary_last();
+
+        TEdgeProgramScalar add(
+            const TEdgeProgramScalar &lhs,
+            const TEdgeProgramScalar &rhs);
+
+        TEdgeProgramScalar subtract(
+            const TEdgeProgramScalar &lhs,
+            const TEdgeProgramScalar &rhs);
+
+        TEdgeProgramScalar multiply(
+            const TEdgeProgramScalar &lhs,
+            const TEdgeProgramScalar &rhs);
+
+        TEdgeProgramScalar negate(
+            const TEdgeProgramScalar &value);
+
+        void append_term(
+            const TEdgeProgramScalar &term,
+            const FieldElement &alpha_scale);
+
+        TEdgeBoundProgram finish();
 
     private:
-        TEdgeProgramBuilder *builder_ = nullptr;
-        std::uint32_t node_ = 0;
+        struct Node
+        {
+            TEdgeProgramOpcode opcode =
+                TEdgeProgramOpcode::LoadConstant;
+
+            std::uint32_t lhs = 0;
+            std::uint32_t rhs = 0;
+            std::uint32_t operand = 0;
+        };
+
+        std::vector<Node> nodes_;
+
+        TEdgeBoundProgram program_;
     };
 
     std::optional<std::string> dynamic_commitment_domain_name(

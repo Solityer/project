@@ -13,7 +13,8 @@ namespace gatzk::protocol
     {
         LoadAccess,
         LoadConstant,
-        LoadCosetPoint,
+        LoadBoundaryFirst,
+        LoadBoundaryLast,
         LoadZeroPolynomial,
         LoadZeroPolynomialInverse,
         Add,

@@ -1179,6 +1179,12 @@ namespace gatzk::crypto
         {
             return false;
         }
+        if (!should_use_cuda_msm_shape(
+                count,
+                stable_srs_bases))
+        {
+            return false;
+        }
 
         constexpr std::size_t
             kMinimumCoalescedMsmCount =

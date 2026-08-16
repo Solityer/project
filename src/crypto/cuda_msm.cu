@@ -1004,10 +1004,18 @@ namespace gatzk::crypto
             }
 
             bool prepare(
-                std::size_t chunk_size)
+                std::size_t chunk_size,
+                std::size_t scalar_batch_size = 1)
             {
                 release();
-
+                if (scalar_batch_size == 0 ||
+                    chunk_size >
+                        std::numeric_limits<
+                            std::size_t>::max() /
+                            scalar_batch_size)
+                {
+                    return false;
+                }
                 try
                 {
                     normalized_points.resize(
@@ -1017,7 +1025,8 @@ namespace gatzk::crypto
                         chunk_size);
 
                     converted_scalars.resize(
-                        chunk_size);
+                        chunk_size *
+                        scalar_batch_size);
                 }
                 catch (const std::bad_alloc &)
                 {
@@ -1248,6 +1257,13 @@ namespace gatzk::crypto
 
             *output = total;
         }
+
+        void execute_streamed_cuda_msm_same_bases_batch(
+            G1Point *const *outputs,
+            const G1Point *points,
+            const algebra::FieldElement *const *scalar_vectors,
+            std::size_t count,
+            std::size_t batch_size)
     }
     void release_cuda_g1_msm_resident_cache()
     {
@@ -1495,24 +1511,12 @@ namespace gatzk::crypto
         // A batch that exceeds the safe shared working set is not a protocol
         // failure.  Release the CUDA execution lock and execute the exact same
         // MSMs through the existing resident/streamed CUDA route one by one.
-        execution_lock.unlock();
-
-        for (std::size_t batch = 0;
-             batch < batch_size;
-             ++batch)
-        {
-            if (!try_cuda_g1_msm(
-                    outputs[batch],
-                    points,
-                    scalar_vectors[batch],
-                    count,
-                    true,
-                    stable_srs_capacity))
-            {
-                throw std::runtime_error(
-                    "CUDA same-SRS batch attempted a CPU fallback");
-            }
-        }
+        execute_streamed_cuda_msm_same_bases_batch(
+            outputs,
+            points,
+            scalar_vectors,
+            count,
+            batch_size);
 
         return true;
     }

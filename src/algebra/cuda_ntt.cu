@@ -402,49 +402,22 @@ namespace gatzk::algebra
                 }
             }
 
-            IcicleScalar *device_input = nullptr;
-            IcicleScalar *device_output = nullptr;
+            auto &workspace =
+                cuda_ntt_workspace();
 
-            status = cudaMallocAsync(
-                reinterpret_cast<void **>(&device_input),
-                total_bytes,
-                ctx.stream);
-
-            if (status != cudaSuccess)
+            if (!workspace.ensure(
+                    total_bytes,
+                    device,
+                    ctx.stream))
             {
-                if (status == cudaErrorMemoryAllocation)
-                {
-                    (void)cudaGetLastError();
-                    return false;
-                }
-
-                throw_cuda_ntt_error(
-                    "input allocation",
-                    status);
+                return false;
             }
 
-            status = cudaMallocAsync(
-                reinterpret_cast<void **>(&device_output),
-                total_bytes,
-                ctx.stream);
+            auto *device_input =
+                workspace.input;
 
-            if (status != cudaSuccess)
-            {
-                cleanup_device_buffers(
-                    device_input,
-                    nullptr,
-                    ctx.stream);
-
-                if (status == cudaErrorMemoryAllocation)
-                {
-                    (void)cudaGetLastError();
-                    return false;
-                }
-
-                throw_cuda_ntt_error(
-                    "output allocation",
-                    status);
-            }
+            auto *device_output =
+                workspace.output;
 
             status = cudaMemcpyAsync(
                 device_input,
@@ -455,9 +428,7 @@ namespace gatzk::algebra
 
             if (status != cudaSuccess)
             {
-                cleanup_device_buffers(
-                    device_input,
-                    device_output,
+                workspace.release(
                     ctx.stream);
 
                 throw_cuda_ntt_error(
@@ -476,9 +447,7 @@ namespace gatzk::algebra
 
                 if (status != cudaSuccess)
                 {
-                    cleanup_device_buffers(
-                        device_input,
-                        device_output,
+                    workspace.release(
                         ctx.stream);
 
                     throw_cuda_ntt_error(
@@ -488,17 +457,25 @@ namespace gatzk::algebra
             }
 
             auto config =
-                ntt::default_ntt_config<IcicleScalar>(
-                    ctx);
+                ntt::default_ntt_config<
+                    IcicleScalar>(ctx);
 
             config.batch_size =
-                static_cast<int>(batch_size);
+                static_cast<int>(
+                    batch_size);
+
             config.columns_batch = false;
             config.ordering =
                 ntt::Ordering::kNN;
-            config.are_inputs_on_device = true;
-            config.are_outputs_on_device = true;
+
+            config.are_inputs_on_device =
+                true;
+
+            config.are_outputs_on_device =
+                true;
+
             config.is_async = false;
+
             config.ntt_algorithm =
                 ntt::NttAlgorithm::Auto;
 
@@ -511,9 +488,7 @@ namespace gatzk::algebra
 
             if (status != cudaSuccess)
             {
-                cleanup_device_buffers(
-                    device_input,
-                    device_output,
+                workspace.release(
                     ctx.stream);
 
                 throw_cuda_ntt_error(
@@ -530,9 +505,7 @@ namespace gatzk::algebra
 
             if (status != cudaSuccess)
             {
-                cleanup_device_buffers(
-                    device_input,
-                    device_output,
+                workspace.release(
                     ctx.stream);
 
                 throw_cuda_ntt_error(
@@ -551,9 +524,7 @@ namespace gatzk::algebra
 
                 if (status != cudaSuccess)
                 {
-                    cleanup_device_buffers(
-                        device_input,
-                        device_output,
+                    workspace.release(
                         ctx.stream);
 
                     throw_cuda_ntt_error(
@@ -562,47 +533,15 @@ namespace gatzk::algebra
                 }
             }
 
-            status = cudaFreeAsync(
-                device_input,
-                ctx.stream);
-
-            if (status != cudaSuccess)
-            {
-                cleanup_device_buffers(
-                    nullptr,
-                    device_output,
+            status =
+                cudaStreamSynchronize(
                     ctx.stream);
 
-                throw_cuda_ntt_error(
-                    "input release",
-                    status);
-            }
-
-            device_input = nullptr;
-
-            status = cudaFreeAsync(
-                device_output,
-                ctx.stream);
-
             if (status != cudaSuccess)
             {
-                cleanup_device_buffers(
-                    nullptr,
-                    device_output,
+                workspace.release(
                     ctx.stream);
 
-                throw_cuda_ntt_error(
-                    "output release",
-                    status);
-            }
-
-            device_output = nullptr;
-
-            status = cudaStreamSynchronize(
-                ctx.stream);
-
-            if (status != cudaSuccess)
-            {
                 throw_cuda_ntt_error(
                     "synchronization",
                     status);

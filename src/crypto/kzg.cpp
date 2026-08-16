@@ -2439,92 +2439,27 @@ namespace gatzk::crypto
 
             return material;
         }
-        void accumulate_file_backed_semantic_source(
-            FoldedEvaluationGroup *group,
-            const OpeningSemanticSourceInfo &info,
-            const FieldElement &scale,
-            std::size_t worker_cap)
-        {
-            if (!info.file_backed ||
-                info.file_path.empty())
-            {
-                throw std::runtime_error(
-                    "file-backed semantic source metadata is incomplete");
-            }
-
-            constexpr std::size_t kChunkSize =
-                std::size_t{1} << 20;
-
-            std::ifstream stream(
-                info.file_path,
-                std::ios::binary);
-
-            if (!stream)
-            {
-                throw std::runtime_error(
-                    "failed to open semantic source: " +
-                    info.file_path);
-            }
-
-            std::vector<FieldElement>
-                chunk(kChunkSize);
-
-            std::array<std::uint8_t, 32>
-                bytes{};
-
-            for (std::size_t offset = 0;
-                 offset < info.value_count;)
-            {
-                const auto count =
-                    std::min(
-                        kChunkSize,
-                        info.value_count - offset);
-
-                for (std::size_t local = 0;
-                     local < count;
-                     ++local)
-                {
-                    stream.read(
-                        reinterpret_cast<char *>(
-                            bytes.data()),
-                        static_cast<std::streamsize>(
-                            bytes.size()));
-
-                    if (!stream)
-                    {
-                        throw std::runtime_error(
-                            "failed to read semantic source: " +
-                            info.file_path);
-                    }
-
-                    chunk[local] =
-                        FieldElement::
-                            from_little_endian_mod(
-                                bytes.data(),
-                                bytes.size());
-                }
-
-                accumulate_streamed_evaluation_source(
-                    group,
-                    std::vector<FieldElement>(
-                        chunk.begin(),
-                        chunk.begin() + count),
-                    scale,
-                    info.file_path,
-                    worker_cap,
-                    offset);
-
-                offset += count;
-            }
-        }
-
         void accumulate_streamed_evaluation_source(
             FoldedEvaluationGroup *group,
             const std::vector<FieldElement> &source_values,
             const FieldElement &scale,
             const std::string &label,
-            std::size_t worker_cap)
+            std::size_t worker_cap,
+            std::size_t target_offset = 0)
         {
+            if (group == nullptr ||
+                target_offset >
+                    group->folded_values.size() ||
+                source_values.size() >
+                    group->folded_values.size() -
+                        target_offset)
+            {
+                throw std::runtime_error(
+                    "streamed evaluation source range "
+                    "exceeds folded target: " +
+                    label);
+            }
+
             if (group == nullptr ||
                 source_values.size() >
                     group->folded_values.size())
@@ -2541,7 +2476,8 @@ namespace gatzk::crypto
 
             auto *folded_native =
                 FieldElement::mutable_native_array_data(
-                    group->folded_values.data());
+                    group->folded_values.data()) +
+                target_offset;
 
             const auto *source_native =
                 FieldElement::native_array_data(
@@ -2590,7 +2526,8 @@ namespace gatzk::crypto
             const FieldElement &first_scale,
             const FieldElement &second_scale,
             const std::string &label,
-            std::size_t worker_cap)
+            std::size_t worker_cap,
+            std::size_t target_offset = 0)
         {
             if (first_group == nullptr ||
                 second_group == nullptr ||
@@ -2699,6 +2636,186 @@ namespace gatzk::crypto
                                 second_product);
                         }
                     });
+            }
+        }
+
+        void accumulate_file_backed_semantic_source(
+            FoldedEvaluationGroup *group,
+            const OpeningSemanticSourceInfo &info,
+            const FieldElement &scale,
+            std::size_t worker_cap)
+        {
+            if (!info.file_backed ||
+                info.file_path.empty())
+            {
+                throw std::runtime_error(
+                    "file-backed semantic source "
+                    "metadata is incomplete");
+            }
+
+            constexpr std::size_t kChunkSize =
+                std::size_t{1} << 20;
+
+            std::ifstream stream(
+                info.file_path,
+                std::ios::binary);
+
+            if (!stream)
+            {
+                throw std::runtime_error(
+                    "failed to open semantic source: " +
+                    info.file_path);
+            }
+
+            std::vector<FieldElement>
+                chunk(kChunkSize);
+
+            std::array<std::uint8_t, 32>
+                bytes{};
+
+            for (std::size_t offset = 0;
+                 offset < info.value_count;)
+            {
+                const auto count =
+                    std::min(
+                        kChunkSize,
+                        info.value_count -
+                            offset);
+
+                for (std::size_t local = 0;
+                     local < count;
+                     ++local)
+                {
+                    stream.read(
+                        reinterpret_cast<char *>(
+                            bytes.data()),
+                        static_cast<
+                            std::streamsize>(
+                            bytes.size()));
+
+                    if (!stream)
+                    {
+                        throw std::runtime_error(
+                            "failed to read semantic source: " +
+                            info.file_path);
+                    }
+
+                    chunk[local] =
+                        FieldElement::
+                            from_little_endian_mod(
+                                bytes.data(),
+                                bytes.size());
+                }
+
+                const std::vector<FieldElement>
+                    chunk_values(
+                        chunk.begin(),
+                        chunk.begin() +
+                            static_cast<
+                                std::ptrdiff_t>(
+                                count));
+
+                accumulate_streamed_evaluation_source(
+                    group,
+                    chunk_values,
+                    scale,
+                    info.file_path,
+                    worker_cap,
+                    offset);
+
+                offset += count;
+            }
+        }
+
+        void accumulate_file_backed_semantic_source_pair(
+            FoldedEvaluationGroup *first_group,
+            FoldedEvaluationGroup *second_group,
+            const OpeningSemanticSourceInfo &info,
+            const FieldElement &first_scale,
+            const FieldElement &second_scale,
+            std::size_t worker_cap)
+        {
+            if (!info.file_backed ||
+                info.file_path.empty())
+            {
+                throw std::runtime_error(
+                    "paired file-backed semantic source "
+                    "metadata is incomplete");
+            }
+
+            constexpr std::size_t kChunkSize =
+                std::size_t{1} << 20;
+
+            std::ifstream stream(
+                info.file_path,
+                std::ios::binary);
+
+            if (!stream)
+            {
+                throw std::runtime_error(
+                    "failed to open paired semantic source: " +
+                    info.file_path);
+            }
+
+            std::vector<FieldElement>
+                chunk(kChunkSize);
+
+            std::array<std::uint8_t, 32>
+                bytes{};
+
+            for (std::size_t offset = 0;
+                 offset < info.value_count;)
+            {
+                const auto count =
+                    std::min(
+                        kChunkSize,
+                        info.value_count -
+                            offset);
+
+                for (std::size_t local = 0;
+                     local < count;
+                     ++local)
+                {
+                    stream.read(
+                        reinterpret_cast<char *>(
+                            bytes.data()),
+                        static_cast<
+                            std::streamsize>(
+                            bytes.size()));
+
+                    if (!stream)
+                    {
+                        throw std::runtime_error(
+                            "failed to read paired semantic source: " +
+                            info.file_path);
+                    }
+
+                    chunk[local] =
+                        FieldElement::
+                            from_little_endian_mod(
+                                bytes.data(),
+                                bytes.size());
+                }
+
+                const std::vector<FieldElement>
+                    chunk_values(
+                        chunk.begin(),
+                        chunk.begin() +
+                            static_cast<
+                                std::ptrdiff_t>(
+                                count));
+
+                accumulate_streamed_evaluation_source_pair(
+                    first_group,
+                    second_group,
+                    chunk_values,
+                    first_scale,
+                    second_scale,
+                    info.file_path,
+                    worker_cap,
+                    offset);
+
+                offset += count;
             }
         }
 
@@ -3248,11 +3365,24 @@ namespace gatzk::crypto
                         }
                         else
                         {
-                            const auto material =
-                                resolve_streamed_semantic_source_material(
-                                    opening_resolver,
-                                    commitments[i],
-                                    semantic_fold.info);
+                            if (source.info.file_backed)
+                            {
+                                auto &group =
+                                    require_folded_evaluation_group(
+                                        &result.plans[plan_index],
+                                        source.info.domain);
+
+                                accumulate_file_backed_semantic_source(
+                                    &group,
+                                    source.info,
+                                    source.scale,
+                                    worker_caps[plan_index]);
+
+                                return;
+                            }
+
+const auto material =
+    resolve_streamed_semantic_source_material(
 
                             accumulate_streamed_evaluation_source(
                                 &group,
@@ -3657,14 +3787,36 @@ namespace gatzk::crypto
                         &result.plans[1],
                         second.info.domain);
 
-                accumulate_streamed_evaluation_source_pair(
-                    &first_group,
-                    &second_group,
-                    material->values(),
-                    first.scale,
-                    second.scale,
-                    first.representative.name,
-                    shared_worker_cap);
+                if (first.info.file_backed &&
+                    second.info.file_backed &&
+                    first.info.file_path ==
+                        second.info.file_path)
+                {
+                    accumulate_file_backed_semantic_source_pair(
+                        &first_group,
+                        &second_group,
+                        first.info,
+                        first.scale,
+                        second.scale,
+                        shared_worker_cap);
+                }
+                else
+                {
+                    const auto material =
+                        resolve_streamed_semantic_source_material(
+                            opening_resolver,
+                            first.representative,
+                            first.info);
+
+                    accumulate_streamed_evaluation_source_pair(
+                        &first_group,
+                        &second_group,
+                        material->values(),
+                        first.scale,
+                        second.scale,
+                        first.representative.name,
+                        shared_worker_cap);
+                }
 
                 second_consumed[second_index] =
                     true;
