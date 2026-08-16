@@ -28,6 +28,8 @@
 #include "gatzk/crypto/kzg.hpp"
 #include "gatzk/data/loader.hpp"
 #include "gatzk/protocol/challenges.hpp"
+#include "gatzk/protocol/cuda_t_edge.hpp"
+#include "gatzk/protocol/t_edge_program.hpp"
 #include "gatzk/protocol/lookup.hpp"
 #include "gatzk/protocol/opening_registry.hpp"
 #include "gatzk/protocol/prover.hpp"
@@ -1347,6 +1349,335 @@ namespace
             "independently challenged point groups must verify");
     }
 
+    void test_cuda_t_edge_executor_equivalence()
+    {
+        if (!gatzk::protocol::
+                cuda_t_edge_executor_available())
+        {
+            return;
+        }
+
+        constexpr std::size_t domain_size = 64;
+        constexpr std::size_t target_size = 256;
+        constexpr std::size_t rotation_step =
+            target_size / domain_size;
+
+        const auto domain =
+            gatzk::algebra::
+                RootOfUnityDomain::create(
+                    "cuda_t_edge_executor_regression",
+                    domain_size);
+
+        const FieldElement shift(7);
+
+        gatzk::protocol::TEdgeBoundProgram
+            program;
+
+        program.constants = {
+            FieldElement(7),
+        };
+
+        program.accesses = {
+            {
+                .label = "A",
+                .rotated = false,
+            },
+            {
+                .label = "A",
+                .rotated = true,
+            },
+            {
+                .label = "B",
+                .rotated = false,
+            },
+        };
+
+        program.instructions = {
+            {
+                .opcode =
+                    gatzk::protocol::
+                        TEdgeProgramOpcode::
+                            LoadAccess,
+                .operand = 0,
+            },
+            {
+                .opcode =
+                    gatzk::protocol::
+                        TEdgeProgramOpcode::
+                            LoadAccess,
+                .operand = 2,
+            },
+            {
+                .opcode =
+                    gatzk::protocol::
+                        TEdgeProgramOpcode::
+                            Multiply,
+                .operand = 0,
+            },
+            {
+                .opcode =
+                    gatzk::protocol::
+                        TEdgeProgramOpcode::
+                            LoadConstant,
+                .operand = 0,
+            },
+            {
+                .opcode =
+                    gatzk::protocol::
+                        TEdgeProgramOpcode::Add,
+                .operand = 0,
+            },
+
+            {
+                .opcode =
+                    gatzk::protocol::
+                        TEdgeProgramOpcode::
+                            LoadAccess,
+                .operand = 1,
+            },
+            {
+                .opcode =
+                    gatzk::protocol::
+                        TEdgeProgramOpcode::
+                            LoadAccess,
+                .operand = 0,
+            },
+            {
+                .opcode =
+                    gatzk::protocol::
+                        TEdgeProgramOpcode::
+                            Subtract,
+                .operand = 0,
+            },
+            {
+                .opcode =
+                    gatzk::protocol::
+                        TEdgeProgramOpcode::
+                            Negate,
+                .operand = 0,
+            },
+        };
+
+        program.terms = {
+            {
+                .instruction_begin = 0,
+                .instruction_end = 5,
+                .alpha_scale =
+                    FieldElement(3),
+                .required_accesses = {
+                    0,
+                    2,
+                },
+                .maximum_stack_depth = 2,
+            },
+            {
+                .instruction_begin = 5,
+                .instruction_end = 9,
+                .alpha_scale = FieldElement(5),
+                .required_accesses = {
+                    0,
+                    1,
+                },
+                .maximum_stack_depth = 2,
+            },
+        };
+
+        program.maximum_stack_depth = 2;
+
+        std::vector<FieldElement> a(
+            target_size);
+
+        std::vector<FieldElement> b(
+            target_size);
+
+        for (std::size_t index = 0;
+             index < target_size;
+             ++index)
+        {
+            a[index] =
+                FieldElement(
+                    17 + 3 * index);
+
+            b[index] =
+                FieldElement(
+                    29 + 5 * index);
+        }
+
+        gatzk::protocol::
+            CudaTEdgeExecutionProfile
+                profile;
+
+        auto executor =
+            gatzk::protocol::
+                create_cuda_t_edge_executor(
+                    domain_size,
+                    target_size,
+                    shift,
+                    domain->omega,
+                    2,
+                    &profile);
+
+        require(
+            executor != nullptr,
+            "CUDA t_edge executor was "
+            "reported available but could "
+            "not be created");
+
+        executor->prepare_program(
+            program);
+
+        constexpr std::size_t first_chunk =
+            target_size / 2;
+
+        executor->upload_leaf_chunk(
+            0,
+            0,
+            FieldElement::
+                native_array_data(
+                    a.data()),
+            first_chunk);
+
+        executor->upload_leaf_chunk(
+            0,
+            first_chunk,
+            FieldElement::
+                native_array_data(
+                    a.data() +
+                    first_chunk),
+            target_size -
+                first_chunk);
+
+        executor->upload_leaf_chunk(
+            1,
+            0,
+            FieldElement::
+                native_array_data(
+                    b.data()),
+            target_size);
+
+        const std::vector<std::uint32_t>
+            access_slots{
+                0,
+                0,
+                1,
+            };
+
+        executor->accumulate_term(
+            0,
+            access_slots);
+
+        executor->accumulate_term(
+            1,
+            access_slots);
+
+        executor->release_leaf(0);
+        executor->release_leaf(1);
+
+        std::vector<FieldElement> actual(
+            target_size,
+            FieldElement::zero());
+
+        executor->finalize(
+            actual.data(),
+            actual.size());
+
+        const auto root =
+            FieldElement::
+                root_of_unity(
+                    target_size);
+
+        auto point = shift;
+
+        for (std::size_t index = 0;
+             index < target_size;
+             ++index)
+        {
+            const auto rotated_index =
+                (index +
+                 rotation_step) &
+                (target_size - 1U);
+
+            const auto first_term =
+                a[index] *
+                    b[index] +
+                FieldElement(7);
+
+            const auto second_term =
+                a[index] -
+                a[rotated_index];
+
+            const auto numerator =
+                FieldElement(3) *
+                    first_term +
+                FieldElement(5) *
+                    second_term;
+
+            const auto denominator =
+                point.pow(domain_size) -
+                FieldElement::one();
+
+            require(
+                !denominator.is_zero(),
+                "CUDA t_edge regression "
+                "coset overlaps edge domain");
+
+            const auto expected =
+                numerator /
+                denominator;
+
+            require(
+                actual[index] ==
+                    expected,
+                "CUDA t_edge executor "
+                "changed exact quotient "
+                "value at index " +
+                    std::to_string(index));
+
+            point *= root;
+        }
+
+        require(
+            profile.term_count == 2,
+            "CUDA t_edge executor "
+            "term profile mismatch");
+
+        require(
+            profile.access_count == 3,
+            "CUDA t_edge executor "
+            "access profile mismatch");
+
+        require(
+            profile.leaf_cache_slot_count ==
+                2,
+            "CUDA t_edge executor "
+            "cache-slot profile mismatch");
+
+        require(
+            profile
+                    .leaf_materialization_count ==
+                2,
+            "CUDA t_edge executor "
+            "leaf materialization profile "
+            "mismatch");
+
+        require(
+            profile.source_bytes_uploaded ==
+                2 *
+                    target_size *
+                    sizeof(mcl::Fr),
+            "CUDA t_edge executor "
+            "source-upload byte count "
+            "mismatch");
+
+        require(
+            profile
+                    .quotient_bytes_downloaded ==
+                target_size *
+                    sizeof(mcl::Fr),
+            "CUDA t_edge executor "
+            "quotient-download byte count "
+            "mismatch");
+    }
     void test_paired_streamed_point_group_equivalence()
     {
         const auto keys = gatzk::crypto::KZG::load_keys(
@@ -1449,6 +1780,94 @@ namespace
             };
         };
 
+        const auto paired_spill_path =
+            std::filesystem::path(
+                GATZK_TEST_BINARY_DIR) /
+            "paired_streamed_semantic_source.bin";
+
+        struct PairedStreamSpillCleanup
+        {
+            std::filesystem::path path;
+
+            ~PairedStreamSpillCleanup()
+            {
+                std::error_code ignored;
+
+                std::filesystem::remove(
+                    path,
+                    ignored);
+            }
+        } paired_stream_spill_cleanup{
+            paired_spill_path};
+
+        {
+            std::ofstream output(
+                paired_spill_path,
+                std::ios::binary |
+                    std::ios::trunc);
+
+            require(
+                static_cast<bool>(output),
+                "failed to create paired "
+                "streamed file-backed "
+                "semantic source");
+
+            std::array<std::uint8_t, 32>
+                bytes{};
+
+            for (const auto &value :
+                 *shared_values)
+            {
+                value.write_little_endian(
+                    bytes.data(),
+                    bytes.size());
+
+                output.write(
+                    reinterpret_cast<
+                        const char *>(
+                        bytes.data()),
+                    static_cast<
+                        std::streamsize>(
+                        bytes.size()));
+            }
+
+            require(
+                static_cast<bool>(output),
+                "failed to write paired "
+                "streamed file-backed "
+                "semantic source");
+        }
+
+        const gatzk::crypto::
+            OpeningSemanticSourceResolver
+                file_backed_semantic_source_resolver =
+                    [&](const gatzk::crypto::
+                            Commitment &requested)
+            -> std::optional<
+                gatzk::crypto::
+                    OpeningSemanticSourceInfo>
+        {
+            const auto material =
+                opening_resolver(
+                    requested);
+
+            return gatzk::crypto::
+                OpeningSemanticSourceInfo{
+                    .key =
+                        "paired-streamed-unit-"
+                        "shared-source",
+                    .domain = domain,
+                    .value_count =
+                        domain->size,
+                    .zero_domain_blinder =
+                        material->zero_domain_blinder,
+                    .file_path =
+                        paired_spill_path
+                            .string(),
+                    .file_backed = true,
+                };
+        };
+
         const auto first_point =
             choose_non_domain_point(*domain);
 
@@ -1486,8 +1905,13 @@ namespace
             };
 
         const auto run_case =
-            [&](const std::array<FieldElement, 2> &challenges,
-                const std::string &label)
+            [&](const std::array<
+                    FieldElement,
+                    2> &challenges,
+                const std::string &label,
+                const gatzk::crypto::
+                    OpeningSemanticSourceResolver
+                        &semantic_resolver)
         {
             const auto paired =
                 gatzk::crypto::KZG::
@@ -1503,7 +1927,7 @@ namespace
                                 AlreadyComputedFromOpeningPolynomials,
                         nullptr,
                         &opening_resolver,
-                        &semantic_source_resolver);
+                        &semantic_resolver);
 
             for (std::size_t group = 0;
                  group < 2;
@@ -1522,7 +1946,7 @@ namespace
                                 AlreadyComputedFromOpeningPolynomials,
                         nullptr,
                         &opening_resolver,
-                        &semantic_source_resolver);
+                        &semantic_resolver);
 
                 require(
                     paired[group] == reference,
@@ -1547,17 +1971,36 @@ namespace
                 FieldElement(41),
                 FieldElement(43),
             },
-            "shared-source");
+            "shared-source",
+            semantic_source_resolver);
 
         const auto minus_one =
-            FieldElement::zero() - FieldElement::one();
+            FieldElement::zero() -
+            FieldElement::one();
 
         run_case(
             {
                 minus_one,
                 minus_one,
             },
-            "zero-source-scale");
+            "zero-source-scale",
+            semantic_source_resolver);
+
+        run_case(
+            {
+                FieldElement(41),
+                FieldElement(43),
+            },
+            "shared-source-file-backed",
+            file_backed_semantic_source_resolver);
+
+        run_case(
+            {
+                minus_one,
+                minus_one,
+            },
+            "zero-source-scale-file-backed",
+            file_backed_semantic_source_resolver);
     }
 
     void test_coefficient_taylor_shift_fixed_shape()
@@ -4973,6 +5416,10 @@ int main()
         {
             std::cerr << "running test_kzg_opening_selftest\n";
             test_kzg_opening_selftest();
+            std::cerr
+                << "running test_cuda_t_edge_executor_equivalence\n";
+            test_cuda_t_edge_executor_equivalence();
+
             std::cerr
                 << "running test_paired_streamed_point_group_equivalence\n";
             test_paired_streamed_point_group_equivalence();
