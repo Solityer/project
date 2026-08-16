@@ -524,7 +524,7 @@ namespace
             "CUDA spilled weighted route "
             "changed streamed element count");
 
-            const std::vector<FieldElement>
+        const std::vector<FieldElement>
             mixed_points{
                 domain->point_at(17),
                 point,
@@ -591,14 +591,14 @@ namespace
 
         require(
             mixed_profile
-                    .direct_values_resolved ==
-                1 &&
+                        .direct_values_resolved ==
+                    1 &&
                 mixed_profile
-                    .sequential_pass_count ==
-                1 &&
+                        .sequential_pass_count ==
+                    1 &&
                 mixed_profile
-                    .field_elements_streamed ==
-                domain_size,
+                        .field_elements_streamed ==
+                    domain_size,
             "CUDA spilled weighted mixed "
             "request changed direct or "
             "one-pass semantics");
@@ -2418,6 +2418,82 @@ namespace
                 profile.quotient_bytes_downloaded > 0,
             "CUDA t_edge production cache regression "
             "did not execute device data movement");
+    }
+    void test_prover_cuda_cache_exception_retry()
+    {
+        if (!gatzk::algebra::
+                cuda_field_hotspots_available())
+        {
+            return;
+        }
+
+        const auto &fixture =
+            unit_security_fixture();
+
+        const auto saved_route =
+            gatzk::util::route2_options();
+
+        struct RouteRestore
+        {
+            gatzk::util::Route2Options route;
+
+            ~RouteRestore()
+            {
+                gatzk::util::
+                    set_route2_options(route);
+            }
+        } route_restore{saved_route};
+
+        auto gpu_route =
+            saved_route;
+
+        gpu_route.cuda_field_hotspots =
+            true;
+
+        gatzk::util::
+            set_route2_options(
+                gpu_route);
+
+        auto failing_trace =
+            fixture.trace;
+
+        failing_trace.pi_bind.reset();
+
+        bool saw_expected_failure =
+            false;
+
+        try
+        {
+            (void)gatzk::protocol::prove(
+                fixture.context,
+                failing_trace,
+                nullptr);
+        }
+        catch (const std::runtime_error &error)
+        {
+            saw_expected_failure =
+                std::string_view(error.what()) ==
+                "trace is missing Pi_bind proof material";
+        }
+
+        require(
+            saw_expected_failure,
+            "prover cache cleanup regression "
+            "did not reach the intended "
+            "post-quotient failure");
+
+        const auto retry_proof =
+            gatzk::protocol::prove(
+                fixture.context,
+                fixture.trace,
+                nullptr);
+
+        require(
+            gatzk::protocol::verify(
+                fixture.context,
+                retry_proof),
+            "prover retry after CUDA cache "
+            "cleanup failure path did not verify");
     }
     void test_paired_streamed_point_group_equivalence()
     {
@@ -6171,7 +6247,9 @@ int main()
             std::cerr
                 << "running test_cuda_t_edge_production_cache_equivalence\n";
             test_cuda_t_edge_production_cache_equivalence();
-
+            std::cerr
+                << "running test_prover_cuda_cache_exception_retry\n";
+            test_prover_cuda_cache_exception_retry();
             std::cerr
                 << "running test_paired_streamed_point_group_equivalence\n";
             test_paired_streamed_point_group_equivalence();
