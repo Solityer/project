@@ -5585,6 +5585,16 @@ namespace gatzk::protocol
                     std::size_t>
                     remaining_uses;
 
+                std::unordered_map<
+                    std::string,
+                    std::vector<std::size_t>>
+                    leaf_use_terms;
+
+                std::unordered_map<
+                    std::string,
+                    std::size_t>
+                    leaf_use_cursors;
+
                 for (std::size_t term_index = 0;
                      term_index <
                      program.terms.size();
@@ -5623,6 +5633,10 @@ namespace gatzk::protocol
                                 label);
 
                             ++remaining_uses[label];
+
+                            leaf_use_terms[label]
+                                .push_back(
+                                    term_index);
                         }
                     }
 
@@ -5846,10 +5860,7 @@ namespace gatzk::protocol
                                 slot_labels.size())
                             {
                                 std::size_t
-                                    selected_remaining =
-                                        std::numeric_limits<
-                                            std::size_t>::
-                                            max();
+                                    selected_next_use = 0;
 
                                 for (std::size_t slot = 0;
                                      slot <
@@ -5872,31 +5883,51 @@ namespace gatzk::protocol
                                         continue;
                                     }
 
-                                    const auto found =
-                                        remaining_uses
-                                            .find(
+                                    std::size_t
+                                        candidate_next_use =
+                                            std::numeric_limits<
+                                                std::size_t>::
+                                                max();
+
+                                    const auto use_it =
+                                        leaf_use_terms.find(
+                                            candidate);
+
+                                    if (use_it !=
+                                        leaf_use_terms.end())
+                                    {
+                                        const auto cursor_it =
+                                            leaf_use_cursors.find(
                                                 candidate);
 
-                                    const auto
-                                        candidate_remaining =
-                                            found ==
-                                                    remaining_uses
+                                        const auto cursor =
+                                            cursor_it ==
+                                                    leaf_use_cursors
                                                         .end()
                                                 ? std::size_t{0}
-                                                : found
+                                                : cursor_it
                                                       ->second;
+
+                                        if (cursor <
+                                            use_it->second
+                                                .size())
+                                        {
+                                            candidate_next_use =
+                                                use_it->second[cursor];
+                                        }
+                                    }
 
                                     if (selected_slot ==
                                             slot_labels
                                                 .size() ||
-                                        candidate_remaining <
-                                            selected_remaining)
+                                        candidate_next_use >
+                                            selected_next_use)
                                     {
                                         selected_slot =
                                             slot;
 
-                                        selected_remaining =
-                                            candidate_remaining;
+                                        selected_next_use =
+                                            candidate_next_use;
                                     }
                                 }
                             }
@@ -5953,6 +5984,36 @@ namespace gatzk::protocol
                             {
                                 --found->second;
                             }
+
+                            const auto use_it =
+                                leaf_use_terms.find(
+                                    label);
+
+                            if (use_it ==
+                                leaf_use_terms.end())
+                            {
+                                throw std::runtime_error(
+                                    "CUDA t_edge leaf "
+                                    "use schedule is missing "
+                                    "a required label");
+                            }
+
+                            auto &cursor =
+                                leaf_use_cursors[label];
+
+                            if (cursor >=
+                                    use_it->second
+                                        .size() ||
+                                use_it->second[cursor] !=
+                                    term_index)
+                            {
+                                throw std::runtime_error(
+                                    "CUDA t_edge leaf "
+                                    "use schedule is out "
+                                    "of sync");
+                            }
+
+                            ++cursor;
                         }
                     }
 
