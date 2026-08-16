@@ -116,6 +116,71 @@ namespace gatzk::protocol
                 std::cerr << "[progress] " << label << '\n';
             }
         }
+        class ScopedCudaProverCacheRelease
+        {
+        public:
+            ScopedCudaProverCacheRelease() = default;
+
+            ~ScopedCudaProverCacheRelease() noexcept
+            {
+                if (!armed_)
+                {
+                    return;
+                }
+
+                try
+                {
+                    crypto::
+                        release_cuda_g1_msm_resident_cache();
+                }
+                catch (...)
+                {
+                }
+
+                try
+                {
+                    algebra::
+                        release_cuda_ntt_workspace();
+                }
+                catch (...)
+                {
+                }
+
+                try
+                {
+                    algebra::
+                        release_cuda_weighted_dot_cache();
+                }
+                catch (...)
+                {
+                }
+
+                try
+                {
+                    release_cuda_t_edge_executor_cache();
+                }
+                catch (...)
+                {
+                }
+            }
+
+            ScopedCudaProverCacheRelease(
+                const ScopedCudaProverCacheRelease &) =
+                delete;
+
+            ScopedCudaProverCacheRelease &
+            operator=(
+                const ScopedCudaProverCacheRelease &) =
+                delete;
+
+            void dismiss() noexcept
+            {
+                armed_ = false;
+            }
+
+        private:
+            bool armed_ = true;
+        };
 
         PayloadValueKind payload_kind_for_label(const ProtocolContext &context, const std::string &label)
         {
@@ -11741,6 +11806,10 @@ namespace gatzk::protocol
         {
             throw std::runtime_error("trace commitment order does not match the protocol commitment order");
         }
+
+        ScopedCudaProverCacheRelease
+            cuda_cache_release_guard;
+
         if (context.model.has_real_multihead)
         {
             auto stage_start = Clock::now();
@@ -13778,6 +13847,9 @@ namespace gatzk::protocol
 
             progress_note(
                 "prove:cuda_cache_release:done");
+
+            cuda_cache_release_guard.dismiss();
+
             return proof;
         }
 
