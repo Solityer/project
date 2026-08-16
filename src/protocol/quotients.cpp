@@ -1330,14 +1330,13 @@ namespace gatzk::protocol
                     context.config.range_bits,
                     challenges);
 
-            const auto head_dim = context.model.hidden_heads[head_index]
-                                          .seq_kernel_fp.empty()
-                                      ? std::size_t{0}
-                                      : context.model.hidden_heads[head_index]
-                                            .seq_kernel_fp.front()
-                                            .size();
             constants.elu_query_selector =
-                head_dim == model::max_hidden_head_dim(context.model)
+                context.model.hidden_heads[head_index]
+                            .seq_kernel_fp.empty() ||
+                        context.model.hidden_heads[head_index]
+                                .seq_kernel_fp.front()
+                                .size() ==
+                            model::max_hidden_head_dim(context.model)
                     ? "P_Q_qry_ELU"
                     : constants.division_selector;
             constants.beta_src = challenges.at("beta_src_h" + index);

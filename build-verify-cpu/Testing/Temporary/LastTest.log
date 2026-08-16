@@ -1,0 +1,87 @@
+Start testing: Aug 16 15:59 CST
+----------------------------------------------------------
+1/3 Testing: gatzk_tests
+1/3 Test: gatzk_tests
+Command: "/home/pzh/project/build-verify-cpu/gatzk_tests"
+Directory: /home/pzh/project/build-verify-cpu
+"gatzk_tests" start time: Aug 16 15:59 CST
+Output:
+----------------------------------------------------------
+running test_rotation_shift_subgroup_rejection_equivalence
+running test_spilled_multi_point_evaluation_equivalence
+running test_cuda_spilled_weighted_session_equivalence
+running test_fh_precomputed_boundary_equivalence
+running test_logup_inverse_accumulator_reuse_equivalence
+running test_parallel_split_intt_equivalence
+running test_quotient_split_lane_materialization_equivalence
+running test_kzg_opening_selftest
+running test_t_edge_bound_program_equivalence
+running test_cuda_t_edge_executor_equivalence
+running test_paired_streamed_point_group_equivalence
+running test_coefficient_taylor_shift_fixed_shape
+running test_cross_domain_indexed_view_shift_relation
+running test_same_point_indexed_view_relation
+running test_compact_eval_kzg_regression
+running test_evaluation_commitment_cache_lifetime
+running test_file_backed_taylor_shift_source_resolution
+running test_external_point_grouping_regression
+running test_packed_backend_padded_tail_regression
+running test_msm_non_divisible_chunk_regression
+skipping opt-in large-SRS MSM regression; set GATZK_RUN_LARGE_MSM_TESTS=1 with a sufficiently large test SRS to run it
+running test_srs_mismatch_gate
+running test_metadata_and_schema_gates
+running test_removed_compatibility_protocol_gate
+running test_canonical_output_digest_contract
+running test_multi_graph_public_boundary_validation
+running test_formal_shape_and_activation_boundaries
+running test_weighted_edge_aggregate_raw_by_destination
+running test_field_element_spill_io
+running test_ppi_deferred_commitment_chunk_dependency_order
+running test_compiler_observation_certificate_gate
+running test_domain_opening_challenge_exclusion_registry
+skipping unit coefficient-basis closure regression; set GATZK_RUN_UNIT_SECURITY_TESTS=1 to run it
+skipping real PPI representative-batch boundary regression; set GATZK_RUN_PPI_BOUNDARY_TESTS=1 to run it
+skipping full Cora security regression; set GATZK_RUN_FULL_SECURITY_TESTS=1 to run it
+secure regression tests passed
+<end of output>
+Test time =   7.45 sec
+----------------------------------------------------------
+Test Passed.
+"gatzk_tests" end time: Aug 16 15:59 CST
+"gatzk_tests" time elapsed: 00:00:07
+----------------------------------------------------------
+
+2/3 Testing: gatzk_family_scaling_tests
+2/3 Test: gatzk_family_scaling_tests
+Command: "/home/pzh/project/build-verify-cpu/gatzk_family_scaling_tests"
+Directory: /home/pzh/project/build-verify-cpu
+"gatzk_family_scaling_tests" start time: Aug 16 15:59 CST
+Output:
+----------------------------------------------------------
+skipping opt-in L3/Kout2 secure round trip; set GATZK_FAMILY_TEST_SRS_PATH after the independent test ceremony
+family scaling tests passed
+<end of output>
+Test time =   0.31 sec
+----------------------------------------------------------
+Test Passed.
+"gatzk_family_scaling_tests" end time: Aug 16 15:59 CST
+"gatzk_family_scaling_tests" time elapsed: 00:00:00
+----------------------------------------------------------
+
+3/3 Testing: static_secure_scan
+3/3 Test: static_secure_scan
+Command: "/usr/bin/python3" "/home/pzh/project/tools/security/static_scan_no_tau.py"
+Directory: /home/pzh/project/build-verify-cpu
+"static_secure_scan" start time: Aug 16 15:59 CST
+Output:
+----------------------------------------------------------
+static secure scan passed
+<end of output>
+Test time =  30.55 sec
+----------------------------------------------------------
+Test Passed.
+"static_secure_scan" end time: Aug 16 16:00 CST
+"static_secure_scan" time elapsed: 00:00:30
+----------------------------------------------------------
+
+End testing: Aug 16 16:00 CST

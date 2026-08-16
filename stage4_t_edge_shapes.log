@@ -1,0 +1,2 @@
+dataset,edge_domain_size,quotient_coset_size,sample_points,sample_stride,hidden_head_count,output_head_count,range_bits,repeat,workers,alpha_power_mode,eval_calls,audited_eval_calls_per_point,audited_unique_eval_keys_per_point,total_ms,projected_full_domain_ms,ns_per_sample_eval,accumulator
+fatal: t_edge evaluation plan/boundary changed the quotient value

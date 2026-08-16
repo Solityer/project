@@ -1,0 +1,5 @@
+cuda_domain_init_ms=418.293 warmup_exact=true
+cuda_device_summary=cuda_build=true; cuda_runtime=true; cuda_device=NVIDIA GB10; cuda_device_count=1; cuda_integrated=true; cuda_unified_addressing=true; cuda_pageable_memory_access=true; cuda_pageable_host_page_tables=true
+intt_size,pair_size,repeat,cpu_pair_ms,gpu_pair_ms,pair_speedup,cpu_intt_ms,gpu_intt_ms,intt_speedup,exact
+8388608,16777216,0,1033.371,231.798,4.458,436.704,39.023,11.191,true
+production_pair_size=16777216 production_pair_route=cuda production_pair_ms=156.903 production_pair_exact=true

@@ -1,0 +1,4 @@
+domain_size,points,repeats,single_passes,grouped_passes,single_avg_ms,grouped_avg_ms,speedup,sink
+262144,2,2,4,2,24.891,16.317,1.526,1436239594089010636685363250400832949658571951375677918688479117066735206655
+domain_size,jobs,points,repeats,input_mib,serial_workers,bounded_workers,serial_avg_ms,bounded_avg_ms,speedup,peak_rss_kib,sink
+262144,8,2,2,64.000,1,4,133.336,47.871,2.785,56000,47615948879996718481751071763786574385021734822075382563204261308116424554052

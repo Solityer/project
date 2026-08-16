@@ -1,13 +1,4 @@
 [  3%] Built target gatzk_mcl_build
 [  6%] Building CXX object CMakeFiles/gatzkml.dir/src/protocol/prover.cpp.o
-/home/pzh/project/src/protocol/prover.cpp: In function ‘gatzk::protocol::Proof gatzk::protocol::prove(const ProtocolContext&, const TraceArtifacts&, RunMetrics*)’:
-/home/pzh/project/src/protocol/prover.cpp:12046:24: error: conflicting declaration ‘const auto spilled_bytes_for_domain’
-12046 |             const auto spilled_bytes_for_domain =
-      |                        ^~~~~~~~~~~~~~~~~~~~~~~~
-/home/pzh/project/src/protocol/prover.cpp:11952:24: note: previous declaration as ‘const gatzk::protocol::prove(const ProtocolContext&, const TraceArtifacts&, RunMetrics*)::<lambda(const std::string&)> spilled_bytes_for_domain’
-11952 |             const auto spilled_bytes_for_domain =
-      |                        ^~~~~~~~~~~~~~~~~~~~~~~~
-gmake[3]: *** [CMakeFiles/gatzkml.dir/build.make:272：CMakeFiles/gatzkml.dir/src/protocol/prover.cpp.o] 错误 1
-gmake[2]: *** [CMakeFiles/Makefile2:150：CMakeFiles/gatzkml.dir/all] 错误 2
-gmake[1]: *** [CMakeFiles/Makefile2:157：CMakeFiles/gatzkml.dir/rule] 错误 2
-gmake: *** [Makefile:147：gatzkml] 错误 2
+[ 10%] Linking CXX static library libgatzkml.a
+[100%] Built target gatzkml
