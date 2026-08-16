@@ -1758,7 +1758,7 @@ namespace gatzk::crypto
             }
         }
 
-        / // Keep the CUDA execution lock while the shared-base
+        // Keep the CUDA execution lock while the shared-base
         // streamed batch is active.  The point vector is uploaded
         // once per chunk for the whole batch.
         try
