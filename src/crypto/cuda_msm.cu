@@ -1758,16 +1758,55 @@ namespace gatzk::crypto
             }
         }
 
-        // A batch that exceeds the safe shared working set is not a protocol
-        // failure.  Release the CUDA execution lock and execute the exact same
-        // MSMs through the existing resident/streamed CUDA route one by one.
-        execute_streamed_cuda_msm_same_bases_batch(
-            outputs,
-            points,
-            scalar_vectors,
-            count,
-            batch_size);
+        / // Keep the CUDA execution lock while the shared-base
+        // streamed batch is active.  The point vector is uploaded
+        // once per chunk for the whole batch.
+        try
+        {
+            execute_streamed_cuda_msm_same_bases_batch(
+                outputs,
+                points,
+                scalar_vectors,
+                count,
+                batch_size);
 
-        return true;
+            return true;
+        }
+        catch (const CudaMsmResourcePressure &)
+        {
+            cache.clear();
+
+            util::info(
+                "cuda_msm streamed_batch "
+                "resource pressure: cleared "
+                "resident base cache and retrying");
+
+            execute_streamed_cuda_msm_same_bases_batch(
+                outputs,
+                points,
+                scalar_vectors,
+                count,
+                batch_size);
+
+            return true;
+        }
+        catch (const std::bad_alloc &)
+        {
+            cache.clear();
+
+            util::info(
+                "cuda_msm streamed_batch "
+                "host staging pressure: cleared "
+                "resident base cache and retrying");
+
+            execute_streamed_cuda_msm_same_bases_batch(
+                outputs,
+                points,
+                scalar_vectors,
+                count,
+                batch_size);
+
+            return true;
+        }
     }
 }

@@ -7,7 +7,9 @@
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <fstream>
 #include <limits>
+#include <sstream>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -1186,10 +1188,147 @@ namespace gatzk::protocol
             leaf_cache_bytes +
             leaf_bytes;
 
+        int device = 0;
+
+        auto status =
+            cudaGetDevice(
+                &device);
+
+        if (status != cudaSuccess)
+        {
+            (void)cudaGetLastError();
+            return false;
+        }
+
+        int integrated = 0;
+
+        status =
+            cudaDeviceGetAttribute(
+                &integrated,
+                cudaDevAttrIntegrated,
+                device);
+
+        if (status != cudaSuccess)
+        {
+            (void)cudaGetLastError();
+            return false;
+        }
+
+        if (integrated != 0)
+        {
+            std::size_t host_total_bytes = 0;
+
+            std::size_t host_available_bytes =
+                std::numeric_limits<
+                    std::size_t>::max();
+
+            std::ifstream input(
+                "/proc/meminfo");
+
+            if (input)
+            {
+                std::string line;
+
+                while (std::getline(
+                    input,
+                    line))
+                {
+                    std::istringstream row(
+                        line);
+
+                    std::string key;
+                    unsigned long long
+                        value_kib = 0;
+
+                    std::string unit;
+
+                    if (!(row >>
+                          key >>
+                          value_kib))
+                    {
+                        continue;
+                    }
+
+                    row >> unit;
+
+                    if (!unit.empty() &&
+                        unit != "kB")
+                    {
+                        continue;
+                    }
+
+                    const auto maximum =
+                        std::numeric_limits<
+                            std::size_t>::max();
+
+                    const auto bytes =
+                        value_kib >
+                                maximum /
+                                    1024ULL
+                            ? maximum
+                            : static_cast<
+                                  std::size_t>(
+                                  value_kib *
+                                  1024ULL);
+
+                    if (key ==
+                        "MemTotal:")
+                    {
+                        host_total_bytes =
+                            bytes;
+                    }
+                    else if (
+                        key ==
+                        "MemAvailable:")
+                    {
+                        host_available_bytes =
+                            bytes;
+                    }
+                }
+            }
+
+            if (host_available_bytes !=
+                std::numeric_limits<
+                    std::size_t>::max())
+            {
+                constexpr std::size_t
+                    kMinimumIntegratedReserve =
+                        std::size_t{16}
+                        << 30;
+
+                const auto reserve_bytes =
+                    std::max(
+                        kMinimumIntegratedReserve,
+                        host_total_bytes == 0
+                            ? kMinimumIntegratedReserve
+                            : host_total_bytes /
+                                  4);
+
+                if (host_available_bytes <=
+                    reserve_bytes)
+                {
+                    return false;
+                }
+
+                if (required_bytes >
+                    host_available_bytes -
+                        reserve_bytes)
+                {
+                    return false;
+                }
+            }
+
+            // UMA 上 cudaMemGetInfo() 不能代表可回收
+            // page cache / shared DRAM 的真实可用量。
+            // 上面的 MemAvailable 仅做预 admission；
+            // cudaMalloc 仍是最终 fail-closed 检查。
+            return true;
+        }
+
         std::size_t free_bytes = 0;
         std::size_t total_bytes = 0;
 
-        const auto status =
+        status =
             cudaMemGetInfo(
                 &free_bytes,
                 &total_bytes);
@@ -1209,7 +1348,8 @@ namespace gatzk::protocol
                 kMinimumCudaReserveBytes,
                 total_bytes / 8);
 
-        if (free_bytes <= reserve_bytes)
+        if (free_bytes <=
+            reserve_bytes)
         {
             return false;
         }
@@ -1218,7 +1358,6 @@ namespace gatzk::protocol
                free_bytes -
                    reserve_bytes;
     }
-
     void release_cuda_t_edge_executor_cache()
     {
     }
