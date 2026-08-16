@@ -1,0 +1,10 @@
+[  2%] Built target gatzk_mcl_build
+[ 10%] Built target gatzk_icicle_bls12_381_ntt
+[ 15%] Built target gatzk_icicle_bls12_381_msm
+[ 17%] Building CXX object CMakeFiles/gatzkml.dir/src/protocol/prover.cpp.o
+[ 20%] Linking CXX static library libgatzkml.a
+[ 92%] Built target gatzkml
+[ 94%] Building CXX object CMakeFiles/gatzk_tests.dir/tests/test_main.cpp.o
+[ 97%] Linking CUDA device code CMakeFiles/gatzk_tests.dir/cmake_device_link.o
+[100%] Linking CXX executable gatzk_tests
+[100%] Built target gatzk_tests

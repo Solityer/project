@@ -5490,6 +5490,13 @@ namespace gatzk::protocol
                 executor->prepare_program(
                     program);
 
+                // CUDA t_edge materializes registered derived
+                // linear views directly instead of going through
+                // the CPU coset-prewarm path.  Those views must
+                // use the same zero-domain blinder correction
+                // geometry as the canonical materializer.
+                seed_lazy_blinder_geometry();
+
                 const auto invalid_slot =
                     std::numeric_limits<
                         std::uint32_t>::max();
