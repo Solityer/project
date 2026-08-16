@@ -5321,12 +5321,64 @@ namespace gatzk::protocol
                 }
             }
 
+            static std::size_t
+            cuda_t_edge_leaf_cache_slot_count(
+                const TEdgeBoundProgram &program)
+            {
+                constexpr std::size_t
+                    kBaselineLeafCacheSlots = 8;
+
+                std::size_t slot_count =
+                    kBaselineLeafCacheSlots;
+
+                for (const auto &term :
+                     program.terms)
+                {
+                    std::vector<std::string>
+                        labels;
+
+                    labels.reserve(
+                        term.required_accesses
+                            .size());
+
+                    for (const auto access_index :
+                         term.required_accesses)
+                    {
+                        if (access_index >=
+                            program.accesses.size())
+                        {
+                            throw std::runtime_error(
+                                "CUDA t_edge program "
+                                "access index overflow");
+                        }
+
+                        const auto &label =
+                            program
+                                .accesses[access_index]
+                                .label;
+
+                        if (std::find(
+                                labels.begin(),
+                                labels.end(),
+                                label) ==
+                            labels.end())
+                        {
+                            labels.push_back(
+                                label);
+                        }
+                    }
+
+                    slot_count =
+                        std::max(
+                            slot_count,
+                            labels.size());
+                }
+
+                return slot_count;
+            }
             bool should_use_cuda_t_edge_engine()
                 const
             {
-                constexpr std::size_t
-                    kCudaTEdgeLeafCacheSlots = 8;
-
                 const bool route_requested =
                     force_cuda_t_edge_stage_ ||
                     (target_size_ >=
@@ -5334,14 +5386,38 @@ namespace gatzk::protocol
                      util::route2_options()
                          .cuda_field_hotspots);
 
-                return label_ == "t_edge" &&
-                       route_requested &&
-                       algebra::
-                           cuda_field_hotspots_available() &&
-                       cuda_t_edge_executor_available() &&
-                       cuda_t_edge_executor_can_admit(
-                           target_size_,
-                           kCudaTEdgeLeafCacheSlots);
+                if (label_ != "t_edge" ||
+                    !route_requested ||
+                    !algebra::
+                        cuda_field_hotspots_available() ||
+                    !cuda_t_edge_executor_available())
+                {
+                    return false;
+                }
+
+                if (edge_evaluation_plan_ ==
+                    nullptr)
+                {
+                    throw std::runtime_error(
+                        "CUDA t_edge route "
+                        "is missing evaluation plan");
+                }
+
+                const auto program =
+                    build_t_edge_bound_program(
+                        context_,
+                        challenges_,
+                        trace_
+                            .external_evaluations,
+                        *edge_evaluation_plan_);
+
+                const auto cache_slot_count =
+                    cuda_t_edge_leaf_cache_slot_count(
+                        program);
+
+                return cuda_t_edge_executor_can_admit(
+                    target_size_,
+                    cache_slot_count);
             }
 
             void reset_cuda_t_edge_transient_leaf_state()
@@ -5387,8 +5463,9 @@ namespace gatzk::protocol
                             .external_evaluations,
                         *edge_evaluation_plan_);
 
-                constexpr std::size_t
-                    kLeafCacheSlots = 8;
+                const auto leaf_cache_slots =
+                    cuda_t_edge_leaf_cache_slot_count(
+                        program);
 
                 CudaTEdgeExecutionProfile
                     profile;
@@ -5399,7 +5476,7 @@ namespace gatzk::protocol
                         target_size_,
                         shift_,
                         domain_->omega,
-                        kLeafCacheSlots,
+                        leaf_cache_slots,
                         &profile);
 
                 if (executor == nullptr)
@@ -5834,6 +5911,10 @@ namespace gatzk::protocol
                         std::to_string(
                             profile
                                 .unique_leaf_count) +
+                        ":cache_slots=" +
+                        std::to_string(
+                            profile
+                                .leaf_cache_slot_count) +
                         ":materializations=" +
                         std::to_string(
                             profile

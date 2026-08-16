@@ -2301,15 +2301,15 @@ namespace
             "differs from canonical CPU quotient");
 
         require(
-            profile.leaf_cache_slot_count == 8,
-            "production CUDA t_edge must use "
-            "exactly eight leaf-cache slots");
+            profile.leaf_cache_slot_count >= 8,
+            "production CUDA t_edge must preserve "
+            "the eight-slot cache baseline");
 
         require(
             profile.unique_leaf_count >
                 profile.leaf_cache_slot_count,
             "CUDA t_edge cache regression did not "
-            "exceed eight unique leaves");
+            "exceed active cache capacity");
 
         require(
             profile.leaf_cache_hit_count > 0,
