@@ -1,0 +1,1 @@
+/usr/bin/c++ -O3 -DNDEBUG CMakeFiles/gatzk_t_edge_eval_stage_bench.dir/tools/benchmarks/t_edge_eval_stage_bench.cpp.o -o gatzk_t_edge_eval_stage_bench  libgatzkml.a /home/pzh/project/third_party/mcl/lib/libmcl.a /usr/lib/aarch64-linux-gnu/libcrypto.so 

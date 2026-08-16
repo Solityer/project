@@ -11949,38 +11949,6 @@ namespace gatzk::protocol
             };
             stage_start = Clock::now();
             progress_note("prove:domain_opening:start");
-            const auto spilled_bytes_for_domain =
-                [&](const std::string &domain_name)
-            {
-                std::size_t bytes = 0;
-
-                for (const auto &[name, spilled] :
-                     trace.spilled_polynomials)
-                {
-                    (void)name;
-
-                    if (spilled.domain_name !=
-                        domain_name)
-                    {
-                        continue;
-                    }
-
-                    if (spilled.size >
-                        std::numeric_limits<
-                            std::size_t>::max() /
-                            sizeof(FieldElement))
-                    {
-                        throw std::runtime_error(
-                            "domain opening spill byte overflow");
-                    }
-
-                    bytes +=
-                        spilled.size *
-                        sizeof(FieldElement);
-                }
-
-                return bytes;
-            };
             struct BundleBuildResult
             {
                 std::string bundle_name;
