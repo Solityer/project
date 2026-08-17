@@ -2381,14 +2381,6 @@ namespace
         gatzk::protocol::
             release_cuda_t_edge_executor_cache();
 
-        gatzk::protocol::
-            release_cuda_t_edge_executor_cache();
-
-        require(
-            exact,
-            "production CUDA t_edge materialization "
-            "differs from canonical CPU quotient");
-
         require(
             exact,
             "production CUDA t_edge materialization "
