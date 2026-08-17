@@ -1,0 +1,31 @@
+{
+  "routes": [
+    {
+      "route_id": "ezkl_gat_native_compressed_csr_attention_full",
+      "backend": "cpu",
+      "description": "Compressed native ezkl GraphSegmentAttention route over full-dataset CSR/ragged dst segments with deterministic formal lookup tables, row-compressed projection/aggregation checks, batched lookup accounting, and CSR state-machine segment max/sum rows.",
+      "final_benchmark_allowed": true,
+      "strict_public_input_equivalent_when_verified": true,
+      "native_primitive": "GraphSegmentAttentionCompressedCSR",
+      "native_primitive_version": "csr_segment_attention_compressed_v1",
+      "csr_layout": "csr_dst_segment_ragged",
+      "formal_table_policy": "degree_bound_exp_bound_sum_scale_v1",
+      "statement_route_id": "ezkl_gat_native_compressed_csr_attention_full",
+      "statement_equivalence_group": "gat_native_compressed_csr_attention_full_v1",
+      "forbidden_fallbacks": [
+        "output_binding_replacement",
+        "digest",
+        "folding",
+        "identity",
+        "precomputed_logits",
+        "toy",
+        "smoke",
+        "subset",
+        "sample",
+        "shard",
+        "partial",
+        "scaled_graph"
+      ]
+    }
+  ]
+}
