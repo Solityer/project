@@ -23,6 +23,9 @@ extern "C" cudaError_t bls12_381_initialize_domain(
     device_context::DeviceContext &ctx,
     bool fast_twiddles_mode);
 
+extern "C" cudaError_t bls12_381_release_domain(
+    device_context::DeviceContext &ctx);
+
 extern "C" cudaError_t bls12_381_ntt_cuda(
     const bls12_381::scalar_t *input,
     int size,
@@ -1612,6 +1615,75 @@ namespace gatzk::algebra
             throw_cuda_ntt_error(
                 "workspace release device lookup",
                 status);
+        }
+
+        if (device < 0 ||
+            static_cast<std::size_t>(device) >=
+                device_context::MAX_DEVICES)
+        {
+            throw std::runtime_error(
+                "CUDA quotient NTT workspace release "
+                "received an invalid device id");
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(
+                cuda_ntt_domain_mutex());
+
+            auto &initialized =
+                cuda_ntt_domain_initialized();
+
+            const auto device_index =
+                static_cast<std::size_t>(device);
+
+            if (initialized[device_index])
+            {
+                // release_domain frees twiddle material shared by every NTT on
+                // this device.  All quotient transforms must be complete before
+                // this stage boundary is entered.
+                status =
+                    cudaDeviceSynchronize();
+
+                if (status != cudaSuccess)
+                {
+                    throw_cuda_ntt_error(
+                        "domain release pre-synchronization",
+                        status);
+                }
+
+                auto ctx =
+                    device_context::
+                        get_default_device_context();
+
+                ctx.device_id =
+                    device_index;
+
+                ctx.stream = nullptr;
+
+                status =
+                    bls12_381_release_domain(
+                        ctx);
+
+                if (status != cudaSuccess)
+                {
+                    throw_cuda_ntt_error(
+                        "domain release",
+                        status);
+                }
+
+                status =
+                    cudaDeviceSynchronize();
+
+                if (status != cudaSuccess)
+                {
+                    throw_cuda_ntt_error(
+                        "domain release synchronization",
+                        status);
+                }
+
+                initialized[device_index] =
+                    false;
+            }
         }
 
         cudaMemPool_t pool = nullptr;

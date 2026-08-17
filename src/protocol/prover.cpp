@@ -12284,6 +12284,24 @@ namespace gatzk::protocol
             named_quotient_polynomials = blind_quotient_polynomials(
                 context,
                 std::move(named_quotient_polynomials));
+
+            if (route2.cuda_field_hotspots)
+            {
+                progress_note(
+                    "prove:quotient:release_cuda_transform_transients:start");
+
+                // All quotient coefficients are now canonical host-side prover
+                // material.  The device-resident t_edge executor and the CUDA NTT
+                // workspace/domain are no longer needed by quotient construction and
+                // must not compete with the following KZG MSM commitments.
+                release_cuda_t_edge_executor_cache();
+
+                algebra::release_cuda_ntt_workspace();
+
+                progress_note(
+                    "prove:quotient:release_cuda_transform_transients:done");
+            }
+
             progress_note("prove:quotient:commit_batch:start");
             const auto quotient_commit_batch_start = Clock::now();
             crypto::CommitBatchProfile quotient_commit_profile;

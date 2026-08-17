@@ -11,3 +11,4 @@ data/cache/
 build_asan/
 build-verify-cpu/
 build-verify-gpu/
+build-verify-cuda/
