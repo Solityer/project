@@ -12,3 +12,4 @@ build_asan/
 build-verify-cpu/
 build-verify-gpu/
 build-verify-cuda/
+build_verify_cpu_only/
