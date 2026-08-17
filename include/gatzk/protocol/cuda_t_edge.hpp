@@ -41,6 +41,17 @@ namespace gatzk::protocol
         virtual void prepare_program(
             const TEdgeBoundProgram &program) = 0;
 
+        virtual bool materialize_evaluation_leaf(
+            std::size_t slot,
+            const mcl::Fr *values,
+            std::size_t value_count,
+            const mcl::Fr *zero_domain_blinder,
+            std::size_t blinder_count) = 0;
+
+        virtual bool materialize_coefficient_leaf(
+            std::size_t slot,
+            const mcl::Fr *coefficients,
+            std::size_t coefficient_count) = 0;
         virtual void upload_leaf_chunk(
             std::size_t slot,
             std::size_t logical_offset,
@@ -58,6 +69,9 @@ namespace gatzk::protocol
         virtual void finalize(
             algebra::FieldElement *output,
             std::size_t output_count) = 0;
+        virtual void finalize_coefficients(
+            algebra::FieldElement *output,
+            std::size_t output_count) = 0;
     };
 
     std::unique_ptr<CudaTEdgeExecutor>
@@ -68,7 +82,7 @@ namespace gatzk::protocol
         const algebra::FieldElement &omega,
         std::size_t cache_slot_count,
         CudaTEdgeExecutionProfile *profile);
-        
+
     bool cuda_t_edge_executor_available();
 
     bool cuda_t_edge_executor_can_admit(

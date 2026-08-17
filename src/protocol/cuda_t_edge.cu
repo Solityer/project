@@ -14,6 +14,9 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include <chrono>
+
+#include "gatzk/algebra/cuda_ntt_device.hpp"
 
 #include "gatzk/algebra/cuda_field.cuh"
 #include "gatzk/algebra/vector_ops.hpp"
