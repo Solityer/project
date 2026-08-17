@@ -1,1 +1,0 @@
-dataset=ppi config=/home/pzh/project/comparison/baselines/zkGPT/generated_configs/gpu/ppi_batch_formal.cfg backend=gpu status=VERIFY_OK commitment_time_ms=1271.815 prove_time_ms=4577.915 verify_time_ms=455.908 proof_size_bytes=21360

@@ -1,6 +1,0 @@
-{
-  "created_at": "2026-06-15T03:12:08Z",
-  "git_head_at_start": "57bf0fbe8154115bea6c1a7a78156b8cdd954d73",
-  "rerun_marker_id": "comparison-rerun-20260615T031208Z",
-  "stale_policy": "proof/verify/run artifacts older than this marker cannot enter final comparison results"
-}

@@ -1,8 +1,0 @@
-backend = cpu
-commitment_time_ms = 17738.997
-config = cpu/ogbn_arxiv_full.cfg
-dataset = ogbn-arxiv
-proof_size_bytes = 21361
-prove_time_ms = 65477.886
-status = VERIFY_OK
-verify_time_ms = 414.962
