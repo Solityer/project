@@ -337,31 +337,6 @@ namespace gatzk::algebra
             return workspace;
         }
 
-        void release(
-            cudaStream_t stream) noexcept
-        {
-            if (input != nullptr)
-            {
-                (void)cudaFreeAsync(
-                    input,
-                    stream);
-            }
-
-            if (output != nullptr)
-            {
-                (void)cudaFreeAsync(
-                    output,
-                    stream);
-            }
-
-            (void)cudaStreamSynchronize(
-                stream);
-
-            input = nullptr;
-            output = nullptr;
-            capacity_bytes = 0;
-            device = -1;
-        }
         using GpuFr =
             algebra::gpu::GpuFr;
 
@@ -631,45 +606,989 @@ namespace gatzk::algebra
             }
         }
 
-    };
+        bool run_cuda_ntt_device(
+            const IcicleScalar *device_input,
+            IcicleScalar *device_output,
+            std::size_t size,
+            std::size_t batch_size,
+            ntt::NTTDir direction,
+            int device,
+            cudaStream_t stream)
+        {
+            if (device_input == nullptr ||
+                device_output == nullptr ||
+                size == 0 ||
+                (size & (size - 1U)) != 0U ||
+                size > kMaximumCudaNttSize ||
+                batch_size == 0 ||
+                batch_size >
+                    static_cast<std::size_t>(
+                        std::numeric_limits<int>::max()) ||
+                size >
+                    static_cast<std::size_t>(
+                        std::numeric_limits<int>::max()))
+            {
+                return false;
+            }
 
-    CudaNttWorkspace &
-    cuda_ntt_workspace()
-    {
-        static CudaNttWorkspace workspace;
-        return workspace;
+            auto ctx =
+                device_context::
+                    get_default_device_context();
+
+            ctx.device_id =
+                static_cast<std::size_t>(
+                    device);
+
+            ctx.stream = stream;
+
+            ensure_cuda_ntt_domain(
+                device,
+                ctx);
+
+            auto config =
+                ntt::default_ntt_config<
+                    IcicleScalar>(ctx);
+
+            config.batch_size =
+                static_cast<int>(
+                    batch_size);
+
+            config.columns_batch = false;
+
+            config.ordering =
+                ntt::Ordering::kNN;
+
+            config.are_inputs_on_device =
+                true;
+
+            config.are_outputs_on_device =
+                true;
+
+            config.is_async = true;
+
+            config.ntt_algorithm =
+                ntt::NttAlgorithm::Auto;
+
+            const auto status =
+                bls12_381_ntt_cuda(
+                    device_input,
+                    static_cast<int>(size),
+                    direction,
+                    config,
+                    device_output);
+
+            if (status != cudaSuccess)
+            {
+                throw_cuda_ntt_error(
+                    "execution",
+                    status);
+            }
+
+            return true;
+        }
+        bool run_cuda_ntt_batch(
+            mcl::Fr *first,
+            mcl::Fr *second,
+            std::size_t size,
+            std::size_t batch_size,
+            ntt::NTTDir direction)
+        {
+            if (size == 0 ||
+                (size & (size - 1U)) != 0U ||
+                size > kMaximumCudaNttSize)
+            {
+                return false;
+            }
+
+            if (first == nullptr ||
+                (batch_size == 2 &&
+                 second == nullptr))
+            {
+                throw std::runtime_error(
+                    "CUDA quotient NTT received a null input");
+            }
+
+            if (batch_size != 1 &&
+                batch_size != 2)
+            {
+                throw std::runtime_error(
+                    "CUDA quotient NTT supports only batch size 1 or 2");
+            }
+
+            int device = 0;
+
+            auto status =
+                cudaGetDevice(&device);
+
+            if (status != cudaSuccess)
+            {
+                throw_cuda_ntt_error(
+                    "device lookup",
+                    status);
+            }
+
+            const auto one_vector_bytes =
+                checked_ntt_bytes(
+                    size,
+                    1);
+
+            const auto total_bytes =
+                checked_ntt_bytes(
+                    size,
+                    batch_size);
+
+            int integrated_device = 0;
+
+            status =
+                cudaDeviceGetAttribute(
+                    &integrated_device,
+                    cudaDevAttrIntegrated,
+                    device);
+
+            if (status != cudaSuccess)
+            {
+                throw_cuda_ntt_error(
+                    "integrated-memory capability query",
+                    status);
+            }
+
+            if (integrated_device == 0)
+            {
+                std::size_t free_bytes = 0;
+                std::size_t total_device_bytes = 0;
+
+                status =
+                    cudaMemGetInfo(
+                        &free_bytes,
+                        &total_device_bytes);
+
+                if (status != cudaSuccess)
+                {
+                    throw_cuda_ntt_error(
+                        "memory query",
+                        status);
+                }
+
+                (void)total_device_bytes;
+
+                if (total_bytes >
+                    (std::numeric_limits<
+                         std::size_t>::max() -
+                     kCudaNttReserveBytes) /
+                        2)
+                {
+                    return false;
+                }
+
+                const auto required_free_bytes =
+                    2 * total_bytes +
+                    kCudaNttReserveBytes;
+
+                if (free_bytes <
+                    required_free_bytes)
+                {
+                    return false;
+                }
+            }
+
+            auto &workspace =
+                cuda_ntt_workspace();
+
+            if (!workspace.ensure(
+                    total_bytes,
+                    device))
+            {
+                return false;
+            }
+
+            const auto stream =
+                workspace.stream;
+
+            status =
+                cudaMemcpyAsync(
+                    workspace.input,
+                    first,
+                    one_vector_bytes,
+                    cudaMemcpyHostToDevice,
+                    stream);
+
+            if (status != cudaSuccess)
+            {
+                workspace.release();
+
+                throw_cuda_ntt_error(
+                    "first input upload",
+                    status);
+            }
+
+            if (batch_size == 2)
+            {
+                status =
+                    cudaMemcpyAsync(
+                        workspace.input + size,
+                        second,
+                        one_vector_bytes,
+                        cudaMemcpyHostToDevice,
+                        stream);
+
+                if (status != cudaSuccess)
+                {
+                    workspace.release();
+
+                    throw_cuda_ntt_error(
+                        "second input upload",
+                        status);
+                }
+            }
+
+            if (!run_cuda_ntt_device(
+                    workspace.input,
+                    workspace.output,
+                    size,
+                    batch_size,
+                    direction,
+                    device,
+                    stream))
+            {
+                return false;
+            }
+
+            status =
+                cudaMemcpyAsync(
+                    first,
+                    workspace.output,
+                    one_vector_bytes,
+                    cudaMemcpyDeviceToHost,
+                    stream);
+
+            if (status != cudaSuccess)
+            {
+                workspace.release();
+
+                throw_cuda_ntt_error(
+                    "first output download",
+                    status);
+            }
+
+            if (batch_size == 2)
+            {
+                status =
+                    cudaMemcpyAsync(
+                        second,
+                        workspace.output + size,
+                        one_vector_bytes,
+                        cudaMemcpyDeviceToHost,
+                        stream);
+
+                if (status != cudaSuccess)
+                {
+                    workspace.release();
+
+                    throw_cuda_ntt_error(
+                        "second output download",
+                        status);
+                }
+            }
+
+            status =
+                cudaStreamSynchronize(
+                    stream);
+
+            if (status != cudaSuccess)
+            {
+                workspace.release();
+
+                throw_cuda_ntt_error(
+                    "synchronization",
+                    status);
+            }
+
+            return true;
+        }
+
     }
 
-    bool run_cuda_ntt_batch(
+    bool cuda_coset_evaluations_to_device_exact(
+        const mcl::Fr *values,
+        std::size_t value_count,
+        std::size_t domain_size,
+        const mcl::Fr *zero_domain_blinder,
+        std::size_t blinder_count,
+        const FieldElement &shift,
+        mcl::Fr *device_output,
+        std::size_t target_size)
+    {
+        if (device_output == nullptr ||
+            domain_size == 0 ||
+            target_size < 2 ||
+            value_count > domain_size ||
+            (domain_size &
+             (domain_size - 1U)) != 0U ||
+            (target_size &
+             (target_size - 1U)) != 0U)
+        {
+            return false;
+        }
+
+        if (value_count != 0 &&
+            values == nullptr)
+        {
+            throw std::runtime_error(
+                "CUDA coset evaluation received null values");
+        }
+
+        if (blinder_count != 0 &&
+            zero_domain_blinder == nullptr)
+        {
+            throw std::runtime_error(
+                "CUDA coset evaluation received null blinder");
+        }
+
+        if (domain_size >
+            std::numeric_limits<
+                std::size_t>::max() -
+                blinder_count)
+        {
+            return false;
+        }
+
+        const auto half_size =
+            target_size / 2;
+
+        const auto active_count =
+            domain_size +
+            blinder_count;
+
+        if (domain_size >
+                kMaximumCudaNttSize ||
+            half_size >
+                kMaximumCudaNttSize ||
+            active_count >
+                half_size)
+        {
+            return false;
+        }
+
+        int device = 0;
+
+        auto status =
+            cudaGetDevice(
+                &device);
+
+        if (status != cudaSuccess)
+        {
+            throw_cuda_ntt_error(
+                "device lookup",
+                status);
+        }
+
+        auto &workspace =
+            cuda_ntt_workspace();
+
+        const auto total_bytes =
+            checked_ntt_bytes(
+                target_size,
+                1);
+
+        if (!workspace.ensure(
+                total_bytes,
+                device))
+        {
+            return false;
+        }
+
+        const auto stream =
+            workspace.stream;
+
+        status =
+            cudaMemsetAsync(
+                workspace.input,
+                0,
+                total_bytes,
+                stream);
+
+        if (status != cudaSuccess)
+        {
+            throw_cuda_ntt_error(
+                "evaluation workspace clear",
+                status);
+        }
+
+        if (value_count != 0)
+        {
+            status =
+                cudaMemcpyAsync(
+                    workspace.input,
+                    values,
+                    checked_ntt_bytes(
+                        value_count,
+                        1),
+                    cudaMemcpyHostToDevice,
+                    stream);
+
+            if (status != cudaSuccess)
+            {
+                throw_cuda_ntt_error(
+                    "evaluation upload",
+                    status);
+            }
+        }
+
+        if (!run_cuda_ntt_device(
+                workspace.input,
+                workspace.output,
+                domain_size,
+                1,
+                ntt::NTTDir::kInverse,
+                device,
+                stream))
+        {
+            return false;
+        }
+
+        if (blinder_count != 0)
+        {
+            status =
+                cudaMemcpyAsync(
+                    workspace.output +
+                        domain_size,
+                    zero_domain_blinder,
+                    checked_ntt_bytes(
+                        blinder_count,
+                        1),
+                    cudaMemcpyHostToDevice,
+                    stream);
+
+            if (status != cudaSuccess)
+            {
+                throw_cuda_ntt_error(
+                    "blinder upload",
+                    status);
+            }
+        }
+
+        status =
+            cudaMemsetAsync(
+                workspace.input,
+                0,
+                total_bytes,
+                stream);
+
+        if (status != cudaSuccess)
+        {
+            throw_cuda_ntt_error(
+                "coset lane clear",
+                status);
+        }
+
+        const auto root =
+            FieldElement::
+                root_of_unity(
+                    target_size);
+
+        const auto odd_shift =
+            shift * root;
+
+        const auto chunk_count =
+            (active_count +
+             kCosetPowerChunkElements -
+             1) /
+            kCosetPowerChunkElements;
+
+        constexpr unsigned
+            kBlockSize = 256;
+
+        const auto block_count =
+            static_cast<unsigned>(
+                (chunk_count +
+                 kBlockSize - 1) /
+                kBlockSize);
+
+        if (block_count != 0)
+        {
+            prepare_coset_lanes_kernel<<<
+                block_count,
+                kBlockSize,
+                0,
+                stream>>>(
+                reinterpret_cast<
+                    const GpuFr *>(
+                    workspace.output),
+                domain_size,
+                domain_size,
+                reinterpret_cast<
+                    const GpuFr *>(
+                    workspace.output +
+                    domain_size),
+                blinder_count,
+                active_count,
+                gpu_field(
+                    shift),
+                gpu_field(
+                    odd_shift),
+                reinterpret_cast<
+                    GpuFr *>(
+                    workspace.input),
+                reinterpret_cast<
+                    GpuFr *>(
+                    workspace.input +
+                    half_size));
+
+            status =
+                cudaGetLastError();
+
+            if (status != cudaSuccess)
+            {
+                throw_cuda_ntt_error(
+                    "coset lane preparation",
+                    status);
+            }
+
+            record_cuda_kernel_invocations(
+                1);
+        }
+
+        if (!run_cuda_ntt_device(
+                workspace.input,
+                reinterpret_cast<
+                    IcicleScalar *>(
+                    device_output),
+                half_size,
+                2,
+                ntt::NTTDir::kForward,
+                device,
+                stream))
+        {
+            return false;
+        }
+
+        status =
+            cudaStreamSynchronize(
+                stream);
+
+        if (status != cudaSuccess)
+        {
+            throw_cuda_ntt_error(
+                "coset evaluation synchronization",
+                status);
+        }
+
+        return true;
+    }
+
+    bool cuda_coset_coefficients_to_device_exact(
+        const mcl::Fr *coefficients,
+        std::size_t coefficient_count,
+        const FieldElement &shift,
+        mcl::Fr *device_output,
+        std::size_t target_size)
+    {
+        if (device_output == nullptr ||
+            target_size < 2 ||
+            (target_size &
+             (target_size - 1U)) != 0U)
+        {
+            return false;
+        }
+
+        if (coefficient_count != 0 &&
+            coefficients == nullptr)
+        {
+            throw std::runtime_error(
+                "CUDA coefficient coset received null coefficients");
+        }
+
+        const auto half_size =
+            target_size / 2;
+
+        if (half_size >
+                kMaximumCudaNttSize ||
+            coefficient_count >
+                half_size)
+        {
+            return false;
+        }
+
+        int device = 0;
+
+        auto status =
+            cudaGetDevice(
+                &device);
+
+        if (status != cudaSuccess)
+        {
+            throw_cuda_ntt_error(
+                "device lookup",
+                status);
+        }
+
+        auto &workspace =
+            cuda_ntt_workspace();
+
+        const auto total_bytes =
+            checked_ntt_bytes(
+                target_size,
+                1);
+
+        if (!workspace.ensure(
+                total_bytes,
+                device))
+        {
+            return false;
+        }
+
+        const auto stream =
+            workspace.stream;
+
+        status =
+            cudaMemsetAsync(
+                workspace.input,
+                0,
+                total_bytes,
+                stream);
+
+        if (status != cudaSuccess)
+        {
+            throw_cuda_ntt_error(
+                "coefficient lane clear",
+                status);
+        }
+
+        if (coefficient_count != 0)
+        {
+            status =
+                cudaMemcpyAsync(
+                    workspace.output,
+                    coefficients,
+                    checked_ntt_bytes(
+                        coefficient_count,
+                        1),
+                    cudaMemcpyHostToDevice,
+                    stream);
+
+            if (status != cudaSuccess)
+            {
+                throw_cuda_ntt_error(
+                    "coefficient upload",
+                    status);
+            }
+        }
+
+        const auto root =
+            FieldElement::
+                root_of_unity(
+                    target_size);
+
+        const auto odd_shift =
+            shift * root;
+
+        const auto chunk_count =
+            (coefficient_count +
+             kCosetPowerChunkElements -
+             1) /
+            kCosetPowerChunkElements;
+
+        constexpr unsigned
+            kBlockSize = 256;
+
+        const auto block_count =
+            static_cast<unsigned>(
+                (chunk_count +
+                 kBlockSize - 1) /
+                kBlockSize);
+
+        if (block_count != 0)
+        {
+            prepare_coset_lanes_kernel<<<
+                block_count,
+                kBlockSize,
+                0,
+                stream>>>(
+                reinterpret_cast<
+                    const GpuFr *>(
+                    workspace.output),
+                coefficient_count,
+                coefficient_count,
+                nullptr,
+                0,
+                coefficient_count,
+                gpu_field(
+                    shift),
+                gpu_field(
+                    odd_shift),
+                reinterpret_cast<
+                    GpuFr *>(
+                    workspace.input),
+                reinterpret_cast<
+                    GpuFr *>(
+                    workspace.input +
+                    half_size));
+
+            status =
+                cudaGetLastError();
+
+            if (status != cudaSuccess)
+            {
+                throw_cuda_ntt_error(
+                    "coefficient coset preparation",
+                    status);
+            }
+
+            record_cuda_kernel_invocations(
+                1);
+        }
+
+        if (!run_cuda_ntt_device(
+                workspace.input,
+                reinterpret_cast<
+                    IcicleScalar *>(
+                    device_output),
+                half_size,
+                2,
+                ntt::NTTDir::kForward,
+                device,
+                stream))
+        {
+            return false;
+        }
+
+        status =
+            cudaStreamSynchronize(
+                stream);
+
+        if (status != cudaSuccess)
+        {
+            throw_cuda_ntt_error(
+                "coefficient coset synchronization",
+                status);
+        }
+
+        return true;
+    }
+
+    bool cuda_coset_device_to_coefficients_exact(
+        const mcl::Fr *device_values,
+        std::size_t size,
+        const FieldElement &shift,
+        mcl::Fr *host_coefficients)
+    {
+        if (device_values == nullptr ||
+            host_coefficients == nullptr ||
+            size < 2 ||
+            (size &
+             (size - 1U)) != 0U)
+        {
+            return false;
+        }
+
+        const auto half_size =
+            size / 2;
+
+        if (half_size >
+            kMaximumCudaNttSize)
+        {
+            return false;
+        }
+
+        int device = 0;
+
+        auto status =
+            cudaGetDevice(
+                &device);
+
+        if (status != cudaSuccess)
+        {
+            throw_cuda_ntt_error(
+                "device lookup",
+                status);
+        }
+
+        auto &workspace =
+            cuda_ntt_workspace();
+
+        const auto total_bytes =
+            checked_ntt_bytes(
+                size,
+                1);
+
+        if (!workspace.ensure(
+                total_bytes,
+                device))
+        {
+            return false;
+        }
+
+        const auto stream =
+            workspace.stream;
+
+        constexpr unsigned
+            kBlockSize = 256;
+
+        const auto split_blocks =
+            static_cast<unsigned>(
+                (half_size +
+                 kBlockSize - 1) /
+                kBlockSize);
+
+        split_even_odd_kernel<<<
+            split_blocks,
+            kBlockSize,
+            0,
+            stream>>>(
+            reinterpret_cast<
+                const GpuFr *>(
+                device_values),
+            reinterpret_cast<
+                GpuFr *>(
+                workspace.input),
+            reinterpret_cast<
+                GpuFr *>(
+                workspace.input +
+                half_size),
+            half_size);
+
+        status =
+            cudaGetLastError();
+
+        if (status != cudaSuccess)
+        {
+            throw_cuda_ntt_error(
+                "inverse coset split",
+                status);
+        }
+
+        record_cuda_kernel_invocations(
+            1);
+
+        if (!run_cuda_ntt_device(
+                workspace.input,
+                workspace.output,
+                half_size,
+                2,
+                ntt::NTTDir::kInverse,
+                device,
+                stream))
+        {
+            return false;
+        }
+
+        const auto omega_inverse =
+            FieldElement::
+                root_of_unity(
+                    size)
+                    .inv();
+
+        const auto inverse_two =
+            FieldElement(2).inv();
+
+        const auto shift_inverse =
+            shift.inv();
+
+        const auto
+            shift_inverse_half =
+                shift_inverse.pow(
+                    half_size);
+
+        const auto chunk_count =
+            (half_size +
+             kCosetPowerChunkElements -
+             1) /
+            kCosetPowerChunkElements;
+
+        const auto combine_blocks =
+            static_cast<unsigned>(
+                (chunk_count +
+                 kBlockSize - 1) /
+                kBlockSize);
+
+        combine_inverse_coset_kernel<<<
+            combine_blocks,
+            kBlockSize,
+            0,
+            stream>>>(
+            reinterpret_cast<
+                const GpuFr *>(
+                workspace.output),
+            reinterpret_cast<
+                const GpuFr *>(
+                workspace.output +
+                half_size),
+            reinterpret_cast<
+                GpuFr *>(
+                workspace.input),
+            half_size,
+            gpu_field(
+                omega_inverse),
+            gpu_field(
+                inverse_two),
+            gpu_field(
+                shift_inverse),
+            gpu_field(
+                shift_inverse_half));
+
+        status =
+            cudaGetLastError();
+
+        if (status != cudaSuccess)
+        {
+            throw_cuda_ntt_error(
+                "inverse coset combine",
+                status);
+        }
+
+        record_cuda_kernel_invocations(
+            1);
+
+        status =
+            cudaMemcpyAsync(
+                host_coefficients,
+                workspace.input,
+                total_bytes,
+                cudaMemcpyDeviceToHost,
+                stream);
+
+        if (status != cudaSuccess)
+        {
+            throw_cuda_ntt_error(
+                "coefficient download",
+                status);
+        }
+
+        status =
+            cudaStreamSynchronize(
+                stream);
+
+        if (status != cudaSuccess)
+        {
+            throw_cuda_ntt_error(
+                "coefficient synchronization",
+                status);
+        }
+
+        return true;
+    }
+
+    bool cuda_intt_in_place_exact(
         mcl::Fr *first,
         mcl::Fr *second,
-        std::size_t size,
-        std::size_t batch_size,
-        ntt::NTTDir direction)
+        std::size_t size)
     {
-        if (size == 0 || (size & (size - 1U)) != 0U || size > kMaximumCudaNttSize)
-        {
-            return false;
-        }
-
-        if (first == nullptr || (batch_size == 2 && second == nullptr))
+        if (first == second)
         {
             throw std::runtime_error(
-                "CUDA quotient NTT received a null input");
+                "CUDA paired NTT requires distinct input vectors");
         }
 
-        if (batch_size != 1 && batch_size != 2)
-        {
-            throw std::runtime_error(
-                "CUDA quotient NTT supports only batch size 1 or 2");
-        }
-
-        if (size >
-            static_cast<std::size_t>(
-                std::numeric_limits<int>::max()))
-        {
-            return false;
-        }
+        return run_cuda_ntt_batch(
+            first,
+            second,
+            size,
+            2,
+            ntt::NTTDir::kForward);
+    }
+    void release_cuda_ntt_workspace()
+    {
+        cuda_ntt_workspace().release();
 
         int device = 0;
 
@@ -679,299 +1598,21 @@ namespace gatzk::algebra
         if (status != cudaSuccess)
         {
             throw_cuda_ntt_error(
-                "device lookup",
+                "workspace release device lookup",
                 status);
         }
 
-        auto ctx =
-            device_context::get_default_device_context();
+        cudaMemPool_t pool = nullptr;
 
-        ctx.device_id =
-            static_cast<std::size_t>(device);
-
-        ensure_cuda_ntt_domain(
-            device,
-            ctx);
-
-        const auto one_vector_bytes =
-            checked_ntt_bytes(size, 1);
-
-        const auto total_bytes =
-            checked_ntt_bytes(
-                size,
-                batch_size);
-
-        int integrated_device = 0;
-
-        status = cudaDeviceGetAttribute(
-            &integrated_device,
-            cudaDevAttrIntegrated,
-            device);
-
-        if (status != cudaSuccess)
+        if (cudaDeviceGetDefaultMemPool(
+                &pool,
+                device) == cudaSuccess &&
+            pool != nullptr)
         {
-            throw_cuda_ntt_error(
-                "integrated-memory capability query",
-                status);
+            (void)cudaMemPoolTrimTo(
+                pool,
+                0);
         }
-
-        // On discrete GPUs, cudaMemGetInfo() describes the dedicated device-memory
-        // pool closely enough for conservative admission.
-        //
-        // DGX Spark / GB10 is an integrated UMA platform.  NVIDIA documents that
-        // cudaMemGetInfo() does not include DRAM that the CPU can reclaim from page
-        // cache / swap, so treating it as a hard allocation ceiling can reject valid
-        // allocations.  On UMA, let the actual CUDA allocations below be the
-        // authoritative fail-closed resource check.
-        if (integrated_device == 0)
-        {
-            std::size_t free_bytes = 0;
-            std::size_t total_device_bytes = 0;
-
-            status = cudaMemGetInfo(
-                &free_bytes,
-                &total_device_bytes);
-
-            if (status != cudaSuccess)
-            {
-                throw_cuda_ntt_error(
-                    "memory query",
-                    status);
-            }
-
-            (void)total_device_bytes;
-
-            if (total_bytes >
-                (std::numeric_limits<std::size_t>::max() - kCudaNttReserveBytes) / 2)
-            {
-                return false;
-            }
-
-            const auto required_free_bytes =
-                2 * total_bytes + kCudaNttReserveBytes;
-
-            if (free_bytes < required_free_bytes)
-            {
-                return false;
-            }
-        }
-
-        auto &workspace =
-            cuda_ntt_workspace();
-
-        if (!workspace.ensure(
-                total_bytes,
-                device,
-                ctx.stream))
-        {
-            return false;
-        }
-
-        auto *device_input =
-            workspace.input;
-
-        auto *device_output =
-            workspace.output;
-
-        status = cudaMemcpyAsync(
-            device_input,
-            first,
-            one_vector_bytes,
-            cudaMemcpyHostToDevice,
-            ctx.stream);
-
-        if (status != cudaSuccess)
-        {
-            workspace.release(
-                ctx.stream);
-
-            throw_cuda_ntt_error(
-                "first input upload",
-                status);
-        }
-
-        if (batch_size == 2)
-        {
-            status = cudaMemcpyAsync(
-                device_input + size,
-                second,
-                one_vector_bytes,
-                cudaMemcpyHostToDevice,
-                ctx.stream);
-
-            if (status != cudaSuccess)
-            {
-                workspace.release(
-                    ctx.stream);
-
-                throw_cuda_ntt_error(
-                    "second input upload",
-                    status);
-            }
-        }
-
-        auto config =
-            ntt::default_ntt_config<
-                IcicleScalar>(ctx);
-
-        config.batch_size =
-            static_cast<int>(
-                batch_size);
-
-        config.columns_batch = false;
-        config.ordering =
-            ntt::Ordering::kNN;
-
-        config.are_inputs_on_device =
-            true;
-
-        config.are_outputs_on_device =
-            true;
-
-        config.is_async = false;
-
-        config.ntt_algorithm =
-            ntt::NttAlgorithm::Auto;
-
-        status = bls12_381_ntt_cuda(
-            device_input,
-            static_cast<int>(size),
-            direction,
-            config,
-            device_output);
-
-        if (status != cudaSuccess)
-        {
-            workspace.release(
-                ctx.stream);
-
-            throw_cuda_ntt_error(
-                "execution",
-                status);
-        }
-
-        status = cudaMemcpyAsync(
-            first,
-            device_output,
-            one_vector_bytes,
-            cudaMemcpyDeviceToHost,
-            ctx.stream);
-
-        if (status != cudaSuccess)
-        {
-            workspace.release(
-                ctx.stream);
-
-            throw_cuda_ntt_error(
-                "first output download",
-                status);
-        }
-
-        if (batch_size == 2)
-        {
-            status = cudaMemcpyAsync(
-                second,
-                device_output + size,
-                one_vector_bytes,
-                cudaMemcpyDeviceToHost,
-                ctx.stream);
-
-            if (status != cudaSuccess)
-            {
-                workspace.release(
-                    ctx.stream);
-
-                throw_cuda_ntt_error(
-                    "second output download",
-                    status);
-            }
-        }
-
-        status =
-            cudaStreamSynchronize(
-                ctx.stream);
-
-        if (status != cudaSuccess)
-        {
-            workspace.release(
-                ctx.stream);
-
-            throw_cuda_ntt_error(
-                "synchronization",
-                status);
-        }
-
-        return true;
     }
-}
-
-bool cuda_intt_in_place_exact(
-    mcl::Fr *values,
-    std::size_t size)
-{
-    return run_cuda_ntt_batch(
-        values,
-        nullptr,
-        size,
-        1,
-        ntt::NTTDir::kInverse);
-}
-
-bool cuda_ntt_pair_in_place_exact(
-    mcl::Fr *first,
-    mcl::Fr *second,
-    std::size_t size)
-{
-    if (first == second)
-    {
-        throw std::runtime_error(
-            "CUDA paired NTT requires distinct input vectors");
-    }
-
-    return run_cuda_ntt_batch(
-        first,
-        second,
-        size,
-        2,
-        ntt::NTTDir::kForward);
-}
-void release_cuda_ntt_workspace()
-{
-    cuda_ntt_workspace().release();
-    int device = 0;
-
-    auto status =
-        cudaGetDevice(&device);
-
-    if (status != cudaSuccess)
-    {
-        throw_cuda_ntt_error(
-            "workspace release device lookup",
-            status);
-    }
-
-    auto ctx =
-        device_context::
-            get_default_device_context();
-
-    ctx.device_id =
-        static_cast<std::size_t>(
-            device);
-
-    cuda_ntt_workspace().release(
-        ctx.stream);
-
-    cudaMemPool_t pool = nullptr;
-
-    if (cudaDeviceGetDefaultMemPool(
-            &pool,
-            device) == cudaSuccess &&
-        pool != nullptr)
-    {
-        (void)cudaMemPoolTrimTo(
-            pool,
-            0);
-    }
-}
 
 } // namespace gatzk::algebra

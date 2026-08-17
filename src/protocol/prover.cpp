@@ -5509,7 +5509,7 @@ namespace gatzk::protocol
             }
 
             std::vector<FieldElement>
-            materialize_cuda_t_edge_quotient()
+            materialize_cuda_t_edge_coefficients()
             {
                 if (edge_evaluation_plan_ ==
                     nullptr)
@@ -5708,10 +5708,128 @@ namespace gatzk::protocol
                     }
                 };
 
+                const auto
+                    try_materialize_direct_gpu_leaf =
+                        [&](const std::string &label,
+                            std::size_t slot)
+                    -> bool
+                {
+                    if (const auto *polynomial =
+                            lookup_polynomial(
+                                label);
+                        polynomial != nullptr)
+                    {
+                        if (polynomial->basis ==
+                                algebra::
+                                    PolynomialBasis::
+                                        Evaluation &&
+                            polynomial->domain !=
+                                nullptr &&
+                            polynomial->domain->size ==
+                                domain_->size &&
+                            polynomial->domain->omega ==
+                                domain_->omega)
+                        {
+                            const auto &values =
+                                polynomial->values();
+
+                            const auto *blinder =
+                                polynomial
+                                        ->zero_domain_blinder
+                                        .empty()
+                                    ? nullptr
+                                    : FieldElement::
+                                          native_array_data(
+                                              polynomial
+                                                  ->zero_domain_blinder
+                                                  .data());
+
+                            return executor->materialize_evaluation_leaf(
+                                slot,
+                                FieldElement::
+                                    native_array_data(
+                                        values.data()),
+                                values.size(),
+                                blinder,
+                                polynomial
+                                    ->zero_domain_blinder
+                                    .size());
+                        }
+
+                        if (polynomial->basis ==
+                            algebra::
+                                PolynomialBasis::
+                                    Coefficient)
+                        {
+                            const auto &coefficients =
+                                polynomial->values();
+
+                            return executor->materialize_coefficient_leaf(
+                                slot,
+                                FieldElement::
+                                    native_array_data(
+                                        coefficients.data()),
+                                coefficients.size());
+                        }
+                    }
+
+                    const auto spilled_it =
+                        trace_.spilled_polynomials
+                            .find(label);
+
+                    if (spilled_it !=
+                            trace_
+                                .spilled_polynomials
+                                .end() &&
+                        spilled_it->second
+                                .domain_name ==
+                            domain_->name)
+                    {
+                        auto source_values =
+                            load_spilled_values(
+                                spilled_it->second);
+
+                        const auto *blinder =
+                            spilled_it->second
+                                    .zero_domain_blinder
+                                    .empty()
+                                ? nullptr
+                                : FieldElement::
+                                      native_array_data(
+                                          spilled_it
+                                              ->second
+                                              .zero_domain_blinder
+                                              .data());
+
+                        return executor->materialize_evaluation_leaf(
+                            slot,
+                            FieldElement::
+                                native_array_data(
+                                    source_values
+                                        .data()),
+                            source_values.size(),
+                            blinder,
+                            spilled_it->second
+                                .zero_domain_blinder
+                                .size());
+                    }
+
+                    return false;
+                };
                 const auto materialize_label =
                     [&](const std::string &label,
                         std::size_t slot)
                 {
+                    if (label !=
+                            "__t_edge_boundary_l0" &&
+                        try_materialize_direct_gpu_leaf(
+                            label,
+                            slot))
+                    {
+                        reset_cuda_t_edge_transient_leaf_state();
+                        return;
+                    }
+
                     QuotientCosetValuesPtr values;
 
                     if (label ==
@@ -6022,9 +6140,12 @@ namespace gatzk::protocol
                             target_size_,
                             FieldElement::zero());
 
-                    executor->finalize(
+                    executor->finalize_coefficients(
                         output.data(),
                         output.size());
+
+                    trim_field_coefficients(
+                        &output);
 
                     cuda_t_edge_transient_leaf_mode_ =
                         false;
@@ -6263,9 +6384,14 @@ namespace gatzk::protocol
                     }
                 };
 
-                std::vector<FieldElement> quotient_values(target_size_, FieldElement::zero());
                 const bool cuda_t_edge_route =
                     should_use_cuda_t_edge_engine();
+
+                std::vector<FieldElement>
+                    quotient_values;
+
+                std::vector<FieldElement>
+                    cuda_t_edge_coefficients;
 
                 if (cuda_t_edge_route)
                 {
@@ -6273,12 +6399,18 @@ namespace gatzk::protocol
                         "prove:quotient:t_edge:"
                         "cuda_device_resident:start");
 
-                    quotient_values =
-                        materialize_cuda_t_edge_quotient();
+                    cuda_t_edge_coefficients =
+                        materialize_cuda_t_edge_coefficients();
 
                     progress_note(
                         "prove:quotient:t_edge:"
                         "cuda_device_resident:done");
+                }
+                else
+                {
+                    quotient_values.assign(
+                        target_size_,
+                        FieldElement::zero());
                 }
                 // Warm the dependency cache before parallel point evaluation; after this the worker
                 // threads only read the cached coset vectors.
@@ -7088,9 +7220,26 @@ namespace gatzk::protocol
                     progress_note("prove:quotient:t_N:coefficients:start");
                 }
 
-                const auto coefficient_start = Clock::now();
-                auto coefficients = coefficients_from_coset_evaluations_in_place(
-                    std::move(quotient_values), shift_);
+                const auto coefficient_start =
+                    Clock::now();
+
+                std::vector<FieldElement>
+                    coefficients;
+
+                if (cuda_t_edge_route)
+                {
+                    coefficients =
+                        std::move(
+                            cuda_t_edge_coefficients);
+                }
+                else
+                {
+                    coefficients =
+                        coefficients_from_coset_evaluations_in_place(
+                            std::move(
+                                quotient_values),
+                            shift_);
+                }
                 if (std::getenv("GATZK_DEBUG_QUOTIENT_SELF_CHECK") != nullptr)
                 {
                     std::cerr << "[quotient-debug] " << label_

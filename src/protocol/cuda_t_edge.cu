@@ -94,6 +94,7 @@ namespace gatzk::protocol
             std::size_t instruction_end,
             const GpuFr *constants,
             GpuFr *const *leaf_slots,
+            const std::uint8_t *leaf_split_layout,
             const std::uint32_t *access_slots,
             const std::uint8_t *access_rotated,
             std::size_t rotation_step,
@@ -141,10 +142,24 @@ namespace gatzk::protocol
                                rotation_step) &
                                   (target_size - 1U)
                             : point;
+                    std::size_t physical_index =
+                        logical_index;
+
+                    if (leaf_split_layout[slot] != 0)
+                    {
+                        const auto half_size =
+                            target_size / 2;
+
+                        physical_index =
+                            logical_index / 2 +
+                            ((logical_index & 1U) != 0U
+                                 ? half_size
+                                 : 0);
+                    }
 
                     stack[stack_size++] =
                         leaf_slots[slot]
-                                  [logical_index];
+                                  [physical_index];
 
                     break;
                 }
@@ -270,6 +285,7 @@ namespace gatzk::protocol
                 CudaTEdgeExecutionProfile *profile)
                 : domain_size_(domain_size),
                   target_size_(target_size),
+                  shift_(shift),
                   rotation_step_(
                       target_size /
                       domain_size),
@@ -302,6 +318,10 @@ namespace gatzk::protocol
                         "CUDA t_edge leaf-cache "
                         "slot count overflow");
                 }
+
+                host_leaf_split_layout_.assign(
+                    cache_slot_count_,
+                    0);
 
                 try
                 {
@@ -366,6 +386,39 @@ namespace gatzk::protocol
                     {
                         throw_cuda_t_edge_error(
                             "leaf-table upload",
+                            status);
+                    }
+
+                    status =
+                        cudaMalloc(
+                            reinterpret_cast<
+                                void **>(
+                                &device_leaf_split_layout_),
+                            checked_bytes(
+                                cache_slot_count_,
+                                sizeof(std::uint8_t),
+                                "leaf layout"));
+
+                    if (status != cudaSuccess)
+                    {
+                        throw_cuda_t_edge_error(
+                            "leaf-layout allocation",
+                            status);
+                    }
+
+                    status =
+                        cudaMemset(
+                            device_leaf_split_layout_,
+                            0,
+                            checked_bytes(
+                                cache_slot_count_,
+                                sizeof(std::uint8_t),
+                                "leaf layout"));
+
+                    if (status != cudaSuccess)
+                    {
+                        throw_cuda_t_edge_error(
+                            "leaf-layout clear",
                             status);
                     }
 
@@ -702,6 +755,164 @@ namespace gatzk::protocol
                 }
             }
 
+            bool materialize_evaluation_leaf(
+                std::size_t slot,
+                const mcl::Fr *values,
+                std::size_t value_count,
+                const mcl::Fr *zero_domain_blinder,
+                std::size_t blinder_count)
+                override
+            {
+                if (slot >=
+                    cache_slot_count_)
+                {
+                    throw std::runtime_error(
+                        "invalid CUDA t_edge evaluation leaf slot");
+                }
+
+                const auto start =
+                    std::chrono::
+                        steady_clock::now();
+
+                const bool executed =
+                    algebra::
+                        cuda_coset_evaluations_to_device_exact(
+                            values,
+                            value_count,
+                            domain_size_,
+                            zero_domain_blinder,
+                            blinder_count,
+                            shift_,
+                            reinterpret_cast<
+                                mcl::Fr *>(
+                                device_leaf_slots_[slot]),
+                            target_size_);
+
+                if (!executed)
+                {
+                    return false;
+                }
+
+                host_leaf_split_layout_[slot] =
+                    1;
+
+                const auto status =
+                    cudaMemcpy(
+                        device_leaf_split_layout_ +
+                            slot,
+                        &host_leaf_split_layout_[slot],
+                        sizeof(std::uint8_t),
+                        cudaMemcpyHostToDevice);
+
+                if (status != cudaSuccess)
+                {
+                    throw_cuda_t_edge_error(
+                        "leaf-layout upload",
+                        status);
+                }
+
+                if (profile_ != nullptr)
+                {
+                    ++profile_
+                          ->leaf_materialization_count;
+
+                    profile_
+                        ->source_bytes_uploaded +=
+                        value_count *
+                        sizeof(mcl::Fr);
+
+                    profile_
+                        ->source_bytes_uploaded +=
+                        blinder_count *
+                        sizeof(mcl::Fr);
+
+                    profile_->leaf_ntt_ms +=
+                        std::chrono::duration<
+                            double,
+                            std::milli>(
+                            std::chrono::
+                                steady_clock::now() -
+                            start)
+                            .count();
+                }
+
+                return true;
+            }
+
+            bool materialize_coefficient_leaf(
+                std::size_t slot,
+                const mcl::Fr *coefficients,
+                std::size_t coefficient_count)
+                override
+            {
+                if (slot >=
+                    cache_slot_count_)
+                {
+                    throw std::runtime_error(
+                        "invalid CUDA t_edge coefficient leaf slot");
+                }
+
+                const auto start =
+                    std::chrono::
+                        steady_clock::now();
+
+                const bool executed =
+                    algebra::
+                        cuda_coset_coefficients_to_device_exact(
+                            coefficients,
+                            coefficient_count,
+                            shift_,
+                            reinterpret_cast<
+                                mcl::Fr *>(
+                                device_leaf_slots_[slot]),
+                            target_size_);
+
+                if (!executed)
+                {
+                    return false;
+                }
+
+                host_leaf_split_layout_[slot] =
+                    1;
+
+                const auto status =
+                    cudaMemcpy(
+                        device_leaf_split_layout_ +
+                            slot,
+                        &host_leaf_split_layout_[slot],
+                        sizeof(std::uint8_t),
+                        cudaMemcpyHostToDevice);
+
+                if (status != cudaSuccess)
+                {
+                    throw_cuda_t_edge_error(
+                        "leaf-layout upload",
+                        status);
+                }
+
+                if (profile_ != nullptr)
+                {
+                    ++profile_
+                          ->leaf_materialization_count;
+
+                    profile_
+                        ->source_bytes_uploaded +=
+                        coefficient_count *
+                        sizeof(mcl::Fr);
+
+                    profile_->leaf_ntt_ms +=
+                        std::chrono::duration<
+                            double,
+                            std::milli>(
+                            std::chrono::
+                                steady_clock::now() -
+                            start)
+                            .count();
+                }
+
+                return true;
+            }
+
             void upload_leaf_chunk(
                 std::size_t slot,
                 std::size_t logical_offset,
@@ -726,6 +937,28 @@ namespace gatzk::protocol
                 if (count == 0)
                 {
                     return;
+                }
+
+                if (logical_offset == 0)
+                {
+                    host_leaf_split_layout_[slot] =
+                        0;
+
+                    const auto layout_status =
+                        cudaMemcpy(
+                            device_leaf_split_layout_ +
+                                slot,
+                            &host_leaf_split_layout_[slot],
+                            sizeof(std::uint8_t),
+                            cudaMemcpyHostToDevice);
+
+                    if (layout_status !=
+                        cudaSuccess)
+                    {
+                        throw_cuda_t_edge_error(
+                            "fallback leaf-layout upload",
+                            layout_status);
+                    }
                 }
 
                 const auto byte_count =
@@ -846,6 +1079,7 @@ namespace gatzk::protocol
                     term.instruction_end,
                     device_constants_,
                     device_leaf_table_,
+                    device_leaf_split_layout_,
                     device_access_slots_,
                     device_access_rotated_,
                     rotation_step_,
@@ -979,6 +1213,122 @@ namespace gatzk::protocol
                 }
             }
 
+            void finalize_coefficients(
+                algebra::FieldElement *output,
+                std::size_t output_count)
+                override
+            {
+                if (output == nullptr ||
+                    output_count != target_size_ ||
+                    zero_inverse_cycle_size_ == 0)
+                {
+                    throw std::runtime_error(
+                        "invalid CUDA t_edge coefficient output");
+                }
+
+                constexpr unsigned
+                    kBlockSize = 256;
+
+                const auto block_count_size =
+                    (target_size_ +
+                     kBlockSize - 1) /
+                    kBlockSize;
+
+                t_edge_finalize_kernel<<<
+                    static_cast<unsigned>(
+                        block_count_size),
+                    kBlockSize>>>(
+                    device_quotient_,
+                    device_zero_inverse_cycle_,
+                    target_size_,
+                    zero_inverse_cycle_size_);
+
+                auto status =
+                    cudaGetLastError();
+
+                if (status != cudaSuccess)
+                {
+                    throw_cuda_t_edge_error(
+                        "finalize kernel launch",
+                        status);
+                }
+
+                status =
+                    cudaStreamSynchronize(0);
+
+                if (status != cudaSuccess)
+                {
+                    throw_cuda_t_edge_error(
+                        "finalize synchronization",
+                        status);
+                }
+
+                const auto start =
+                    std::chrono::
+                        steady_clock::now();
+
+                const bool executed =
+                    algebra::
+                        cuda_coset_device_to_coefficients_exact(
+                            reinterpret_cast<
+                                const mcl::Fr *>(
+                                device_quotient_),
+                            target_size_,
+                            shift_,
+                            algebra::FieldElement::
+                                mutable_native_array_data(
+                                    output));
+
+                if (!executed)
+                {
+                    throw std::runtime_error(
+                        "CUDA t_edge device quotient INTT was not admitted");
+                }
+
+                algebra::
+                    record_cuda_kernel_invocations(
+                        1);
+
+                if (profile_ != nullptr)
+                {
+                    profile_
+                        ->quotient_bytes_downloaded =
+                        target_size_ *
+                        sizeof(GpuFr);
+
+                    profile_->final_download_ms +=
+                        std::chrono::duration<
+                            double,
+                            std::milli>(
+                            std::chrono::
+                                steady_clock::now() -
+                            start)
+                            .count();
+
+                    std::cerr
+                        << "[gatzk] cuda_t_edge"
+                        << " terms="
+                        << profile_->term_count
+                        << " accesses="
+                        << profile_->access_count
+                        << " unique_leaves="
+                        << profile_->unique_leaf_count
+                        << " cache_slots="
+                        << profile_->leaf_cache_slot_count
+                        << " materializations="
+                        << profile_->leaf_materialization_count
+                        << " cache_hits="
+                        << profile_->leaf_cache_hit_count
+                        << " evictions="
+                        << profile_->leaf_eviction_count
+                        << " source_upload_bytes="
+                        << profile_->source_bytes_uploaded
+                        << " quotient_download_bytes="
+                        << profile_->quotient_bytes_downloaded
+                        << '\n';
+                }
+            }
+
         private:
             void release_program_noexcept() noexcept
             {
@@ -1047,6 +1397,13 @@ namespace gatzk::protocol
                         device_leaf_table_);
                 }
 
+                if (device_leaf_split_layout_ !=
+                    nullptr)
+                {
+                    (void)cudaFree(
+                        device_leaf_split_layout_);
+                }
+
                 if (device_quotient_ !=
                     nullptr)
                 {
@@ -1064,6 +1421,9 @@ namespace gatzk::protocol
                 device_leaf_table_ =
                     nullptr;
 
+                device_leaf_split_layout_ =
+                    nullptr;
+
                 device_quotient_ =
                     nullptr;
 
@@ -1073,6 +1433,10 @@ namespace gatzk::protocol
 
             std::size_t domain_size_ = 0;
             std::size_t target_size_ = 0;
+
+            algebra::FieldElement
+                shift_;
+
             std::size_t rotation_step_ = 0;
             std::size_t cache_slot_count_ = 0;
 
@@ -1081,6 +1445,13 @@ namespace gatzk::protocol
 
             GpuFr **device_leaf_table_ =
                 nullptr;
+
+            std::vector<std::uint8_t>
+                host_leaf_split_layout_;
+
+            std::uint8_t
+                *device_leaf_split_layout_ =
+                    nullptr;
 
             GpuFr *device_quotient_ =
                 nullptr;
@@ -1296,7 +1667,12 @@ namespace gatzk::protocol
             {
                 constexpr std::size_t
                     kMinimumIntegratedReserve =
-                        std::size_t{16}
+                        std::size_t{8}
+                        << 30;
+
+                constexpr std::size_t
+                    kIntegratedTransformHeadroom =
+                        std::size_t{3}
                         << 30;
 
                 const auto reserve_bytes =
@@ -1305,17 +1681,22 @@ namespace gatzk::protocol
                         host_total_bytes == 0
                             ? kMinimumIntegratedReserve
                             : host_total_bytes /
-                                  4);
+                                  16);
 
                 if (host_available_bytes <=
-                    reserve_bytes)
+                    reserve_bytes +
+                        kIntegratedTransformHeadroom)
                 {
                     return false;
                 }
 
-                if (required_bytes >
+                const auto safely_usable =
                     host_available_bytes -
-                        reserve_bytes)
+                    reserve_bytes -
+                    kIntegratedTransformHeadroom;
+
+                if (required_bytes >
+                    safely_usable)
                 {
                     return false;
                 }
