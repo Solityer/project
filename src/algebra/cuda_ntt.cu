@@ -1569,6 +1569,18 @@ namespace gatzk::algebra
     }
 
     bool cuda_intt_in_place_exact(
+        mcl::Fr *values,
+        std::size_t size)
+    {
+        return run_cuda_ntt_batch(
+            values,
+            nullptr,
+            size,
+            1,
+            ntt::NTTDir::kInverse);
+    }
+
+    bool cuda_ntt_pair_in_place_exact(
         mcl::Fr *first,
         mcl::Fr *second,
         std::size_t size)
