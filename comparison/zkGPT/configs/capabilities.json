@@ -1,0 +1,17 @@
+{
+  "baseline": "zkGPT",
+  "relation": "gat_comparison",
+  "status": "unsupported_exact_relation",
+  "privacy_status": "unsupported_privacy_profile",
+  "backends": {
+    "cpu": "unsupported",
+    "gpu": "unsupported"
+  },
+  "missing_capabilities": [
+    "complete native Lasso proof",
+    "exact SignedRoundDiv constraints at all required sites",
+    "complete commitment-bound GKR and matrix-multiplication proofs",
+    "fresh-randomness OpenMasked and reused-com_W multi-session zero knowledge",
+    "faithful GPU prover backend"
+  ]
+}

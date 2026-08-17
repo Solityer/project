@@ -66,11 +66,7 @@ out
 !tests/assets/wasm.code
 !tests/assets/wasm.sol
 
-# GAT-ZKML baseline local build/run outputs.
-build_gat_adapter/
-CMakeFiles/
-CMakeCache.txt
-cmake_install.cmake
+# Local build and future experiment outputs.
 *.o
 *.a
 *.so
@@ -81,34 +77,8 @@ artifacts/
 .rustup/
 *.stdout.txt
 *.stderr.txt
-!results/*.csv
-!results/*.json
-!results/*.md
-
-# Final GAT comparison run directories are ignored by the project root
-# gitignore. The small JSON audit artifacts are force-added intentionally;
-# large proof/setup/witness payloads remain ignored and reproducible.
-runs/*/proof.json
-runs/*/*/proof.json
-runs/*/pk.key
-runs/*/*/pk.key
-runs/*/vk.key
-runs/*/*/vk.key
-runs/*/pk.srs
-runs/*/*/pk.srs
-runs/*/vk.srs
-runs/*/*/vk.srs
-runs/*/witness.json
-runs/*/*/witness.json
-runs/*/model.compiled
-runs/*/*/model.compiled
-runs/*/*.bin
-runs/*/*/*.bin
-runs/*/*.stdout.txt
-runs/*/*/*.stdout.txt
-runs/*/*.stderr.txt
-runs/*/*/*.stderr.txt
-runs/*/*.time.txt
-runs/*/*/*.time.txt
-runs/*/prove_memory_profile_internal.json
-runs/*/*/prove_memory_profile_internal.json
+results/*
+!results/.gitkeep
+!runs/
+runs/*
+!runs/.gitkeep

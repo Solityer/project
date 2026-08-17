@@ -1,0 +1,8 @@
+/build/
+/bin/
+/results/*
+!/results/.gitkeep
+!/runs/
+/runs/*
+!/runs/.gitkeep
+/zkdl_gat_outputs/

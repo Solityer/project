@@ -1,6 +1,0 @@
-dataset,backend,ezkl_status,ezkl_block_reason,ezkl_route_id,manifest_strict_check,main_cpu_commitment_time_ms,ezkl_commitment_time_ms,main_cpu_prove_time_ms,ezkl_prove_time_ms,main_cpu_verify_time_ms,ezkl_verify_time_ms,main_cpu_proof_size_bytes,ezkl_proof_size_bytes
-Cora,cpu,verified,,ezkl_gat_native_compressed_csr_attention_full,passed,283.786,39610.1438869955,1207.818,19551.08707601903,153.379,399.0982730174437,90755,1280317
-Citeseer,cpu,verified,,ezkl_gat_native_compressed_csr_attention_full,passed,453.773,39191.258862032555,1418.744,20785.287906008307,153.837,492.9125519702211,90763,1347633
-Pubmed,cpu,verified,,ezkl_gat_native_compressed_csr_attention_full,passed,2962.933,80007.43162399158,5604.074,42373.14125703415,175.454,989.2912759678438,90760,3973375
-PPI,cpu,verified,,ezkl_gat_native_compressed_csr_attention_full,passed,3563.973,1280185.848116991,7111.447,1956645.759498002,424.71,24571.38031598879,21360,461655281
-ogbn-arxiv,cpu,verified,,ezkl_gat_native_compressed_csr_attention_full,passed,18071.562,1287653.770031,66540.6,1947900.980831997,417.38,25975.18372000195,21361,453849491

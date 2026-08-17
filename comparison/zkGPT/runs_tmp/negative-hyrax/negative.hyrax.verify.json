@@ -1,8 +1,0 @@
-{
-  "backend": "bn254-field-hyrax-mle-openmasked-v2",
-  "evaluation_ok": false,
-  "label": "negative.hyrax",
-  "opening_commitment_ok": true,
-  "row_commitment_fold_ok": true,
-  "status": "VERIFY_FAILED"
-}

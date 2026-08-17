@@ -1,0 +1,17 @@
+{
+  "baseline": "zkdl",
+  "relation": "zkdl_style_gat_inference",
+  "status": "unsupported_exact_relation",
+  "privacy_status": "unsupported_privacy_profile",
+  "cpu": "unsupported",
+  "gpu": "unsupported",
+  "missing": [
+    "cryptographic domain-separated Fiat-Shamir transcript",
+    "independent hiding randomness in the Hyrax/Pedersen commitment",
+    "complete tensor and operation family with FAC canonical re-indexing",
+    "protocol batched indexed public table relation",
+    "exact max, range, and SignedRoundDiv relations at every required site",
+    "registered-model multi-session zero-knowledge composition",
+    "clean serialized proof and verifier"
+  ]
+}

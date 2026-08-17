@@ -1,7 +1,5 @@
-use crate::EZKL_BUF_CAPACITY;
-use crate::RunArgs;
-use crate::circuit::CheckMode;
 use crate::circuit::region::RegionSettings;
+use crate::circuit::CheckMode;
 use crate::commands::CalibrationTarget;
 #[cfg(all(feature = "eth", not(target_arch = "wasm32")))]
 use crate::eth::deploy_contract_via_solidity;
@@ -14,27 +12,28 @@ use crate::graph::input::GraphData;
 use crate::graph::{GraphCircuit, GraphSettings, GraphWitness, Model};
 #[cfg(all(feature = "eth", not(target_arch = "wasm32")))]
 use crate::pfsys::encode_calldata;
-use crate::pfsys::{ProofSplitCommit, create_proof_circuit, verify_proof_circuit};
 use crate::pfsys::{
-    Snark, create_keys, load_pk, load_vk, save_params, save_pk, swap_proof_commitments,
+    create_keys, load_pk, load_vk, save_params, save_pk, swap_proof_commitments, Snark,
 };
+use crate::pfsys::{create_proof_circuit, verify_proof_circuit, ProofSplitCommit};
 use crate::pfsys::{save_vk, srs::*};
 use crate::tensor::TensorError;
-use crate::{EZKLError, commands::*};
+use crate::RunArgs;
+use crate::EZKL_BUF_CAPACITY;
+use crate::{commands::*, EZKLError};
 use colored::Colorize;
 #[cfg(unix)]
 use gag::Gag;
-use halo2_proofs::dev::VerifyFailure;
 use halo2_proofs::plonk::{self, Circuit};
 use halo2_proofs::poly::commitment::Verifier;
 use halo2_proofs::poly::commitment::{CommitmentScheme, Params};
 
-use halo2_proofs::poly::VerificationStrategy;
 use halo2_proofs::poly::kzg::commitment::KZGCommitmentScheme;
 use halo2_proofs::poly::kzg::multiopen::{ProverSHPLONK, VerifierSHPLONK};
 use halo2_proofs::poly::kzg::{
     commitment::ParamsKZG, strategy::SingleStrategy as KZGSingleStrategy,
 };
+use halo2_proofs::poly::VerificationStrategy;
 use halo2_proofs::transcript::{
     Blake2bRead, Blake2bWrite, Challenge255, EncodedChallenge, TranscriptReadBuffer,
 };
@@ -49,8 +48,8 @@ use itertools::Itertools;
 use lazy_static::lazy_static;
 use log::debug;
 use log::{info, trace, warn};
-use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde::Serialize;
 #[cfg(all(feature = "eth", not(target_arch = "wasm32")))]
 use std::fs::File;
 use std::io::BufWriter;
@@ -61,7 +60,6 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
 use tabled::Tabled;
-use thiserror::Error;
 use tract_onnx::prelude::IntoTensor;
 use tract_onnx::prelude::Tensor as TractTensor;
 
@@ -77,17 +75,6 @@ lazy_static! {
     /// The path to the ezkl related data (SRS)
     pub static ref EZKL_SRS_REPO_PATH: String = format!("{}/srs", *EZKL_REPO_PATH);
 
-}
-
-/// A wrapper for execution errors
-#[derive(Debug, Error)]
-pub enum ExecutionError {
-    /// verification failed
-    #[error("verification failed:\n{}", .0.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("\n"))]
-    VerifyError(Vec<VerifyFailure>),
-    /// Prover error
-    #[error("[mock] {0}")]
-    MockProverError(String),
 }
 
 lazy_static::lazy_static! {
@@ -113,65 +100,6 @@ pub async fn run(command: Commands) -> Result<String, EZKLError> {
             logrows,
         } => get_srs_cmd(srs_path, settings_path, logrows).await,
         Commands::Table { model, args } => table(model.unwrap_or(DEFAULT_MODEL.into()), args),
-        Commands::GraphGatGenSettings {
-            spec_path,
-            csr_layout_path,
-            settings_path,
-            max_logrows,
-            native_debug_scope,
-        } => {
-            // Native GAT settings bind the formal table hashes that define inverse and alpha semantics.
-            crate::native_gat::graph_gat_gen_settings(
-                spec_path,
-                csr_layout_path,
-                settings_path,
-                max_logrows,
-                native_debug_scope,
-            )
-        }
-        Commands::GraphGatCompile {
-            spec_path,
-            csr_layout_path,
-            settings_path,
-            compiled_circuit,
-            max_logrows,
-            native_debug_scope,
-        } => crate::native_gat::graph_gat_compile(
-            spec_path,
-            csr_layout_path,
-            settings_path,
-            compiled_circuit,
-            max_logrows,
-            native_debug_scope,
-        ),
-        Commands::GraphGatSetup {
-            compiled_circuit,
-            vk_path,
-            pk_path,
-        } => crate::native_gat::graph_gat_setup(compiled_circuit, vk_path, pk_path),
-        Commands::GraphGatGenWitness {
-            compiled_circuit,
-            output,
-        } => crate::native_gat::graph_gat_gen_witness(compiled_circuit, output),
-        Commands::GraphGatProve {
-            compiled_circuit,
-            witness,
-            pk_path,
-            proof_path,
-        } => crate::native_gat::graph_gat_prove(compiled_circuit, witness, pk_path, proof_path),
-        Commands::GraphGatVerify {
-            compiled_circuit,
-            proof_path,
-            settings_path,
-            vk_path,
-            output,
-        } => crate::native_gat::graph_gat_verify(
-            compiled_circuit,
-            proof_path,
-            settings_path,
-            vk_path,
-            output,
-        ),
         Commands::GenSettings {
             model,
             settings_path,
@@ -230,10 +158,6 @@ pub async fn run(command: Commands) -> Result<String, EZKLError> {
             srs_path,
         )
         .map(|e| serde_json::to_string(&e).unwrap()),
-        Commands::Mock { model, witness } => mock(
-            model.unwrap_or(DEFAULT_MODEL.into()),
-            witness.unwrap_or(DEFAULT_WITNESS.into()),
-        ),
         #[cfg(all(feature = "eth", not(target_arch = "wasm32")))]
         Commands::CreateEvmVerifier {
             vk_path,
@@ -1315,32 +1239,6 @@ pub(crate) fn calibrate(
     debug!("Saved parameters.");
 
     Ok(best_params)
-}
-
-pub(crate) fn mock(
-    compiled_circuit_path: PathBuf,
-    data_path: PathBuf,
-) -> Result<String, EZKLError> {
-    // mock should catch any issues by default so we set it to safe
-    let mut circuit = GraphCircuit::load(compiled_circuit_path)?;
-
-    let data = GraphWitness::from_path(data_path)?;
-
-    circuit.load_graph_witness(&data)?;
-
-    let public_inputs = circuit.prepare_public_inputs(&data)?;
-
-    info!("Mock proof");
-
-    let prover = halo2_proofs::dev::MockProver::run(
-        circuit.settings().run_args.logrows,
-        &circuit,
-        vec![public_inputs],
-    )
-    .map_err(|e| ExecutionError::MockProverError(e.to_string()))?;
-
-    prover.verify().map_err(ExecutionError::VerifyError)?;
-    Ok(String::new())
 }
 
 #[cfg(all(feature = "eth", not(target_arch = "wasm32")))]

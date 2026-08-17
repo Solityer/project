@@ -1,14 +1,19 @@
-data/
-cmake*/
-output/
-*.cbp
-*.cmake
+# Local build and temporary state
+build/
+cmake-build-*/
+*.o
 *.a
-Makefile
-CMakeFiles/
-CMakeCache.txt
-src/CMakeFiles/
-.vscode
-results/
-logs/
+*.so
 *.log
+*.tmp
+__pycache__/
+*.py[cod]
+
+# Formal artifacts are regenerated only by a future supported implementation.
+results/**
+!results/.gitkeep
+!runs/
+runs/**
+!runs/.gitkeep
+outputs/**
+runs_tmp/**

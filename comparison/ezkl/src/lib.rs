@@ -77,12 +77,6 @@ pub enum EZKLError {
     Halo2Error(#[from] halo2_proofs::plonk::Error),
     #[error("[Uncategorized] {0}")]
     UncategorizedError(String),
-    #[cfg(all(
-        feature = "ezkl",
-        not(all(target_arch = "wasm32", target_os = "unknown"))
-    ))]
-    #[error("[execute] {0}")]
-    ExecutionError(#[from] execute::ExecutionError),
     #[error("[srs] {0}")]
     SrsError(#[from] pfsys::srs::SrsError),
 }
@@ -151,9 +145,6 @@ pub mod graph;
     not(all(target_arch = "wasm32", target_os = "unknown"))
 ))]
 pub mod logger;
-#[cfg(all(feature = "ezkl", not(target_arch = "wasm32")))]
-#[allow(missing_docs)]
-pub(crate) mod native_gat;
 /// Tools for proofs and verification used by cli
 pub mod pfsys;
 /// srs sha hashes
