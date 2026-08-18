@@ -122,6 +122,7 @@ namespace gat_ezkl
                 "seed",
                 "self_loop_rule",
                 "static_table_id",
+                "subgraph_rule",
                 "symmetrize_edges",
                 "task_type",
             };
@@ -208,6 +209,7 @@ namespace gat_ezkl
         if (entries.count("task_type")) config.task_type = entries.at("task_type");
         if (entries.count("report_unit")) config.report_unit = entries.at("report_unit");
         if (entries.count("batching_rule")) config.batching_rule = entries.at("batching_rule");
+        if (entries.count("subgraph_rule")) config.subgraph_rule = entries.at("subgraph_rule");
         if (entries.count("self_loop_rule")) config.self_loop_rule = entries.at("self_loop_rule");
         if (entries.count("edge_sort_rule")) config.edge_sort_rule = entries.at("edge_sort_rule");
         if (entries.count("chunking_rule")) config.chunking_rule = entries.at("chunking_rule");
@@ -231,14 +233,10 @@ namespace gat_ezkl
         if (entries.count("hidden_profile")) config.hidden_profile = parse_hidden_profile(entries.at("hidden_profile"));
         if (entries.count("d_in_profile")) config.d_in_profile = parse_size_list(entries.at("d_in_profile"));
 
-        if (config.quant_cfg_id.empty()) {
-            config.quant_cfg_id = "range_bits=" + std::to_string(config.range_bits);
-        }
-        if (config.static_table_id.empty()) {
-            config.static_table_id = "tables:lrelu+elu+exp+range";
-        }
-        if (config.degree_bound_id.empty()) {
-            config.degree_bound_id = "auto";
+        if (config.model_arch_id.empty() || config.model_param_id.empty() ||
+            config.quant_cfg_id.empty() || config.static_table_id.empty() ||
+            config.degree_bound_id.empty()) {
+            throw std::runtime_error("formal config must explicitly bind all checkpoint identity fields");
         }
         validate_shape_fields(config);
         return config;

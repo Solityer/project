@@ -3,34 +3,20 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT}"
+: "${EZKL_SRS_PATH:?set EZKL_SRS_PATH to the trusted ceremony SRS matching formal logrows}"
+: "${EZKL_CEREMONY_DESCRIPTOR:?set EZKL_CEREMONY_DESCRIPTOR to its exact trusted descriptor}"
 
+# Formal matrix entry.  CUDA is included by default and fails closed if the
+# distinct gpu-accelerated binary or runtime device is unavailable.
+read -r -a devices <<< "${EZKL_DEVICES:-cpu cuda}"
 datasets=(cora_full citeseer_full pubmed_full ppi_full_formal ogbn_arxiv_full)
 for dataset in "${datasets[@]}"; do
-  if [[ "${dataset}" == "ppi_full_formal" || "${dataset}" == "ogbn_arxiv_full" ]]; then
-    resume_from="$(python3 - "${dataset}" <<'PY'
-import json
-import subprocess
-import sys
-
-dataset = sys.argv[1]
-completed = subprocess.run(
-    ["python3", "scripts/run_gat_ezkl_baseline.py", "--dataset", dataset, "--check-resume-state"],
-    text=True,
-    capture_output=True,
-    check=True,
-)
-state = json.loads(completed.stdout)
-print("prove" if state.get("setup_reusable") else "gen-settings")
-PY
-)"
-    if [[ "${resume_from}" == "prove" ]]; then
-      python3 scripts/run_gat_ezkl_baseline.py --dataset "${dataset}" --resume --resume-from prove --no-clean-existing-keys --run
-    else
-      python3 scripts/run_gat_ezkl_baseline.py --dataset "${dataset}" --clean --run
-    fi
-  else
-    python3 scripts/run_gat_ezkl_baseline.py --dataset "${dataset}" --clean --run
-  fi
+  for device in "${devices[@]}"; do
+    python3 scripts/run_gat_ezkl_baseline.py \
+      --dataset "${dataset}" --device "${device}" --srs-path "${EZKL_SRS_PATH}" \
+      --ceremony-descriptor "${EZKL_CEREMONY_DESCRIPTOR}" --clean --run
+  done
 done
 
+python3 scripts/validate_final_results.py
 python3 scripts/collect_results.py

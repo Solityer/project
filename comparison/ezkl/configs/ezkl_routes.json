@@ -1,31 +1,27 @@
 {
+  "relation": "R_GAT-ezkl",
+  "statement": "(M_pub,T_H,I,src,dst,node_ptr,edge_ptr,Y,H(W),CircuitRef)",
   "routes": [
     {
       "route_id": "ezkl_gat_native_compressed_csr_attention_full",
       "backend": "cpu",
-      "description": "Compressed native ezkl GraphSegmentAttention route over full-dataset CSR/ragged dst segments with deterministic formal lookup tables, row-compressed projection/aggregation checks, batched lookup accounting, and CSR state-machine segment max/sum rows.",
-      "final_benchmark_allowed": true,
-      "strict_public_input_equivalent_when_verified": true,
-      "native_primitive": "GraphSegmentAttentionCompressedCSR",
-      "native_primitive_version": "csr_segment_attention_compressed_v1",
-      "csr_layout": "csr_dst_segment_ragged",
-      "formal_table_policy": "degree_bound_exp_bound_sum_scale_v1",
-      "statement_route_id": "ezkl_gat_native_compressed_csr_attention_full",
-      "statement_equivalence_group": "gat_native_compressed_csr_attention_full_v1",
-      "forbidden_fallbacks": [
-        "output_binding_replacement",
-        "digest",
-        "folding",
-        "identity",
-        "precomputed_logits",
-        "toy",
-        "smoke",
-        "subset",
-        "sample",
-        "shard",
-        "partial",
-        "scaled_graph"
-      ]
+      "binary": "target/release/ezkl",
+      "device_marker": "halo2_cpu",
+      "proof_system": "ezkl Halo2 BN254 KZG SHPLONK",
+      "full_gat_relation": true,
+      "independent_verification": true,
+      "fallback_allowed": false
+    },
+    {
+      "route_id": "ezkl_gat_native_compressed_csr_attention_full",
+      "backend": "cuda",
+      "binary": "target-gpu/release/ezkl",
+      "required_feature": "gpu-accelerated",
+      "device_marker": "halo2_icicle_cuda_device_0",
+      "proof_system": "ezkl Halo2 BN254 KZG SHPLONK with ICICLE prover backend",
+      "full_gat_relation": true,
+      "independent_verification": true,
+      "fallback_allowed": false
     }
   ]
 }

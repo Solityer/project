@@ -1,25 +1,137 @@
-# ezkl GAT comparison baseline
+# ezkl formal GAT-ZKML baseline
 
-本目录保留 ezkl/Halo2 上游源码，并按 `GAT-ZKML-ezkl.md` 要求评估 GAT comparison relation。比较方法要求证明电路忠实约束完整 relation；宿主侧预计算、未受约束输入或替代协议均不能作为正式路线。
+本目录在 ezkl 自身的 Halo2/BN254/KZG/SHPLONK 证明系统内实现
+`GAT-ZKML-ezkl.md` 的完整固定形状 GAT relation。正式路线不读取预计算 logits，
+不使用 host-side equality 代替约束，也没有 tiny/partial/sampled 或 CPU/GPU fallback。
 
-## 当前状态
+## 证明 relation
 
-整体状态为 `unsupported_exact_relation`。当前 ezkl/Halo2 集成缺少完整受约束的 sparse routing、exact group max、协议要求的四处 `SignedRoundDiv`、完整多层多头执行，以及同一电路内的 ZKG `H(W)` 绑定。因此 CPU 与 GPU 正式路径均为 `unsupported`。
+公开 statement 是
+`(M_pub,T_H,I,src,dst,node_ptr,edge_ptr,Y,H(W),CircuitRef)`；规范整数模型参数和完整
+GAT trace 是 private witness。编译计划固定层数、所有 hidden/output heads、张量形状、
+CSR topology wiring、量化链、冻结的 canonical exact lookup rows、整数 bound ledger、security
+profile 和注册模型 Poseidon hash。
 
-此前的 native adapter、GAT 专用 CLI、runner、collector、validator、配置与派生结果建立在错误 comparison relation 上，现已删除或禁用。当前没有正式 run、prove 或 verify 入口，也没有可发布的实验结论。
+`src/native_gat.rs` 的 Halo2 circuit 约束 projection、edge route、LReLU、stable group
+max、exact ExpMap、非零 `Sum` 与 field inverse、`alpha`、field/integer 双聚合、hidden
+ELU/concat、output bias、head average，以及协议规定的 recovery/alignment/average
+`SignedRoundDiv(nearest_ties_away)`。模型哈希由同一 circuit 的 ezkl Poseidon chip 对
+canonical private model cells 计算。
 
-## 目录结构
+Verifier 从单独的 `public_statement.json` 重建 instances，并检查 settings、compiled
+circuit、VK、table digest、integer ledger、model registration 与 `CircuitRef` 的绑定；
+proof 内序列化的 instances 只允许与重建值完全一致，不能充当 statement 来源。
 
-- `src/`：ezkl/Halo2 上游正式源码；不再暴露错误的 GAT comparison 命令。
-- `configs/capabilities.json`：机器可读的 relation 与 backend 支持状态。
-- `scripts/build.sh`：仅构建 release 版 ezkl CLI 的正式 build 入口。
-- `tests/`：上游测试代码与测试资源；正式代码不依赖该目录。
-- `results/`、`runs/`：未来忠实实现完成后重新实验的保留位置，目前仅含空占位文件。
+## Canonical adapter artifacts
 
-构建依赖为仓库锁定的 Rust 工具链、`Cargo.lock` 中锁定的依赖及本机 C/C++ linker。构建入口不会安装或更新依赖：
+正式 C++ adapter 只编译 integer/formal 路线并输出：
+
+- `node_features.i64.bin`、`model_parameters.i64.txt`
+- `csr_segment_layout.bin`（含 absolute node identities）与 `graph_attention_spec.json`
+- `formal_quant_config.json`、`formal_table_spec.json`
+- `formal_main_tables.i64.bin`（只含协议主表 LReLU/ELU/ExpMap；ID 同时绑定 generator/version/scales/domain/rounding/clipping/order 元数据与 rows）
+- `backend_aux_table_spec.json`、`backend_aux_tables.i64.bin`（独立绑定 Halo2 range limb 与 MaxReLU，绝不进入 `static_tables_id`）
+- `integer_bound_ledger.json`、`model_registration.json`
+- `security_profile.json`（固定 Halo2 commit `01c88842679b...`、BN254-Fr、KZG/SHPLONK、Blake2b/Challenge255，以及 exact ceremony ID/source SRS SHA-256/original max_k）
+- `canonical_forward.json`（仅供 adapter 语义检查；prover 会从 canonical inputs 独立生成完整 trace）
+
+旧 f64、approximation-band、attention-bias、preflight candidate 和 final-logits binding
+代码不在正式 adapter target 中。
+
+正式 circuit 使用 32 个相互独立的 fixed-program lanes；lane 数进入 compiled identity，
+只压缩 Halo2 row 布局，不改变 canonical variable、copy constraint 或 lookup relation。
+模型 family bounds 在 compile/setup 前从 canonical 参数重新计算并与 bounds digest、`H(W)`、
+architecture 和 quant profile 绑定；inference circuit 不重复逐参数 range proof。
+
+## Build
+
+构建脚本不运行测试、不下载数据或模型。CPU 是默认 target；GPU 使用独立 target 目录
+和 ezkl/Halo2 的 `gpu-accelerated`/ICICLE feature：
 
 ```bash
 scripts/build.sh
+EZKL_BUILD_GPU=1 scripts/build.sh
 ```
 
-代码和实验逻辑已整理；正式实验结果等待未来忠实实现后重新运行。
+CPU binary 为 `target/release/ezkl`；CUDA binary 为
+`target-gpu/release/ezkl`。CUDA 入口必须成功加载并选择 CUDA device，否则立即失败；
+不会回退到 CPU。CPU runner 也拒绝 GPU-enabled binary。
+
+## 单数据集正式运行
+
+默认外部数据与 checkpoint 路径登记在 `configs/full_datasets.json`，也可通过 CLI
+显式覆盖。以下命令依次执行 adapter、settings、compile、setup、full witness、proof 和
+independent verify：
+
+首先由可信 ceremony 管理方提供 descriptor（`descriptor_kind=ezkl_trusted_ceremony_srs_v1`、
+`ceremony_id`、`source_srs_sha256`、`source_srs_max_k=28`）。runner 会在 adapter 之前
+校验 SRS bytes 并物化 resolved profile；任意“足够大”的未登记 SRS 会被拒绝。
+
+```bash
+python3 scripts/run_gat_ezkl_baseline.py \
+  --dataset cora_full --device cpu --srs-path /trusted/kzg28.srs \
+  --ceremony-descriptor /trusted/kzg28.descriptor.json --clean --run
+
+python3 scripts/run_gat_ezkl_baseline.py \
+  --dataset cora_full --device cuda --srs-path /trusted/kzg28.srs \
+  --ceremony-descriptor /trusted/kzg28.descriptor.json --clean --run
+```
+
+仅生成 canonical adapter inputs（不产生 proof）：
+
+```bash
+python3 scripts/run_gat_ezkl_baseline.py --dataset cora_full --device cpu \
+  --srs-path /trusted/kzg28.srs --ceremony-descriptor /trusted/kzg28.descriptor.json --clean
+```
+
+外部输入覆盖示例：
+
+```bash
+python3 scripts/run_gat_ezkl_baseline.py \
+  --dataset cora_full --device cpu \
+  --config configs/cora_full.cfg \
+  --dataset-root /absolute/read-only/data/cache/cora \
+  --checkpoint /absolute/read-only/checkpoints/cora_gat \
+  --srs-path /trusted/kzg28.srs \
+  --ceremony-descriptor /trusted/kzg28.descriptor.json \
+  --clean --run
+```
+
+## 全量正式入口与结果
+
+```bash
+export EZKL_SRS_PATH=/trusted/kzg28.srs
+export EZKL_CEREMONY_DESCRIPTOR=/trusted/kzg28.descriptor.json
+scripts/run_all.sh
+python3 scripts/collect_results.py
+python3 scripts/validate_final_results.py
+```
+
+`run_all.sh` 默认运行 CPU/CUDA 全矩阵；可用 `EZKL_DEVICES=cpu` 或
+`EZKL_DEVICES=cuda` 选择一个正式 backend。只有 native verifier 写出
+`verify_passed=true` 的 run 才会进入 `results/formal_results.{json,csv}`；未验证、失败或
+中断的 manifest 会被明确排除。`scripts/run_until_complete.sh` 只重试缺失的正式矩阵
+cell，不改变 relation、backend 或输入。
+
+validator 默认要求配置中全部 dataset × `{cpu,cuda}` cells；只检查已经存在的工件时需
+显式使用 `python3 scripts/validate_final_results.py --allow-incomplete`。每个正式 run 还会
+绑定并重算 source SRS、downsized `pk.srs`/`vk.srs` 的 SHA-256 与原始/目标 `k`。
+prove/verify 会各自从 profile 固定的 source SRS 重新执行 deterministic downsize，并将
+期望序列化 bytes 与 `pk.srs`、`vk.srs` 逐字节比较，不依赖可修改的 manifest 声明。
+
+本轮没有执行正式 setup/proof/verify 或全数据集实验；资源需求、CUDA runtime 与正式
+计时仍需在上述正式命令中验证。
+
+## 已知 fail-closed blockers
+
+- 仓内 ezkl 官方 public-SRS 认证只到 k=26，尚无可认证的 trusted ceremony max_k=28
+  descriptor/artifact；这只阻塞 formal setup（以及其后的 proof/verify），代码不会接受
+  任意自报的 k=28 SRS。
+- 协议 0.4.5 要求每个 family 先以 scalar `B_H/B_W/B_a` 递推保守 `B_S`，并强制
+  `[-B_S,B_S]` 落在主 LReLU table domain。当前冻结配置的 Cora/Citeseer/Pubmed
+  `range_bits=12`，已审计的 `B_S` 分别约为 1,031,760 / 266,616 / 32,000，均大于
+  4,096。adapter 和 Rust compile 都保留此 mandatory reject；正式公开 ledger 仅包含
+  注册模型 bounds 与公开 topology 派生的保守 family certificate，private trace maxima
+  不进入 compiled identity。该冲突阻塞这三个配置的
+  settings/compile/proof/verify，必须由协议/正式配置负责人解决，不能在 baseline 中擅自
+  扩表或改 scale。

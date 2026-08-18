@@ -216,7 +216,8 @@ namespace gat_ezkl
         return bundle;
     }
 
-    // 将 checkpoint 中的超参数与 AppConfig 对齐，填充 config 中缺失的 ID 字段
+    // Formal runs require an explicit, exact source identity match.  The
+    // collision-resistant derived quant/table profiles are emitted separately.
     void validate_checkpoint_against_config(const CheckpointBundle& bundle, AppConfig* config) {
         if (bundle.family_schema_version.empty()) {
             throw std::runtime_error("checkpoint family_schema_version is empty");
@@ -245,13 +246,17 @@ namespace gat_ezkl
         if (!bundle.d_in_profile.empty() && !config->d_in_profile.empty() && bundle.d_in_profile != config->d_in_profile) {
             throw std::runtime_error("checkpoint d_in_profile does not match config");
         }
-        if (config->model_arch_id.empty()) config->model_arch_id = bundle.model_arch_id;
-        if (config->model_param_id.empty()) config->model_param_id = bundle.model_param_id;
-        if (config->quant_cfg_id.empty() || config->quant_cfg_id.rfind("range_bits=", 0) == 0) {
-            config->quant_cfg_id = bundle.quant_cfg_id;
-        }
-        if (config->static_table_id.empty()) config->static_table_id = bundle.static_table_id;
-        if (config->degree_bound_id.empty()) config->degree_bound_id = bundle.degree_bound_id;
+        const auto require_equal = [](const std::string& configured, const std::string& actual,
+                                      const char* label) {
+            if (configured.empty() || actual.empty() || configured != actual) {
+                throw std::runtime_error(std::string("checkpoint ") + label + " does not match config");
+            }
+        };
+        require_equal(config->model_arch_id, bundle.model_arch_id, "model_arch_id");
+        require_equal(config->model_param_id, bundle.model_param_id, "model_param_id");
+        require_equal(config->quant_cfg_id, bundle.quant_cfg_id, "quant_cfg_id");
+        require_equal(config->static_table_id, bundle.static_table_id, "static_table_id");
+        require_equal(config->degree_bound_id, bundle.degree_bound_id, "degree_bound_id");
     }
 
 }

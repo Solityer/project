@@ -33,6 +33,10 @@ pub const DEFAULT_PROOF: &str = "proof.json";
 pub const DEFAULT_GRAPH_GAT_SPEC: &str = "graph_attention_spec.json";
 /// The default path to the native CSR segment layout manifest
 pub const DEFAULT_GRAPH_GAT_CSR_LAYOUT: &str = "csr_segment_layout.json";
+/// Default independently supplied public statement for the formal GAT relation.
+pub const DEFAULT_GRAPH_GAT_PUBLIC_STATEMENT: &str = "public_statement.json";
+/// Default trusted KZG SRS path for formal GAT setup.
+pub const DEFAULT_GRAPH_GAT_SRS: &str = "kzg.srs";
 /// Default for whether to split proofs
 pub const DEFAULT_SPLIT: &str = "false";
 /// Default verifier abi
@@ -405,7 +409,7 @@ pub enum Commands {
         args: RunArgs,
     },
 
-    /// Generates settings for the native CSR GraphSegmentAttention route with quantized inverse policy metadata.
+    /// Generates settings for the fixed full-GAT Halo2 circuit and exact integer tables.
     #[command(name = "graph-gat-gen-settings")]
     GraphGatGenSettings {
         /// The path to graph_attention_spec.json.
@@ -420,12 +424,9 @@ pub enum Commands {
         /// Maximum supported KZG logrows for this native route.
         #[arg(long, value_hint = clap::ValueHint::Other)]
         max_logrows: Option<u32>,
-        /// Native graph diagnostic scope.
-        #[arg(long, value_hint = clap::ValueHint::Other)]
-        native_debug_scope: Option<String>,
     },
 
-    /// Compiles the native CSR GraphSegmentAttention plan and binds quantized inverse policy hashes.
+    /// Compiles and identity-binds the fixed GAT program, topology, tables and model registration.
     #[command(name = "graph-gat-compile")]
     GraphGatCompile {
         /// The path to graph_attention_spec.json.
@@ -443,12 +444,9 @@ pub enum Commands {
         /// Maximum supported KZG logrows for this native route.
         #[arg(long, value_hint = clap::ValueHint::Other)]
         max_logrows: Option<u32>,
-        /// Native graph diagnostic scope.
-        #[arg(long, value_hint = clap::ValueHint::Other)]
-        native_debug_scope: Option<String>,
     },
 
-    /// Creates native CSR GraphSegmentAttention proving and verifying keys after policy preflight.
+    /// Creates native Halo2/KZG proving and verifying keys for the fixed GAT circuit.
     #[command(name = "graph-gat-setup")]
     GraphGatSetup {
         /// The path to the compiled native plan.
@@ -460,9 +458,15 @@ pub enum Commands {
         /// The path to output the proving key file to.
         #[arg(long, default_value = DEFAULT_PK, value_hint = clap::ValueHint::FilePath)]
         pk_path: PathBuf,
+        /// Trusted ceremony KZG SRS; formal setup never generates a local toxic-waste SRS.
+        #[arg(long, default_value = DEFAULT_GRAPH_GAT_SRS, value_hint = clap::ValueHint::FilePath)]
+        srs_path: PathBuf,
+        /// Prover backend. `cuda` is fail-closed and requires the gpu-accelerated build.
+        #[arg(long, default_value = "cpu", value_parser = ["cpu", "cuda"])]
+        device: String,
     },
 
-    /// Generates a witness for the native CSR GraphSegmentAttention route after inverse/alpha preflight.
+    /// Generates the private full GAT trace and independent public statement.
     #[command(name = "graph-gat-gen-witness")]
     GraphGatGenWitness {
         /// The path to the compiled native plan.
@@ -471,9 +475,12 @@ pub enum Commands {
         /// Path to output the witness file.
         #[arg(short = 'O', long, default_value = DEFAULT_WITNESS, value_hint = clap::ValueHint::FilePath)]
         output: PathBuf,
+        /// Path to write the independent verifier-facing public statement.
+        #[arg(long, default_value = DEFAULT_GRAPH_GAT_PUBLIC_STATEMENT, value_hint = clap::ValueHint::FilePath)]
+        public_statement: PathBuf,
     },
 
-    /// Creates a proof for the native CSR GraphSegmentAttention route.
+    /// Creates a native Halo2/KZG proof of the complete fixed GAT relation.
     #[command(name = "graph-gat-prove")]
     GraphGatProve {
         /// The path to the compiled native plan.
@@ -482,15 +489,21 @@ pub enum Commands {
         /// The path to the native graph witness.
         #[arg(short = 'W', long, default_value = DEFAULT_WITNESS, value_hint = clap::ValueHint::FilePath)]
         witness: PathBuf,
+        /// Independent public statement; proof-carried instances are never trusted.
+        #[arg(long, default_value = DEFAULT_GRAPH_GAT_PUBLIC_STATEMENT, value_hint = clap::ValueHint::FilePath)]
+        public_statement: PathBuf,
         /// The path to the proving key file.
         #[arg(long, default_value = DEFAULT_PK, value_hint = clap::ValueHint::FilePath)]
         pk_path: PathBuf,
         /// The path to output the proof file to.
         #[arg(long, default_value = DEFAULT_PROOF, value_hint = clap::ValueHint::FilePath)]
         proof_path: PathBuf,
+        /// Prover backend. `cuda` is fail-closed and requires the gpu-accelerated build.
+        #[arg(long, default_value = "cpu", value_parser = ["cpu", "cuda"])]
+        device: String,
     },
 
-    /// Verifies a native CSR GraphSegmentAttention proof.
+    /// Independently verifies the native proof against a separately supplied public statement.
     #[command(name = "graph-gat-verify")]
     GraphGatVerify {
         /// The path to the compiled native plan.
@@ -499,6 +512,9 @@ pub enum Commands {
         /// The path to the proof file.
         #[arg(long, default_value = DEFAULT_PROOF, value_hint = clap::ValueHint::FilePath)]
         proof_path: PathBuf,
+        /// Independent verifier-supplied public statement.
+        #[arg(long, default_value = DEFAULT_GRAPH_GAT_PUBLIC_STATEMENT, value_hint = clap::ValueHint::FilePath)]
+        public_statement: PathBuf,
         /// The path to native settings.
         #[arg(short = 'S', long, default_value = DEFAULT_SETTINGS, value_hint = clap::ValueHint::FilePath)]
         settings_path: PathBuf,

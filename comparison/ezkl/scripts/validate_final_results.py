@@ -1,394 +1,247 @@
 #!/usr/bin/env python3
-"""Validate final CPU-only strict ezkl native GAT comparison artifacts."""
+"""Fail-closed structural validation of collected formal ezkl GAT results."""
 
 from __future__ import annotations
 
-import csv
+import hashlib
 import json
-import subprocess
+import argparse
+import struct
+import math
 from pathlib import Path
-from typing import Any
+
+ROOT = Path(__file__).resolve().parents[1]
+REQUIRED = (
+    "graph_attention_spec.json", "csr_segment_layout.bin", "node_features.i64.bin",
+    "model_parameters.i64.txt", "formal_quant_config.json", "formal_table_spec.json",
+    "formal_main_tables.i64.bin", "backend_aux_table_spec.json", "backend_aux_tables.i64.bin",
+    "security_profile.json",
+    "integer_bound_ledger.json", "model_registration.json", "settings.json",
+    "network.compiled", "vk.key", "pk.key", "witness.json", "public_statement.json",
+    "proof.json", "verify.json", "circuit_manifest.json", "pk.srs", "vk.srs",
+)
 
 
-EZKL_ROOT = Path(__file__).resolve().parents[1]
-PROJECT_ROOT = EZKL_ROOT.parents[2]
-RESULTS = EZKL_ROOT / "results"
-RUNS = EZKL_ROOT / "runs"
-CPU_ROUTE_ID = "ezkl_gat_native_compressed_csr_attention_full"
-DATASETS = [
-    "cora_full",
-    "citeseer_full",
-    "pubmed_full",
-    "ppi_full_formal",
-    "ogbn_arxiv_full",
-]
-DISPLAY_BY_DATASET = {
-    "cora_full": "Cora",
-    "citeseer_full": "Citeseer",
-    "pubmed_full": "Pubmed",
-    "ppi_full_formal": "PPI",
-    "ogbn_arxiv_full": "ogbn-arxiv",
-}
-REQUIRED_RUN_ARTIFACTS = [
-    "run_manifest.json",
-    "proof.json",
-    "verify.json",
-    "model_info.json",
-    "graph_attention_spec.json",
-    "final_logits_binding.json",
-    "formal_tables.json",
-    "formal_table_hashes.json",
-    "native_full_witness_preflight.json",
-    "keygen_memory_profile.json",
-    "prove_memory_profile.json",
-]
-REQUIRED_RESULTS = [
-    "gat_ezkl_full_results.json",
-    "gat_ezkl_full_results.csv",
-    "main_vs_ezkl_full_comparison.json",
-    "main_vs_ezkl_full_comparison.csv",
-    "summary.md",
-    "strict_audit_report.md",
-    "control_variable_audit.md",
-    "native_full_experiment_report.md",
-    "ppi_ogbn_arxiv_audit.md",
-    "cleanup_report.md",
-]
-METRICS = [
-    "commitment_time_ms",
-    "prove_time_ms",
-    "verify_time_ms",
-    "proof_size_bytes",
-]
-STRICT_TIMINGS = [
-    "gen_settings_ms",
-    "compile_ms",
-    "setup_ms",
-    "gen_witness_ms",
-    "prove_time_ms",
-    "verify_time_ms",
-]
+def digest(path: Path) -> str:
+    value = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            value.update(chunk)
+    return value.hexdigest()
 
 
-def read_json(path: Path) -> Any:
-    with path.open("r", encoding="utf-8") as handle:
-        return json.load(handle)
+def formal_digest(domain: str, role: str, payload: bytes) -> str:
+    prefix = b"GAT-ZKML/ezkl/canonical/v1"
+    encoded = struct.pack("<Q", len(prefix)) + prefix
+    encoded += struct.pack("<Q", len(domain)) + domain.encode()
+    encoded += struct.pack("<Q", 1)
+    encoded += struct.pack("<Q", len(role)) + role.encode()
+    encoded += struct.pack("<Q", len(payload)) + payload
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
-def fail(message: str) -> None:
-    raise SystemExit(f"final_result_validation=FAILED: {message}")
+def round_away(value: float) -> int:
+    return int(value + 0.5) if value >= 0 else int(value - 0.5)
 
 
-def require(condition: bool, message: str) -> None:
-    if not condition:
-        fail(message)
+def signed_round_div(value: int, denominator: int) -> int:
+    magnitude = abs(value)
+    quotient = (2 * magnitude + denominator) // (2 * denominator)
+    return -quotient if value < 0 else quotient
 
 
-def rows_by_dataset(rows: list[dict]) -> dict[str, dict]:
-    return {str(row.get("dataset")): row for row in rows}
-
-
-def empty_field(value: object) -> bool:
-    return value is None or value == ""
-
-
-def metric_cell(value: object) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, float):
-        return f"{value:.3f}"
-    return str(value)
-
-
-def contains_manual_continuation(value: object) -> bool:
-    return isinstance(value, str) and "manual continuation" in value.lower()
-
-
-def validate_rows(rows: list[dict], audits: dict) -> dict[str, dict]:
-    require(len(rows) == 5, f"expected 5 result rows, got {len(rows)}")
-    by_dataset = rows_by_dataset(rows)
-    require(set(by_dataset) == set(DATASETS), "result datasets do not match final full-dataset set")
-    require(set(audits) == set(DATASETS), "result audits do not cover final full-dataset set")
-    for dataset in DATASETS:
-        row = by_dataset[dataset]
-        status = row.get("status")
-        require(row.get("backend") == "cpu", f"{dataset} backend mismatch")
-        require(row.get("route_id") == CPU_ROUTE_ID, f"{dataset} route_id mismatch")
-        require(row.get("statement_route_id") == CPU_ROUTE_ID, f"{dataset} statement route mismatch")
-        require(row.get("final_logits_derivation_complete") is True, f"{dataset} final logits flag false")
-        require(row.get("no_precomputed_logits_bypass") is True, f"{dataset} precomputed logits bypass flag false")
-        require(row.get("audit_error_count") == 0, f"{dataset} audit errors present")
-        for key in ["run_id", "run_started_at", "run_completed_at"]:
-            require(bool(row.get(key)), f"{dataset} missing {key}")
-        audit = audits[dataset]
-        require(audit.get("errors") == [], f"{dataset} audit errors non-empty")
-
-        if status == "verified":
-            require(row.get("verify_passed") is True, f"{dataset} verify_passed false")
-            require(row.get("proof_generated") is True, f"{dataset} proof_generated false")
-            require(row.get("strict_public_input_equivalent") is True, f"{dataset} strict flag false")
-            require(row.get("full_gat_forward_in_ezkl_proof") is True, f"{dataset} full GAT flag false")
-            require(row.get("manifest_strict_check") == "passed", f"{dataset} manifest strict check failed")
-            require(row.get("proof_size_matches_manifest") is True, f"{dataset} proof size audit mismatch")
-            require(row.get("verify_json_status") == "verified", f"{dataset} verify JSON status mismatch")
-            require(row.get("verify_json_verify_passed") is True, f"{dataset} verify JSON flag false")
-            require(row.get("final_benchmark_included") is True, f"{dataset} verified row not included")
-            require(empty_field(row.get("block_reason")), f"{dataset} block_reason is not empty")
-            require(empty_field(row.get("failure_step")), f"{dataset} failure_step is not empty")
-            for metric in METRICS:
-                require(row.get(metric) is not None, f"{dataset} missing {metric}")
-            require(audit.get("status") == "passed", f"{dataset} audit status failed")
-        elif status in {"blocked", "failed"}:
-            require(row.get("verify_passed") is False, f"{dataset} blocked verify_passed not false")
-            require(row.get("proof_generated") is False, f"{dataset} blocked proof_generated not false")
-            require(row.get("manifest_strict_check") == status, f"{dataset} blocked audit status mismatch")
-            require(row.get("final_benchmark_included") is False, f"{dataset} blocked row included in benchmark")
-            require(not empty_field(row.get("block_reason")), f"{dataset} blocked missing block_reason")
-            require(not empty_field(row.get("failure_step")), f"{dataset} blocked missing failure_step")
-            require(row.get("verify_json_status") in {"blocked", "failed"}, f"{dataset} blocked verify JSON status mismatch")
-            require(empty_field(row.get("verify_json_verify_passed")), f"{dataset} blocked verify JSON flag should be absent")
-            require(audit.get("status") == status, f"{dataset} blocked audit status failed")
-        else:
-            fail(f"{dataset} has unexpected status {status}")
-    return by_dataset
-
-
-def validate_result_csv(path: Path, expected: dict[str, dict]) -> None:
-    with path.open("r", encoding="utf-8", newline="") as handle:
-        rows = list(csv.DictReader(handle))
-    require(len(rows) == 5, f"{path.name} row count mismatch")
-    for row in rows:
-        dataset = row.get("dataset")
-        require(dataset in expected, f"{path.name} unexpected dataset {dataset}")
-        require(row.get("backend") == "cpu", f"{dataset} CSV backend mismatch")
-        require(row.get("route_id") == CPU_ROUTE_ID, f"{dataset} CSV route mismatch")
-        expected_status = expected[dataset].get("status")
-        require(row.get("status") == expected_status, f"{dataset} CSV status mismatch")
-        if expected_status == "verified":
-            require(row.get("manifest_strict_check") == "passed", f"{dataset} CSV strict audit mismatch")
-            require(row.get("final_benchmark_included") in {"True", "true", True}, f"{dataset} CSV inclusion mismatch")
-            for metric in METRICS:
-                require(row.get(metric) not in {"", None}, f"{dataset} CSV missing {metric}")
-        else:
-            require(row.get("manifest_strict_check") == expected_status, f"{dataset} CSV blocked audit mismatch")
-            require(row.get("final_benchmark_included") in {"False", "false", False}, f"{dataset} CSV blocked inclusion mismatch")
-            require(row.get("block_reason") not in {"", None}, f"{dataset} CSV blocked reason missing")
-
-
-def validate_comparison_csv(path: Path, expected: dict[str, dict]) -> None:
-    display_to_dataset = {display: dataset for dataset, display in DISPLAY_BY_DATASET.items()}
-    expected_displays = set(DISPLAY_BY_DATASET.values())
-    with path.open("r", encoding="utf-8", newline="") as handle:
-        rows = list(csv.DictReader(handle))
-    require(len(rows) == 5, f"{path.name} row count mismatch")
-    require({row.get("dataset") for row in rows} == expected_displays, "comparison CSV dataset mismatch")
-    for row in rows:
-        dataset = row.get("dataset")
-        source_dataset = display_to_dataset[str(dataset)]
-        expected_status = expected[source_dataset].get("status")
-        require(row.get("backend") == "cpu", f"{dataset} comparison backend mismatch")
-        require(row.get("ezkl_status") == expected_status, f"{dataset} comparison status mismatch")
-        require(row.get("ezkl_route_id") == CPU_ROUTE_ID, f"{dataset} comparison route mismatch")
-        if expected_status == "verified":
-            require(row.get("manifest_strict_check") == "passed", f"{dataset} comparison audit mismatch")
-            for metric in METRICS:
-                require(row.get(f"ezkl_{metric}") not in {"", None}, f"{dataset} comparison missing {metric}")
-        else:
-            require(row.get("manifest_strict_check") == expected_status, f"{dataset} comparison blocked audit mismatch")
-            require(row.get("ezkl_block_reason") not in {"", None}, f"{dataset} comparison block reason missing")
-            for metric in METRICS:
-                require(row.get(f"ezkl_{metric}") in {"", None}, f"{dataset} blocked comparison metric should be blank")
-
-
-def validate_manifest_text_tails(dataset: str, manifest: dict) -> None:
-    require(not contains_manual_continuation(manifest.get("stdout_tail")), f"{dataset} stdout manual continuation")
-    require(not contains_manual_continuation(manifest.get("stderr_tail")), f"{dataset} stderr manual continuation")
-    stage_records = manifest.get("stage_records")
-    status = manifest.get("status")
-    require(isinstance(stage_records, list) and len(stage_records) >= 1, f"{dataset} missing stage records")
-    if status == "verified":
-        require(len(stage_records) == 6, f"{dataset} verified stage record count mismatch")
-    for index, record in enumerate(stage_records):
-        require(isinstance(record, dict), f"{dataset} stage record is not object")
-        if status == "verified" or index < len(stage_records) - 1:
-            require(record.get("returncode") == 0, f"{dataset} stage {record.get('phase')} returncode nonzero")
-        elif status in {"blocked", "failed"}:
-            require(record.get("returncode") not in {0, None}, f"{dataset} blocked final stage returncode missing")
-        require(record.get("manual_continuation_detected") is False, f"{dataset} stage manual flag")
-        require(not contains_manual_continuation(record.get("stdout_tail")), f"{dataset} stage stdout manual")
-        require(not contains_manual_continuation(record.get("stderr_tail")), f"{dataset} stage stderr manual")
-
-
-def validate_manifests(expected: dict[str, dict]) -> None:
-    for dataset in DATASETS:
-        run_dir = RUNS / dataset
-        for name in REQUIRED_RUN_ARTIFACTS:
-            require((run_dir / name).exists(), f"{dataset} missing {name}")
-        manifest = read_json(run_dir / "run_manifest.json")
-        verify = read_json(run_dir / "verify.json")
-        binding = read_json(run_dir / "final_logits_binding.json")
-        preflight = read_json(run_dir / "native_full_witness_preflight.json")
-        prove_profile = read_json(run_dir / "prove_memory_profile.json")
-        row = expected[dataset]
-
-        require(isinstance(manifest, dict), f"{dataset} manifest is not an object")
-        require(manifest.get("dataset") == dataset, f"{dataset} manifest dataset mismatch")
-        status = manifest.get("status")
-        require(status in {"verified", "blocked", "failed"}, f"{dataset} manifest status unexpected")
-        require(manifest.get("backend") == "cpu", f"{dataset} manifest backend mismatch")
-        require(manifest.get("route_id") == CPU_ROUTE_ID, f"{dataset} manifest route mismatch")
-        require(manifest.get("statement_route_id") == CPU_ROUTE_ID, f"{dataset} manifest statement route mismatch")
-        require(manifest.get("final_logits_derivation_complete") is True, f"{dataset} final logits false")
-        require(manifest.get("forbidden_substitute_used") is False, f"{dataset} forbidden fallback")
-        require(manifest.get("precomputed_logits_binding_used") is False, f"{dataset} precomputed logits binding")
-        require(manifest.get("clean_run") is True, f"{dataset} was not a clean run")
-        require(bool(manifest.get("run_id")), f"{dataset} missing run_id")
-        validate_manifest_text_tails(dataset, manifest)
-        require(manifest.get("commitment_time_ms") == manifest.get("setup_ms"), f"{dataset} commitment/setup mismatch")
-
-        require(isinstance(binding, dict), f"{dataset} binding is not an object")
-        require(binding.get("no_precomputed_logits_bypass") is True, f"{dataset} binding bypass flag false")
-        require(binding.get("final_logits_derivation_complete") is True, f"{dataset} binding derivation false")
-        require(isinstance(preflight, dict), f"{dataset} preflight is not an object")
-        require(preflight.get("status") == "ready", f"{dataset} preflight not ready")
-        require(preflight.get("witness_specific_table") is False, f"{dataset} witness-specific table")
-        require(isinstance(prove_profile, dict), f"{dataset} prove profile is not object")
-
-        if status == "verified":
-            require(manifest.get("check_mode") == "safe", f"{dataset} check_mode not safe")
-            require(manifest.get("verify_passed") is True, f"{dataset} manifest verify false")
-            require(manifest.get("proof_generated") is True, f"{dataset} manifest proof false")
-            require(manifest.get("strict_public_input_equivalent") is True, f"{dataset} manifest strict false")
-            require(manifest.get("full_gat_forward_in_ezkl_proof") is True, f"{dataset} manifest full GAT false")
-            require(manifest.get("no_precomputed_logits_bypass") is True, f"{dataset} bypass flag false")
-            require(empty_field(manifest.get("block_reason")), f"{dataset} block_reason residue")
-            require(empty_field(manifest.get("failure_step")), f"{dataset} failure_step residue")
-            require(empty_field(manifest.get("failed_command")), f"{dataset} failed_command residue")
-            for key in STRICT_TIMINGS:
-                require(isinstance(manifest.get(key), (int, float)), f"{dataset} null/non-numeric {key}")
-            proof_size = (run_dir / "proof.json").stat().st_size
-            require(manifest.get("proof_size_bytes") == proof_size, f"{dataset} proof size mismatch")
-            require(row.get("proof_size_bytes") == proof_size, f"{dataset} result proof size mismatch")
-            for metric in METRICS:
-                require(manifest.get(metric) == row.get(metric), f"{dataset} manifest {metric} mismatch")
-            require(isinstance(verify, dict), f"{dataset} verify JSON is not object")
-            require(verify.get("status") == "verified", f"{dataset} verify JSON status mismatch")
-            require(verify.get("verify_passed") is True, f"{dataset} verify JSON false")
-            require(verify.get("strict_public_input_equivalent") is True, f"{dataset} verify strict false")
-            require(verify.get("full_gat_forward_in_ezkl_proof") is True, f"{dataset} verify full GAT false")
-            require(verify.get("route_id") == CPU_ROUTE_ID, f"{dataset} verify route mismatch")
-            require(prove_profile.get("proof_generated") is True, f"{dataset} prove profile proof false")
-        else:
-            require(manifest.get("check_mode") == "not_started", f"{dataset} blocked check_mode mismatch")
-            require(manifest.get("verify_passed") is False, f"{dataset} blocked manifest verify not false")
-            require(manifest.get("proof_generated") is False, f"{dataset} blocked manifest proof not false")
-            require(not empty_field(manifest.get("block_reason")), f"{dataset} blocked block_reason missing")
-            require(not empty_field(manifest.get("failure_step")), f"{dataset} blocked failure_step missing")
-            require(not empty_field(manifest.get("failed_command")), f"{dataset} blocked failed_command missing")
-            for key in ["gen_settings_ms", "compile_ms", "setup_ms", "gen_witness_ms"]:
-                require(isinstance(manifest.get(key), (int, float)), f"{dataset} blocked null/non-numeric {key}")
-            require(isinstance(manifest.get(manifest.get("failure_step")), (int, float)), f"{dataset} blocked failed stage untimed")
-            require(manifest.get("verify_time_ms") is None, f"{dataset} blocked verify_time_ms should be null")
-            require(manifest.get("proof_size_bytes") is None, f"{dataset} blocked proof_size_bytes should be null")
-            require(row.get("final_benchmark_included") is False, f"{dataset} blocked row included")
-            require(isinstance(verify, dict), f"{dataset} blocked verify JSON is not object")
-            require(verify.get("status") == status, f"{dataset} blocked verify JSON status mismatch")
-            require(verify.get("verified") is False, f"{dataset} blocked verify JSON verified not false")
-            require(verify.get("verify_invoked") is False, f"{dataset} blocked verify was invoked")
-            require(prove_profile.get("proof_generated") is False, f"{dataset} blocked prove profile proof true")
-            require(prove_profile.get("returncode") not in {0, None}, f"{dataset} blocked prove returncode missing")
-
-
-def validate_reports(expected: dict[str, dict]) -> None:
-    for name in REQUIRED_RESULTS:
-        require((RESULTS / name).exists(), f"missing results/{name}")
-    summary = (RESULTS / "summary.md").read_text(encoding="utf-8")
-    readme = (EZKL_ROOT / "README.md").read_text(encoding="utf-8")
-    strict_audit = (RESULTS / "strict_audit_report.md").read_text(encoding="utf-8")
-    ppi_audit = (RESULTS / "ppi_ogbn_arxiv_audit.md").read_text(encoding="utf-8")
-    verified_count = sum(1 for row in expected.values() if row.get("status") == "verified")
-    require(f"已验证全量数据集行数：{verified_count}/5" in summary, "summary verified count mismatch")
-    require("CPU-only strict baseline" in readme, "README CPU-only language missing")
-    require("不存在 GPU baseline" in readme, "README GPU non-claim missing")
-    require(CPU_ROUTE_ID in summary and CPU_ROUTE_ID in readme, "route missing from summary/README")
-    require("manual continuation" in readme, "README audit rule missing manual continuation")
-    require("ppi_full_formal" in ppi_audit and "ogbn_arxiv_full" in ppi_audit, "PPI/ogbn audit coverage missing")
-    require("returns a non-zero BLOCKED status unless every dataset is a verified benchmark row" in strict_audit, "strict audit enforcement missing")
-    for dataset, row in expected.items():
-        display = DISPLAY_BY_DATASET[dataset]
-        require(display in summary and display in readme, f"{dataset} missing from summary/README")
-        require(str(row.get("status")) in summary and str(row.get("status")) in readme, f"{dataset} status missing")
-        if row.get("status") == "verified":
-            for metric in METRICS:
-                rendered = metric_cell(row[metric])
-                require(rendered in summary, f"{dataset} {metric} missing from summary")
-                require(rendered in readme, f"{dataset} {metric} missing from README")
-        else:
-            require(str(row.get("block_reason")) in strict_audit or str(row.get("block_reason")) in readme, f"{dataset} block reason missing from reports")
-
-
-def validate_git_boundary() -> None:
-    # The user may have unrelated project edits in the shared worktree. Baseline
-    # validation must reject outputs that escape the ezkl directory, but it must
-    # not fail merely because unrelated source files are dirty before this run.
-    completed = subprocess.run(
-        ["git", "status", "--short"],
-        cwd=PROJECT_ROOT,
-        text=True,
-        capture_output=True,
-        check=True,
-    )
-    for raw_line in completed.stdout.splitlines():
-        if not raw_line.strip():
-            continue
-        path_part = raw_line[3:] if len(raw_line) > 3 else ""
-        paths = [part.strip() for part in path_part.split(" -> ")]
-        for path in paths:
-            allowed = (
-                path.startswith("comparison/baselines/ezkl/")
-                or path.startswith("comparison/scripts/")
-                or path.startswith("comparison/results/")
+def validate_rows(path: Path, domain: str, expected_digest: str,
+                  domains: dict[int, tuple[int, int]]) -> list[str]:
+    failures: list[str] = []
+    payload = path.read_bytes()
+    if formal_digest(domain, "canonical_rows", payload) != expected_digest:
+        return [f"{path}: canonical rows digest mismatch"]
+    if not payload.startswith(b"EZKLGATTABLE1\n") or (len(payload) - 14) % 24:
+        return [f"{path}: invalid canonical row encoding"]
+    counts = {kind: 0 for kind in domains}
+    for offset in range(14, len(payload), 24):
+        kind, value, output = struct.unpack_from("<Qqq", payload, offset)
+        if kind not in domains:
+            failures.append(f"{path}: unexpected table kind {kind}")
+            break
+        start, end = domains[kind]
+        expected_value = start + counts[kind]
+        if value != expected_value or value > end:
+            failures.append(f"{path}: noncanonical kind/input order")
+            break
+        if kind == 1:
+            expected_output = value
+        elif kind == 2:
+            expected_output = value if value >= 0 else -signed_round_div(-value, 5)
+        elif kind == 3:
+            expected_output = value if value >= 0 else round_away(
+                16.0 * (math.exp(value / 16.0) - 1.0)
             )
-            if not allowed:
-                continue
+        elif kind == 4:
+            expected_output = max(0, round_away(16.0 * math.exp(-value / 256.0)))
+        else:
+            expected_output = max(value, 0)
+        if output != expected_output:
+            failures.append(f"{path}: kind {kind} row semantics mismatch at {value}")
+            break
+        counts[kind] += 1
+    for kind, (start, end) in domains.items():
+        if counts[kind] != end - start + 1:
+            failures.append(f"{path}: kind {kind} domain/row count mismatch")
+    return failures
 
 
-def validate_no_junk_files() -> None:
-    patterns = ["*.bak", "*.tmp", "*scratch*", "*manual*", "*old*", "*.orig"]
-    ignored_dirs = {".cargo_local", ".rustup", "target", "build_gat_adapter", "__pycache__"}
-    matches: list[Path] = []
-    for pattern in patterns:
-        for path in EZKL_ROOT.rglob(pattern):
-            if any(part in ignored_dirs for part in path.relative_to(EZKL_ROOT).parts):
-                continue
-            matches.append(path)
-    require(not matches, "junk files present: " + ", ".join(str(path.relative_to(EZKL_ROOT)) for path in matches))
+def validate_table_artifacts(run_dir: Path) -> list[str]:
+    failures: list[str] = []
+    main = json.loads((run_dir / "formal_table_spec.json").read_text(encoding="utf-8"))
+    aux = json.loads((run_dir / "backend_aux_table_spec.json").read_text(encoding="utf-8"))
+    spec = json.loads((run_dir / "graph_attention_spec.json").read_text(encoding="utf-8"))
+    quant = json.loads((run_dir / "formal_quant_config.json").read_text(encoding="utf-8"))
+    for profile, domain in ((main, "formal_static_table_profile"),
+                            (aux, "ezkl_backend_aux_table_profile")):
+        supplied = profile.get("canonical_digest")
+        profile["canonical_digest"] = ""
+        canonical = json.dumps(profile, separators=(",", ":"), ensure_ascii=False).encode()
+        if supplied != formal_digest(domain, "canonical_json", canonical):
+            failures.append(f"{run_dir}: {domain} canonical digest mismatch")
+        profile["canonical_digest"] = supplied
+    configured = 1 << quant["limb_bits"]
+    large = spec.get("batching_rule") == "whole_graph_single" and (
+        spec["edge_count"] >= (1 << 18) or spec["node_count"] * spec["feature_dim"] >= (1 << 24)
+    )
+    range_size = max(configured, (1 << 23) - 2) if large else configured
+    lrelu_min = -(3 << 18) if large else -configured
+    lrelu_max = ((1 << 23) - 2) - (3 << 18) - 1 if large else configured
+    elu_bound = max(configured, 1 << 20) if large else configured
+    expected_main = (lrelu_min, lrelu_max, -elu_bound, elu_bound, range_size - 1)
+    actual_main = (main.get("lrelu_min"), main.get("lrelu_max"), main.get("elu_min"),
+                   main.get("elu_max"), main.get("exp_max"))
+    expected_metadata = {
+        "generator_id": "main_gatzk_quantized_tables_v1",
+        "profile_version": "main_gatzk_table_profile_v1",
+        "rounding_mode": "nearest_ties_away",
+        "clipping_rule": "exp_nonnegative_clamp_zero",
+        "canonical_order": "kind_then_signed_input_ascending",
+        "lrelu_scale": 256, "elu_input_scale": 16, "elu_output_scale": 16,
+        "exp_input_scale": 256, "exp_output_scale": 16,
+    }
+    if actual_main != expected_main or any(main.get(key) != value for key, value in expected_metadata.items()):
+        failures.append(f"{run_dir}: main table domain selection mismatch")
+    failures.extend(validate_rows(
+        run_dir / main["rows_path"], "formal_static_table_rows", main["rows_digest"],
+        {2: (lrelu_min, lrelu_max), 3: (-elu_bound, elu_bound), 4: (0, range_size - 1)},
+    ))
+    required_aux = max(
+        max((family.get("delta", 0) + 1 for family in
+             json.loads((run_dir / "integer_bound_ledger.json").read_text(encoding="utf-8"))["families"]),
+            default=0),
+        json.loads((run_dir / "csr_segment_layout.json").read_text(encoding="utf-8"))["max_in_degree"] - 1,
+    )
+    if (aux.get("generator_id") != "ezkl_backend_aux_tables_v1"
+            or aux.get("profile_version") != "ezkl_backend_aux_table_profile_v1"
+            or aux.get("canonical_order") != "kind_then_signed_input_ascending"
+            or aux.get("limb_max") != configured - 1 or aux.get("max_relu_min", 1) > -required_aux
+            or aux.get("max_relu_max", -1) < required_aux):
+        failures.append(f"{run_dir}: auxiliary table domain is undersized")
+    failures.extend(validate_rows(
+        run_dir / aux["rows_path"], "ezkl_backend_aux_table_rows", aux["rows_digest"],
+        {1: (0, configured - 1), 5: (aux["max_relu_min"], aux["max_relu_max"])},
+    ))
+    return failures
 
 
 def main() -> int:
-    results = read_json(RESULTS / "gat_ezkl_full_results.json")
-    require(isinstance(results, dict), "result JSON is not an object")
-    rows = results.get("rows")
-    audits = results.get("audits")
-    require(isinstance(rows, list), "result JSON rows missing")
-    require(isinstance(audits, dict), "result JSON audits missing")
-    expected = validate_rows(rows, audits)
-    validate_result_csv(RESULTS / "gat_ezkl_full_results.csv", expected)
-    validate_comparison_csv(RESULTS / "main_vs_ezkl_full_comparison.csv", expected)
-    validate_manifests(expected)
-    validate_reports(expected)
-    validate_git_boundary()
-    validate_no_junk_files()
-    verified = [dataset for dataset, row in expected.items() if row.get("status") == "verified"]
-    blocked = [dataset for dataset, row in expected.items() if row.get("status") in {"blocked", "failed"}]
-    if len(verified) == len(DATASETS):
-        print("final_result_validation=OK cpu_verified=5/5")
-        return 0
-    print(
-        f"final_result_validation=BLOCKED cpu_verified={len(verified)}/{len(DATASETS)} "
-        f"blocked={','.join(blocked) or 'none'}"
-    )
-    return 2
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--allow-incomplete", action="store_true",
+                        help="validate present verified cells without requiring the full matrix")
+    args = parser.parse_args()
+    failures: list[str] = []
+    verified_count = 0
+    dataset_cfg = json.loads((ROOT / "configs" / "full_datasets.json").read_text(encoding="utf-8"))
+    expected = {(entry["run_id"], device) for entry in dataset_cfg["datasets"] for device in ("cpu", "cuda")}
+    present: set[tuple[str, str]] = set()
+    for manifest_path in sorted((ROOT / "runs").glob("*/*/run_manifest.json")):
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        cell = (manifest.get("dataset"), manifest.get("device"))
+        if cell in expected:
+            present.add(cell)
+        if manifest.get("verify_passed") is not True or manifest.get("status") != "verified":
+            if cell in expected and not args.allow_incomplete:
+                failures.append(f"{manifest_path}: required matrix cell is not verified")
+            continue
+        verified_count += 1
+        run_dir = manifest_path.parent
+        missing = [name for name in REQUIRED if not (run_dir / name).is_file()]
+        if missing:
+            failures.append(f"{manifest_path}: missing {', '.join(missing)}")
+            continue
+        verify = json.loads((run_dir / "verify.json").read_text(encoding="utf-8"))
+        if verify.get("verify_passed") is not True:
+            failures.append(f"{manifest_path}: independent verifier marker absent")
+        if verify.get("proof_instances_trusted") is not False:
+            failures.append(f"{manifest_path}: verifier trusted proof-carried instances")
+        circuit = json.loads((run_dir / "circuit_manifest.json").read_text(encoding="utf-8"))
+        security = json.loads((run_dir / "security_profile.json").read_text(encoding="utf-8"))
+        spec = json.loads((run_dir / "graph_attention_spec.json").read_text(encoding="utf-8"))
+        settings = json.loads((run_dir / "settings.json").read_text(encoding="utf-8"))
+        statement = json.loads((run_dir / "public_statement.json").read_text(encoding="utf-8"))
+        aux = json.loads((run_dir / "backend_aux_table_spec.json").read_text(encoding="utf-8"))
+        main_table = json.loads((run_dir / "formal_table_spec.json").read_text(encoding="utf-8"))
+        main_id = main_table.get("canonical_digest")
+        if any(payload.get("static_tables_id") != main_id for payload in
+               (manifest, circuit, spec, settings, statement, verify)):
+            failures.append(f"{manifest_path}: main static table identity mismatch")
+        aux_id = aux.get("canonical_digest")
+        if any(payload.get("backend_aux_tables_id") != aux_id for payload in
+               (manifest, circuit, spec, settings, statement, verify)):
+            failures.append(f"{manifest_path}: backend auxiliary table identity mismatch")
+        failures.extend(validate_table_artifacts(run_dir))
+        security_bytes = (run_dir / "security_profile.json").read_text(encoding="utf-8").rstrip("\r\n").encode()
+        security_id = formal_digest("ezkl_security_profile", "canonical_json", security_bytes)
+        if any(payload.get(field) != security_id for payload, field in (
+            (manifest, "ezkl_security_profile_id"), (circuit, "security_profile_id"),
+            (spec, "security_profile_id"), (settings, "security_profile_id"),
+            (statement, "security_profile_id"))):
+            failures.append(f"{manifest_path}: resolved security profile identity mismatch")
+        if circuit.get("downsized_srs_k") != settings.get("logrows"):
+            failures.append(f"{manifest_path}: downsized SRS k/settings mismatch")
+        if circuit.get("proving_srs_sha256") != "sha256:" + digest(run_dir / "pk.srs"):
+            failures.append(f"{manifest_path}: proving SRS digest mismatch")
+        if circuit.get("verification_srs_sha256") != "sha256:" + digest(run_dir / "vk.srs"):
+            failures.append(f"{manifest_path}: verification SRS digest mismatch")
+        if (Path(str(circuit.get("proving_srs_path", ""))).resolve() != (run_dir / "pk.srs").resolve()
+                or Path(str(circuit.get("verification_srs_path", ""))).resolve()
+                != (run_dir / "vk.srs").resolve()):
+            failures.append(f"{manifest_path}: downsized SRS path binding mismatch")
+        if not str(circuit.get("source_srs_sha256", "")).startswith("sha256:"):
+            failures.append(f"{manifest_path}: source SRS provenance absent")
+        if (circuit.get("source_srs_sha256") != security.get("source_srs_sha256") or
+                circuit.get("source_srs_k") != security.get("source_srs_max_k")):
+            failures.append(f"{manifest_path}: SRS differs from resolved security profile")
+        source_srs = Path(str(circuit.get("source_srs_path", "")))
+        if not source_srs.is_file() or circuit.get("source_srs_sha256") != "sha256:" + digest(source_srs):
+            failures.append(f"{manifest_path}: source SRS bytes/provenance mismatch")
+        for field, path in {
+            "proof_sha256": run_dir / "proof.json",
+            "public_statement_sha256": run_dir / "public_statement.json",
+            "compiled_circuit_sha256": run_dir / "network.compiled",
+            "vk_sha256": run_dir / "vk.key",
+        }.items():
+            if manifest.get(field) != digest(path):
+                failures.append(f"{manifest_path}: {field} mismatch")
+        expected_device = (
+            "halo2_icicle_cuda_device_0" if manifest.get("device") == "cuda" else "halo2_cpu"
+        )
+        if manifest.get("runtime_device_marker") != expected_device:
+            failures.append(f"{manifest_path}: runtime device marker mismatch")
+    if not args.allow_incomplete:
+        for dataset, device in sorted(expected - present):
+            failures.append(f"missing required matrix cell: {dataset}/{device}")
+    if failures:
+        print("\n".join(failures))
+        return 2
+    print(json.dumps({"verified_formal_runs_validated": verified_count}))
+    return 0
 
 
 if __name__ == "__main__":

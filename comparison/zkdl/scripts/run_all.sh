@@ -3,4 +3,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT}"
-python3 tools/run_zkdl_gat_experiments.py --dataset all --device all --output-root zkdl_gat_outputs --commitment-block-size 64
+for dataset in cora citeseer pubmed ppi ogbn-arxiv; do
+  for device in cpu gpu; do
+    python3 scripts/run_single.py --dataset "${dataset}" --device "${device}" "$@"
+  done
+done

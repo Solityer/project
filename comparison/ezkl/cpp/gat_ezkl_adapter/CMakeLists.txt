@@ -6,19 +6,15 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_executable(gat_ezkl_export
-  src/bounds.cpp
   src/checkpoint.cpp
   src/config.cpp
   src/dataset.cpp
-  src/formal_tables.cpp
-  src/gat.cpp
+  src/formal_csr.cpp
+  src/formal_gat.cpp
+  src/formal_hash.cpp
+  src/formal_io.cpp
   src/graph.cpp
-  src/hash.cpp
   src/main.cpp
-  src/metadata.cpp
-  src/onnx_export.cpp
-  src/quant.cpp
-  src/segment_softmax.cpp
 )
 
 target_include_directories(gat_ezkl_export PRIVATE include)

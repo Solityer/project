@@ -253,6 +253,7 @@ parallel-poly-read = [
 mv-lookup = ["halo2_proofs/mv-lookup", "snark-verifier/mv-lookup"]
 asm = ["halo2curves/asm", "halo2_proofs/asm"]
 precompute-coset = ["halo2_proofs/precompute-coset"]
+gpu-accelerated = ["halo2_proofs/gpu-accelerated"]
 det-prove = []
 empty-cmd = []
 no-banner = []

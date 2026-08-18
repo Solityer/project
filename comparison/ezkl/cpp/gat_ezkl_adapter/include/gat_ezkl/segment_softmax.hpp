@@ -125,22 +125,6 @@ namespace gat_ezkl
     void write_segment_analysis_json(
         const std::filesystem::path& path,
         const SegmentAnalysisReport& report);
-    void write_segment_debug_files(
-        const std::filesystem::path& output_dir,
-        const SegmentPackedLayout& layout);
-    void write_native_csr_graph_artifacts(
-        const std::filesystem::path& output_dir,
-        const std::string& route_id,
-        const AppConfig& config,
-        const NormalizedGraph& graph,
-        const CheckpointBundle& bundle,
-        const GatSemanticSummary& summary,
-        const std::string& graph_hash,
-        const std::string& checkpoint_hash,
-        const std::string& metadata_hash,
-        const std::string& shape_hash,
-        const FormalTablesSummary* formal_tables = nullptr);
-
     std::string segment_analysis_json(const SegmentAnalysisReport& report);
     std::string segment_metadata_json(const SegmentAnalysisReport& report);
 
