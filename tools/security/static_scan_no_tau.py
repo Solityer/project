@@ -37,14 +37,13 @@ def blocked_patterns():
 
 def scan_paths():
     include_roots = [
-        ROOT / "include" / "gatzk",
-        ROOT / "src",
-        ROOT / "configs",
-        ROOT / "scripts",
-        ROOT / "tools" / "security",
-        ROOT / "tests",
-        ROOT / "docs" / "security",
-    ]
+    ROOT / "include" / "gatzk",
+    ROOT / "src",
+    ROOT / "configs",
+    ROOT / "scripts",
+    ROOT / "tools" / "security",
+    ROOT / "docs" / "security",
+]
     files = [ROOT / "README.md", ROOT / "CMakeLists.txt"]
     for root in include_roots:
         if root.exists():
@@ -54,7 +53,6 @@ def scan_paths():
 
 def configured_srs_roots():
     config_paths = sorted((ROOT / "configs").glob("*_secure.cfg"))
-    config_paths.append(ROOT / "configs" / "unit_security_regression.cfg")
     roots = []
     for config in config_paths:
         if not config.exists():
@@ -126,7 +124,7 @@ def main():
                     if "context.kzg))" in window or "context.kzg);" in window:
                         failures.append((path.relative_to(ROOT), line_no, "verifier must use context.kzg.vk"))
                     if "keys)" in window and "keys.vk" not in window:
-                        failures.append((path.relative_to(ROOT), line_no, "KZG verify tests must use keys.vk"))
+                        failures.append((path.relative_to(ROOT), line_no, "KZG verification must use keys.vk"))
                     pos += len(marker)
     diagnostics = ROOT / "tools" / "diagnostics"
     if diagnostics.exists():

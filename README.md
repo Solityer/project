@@ -2,7 +2,7 @@
 
 本仓库的唯一生产入口是编译后的 `gatzk_run`。协议、模型语义和安全边界以只读文件
 `GAT-ZKML-多层多头.md` 与 `PROJECT_CONTEXT_AND_EXECUTION_CONSTRAINTS.md` 为最高规范。
-小规模回归、阶段 benchmark 与正式数据共用 `src/` 中同一套 Context、Trace、Prover、
+正式数据的 CPU/CUDA 路径共用 `src/` 中同一套 Context、Trace、Prover、
 Verifier、KZG、canonical serializer 和 strict parser。
 
 第三阶段尚未收敛。部分正确性、file-backed 生命周期、内存、quotient 和 verify
@@ -22,7 +22,6 @@ CPU Release：
 ```bash
 cmake -S . -B build \
   -DCMAKE_BUILD_TYPE=Release \
-  -DGATZK_BUILD_TESTS=ON \
   -DGATZK_ENABLE_CUDA_BACKEND=OFF
 cmake --build build -j10
 ```
@@ -32,7 +31,6 @@ CUDA Release：
 ```bash
 cmake -S . -B build_cuda \
   -DCMAKE_BUILD_TYPE=Release \
-  -DGATZK_BUILD_TESTS=ON \
   -DGATZK_ENABLE_CUDA_BACKEND=ON
 cmake --build build_cuda -j10
 ```
@@ -196,21 +194,6 @@ python3 tools/security/static_scan_no_tau.py --require-all-configured-srs
 目录具有不同 manifest/ceremony provenance，未作为缓存删除；当前正式配置只引用
 `artifacts/srs/<dataset>_formal_srs`。
 
-## 测试与 benchmark
-
-```bash
-ctest --test-dir build --output-on-failure
-ctest --test-dir build_cuda --output-on-failure
-GATZK_RUN_UNIT_SECURITY_TESTS=1 build/gatzk_tests
-GATZK_RUN_UNIT_SECURITY_TESTS=1 GATZK_RUN_PPI_BOUNDARY_TESTS=1 build/gatzk_tests
-build_cuda/gatzk_cuda_hotspots_stage_bench
-```
-
-`gatzk_proof_codec_stage_bench` 调用生产 Context、Trace、Prover、canonical codec、
-strict parser 和 Verifier，只限制输入规模；`gatzk_msm_stage_bench`、
-`gatzk_kzg_opening_stage_bench`、`gatzk_t_edge_eval_stage_bench` 与
-`gatzk_quotient_transform_stage_bench` 直接调用相应生产函数，不复制协议实现。
-
 ## 保留脚本
 
 单数据集正式运行不依赖任何 Python 或 Shell 脚本。保留脚本仅用于工件重建、检查或
@@ -238,7 +221,7 @@ strict parser 和 Verifier，只限制输入规模；`gatzk_msm_stage_bench`、
 
 这些结果属于优化前源码，对当前源码是 `stale-for-current-source`。当前源码 Cora
 完整 CPU 路径也已 `VERIFY_OK`：43.858/152.137/0.713 s，canonical proof 为
-1,462,616 bytes。该次运行与两个训练任务和一个 CPU 测试任务重叠，因此正确性与工件
+1,462,616 bytes。该次运行与两个训练任务和其他 CPU 负载重叠，因此正确性与工件
 有效，时间不能当作受控冻结上限。
 
 同源 production profiling 显示 Cora quotient build 从 126.253 s 降至 102.171 s

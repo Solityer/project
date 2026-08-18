@@ -12,316 +12,426 @@
 // 实现正式配置解析与约束检查
 // 负责拦截过时字段和形状冲突，避免错误配置进入 proving / verifying 主链
 
-namespace gatzk::util {
-namespace {
+namespace gatzk::util
+{
+    namespace
+    {
 
-std::string trim(std::string value) {
-    value.erase(value.begin(), std::find_if(value.begin(), value.end(), [](unsigned char ch) { return !std::isspace(ch); }));
-    value.erase(std::find_if(value.rbegin(), value.rend(), [](unsigned char ch) { return !std::isspace(ch); }).base(), value.end());
-    return value;
-}
+        std::string trim(std::string value)
+        {
+            value.erase(value.begin(), std::find_if(value.begin(), value.end(), [](unsigned char ch)
+                                                    { return !std::isspace(ch); }));
+            value.erase(std::find_if(value.rbegin(), value.rend(), [](unsigned char ch)
+                                     { return !std::isspace(ch); })
+                            .base(),
+                        value.end());
+            return value;
+        }
 
-bool parse_bool(const std::string& value) {
-    return value == "true" || value == "1" || value == "yes";
-}
+        bool parse_bool(const std::string &value)
+        {
+            return value == "true" || value == "1" || value == "yes";
+        }
 
-std::string strip_wrappers(std::string value) {
-    value.erase(std::remove_if(value.begin(), value.end(), [](unsigned char ch) {
-        return std::isspace(ch) || ch == '[' || ch == ']' || ch == '(' || ch == ')';
-    }), value.end());
-    return value;
-}
+        std::string strip_wrappers(std::string value)
+        {
+            value.erase(std::remove_if(value.begin(), value.end(), [](unsigned char ch)
+                                       { return std::isspace(ch) || ch == '[' || ch == ']' || ch == '(' || ch == ')'; }),
+                        value.end());
+            return value;
+        }
 
-std::vector<std::string> split_tokens(const std::string& value) {
-    std::vector<std::string> out;
-    std::string current;
-    for (const auto ch : value) {
-        if (ch == ',' || ch == ';') {
-            if (!current.empty()) {
+        std::vector<std::string> split_tokens(const std::string &value)
+        {
+            std::vector<std::string> out;
+            std::string current;
+            for (const auto ch : value)
+            {
+                if (ch == ',' || ch == ';')
+                {
+                    if (!current.empty())
+                    {
+                        out.push_back(current);
+                        current.clear();
+                    }
+                    continue;
+                }
+                current.push_back(ch);
+            }
+            if (!current.empty())
+            {
                 out.push_back(current);
-                current.clear();
             }
-            continue;
+            return out;
         }
-        current.push_back(ch);
-    }
-    if (!current.empty()) {
-        out.push_back(current);
-    }
-    return out;
-}
 
-std::vector<std::size_t> parse_size_list(const std::string& value) {
-    const auto compact = strip_wrappers(value);
-    if (compact.empty()) {
-        return {};
-    }
-    std::vector<std::size_t> out;
-    for (const auto& token : split_tokens(compact)) {
-        out.push_back(std::stoull(token));
-    }
-    return out;
-}
-
-std::vector<HiddenLayerProfile> parse_hidden_profile(const std::string& value) {
-    const auto compact = strip_wrappers(value);
-    if (compact.empty()) {
-        return {};
-    }
-    std::vector<HiddenLayerProfile> out;
-    for (const auto& token : split_tokens(compact)) {
-        const auto sep = token.find_first_of("x:X:");
-        if (sep == std::string::npos) {
-            throw std::runtime_error("invalid hidden_profile token: " + token);
+        std::vector<std::size_t> parse_size_list(const std::string &value)
+        {
+            const auto compact = strip_wrappers(value);
+            if (compact.empty())
+            {
+                return {};
+            }
+            std::vector<std::size_t> out;
+            for (const auto &token : split_tokens(compact))
+            {
+                out.push_back(std::stoull(token));
+            }
+            return out;
         }
-        out.push_back(HiddenLayerProfile{
-            .head_count = std::stoull(token.substr(0, sep)),
-            .head_dim = std::stoull(token.substr(sep + 1)),
-        });
-    }
-    return out;
-}
 
-void fail_if_present(
-    const std::unordered_map<std::string, std::string>& entries,
-    const std::set<std::string>& keys) {
-    for (const auto& key : keys) {
-        if (entries.contains(key)) {
-            throw std::runtime_error("unsupported legacy config field: " + key);
+        std::vector<HiddenLayerProfile> parse_hidden_profile(const std::string &value)
+        {
+            const auto compact = strip_wrappers(value);
+            if (compact.empty())
+            {
+                return {};
+            }
+            std::vector<HiddenLayerProfile> out;
+            for (const auto &token : split_tokens(compact))
+            {
+                const auto sep = token.find_first_of("x:X:");
+                if (sep == std::string::npos)
+                {
+                    throw std::runtime_error("invalid hidden_profile token: " + token);
+                }
+                out.push_back(HiddenLayerProfile{
+                    .head_count = std::stoull(token.substr(0, sep)),
+                    .head_dim = std::stoull(token.substr(sep + 1)),
+                });
+            }
+            return out;
         }
-    }
-}
 
-void validate_supported_keys(const std::unordered_map<std::string, std::string>& entries) {
-    // formal 主线显式列出允许字段，未收敛的历史键直接拒绝进入运行时
-    static const std::set<std::string> supported_keys = {
-        "L",
-        "K_out",
-        "allow_synthetic_model",
-        "auto_prepare_dataset",
-        "batch_graphs",
-        "batching_rule",
-        "cache_root",
-        "checkpoint_bundle",
-        "chunking_rule",
-        "d_in_profile",
-        "data_root",
-        "dataset",
-        "deduplicate_edges",
-        "degree_bound_id",
-        "dump_trace",
-        "edge_sort_rule",
-        "export_dir",
-        "hidden_dim",
-        "hidden_profile",
-        "model_arch_id",
-        "model_param_id",
-        "num_classes",
-        "quant_cfg_id",
-        "range_bits",
-        "reference_output_dir",
-        "report_unit",
-        "binding_mode",
-        "seed",
-        "self_loop_rule",
-        "security_profile_id",
-        "srs_id",
-        "srs_path",
-        "srs_type",
-        "static_table_id",
-        "symmetrize_edges",
-        "task_type",
-        "input_privacy",
-        "opening_mode",
-        "output_mode",
-        "privacy_policy",
-        "proof_task",
-    };
-    for (const auto& [key, value] : entries) {
-        (void)value;
-        if (!supported_keys.contains(key)) {
-            throw std::runtime_error("unsupported config field: " + key);
+        void fail_if_present(
+            const std::unordered_map<std::string, std::string> &entries,
+            const std::set<std::string> &keys)
+        {
+            for (const auto &key : keys)
+            {
+                if (entries.contains(key))
+                {
+                    throw std::runtime_error("unsupported legacy config field: " + key);
+                }
+            }
         }
-    }
-}
 
-void require_explicit_family_shape_fields(
-    const std::unordered_map<std::string, std::string>& entries) {
-    for (const auto* key : {"L", "hidden_profile", "d_in_profile", "K_out"}) {
-        if (!entries.contains(key)) {
+        void validate_supported_keys(const std::unordered_map<std::string, std::string> &entries)
+        {
+            // formal 主线显式列出允许字段，未收敛的历史键直接拒绝进入运行时
+            static const std::set<std::string> supported_keys = {
+                "L",
+                "K_out",
+                "auto_prepare_dataset",
+                "batch_graphs",
+                "batching_rule",
+                "cache_root",
+                "checkpoint_bundle",
+                "chunking_rule",
+                "d_in_profile",
+                "data_root",
+                "dataset",
+                "deduplicate_edges",
+                "degree_bound_id",
+                "dump_trace",
+                "edge_sort_rule",
+                "export_dir",
+                "hidden_dim",
+                "hidden_profile",
+                "model_arch_id",
+                "model_param_id",
+                "num_classes",
+                "quant_cfg_id",
+                "range_bits",
+                "reference_output_dir",
+                "report_unit",
+                "binding_mode",
+                "seed",
+                "self_loop_rule",
+                "security_profile_id",
+                "srs_id",
+                "srs_path",
+                "srs_type",
+                "static_table_id",
+                "symmetrize_edges",
+                "task_type",
+                "input_privacy",
+                "opening_mode",
+                "output_mode",
+                "privacy_policy",
+                "proof_task",
+            };
+            for (const auto &[key, value] : entries)
+            {
+                (void)value;
+                if (!supported_keys.contains(key))
+                {
+                    throw std::runtime_error("unsupported config field: " + key);
+                }
+            }
+        }
+
+        void require_explicit_family_shape_fields(
+            const std::unordered_map<std::string, std::string> &entries)
+        {
+            for (const auto *key : {"L", "hidden_profile", "d_in_profile", "K_out"})
+            {
+                if (!entries.contains(key))
+                {
+                    throw std::runtime_error(
+                        "formal config must set family shape field explicitly: " + std::string(key));
+                }
+            }
+        }
+
+        if (config.dataset.empty())
+        {
             throw std::runtime_error(
-                "formal config must set family shape field explicitly: "
-                + std::string(key));
+                "formal config must set dataset explicitly");
         }
-    }
-}
+        if (config.srs_id.empty() || config.srs_path.empty())
+        {
+            throw std::runtime_error(
+                "formal config must set srs_id and srs_path explicitly");
+        }
+        if (config.checkpoint_bundle.empty())
+        {
+            throw std::runtime_error(
+                "formal config must set checkpoint_bundle explicitly");
+        }
 
-void validate_config(const AppConfig& config) {
-    if (config.subgraph_rule != "whole_graph") {
-        throw std::runtime_error("formal mainline only supports subgraph_rule=whole_graph");
-    }
-    if (config.hidden_profile.empty()) {
-        throw std::runtime_error("hidden_profile must be set explicitly");
-    }
-    if (config.layer_count == 0) {
-        throw std::runtime_error("L must be set explicitly and be >= 2");
-    }
-    if (config.layer_count != config.hidden_profile.size() + 1) {
-        throw std::runtime_error(
-            "L=" + std::to_string(config.layer_count)
-            + " conflicts with hidden_profile size=" + std::to_string(config.hidden_profile.size()));
-    }
-    if (config.d_in_profile.empty()) {
-        throw std::runtime_error("d_in_profile must be set explicitly");
-    }
-    if (config.d_in_profile.size() != config.hidden_profile.size()) {
-        throw std::runtime_error(
-            "d_in_profile size=" + std::to_string(config.d_in_profile.size())
-            + " conflicts with hidden_profile size=" + std::to_string(config.hidden_profile.size()));
-    }
-    if (std::any_of(
-            config.d_in_profile.begin(), config.d_in_profile.end(),
-            [](std::size_t value) { return value == 0; })) {
-        throw std::runtime_error("d_in_profile entries must be non-zero");
-    }
-    if (config.K_out == 0) {
-        throw std::runtime_error("K_out must be >= 1");
-    }
-    if (config.num_classes == 0) {
-        throw std::runtime_error("C/num_classes must be >= 1");
-    }
-    if (config.srs_type != "trusted_srs") {
-        throw std::runtime_error("secure mainline requires srs_type=trusted_srs");
-    }
-    if (config.privacy_policy != "model_and_trace_hidden") {
-        throw std::runtime_error("secure mainline requires privacy_policy=model_and_trace_hidden");
-    }
-    if (config.input_privacy != "public_graph_public_features") {
-        throw std::runtime_error("secure mainline requires input_privacy=public_graph_public_features");
-    }
-    if (config.output_mode != "public_logits") {
-        throw std::runtime_error("secure mainline requires output_mode=public_logits");
-    }
-    if (config.opening_mode != "point_grouped_batch_opening") {
-        throw std::runtime_error("secure mainline requires opening_mode=point_grouped_batch_opening");
-    }
-    if (config.binding_mode != "zk_subproof_for_crpc") {
-        throw std::runtime_error("secure mainline requires binding_mode=zk_subproof_for_crpc");
-    }
-    if (config.proof_task != "node_classification_full_gat") {
-        throw std::runtime_error("secure mainline requires proof_task=node_classification_full_gat");
-    }
-    for (std::size_t layer_index = 0; layer_index < config.hidden_profile.size(); ++layer_index) {
-        const auto& layer = config.hidden_profile[layer_index];
-        if (layer.head_count == 0 || layer.head_dim == 0) {
-            throw std::runtime_error("hidden_profile entries must have non-zero head_count and head_dim");
-        }
-        if (layer_index + 1 < config.hidden_profile.size()) {
-            const auto expected = layer.head_count * layer.head_dim;
-            const auto actual = config.d_in_profile[layer_index + 1];
-            if (expected != actual) {
+        void validate_config(const AppConfig &config)
+        {
+            if (config.subgraph_rule != "whole_graph")
+            {
+                throw std::runtime_error("formal mainline only supports subgraph_rule=whole_graph");
+            }
+            if (config.hidden_profile.empty())
+            {
+                throw std::runtime_error("hidden_profile must be set explicitly");
+            }
+            if (config.layer_count == 0)
+            {
+                throw std::runtime_error("L must be set explicitly and be >= 2");
+            }
+            if (config.layer_count != config.hidden_profile.size() + 1)
+            {
                 throw std::runtime_error(
-                    "d_in_profile[" + std::to_string(layer_index + 1) + "]="
-                    + std::to_string(actual)
-                    + " conflicts with previous hidden concat width="
-                    + std::to_string(expected));
+                    "L=" + std::to_string(config.layer_count) + " conflicts with hidden_profile size=" + std::to_string(config.hidden_profile.size()));
+            }
+            if (config.d_in_profile.empty())
+            {
+                throw std::runtime_error("d_in_profile must be set explicitly");
+            }
+            if (config.d_in_profile.size() != config.hidden_profile.size())
+            {
+                throw std::runtime_error(
+                    "d_in_profile size=" + std::to_string(config.d_in_profile.size()) + " conflicts with hidden_profile size=" + std::to_string(config.hidden_profile.size()));
+            }
+            if (std::any_of(
+                    config.d_in_profile.begin(), config.d_in_profile.end(),
+                    [](std::size_t value)
+                    { return value == 0; }))
+            {
+                throw std::runtime_error("d_in_profile entries must be non-zero");
+            }
+            if (config.K_out == 0)
+            {
+                throw std::runtime_error("K_out must be >= 1");
+            }
+            if (config.num_classes == 0)
+            {
+                throw std::runtime_error("C/num_classes must be >= 1");
+            }
+            if (config.srs_type != "trusted_srs")
+            {
+                throw std::runtime_error("secure mainline requires srs_type=trusted_srs");
+            }
+            if (config.privacy_policy != "model_and_trace_hidden")
+            {
+                throw std::runtime_error("secure mainline requires privacy_policy=model_and_trace_hidden");
+            }
+            if (config.input_privacy != "public_graph_public_features")
+            {
+                throw std::runtime_error("secure mainline requires input_privacy=public_graph_public_features");
+            }
+            if (config.output_mode != "public_logits")
+            {
+                throw std::runtime_error("secure mainline requires output_mode=public_logits");
+            }
+            if (config.opening_mode != "point_grouped_batch_opening")
+            {
+                throw std::runtime_error("secure mainline requires opening_mode=point_grouped_batch_opening");
+            }
+            if (config.binding_mode != "zk_subproof_for_crpc")
+            {
+                throw std::runtime_error("secure mainline requires binding_mode=zk_subproof_for_crpc");
+            }
+            if (config.proof_task != "node_classification_full_gat")
+            {
+                throw std::runtime_error("secure mainline requires proof_task=node_classification_full_gat");
+            }
+            for (std::size_t layer_index = 0; layer_index < config.hidden_profile.size(); ++layer_index)
+            {
+                const auto &layer = config.hidden_profile[layer_index];
+                if (layer.head_count == 0 || layer.head_dim == 0)
+                {
+                    throw std::runtime_error("hidden_profile entries must have non-zero head_count and head_dim");
+                }
+                if (layer_index + 1 < config.hidden_profile.size())
+                {
+                    const auto expected = layer.head_count * layer.head_dim;
+                    const auto actual = config.d_in_profile[layer_index + 1];
+                    if (expected != actual)
+                    {
+                        throw std::runtime_error(
+                            "d_in_profile[" + std::to_string(layer_index + 1) + "]=" + std::to_string(actual) + " conflicts with previous hidden concat width=" + std::to_string(expected));
+                    }
+                }
             }
         }
-    }
-}
 
-}
-
-// 解析 `.cfg` 文件并补齐工程根路径等派生字段
-AppConfig load_config(const std::string& path) {
-    std::ifstream input(path);
-    if (!input) {
-        throw std::runtime_error("failed to open config: " + path);
     }
 
-    std::unordered_map<std::string, std::string> entries;
-    std::string line;
-    // 配置文件按 `key = value` 读取，注释与空行都在这一层先剔掉。
-    while (std::getline(input, line)) {
-        const auto hash = line.find('#');
-        if (hash != std::string::npos) {
-            line = line.substr(0, hash);
+    // 解析 `.cfg` 文件并补齐工程根路径等派生字段
+    AppConfig load_config(const std::string &path)
+    {
+        std::ifstream input(path);
+        if (!input)
+        {
+            throw std::runtime_error("failed to open config: " + path);
         }
-        line = trim(line);
-        if (line.empty()) {
-            continue;
-        }
-        const auto eq = line.find('=');
-        if (eq == std::string::npos) {
-            throw std::runtime_error("invalid config line: " + line);
-        }
-        const auto key = trim(line.substr(0, eq));
-        const auto value = trim(line.substr(eq + 1));
-        if (!entries.emplace(key, value).second) {
-            throw std::runtime_error("duplicate config field: " + key);
-        }
-    }
 
-    AppConfig config;
-    fail_if_present(entries, {"hidden_heads", "checkpoint_dir"});
-    validate_supported_keys(entries);
-    require_explicit_family_shape_fields(entries);
-    const auto absolute = std::filesystem::absolute(path);
-    config.config_dir = absolute.parent_path().string();
-    config.project_root = absolute.parent_path().parent_path().string();
-    if (entries.contains("dataset")) config.dataset = entries["dataset"];
-    if (entries.contains("data_root")) config.data_root = entries["data_root"];
-    if (entries.contains("cache_root")) config.cache_root = entries["cache_root"];
-    if (entries.contains("export_dir")) config.export_dir = entries["export_dir"];
-    if (entries.contains("checkpoint_bundle")) config.checkpoint_bundle = entries["checkpoint_bundle"];
-    if (entries.contains("reference_output_dir")) config.reference_output_dir = entries["reference_output_dir"];
-    if (entries.contains("task_type")) config.task_type = entries["task_type"];
-    if (entries.contains("report_unit")) config.report_unit = entries["report_unit"];
-    if (entries.contains("batching_rule")) config.batching_rule = entries["batching_rule"];
-    if (entries.contains("self_loop_rule")) config.self_loop_rule = entries["self_loop_rule"];
-    if (entries.contains("edge_sort_rule")) config.edge_sort_rule = entries["edge_sort_rule"];
-    if (entries.contains("chunking_rule")) config.chunking_rule = entries["chunking_rule"];
-    if (entries.contains("quant_cfg_id")) config.quant_cfg_id = entries["quant_cfg_id"];
-    if (entries.contains("model_arch_id")) config.model_arch_id = entries["model_arch_id"];
-    if (entries.contains("model_param_id")) config.model_param_id = entries["model_param_id"];
-    if (entries.contains("static_table_id")) config.static_table_id = entries["static_table_id"];
-    if (entries.contains("degree_bound_id")) config.degree_bound_id = entries["degree_bound_id"];
-    if (entries.contains("srs_type")) config.srs_type = entries["srs_type"];
-    if (entries.contains("srs_id")) config.srs_id = entries["srs_id"];
-    if (entries.contains("srs_path")) config.srs_path = entries["srs_path"];
-    if (entries.contains("privacy_policy")) config.privacy_policy = entries["privacy_policy"];
-    if (entries.contains("input_privacy")) config.input_privacy = entries["input_privacy"];
-    if (entries.contains("output_mode")) config.output_mode = entries["output_mode"];
-    if (entries.contains("opening_mode")) config.opening_mode = entries["opening_mode"];
-    if (entries.contains("binding_mode")) config.binding_mode = entries["binding_mode"];
-    if (entries.contains("proof_task")) config.proof_task = entries["proof_task"];
-    if (entries.contains("security_profile_id")) config.security_profile_id = entries["security_profile_id"];
-    if (entries.contains("hidden_dim")) config.hidden_dim = std::stoull(entries["hidden_dim"]);
-    if (entries.contains("num_classes")) config.num_classes = std::stoull(entries["num_classes"]);
-    if (entries.contains("range_bits")) config.range_bits = std::stoull(entries["range_bits"]);
-    if (entries.contains("seed")) config.seed = std::stoull(entries["seed"]);
-    if (entries.contains("L")) config.layer_count = std::stoull(entries["L"]);
-    if (entries.contains("K_out")) config.K_out = std::stoull(entries["K_out"]);
-    if (entries.contains("batch_graphs")) config.batch_graphs = std::stoull(entries["batch_graphs"]);
-    if (entries.contains("allow_synthetic_model")) config.allow_synthetic_model = parse_bool(entries["allow_synthetic_model"]);
-    if (entries.contains("dump_trace")) config.dump_trace = parse_bool(entries["dump_trace"]);
-    if (entries.contains("auto_prepare_dataset")) config.auto_prepare_dataset = parse_bool(entries["auto_prepare_dataset"]);
-    if (entries.contains("symmetrize_edges")) config.symmetrize_edges = parse_bool(entries["symmetrize_edges"]);
-    if (entries.contains("deduplicate_edges")) config.deduplicate_edges = parse_bool(entries["deduplicate_edges"]);
-    if (entries.contains("hidden_profile")) config.hidden_profile = parse_hidden_profile(entries["hidden_profile"]);
-    if (entries.contains("d_in_profile")) config.d_in_profile = parse_size_list(entries["d_in_profile"]);
-    if (config.quant_cfg_id.empty()) {
-        config.quant_cfg_id = "range_bits=" + std::to_string(config.range_bits);
+        std::unordered_map<std::string, std::string> entries;
+        std::string line;
+        // 配置文件按 `key = value` 读取，注释与空行都在这一层先剔掉。
+        while (std::getline(input, line))
+        {
+            const auto hash = line.find('#');
+            if (hash != std::string::npos)
+            {
+                line = line.substr(0, hash);
+            }
+            line = trim(line);
+            if (line.empty())
+            {
+                continue;
+            }
+            const auto eq = line.find('=');
+            if (eq == std::string::npos)
+            {
+                throw std::runtime_error("invalid config line: " + line);
+            }
+            const auto key = trim(line.substr(0, eq));
+            const auto value = trim(line.substr(eq + 1));
+            if (!entries.emplace(key, value).second)
+            {
+                throw std::runtime_error("duplicate config field: " + key);
+            }
+        }
+
+        AppConfig config;
+        fail_if_present(entries, {"hidden_heads", "checkpoint_dir"});
+        validate_supported_keys(entries);
+        require_explicit_family_shape_fields(entries);
+        const auto absolute = std::filesystem::absolute(path);
+        config.config_dir = absolute.parent_path().string();
+        config.project_root = absolute.parent_path().parent_path().string();
+        if (entries.contains("dataset"))
+            config.dataset = entries["dataset"];
+        if (entries.contains("data_root"))
+            config.data_root = entries["data_root"];
+        if (entries.contains("cache_root"))
+            config.cache_root = entries["cache_root"];
+        if (entries.contains("export_dir"))
+            config.export_dir = entries["export_dir"];
+        if (entries.contains("checkpoint_bundle"))
+            config.checkpoint_bundle = entries["checkpoint_bundle"];
+        if (entries.contains("reference_output_dir"))
+            config.reference_output_dir = entries["reference_output_dir"];
+        if (entries.contains("task_type"))
+            config.task_type = entries["task_type"];
+        if (entries.contains("report_unit"))
+            config.report_unit = entries["report_unit"];
+        if (entries.contains("batching_rule"))
+            config.batching_rule = entries["batching_rule"];
+        if (entries.contains("self_loop_rule"))
+            config.self_loop_rule = entries["self_loop_rule"];
+        if (entries.contains("edge_sort_rule"))
+            config.edge_sort_rule = entries["edge_sort_rule"];
+        if (entries.contains("chunking_rule"))
+            config.chunking_rule = entries["chunking_rule"];
+        if (entries.contains("quant_cfg_id"))
+            config.quant_cfg_id = entries["quant_cfg_id"];
+        if (entries.contains("model_arch_id"))
+            config.model_arch_id = entries["model_arch_id"];
+        if (entries.contains("model_param_id"))
+            config.model_param_id = entries["model_param_id"];
+        if (entries.contains("static_table_id"))
+            config.static_table_id = entries["static_table_id"];
+        if (entries.contains("degree_bound_id"))
+            config.degree_bound_id = entries["degree_bound_id"];
+        if (entries.contains("srs_type"))
+            config.srs_type = entries["srs_type"];
+        if (entries.contains("srs_id"))
+            config.srs_id = entries["srs_id"];
+        if (entries.contains("srs_path"))
+            config.srs_path = entries["srs_path"];
+        if (entries.contains("privacy_policy"))
+            config.privacy_policy = entries["privacy_policy"];
+        if (entries.contains("input_privacy"))
+            config.input_privacy = entries["input_privacy"];
+        if (entries.contains("output_mode"))
+            config.output_mode = entries["output_mode"];
+        if (entries.contains("opening_mode"))
+            config.opening_mode = entries["opening_mode"];
+        if (entries.contains("binding_mode"))
+            config.binding_mode = entries["binding_mode"];
+        if (entries.contains("proof_task"))
+            config.proof_task = entries["proof_task"];
+        if (entries.contains("security_profile_id"))
+            config.security_profile_id = entries["security_profile_id"];
+        if (entries.contains("hidden_dim"))
+            config.hidden_dim = std::stoull(entries["hidden_dim"]);
+        if (entries.contains("num_classes"))
+            config.num_classes = std::stoull(entries["num_classes"]);
+        if (entries.contains("range_bits"))
+            config.range_bits = std::stoull(entries["range_bits"]);
+        if (entries.contains("seed"))
+            config.seed = std::stoull(entries["seed"]);
+        if (entries.contains("L"))
+            config.layer_count = std::stoull(entries["L"]);
+        if (entries.contains("K_out"))
+            config.K_out = std::stoull(entries["K_out"]);
+        if (entries.contains("batch_graphs"))
+            config.batch_graphs = std::stoull(entries["batch_graphs"]);
+        if (entries.contains("dump_trace"))
+            config.dump_trace = parse_bool(entries["dump_trace"]);
+        if (entries.contains("auto_prepare_dataset"))
+            config.auto_prepare_dataset = parse_bool(entries["auto_prepare_dataset"]);
+        if (entries.contains("symmetrize_edges"))
+            config.symmetrize_edges = parse_bool(entries["symmetrize_edges"]);
+        if (entries.contains("deduplicate_edges"))
+            config.deduplicate_edges = parse_bool(entries["deduplicate_edges"]);
+        if (entries.contains("hidden_profile"))
+            config.hidden_profile = parse_hidden_profile(entries["hidden_profile"]);
+        if (entries.contains("d_in_profile"))
+            config.d_in_profile = parse_size_list(entries["d_in_profile"]);
+        if (config.quant_cfg_id.empty())
+        {
+            config.quant_cfg_id = "range_bits=" + std::to_string(config.range_bits);
+        }
+        if (config.static_table_id.empty())
+        {
+            config.static_table_id = "tables:lrelu+elu+exp+range";
+        }
+        if (config.degree_bound_id.empty())
+        {
+            config.degree_bound_id = "auto";
+        }
+        // 这里最后做一次 shape 和 formal 约束校验，保证 prover / verifier 看到的是同一套配置含义。
+        validate_config(config);
+        return config;
     }
-    if (config.static_table_id.empty()) {
-        config.static_table_id = "tables:lrelu+elu+exp+range";
-    }
-    if (config.degree_bound_id.empty()) {
-        config.degree_bound_id = "auto";
-    }
-    // 这里最后做一次 shape 和 formal 约束校验，保证 prover / verifier 看到的是同一套配置含义。
-    validate_config(config);
-    return config;
-}
 
 }

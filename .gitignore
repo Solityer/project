@@ -1,15 +1,8 @@
 .venv/
 build/
-build_tmp/
-build_cpu_check/
 build_cuda/
 __pycache__/
 *.pyc
 runs/
 artifacts/
 data/cache/
-build_asan/
-build-verify-cpu/
-build-verify-gpu/
-build-verify-cuda/
-build_verify_cpu_only/

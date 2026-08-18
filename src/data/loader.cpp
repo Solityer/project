@@ -494,11 +494,6 @@ namespace gatzk::data
     GraphDataset load_dataset(const util::AppConfig &config)
     {
         const std::filesystem::path project_root(config.project_root);
-        if (config.dataset == "unit_security")
-        {
-            return load_cached_dataset(project_root / "data/security_fixture");
-        }
-
         const auto cache_root = project_root / config.cache_root / config.dataset;
         if (config.dataset == "ppi")
         {
@@ -518,26 +513,15 @@ namespace gatzk::data
     void validate_normalized_graph_input(const LocalGraph &local)
     {
         const auto &public_input = local.public_input;
-        if (public_input.N != local.num_nodes
-            || public_input.E != local.edges.size()
-            || public_input.G_batch != local.graph_count)
+        if (public_input.N != local.num_nodes || public_input.E != local.edges.size() || public_input.G_batch != local.graph_count)
         {
             throw std::runtime_error("normalized graph size metadata mismatch");
         }
-        if (public_input.N_total < public_input.N
-            || public_input.I.size() != public_input.N
-            || public_input.src.size() != public_input.E
-            || public_input.dst.size() != public_input.E)
+        if (public_input.N_total < public_input.N || public_input.I.size() != public_input.N || public_input.src.size() != public_input.E || public_input.dst.size() != public_input.E)
         {
             throw std::runtime_error("normalized graph public vector size mismatch");
         }
-        if (public_input.G_batch == 0
-            || public_input.node_ptr.size() != public_input.G_batch + 1
-            || public_input.edge_ptr.size() != public_input.G_batch + 1
-            || public_input.node_ptr.front() != 0
-            || public_input.edge_ptr.front() != 0
-            || public_input.node_ptr.back() != public_input.N
-            || public_input.edge_ptr.back() != public_input.E)
+        if (public_input.G_batch == 0 || public_input.node_ptr.size() != public_input.G_batch + 1 || public_input.edge_ptr.size() != public_input.G_batch + 1 || public_input.node_ptr.front() != 0 || public_input.edge_ptr.front() != 0 || public_input.node_ptr.back() != public_input.N || public_input.edge_ptr.back() != public_input.E)
         {
             throw std::runtime_error("normalized graph batch pointer shape mismatch");
         }
@@ -591,7 +575,8 @@ namespace gatzk::data
                 ++indegree[dst];
             }
         }
-        if (std::any_of(indegree.begin(), indegree.end(), [](std::size_t value) { return value == 0; }))
+        if (std::any_of(indegree.begin(), indegree.end(), [](std::size_t value)
+                        { return value == 0; }))
         {
             throw std::runtime_error("normalized graph contains a zero-indegree node");
         }

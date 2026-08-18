@@ -194,69 +194,41 @@ namespace gatzk::model
         FloatMatrix Y_lin;
         FloatMatrix Y;
     };
-
-    // 构造测试用的单头参数，不参与正式 checkpoint 主线。
-    ModelParameters build_model_parameters(
-        std::size_t input_dim,
-        std::size_t hidden_dim,
-        std::size_t num_classes,
-        std::uint64_t seed);
-    // 构造测试用多层多头参数族，专供 formal suite 的 synthetic 覆盖。
-    ModelParameters build_family_model_parameters(
-        const std::vector<std::size_t>& d_in_profile,
-        const std::vector<HiddenLayerShape>& hidden_profile,
-        std::size_t k_out,
-        std::size_t num_classes,
-        std::uint64_t seed);
     // 读取 bundle 的 manifest 元数据，不直接加载权重张量。
-    CheckpointBundleInfo inspect_checkpoint_bundle(const std::string& bundle_root);
+    CheckpointBundleInfo inspect_checkpoint_bundle(const std::string &bundle_root);
     // 检查 bundle 是否满足当前 formal 主线要求的层数、hidden_profile、K_out 与输出平均规则。
-    bool checkpoint_bundle_matches_formal_proof_shape(const CheckpointBundleInfo& info, std::string* reason = nullptr);
+    bool checkpoint_bundle_matches_formal_proof_shape(const CheckpointBundleInfo &info, std::string *reason = nullptr);
     // 从真实 checkpoint bundle 载入模型参数，是正式 proving 主线的唯一模型来源。
-    ModelParameters load_checkpoint_bundle_parameters(const std::string& bundle_root);
+    ModelParameters load_checkpoint_bundle_parameters(const std::string &bundle_root);
     // 推出一个注意力头的输出宽度，供 domain 规划与 trace 物化使用。
-    std::size_t attention_head_output_width(const AttentionHeadParameters& parameters);
-    // 根据图边构造参考前向使用的偏置矩阵。
-    FloatMatrix build_attention_bias_matrix(std::size_t num_nodes, const std::vector<data::Edge>& edges);
-    // 执行单头参考前向，输出会被 trace 层重新量化并约束。
-    HeadForwardTrace attention_head_forward(
-        const FloatMatrix& features,
-        const std::vector<data::Edge>& edges,
-        const AttentionHeadParameters& parameters,
-        HeadForwardProfile* profile = nullptr);
-    // 保留的参考实现路径，主要用于对照与测试。
-    MultiHeadForwardTrace forward_reference_style(
-        const FloatMatrix& features,
-        const std::vector<data::Edge>& edges,
-        const ModelParameters& parameters,
-        ForwardProfile* profile = nullptr);
+    std::size_t attention_head_output_width(const AttentionHeadParameters &parameters);
     // 当前 formal 主线对应的前向实现，trace 构建直接依赖它的输出对象。
     MultiHeadForwardTrace forward_note_style(
-        const FloatMatrix& features,
-        const std::vector<data::Edge>& edges,
-        const ModelParameters& parameters,
-        ForwardProfile* profile = nullptr);
+        const FloatMatrix &features,
+        const std::vector<data::Edge> &edges,
+        const ModelParameters &parameters,
+        ForwardProfile *profile = nullptr);
 
     // 下面这些辅助函数将矩阵、向量与边聚合结果转换成 trace / lookup 可消费的对象。
-    Matrix project_features(const Matrix& left, const Matrix& right);
-    std::vector<algebra::FieldElement> matvec_projection(const Matrix& matrix, const std::vector<algebra::FieldElement>& vector);
-    std::vector<algebra::FieldElement> compress_rows(const Matrix& matrix, const algebra::FieldElement& challenge);
+    Matrix project_features(const Matrix &left, const Matrix &right);
+    std::vector<algebra::FieldElement> matvec_projection(const Matrix &matrix, const std::vector<algebra::FieldElement> &vector);
+    std::vector<algebra::FieldElement> compress_rows(const Matrix &matrix, const algebra::FieldElement &challenge);
     Matrix aggregate_by_edges(
-        const Matrix& h_prime,
-        const std::vector<algebra::FieldElement>& alpha,
-        const std::vector<data::Edge>& edges,
+        const Matrix &h_prime,
+        const std::vector<algebra::FieldElement> &alpha,
+        const std::vector<data::Edge> &edges,
         std::size_t num_nodes);
     Matrix output_projection(
-        const Matrix& h_agg,
-        const Matrix& w_out,
-        const std::vector<algebra::FieldElement>& bias,
-        Matrix* linear_part);
+        const Matrix &h_agg,
+        const Matrix &w_out,
+        const std::vector<algebra::FieldElement> &bias,
+        Matrix *linear_part);
     // 验证多层多头形状链是否自洽，是 context 构建阶段的重要前置约束。
-    bool hidden_family_dimension_chain_is_valid(const ModelParameters& parameters, std::string* reason = nullptr);
+    bool hidden_family_dimension_chain_is_valid(const ModelParameters &parameters, std::string *reason = nullptr);
     // 下面这些查询函数为 domain 规划、metadata 导出与 tests 提供统一形状信息。
-    std::size_t flattened_hidden_head_count(const ModelParameters& parameters);
-    std::size_t max_hidden_input_dim(const ModelParameters& parameters);
-    std::size_t max_hidden_head_dim(const ModelParameters& parameters);
-    std::size_t max_hidden_concat_width(const ModelParameters& parameters);
-    bool supports_current_formal_proof_shape(const ModelParameters& parameters);
+    std::size_t flattened_hidden_head_count(const ModelParameters &parameters);
+    std::size_t max_hidden_input_dim(const ModelParameters &parameters);
+    std::size_t max_hidden_head_dim(const ModelParameters &parameters);
+    std::size_t max_hidden_concat_width(const ModelParameters &parameters);
+    bool supports_current_formal_proof_shape(const ModelParameters &parameters);
 }

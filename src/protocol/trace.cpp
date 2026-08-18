@@ -142,8 +142,7 @@ namespace gatzk::protocol
 
         bool progress_enabled()
         {
-            const auto *value = std::getenv("GATZK_RUN_PROGRESS");
-            return value != nullptr && std::string_view(value) != "stage";
+            return std::getenv("GATZK_RUN_PROGRESS") != nullptr;
         }
 
         bool taylor_shift_self_check_enabled()
