@@ -6192,7 +6192,6 @@ namespace gatzk::protocol
                 stage_start = Clock::now();
                 const auto y_dst_h = trace.challenges.at("y_dst_h" + std::to_string(head_index));
                 const auto dst_binding = cached_binding_trace(
-                    head_cache_prefix + ":dst:" + y_dst_h.to_string(),
                     [&]()
                     {
                         return build_binding_trace(
@@ -6215,7 +6214,6 @@ namespace gatzk::protocol
                 const auto xi_powers = powers(xi, head_dim);
                 const auto y_star_h = trace.challenges.at("y_star_h" + std::to_string(head_index));
                 const auto star_binding = cached_binding_trace(
-                    head_cache_prefix + ":star:" + y_star_h.to_string(),
                     [&]()
                     {
                         return build_binding_trace(
@@ -6502,7 +6500,6 @@ namespace gatzk::protocol
                 std::vector<FieldElement> table_exp =
                     cached_pair_lookup_table(prefix + "exp", context.tables.exp, eta_exp, domains.edge->size);
                 const auto exp_artifacts = cached_pair_lookup_artifacts(
-                    head_cache_prefix + ":exp_artifacts:" + eta_exp.to_string(),
                     [&]()
                     {
                         return build_pair_lookup_artifacts(
@@ -6609,7 +6606,6 @@ namespace gatzk::protocol
                 add_metric(metrics != nullptr ? &metrics->hidden_softmax_chain_trace_ms : nullptr, stage_start);
                 stage_start = Clock::now();
                 const auto psq = cached_state_vector(
-                    head_cache_prefix + ":psq:" + lambda_psq.to_string(),
                     [&]()
                     {
                         return build_group_prefix_state(w_psq, q_new, enable_single_graph_selector_shortcut);
@@ -6740,7 +6736,6 @@ namespace gatzk::protocol
                 const auto beta_t = transcript.challenge("beta_t_h" + std::to_string(head_index));
                 trace.challenges["beta_t_h" + std::to_string(head_index)] = beta_t;
                 const auto t_route = cached_route_trace(
-                    head_cache_prefix + ":t_route:" + eta_t.to_string() + ":" + beta_t.to_string(),
                     [&]()
                     {
                         return build_route_trace_from_padded(
@@ -6817,7 +6812,6 @@ namespace gatzk::protocol
                 std::vector<FieldElement> table_elu =
                     cached_pair_lookup_table(prefix + "ELU", context.tables.elu, eta_elu, domains.edge->size);
                 const auto elu_artifacts = cached_pair_lookup_artifacts(
-                    head_cache_prefix + ":elu_artifacts:" + eta_elu.to_string(),
                     [&]()
                     {
                         return build_pair_lookup_artifacts(
@@ -6977,7 +6971,6 @@ namespace gatzk::protocol
                 const auto beta_dst = transcript.challenge("beta_dst_h" + std::to_string(head_index));
                 trace.challenges["beta_dst_h" + std::to_string(head_index)] = beta_dst;
                 const auto dst_route = cached_route_trace(
-                    head_cache_prefix + ":dst_route:" + eta_dst.to_string() + ":" + beta_dst.to_string(),
                     [&]()
                     {
                         return build_route_trace_from_padded(
@@ -7010,7 +7003,6 @@ namespace gatzk::protocol
                 stage_start = Clock::now();
                 const auto y_agg_pre_h = trace.challenges.at("y_agg_pre_h" + std::to_string(head_index));
                 const auto agg_pre_binding = cached_binding_trace(
-                    head_cache_prefix + ":agg_pre:" + y_agg_pre_h.to_string(),
                     [&]()
                     {
                         return build_binding_trace(
@@ -7027,7 +7019,6 @@ namespace gatzk::protocol
                 stage_start = Clock::now();
                 const auto y_agg_h = trace.challenges.at("y_agg_h" + std::to_string(head_index));
                 const auto agg_binding = cached_binding_trace(
-                    head_cache_prefix + ":agg:" + y_agg_h.to_string(),
                     [&]()
                     {
                         return build_binding_trace(
@@ -7537,7 +7528,6 @@ namespace gatzk::protocol
                 const auto beta_src_out = transcript.challenge(output_challenge_name("beta_src_out", head_index));
                 trace.challenges[output_challenge_name("beta_src_out", head_index)] = beta_src_out;
                 const auto out_src_route = cached_route_trace(
-                    head_cache_prefix + ":src_route:" + eta_src_out.to_string() + ":" + beta_src_out.to_string(),
                     [&]()
                     {
                         return build_route_trace_from_padded(
@@ -7653,7 +7643,6 @@ namespace gatzk::protocol
                 const std::vector<FieldElement> out_table_l =
                     cached_pair_lookup_table(prefix_base + "_L", context.tables.lrelu, eta_l_out, domains.edge->size);
                 const auto out_l_artifacts = cached_pair_lookup_artifacts(
-                    head_cache_prefix + ":lrelu_artifacts:" + eta_l_out.to_string(),
                     [&]()
                     {
                         return build_pair_lookup_artifacts(
@@ -7694,7 +7683,6 @@ namespace gatzk::protocol
 
                 auto out_s_max = build_first_zero_group_selector(out_delta, edge_groups_by_dst, domains.edge->size);
                 const auto out_c_max = cached_state_vector(
-                    head_cache_prefix + ":cmax",
                     [&]()
                     {
                         return build_max_counter_state(out_s_max, q_new, enable_single_graph_selector_shortcut);
@@ -7707,7 +7695,6 @@ namespace gatzk::protocol
                 const std::vector<FieldElement> out_table_r =
                     cached_single_lookup_table(prefix_base + "_R", context.tables.range, domains.edge->size);
                 const auto out_r_artifacts = cached_single_lookup_artifacts(
-                    head_cache_prefix + ":range_artifacts",
                     [&]()
                     {
                         return build_single_lookup_artifacts(
@@ -7740,7 +7727,6 @@ namespace gatzk::protocol
                 const std::vector<FieldElement> out_table_exp =
                     cached_pair_lookup_table(prefix_base + "_exp", context.tables.exp, eta_exp_out, domains.edge->size);
                 const auto out_exp_artifacts = cached_pair_lookup_artifacts(
-                    head_cache_prefix + ":exp_artifacts:" + eta_exp_out.to_string(),
                     [&]()
                     {
                         return build_pair_lookup_artifacts(
@@ -7807,7 +7793,6 @@ namespace gatzk::protocol
                 const auto t_out_edge = std::make_shared<std::vector<FieldElement>>(
                     build_group_target(*t_out, edges, domains.edge->size));
                 const auto psq_out = cached_state_vector(
-                    head_cache_prefix + ":psq:" + lambda_out.to_string(),
                     [&]()
                     {
                         return build_group_prefix_state(w_out, q_new, enable_single_graph_selector_shortcut);
@@ -7930,7 +7915,6 @@ namespace gatzk::protocol
                 const auto beta_t_out = transcript.challenge(output_challenge_name("beta_t_out", head_index));
                 trace.challenges[output_challenge_name("beta_t_out", head_index)] = beta_t_out;
                 const auto out_t_route = cached_route_trace(
-                    head_cache_prefix + ":t_route:" + eta_t_out.to_string() + ":" + beta_t_out.to_string(),
                     [&]()
                     {
                         return build_route_trace_from_padded(
@@ -8018,7 +8002,6 @@ namespace gatzk::protocol
 
                 const auto out_proj_binding =
                     cached_binding_trace(
-                        head_cache_prefix + ":proj:" + y_proj_out.to_string(),
                         [&]()
                         {
                             return build_row_major_projection_binding_trace(
@@ -8034,7 +8017,6 @@ namespace gatzk::protocol
 
                 const auto out_src_binding =
                     cached_binding_trace(
-                        head_cache_prefix + ":src:" + y_src_out.to_string(),
                         [&]()
                         {
                             return build_binding_trace(
@@ -8049,7 +8031,6 @@ namespace gatzk::protocol
 
                 const auto out_dst_binding =
                     cached_binding_trace(
-                        head_cache_prefix + ":dst:" + y_dst_out.to_string(),
                         [&]()
                         {
                             return build_binding_trace(
@@ -8064,7 +8045,6 @@ namespace gatzk::protocol
 
                 const auto out_y_binding =
                     cached_binding_trace(
-                        head_cache_prefix + ":y:" + y_out_star.to_string(),
                         [&]()
                         {
                             return build_binding_trace(
@@ -8161,7 +8141,6 @@ namespace gatzk::protocol
                 const auto beta_dst_out = transcript.challenge(output_challenge_name("beta_dst_out", head_index));
                 trace.challenges[output_challenge_name("beta_dst_out", head_index)] = beta_dst_out;
                 const auto out_dst_route = cached_route_trace(
-                    head_cache_prefix + ":dst_route:" + eta_dst_out.to_string() + ":" + beta_dst_out.to_string(),
                     [&]()
                     {
                         return build_route_trace_from_padded(
