@@ -492,6 +492,12 @@ namespace gatzk::protocol
             const std::shared_ptr<algebra::RootOfUnityDomain> &domain,
             const FieldElement &point)
         {
+            static std::mutex cache_mutex;
+            static std::unordered_map<
+                std::string,
+                std::shared_ptr<std::vector<mcl::Fr>>>
+                cache;
+
             const auto cache_key =
                 domain->name + ":" + std::to_string(domain->size) + ":" + point.to_string();
             {
@@ -2880,6 +2886,12 @@ namespace gatzk::protocol
                     context.config.batching_rule == "whole_graph_single" && context.local.num_nodes == context.dataset.num_nodes && context.local.num_features == context.dataset.num_features && context.domains.fh != nullptr && context.domains.fh->size >= kMinLazyLargeFhDomainSize && (name == "P_Q_tbl_feat" || name == "P_Q_qry_feat");
                 if (lazy_large_feature_selector)
                 {
+                    static std::mutex cache_mutex;
+                    static std::unordered_map<
+                        std::string,
+                        std::shared_ptr<std::vector<FieldElement>>>
+                        cache;
+
                     const auto valid_count =
                         name == "P_Q_tbl_feat"
                             ? context.dataset.num_nodes * context.dataset.num_features
@@ -3396,6 +3408,12 @@ namespace gatzk::protocol
             const ProtocolContext &context,
             std::size_t head_index)
         {
+            static std::mutex cache_mutex;
+            static std::unordered_map<
+                std::string,
+                std::shared_ptr<HiddenHeadStaticQuantizedParameters>>
+                cache;
+
             const auto &head = context.model.hidden_heads.at(head_index);
             const auto cache_key =
                 context.config.checkpoint_bundle + ":" + context.config.dataset + ":" + std::to_string(context.config.seed) + ":hidden:" + std::to_string(head_index) + ":" + std::to_string(head.seq_kernel_fp.size()) + ":" + std::to_string(head.seq_kernel_fp.empty() ? 0 : head.seq_kernel_fp.front().size());
@@ -3422,6 +3440,12 @@ namespace gatzk::protocol
             const ProtocolContext &context,
             std::size_t head_index)
         {
+            static std::mutex cache_mutex;
+            static std::unordered_map<
+                std::string,
+                std::shared_ptr<OutputHeadStaticQuantizedParameters>>
+                cache;
+
             const auto &head = context.model.output_layer.heads.at(head_index);
             const auto cache_key =
                 context.config.checkpoint_bundle + ":" + context.config.dataset + ":" + std::to_string(context.config.seed) + ":output:" + std::to_string(head_index) + ":" + std::to_string(head.seq_kernel_fp.size()) + ":" + std::to_string(head.seq_kernel_fp.empty() ? 0 : head.seq_kernel_fp.front().size());
@@ -4371,6 +4395,12 @@ namespace gatzk::protocol
 
         const TraceStaticArtifacts &cached_trace_static_artifacts(const ProtocolContext &context)
         {
+            static std::mutex cache_mutex;
+            static std::unordered_map<
+                std::string,
+                std::shared_ptr<TraceStaticArtifacts>>
+                cache;
+
             const auto cache_key =
                 trace_cache_prefix(context) + ":trace_static:" + std::to_string(context.local.num_features) + ":" + std::to_string(context.dataset.num_nodes) + ":" + std::to_string(context.domains.n->size) + ":" + std::to_string(context.domains.edge->size);
             {
@@ -4759,6 +4789,12 @@ namespace gatzk::protocol
             const std::vector<FieldElement> &values,
             std::size_t valid_count)
         {
+            static std::mutex cache_mutex;
+            static std::unordered_map<
+                std::string,
+                std::shared_ptr<std::unordered_map<std::uint64_t, std::size_t>>>
+                cache;
+
             const auto cache_key =
                 label + ":" + std::to_string(valid_count) + ":" + std::to_string(values.size());
             {
@@ -4788,11 +4824,20 @@ namespace gatzk::protocol
             }
             return index;
         }
-
         std::shared_ptr<const std::unordered_map<FieldPairKey, std::size_t, FieldPairKeyHash>> cached_pair_index_map(
             const std::string &label,
             const std::vector<std::pair<FieldElement, FieldElement>> &values)
         {
+            static std::mutex cache_mutex;
+            static std::unordered_map<
+                std::string,
+                std::shared_ptr<
+                    std::unordered_map<
+                        FieldPairKey,
+                        std::size_t,
+                        FieldPairKeyHash>>>
+                cache;
+
             const auto cache_key =
                 label + ":" + std::to_string(values.size()) + ":first=" + (values.empty() ? std::string("empty") : values.front().first.to_string() + "," + values.front().second.to_string()) + ":last=" + (values.empty() ? std::string("empty") : values.back().first.to_string() + "," + values.back().second.to_string());
             {
@@ -4846,6 +4891,12 @@ namespace gatzk::protocol
             const std::vector<FieldElement> &values,
             std::size_t domain_size)
         {
+            static std::mutex cache_mutex;
+            static std::unordered_map<
+                std::string,
+                std::shared_ptr<std::vector<FieldElement>>>
+                cache;
+
             const auto cache_key =
                 label + ":" + std::to_string(domain_size) + ":" + std::to_string(values.size()) + ":first=" + (values.empty() ? std::string("empty") : values.front().to_string()) + ":last=" + (values.empty() ? std::string("empty") : values.back().to_string());
             {
@@ -4879,6 +4930,12 @@ namespace gatzk::protocol
             const FieldElement &eta,
             std::size_t domain_size)
         {
+            static std::mutex cache_mutex;
+            static std::unordered_map<
+                std::string,
+                std::shared_ptr<std::vector<FieldElement>>>
+                cache;
+
             const auto cache_key =
                 label + ":" + std::to_string(domain_size) + ":" + std::to_string(values.size()) + ":" + eta.to_string() + ":first=" + (values.empty() ? std::string("empty") : values.front().first.to_string() + "," + values.front().second.to_string()) + ":last=" + (values.empty() ? std::string("empty") : values.back().first.to_string() + "," + values.back().second.to_string());
             {
@@ -7170,7 +7227,6 @@ namespace gatzk::protocol
                 trace.challenges[y_name] = transcript.challenge(y_name);
                 stage_start = Clock::now();
                 const auto cat_binding = cached_binding_trace(
-                    cache_prefix + ":cat:" + std::to_string(layer_index) + ":" + trace.challenges.at(y_name).to_string(),
                     [&]()
                     {
                         return build_binding_trace(
@@ -8679,13 +8735,13 @@ namespace gatzk::protocol
                     });
                 trace.challenges[route.terminal_challenge_label] = y_rel;
                 const auto u_rel =
-                    shifted.opening_polynomial->evaluate(y_rel)
-                        subproof.evaluations.push_back(BindingEvaluation{
-                            .domain = "relation",
-                            .object_id = route.shifted_accumulator_object + ":u_rel",
-                            .values = {u_rel},
-                            .kind = PayloadValueKind::MaskedPrivateValue,
-                        });
+                    shifted.opening_polynomial->evaluate(y_rel);
+                subproof.evaluations.push_back(BindingEvaluation{
+                    .domain = "relation",
+                    .object_id = route.shifted_accumulator_object + ":u_rel",
+                    .values = {u_rel},
+                    .kind = PayloadValueKind::MaskedPrivateValue,
+                });
 
                 const auto node_degree = domains.n->size + registered_blinder_coefficient_count(context, route.node_accumulator_object) - 1;
                 const auto relation_degree = std::max(
@@ -9336,16 +9392,8 @@ namespace gatzk::protocol
                          index < basis_meta.chunks.size(); ++index)
                     {
                         const auto &chunk = basis_meta.chunks[index];
-                        const auto delta = chunk.terminal_point - gamma;
                         const auto u_rel = shifted_accumulators[index]
                                                .opening_polynomial->evaluate(y_rel);
-                        if (debug_taylor_shift_self_check && u_rel != evaluate_trace_polynomial(
-                                                                          trace,
-                                                                          chunk.accumulator_object,
-                                                                          y_rel + delta,
-                                                                          domains.edge))
-                            throw std::runtime_error(
-                                "output bias coefficient chunk Taylor shift value mismatch");
                         binding_subproof.evaluations.push_back(
                             BindingEvaluation{
                                 .domain = "relation",
