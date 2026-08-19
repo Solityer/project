@@ -10541,6 +10541,42 @@ namespace gatzk::protocol
 
         progress_note("context:load_static:start");
         auto start = Clock::now();
+
+        // 先把数据集和 checkpoint bundle 收束成 formal shape；
+        // 这一段还不接触任何 challenge 或 witness。
+        context.dataset = data::load_dataset(config);
+        context.local =
+            data::normalize_graph_input(
+                context.dataset,
+                config);
+
+        if (config.checkpoint_bundle.empty())
+        {
+            throw std::runtime_error(
+                "formal model route requires checkpoint_bundle; "
+                "refusing to fall back to synthetic parameters");
+        }
+
+        const auto checkpoint_root =
+            resolve_project_path(
+                config.project_root,
+                config.checkpoint_bundle);
+
+        context.model =
+            model::load_checkpoint_bundle_parameters(
+                checkpoint_root.string());
+
+        append_note(
+            metrics,
+            "model_source=checkpoint_bundle");
+
+        append_note(
+            metrics,
+            "hidden_head_count=" +
+                std::to_string(
+                    model::flattened_hidden_head_count(
+                        context.model)));
+
         if (!context.model.has_real_multihead)
         {
             throw std::runtime_error(
