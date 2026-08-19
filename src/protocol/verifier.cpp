@@ -1697,7 +1697,6 @@ namespace gatzk::protocol
                        ? PayloadValueKind::MaskedPrivateValue
                        : PayloadValueKind::PublicValue;
         }
-
         bool audit_payload_values(
             const ProtocolContext &context,
             const Proof &proof,
@@ -1705,6 +1704,7 @@ namespace gatzk::protocol
             std::string *reason)
         {
             std::size_t count = 0;
+
             auto fail = [&](const std::string &value)
             {
                 if (private_plain_count != nullptr)
@@ -1717,31 +1717,45 @@ namespace gatzk::protocol
                 }
                 return false;
             };
+
             auto check = [&](const std::string &label, PayloadValueKind actual)
             {
-                const auto expected = expected_payload_kind_for_label(context, label);
-                if (expected == PayloadValueKind::MaskedPrivateValue && actual == PayloadValueKind::PublicValue)
+                const auto expected =
+                    expected_payload_kind_for_label(context, label);
+
+                if (expected == PayloadValueKind::MaskedPrivateValue &&
+                    actual == PayloadValueKind::PublicValue)
                 {
                     ++count;
                     return false;
                 }
+
                 return expected == actual;
             };
+
             for (const auto &[bundle_name, bundle] : proof.domain_openings)
             {
                 (void)bundle_name;
+
                 if (bundle.value_kinds.size() != bundle.values.size())
                 {
-                    return false;
+                    return fail(
+                        "domain opening payload kind count mismatch");
                 }
+
                 for (std::size_t i = 0; i < bundle.values.size(); ++i)
                 {
-                    if (!check(bundle.values[i].first, bundle.value_kinds[i]))
+                    if (!check(
+                            bundle.values[i].first,
+                            bundle.value_kinds[i]))
                     {
-                        return false;
+                        return fail(
+                            "domain opening payload kind mismatch: " +
+                            bundle.values[i].first);
                     }
                 }
             }
+
             for (const auto &subproof : proof.pi_bind.subproofs)
             {
                 for (const auto &evaluation : subproof.evaluations)
@@ -1749,54 +1763,94 @@ namespace gatzk::protocol
                     const bool public_multiplicity =
                         evaluation.object_id.ends_with(
                             "_BiasView_m_can:public_bind");
+
                     if (public_multiplicity)
                     {
-                        if (evaluation.kind != PayloadValueKind::PublicValue)
-                            return false;
+                        if (evaluation.kind !=
+                            PayloadValueKind::PublicValue)
+                        {
+                            return fail(
+                                "Pi_bind public multiplicity kind mismatch");
+                        }
                     }
                     else
                     {
                         auto source_label = evaluation.object_id;
+
                         if (source_label.ends_with(":u_rel"))
-                            source_label.resize(source_label.size() - 6);
-                        if (!check(source_label, evaluation.kind))
-                            return false;
+                        {
+                            source_label.resize(
+                                source_label.size() - 6);
+                        }
+
+                        if (!check(
+                                source_label,
+                                evaluation.kind))
+                        {
+                            return fail(
+                                "Pi_bind evaluation payload kind mismatch: " +
+                                evaluation.object_id);
+                        }
                     }
                 }
             }
-            if (proof.external_evaluation_kinds.size() != proof.external_evaluations.size())
+
+            if (proof.external_evaluation_kinds.size() !=
+                proof.external_evaluations.size())
             {
-                return false;
+                return fail(
+                    "external evaluation payload kind count mismatch");
             }
-            std::unordered_map<std::string, std::string> external_sources;
+
+            std::unordered_map<std::string, std::string>
+                external_sources;
+
             for (const auto &spec : multihead_external_specs(context))
             {
-                external_sources.emplace(spec.proof_name, spec.label);
+                external_sources.emplace(
+                    spec.proof_name,
+                    spec.label);
             }
-            for (std::size_t i = 0; i < proof.external_evaluations.size(); ++i)
+
+            for (std::size_t i = 0;
+                 i < proof.external_evaluations.size();
+                 ++i)
             {
-                const auto &name = proof.external_evaluations[i].first;
-                const auto it = external_sources.find(name);
+                const auto &name =
+                    proof.external_evaluations[i].first;
+
+                const auto it =
+                    external_sources.find(name);
+
                 if (it == external_sources.end())
                 {
-                    return false;
+                    return fail(
+                        "unknown external evaluation payload: " +
+                        name);
                 }
-                if (!check(it->second, proof.external_evaluation_kinds[i]))
+
+                if (!check(
+                        it->second,
+                        proof.external_evaluation_kinds[i]))
                 {
-                    return false;
+                    return fail(
+                        "external evaluation payload kind mismatch: " +
+                        name);
                 }
             }
+
             if (private_plain_count != nullptr)
             {
                 *private_plain_count = count;
             }
+
             if (reason != nullptr)
             {
                 reason->clear();
             }
+
             return true;
         }
-
     } // namespace
 
     std::size_t private_plain_value_count(const ProtocolContext &context, const Proof &proof)
@@ -1813,13 +1867,6 @@ namespace gatzk::protocol
     // verifier 入口：重放 transcript、批量校验 opening，并确认 quotient / external relation 全部成立。
     bool verify(const ProtocolContext &context, const Proof &proof, RunMetrics *metrics)
     {
-        {
-            if (debug_verify)
-            {
-                util::info("verify_fail=" + reason);
-            }
-            return false;
-        };
         const auto metadata_start = Clock::now();
         if (!has_formal_public_architecture(context))
         {
