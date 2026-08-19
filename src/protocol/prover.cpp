@@ -5235,8 +5235,7 @@ namespace gatzk::protocol
         class QuotientPolynomialMaterializer
         {
         public:
-            QuotientPolynomialMaterializer
-            (
+            QuotientPolynomialMaterializer(
                 const ProtocolContext &context,
                 const TraceArtifacts &trace,
                 const std::map<std::string, FieldElement> &challenges,
@@ -5248,7 +5247,7 @@ namespace gatzk::protocol
                   domain_(quotient_domain(context_, label_)),
                   target_size_(domain_->size * quotient_coset_multiplier(label_)),
                   rotation_step_(target_size_ / domain_->size),
-                  shift_(quotient_coset_shift(*domain_)))
+                  shift_(quotient_coset_shift(*domain_))
             {
                 if (domain_ == nullptr)
                 {
