@@ -3570,54 +3570,6 @@ namespace gatzk::protocol
         return it->query_bound;
     }
 
-    bool observation_image_is_covered(
-        const std::vector<std::vector<algebra::FieldElement>> &blind,
-        const std::vector<std::vector<algebra::FieldElement>> &secret)
-    {
-        if (blind.size() != secret.size()) return false;
-        auto column_count = [](const auto &matrix) -> std::optional<std::size_t>
-        {
-            if (matrix.empty()) return std::size_t{0};
-            const auto columns = matrix.front().size();
-            for (const auto &row : matrix)
-                if (row.size() != columns) return std::nullopt;
-            return columns;
-        };
-        const auto blind_columns = column_count(blind);
-        const auto secret_columns = column_count(secret);
-        if (!blind_columns.has_value() || !secret_columns.has_value()) return false;
-        auto rank = [](std::vector<std::vector<algebra::FieldElement>> matrix)
-        {
-            if (matrix.empty()) return std::size_t{0};
-            const auto columns = matrix.front().size();
-            std::size_t pivot_row = 0;
-            for (std::size_t column = 0;
-                 column < columns && pivot_row < matrix.size(); ++column)
-            {
-                std::size_t pivot = pivot_row;
-                while (pivot < matrix.size() && matrix[pivot][column].is_zero())
-                    ++pivot;
-                if (pivot == matrix.size()) continue;
-                std::swap(matrix[pivot_row], matrix[pivot]);
-                const auto inverse = matrix[pivot_row][column].inv();
-                for (auto &value : matrix[pivot_row]) value *= inverse;
-                for (std::size_t row = 0; row < matrix.size(); ++row)
-                {
-                    if (row == pivot_row || matrix[row][column].is_zero()) continue;
-                    const auto scale = matrix[row][column];
-                    for (std::size_t item = column; item < columns; ++item)
-                        matrix[row][item] -= scale * matrix[pivot_row][item];
-                }
-                ++pivot_row;
-            }
-            return pivot_row;
-        };
-        auto combined = blind;
-        for (std::size_t row = 0; row < combined.size(); ++row)
-            combined[row].insert(
-                combined[row].end(), secret[row].begin(), secret[row].end());
-        return rank(std::move(combined)) == rank(blind);
-    }
 
     PolynomialVisibility polynomial_visibility(
         const ProtocolContext &context,

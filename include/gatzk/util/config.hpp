@@ -18,7 +18,7 @@ namespace gatzk::util
         std::size_t head_dim = 0;
     };
 
-    // 一次正式运行的统一配置。这里的字段会被 context、metadata、benchmark 与 tests 共同消费。
+    // 一次正式运行的统一配置。这里的字段会被 context、metadata 与正式 artifact 共同消费。
     struct AppConfig
     {
         std::string dataset;
@@ -28,7 +28,6 @@ namespace gatzk::util
         std::string config_dir = ".";
         std::string project_root = ".";
         std::string checkpoint_bundle;
-        std::string reference_output_dir = "runs/reference";
         std::string task_type = "transductive_node_classification";
         std::string report_unit = "node";
         std::string batching_rule = "whole_graph_single";

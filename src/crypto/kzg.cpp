@@ -4361,30 +4361,6 @@ namespace gatzk::crypto
             return pairing_equal(numerator, vk.g2_one, witness, rhs);
         }
     }
-    std::vector<FieldElement>
-    opening_inverse_denominators_for_stage_benchmark(
-        const std::shared_ptr<algebra::RootOfUnityDomain> &domain,
-        const FieldElement &point,
-        std::size_t worker_cap)
-    {
-        if (domain == nullptr)
-        {
-            throw std::runtime_error(
-                "opening inverse denominator benchmark requires a domain");
-        }
-
-        std::vector<FieldElement> values(
-            domain->size,
-            FieldElement::zero());
-
-        build_opening_inverse_denominators(
-            &values,
-            domain,
-            point,
-            worker_cap);
-
-        return values;
-    }
     struct EvaluationCommitmentCache::Impl
     {
         struct PointerKey
@@ -5653,7 +5629,6 @@ namespace gatzk::crypto
         const FieldElement &folding_challenge,
         const KZGKeyPair &key,
         BatchOpeningProfile *profile,
-        BatchOpeningClaimValidation claim_validation,
         const PointGroupOpeningExecutionOptions *execution_options,
         const OpeningPolynomialResolver *opening_resolver,
         const OpeningSemanticSourceResolver *semantic_source_resolver)
@@ -5683,46 +5658,42 @@ namespace gatzk::crypto
         const auto precompute_start = Clock::now();
         const auto powers = folding_powers(folding_challenge, commitments.size());
         const auto folded_plan = opening_resolver == nullptr
-                                     ? build_folded_opening_plan(
-                                           commitments,
-                                           value_columns,
-                                           powers,
-                                           std::vector<FieldElement>{point},
-                                           field_worker_cap,
-                                           claim_validation == BatchOpeningClaimValidation::VerifyAgainstOpeningPolynomials)
-                                     : build_streamed_folded_opening_plan(
-                                           commitments,
-                                           value_columns,
-                                           powers,
-                                           std::vector<FieldElement>{point},
-                                           field_worker_cap,
-                                           claim_validation == BatchOpeningClaimValidation::VerifyAgainstOpeningPolynomials,
-                                           *opening_resolver,
-                                           semantic_source_resolver,
-                                           nullptr);
-        if (profile != nullptr)
-        {
-            profile->precompute_ms += elapsed_ms(precompute_start, Clock::now());
-            profile->point_msm_worker_cap =
-                msm_options != nullptr
-                    ? msm_options->max_worker_count
-                    : 0;
-        }
+            ? build_folded_opening_plan(
+                  commitments,
+                  value_columns,
+                  powers,
+                  std::vector<FieldElement>{point},
+                  field_worker_cap,
+                  false : build_streamed_folded_opening_plan(
+                      commitments,
+                      value_columns,
+                      powers,
+                      std::vector<FieldElement>{point},
+                      field_worker_cap,
+                      false,
+                      *opening_resolver,
+                      semantic_source_resolver,
+                      nullptr);
+                  if (profile != nullptr) {
+                      profile->precompute_ms += elapsed_ms(precompute_start, Clock::now());
+                      profile->point_msm_worker_cap =
+                          msm_options != nullptr
+                              ? msm_options->max_worker_count
+                              : 0;
+                  }
 
-        const auto witness_start = Clock::now();
-        const auto witness = open_single_point_fold(
-            folded_plan,
-            0,
-            point,
-            key.pk,
-            profile,
-            field_worker_cap,
-            msm_options);
-        if (profile != nullptr)
-        {
-            profile->finalize_ms += elapsed_ms(witness_start, Clock::now());
-        }
-        return witness;
+                  const auto witness_start = Clock::now();
+                  const auto witness = open_single_point_fold(
+                      folded_plan,
+                      0,
+                      point,
+                      key.pk,
+                      profile,
+                      field_worker_cap,
+                      msm_options);
+                  if (profile != nullptr) {
+                      profile->finalize_ms += elapsed_ms(witness_start, Clock::now());
+                  } return witness;
     }
 
     std::array<G1Point, 2>
@@ -5738,7 +5709,6 @@ namespace gatzk::crypto
             &folding_challenges,
         const KZGKeyPair &key,
         std::array<BatchOpeningProfile, 2> *profiles,
-        BatchOpeningClaimValidation claim_validation,
         const std::array<
             PointGroupOpeningExecutionOptions,
             2> *execution_options,
@@ -5765,10 +5735,7 @@ namespace gatzk::crypto
             }
         }
 
-        if (claim_validation !=
-                BatchOpeningClaimValidation::
-                    AlreadyComputedFromOpeningPolynomials ||
-            opening_resolver == nullptr ||
+        if (opening_resolver == nullptr ||
             semantic_source_resolver == nullptr)
         {
             throw std::runtime_error(

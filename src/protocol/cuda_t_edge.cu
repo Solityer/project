@@ -281,8 +281,7 @@ namespace gatzk::protocol
                 std::size_t target_size,
                 const algebra::FieldElement &shift,
                 const algebra::FieldElement &omega,
-                std::size_t cache_slot_count,
-                CudaTEdgeExecutionProfile *profile)
+                std::size_t cache_slot_count)
                 : domain_size_(domain_size),
                   target_size_(target_size),
                   shift_(shift),
@@ -542,12 +541,6 @@ namespace gatzk::protocol
                     release_all_noexcept();
                     throw;
                 }
-
-                if (profile_ != nullptr)
-                {
-                    profile_->leaf_cache_slot_count =
-                        cache_slot_count_;
-                }
             }
 
             ~CudaTEdgeExecutorImpl()
@@ -744,15 +737,6 @@ namespace gatzk::protocol
                     release_program_noexcept();
                     throw;
                 }
-
-                if (profile_ != nullptr)
-                {
-                    profile_->term_count =
-                        program.terms.size();
-
-                    profile_->access_count =
-                        program.accesses.size();
-                }
             }
 
             bool materialize_evaluation_leaf(
@@ -810,32 +794,6 @@ namespace gatzk::protocol
                         "leaf-layout upload",
                         status);
                 }
-
-                if (profile_ != nullptr)
-                {
-                    ++profile_
-                          ->leaf_materialization_count;
-
-                    profile_
-                        ->source_bytes_uploaded +=
-                        value_count *
-                        sizeof(mcl::Fr);
-
-                    profile_
-                        ->source_bytes_uploaded +=
-                        blinder_count *
-                        sizeof(mcl::Fr);
-
-                    profile_->leaf_ntt_ms +=
-                        std::chrono::duration<
-                            double,
-                            std::milli>(
-                            std::chrono::
-                                steady_clock::now() -
-                            start)
-                            .count();
-                }
-
                 return true;
             }
 
@@ -889,27 +847,6 @@ namespace gatzk::protocol
                         "leaf-layout upload",
                         status);
                 }
-
-                if (profile_ != nullptr)
-                {
-                    ++profile_
-                          ->leaf_materialization_count;
-
-                    profile_
-                        ->source_bytes_uploaded +=
-                        coefficient_count *
-                        sizeof(mcl::Fr);
-
-                    profile_->leaf_ntt_ms +=
-                        std::chrono::duration<
-                            double,
-                            std::milli>(
-                            std::chrono::
-                                steady_clock::now() -
-                            start)
-                            .count();
-                }
-
                 return true;
             }
 
@@ -980,17 +917,6 @@ namespace gatzk::protocol
                     throw_cuda_t_edge_error(
                         "leaf upload",
                         status);
-                }
-
-                if (profile_ != nullptr)
-                {
-                    profile_->source_bytes_uploaded +=
-                        byte_count;
-
-                    if (logical_offset == 0)
-                    {
-                        ++profile_->leaf_materialization_count;
-                    }
                 }
             }
 
@@ -1183,34 +1109,6 @@ namespace gatzk::protocol
                 algebra::
                     record_cuda_kernel_invocations(
                         1);
-
-                if (profile_ != nullptr)
-                {
-                    profile_->quotient_bytes_downloaded =
-                        byte_count;
-
-                    std::cerr
-                        << "[gatzk] cuda_t_edge"
-                        << " terms="
-                        << profile_->term_count
-                        << " accesses="
-                        << profile_->access_count
-                        << " unique_leaves="
-                        << profile_->unique_leaf_count
-                        << " cache_slots="
-                        << profile_->leaf_cache_slot_count
-                        << " materializations="
-                        << profile_->leaf_materialization_count
-                        << " cache_hits="
-                        << profile_->leaf_cache_hit_count
-                        << " evictions="
-                        << profile_->leaf_eviction_count
-                        << " source_upload_bytes="
-                        << profile_->source_bytes_uploaded
-                        << " quotient_download_bytes="
-                        << profile_->quotient_bytes_downloaded
-                        << '\n';
-                }
             }
 
             void finalize_coefficients(
@@ -1262,10 +1160,6 @@ namespace gatzk::protocol
                         "finalize synchronization",
                         status);
                 }
-
-                const auto start =
-                    std::chrono::
-                        steady_clock::now();
 
                 const bool executed =
                     algebra::
@@ -1479,9 +1373,6 @@ namespace gatzk::protocol
 
             const TEdgeBoundProgram
                 *program_ = nullptr;
-
-            CudaTEdgeExecutionProfile
-                *profile_ = nullptr;
         };
     }
 
@@ -1491,8 +1382,7 @@ namespace gatzk::protocol
         std::size_t target_size,
         const algebra::FieldElement &shift,
         const algebra::FieldElement &omega,
-        std::size_t cache_slot_count,
-        CudaTEdgeExecutionProfile *profile)
+        std::size_t cache_slot_count)
     {
         if (!cuda_t_edge_executor_available())
         {

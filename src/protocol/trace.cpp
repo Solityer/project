@@ -145,40 +145,6 @@ namespace gatzk::protocol
             return std::getenv("GATZK_RUN_PROGRESS") != nullptr;
         }
 
-        bool taylor_shift_self_check_enabled()
-        {
-            return std::getenv(
-                       "GATZK_DEBUG_TAYLOR_SHIFT_SELF_CHECK") != nullptr;
-        }
-
-        FieldElement evaluate_shifted_with_optional_source_self_check(
-            const Polynomial &shifted,
-            const FieldElement &shifted_point,
-            const Polynomial &source,
-            const FieldElement &source_point,
-            bool run_self_check,
-            std::string_view error_label)
-        {
-            const auto retained_value = shifted.evaluate(shifted_point);
-            if (run_self_check && retained_value != source.evaluate(source_point))
-            {
-                throw std::runtime_error(std::string(error_label));
-            }
-            return retained_value;
-        }
-
-        void run_optional_relation_zero_self_check(
-            const Polynomial &relation,
-            const FieldElement &point,
-            bool run_self_check,
-            std::string_view error_label)
-        {
-            if (run_self_check && !relation.evaluate(point).is_zero())
-            {
-                throw std::runtime_error(std::string(error_label));
-            }
-        }
-
         void progress_note(const std::string &label)
         {
             if (progress_enabled())
@@ -338,21 +304,6 @@ namespace gatzk::protocol
             }
             progress_note(out.str());
         }
-
-        bool should_persist_large_trace_cache_key(const std::string &cache_key)
-        {
-            (void)cache_key;
-            // Forward/route/lookup/PSQ/binding objects are proof-specific even when the
-            // public input is identical. A fresh proof must rebuild them.
-            return false;
-        }
-
-        bool should_persist_state_vector_cache_key(const std::string &cache_key)
-        {
-            (void)cache_key;
-            return false;
-        }
-
         std::vector<FieldElement> padded_column(const std::vector<FieldElement> &values, std::size_t size)
         {
             if (values.size() > size)
@@ -391,21 +342,6 @@ namespace gatzk::protocol
         std::string stable_hash(std::string_view text)
         {
             return std::to_string(fnv1a64(text));
-        }
-
-        std::string hash_field_matrix_buffered(const Matrix &matrix)
-        {
-            std::ostringstream stream;
-            stream << "rows=" << matrix.size();
-            for (const auto &row : matrix)
-            {
-                stream << "|cols=" << row.size();
-                for (const auto &value : row)
-                {
-                    stream << ':' << value.to_string();
-                }
-            }
-            return stable_hash(stream.str());
         }
 
         void append_fnv1a64(
@@ -556,8 +492,6 @@ namespace gatzk::protocol
             const std::shared_ptr<algebra::RootOfUnityDomain> &domain,
             const FieldElement &point)
         {
-            static std::mutex cache_mutex;
-            static std::unordered_map<std::string, std::shared_ptr<std::vector<mcl::Fr>>> cache;
             const auto cache_key =
                 domain->name + ":" + std::to_string(domain->size) + ":" + point.to_string();
             {
@@ -2946,8 +2880,6 @@ namespace gatzk::protocol
                     context.config.batching_rule == "whole_graph_single" && context.local.num_nodes == context.dataset.num_nodes && context.local.num_features == context.dataset.num_features && context.domains.fh != nullptr && context.domains.fh->size >= kMinLazyLargeFhDomainSize && (name == "P_Q_tbl_feat" || name == "P_Q_qry_feat");
                 if (lazy_large_feature_selector)
                 {
-                    static std::mutex cache_mutex;
-                    static std::unordered_map<std::string, std::shared_ptr<std::vector<FieldElement>>> cache;
                     const auto valid_count =
                         name == "P_Q_tbl_feat"
                             ? context.dataset.num_nodes * context.dataset.num_features
@@ -3464,8 +3396,6 @@ namespace gatzk::protocol
             const ProtocolContext &context,
             std::size_t head_index)
         {
-            static std::mutex cache_mutex;
-            static std::unordered_map<std::string, std::shared_ptr<HiddenHeadStaticQuantizedParameters>> cache;
             const auto &head = context.model.hidden_heads.at(head_index);
             const auto cache_key =
                 context.config.checkpoint_bundle + ":" + context.config.dataset + ":" + std::to_string(context.config.seed) + ":hidden:" + std::to_string(head_index) + ":" + std::to_string(head.seq_kernel_fp.size()) + ":" + std::to_string(head.seq_kernel_fp.empty() ? 0 : head.seq_kernel_fp.front().size());
@@ -3492,8 +3422,6 @@ namespace gatzk::protocol
             const ProtocolContext &context,
             std::size_t head_index)
         {
-            static std::mutex cache_mutex;
-            static std::unordered_map<std::string, std::shared_ptr<OutputHeadStaticQuantizedParameters>> cache;
             const auto &head = context.model.output_layer.heads.at(head_index);
             const auto cache_key =
                 context.config.checkpoint_bundle + ":" + context.config.dataset + ":" + std::to_string(context.config.seed) + ":output:" + std::to_string(head_index) + ":" + std::to_string(head.seq_kernel_fp.size()) + ":" + std::to_string(head.seq_kernel_fp.empty() ? 0 : head.seq_kernel_fp.front().size());
@@ -4020,20 +3948,6 @@ namespace gatzk::protocol
                 &destination_groups,
             std::size_t edge_domain_size)
         {
-            static std::mutex cache_mutex;
-            static std::unordered_map<std::string, std::shared_ptr<CachedForwardArtifacts>> cache;
-            const auto cache_key =
-                trace_cache_prefix(context) + ":forward_artifacts:" + std::to_string(context.domains.edge->size) + ":" + std::to_string(context.model.hidden_heads.size()) + ":" + std::to_string(context.model.output_layer.heads.size());
-            const bool persist_cache = should_persist_large_trace_cache_key(cache_key);
-            if (persist_cache)
-            {
-                std::lock_guard<std::mutex> lock(cache_mutex);
-                if (const auto it = cache.find(cache_key); it != cache.end())
-                {
-                    return it->second;
-                }
-            }
-
             auto artifacts = std::make_shared<CachedForwardArtifacts>();
             auto forward = model::forward_note_style(context.local.features_fp, edges, context.model, &artifacts->profile);
             artifacts->reference_logits_fp32 = forward.Y;
@@ -4223,13 +4137,6 @@ namespace gatzk::protocol
                     sum_values.size(),
                     context.config.range_bits,
                     "final output head average");
-            }
-
-            if (persist_cache)
-            {
-                std::lock_guard<std::mutex> lock(cache_mutex);
-                const auto [it, _] = cache.emplace(cache_key, artifacts);
-                return it->second;
             }
             return artifacts;
         }
@@ -4464,8 +4371,6 @@ namespace gatzk::protocol
 
         const TraceStaticArtifacts &cached_trace_static_artifacts(const ProtocolContext &context)
         {
-            static std::mutex cache_mutex;
-            static std::unordered_map<std::string, std::shared_ptr<TraceStaticArtifacts>> cache;
             const auto cache_key =
                 trace_cache_prefix(context) + ":trace_static:" + std::to_string(context.local.num_features) + ":" + std::to_string(context.dataset.num_nodes) + ":" + std::to_string(context.domains.n->size) + ":" + std::to_string(context.domains.edge->size);
             {
@@ -4583,31 +4488,13 @@ namespace gatzk::protocol
         }
 
         template <typename Builder>
-        std::shared_ptr<const BindingTrace> cached_binding_trace(
-            const std::string &cache_key,
+        std::shared_ptr<const BindingTrace>
+        cached_binding_trace(
             Builder &&builder)
         {
-            static std::mutex cache_mutex;
-            static std::unordered_map<std::string, std::shared_ptr<BindingTrace>> cache;
-            if (should_persist_large_trace_cache_key(cache_key))
-            {
-                std::lock_guard<std::mutex> lock(cache_mutex);
-                if (const auto it = cache.find(cache_key); it != cache.end())
-                {
-                    return it->second;
-                }
-            }
-
-            auto binding = std::make_shared<BindingTrace>(builder());
-            if (should_persist_large_trace_cache_key(cache_key))
-            {
-                std::lock_guard<std::mutex> lock(cache_mutex);
-                const auto [it, _] = cache.emplace(cache_key, binding);
-                return it->second;
-            }
-            return binding;
+            return std::make_shared<BindingTrace>(
+                builder());
         }
-
         struct HiddenCompressedTrace
         {
             std::vector<FieldElement> h_star;
@@ -4619,7 +4506,6 @@ namespace gatzk::protocol
         };
 
         std::shared_ptr<const HiddenCompressedTrace> cached_hidden_compressed_trace(
-            const std::string &cache_key,
             const Matrix &h_prime,
             const Matrix &h_agg_pre,
             const Matrix &h_agg,
@@ -4627,8 +4513,6 @@ namespace gatzk::protocol
             std::size_t edge_domain_size,
             const FieldElement &xi)
         {
-            static std::mutex cache_mutex;
-            static std::unordered_map<std::string, std::shared_ptr<HiddenCompressedTrace>> cache;
             if (should_persist_large_trace_cache_key(cache_key))
             {
                 std::lock_guard<std::mutex> lock(cache_mutex);
@@ -4664,15 +4548,12 @@ namespace gatzk::protocol
         };
 
         std::shared_ptr<const OutputCompressedTrace> cached_output_compressed_trace(
-            const std::string &cache_key,
             const Matrix &y_prime,
             const Matrix &y_lin,
             const std::vector<Edge> &edges,
             std::size_t edge_domain_size,
             const FieldElement &xi)
         {
-            static std::mutex cache_mutex;
-            static std::unordered_map<std::string, std::shared_ptr<OutputCompressedTrace>> cache;
             if (should_persist_large_trace_cache_key(cache_key))
             {
                 std::lock_guard<std::mutex> lock(cache_mutex);
@@ -4709,86 +4590,22 @@ namespace gatzk::protocol
         };
 
         template <typename Builder>
-        std::shared_ptr<const RouteTrace> cached_route_trace(
-            const std::string &cache_key,
+        std::shared_ptr<const RouteTrace>
+        cached_route_trace(
             Builder &&builder)
         {
-            static std::mutex cache_mutex;
-            static std::unordered_map<std::string, std::shared_ptr<RouteTrace>> cache;
-            if (should_persist_large_trace_cache_key(cache_key))
-            {
-                std::lock_guard<std::mutex> lock(cache_mutex);
-                if (const auto it = cache.find(cache_key); it != cache.end())
-                {
-                    return it->second;
-                }
-            }
-
-            auto route = std::make_shared<RouteTrace>(builder());
-            if (should_persist_large_trace_cache_key(cache_key))
-            {
-                std::lock_guard<std::mutex> lock(cache_mutex);
-                const auto [it, _] = cache.emplace(cache_key, route);
-                return it->second;
-            }
-            return route;
+            return std::make_shared<RouteTrace>(
+                builder());
         }
 
         template <typename Builder>
-        std::shared_ptr<const std::vector<FieldElement>> cached_state_vector(
-            const std::string &cache_key,
+        std::shared_ptr<const std::vector<FieldElement>>
+        cached_state_vector(
             Builder &&builder)
         {
-            static std::mutex cache_mutex;
-            static std::unordered_map<std::string, std::shared_ptr<std::vector<FieldElement>>> cache;
-            if (should_persist_state_vector_cache_key(cache_key))
-            {
-                std::lock_guard<std::mutex> lock(cache_mutex);
-                if (const auto it = cache.find(cache_key); it != cache.end())
-                {
-                    return it->second;
-                }
-            }
-
-            auto values = std::make_shared<std::vector<FieldElement>>(builder());
-            if (should_persist_state_vector_cache_key(cache_key))
-            {
-                std::lock_guard<std::mutex> lock(cache_mutex);
-                const auto [it, _] = cache.emplace(cache_key, values);
-                return it->second;
-            }
-            return values;
-        }
-
-        RouteTrace build_route_trace(
-            const std::vector<FieldElement> &table_values,
-            const std::vector<FieldElement> &query_values,
-            const std::vector<FieldElement> &multiplicity_values,
-            std::size_t real_node_count,
-            std::size_t real_edge_count,
-            const std::shared_ptr<algebra::RootOfUnityDomain> &node_domain,
-            const std::shared_ptr<algebra::RootOfUnityDomain> &edge_domain,
-            const FieldElement &beta)
-        {
-            RouteTrace out;
-            out.table = padded_column(table_values, node_domain->size);
-            out.query = padded_column(query_values, edge_domain->size);
-            out.multiplicity = padded_column(multiplicity_values, node_domain->size);
-            out.node_inverse = build_selected_inverse_column(
-                out.table, build_selector(real_node_count, node_domain->size), beta);
-            out.edge_inverse = build_selected_inverse_column(
-                out.query, build_selector(real_edge_count, edge_domain->size), beta);
-            out.node_acc = build_route_node_accumulator(
-                out.node_inverse,
-                out.multiplicity,
-                real_node_count,
-                node_domain->size);
-            out.edge_acc = build_route_edge_accumulator(
-                out.edge_inverse,
-                real_edge_count,
-                edge_domain->size);
-            out.total = out.node_acc[real_node_count];
-            return out;
+            return std::make_shared<
+                std::vector<FieldElement>>(
+                builder());
         }
 
         RouteTrace build_route_trace_from_padded(
@@ -4917,11 +4734,6 @@ namespace gatzk::protocol
             const std::vector<FieldElement> &values,
             std::size_t valid_count)
         {
-            static std::mutex cache_mutex;
-            static std::unordered_map<
-                std::string,
-                std::shared_ptr<std::unordered_map<std::uint64_t, std::size_t>>>
-                cache;
             const auto cache_key =
                 label + ":" + std::to_string(valid_count) + ":" + std::to_string(values.size());
             {
@@ -4956,11 +4768,6 @@ namespace gatzk::protocol
             const std::string &label,
             const std::vector<std::pair<FieldElement, FieldElement>> &values)
         {
-            static std::mutex cache_mutex;
-            static std::unordered_map<
-                std::string,
-                std::shared_ptr<std::unordered_map<FieldPairKey, std::size_t, FieldPairKeyHash>>>
-                cache;
             const auto cache_key =
                 label + ":" + std::to_string(values.size()) + ":first=" + (values.empty() ? std::string("empty") : values.front().first.to_string() + "," + values.front().second.to_string()) + ":last=" + (values.empty() ? std::string("empty") : values.back().first.to_string() + "," + values.back().second.to_string());
             {
@@ -5014,8 +4821,6 @@ namespace gatzk::protocol
             const std::vector<FieldElement> &values,
             std::size_t domain_size)
         {
-            static std::mutex cache_mutex;
-            static std::unordered_map<std::string, std::shared_ptr<std::vector<FieldElement>>> cache;
             const auto cache_key =
                 label + ":" + std::to_string(domain_size) + ":" + std::to_string(values.size()) + ":first=" + (values.empty() ? std::string("empty") : values.front().to_string()) + ":last=" + (values.empty() ? std::string("empty") : values.back().to_string());
             {
@@ -5049,8 +4854,6 @@ namespace gatzk::protocol
             const FieldElement &eta,
             std::size_t domain_size)
         {
-            static std::mutex cache_mutex;
-            static std::unordered_map<std::string, std::shared_ptr<std::vector<FieldElement>>> cache;
             const auto cache_key =
                 label + ":" + std::to_string(domain_size) + ":" + std::to_string(values.size()) + ":" + eta.to_string() + ":first=" + (values.empty() ? std::string("empty") : values.front().first.to_string() + "," + values.front().second.to_string()) + ":last=" + (values.empty() ? std::string("empty") : values.back().first.to_string() + "," + values.back().second.to_string());
             {
@@ -5083,8 +4886,6 @@ namespace gatzk::protocol
             const std::string &cache_key,
             Builder &&builder)
         {
-            static std::mutex cache_mutex;
-            static std::unordered_map<std::string, std::shared_ptr<SingleLookupArtifacts>> cache;
             if (should_persist_large_trace_cache_key(cache_key))
             {
                 std::lock_guard<std::mutex> lock(cache_mutex);
@@ -5186,8 +4987,6 @@ namespace gatzk::protocol
             const std::string &cache_key,
             Builder &&builder)
         {
-            static std::mutex cache_mutex;
-            static std::unordered_map<std::string, std::shared_ptr<PairLookupArtifacts>> cache;
             if (should_persist_large_trace_cache_key(cache_key))
             {
                 std::lock_guard<std::mutex> lock(cache_mutex);
@@ -5384,8 +5183,6 @@ namespace gatzk::protocol
             }
             crypto::Transcript transcript("gatzkml");
             const bool keep_trace_payloads = context.config.dump_trace;
-            const bool debug_taylor_shift_self_check =
-                taylor_shift_self_check_enabled();
             const auto &local = context.local;
             const auto &domains = context.domains;
             const auto &edges = local.edges;
@@ -6367,21 +6164,21 @@ namespace gatzk::protocol
                 const auto y_proj_h = trace.challenges.at("y_proj_h" + std::to_string(head_index));
                 const auto y_proj_powers = powers(y_proj_h, head_dim);
                 const auto proj_b = linear_form_by_powers(head_w, y_proj_powers);
-                const auto proj_binding = cached_binding_trace(
-                    head_cache_prefix + ":proj:" + y_proj_h.to_string(),
-                    [&]()
-                    {
-                        const auto target_mu = matrix_row_major_evaluation(h_prime, y_proj_h);
-                        return build_row_major_projection_binding_trace(
-                            input_matrix,
-                            n_nodes,
-                            y_proj_h,
-                            head_dim,
-                            proj_b,
-                            domains.in,
-                            input_dim,
-                            target_mu);
-                    });
+                const auto proj_binding =
+                    cached_binding_trace(
+                        [&]()
+                        {
+                            const auto target_mu = matrix_row_major_evaluation(h_prime, y_proj_h);
+                            return build_row_major_projection_binding_trace(
+                                input_matrix,
+                                n_nodes,
+                                y_proj_h,
+                                head_dim,
+                                proj_b,
+                                domains.in,
+                                input_dim,
+                                target_mu);
+                        });
                 add_metric(metrics != nullptr ? &metrics->hidden_projection_trace_ms : nullptr, stage_start);
 
                 stage_start = Clock::now();
@@ -8904,19 +8701,13 @@ namespace gatzk::protocol
                     });
                 trace.challenges[route.terminal_challenge_label] = y_rel;
                 const auto u_rel =
-                    evaluate_shifted_with_optional_source_self_check(
-                        *shifted.opening_polynomial,
-                        y_rel,
-                        *edge_accumulator.opening_polynomial,
-                        y_rel + route.terminal_delta,
-                        debug_taylor_shift_self_check,
-                        "aggregation route Taylor shift value mismatch: " + route.relation_id);
-                subproof.evaluations.push_back(BindingEvaluation{
-                    .domain = "relation",
-                    .object_id = route.shifted_accumulator_object + ":u_rel",
-                    .values = {u_rel},
-                    .kind = PayloadValueKind::MaskedPrivateValue,
-                });
+                    shifted.opening_polynomial->evaluate(y_rel)
+                        subproof.evaluations.push_back(BindingEvaluation{
+                            .domain = "relation",
+                            .object_id = route.shifted_accumulator_object + ":u_rel",
+                            .values = {u_rel},
+                            .kind = PayloadValueKind::MaskedPrivateValue,
+                        });
 
                 const auto node_degree = domains.n->size + registered_blinder_coefficient_count(context, route.node_accumulator_object) - 1;
                 const auto relation_degree = std::max(
@@ -8937,11 +8728,6 @@ namespace gatzk::protocol
                     Polynomial::from_coefficients(
                         route.relation_virtual_object,
                         std::move(relation_coefficients)));
-                run_optional_relation_zero_self_check(
-                    *relation_polynomial,
-                    route.node_terminal_point,
-                    debug_taylor_shift_self_check,
-                    "aggregation route terminal relation is nonzero: " + route.relation_id);
                 trace.commitments.emplace(
                     route.relation_virtual_object,
                     crypto::Commitment{
@@ -9017,13 +8803,7 @@ namespace gatzk::protocol
                     });
                 trace.challenges[relation.challenge_label] = y_rel;
                 const auto u_rel =
-                    evaluate_shifted_with_optional_source_self_check(
-                        *shifted.opening_polynomial,
-                        y_rel,
-                        *edge_accumulator.opening_polynomial,
-                        y_rel + relation.terminal_delta,
-                        debug_taylor_shift_self_check,
-                        "route terminal Taylor shift value mismatch: " + relation.relation_id);
+                    shifted.opening_polynomial->evaluate(y_rel);
                 subproof.evaluations.push_back(BindingEvaluation{
                     .domain = "relation",
                     .object_id = relation.shifted_accumulator_object + ":u_rel",
@@ -9050,11 +8830,6 @@ namespace gatzk::protocol
                     Polynomial::from_coefficients(
                         relation.relation_virtual_object,
                         std::move(relation_coefficients)));
-                run_optional_relation_zero_self_check(
-                    *relation_polynomial,
-                    relation.node_terminal_point,
-                    debug_taylor_shift_self_check,
-                    "route terminal relation is nonzero: " + relation.relation_id);
                 trace.commitments.emplace(
                     relation.relation_virtual_object,
                     crypto::Commitment{
@@ -9644,11 +9419,6 @@ namespace gatzk::protocol
                         Polynomial::from_coefficients(
                             relation_label,
                             std::move(relation_coefficients)));
-                    run_optional_relation_zero_self_check(
-                        *relation_polynomial,
-                        gamma,
-                        debug_taylor_shift_self_check,
-                        "output bias coefficient basis link is nonzero");
                     trace.commitments.emplace(
                         relation_label,
                         crypto::Commitment{
@@ -9704,11 +9474,6 @@ namespace gatzk::protocol
                     auto relation_polynomial = std::make_shared<Polynomial>(
                         Polynomial::from_coefficients(
                             relation_label, std::move(relation_coefficients)));
-                    run_optional_relation_zero_self_check(
-                        *relation_polynomial,
-                        shift_meta.canonical_points.front(),
-                        debug_taylor_shift_self_check,
-                        "same-point output bias terminal relation is nonzero");
                     trace.commitments.emplace(
                         relation_label,
                         crypto::Commitment{
@@ -9840,13 +9605,7 @@ namespace gatzk::protocol
                     });
                 trace.challenges[shift_meta.challenge_label] = y_rel;
                 const auto u_rel =
-                    evaluate_shifted_with_optional_source_self_check(
-                        *shifted.opening_polynomial,
-                        y_rel,
-                        *second_source.opening_polynomial,
-                        y_rel + shift_meta.deltas.at(1),
-                        debug_taylor_shift_self_check,
-                        "output bias Taylor shift value mismatch");
+                    shifted.opening_polynomial->evaluate(y_rel);
                 binding_subproof.evaluations.push_back(BindingEvaluation{
                     .domain = "relation",
                     .object_id = shifted_label + ":u_rel",
@@ -9869,11 +9628,6 @@ namespace gatzk::protocol
                 auto relation_polynomial = std::make_shared<Polynomial>(
                     Polynomial::from_coefficients(
                         relation_label, std::move(relation_coefficients)));
-                run_optional_relation_zero_self_check(
-                    *relation_polynomial,
-                    shift_meta.canonical_points.at(0),
-                    debug_taylor_shift_self_check,
-                    "output bias indexed-view terminal relation is nonzero");
                 trace.commitments.emplace(
                     relation_label,
                     crypto::Commitment{
@@ -10114,504 +9868,6 @@ namespace gatzk::protocol
         }
 
     } // namespace
-
-    SignedRoundDivInverseStageProfile
-    benchmark_signed_round_div_inverse_stage(
-        std::size_t active_count,
-        std::size_t repeats)
-    {
-        if (active_count == 0 || repeats < 3)
-        {
-            throw std::runtime_error(
-                "SignedRoundDiv inverse benchmark requires a non-zero active "
-                "prefix and at least three repeats");
-        }
-        if (active_count > std::numeric_limits<std::size_t>::max() - 17)
-        {
-            throw std::runtime_error(
-                "SignedRoundDiv inverse benchmark active prefix is too large");
-        }
-
-        SignedRoundDivInverseStageProfile profile;
-        profile.active_count = active_count;
-        profile.column_size = active_count + 17;
-        std::vector<std::int64_t> numerators(profile.column_size, 0);
-        std::vector<FieldElement> magnitudes(
-            profile.column_size, FieldElement::zero());
-        std::vector<FieldElement> denominators(
-            profile.column_size, FieldElement::zero());
-        for (std::size_t i = 0; i < active_count; ++i)
-        {
-            const bool zero = i % 11 == 0;
-            const bool negative = !zero && i % 2 != 0;
-            const auto magnitude = zero
-                                       ? std::uint64_t{0}
-                                       : static_cast<std::uint64_t>(1 + i % 65521);
-            numerators[i] = negative
-                                ? -static_cast<std::int64_t>(magnitude)
-                                : static_cast<std::int64_t>(magnitude);
-            magnitudes[i] = FieldElement(magnitude);
-            // Exercise both shared and heterogeneous positive divisors.
-            denominators[i] = FieldElement(
-                i % 3 == 0
-                    ? std::uint64_t{256}
-                    : static_cast<std::uint64_t>(3 + i % 251));
-            profile.zero_magnitude_count += zero ? 1U : 0U;
-            profile.negative_numerator_count += negative ? 1U : 0U;
-            profile.positive_numerator_count += (!zero && !negative) ? 1U : 0U;
-        }
-
-        std::vector<FieldElement> scalar_a(profile.column_size);
-        std::vector<FieldElement> scalar_d(profile.column_size);
-        std::vector<FieldElement> batch_a(profile.column_size);
-        std::vector<FieldElement> batch_d(profile.column_size);
-
-        const auto run_scalar = [&]()
-        {
-            std::copy(magnitudes.begin(), magnitudes.end(), scalar_a.begin());
-            std::copy(denominators.begin(), denominators.end(), scalar_d.begin());
-            const auto start = Clock::now();
-            for (std::size_t i = 0; i < active_count; ++i)
-            {
-                scalar_a[i] = scalar_a[i].is_zero()
-                                  ? FieldElement::zero()
-                                  : scalar_a[i].inv();
-                scalar_d[i] = scalar_d[i].inv();
-            }
-            return elapsed_ms(start, Clock::now());
-        };
-        const auto run_batch = [&]()
-        {
-            std::copy(magnitudes.begin(), magnitudes.end(), batch_a.begin());
-            std::copy(denominators.begin(), denominators.end(), batch_d.begin());
-            const auto start = Clock::now();
-            {
-                std::vector<mcl::Fr> prefix_scratch;
-                prefix_scratch.reserve(active_count);
-                batch_invert_active_prefix_in_place(
-                    &batch_a, active_count, true, &prefix_scratch);
-                batch_invert_active_prefix_in_place(
-                    &batch_d, active_count, false, &prefix_scratch);
-            }
-            return elapsed_ms(start, Clock::now());
-        };
-
-        // Warm both implementations before collecting alternating-order samples.
-        (void)run_scalar();
-        (void)run_batch();
-        profile.scalar_inverse_ms.reserve(repeats);
-        profile.batch_inverse_ms.reserve(repeats);
-        for (std::size_t repeat = 0; repeat < repeats; ++repeat)
-        {
-            double scalar_ms = 0.0;
-            double batch_ms = 0.0;
-            if (repeat % 2 == 0)
-            {
-                scalar_ms = run_scalar();
-                batch_ms = run_batch();
-            }
-            else
-            {
-                batch_ms = run_batch();
-                scalar_ms = run_scalar();
-            }
-            if (scalar_a != batch_a || scalar_d != batch_d)
-            {
-                throw std::runtime_error(
-                    "SignedRoundDiv inverse benchmark exact-column mismatch");
-            }
-            for (std::size_t i = 0; i < active_count; ++i)
-            {
-                const auto expected_magnitude = numerators[i] < 0
-                                                    ? static_cast<std::uint64_t>(-numerators[i])
-                                                    : static_cast<std::uint64_t>(numerators[i]);
-                if (magnitudes[i] != FieldElement(expected_magnitude) || (magnitudes[i].is_zero() && !batch_a[i].is_zero()) || (!magnitudes[i].is_zero() && magnitudes[i] * batch_a[i] != FieldElement::one()) || denominators[i] * batch_d[i] != FieldElement::one())
-                {
-                    throw std::runtime_error(
-                        "SignedRoundDiv inverse benchmark algebra audit failed");
-                }
-            }
-            for (std::size_t i = active_count; i < profile.column_size; ++i)
-            {
-                if (!batch_a[i].is_zero() || !batch_d[i].is_zero())
-                {
-                    throw std::runtime_error(
-                        "SignedRoundDiv inverse benchmark changed inactive padding");
-                }
-            }
-            profile.scalar_inverse_ms.push_back(scalar_ms);
-            profile.batch_inverse_ms.push_back(batch_ms);
-        }
-        return profile;
-    }
-
-    TaylorShiftSelfCheckStageProfile
-    benchmark_taylor_shift_self_check_stage(
-        std::size_t polynomial_size,
-        std::size_t repeats)
-    {
-        if (polynomial_size < 2 || (polynomial_size & (polynomial_size - 1U)) != 0U || repeats < 5)
-        {
-            throw std::runtime_error(
-                "Taylor-shift self-check benchmark requires a power-of-two "
-                "polynomial size and at least five repeats");
-        }
-
-        const auto domain = algebra::RootOfUnityDomain::create(
-            "taylor_shift_self_check_stage", polynomial_size);
-        const FieldElement constant(41);
-        const FieldElement slope(73);
-        const FieldElement delta(19);
-        const FieldElement y_rel(65537);
-        const FieldElement terminal(31337);
-
-        std::vector<FieldElement> source_values(
-            polynomial_size, FieldElement::zero());
-        for (std::size_t i = 0; i < polynomial_size; ++i)
-        {
-            source_values[i] = constant + slope * domain->point_at(i);
-        }
-        const auto source = Polynomial::from_evaluations(
-            "taylor_self_check_source",
-            std::move(source_values),
-            domain);
-
-        std::vector<FieldElement> shifted_coefficients(
-            polynomial_size, FieldElement::zero());
-        shifted_coefficients[0] = constant + slope * delta;
-        shifted_coefficients[1] = slope;
-        const auto shifted = Polynomial::from_coefficients(
-            "taylor_self_check_shifted",
-            std::move(shifted_coefficients));
-
-        // Construct a full-length terminal relation R(X)=(X-terminal)S(X).
-        // The dense deterministic S keeps the evaluation work representative.
-        std::vector<FieldElement> relation_coefficients(
-            polynomial_size, FieldElement::zero());
-        auto previous = FieldElement(1);
-        relation_coefficients[0] =
-            FieldElement::zero() - terminal * previous;
-        for (std::size_t i = 1; i + 1 < polynomial_size; ++i)
-        {
-            const auto current = FieldElement(
-                static_cast<std::uint64_t>(1 + (i * 17) % 65521));
-            relation_coefficients[i] = previous - terminal * current;
-            previous = current;
-        }
-        relation_coefficients.back() = previous;
-        const auto relation = Polynomial::from_coefficients(
-            "taylor_self_check_relation",
-            std::move(relation_coefficients));
-
-        const auto run = [&](bool full_self_check)
-        {
-            const auto start = Clock::now();
-            const auto retained =
-                evaluate_shifted_with_optional_source_self_check(
-                    shifted,
-                    y_rel,
-                    source,
-                    y_rel + delta,
-                    full_self_check,
-                    "Taylor-shift self-check benchmark source mismatch");
-            run_optional_relation_zero_self_check(
-                relation,
-                terminal,
-                full_self_check,
-                "Taylor-shift self-check benchmark terminal mismatch");
-            return std::pair{
-                elapsed_ms(start, Clock::now()), retained};
-        };
-
-        (void)run(true);
-        (void)run(false);
-        TaylorShiftSelfCheckStageProfile profile;
-        profile.polynomial_size = polynomial_size;
-        profile.full_self_check_ms.reserve(repeats);
-        profile.default_path_ms.reserve(repeats);
-        for (std::size_t repeat = 0; repeat < repeats; ++repeat)
-        {
-            std::pair<double, FieldElement> full;
-            std::pair<double, FieldElement> default_path;
-            if ((repeat & 1U) == 0)
-            {
-                full = run(true);
-                default_path = run(false);
-            }
-            else
-            {
-                default_path = run(false);
-                full = run(true);
-            }
-            const auto expected = constant + slope * (y_rel + delta);
-            if (full.second != default_path.second || default_path.second != expected)
-            {
-                throw std::runtime_error(
-                    "Taylor-shift self-check benchmark changed retained u_rel");
-            }
-            profile.full_self_check_ms.push_back(full.first);
-            profile.default_path_ms.push_back(default_path.first);
-            profile.retained_u_rel = default_path.second;
-        }
-        return profile;
-    }
-
-    RouteConstructionStageProfile benchmark_route_construction_stage(
-        std::size_t node_domain_size,
-        std::size_t node_active_count,
-        std::size_t edge_domain_size,
-        std::size_t edge_active_count,
-        std::size_t repeats)
-    {
-        const auto is_power_of_two = [](std::size_t value)
-        {
-            return value != 0 && (value & (value - 1U)) == 0U;
-        };
-        if (!is_power_of_two(node_domain_size) || !is_power_of_two(edge_domain_size) || node_active_count >= node_domain_size || edge_active_count >= edge_domain_size || repeats < 5)
-        {
-            throw std::runtime_error(
-                "route construction benchmark requires power-of-two domains, "
-                "terminal rows, and at least five repeats");
-        }
-
-        const auto node_domain = algebra::RootOfUnityDomain::create(
-            "route_stage_node", node_domain_size);
-        const auto edge_domain = edge_domain_size == node_domain_size
-                                     ? node_domain
-                                     : algebra::RootOfUnityDomain::create(
-                                           "route_stage_edge", edge_domain_size);
-        std::vector<FieldElement> table(
-            node_active_count, FieldElement::zero());
-        std::vector<FieldElement> query(
-            edge_active_count, FieldElement::zero());
-        std::vector<FieldElement> multiplicity(
-            node_active_count, FieldElement::zero());
-        for (std::size_t i = 0; i < node_active_count; ++i)
-        {
-            table[i] = FieldElement(
-                static_cast<std::uint64_t>(3 + (i * 17) % 65521));
-            multiplicity[i] = FieldElement(
-                static_cast<std::uint64_t>(1 + i % 7));
-        }
-        for (std::size_t i = 0; i < edge_active_count; ++i)
-        {
-            query[i] = FieldElement(
-                static_cast<std::uint64_t>(5 + (i * 29) % 65519));
-        }
-        const FieldElement beta(104729);
-
-        const auto digest_column = [](const std::vector<FieldElement> &column)
-        {
-            std::uint64_t digest =
-                1469598103934665603ULL ^ static_cast<std::uint64_t>(column.size());
-            for (const auto &value : column)
-            {
-                digest ^= value.value() + 0x9e3779b97f4a7c15ULL + (digest << 6U) + (digest >> 2U);
-                digest *= 1099511628211ULL;
-            }
-            return digest;
-        };
-        const auto digest_committed_columns = [&](
-                                                  const std::vector<FieldElement> &padded_table,
-                                                  const std::vector<FieldElement> &padded_query,
-                                                  const std::vector<FieldElement> &padded_multiplicity)
-        {
-            return std::array<std::uint64_t, 3>{
-                digest_column(padded_table),
-                digest_column(padded_query),
-                digest_column(padded_multiplicity)};
-        };
-        struct TimedRoute
-        {
-            double elapsed = 0.0;
-            RouteTrace route;
-            std::array<std::uint64_t, 3> committed_digest{};
-        };
-
-        const auto run_legacy = [&]()
-        {
-            const auto start = Clock::now();
-            std::array<std::uint64_t, 3> committed_digest{};
-            {
-                const auto committed_table =
-                    padded_column(table, node_domain_size);
-                const auto committed_query =
-                    padded_column(query, edge_domain_size);
-                const auto committed_multiplicity =
-                    padded_column(multiplicity, node_domain_size);
-                if (committed_table.size() != node_domain_size || committed_query.size() != edge_domain_size || committed_multiplicity.size() != node_domain_size)
-                {
-                    throw std::runtime_error(
-                        "legacy route commitment padding mismatch");
-                }
-                committed_digest = digest_committed_columns(
-                    committed_table,
-                    committed_query,
-                    committed_multiplicity);
-            }
-            auto route = build_route_trace(
-                table,
-                query,
-                multiplicity,
-                node_active_count,
-                edge_active_count,
-                node_domain,
-                edge_domain,
-                beta);
-            return TimedRoute{
-                elapsed_ms(start, Clock::now()),
-                std::move(route),
-                committed_digest};
-        };
-        const auto run_from_padded = [&]()
-        {
-            const auto start = Clock::now();
-            auto padded_table = padded_column(table, node_domain_size);
-            auto padded_query = padded_column(query, edge_domain_size);
-            auto padded_multiplicity =
-                padded_column(multiplicity, node_domain_size);
-            const auto committed_digest = digest_committed_columns(
-                padded_table,
-                padded_query,
-                padded_multiplicity);
-            auto route = build_route_trace_from_padded(
-                std::move(padded_table),
-                std::move(padded_query),
-                std::move(padded_multiplicity),
-                node_active_count,
-                edge_active_count,
-                node_domain,
-                edge_domain,
-                beta);
-            return TimedRoute{
-                elapsed_ms(start, Clock::now()),
-                std::move(route),
-                committed_digest};
-        };
-        const auto routes_equal = [](const RouteTrace &left,
-                                     const RouteTrace &right)
-        {
-            return left.table == right.table && left.query == right.query && left.multiplicity == right.multiplicity && left.node_inverse == right.node_inverse && left.edge_inverse == right.edge_inverse && left.node_acc == right.node_acc && left.edge_acc == right.edge_acc && left.total == right.total;
-        };
-
-        (void)run_legacy();
-        (void)run_from_padded();
-        RouteConstructionStageProfile profile;
-        profile.node_domain_size = node_domain_size;
-        profile.node_active_count = node_active_count;
-        profile.edge_domain_size = edge_domain_size;
-        profile.edge_active_count = edge_active_count;
-        profile.legacy_route_ms.reserve(repeats);
-        profile.from_padded_route_ms.reserve(repeats);
-        for (std::size_t repeat = 0; repeat < repeats; ++repeat)
-        {
-            TimedRoute legacy;
-            TimedRoute from_padded;
-            if ((repeat & 1U) == 0)
-            {
-                legacy = run_legacy();
-                from_padded = run_from_padded();
-            }
-            else
-            {
-                from_padded = run_from_padded();
-                legacy = run_legacy();
-            }
-            if (legacy.committed_digest != from_padded.committed_digest)
-            {
-                throw std::runtime_error(
-                    "from-padded route committed-column digest differs from legacy");
-            }
-            if (!routes_equal(legacy.route, from_padded.route))
-            {
-                throw std::runtime_error(
-                    "from-padded route trace differs from legacy fields");
-            }
-            profile.legacy_route_ms.push_back(legacy.elapsed);
-            profile.from_padded_route_ms.push_back(from_padded.elapsed);
-        }
-        return profile;
-    }
-
-    OutputHashStageProfile benchmark_output_hash_stage(
-        std::size_t row_count,
-        std::size_t column_count,
-        std::size_t repeats)
-    {
-        if (row_count == 0 || column_count == 0 || repeats < 3 || row_count > std::numeric_limits<std::size_t>::max() / column_count)
-        {
-            throw std::runtime_error(
-                "output hash benchmark requires a non-empty safe shape and at least three repeats");
-        }
-        Matrix secure(
-            row_count,
-            std::vector<FieldElement>(column_count, FieldElement::zero()));
-        for (std::size_t row = 0; row < row_count; ++row)
-        {
-            for (std::size_t column = 0; column < column_count; ++column)
-            {
-                const auto index = row * column_count + column;
-                const auto magnitude = static_cast<std::int64_t>(
-                    17 + (index * 1315423911ULL) % 104729ULL);
-                secure[row][column] = FieldElement::from_signed(
-                    (index & 1U) == 0 ? magnitude : -magnitude);
-            }
-        }
-        const auto reference = secure;
-        OutputHashStageProfile profile;
-        profile.element_count = row_count * column_count;
-        profile.buffered_three_pass_ms.reserve(repeats);
-        profile.streamed_reuse_ms.reserve(repeats);
-
-        const auto run_buffered = [&]()
-        {
-            const auto start = Clock::now();
-            const std::array<std::string, 3> hashes = {
-                hash_field_matrix_buffered(secure),
-                hash_field_matrix_buffered(reference),
-                hash_field_matrix_buffered(secure),
-            };
-            return std::pair{elapsed_ms(start, Clock::now()), hashes};
-        };
-        const auto run_streamed = [&]()
-        {
-            const auto start = Clock::now();
-            const auto public_hash = hash_field_matrix(secure);
-            const auto reference_hash = secure == reference
-                                            ? public_hash
-                                            : hash_field_matrix(reference);
-            const std::array<std::string, 3> hashes = {
-                public_hash,
-                reference_hash,
-                public_hash,
-            };
-            return std::pair{elapsed_ms(start, Clock::now()), hashes};
-        };
-
-        for (std::size_t repeat = 0; repeat < repeats; ++repeat)
-        {
-            std::pair<double, std::array<std::string, 3>> buffered;
-            std::pair<double, std::array<std::string, 3>> streamed;
-            if ((repeat & 1U) == 0)
-            {
-                buffered = run_buffered();
-                streamed = run_streamed();
-            }
-            else
-            {
-                streamed = run_streamed();
-                buffered = run_buffered();
-            }
-            if (buffered.second != streamed.second)
-            {
-                throw std::runtime_error(
-                    "streamed output hash differs from buffered formal bytes");
-            }
-            profile.buffered_three_pass_ms.push_back(buffered.first);
-            profile.streamed_reuse_ms.push_back(streamed.first);
-        }
-        return profile;
-    }
 
     std::vector<std::int64_t> weighted_edge_aggregate_raw_by_destination(
         const std::vector<std::int64_t> &edge_weights,

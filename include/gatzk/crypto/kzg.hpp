@@ -152,12 +152,6 @@ namespace gatzk::crypto
         std::size_t point_msm_worker_cap = 0;
     };
 
-    enum class BatchOpeningClaimValidation
-    {
-        VerifyAgainstOpeningPolynomials,
-        AlreadyComputedFromOpeningPolynomials,
-    };
-
     struct PointGroupOpeningExecutionOptions
     {
         // These caps only govern execution resources. They never alter the
@@ -217,11 +211,6 @@ namespace gatzk::crypto
 
     // 序列化大小直接参与proof_size_bytes统计
     std::size_t serialized_size(const Commitment &commitment);
-    std::vector<algebra::FieldElement>
-    opening_inverse_denominators_for_stage_benchmark(
-        const std::shared_ptr<algebra::RootOfUnityDomain> &domain,
-        const algebra::FieldElement &point,
-        std::size_t worker_cap = 0);
 
     class KZG
     {
@@ -311,8 +300,6 @@ namespace gatzk::crypto
             const algebra::FieldElement &folding_challenge,
             const KZGKeyPair &key,
             BatchOpeningProfile *profile = nullptr,
-            BatchOpeningClaimValidation claim_validation =
-                BatchOpeningClaimValidation::VerifyAgainstOpeningPolynomials,
             const PointGroupOpeningExecutionOptions *execution_options =
                 nullptr,
             const OpeningPolynomialResolver *opening_resolver = nullptr,
@@ -333,9 +320,6 @@ namespace gatzk::crypto
                 &folding_challenges,
             const KZGKeyPair &key,
             std::array<BatchOpeningProfile, 2> *profiles = nullptr,
-            BatchOpeningClaimValidation claim_validation =
-                BatchOpeningClaimValidation::
-                    VerifyAgainstOpeningPolynomials,
             const std::array<
                 PointGroupOpeningExecutionOptions,
                 2> *execution_options = nullptr,

@@ -193,11 +193,6 @@ std::vector<algebra::FieldElement> materialize_coefficient_tail(
 std::size_t registered_blinder_coefficient_count(
     const ProtocolContext& context,
     const std::string& object_id);
-// Exact finite-field image-inclusion gate used by compiler certificate tests.
-// Rows are serialized observations and columns are secret/blinder variables.
-bool observation_image_is_covered(
-    const std::vector<std::vector<algebra::FieldElement>>& blind,
-    const std::vector<std::vector<algebra::FieldElement>>& secret);
 // Single source of truth for payload visibility. In particular, per-head output
 // objects (for example `P_Y_o0`) remain private even when final `P_Y` is public.
 PolynomialVisibility polynomial_visibility(const ProtocolContext& context, const std::string& label);

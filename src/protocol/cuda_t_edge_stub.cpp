@@ -8,8 +8,7 @@ namespace gatzk::protocol
         std::size_t,
         const algebra::FieldElement &,
         const algebra::FieldElement &,
-        std::size_t,
-        CudaTEdgeExecutionProfile *)
+        std::size_t)
     {
         return nullptr;
     }

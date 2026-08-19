@@ -38,7 +38,7 @@ This main experiment does not hide graph structure or node features. It does not
 
 ## Trust Assumptions
 
-KZG security depends on the setup toxic secret not being available to prover or verifier after setup. Prover, verifier, and benchmark code load SRS files and manifest data. SRS hash, domain size, degree bound, curve id, field modulus id, and `srs_type` mismatch must hard fail. Fiat-Shamir transcript order is fixed and public metadata is absorbed before dynamic commitments produce challenges.
+KZG security depends on the setup toxic secret not being available to prover or verifier after setup. Prover, verifier, and formal run code load SRS files and manifest data. SRS hash, domain size, degree bound, curve id, field modulus id, and `srs_type` mismatch must hard fail. Fiat-Shamir transcript order is fixed and public metadata is absorbed before dynamic commitments produce challenges.
 
 ## Leakage Policy
 
@@ -46,7 +46,7 @@ KZG security depends on the setup toxic secret not being available to prover or 
 
 ## Tamper Model
 
-Verifier negative tests cover final-logit/public-output tamper, metadata tamper, `srs_id` tamper, `srs_type` tamper, privacy policy tamper, input privacy tamper, output mode tamper, opening mode tamper, binding mode tamper, proof task tamper, added unknown field, commitment order tamper, dynamic commitment point tamper, quotient commitment tamper, domain opening value tamper, external masked value tamper, and transcript challenge tamper. The same gate category covers edge order, route query, lookup query, PSQ state, output average relation, hidden profile mismatch, and `K_out` mismatch through metadata, schema, quotient, and external-evaluation checks.
+Verifier rejection checks cover final-logit/public-output tamper, metadata tamper, `srs_id` tamper, `srs_type` tamper, privacy policy tamper, input privacy tamper, output mode tamper, opening mode tamper, binding mode tamper, proof task tamper, added unknown field, commitment order tamper, dynamic commitment point tamper, quotient commitment tamper, domain opening value tamper, external masked value tamper, and transcript challenge tamper. The same gate category covers edge order, route query, lookup query, PSQ state, output average relation, hidden profile mismatch, and `K_out` mismatch through metadata, schema, quotient, and external-evaluation checks.
 
 ## Consistency Requirements
 

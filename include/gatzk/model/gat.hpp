@@ -78,7 +78,7 @@ namespace gatzk::model
         std::size_t head_dim = 0;
     };
 
-    // 单个隐藏层的参数集合，由 checkpoint manifest 或 synthetic tests 构造。
+    // 单个隐藏层的参数集合，由 checkpoint manifest 构造。
     struct HiddenLayerParameters
     {
         std::size_t layer_index = 0;
@@ -96,14 +96,10 @@ namespace gatzk::model
         std::vector<AttentionHeadParameters> heads;
     };
 
-    // formal 主线消费的统一模型对象，同时兼容正式 checkpoint 与测试用 synthetic 模式。
+    // 下面这些查询函数为 domain 规划、metadata 导出与 tests 提供统一形状信息。
     struct ModelParameters
     {
-        Matrix W;
         std::vector<algebra::FieldElement> a_src;
-        std::vector<algebra::FieldElement> a_dst;
-        Matrix W_out;
-        std::vector<algebra::FieldElement> b;
         bool has_real_multihead = false;
         std::size_t L = 0;
         std::vector<std::size_t> d_in_profile;
@@ -113,7 +109,6 @@ namespace gatzk::model
         std::vector<HiddenLayerParameters> hidden_layers;
         OutputLayerParameters output_layer;
         std::vector<AttentionHeadParameters> hidden_heads;
-        AttentionHeadParameters output_head;
     };
 
     // checkpoint manifest 中记录的层级元数据。
@@ -209,20 +204,6 @@ namespace gatzk::model
         const ModelParameters &parameters,
         ForwardProfile *profile = nullptr);
 
-    // 下面这些辅助函数将矩阵、向量与边聚合结果转换成 trace / lookup 可消费的对象。
-    Matrix project_features(const Matrix &left, const Matrix &right);
-    std::vector<algebra::FieldElement> matvec_projection(const Matrix &matrix, const std::vector<algebra::FieldElement> &vector);
-    std::vector<algebra::FieldElement> compress_rows(const Matrix &matrix, const algebra::FieldElement &challenge);
-    Matrix aggregate_by_edges(
-        const Matrix &h_prime,
-        const std::vector<algebra::FieldElement> &alpha,
-        const std::vector<data::Edge> &edges,
-        std::size_t num_nodes);
-    Matrix output_projection(
-        const Matrix &h_agg,
-        const Matrix &w_out,
-        const std::vector<algebra::FieldElement> &bias,
-        Matrix *linear_part);
     // 验证多层多头形状链是否自洽，是 context 构建阶段的重要前置约束。
     bool hidden_family_dimension_chain_is_valid(const ModelParameters &parameters, std::string *reason = nullptr);
     // 下面这些查询函数为 domain 规划、metadata 导出与 tests 提供统一形状信息。

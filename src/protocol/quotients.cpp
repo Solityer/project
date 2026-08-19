@@ -1654,22 +1654,6 @@ namespace gatzk::protocol
         return finish_t_fh_quotient(numerator, boundary);
     }
 
-    FieldElement evaluate_t_fh_from_values_power_accumulator_for_stage_benchmark(
-        const FHQuotientParameters &parameters,
-        const FHQuotientValues &values,
-        const QuotientBoundaryValues &boundary,
-        const FHFeatureEncodingValues *feature_encoding_values)
-    {
-        const auto terms = t_fh_terms(
-            parameters, values, boundary, feature_encoding_values);
-        QuotientAccumulator acc(parameters.alpha_quot);
-        for (const auto &term : terms)
-        {
-            acc.add(term);
-        }
-        return finish_t_fh_quotient(acc.value(), boundary);
-    }
-
     FieldElement evaluate_t_fh(
         const ProtocolContext &context,
         const std::map<std::string, FieldElement> &challenges,

@@ -93,15 +93,6 @@ namespace gatzk::protocol
         const QuotientBoundaryValues &boundary_values,
         const FHFeatureEncodingValues *feature_encoding_values = nullptr);
 
-    // Execution-only reference route used by the stage benchmark.  It preserves
-    // the former sequential alpha-power accumulator so the production Horner
-    // evaluation can be compared in the same binary over identical inputs.
-    algebra::FieldElement evaluate_t_fh_from_values_power_accumulator_for_stage_benchmark(
-        const FHQuotientParameters &parameters,
-        const FHQuotientValues &values,
-        const QuotientBoundaryValues &boundary_values,
-        const FHFeatureEncodingValues *feature_encoding_values = nullptr);
-
     std::shared_ptr<const TEdgeEvaluationPlan> build_t_edge_evaluation_plan(
         const ProtocolContext &context,
         const std::map<std::string, algebra::FieldElement> &challenges);

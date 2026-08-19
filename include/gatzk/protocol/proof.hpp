@@ -1,6 +1,6 @@
 #pragma once
 // 定义协议层共享的数据契约，
-// 包括 context、trace、proof 与 benchmark 指标，是 artifact contract 的核心来源。
+// 包括 context、trace、proof 与正式运行指标，是 artifact contract 的核心来源。
 
 #include <map>
 #include <memory>

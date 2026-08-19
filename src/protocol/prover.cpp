@@ -1126,7 +1126,7 @@ namespace gatzk::protocol
                    << config.opening_mode << '|'
                    << config.binding_mode << '|'
                    << config.proof_task << '|'
-                   << (config.allow_synthetic_model ? "synthetic" : "formal");
+                   << "formal";
             for (const auto input_dim : config.d_in_profile)
             {
                 stream << "|din=" << input_dim;
@@ -1545,8 +1545,7 @@ namespace gatzk::protocol
             const TraceArtifacts::SpilledEvaluationPolynomial &spilled,
             const std::shared_ptr<algebra::RootOfUnityDomain> &domain,
             const std::vector<FieldElement> &points,
-            const std::vector<const algebra::DomainEvaluationWeights *> &weights,
-            SpilledEvaluationProfile *profile)
+            const std::vector<const algebra::DomainEvaluationWeights *> &weights)
         {
             if (domain == nullptr)
             {
@@ -1626,11 +1625,6 @@ namespace gatzk::protocol
                     spilled.path);
             }
 
-            if (profile != nullptr)
-            {
-                ++profile->file_open_count;
-            }
-
             if (interpolation_indices.empty())
             {
                 for (const auto point_index :
@@ -1670,19 +1664,9 @@ namespace gatzk::protocol
                             from_little_endian_mod(
                                 bytes.data(),
                                 bytes.size());
-
-                    if (profile != nullptr)
-                    {
-                        ++profile->direct_values_resolved;
-                    }
                 }
 
                 return values;
-            }
-
-            if (profile != nullptr)
-            {
-                ++profile->sequential_pass_count;
             }
 
             const bool use_cuda_stream =
@@ -1775,11 +1759,6 @@ namespace gatzk::protocol
                             {
                                 values[point_index] =
                                     value;
-
-                                if (profile != nullptr)
-                                {
-                                    ++profile->direct_values_resolved;
-                                }
                             }
                         }
                     }
@@ -1826,12 +1805,6 @@ namespace gatzk::protocol
                                     .zero_domain_blinder,
                                 points[point_index]);
                     }
-                }
-
-                if (profile != nullptr)
-                {
-                    profile->field_elements_streamed +=
-                        spilled.size;
                 }
 
                 return values;
@@ -1894,19 +1867,8 @@ namespace gatzk::protocol
                     {
                         values[point_index] =
                             value;
-
-                        if (profile != nullptr)
-                        {
-                            ++profile->direct_values_resolved;
-                        }
                     }
                 }
-            }
-
-            if (profile != nullptr)
-            {
-                profile->field_elements_streamed +=
-                    spilled.size;
             }
 
             for (const auto point_index :
@@ -3179,7 +3141,7 @@ namespace gatzk::protocol
                 }
                 const auto spilled_values =
                     evaluate_spilled_evaluation_requests(
-                        spilled_requests, 4, nullptr);
+                        spilled_requests, 4);
                 for (std::size_t job_index = 0;
                      job_index < spilled_requests.size();
                      ++job_index)
@@ -5273,13 +5235,12 @@ namespace gatzk::protocol
         class QuotientPolynomialMaterializer
         {
         public:
-            QuotientPolynomialMaterializer(
+            QuotientPolynomialMaterializer
+            (
                 const ProtocolContext &context,
                 const TraceArtifacts &trace,
                 const std::map<std::string, FieldElement> &challenges,
-                std::string label,
-                bool force_cuda_t_edge_stage = false,
-                CudaTEdgeExecutionProfile *cuda_t_edge_profile_out = nullptr)
+                std::string label)
                 : context_(context),
                   trace_(trace),
                   challenges_(challenges),
@@ -5287,9 +5248,7 @@ namespace gatzk::protocol
                   domain_(quotient_domain(context_, label_)),
                   target_size_(domain_->size * quotient_coset_multiplier(label_)),
                   rotation_step_(target_size_ / domain_->size),
-                  shift_(quotient_coset_shift(*domain_)),
-                  force_cuda_t_edge_stage_(force_cuda_t_edge_stage),
-                  cuda_t_edge_profile_out_(cuda_t_edge_profile_out)
+                  shift_(quotient_coset_shift(*domain_)))
             {
                 if (domain_ == nullptr)
                 {
@@ -5445,11 +5404,10 @@ namespace gatzk::protocol
                 const
             {
                 const bool route_requested =
-                    force_cuda_t_edge_stage_ ||
-                    (target_size_ >=
-                         (std::size_t{1} << 25) &&
-                     util::route2_options()
-                         .cuda_field_hotspots);
+                    target_size_ >=
+                        (std::size_t{1} << 25) &&
+                    util::route2_options()
+                        .cuda_field_hotspots;
 
                 if (label_ != "t_edge" ||
                     !route_requested ||
@@ -5532,17 +5490,13 @@ namespace gatzk::protocol
                     cuda_t_edge_leaf_cache_slot_count(
                         program);
 
-                CudaTEdgeExecutionProfile
-                    profile;
-
                 auto executor =
                     create_cuda_t_edge_executor(
                         domain_->size,
                         target_size_,
                         shift_,
                         domain_->omega,
-                        leaf_cache_slots,
-                        &profile);
+                        leaf_cache_slots);
 
                 if (executor == nullptr)
                 {
@@ -6532,164 +6486,6 @@ namespace gatzk::protocol
                                                                               prewarm_start, Clock::now())));
                     }
                 }
-                if (label_ == "t_FH" && std::getenv("GATZK_DEBUG_QUOTIENT_SELF_CHECK") != nullptr)
-                {
-                    if (root.pow(static_cast<std::uint64_t>(rotation_step_)) != domain_->omega)
-                    {
-                        throw std::runtime_error(
-                            "FH quotient coset rotation is incompatible with domain omega");
-                    }
-                    std::vector<std::size_t> sample_indices = {
-                        0,
-                        rotation_step_,
-                        target_size_ / 7,
-                        target_size_ / 3,
-                        target_size_ / 2,
-                        target_size_ - 1,
-                    };
-                    std::sort(
-                        sample_indices.begin(),
-                        sample_indices.end());
-                    sample_indices.erase(
-                        std::unique(
-                            sample_indices.begin(),
-                            sample_indices.end()),
-                        sample_indices.end());
-                    for (const auto &name :
-                         quotient_materialization_dependency_labels(
-                             context_, label_))
-                    {
-                        const auto *polynomial = lookup_polynomial(name);
-                        if (polynomial == nullptr && name == "P_H" && lazy_full_feature_lookup_trace_enabled(context_))
-                            polynomial = lookup_polynomial("P_T_H");
-                        if (polynomial == nullptr)
-                            continue;
-                        if (const auto coefficient_it =
-                                context_.public_fh_coefficient_materials.find(
-                                    name);
-                            coefficient_it != context_
-                                                  .public_fh_coefficient_materials.end() &&
-                            coefficient_it->second != nullptr)
-                        {
-                            polynomial = coefficient_it->second.get();
-                        }
-                        const auto materialized_values = coset_values_ptr(name);
-                        for (const auto index : sample_indices)
-                        {
-                            const auto point = shift_ * root.pow(
-                                                            static_cast<std::uint64_t>(index));
-                            const auto direct = polynomial->evaluate(point);
-                            if (materialized_values->at(index) != direct)
-                            {
-                                throw std::runtime_error(
-                                    "FH quotient coset dependency mismatch: " + name + " index=" + std::to_string(index) + " materialized=" + materialized_values->at(index).to_string() + " direct=" + direct.to_string());
-                            }
-                        }
-                    }
-                    for (const auto index : sample_indices)
-                    {
-                        const auto point = shift_ * root.pow(
-                                                        static_cast<std::uint64_t>(index));
-                        const auto omega_point = point * domain_->omega;
-                        const auto rotated_index =
-                            (index + rotation_step_) & (target_size_ - 1U);
-                        const auto boundary = fh_boundary_values(point);
-                        const auto generic = evaluate_t_fh(
-                            context_,
-                            challenges_,
-                            [&](const std::string &name,
-                                const FieldElement &requested_point)
-                            {
-                                if (requested_point == point)
-                                {
-                                    return coset_value_at(name, index);
-                                }
-                                if (requested_point == omega_point)
-                                {
-                                    return coset_value_at(
-                                        name, rotated_index);
-                                }
-                                throw std::runtime_error(
-                                    "FH quotient self-check received an unsupported point for " + name);
-                            },
-                            point,
-                            nullptr,
-                            &boundary,
-                            fh_feature_encoding_terms_are_identically_zero_);
-                        const auto fixed = evaluate_at_index(
-                            index, point, &boundary);
-                        if (fixed != generic)
-                        {
-                            throw std::runtime_error(
-                                "FH fixed-slot quotient mismatch: index=" + std::to_string(index) + " fixed=" + fixed.to_string() + " generic=" + generic.to_string());
-                        }
-                    }
-                    progress_note(
-                        "prove:quotient:t_FH:self_check:samples=" + std::to_string(sample_indices.size()) + ":ok");
-                }
-                if (label_ == "t_edge" &&
-                    !cuda_t_edge_route &&
-                    std::getenv(
-                        "GATZK_DEBUG_QUOTIENT_SELF_CHECK") != nullptr)
-                {
-                    EvaluationMemoization direct_memo(
-                        context_, trace_, challenges_);
-                    auto dependencies = quotient_dependency_labels(
-                        context_, label_);
-                    for (const auto &access : edge_access_sequence_)
-                    {
-                        if (std::find(
-                                dependencies.begin(),
-                                dependencies.end(),
-                                access.name) == dependencies.end())
-                        {
-                            dependencies.push_back(access.name);
-                        }
-                    }
-                    direct_memo.precompute_named(
-                        dependencies,
-                        {shift_, shift_ * domain_->omega});
-                    for (const auto &name : dependencies)
-                    {
-                        const auto materialized_values = coset_values_ptr(name);
-                        for (const auto &[point, index] : std::array<
-                                 std::pair<FieldElement, std::size_t>, 2>{
-                                 std::pair{shift_, std::size_t{0}},
-                                 std::pair{
-                                     shift_ * domain_->omega,
-                                     rotation_step_}})
-                        {
-                            const auto direct_dependency =
-                                direct_memo.eval_named(name, point);
-                            const auto materialized_dependency =
-                                materialized_values->at(index);
-                            if (materialized_dependency != direct_dependency)
-                            {
-                                throw std::runtime_error(
-                                    "edge quotient coset dependency mismatch: " + name + " index=" + std::to_string(index) + " materialized=" + materialized_dependency.to_string() + " direct=" + direct_dependency.to_string());
-                            }
-                        }
-                    }
-                    const auto direct = evaluate_t_edge(
-                        context_,
-                        challenges_,
-                        trace_.external_evaluations,
-                        [&](const std::string &name, const FieldElement &point)
-                        {
-                            return direct_memo.eval_named(name, point);
-                        },
-                        shift_);
-                    const auto materialized = evaluate_at_index(0, shift_);
-                    if (materialized != direct)
-                    {
-                        throw std::runtime_error(
-                            "edge quotient coset evaluator mismatch at index 0: "
-                            "materialized=" +
-                            materialized.to_string() + " direct=" + direct.to_string());
-                    }
-                    progress_note(
-                        "prove:quotient:t_edge:self_check:dependencies=" + std::to_string(dependencies.size()) + ":points=2:quotient_points=1:ok");
-                }
                 if (label_ == "t_edge" &&
                     !cuda_t_edge_route)
                 {
@@ -7240,13 +7036,6 @@ namespace gatzk::protocol
                                 quotient_values),
                             shift_);
                 }
-                if (std::getenv("GATZK_DEBUG_QUOTIENT_SELF_CHECK") != nullptr)
-                {
-                    std::cerr << "[quotient-debug] " << label_
-                              << " coefficient_count="
-                              << coefficients.size() << " target_size="
-                              << target_size_ << '\n';
-                }
                 if (label_ == "t_edge")
                 {
                     progress_note(
@@ -7271,9 +7060,6 @@ namespace gatzk::protocol
                 }
                 return algebra::Polynomial::from_coefficients(label_, std::move(coefficients));
             }
-
-            TEdgeAccessPlanStageProfile benchmark_t_edge_access_plan_stage(
-                std::size_t repeats);
 
         private:
             struct FHQuotientCosetSlots
@@ -9731,212 +9517,7 @@ namespace gatzk::protocol
                 split_lane_interleave_bytes_avoided_{0};
 
             bool cuda_t_edge_transient_leaf_mode_ = false;
-
-            bool force_cuda_t_edge_stage_ = false;
-
-            CudaTEdgeExecutionProfile
-                *cuda_t_edge_profile_out_ = nullptr;
         };
-
-        TEdgeAccessPlanStageProfile
-        QuotientPolynomialMaterializer::benchmark_t_edge_access_plan_stage(
-            std::size_t repeats)
-        {
-            if (label_ != "t_edge" || repeats == 0)
-            {
-                throw std::runtime_error(
-                    "t_edge access-plan stage benchmark requires t_edge and positive repeats");
-            }
-
-            const auto dependency_labels =
-                quotient_dependency_labels(context_, label_);
-            std::vector<std::string> prewarm_labels;
-            prewarm_labels.reserve(dependency_labels.size());
-            for (const auto &dependency_label : dependency_labels)
-            {
-                if (append_t_edge_materializer_dependency(
-                        &prewarm_labels, dependency_label))
-                {
-                    continue;
-                }
-                prewarm_labels.push_back(dependency_label);
-            }
-            // Both arms consume the same already-materialized coset data. The
-            // timed region is only evaluate_t_edge plus its dependency
-            // dispatch callback.
-            prewarm_coset_values(prewarm_labels);
-
-            const auto root = FieldElement::root_of_unity(target_size_);
-            const auto evaluate_at_index = [&](
-                                               std::size_t i,
-                                               const FieldElement &z) -> FieldElement
-            {
-                const auto omega_z = z * domain_->omega;
-                const auto rotated_index =
-                    (i + rotation_step_) & (target_size_ - 1U);
-                std::size_t edge_access_cursor = 0;
-                const auto eval = [&](
-                                      const std::string &name,
-                                      const FieldElement &point) -> FieldElement
-                {
-                    const auto rotated = point == omega_z;
-                    if (!rotated && point != z)
-                    {
-                        throw std::runtime_error(
-                            "t_edge stage benchmark received an unsupported evaluation point for " + name);
-                    }
-                    const auto access_index =
-                        rotated ? rotated_index : i;
-                    if (record_edge_access_sequence_)
-                    {
-                        const auto *values = bind_t_edge_fast_coset(name);
-                        edge_access_sequence_.push_back(
-                            TEdgeCosetAccess{
-                                .name = name,
-                                .values = values,
-                                .rotated = rotated,
-                            });
-                        return (*values)[access_index];
-                    }
-                    if (!edge_access_sequence_.empty())
-                    {
-                        if (edge_access_cursor >= edge_access_sequence_.size())
-                        {
-                            throw std::runtime_error(
-                                "t_edge stage benchmark access-plan overflow");
-                        }
-                        const auto &access =
-                            edge_access_sequence_[edge_access_cursor++];
-                        if (access.values == nullptr || access.values->size() != target_size_)
-                        {
-                            throw std::runtime_error(
-                                "t_edge stage benchmark encountered an invalid bound dependency: " + access.name);
-                        }
-                        return (*access.values)[access_index];
-                    }
-                    // This is the exact pre-optimization production dispatch:
-                    // fast prewarmed bases, then t_edge_derived_value_at's
-                    // layer/head/challenge parsing, then the generic resolver.
-                    return coset_value_at(name, access_index);
-                };
-                const auto value = evaluate_t_edge(
-                    context_,
-                    challenges_,
-                    trace_.external_evaluations,
-                    eval,
-                    z,
-                    false,
-                    nullptr,
-                    nullptr,
-                    quotient_alpha_powers_.empty()
-                        ? nullptr
-                        : &quotient_alpha_powers_,
-                    edge_evaluation_plan_.get());
-                if (!record_edge_access_sequence_ && !edge_access_sequence_.empty() && edge_access_cursor != edge_access_sequence_.size())
-                {
-                    throw std::runtime_error(
-                        "t_edge stage benchmark access-plan underflow");
-                }
-                return value;
-            };
-
-            seed_fast_coset_lookup(dependency_labels);
-            require_t_edge_fast_coset_lookup(dependency_labels);
-            edge_access_sequence_.clear();
-            edge_access_plan_late_bind_count_ = 0;
-            record_edge_access_sequence_ = true;
-            try
-            {
-                (void)evaluate_at_index(0, shift_);
-            }
-            catch (...)
-            {
-                record_edge_access_sequence_ = false;
-                edge_access_sequence_.clear();
-                throw;
-            }
-            record_edge_access_sequence_ = false;
-            if (edge_access_sequence_.empty() || std::any_of(
-                                                     edge_access_sequence_.begin(),
-                                                     edge_access_sequence_.end(),
-                                                     [&](const TEdgeCosetAccess &access)
-                                                     {
-                                                         return access.values == nullptr || access.values->size() != target_size_;
-                                                     }))
-            {
-                throw std::runtime_error(
-                    "t_edge stage benchmark failed to build a complete access plan");
-            }
-
-            TEdgeAccessPlanStageProfile profile;
-            profile.quotient_points = target_size_;
-            profile.access_plan_entries = edge_access_sequence_.size();
-            profile.late_bound_dependencies =
-                edge_access_plan_late_bind_count_;
-            profile.legacy_resolver_ms.reserve(repeats);
-            profile.bound_access_plan_ms.reserve(repeats);
-
-            const auto run_arm = [&](bool bound)
-            {
-                if (bound)
-                {
-                    seed_fast_coset_lookup(dependency_labels);
-                }
-                else
-                {
-                    seed_fast_coset_lookup(prewarm_labels);
-                }
-                std::vector<FieldElement> values(
-                    target_size_, FieldElement::zero());
-                auto z = shift_;
-                const auto start = Clock::now();
-                if (!bound)
-                {
-                    auto saved_plan = std::move(edge_access_sequence_);
-                    for (std::size_t i = 0; i < target_size_; ++i)
-                    {
-                        values[i] = evaluate_at_index(i, z);
-                        z *= root;
-                    }
-                    edge_access_sequence_ = std::move(saved_plan);
-                }
-                else
-                {
-                    for (std::size_t i = 0; i < target_size_; ++i)
-                    {
-                        values[i] = evaluate_at_index(i, z);
-                        z *= root;
-                    }
-                }
-                return std::pair{
-                    elapsed_ms(start, Clock::now()),
-                    std::move(values)};
-            };
-
-            for (std::size_t repeat = 0; repeat < repeats; ++repeat)
-            {
-                std::pair<double, std::vector<FieldElement>> legacy;
-                std::pair<double, std::vector<FieldElement>> bound;
-                if ((repeat & 1U) == 0)
-                {
-                    legacy = run_arm(false);
-                    bound = run_arm(true);
-                }
-                else
-                {
-                    bound = run_arm(true);
-                    legacy = run_arm(false);
-                }
-                if (legacy.second != bound.second)
-                {
-                    throw std::runtime_error(
-                        "t_edge stage benchmark legacy/bound outputs differ");
-                }
-                profile.legacy_resolver_ms.push_back(legacy.first);
-                profile.bound_access_plan_ms.push_back(bound.first);
-            }
-            return profile;
-        }
 
         std::vector<std::pair<std::string, algebra::Polynomial>> materialize_quotient_polynomials(
             const ProtocolContext &context,
@@ -10830,242 +10411,43 @@ namespace gatzk::protocol
 
     } // namespace
 
-    TEdgeAccessPlanStageProfile benchmark_t_edge_access_plan_stage(
-        const ProtocolContext &context,
-        const TraceArtifacts &trace,
-        const std::map<std::string, algebra::FieldElement> &challenges,
-        std::size_t repeats)
-    {
-        QuotientPolynomialMaterializer materializer(
-            context, trace, challenges, "t_edge");
-        return materializer.benchmark_t_edge_access_plan_stage(repeats);
-    }
-    bool benchmark_cuda_t_edge_materialization_stage(
-        const ProtocolContext &context,
-        const TraceArtifacts &trace,
-        const std::map<std::string, algebra::FieldElement> &challenges,
-        CudaTEdgeExecutionProfile *profile)
-    {
-        if (profile == nullptr)
-        {
-            throw std::runtime_error(
-                "CUDA t_edge stage profile is null");
-        }
-
-        constexpr std::size_t kMaxNodes = 1024;
-        constexpr std::size_t kMaxEdges = 16384;
-
-        if (context.local.num_nodes > kMaxNodes ||
-            context.local.edges.size() > kMaxEdges)
-        {
-            throw std::runtime_error(
-                "CUDA t_edge materialization stage "
-                "refuses non-small inputs");
-        }
-
-        *profile = {};
-
-        const auto expected = [&]
-        {
-            QuotientPolynomialMaterializer
-                materializer(
-                    context,
-                    trace,
-                    challenges,
-                    "t_edge");
-
-            return materializer.materialize(
-                context.kzg);
-        }();
-
-        const auto actual = [&]
-        {
-            QuotientPolynomialMaterializer
-                materializer(
-                    context,
-                    trace,
-                    challenges,
-                    "t_edge",
-                    true,
-                    profile);
-
-            return materializer.materialize(
-                context.kzg);
-        }();
-
-        return actual.basis == expected.basis &&
-               actual.values() == expected.values();
-    }
-
-    QuotientSplitLaneStageProfile
-    benchmark_quotient_split_lane_materialization_stage(
-        std::size_t coefficient_count,
-        std::size_t target_size,
-        std::size_t repeats)
-    {
-        if (repeats == 0 ||
-            target_size < 2 ||
-            (target_size &
-             (target_size - 1U)) != 0U ||
-            coefficient_count == 0 ||
-            coefficient_count > target_size / 2)
-        {
-            throw std::runtime_error(
-                "invalid split-lane quotient stage shape");
-        }
-
-        QuotientSplitLaneStageProfile profile;
-        profile.coefficient_count =
-            coefficient_count;
-        profile.target_size =
-            target_size;
-        profile.exact = true;
-
-        profile.contiguous_ms.reserve(repeats);
-        profile.split_lane_ms.reserve(repeats);
-
-        std::vector<mcl::Fr> coefficients(
-            coefficient_count);
-
-        for (std::size_t index = 0;
-             index < coefficient_count;
-             ++index)
-        {
-            coefficients[index] =
-                FieldElement(
-                    17 +
-                    ((index * 1315423911ULL) %
-                     104729ULL))
-                    .native();
-        }
-
-        const FieldElement shift(7);
-
-        std::vector<mcl::Fr> powers(
-            coefficient_count);
-
-        algebra::geometric_powers_native(
-            powers.data(),
-            powers.size(),
-            shift);
-
-        for (std::size_t repeat = 0;
-             repeat < repeats;
-             ++repeat)
-        {
-            auto contiguous =
-                std::make_shared<QuotientCosetValues>(
-                    target_size,
-                    nullptr,
-                    "split_lane_stage_contiguous",
-                    false);
-
-            auto start = Clock::now();
-
-            coset_evaluate_coefficients_into(
-                coefficients.data(),
-                coefficient_count,
-                target_size,
-                shift,
-                "split_lane_stage_contiguous",
-                &powers,
-                contiguous->mutable_data(),
-                false);
-
-            profile.contiguous_ms.push_back(
-                elapsed_ms(
-                    start,
-                    Clock::now()));
-
-            auto split =
-                std::make_shared<QuotientCosetValues>(
-                    target_size,
-                    nullptr,
-                    "split_lane_stage_split",
-                    true);
-
-            start = Clock::now();
-
-            coset_evaluate_coefficients_into(
-                coefficients.data(),
-                coefficient_count,
-                target_size,
-                shift,
-                "split_lane_stage_split",
-                &powers,
-                split->mutable_data(),
-                true);
-
-            profile.split_lane_ms.push_back(
-                elapsed_ms(
-                    start,
-                    Clock::now()));
-
-            for (std::size_t index = 0;
-                 index < target_size;
-                 ++index)
-            {
-                if ((*contiguous)[index] !=
-                    (*split)[index])
-                {
-                    profile.exact = false;
-                    break;
-                }
-            }
-
-            if (split->copy_values() !=
-                contiguous->copy_values())
-            {
-                profile.exact = false;
-            }
-        }
-
-        return profile;
-    }
-
     std::vector<algebra::FieldElement>
     evaluate_spilled_evaluation_polynomial_points(
         const TraceArtifacts::SpilledEvaluationPolynomial &spilled,
         const std::shared_ptr<algebra::RootOfUnityDomain> &domain,
         const std::vector<algebra::FieldElement> &points,
-        const std::vector<const algebra::DomainEvaluationWeights *> &weights,
-        SpilledEvaluationProfile *profile)
+        const std::vector<const algebra::DomainEvaluationWeights *> &weights)
     {
         return evaluate_spilled_evaluation_polynomial_points_impl(
-            spilled, domain, points, weights, profile);
+            spilled,
+            domain,
+            points,
+            weights);
     }
 
     algebra::FieldElement evaluate_spilled_evaluation_polynomial(
         const TraceArtifacts::SpilledEvaluationPolynomial &spilled,
         const std::shared_ptr<algebra::RootOfUnityDomain> &domain,
         const algebra::FieldElement &point,
-        const algebra::DomainEvaluationWeights &weights,
-        SpilledEvaluationProfile *profile)
+        const algebra::DomainEvaluationWeights &weights)
     {
         return evaluate_spilled_evaluation_polynomial_points_impl(
                    spilled,
                    domain,
                    std::vector<algebra::FieldElement>{point},
-                   std::vector<const algebra::DomainEvaluationWeights *>{&weights},
-                   profile)
+                   std::vector<const algebra::DomainEvaluationWeights *>{&weights})
             .front();
     }
 
     std::vector<std::vector<algebra::FieldElement>>
     evaluate_spilled_evaluation_requests(
         const std::vector<SpilledEvaluationRequest> &requests,
-        std::size_t max_workers,
-        SpilledEvaluationBatchProfile *profile)
+        std::size_t max_workers)
     {
         constexpr std::size_t kWorkerCeiling = 4;
         constexpr std::size_t kMinParallelFieldElements = 1U << 18U;
 
         std::vector<std::vector<algebra::FieldElement>> results(requests.size());
-        if (profile != nullptr)
-        {
-            *profile = SpilledEvaluationBatchProfile{};
-            profile->jobs.resize(requests.size());
-        }
         if (requests.empty())
         {
             return results;
@@ -11109,10 +10491,6 @@ namespace gatzk::protocol
                                                   available_workers,
                                                   requests.size()})
                                       : std::size_t{1};
-        if (profile != nullptr)
-        {
-            profile->worker_count = worker_count;
-        }
 
         auto run_job = [&](std::size_t job_index)
         {
@@ -11122,8 +10500,7 @@ namespace gatzk::protocol
                     *request.spilled,
                     request.domain,
                     request.points,
-                    request.weights,
-                    profile != nullptr ? &profile->jobs[job_index] : nullptr);
+                    request.weights);
         };
         if (worker_count == 1)
         {
@@ -11211,40 +10588,6 @@ namespace gatzk::protocol
 
         progress_note("context:load_static:start");
         auto start = Clock::now();
-        // 先把数据集和 checkpoint bundle 收束成 formal shape；这一段还不接触任何 challenge 或 witness。
-        context.dataset = data::load_dataset(config);
-        context.local = data::normalize_graph_input(context.dataset, config);
-        if (config.allow_synthetic_model)
-        {
-            append_note(metrics, "model_source=synthetic_model");
-            context.model = model::build_family_model_parameters(
-                config.d_in_profile.empty() ? std::vector<std::size_t>{context.local.num_features} : config.d_in_profile,
-                [&]()
-                {
-                    std::vector<model::HiddenLayerShape> shapes;
-                    shapes.reserve(config.hidden_profile.size());
-                    for (const auto &layer : config.hidden_profile)
-                    {
-                        shapes.push_back({layer.head_count, layer.head_dim});
-                    }
-                    return shapes;
-                }(),
-                config.K_out,
-                context.local.num_classes,
-                config.seed);
-        }
-        else
-        {
-            if (config.checkpoint_bundle.empty())
-            {
-                throw std::runtime_error(
-                    "formal model route requires checkpoint_bundle; refusing to fall back to synthetic parameters");
-            }
-            const auto checkpoint_root = resolve_project_path(config.project_root, config.checkpoint_bundle);
-            context.model = model::load_checkpoint_bundle_parameters(checkpoint_root.string());
-            append_note(metrics, "model_source=checkpoint_bundle");
-            append_note(metrics, "hidden_head_count=" + std::to_string(model::flattened_hidden_head_count(context.model)));
-        }
         if (!context.model.has_real_multihead)
         {
             throw std::runtime_error(
@@ -12026,216 +11369,6 @@ namespace gatzk::protocol
             progress_note("prove:quotient:start");
             // 先重放动态承诺之前的 transcript，再在这套固定挑战上构造各工作域 quotient。
             const auto pre_quotient_challenges = replay_challenges(context, trace.commitments, {}, &trace.public_metadata);
-            const auto check_fh_domain_constraints = [&]()
-            {
-                std::unordered_map<std::string, std::vector<FieldElement>>
-                    spilled_fh_values;
-                const auto fh_value = [&](const std::string &name, std::size_t row)
-                    -> FieldElement
-                {
-                    if (name == "P_H" && lazy_full_feature_lookup_trace_enabled(context))
-                        return context.public_polynomials.at("P_T_H")
-                            .values()
-                            .at(row);
-                    if (const auto it = trace.polynomials.find(name);
-                        it != trace.polynomials.end())
-                        return it->second.values().at(row);
-                    if (const auto spilled_it =
-                            trace.spilled_polynomials.find(name);
-                        spilled_it != trace.spilled_polynomials.end())
-                    {
-                        auto [cached_it, inserted] =
-                            spilled_fh_values.try_emplace(name);
-                        if (inserted)
-                        {
-                            cached_it->second =
-                                load_spilled_values(spilled_it->second);
-                        }
-                        return cached_it->second.at(row);
-                    }
-                    if (const auto it = context.public_polynomials.find(name);
-                        it != context.public_polynomials.end())
-                        return it->second.values().at(row);
-                    throw std::runtime_error(
-                        "FH domain self-check is missing polynomial: " + name);
-                };
-                const auto one = FieldElement::one();
-                const auto eta = pre_quotient_challenges.at("eta_feat");
-                const auto eta_squared = eta * eta;
-                const auto beta = pre_quotient_challenges.at("beta_feat");
-                for (std::size_t row = 0; row < context.domains.fh->size; ++row)
-                {
-                    const auto next = (row + 1) % context.domains.fh->size;
-                    const auto q_table = fh_value("P_Q_tbl_feat", row);
-                    const auto q_query = fh_value("P_Q_qry_feat", row);
-                    const auto table = fh_value("P_Table_feat", row);
-                    const auto query = fh_value("P_Query_feat", row);
-                    const auto multiplicity = fh_value("P_m_feat", row);
-                    const auto j_table = fh_value("P_J_tbl_feat", row);
-                    const auto j_query = fh_value("P_J_qry_feat", row);
-                    const auto accumulator = fh_value("P_R_feat", row);
-                    const std::vector<std::pair<std::string, FieldElement>> terms = {
-                        {"first_accumulator", row == 0
-                                                  ? accumulator
-                                                  : FieldElement::zero()},
-                        {"recurrence", row + 1 < context.domains.fh->size
-                                           ? fh_value("P_R_feat", next) - accumulator - q_table * multiplicity * j_table + q_query * j_query
-                                           : FieldElement::zero()},
-                        {"last_accumulator", row + 1 == context.domains.fh->size
-                                                 ? accumulator
-                                                 : FieldElement::zero()},
-                        {"table_inverse", q_table * ((table + beta) * j_table - one)},
-                        {"table_padding", (one - q_table) * j_table},
-                        {"query_inverse", q_query * ((query + beta) * j_query - one)},
-                        {"query_padding", (one - q_query) * j_query},
-                        {"table_encoding", table - (fh_value("P_Row_feat_tbl", row) + eta * fh_value("P_Col_feat_tbl", row) + eta_squared * fh_value("P_T_H", row))},
-                        {"query_encoding", query - (fh_value("P_I_feat_qry", row) + eta * fh_value("P_Col_feat_qry", row) + eta_squared * fh_value("P_H", row))},
-                    };
-                    for (const auto &[term_name, term] : terms)
-                    {
-                        if (!term.is_zero())
-                        {
-                            throw std::runtime_error(
-                                "FH domain constraint violation: row=" + std::to_string(row) + " term=" + term_name + " value=" + term.to_string());
-                        }
-                    }
-                }
-            };
-            if (std::getenv("GATZK_DEBUG_QUOTIENT_SELF_CHECK") != nullptr)
-            {
-                check_fh_domain_constraints();
-                std::size_t max_edge_blinder = 0;
-                std::vector<std::string> max_edge_blinder_labels;
-                for (const auto &[name, polynomial] : trace.polynomials)
-                {
-                    if (polynomial.domain != context.domains.edge)
-                        continue;
-                    const auto size = polynomial.zero_domain_blinder.size();
-                    if (size > max_edge_blinder)
-                    {
-                        max_edge_blinder = size;
-                        max_edge_blinder_labels = {name};
-                    }
-                    else if (size == max_edge_blinder && size != 0)
-                    {
-                        max_edge_blinder_labels.push_back(name);
-                    }
-                }
-                std::cerr << "[quotient-debug] edge max_blinder="
-                          << max_edge_blinder << " labels=";
-                for (std::size_t i = 0;
-                     i < std::min<std::size_t>(
-                             max_edge_blinder_labels.size(), 8);
-                     ++i)
-                {
-                    if (i != 0)
-                        std::cerr << ',';
-                    std::cerr << max_edge_blinder_labels[i];
-                }
-                std::cerr << '\n';
-
-                std::vector<std::size_t> sample_rows = {
-                    0,
-                    1,
-                    2,
-                    3,
-                    4,
-                    5,
-                    6,
-                    7,
-                    8,
-                    9,
-                    context.local.edges.size(),
-                    context.local.num_nodes * context.local.num_classes,
-                    context.tables.range.size(),
-                    context.domains.edge->size - 2,
-                    context.domains.edge->size - 1,
-                };
-                std::sort(sample_rows.begin(), sample_rows.end());
-                sample_rows.erase(
-                    std::remove_if(
-                        sample_rows.begin(), sample_rows.end(),
-                        [&](std::size_t row)
-                        { return row >= context.domains.edge->size; }),
-                    sample_rows.end());
-                sample_rows.erase(
-                    std::unique(sample_rows.begin(), sample_rows.end()),
-                    sample_rows.end());
-                std::vector<FieldElement> sample_points;
-                sample_points.reserve(sample_rows.size() * 2);
-                for (const auto row : sample_rows)
-                {
-                    const auto point = context.domains.edge->point_at(row);
-                    sample_points.push_back(point);
-                    sample_points.push_back(point * context.domains.edge->omega);
-                }
-                EvaluationMemoization edge_domain_memo(
-                    context, trace, pre_quotient_challenges);
-                edge_domain_memo.precompute_named(
-                    quotient_dependency_labels(context, "t_edge"),
-                    sample_points);
-                for (const auto row : sample_rows)
-                {
-                    const auto point = context.domains.edge->point_at(row);
-                    std::size_t first_nonzero_term =
-                        std::numeric_limits<std::size_t>::max();
-                    FieldElement first_nonzero_value = FieldElement::zero();
-                    const auto numerator = evaluate_t_edge(
-                        context,
-                        pre_quotient_challenges,
-                        trace.external_evaluations,
-                        [&](const std::string &name, const FieldElement &at)
-                        {
-                            return edge_domain_memo.eval_named(name, at);
-                        },
-                        point,
-                        true,
-                        &first_nonzero_term,
-                        &first_nonzero_value);
-                    if (!numerator.is_zero())
-                    {
-                        throw std::runtime_error(
-                            "edge domain constraint violation: row=" + std::to_string(row) + " first_term=" + std::to_string(first_nonzero_term) + " first_value=" + first_nonzero_value.to_string() + " numerator=" + numerator.to_string());
-                    }
-                }
-
-                std::vector<FieldElement> d_points;
-                d_points.reserve(context.domains.d->size * 2);
-                for (std::size_t row = 0; row < context.domains.d->size; ++row)
-                {
-                    const auto point = context.domains.d->point_at(row);
-                    d_points.push_back(point);
-                    d_points.push_back(point * context.domains.d->omega);
-                }
-                EvaluationMemoization d_domain_memo(
-                    context, trace, pre_quotient_challenges);
-                d_domain_memo.precompute_named(
-                    quotient_dependency_labels(context, "t_d_h"), d_points);
-                for (std::size_t row = 0; row < context.domains.d->size; ++row)
-                {
-                    const auto point = context.domains.d->point_at(row);
-                    std::size_t first_nonzero_term =
-                        std::numeric_limits<std::size_t>::max();
-                    FieldElement first_nonzero_value = FieldElement::zero();
-                    const auto numerator = evaluate_t_d(
-                        context,
-                        pre_quotient_challenges,
-                        trace.external_evaluations,
-                        [&](const std::string &name, const FieldElement &at)
-                        {
-                            return d_domain_memo.eval_named(name, at);
-                        },
-                        point,
-                        true,
-                        &first_nonzero_term,
-                        &first_nonzero_value);
-                    if (!numerator.is_zero())
-                    {
-                        throw std::runtime_error(
-                            "d_h domain constraint violation: row=" + std::to_string(row) + " first_term=" + std::to_string(first_nonzero_term) + " first_value=" + first_nonzero_value.to_string() + " numerator=" + numerator.to_string());
-                    }
-                }
-            }
             std::shared_ptr<const ProofEvaluationBackendRegistry> backend_registry;
             if (route2.fft_backend_upgrade)
             {
@@ -12320,47 +11453,6 @@ namespace gatzk::protocol
             // Quotient polynomials and commitments are proof-specific and must not be
             // reused by a later fresh-proof measurement.
             const auto challenges = replay_challenges(context, trace.commitments, quotient_commitments, &trace.public_metadata);
-            if (std::getenv("GATZK_DEBUG_QUOTIENT_SELF_CHECK") != nullptr)
-            {
-                const auto z = challenges.at("z_FH");
-                EvaluationMemoization self_check_memo(
-                    context,
-                    trace,
-                    challenges,
-                    backend_registry,
-                    proof_domain_weight_cache,
-                    nullptr);
-                self_check_memo.precompute_named(
-                    quotient_dependency_labels(context, "t_FH"),
-                    {z, z * context.domains.fh->omega});
-                const auto expected = evaluate_t_fh(
-                    context,
-                    challenges,
-                    [&](const std::string &name, const FieldElement &point)
-                    {
-                        return self_check_memo.eval_named(name, point);
-                    },
-                    z);
-                const auto quotient_it = quotient_commitments.find("t_FH");
-                const auto mask_it = quotient_commitments.find(
-                    quotient_mask_label("t_FH"));
-                if (quotient_it == quotient_commitments.end() || mask_it == quotient_commitments.end() || quotient_it->second.opening_polynomial == nullptr || mask_it->second.opening_polynomial == nullptr)
-                {
-                    throw std::runtime_error(
-                        "FH quotient self-check is missing opening material");
-                }
-                const auto opened =
-                    quotient_it->second.opening_polynomial->evaluate(z);
-                const auto mask =
-                    mask_it->second.opening_polynomial->evaluate(z);
-                const auto expected_masked = expected + context.domains.fh->zero_polynomial_eval(z) * mask;
-                if (opened != expected_masked)
-                {
-                    throw std::runtime_error(
-                        "FH quotient prover self-check mismatch: opened=" + opened.to_string() + " expected=" + expected.to_string() + " mask=" + mask.to_string() + " expected_masked=" + expected_masked.to_string());
-                }
-                progress_note("prove:quotient:t_FH:self_check:ok");
-            }
             if (metrics != nullptr)
             {
                 metrics->quotient_build_ms += elapsed_ms(stage_start, Clock::now());
