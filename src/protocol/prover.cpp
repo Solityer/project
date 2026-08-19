@@ -5605,9 +5605,6 @@ namespace gatzk::protocol
                     }
                 }
 
-                profile.unique_leaf_count =
-                    remaining_uses.size();
-
                 constexpr std::size_t
                     kUploadChunkElements =
                         std::size_t{1} << 20;
@@ -5899,9 +5896,6 @@ namespace gatzk::protocol
                             if (existing_slot <
                                 slot_labels.size())
                             {
-                                ++profile
-                                      .leaf_cache_hit_count;
-
                                 bind_label_mapping(
                                     label,
                                     existing_slot);
@@ -6021,9 +6015,6 @@ namespace gatzk::protocol
 
                                 executor->release_leaf(
                                     selected_slot);
-
-                                ++profile
-                                      .leaf_eviction_count;
                             }
 
                             materialize_label(
@@ -6105,43 +6096,6 @@ namespace gatzk::protocol
                         false;
 
                     reset_cuda_t_edge_transient_leaf_state();
-
-                    progress_note(
-                        "prove:quotient:t_edge:"
-                        "cuda_device_resident:"
-                        "terms=" +
-                        std::to_string(
-                            profile.term_count) +
-                        ":accesses=" +
-                        std::to_string(
-                            profile.access_count) +
-                        ":unique_leaves=" +
-                        std::to_string(
-                            profile
-                                .unique_leaf_count) +
-                        ":cache_slots=" +
-                        std::to_string(
-                            profile
-                                .leaf_cache_slot_count) +
-                        ":materializations=" +
-                        std::to_string(
-                            profile
-                                .leaf_materialization_count) +
-                        ":cache_hits=" +
-                        std::to_string(
-                            profile
-                                .leaf_cache_hit_count) +
-                        ":evictions=" +
-                        std::to_string(
-                            profile
-                                .leaf_eviction_count));
-
-                    if (cuda_t_edge_profile_out_ !=
-                        nullptr)
-                    {
-                        *cuda_t_edge_profile_out_ =
-                            profile;
-                    }
                     return output;
                 }
                 catch (...)
@@ -12789,8 +12743,6 @@ namespace gatzk::protocol
                                         proof.public_metadata, group),
                                     context.kzg,
                                     &opening_results[group_index].profile,
-                                    crypto::BatchOpeningClaimValidation::
-                                        AlreadyComputedFromOpeningPolynomials,
                                     inner_worker_count != 0
                                         ? &execution_options
                                         : nullptr,
@@ -13008,9 +12960,6 @@ namespace gatzk::protocol
                             pair_challenges,
                             context.kzg,
                             &pair_profiles,
-                            crypto::
-                                BatchOpeningClaimValidation::
-                                    AlreadyComputedFromOpeningPolynomials,
                             &pair_execution_options,
                             trace.spilled_polynomials
                                     .empty()

@@ -4505,7 +4505,8 @@ namespace gatzk::protocol
             std::vector<FieldElement> h_agg_star_edge;
         };
 
-        std::shared_ptr<const HiddenCompressedTrace> cached_hidden_compressed_trace(
+        std::shared_ptr<const HiddenCompressedTrace>
+        cached_hidden_compressed_trace(
             const Matrix &h_prime,
             const Matrix &h_agg_pre,
             const Matrix &h_agg,
@@ -4513,29 +4514,45 @@ namespace gatzk::protocol
             std::size_t edge_domain_size,
             const FieldElement &xi)
         {
-            if (should_persist_large_trace_cache_key(cache_key))
-            {
-                std::lock_guard<std::mutex> lock(cache_mutex);
-                if (const auto it = cache.find(cache_key); it != cache.end())
-                {
-                    return it->second;
-                }
-            }
+            auto packed =
+                std::make_shared<HiddenCompressedTrace>();
 
-            auto packed = std::make_shared<HiddenCompressedTrace>();
-            packed->h_star = compress_rows_with_challenge(h_prime, xi);
-            packed->h_star_edge = broadcast_node_values(packed->h_star, edges, true, edge_domain_size);
-            packed->h_agg_pre_star = compress_rows_with_challenge(h_agg_pre, xi);
+            packed->h_star =
+                compress_rows_with_challenge(
+                    h_prime,
+                    xi);
+
+            packed->h_star_edge =
+                broadcast_node_values(
+                    packed->h_star,
+                    edges,
+                    true,
+                    edge_domain_size);
+
+            packed->h_agg_pre_star =
+                compress_rows_with_challenge(
+                    h_agg_pre,
+                    xi);
+
             packed->h_agg_pre_star_edge =
-                broadcast_node_values(packed->h_agg_pre_star, edges, false, edge_domain_size);
-            packed->h_agg_star = compress_rows_with_challenge(h_agg, xi);
-            packed->h_agg_star_edge = broadcast_node_values(packed->h_agg_star, edges, false, edge_domain_size);
-            if (should_persist_large_trace_cache_key(cache_key))
-            {
-                std::lock_guard<std::mutex> lock(cache_mutex);
-                const auto [it, _] = cache.emplace(cache_key, packed);
-                return it->second;
-            }
+                broadcast_node_values(
+                    packed->h_agg_pre_star,
+                    edges,
+                    false,
+                    edge_domain_size);
+
+            packed->h_agg_star =
+                compress_rows_with_challenge(
+                    h_agg,
+                    xi);
+
+            packed->h_agg_star_edge =
+                broadcast_node_values(
+                    packed->h_agg_star,
+                    edges,
+                    false,
+                    edge_domain_size);
+
             return packed;
         }
 
@@ -4547,33 +4564,41 @@ namespace gatzk::protocol
             std::vector<FieldElement> y_star_edge;
         };
 
-        std::shared_ptr<const OutputCompressedTrace> cached_output_compressed_trace(
+        std::shared_ptr<const OutputCompressedTrace>
+        cached_output_compressed_trace(
             const Matrix &y_prime,
             const Matrix &y_lin,
             const std::vector<Edge> &edges,
             std::size_t edge_domain_size,
             const FieldElement &xi)
         {
-            if (should_persist_large_trace_cache_key(cache_key))
-            {
-                std::lock_guard<std::mutex> lock(cache_mutex);
-                if (const auto it = cache.find(cache_key); it != cache.end())
-                {
-                    return it->second;
-                }
-            }
+            auto packed =
+                std::make_shared<OutputCompressedTrace>();
 
-            auto packed = std::make_shared<OutputCompressedTrace>();
-            packed->y_prime_star = compress_rows_with_challenge(y_prime, xi);
-            packed->y_prime_star_edge = broadcast_node_values(packed->y_prime_star, edges, true, edge_domain_size);
-            packed->y_star = compress_rows_with_challenge(y_lin, xi);
-            packed->y_star_edge = broadcast_node_values(packed->y_star, edges, false, edge_domain_size);
-            if (should_persist_large_trace_cache_key(cache_key))
-            {
-                std::lock_guard<std::mutex> lock(cache_mutex);
-                const auto [it, _] = cache.emplace(cache_key, packed);
-                return it->second;
-            }
+            packed->y_prime_star =
+                compress_rows_with_challenge(
+                    y_prime,
+                    xi);
+
+            packed->y_prime_star_edge =
+                broadcast_node_values(
+                    packed->y_prime_star,
+                    edges,
+                    true,
+                    edge_domain_size);
+
+            packed->y_star =
+                compress_rows_with_challenge(
+                    y_lin,
+                    xi);
+
+            packed->y_star_edge =
+                broadcast_node_values(
+                    packed->y_star,
+                    edges,
+                    false,
+                    edge_domain_size);
+
             return packed;
         }
 
@@ -4882,27 +4907,12 @@ namespace gatzk::protocol
         };
 
         template <typename Builder>
-        std::shared_ptr<const SingleLookupArtifacts> cached_single_lookup_artifacts(
-            const std::string &cache_key,
+        std::shared_ptr<const SingleLookupArtifacts>
+        cached_single_lookup_artifacts(
             Builder &&builder)
         {
-            if (should_persist_large_trace_cache_key(cache_key))
-            {
-                std::lock_guard<std::mutex> lock(cache_mutex);
-                if (const auto it = cache.find(cache_key); it != cache.end())
-                {
-                    return it->second;
-                }
-            }
-
-            auto artifacts = std::make_shared<SingleLookupArtifacts>(builder());
-            if (should_persist_large_trace_cache_key(cache_key))
-            {
-                std::lock_guard<std::mutex> lock(cache_mutex);
-                const auto [it, _] = cache.emplace(cache_key, artifacts);
-                return it->second;
-            }
-            return artifacts;
+            return std::make_shared<SingleLookupArtifacts>(
+                builder());
         }
 
         SingleLookupArtifacts build_single_lookup_artifacts(
@@ -4983,27 +4993,12 @@ namespace gatzk::protocol
         };
 
         template <typename Builder>
-        std::shared_ptr<const PairLookupArtifacts> cached_pair_lookup_artifacts(
-            const std::string &cache_key,
+        std::shared_ptr<const PairLookupArtifacts>
+        cached_pair_lookup_artifacts(
             Builder &&builder)
         {
-            if (should_persist_large_trace_cache_key(cache_key))
-            {
-                std::lock_guard<std::mutex> lock(cache_mutex);
-                if (const auto it = cache.find(cache_key); it != cache.end())
-                {
-                    return it->second;
-                }
-            }
-
-            auto artifacts = std::make_shared<PairLookupArtifacts>(builder());
-            if (should_persist_large_trace_cache_key(cache_key))
-            {
-                std::lock_guard<std::mutex> lock(cache_mutex);
-                const auto [it, _] = cache.emplace(cache_key, artifacts);
-                return it->second;
-            }
-            return artifacts;
+            return std::make_shared<PairLookupArtifacts>(
+                builder());
         }
 
         PairLookupArtifacts build_pair_lookup_artifacts(
@@ -5236,7 +5231,6 @@ namespace gatzk::protocol
             };
 
             auto stage_start = Clock::now();
-            const auto cache_prefix = trace_cache_prefix(context);
             const auto &static_artifacts = cached_trace_static_artifacts(context);
             const auto &feature_index_fields = static_artifacts.feature_index_fields;
             const auto &absolute_id_fields = static_artifacts.absolute_id_fields;
@@ -5991,7 +5985,6 @@ namespace gatzk::protocol
                         ? std::string("P_H")
                         : hidden_layer_concat_label(layer_index - 1, false);
                 const auto prefix = hidden_head_prefix(head_index) + "_";
-                const auto head_cache_prefix = cache_prefix + ":hidden:" + std::to_string(head_index);
                 auto stage_start = Clock::now();
                 // 这一组量已经对应笔记里的单头前向主线：特征投影、源点打分、目标点打分、
                 // 稳定化最大值、分母和、分母倒数、注意力权重，以及按边聚合后的隐藏表示。
@@ -6124,7 +6117,6 @@ namespace gatzk::protocol
                 stage_start = Clock::now();
                 const auto xi = trace.challenges.at("xi_h" + std::to_string(head_index));
                 const auto compressed = cached_hidden_compressed_trace(
-                    head_cache_prefix + ":compressed:" + xi.to_string(),
                     h_prime,
                     h_agg_pre,
                     h_agg,
@@ -6184,7 +6176,6 @@ namespace gatzk::protocol
                 stage_start = Clock::now();
                 const auto y_src_h = trace.challenges.at("y_src_h" + std::to_string(head_index));
                 const auto src_binding = cached_binding_trace(
-                    head_cache_prefix + ":src:" + y_src_h.to_string(),
                     [&]()
                     {
                         return build_binding_trace(
@@ -6323,7 +6314,6 @@ namespace gatzk::protocol
                 const auto beta_src = transcript.challenge("beta_src_h" + std::to_string(head_index));
                 trace.challenges["beta_src_h" + std::to_string(head_index)] = beta_src;
                 const auto src_route = cached_route_trace(
-                    head_cache_prefix + ":src_route:" + eta_src.to_string() + ":" + beta_src.to_string(),
                     [&]()
                     {
                         return build_route_trace_from_padded(
@@ -6362,11 +6352,17 @@ namespace gatzk::protocol
                 std::vector<FieldElement> table_l =
                     cached_pair_lookup_table(prefix + "L", context.tables.lrelu, eta_l, domains.edge->size);
                 const auto lrelu_artifacts = cached_pair_lookup_artifacts(
-                    head_cache_prefix + ":lrelu_artifacts:" + eta_l.to_string(),
                     [&]()
                     {
                         return build_pair_lookup_artifacts(
-                            *lrelu_index, s, z, eta_l, domains.edge->size, n_edges, prefix + "L", metrics);
+                            *lrelu_index,
+                            s,
+                            z,
+                            eta_l,
+                            domains.edge->size,
+                            n_edges,
+                            prefix + "L",
+                            metrics);
                     });
                 const auto &query_l = lrelu_artifacts->query;
                 const auto &m_l = lrelu_artifacts->multiplicity;
@@ -6443,11 +6439,15 @@ namespace gatzk::protocol
                 std::vector<FieldElement> table_r =
                     cached_single_lookup_table(prefix + "R", context.tables.range, domains.edge->size);
                 const auto range_artifacts = cached_single_lookup_artifacts(
-                    head_cache_prefix + ":range_artifacts",
                     [&]()
                     {
                         return build_single_lookup_artifacts(
-                            *range_index, delta, domains.edge->size, n_edges, prefix + "R", metrics);
+                            *range_index,
+                            delta,
+                            domains.edge->size,
+                            n_edges,
+                            prefix + "R",
+                            metrics);
                     });
                 const auto &query_r = range_artifacts->query;
                 const auto &m_r = range_artifacts->multiplicity;
@@ -6581,10 +6581,12 @@ namespace gatzk::protocol
                 add_metric(metrics != nullptr ? &metrics->hidden_edge_score_trace_ms : nullptr, stage_start);
                 stage_start = Clock::now();
                 const auto c_max = cached_state_vector(
-                    head_cache_prefix + ":cmax",
                     [&]()
                     {
-                        return build_max_counter_state(s_max, q_new, enable_single_graph_selector_shortcut);
+                        return build_max_counter_state(
+                            s_max,
+                            q_new,
+                            enable_single_graph_selector_shortcut);
                     });
                 add_metric(metrics != nullptr ? &metrics->state_machine_trace_ms : nullptr, stage_start);
                 // 从这里开始不再只是普通前向，而是在把 softmax 聚合链改写成 PSQ / state-machine 轨迹。
@@ -7238,7 +7240,6 @@ namespace gatzk::protocol
 
             stage_start = Clock::now();
             const auto output_trace_start = stage_start;
-            const auto output_cache_prefix = cache_prefix + ":output";
             const auto output_initial_commit_dynamic_ms =
                 metrics != nullptr ? metrics->commit_dynamic_ms : 0.0;
             // 输出层保持“每头先各算各的”，最后再单独物化平均关系和 bias 后关系。
@@ -7313,7 +7314,6 @@ namespace gatzk::protocol
                 const auto prefix = prefix_base + "_";
                 const auto y_lin_label = output_y_lin_label(head_index);
                 const auto y_label = output_y_label(head_index);
-                const auto head_cache_prefix = output_cache_prefix + ":" + std::to_string(head_index);
                 const auto &quantized = forward_artifacts->output_head_quantized.at(head_index);
                 const auto &y_prime = quantized.y_prime;
                 const auto &out_e_src = quantized.e_src;
@@ -7442,7 +7442,6 @@ namespace gatzk::protocol
                     transcript.challenge(output_challenge_name("y_dst_out", head_index));
                 const auto xi_out = trace.challenges.at("xi_out");
                 const auto compressed = cached_output_compressed_trace(
-                    head_cache_prefix + ":compressed:" + xi_out.to_string(),
                     y_prime,
                     y_lin_matrix,
                     edges,

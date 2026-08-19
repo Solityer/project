@@ -5621,7 +5621,6 @@ namespace gatzk::crypto
         }
         return {std::move(commitments[0]), std::move(commitments[1])};
     }
-
     G1Point KZG::open_point_group(
         const std::vector<Commitment> &commitments,
         const FieldElement &point,
@@ -5633,38 +5632,58 @@ namespace gatzk::crypto
         const OpeningPolynomialResolver *opening_resolver,
         const OpeningSemanticSourceResolver *semantic_source_resolver)
     {
-        if (commitments.empty() || commitments.size() != claimed_values.size())
+        if (commitments.empty() ||
+            commitments.size() != claimed_values.size())
         {
             throw std::runtime_error(
                 "point-group opening mismatch between commitments and values");
         }
+
         if (folding_challenge.is_zero())
         {
             throw std::runtime_error(
                 "point-group opening folding challenge must be non-zero");
         }
-        const auto field_worker_cap = execution_options != nullptr
-                                          ? execution_options->max_field_worker_count
-                                          : 0;
-        const auto *msm_options = execution_options != nullptr
-                                      ? &execution_options->msm
-                                      : nullptr;
-        std::vector<std::vector<FieldElement>> value_columns;
-        value_columns.reserve(claimed_values.size());
+
+        const auto field_worker_cap =
+            execution_options != nullptr
+                ? execution_options->max_field_worker_count
+                : 0;
+
+        const auto *msm_options =
+            execution_options != nullptr
+                ? &execution_options->msm
+                : nullptr;
+
+        std::vector<std::vector<FieldElement>>
+            value_columns;
+
+        value_columns.reserve(
+            claimed_values.size());
+
         for (const auto &value : claimed_values)
         {
             value_columns.push_back({value});
         }
-        const auto precompute_start = Clock::now();
-        const auto powers = folding_powers(folding_challenge, commitments.size());
-        const auto folded_plan = opening_resolver == nullptr
-            ? build_folded_opening_plan(
-                  commitments,
-                  value_columns,
-                  powers,
-                  std::vector<FieldElement>{point},
-                  field_worker_cap,
-                  false : build_streamed_folded_opening_plan(
+
+        const auto precompute_start =
+            Clock::now();
+
+        const auto powers =
+            folding_powers(
+                folding_challenge,
+                commitments.size());
+
+        const auto folded_plan =
+            opening_resolver == nullptr
+                ? build_folded_opening_plan(
+                      commitments,
+                      value_columns,
+                      powers,
+                      std::vector<FieldElement>{point},
+                      field_worker_cap,
+                      false)
+                : build_streamed_folded_opening_plan(
                       commitments,
                       value_columns,
                       powers,
@@ -5674,26 +5693,42 @@ namespace gatzk::crypto
                       *opening_resolver,
                       semantic_source_resolver,
                       nullptr);
-                  if (profile != nullptr) {
-                      profile->precompute_ms += elapsed_ms(precompute_start, Clock::now());
-                      profile->point_msm_worker_cap =
-                          msm_options != nullptr
-                              ? msm_options->max_worker_count
-                              : 0;
-                  }
 
-                  const auto witness_start = Clock::now();
-                  const auto witness = open_single_point_fold(
-                      folded_plan,
-                      0,
-                      point,
-                      key.pk,
-                      profile,
-                      field_worker_cap,
-                      msm_options);
-                  if (profile != nullptr) {
-                      profile->finalize_ms += elapsed_ms(witness_start, Clock::now());
-                  } return witness;
+        if (profile != nullptr)
+        {
+            profile->precompute_ms +=
+                elapsed_ms(
+                    precompute_start,
+                    Clock::now());
+
+            profile->point_msm_worker_cap =
+                msm_options != nullptr
+                    ? msm_options->max_worker_count
+                    : 0;
+        }
+
+        const auto witness_start =
+            Clock::now();
+
+        const auto witness =
+            open_single_point_fold(
+                folded_plan,
+                0,
+                point,
+                key.pk,
+                profile,
+                field_worker_cap,
+                msm_options);
+
+        if (profile != nullptr)
+        {
+            profile->finalize_ms +=
+                elapsed_ms(
+                    witness_start,
+                    Clock::now());
+        }
+
+        return witness;
     }
 
     std::array<G1Point, 2>

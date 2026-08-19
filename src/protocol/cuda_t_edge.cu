@@ -6,7 +6,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <iostream>
 #include <fstream>
 #include <limits>
 #include <sstream>
@@ -14,7 +13,6 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
-#include <chrono>
 
 #include "gatzk/algebra/cuda_ntt_device.hpp"
 
@@ -289,8 +287,7 @@ namespace gatzk::protocol
                       target_size /
                       domain_size),
                   cache_slot_count_(
-                      cache_slot_count),
-                  profile_(profile)
+                      cache_slot_count)
             {
                 (void)omega;
 
@@ -754,10 +751,6 @@ namespace gatzk::protocol
                         "invalid CUDA t_edge evaluation leaf slot");
                 }
 
-                const auto start =
-                    std::chrono::
-                        steady_clock::now();
-
                 const bool executed =
                     algebra::
                         cuda_coset_evaluations_to_device_exact(
@@ -809,10 +802,6 @@ namespace gatzk::protocol
                     throw std::runtime_error(
                         "invalid CUDA t_edge coefficient leaf slot");
                 }
-
-                const auto start =
-                    std::chrono::
-                        steady_clock::now();
 
                 const bool executed =
                     algebra::
@@ -1182,45 +1171,6 @@ namespace gatzk::protocol
                 algebra::
                     record_cuda_kernel_invocations(
                         1);
-
-                if (profile_ != nullptr)
-                {
-                    profile_
-                        ->quotient_bytes_downloaded =
-                        target_size_ *
-                        sizeof(GpuFr);
-
-                    profile_->final_download_ms +=
-                        std::chrono::duration<
-                            double,
-                            std::milli>(
-                            std::chrono::
-                                steady_clock::now() -
-                            start)
-                            .count();
-
-                    std::cerr
-                        << "[gatzk] cuda_t_edge"
-                        << " terms="
-                        << profile_->term_count
-                        << " accesses="
-                        << profile_->access_count
-                        << " unique_leaves="
-                        << profile_->unique_leaf_count
-                        << " cache_slots="
-                        << profile_->leaf_cache_slot_count
-                        << " materializations="
-                        << profile_->leaf_materialization_count
-                        << " cache_hits="
-                        << profile_->leaf_cache_hit_count
-                        << " evictions="
-                        << profile_->leaf_eviction_count
-                        << " source_upload_bytes="
-                        << profile_->source_bytes_uploaded
-                        << " quotient_download_bytes="
-                        << profile_->quotient_bytes_downloaded
-                        << '\n';
-                }
             }
 
         private:
@@ -1395,8 +1345,7 @@ namespace gatzk::protocol
             target_size,
             shift,
             omega,
-            cache_slot_count,
-            profile);
+            cache_slot_count);
     }
 
     bool cuda_t_edge_executor_available()

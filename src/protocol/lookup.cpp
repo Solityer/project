@@ -245,8 +245,7 @@ namespace gatzk::protocol
             const std::vector<algebra::FieldElement> &query,
             const std::vector<algebra::FieldElement> &q_table,
             const std::vector<algebra::FieldElement> &q_query,
-            const algebra::FieldElement &beta,
-            BatchInverseExecution execution)
+            const algebra::FieldElement &beta)
         {
             const auto n = table.size();
             if (query.size() != n || q_table.size() != n || q_query.size() != n)
@@ -278,8 +277,7 @@ namespace gatzk::protocol
             batch_inverse_native(
                 denominators,
                 inverses,
-                "lookup inverse columns",
-                execution);
+                "lookup inverse columns");
             std::size_t inverse_index = 0;
             for (std::size_t i = 0; i < n; ++i)
             {
@@ -313,8 +311,7 @@ namespace gatzk::protocol
         const algebra::FieldElement &beta)
     {
         return build_logup_inverse_columns_impl(
-            table, query, q_table, q_query, beta,
-            BatchInverseExecution::Parallel);
+            table, query, q_table, q_query, beta);
     }
 
     namespace
@@ -384,7 +381,7 @@ namespace gatzk::protocol
                     kMaxParallelWorkers,
                     std::thread::hardware_concurrency()));
             constexpr std::size_t kParallelThreshold = 1ULL << 18;
-            if (execution == AccumulatorExecution::Parallel && active_count >= kParallelThreshold && hardware_workers > 1)
+            if (active_count >= kParallelThreshold && hardware_workers > 1)
             {
                 const auto chunk_count = std::min<std::size_t>(
                     hardware_workers,
@@ -497,8 +494,7 @@ namespace gatzk::protocol
             multiplicity,
             q_table,
             q_query,
-            active_count,
-            AccumulatorExecution::Parallel);
+            active_count);
     }
 
     std::vector<algebra::FieldElement> build_active_prefix_inverse_column(
