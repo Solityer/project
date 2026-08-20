@@ -35,6 +35,14 @@
 #include "gatzk/util/logging.hpp"
 #include "gatzk/util/route2.hpp"
 
+#if defined(__linux__)
+#include <cerrno>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
+
 namespace gatzk::crypto
 {
     namespace
@@ -703,6 +711,492 @@ namespace gatzk::crypto
 
             return "unknown parallel SRS G1 validation failure: " + path.string();
         }
+
+#if defined(__linux__)
+        class ScopedReadOnlySrsMapping
+        {
+        public:
+            ScopedReadOnlySrsMapping(
+                const std::filesystem::path &path,
+                std::size_t expected_size)
+                : size_(expected_size)
+            {
+                fd_ = ::open(
+                    path.c_str(),
+                    O_RDONLY | O_CLOEXEC);
+
+                if (fd_ < 0)
+                {
+                    throw std::runtime_error(
+                        "failed to open SRS material for mmap: " +
+                        path.string() + ": " +
+                        std::strerror(errno));
+                }
+
+                struct stat st{};
+
+                if (::fstat(fd_, &st) != 0)
+                {
+                    const auto error =
+                        std::string(std::strerror(errno));
+
+                    ::close(fd_);
+                    fd_ = -1;
+
+                    throw std::runtime_error(
+                        "failed to stat SRS material for mmap: " +
+                        path.string() + ": " + error);
+                }
+
+                if (st.st_size < 0 ||
+                    static_cast<std::uint64_t>(st.st_size) !=
+                        static_cast<std::uint64_t>(expected_size))
+                {
+                    ::close(fd_);
+                    fd_ = -1;
+
+                    throw std::runtime_error(
+                        "SRS material changed while opening mmap: " +
+                        path.string());
+                }
+
+                mapping_ =
+                    ::mmap(
+                        nullptr,
+                        size_,
+                        PROT_READ,
+                        MAP_PRIVATE,
+                        fd_,
+                        0);
+
+                if (mapping_ == MAP_FAILED)
+                {
+                    mapping_ = nullptr;
+
+                    const auto error =
+                        std::string(std::strerror(errno));
+
+                    ::close(fd_);
+                    fd_ = -1;
+
+                    throw std::runtime_error(
+                        "failed to mmap SRS material: " +
+                        path.string() + ": " + error);
+                }
+            }
+
+            ~ScopedReadOnlySrsMapping()
+            {
+                if (mapping_ != nullptr)
+                {
+                    ::munmap(mapping_, size_);
+                }
+
+                if (fd_ >= 0)
+                {
+                    ::close(fd_);
+                }
+            }
+
+            ScopedReadOnlySrsMapping(
+                const ScopedReadOnlySrsMapping &) = delete;
+
+            ScopedReadOnlySrsMapping &
+            operator=(
+                const ScopedReadOnlySrsMapping &) = delete;
+
+            const std::uint8_t *data() const
+            {
+                return static_cast<const std::uint8_t *>(
+                    mapping_);
+            }
+
+            std::size_t size() const
+            {
+                return size_;
+            }
+
+        private:
+            int fd_ = -1;
+            void *mapping_ = nullptr;
+            std::size_t size_ = 0;
+        };
+
+        std::uint64_t load_u64_le_unaligned(
+            const std::uint8_t *bytes)
+        {
+            std::uint64_t value = 0;
+
+            for (std::size_t i = 0; i < 8; ++i)
+            {
+                value |=
+                    static_cast<std::uint64_t>(
+                        bytes[i])
+                    << (8U * i);
+            }
+
+            return value;
+        }
+
+        std::vector<G1Point>
+        load_mapped_canonical_g1_vector_file_prefix(
+            const std::filesystem::path &path,
+            std::size_t file_size,
+            std::size_t expected_point_count,
+            std::size_t point_size,
+            std::size_t max_points,
+            std::string *actual_hash,
+            G1LoadWorkerFailureInfo &worker_failure)
+        {
+            worker_failure = {};
+
+            constexpr std::size_t
+                kHeaderSize = 24;
+
+            constexpr std::size_t
+                kCanonicalWorkerChunkPoints =
+                    1ULL << 16;
+
+            constexpr std::size_t
+                kMappedHashChunkBytes =
+                    8ULL << 20;
+
+            ScopedReadOnlySrsMapping mapping(
+                path,
+                file_size);
+
+            const auto *file_bytes =
+                mapping.data();
+
+            const std::array<std::uint8_t, 8>
+                expected_magic{{'G', 'A', 'T', 'Z',
+                                'K', 'G', '1', 'C'}};
+
+            if (std::memcmp(
+                    file_bytes,
+                    expected_magic.data(),
+                    expected_magic.size()) != 0)
+            {
+                throw std::runtime_error(
+                    "canonical SRS G1 mmap header mismatch: " +
+                    path.string());
+            }
+
+            const auto mapped_point_count_u64 =
+                load_u64_le_unaligned(
+                    file_bytes + 8);
+
+            const auto mapped_point_size_u64 =
+                load_u64_le_unaligned(
+                    file_bytes + 16);
+
+            if (mapped_point_count_u64 !=
+                    static_cast<std::uint64_t>(
+                        expected_point_count) ||
+                mapped_point_size_u64 !=
+                    static_cast<std::uint64_t>(
+                        point_size))
+            {
+                throw std::runtime_error(
+                    "canonical SRS G1 changed while mapping: " +
+                    path.string());
+            }
+
+            if (expected_point_count >
+                (std::numeric_limits<std::size_t>::max() -
+                 kHeaderSize) /
+                    point_size)
+            {
+                throw std::runtime_error(
+                    "canonical SRS G1 mmap size overflow: " +
+                    path.string());
+            }
+
+            const auto expected_size =
+                kHeaderSize +
+                expected_point_count * point_size;
+
+            if (expected_size != file_size)
+            {
+                throw std::runtime_error(
+                    "canonical SRS G1 mmap size mismatch: " +
+                    path.string());
+            }
+
+            const auto load_count =
+                max_points == 0
+                    ? expected_point_count
+                    : std::min(
+                          expected_point_count,
+                          max_points);
+
+            std::vector<G1Point> out(
+                load_count);
+
+            std::atomic<unsigned>
+                worker_failure_kind{
+                    static_cast<unsigned>(
+                        G1LoadWorkerFailure::None)};
+
+            std::atomic<std::size_t>
+                worker_failure_index{
+                    std::numeric_limits<
+                        std::size_t>::max()};
+
+            auto record_worker_failure =
+                [&](G1LoadWorkerFailure kind,
+                    std::size_t index) noexcept
+            {
+                auto expected =
+                    static_cast<unsigned>(
+                        G1LoadWorkerFailure::None);
+
+                if (worker_failure_kind
+                        .compare_exchange_strong(
+                            expected,
+                            static_cast<unsigned>(kind),
+                            std::memory_order_acq_rel,
+                            std::memory_order_acquire))
+                {
+                    worker_failure_index.store(
+                        index,
+                        std::memory_order_release);
+                }
+            };
+
+            auto worker_failed =
+                [&]() noexcept
+            {
+                return worker_failure_kind.load(
+                           std::memory_order_acquire) !=
+                       static_cast<unsigned>(
+                           G1LoadWorkerFailure::None);
+            };
+
+            std::atomic<std::size_t>
+                next_begin{0};
+
+            auto validation_worker =
+                [&]()
+            {
+                std::size_t active_begin =
+                    std::numeric_limits<
+                        std::size_t>::max();
+
+                try
+                {
+                    std::vector<std::uint8_t>
+                        canonical_bytes(
+                            point_size);
+
+                    while (true)
+                    {
+                        if (worker_failed())
+                        {
+                            return;
+                        }
+
+                        const auto begin =
+                            next_begin.fetch_add(
+                                kCanonicalWorkerChunkPoints,
+                                std::memory_order_relaxed);
+
+                        active_begin = begin;
+
+                        if (begin >= load_count)
+                        {
+                            return;
+                        }
+
+                        const auto end =
+                            std::min<std::size_t>(
+                                load_count,
+                                begin +
+                                    kCanonicalWorkerChunkPoints);
+
+                        for (std::size_t index = begin;
+                             index < end;
+                             ++index)
+                        {
+                            if (worker_failed())
+                            {
+                                return;
+                            }
+
+                            const auto *point_begin =
+                                file_bytes +
+                                kHeaderSize +
+                                index * point_size;
+
+                            const auto consumed =
+                                out[index]
+                                    .value
+                                    .deserialize(
+                                        point_begin,
+                                        point_size);
+
+                            if (consumed != point_size)
+                            {
+                                record_worker_failure(
+                                    G1LoadWorkerFailure::
+                                        CanonicalDeserialize,
+                                    index);
+                                return;
+                            }
+
+                            if (out[index]
+                                    .value
+                                    .isZero())
+                            {
+                                record_worker_failure(
+                                    G1LoadWorkerFailure::
+                                        CanonicalIdentity,
+                                    index);
+                                return;
+                            }
+
+                            const auto written =
+                                out[index]
+                                    .value
+                                    .serialize(
+                                        canonical_bytes.data(),
+                                        canonical_bytes.size());
+
+                            if (written == 0)
+                            {
+                                record_worker_failure(
+                                    G1LoadWorkerFailure::
+                                        CanonicalSerialize,
+                                    index);
+                                return;
+                            }
+
+                            if (written != point_size ||
+                                std::memcmp(
+                                    canonical_bytes.data(),
+                                    point_begin,
+                                    point_size) != 0)
+                            {
+                                record_worker_failure(
+                                    G1LoadWorkerFailure::
+                                        CanonicalEncoding,
+                                    index);
+                                return;
+                            }
+                        }
+                    }
+                }
+                catch (...)
+                {
+                    record_worker_failure(
+                        G1LoadWorkerFailure::
+                            UnexpectedCanonical,
+                        active_begin);
+                }
+            };
+
+            const auto cpu_count =
+                std::max<std::size_t>(
+                    1,
+                    std::thread::
+                        hardware_concurrency());
+
+            const auto chunk_count =
+                load_count == 0
+                    ? std::size_t{0}
+                    : (load_count +
+                       kCanonicalWorkerChunkPoints - 1) /
+                          kCanonicalWorkerChunkPoints;
+
+            // Keep one execution context available for the mandatory
+            // full-file SHA-256 scan.  Once hashing completes the calling
+            // thread joins validation work, so all CPUs are used for the
+            // remaining canonical checks.
+            const auto background_worker_count =
+                cpu_count > 1
+                    ? std::min<std::size_t>(
+                          cpu_count - 1,
+                          chunk_count)
+                    : std::size_t{0};
+
+            std::vector<std::thread> workers;
+            workers.reserve(
+                background_worker_count);
+
+            for (std::size_t worker = 0;
+                 worker < background_worker_count;
+                 ++worker)
+            {
+                workers.emplace_back(
+                    validation_worker);
+            }
+
+            // Hash exactly the authenticated file bytes.  Validation workers
+            // only read the same MAP_PRIVATE/PROT_READ mapping.
+            SHA256_CTX mapped_hash;
+            SHA256_Init(&mapped_hash);
+
+            std::size_t hash_offset = 0;
+
+            while (hash_offset < mapping.size())
+            {
+                const auto chunk =
+                    std::min<std::size_t>(
+                        mapping.size() -
+                            hash_offset,
+                        kMappedHashChunkBytes);
+
+                SHA256_Update(
+                    &mapped_hash,
+                    file_bytes + hash_offset,
+                    chunk);
+
+                hash_offset += chunk;
+            }
+
+            unsigned char
+                digest[SHA256_DIGEST_LENGTH];
+
+            SHA256_Final(
+                digest,
+                &mapped_hash);
+
+            if (actual_hash != nullptr)
+            {
+                *actual_hash =
+                    bytes_to_hex(
+                        digest,
+                        sizeof(digest));
+            }
+
+            // The hash thread now becomes another validation worker instead
+            // of leaving one CPU idle for the remainder of a full SRS load.
+            validation_worker();
+
+            for (auto &worker : workers)
+            {
+                worker.join();
+            }
+
+            const auto recorded_failure =
+                static_cast<G1LoadWorkerFailure>(
+                    worker_failure_kind.load(
+                        std::memory_order_acquire));
+
+            if (recorded_failure !=
+                G1LoadWorkerFailure::None)
+            {
+                worker_failure.kind =
+                    recorded_failure;
+
+                worker_failure.index =
+                    worker_failure_index.load(
+                        std::memory_order_acquire);
+            }
+
+            return out;
+        }
+#endif
         std::vector<G1Point> load_fixed_or_raw_g1_vector_file_prefix(
             const std::filesystem::path &path,
             std::streamoff file_size,
@@ -770,11 +1264,27 @@ namespace gatzk::crypto
                     "fixed SRS G1 material size overflows this platform");
             const auto expected_size =
                 header_size + point_count * point_size;
+
             if (expected_size != static_cast<std::size_t>(file_size))
             {
                 throw std::runtime_error(
-                    "fixed SRS G1 material size mismatch: " + path.string());
+                    "fixed SRS G1 material size mismatch: " +
+                    path.string());
             }
+
+#if defined(__linux__)
+            if (magic == expected_canonical_magic)
+            {
+                return load_mapped_canonical_g1_vector_file_prefix(
+                    path,
+                    static_cast<std::size_t>(file_size),
+                    point_count,
+                    point_size,
+                    max_points,
+                    actual_hash,
+                    worker_failure);
+            }
+#endif
 
             const auto load_count =
                 max_points == 0
