@@ -58,8 +58,7 @@ namespace
                 const auto lock_error = errno;
                 ::close(descriptor_);
                 descriptor_ = -1;
-                if (lock_error == EWOULDBLOCK
-                    || lock_error == EAGAIN)
+                if (lock_error == EWOULDBLOCK || lock_error == EAGAIN)
                 {
                     throw std::runtime_error(
                         "another gatzk_run is active in this workspace; "
@@ -75,14 +74,12 @@ namespace
             const auto truncate_ok =
                 ::ftruncate(descriptor_, 0) == 0;
             const auto written = truncate_ok
-                ? ::write(
-                      descriptor_,
-                      owner.data(),
-                      owner.size())
-                : static_cast<ssize_t>(-1);
-            if (!truncate_ok
-                || written
-                    != static_cast<ssize_t>(owner.size()))
+                                     ? ::write(
+                                           descriptor_,
+                                           owner.data(),
+                                           owner.size())
+                                     : static_cast<ssize_t>(-1);
+            if (!truncate_ok || written != static_cast<ssize_t>(owner.size()))
             {
                 const auto record_error =
                     errno != 0 ? errno : EIO;
@@ -113,6 +110,121 @@ namespace
     private:
         int descriptor_ = -1;
     };
+
+    class ScopedFormalTimingDiagnosticsSuppression
+    {
+    public:
+        explicit ScopedFormalTimingDiagnosticsSuppression(
+            bool enabled)
+            : enabled_(
+                  enabled &&
+                  std::getenv(
+                      "GATZK_ALLOW_TIMED_PROGRESS") ==
+                      nullptr)
+        {
+            if (!enabled_)
+            {
+                return;
+            }
+
+            capture_and_unset(
+                "GATZK_RUN_PROGRESS",
+                &had_progress_,
+                &progress_value_);
+
+            capture_and_unset(
+                "GATZK_DETAILED_PROFILE",
+                &had_detailed_profile_,
+                &detailed_profile_value_);
+        }
+
+        ScopedFormalTimingDiagnosticsSuppression(
+            const ScopedFormalTimingDiagnosticsSuppression &) =
+            delete;
+
+        ScopedFormalTimingDiagnosticsSuppression &
+        operator=(
+            const ScopedFormalTimingDiagnosticsSuppression &) =
+            delete;
+
+        ~ScopedFormalTimingDiagnosticsSuppression()
+        {
+            restore();
+        }
+
+        void restore() noexcept
+        {
+            if (!enabled_ || restored_)
+            {
+                return;
+            }
+
+            restore_one(
+                "GATZK_RUN_PROGRESS",
+                had_progress_,
+                progress_value_);
+
+            restore_one(
+                "GATZK_DETAILED_PROFILE",
+                had_detailed_profile_,
+                detailed_profile_value_);
+
+            restored_ = true;
+        }
+
+    private:
+        static void capture_and_unset(
+            const char *name,
+            bool *present,
+            std::string *value)
+        {
+            const auto *current =
+                std::getenv(name);
+
+            if (current == nullptr)
+            {
+                return;
+            }
+
+            *present = true;
+            *value = current;
+
+            if (::unsetenv(name) != 0)
+            {
+                throw std::system_error(
+                    errno,
+                    std::generic_category(),
+                    std::string(
+                        "failed to suppress timed diagnostic environment: ") +
+                        name);
+            }
+        }
+
+        static void restore_one(
+            const char *name,
+            bool present,
+            const std::string &value) noexcept
+        {
+            if (!present)
+            {
+                return;
+            }
+
+            (void)::setenv(
+                name,
+                value.c_str(),
+                1);
+        }
+
+        bool enabled_ = false;
+        bool restored_ = false;
+
+        bool had_progress_ = false;
+        std::string progress_value_;
+
+        bool had_detailed_profile_ = false;
+        std::string detailed_profile_value_;
+    };
 }
 
 int main(int argc, char **argv)
@@ -131,28 +243,11 @@ int main(int argc, char **argv)
         };
         auto prove_accounted_ms = [](const gatzk::protocol::RunMetrics &metrics)
         {
-            return metrics.forward_ms
-                + std::max(
-                    0.0,
-                    metrics.trace_generation_ms
-                        - metrics.derived_commitment_point_ms)
-                + std::max(
-                    0.0,
-                    metrics.commit_dynamic_ms
-                        - metrics.dynamic_commit_msm_ms)
-                + std::max(
-                    0.0,
-                    metrics.quotient_build_ms
-                        - metrics.quotient_commitment_ms)
-                + metrics.domain_opening_ms + metrics.external_opening_ms
-                + metrics.proof_serialization_ms + metrics.prove_finalize_ms;
+            return metrics.forward_ms + std::max(0.0, metrics.trace_generation_ms - metrics.derived_commitment_point_ms) + std::max(0.0, metrics.commit_dynamic_ms - metrics.dynamic_commit_msm_ms) + std::max(0.0, metrics.quotient_build_ms - metrics.quotient_commitment_ms) + metrics.domain_opening_ms + metrics.external_opening_ms + metrics.proof_serialization_ms + metrics.prove_finalize_ms;
         };
         auto verify_accounted_ms = [](const gatzk::protocol::RunMetrics &metrics)
         {
-            return metrics.proof_parse_ms + metrics.verify_metadata_ms
-                + metrics.verify_transcript_ms + metrics.verify_domain_opening_ms
-                + metrics.verify_quotient_ms + metrics.verify_external_opening_ms
-                + metrics.verify_misc_ms;
+            return metrics.proof_parse_ms + metrics.verify_metadata_ms + metrics.verify_transcript_ms + metrics.verify_domain_opening_ms + metrics.verify_quotient_ms + metrics.verify_external_opening_ms + metrics.verify_misc_ms;
         };
         auto append_note = [](gatzk::protocol::RunMetrics &metrics, const std::string &note)
         {
@@ -220,12 +315,15 @@ int main(int argc, char **argv)
         {
             return metrics.compute_backend_name == "cuda_hotspots" ? std::string("gpu") : std::string("cpu");
         };
-        const bool progress_enabled = std::getenv("GATZK_RUN_PROGRESS") != nullptr;
         auto progress = [&](const std::string &label)
         {
-            if (progress_enabled)
+            if (std::getenv(
+                    "GATZK_RUN_PROGRESS") != nullptr)
             {
-                std::cerr << "[progress] " << label << '\n';
+                std::cerr
+                    << "[progress] "
+                    << label
+                    << '\n';
             }
         };
 
@@ -321,18 +419,8 @@ int main(int argc, char **argv)
         if (!export_tag.empty())
         {
             const bool valid_export_tag =
-                export_tag.size() <= 96
-                && export_tag != "."
-                && export_tag != ".."
-                && std::all_of(
-                    export_tag.begin(), export_tag.end(),
-                    [](unsigned char value)
-                    {
-                        return (value >= 'a' && value <= 'z')
-                            || (value >= 'A' && value <= 'Z')
-                            || (value >= '0' && value <= '9')
-                            || value == '_' || value == '-' || value == '.';
-                    });
+                export_tag.size() <= 96 && export_tag != "." && export_tag != ".." && std::all_of(export_tag.begin(), export_tag.end(), [](unsigned char value)
+                                                                                                  { return (value >= 'a' && value <= 'z') || (value >= 'A' && value <= 'Z') || (value >= '0' && value <= '9') || value == '_' || value == '-' || value == '.'; });
             if (!valid_export_tag)
             {
                 throw std::runtime_error(
@@ -363,17 +451,13 @@ int main(int argc, char **argv)
                               bool applicable, const std::string &source)
             {
                 entries.push_back(
-                    name + "_state="
-                    + (applicable ? (enabled ? "on" : "off") : "not_applicable")
-                    + "," + name + "_source=" + source
-                    + "," + name + "_applicability="
-                    + (applicable ? "applicable" : "not_applicable"));
+                    name + "_state=" + (applicable ? (enabled ? "on" : "off") : "not_applicable") + "," + name + "_source=" + source + "," + name + "_applicability=" + (applicable ? "applicable" : "not_applicable"));
             };
             auto source = [&](const std::string &name)
             {
                 return cli_optimization_overrides.contains(name)
-                    ? std::string("cli_override")
-                    : std::string("compile_default");
+                           ? std::string("cli_override")
+                           : std::string("compile_default");
             };
             append("fast_msm", route2.fast_msm, true, source("fast_msm"));
             append("parallel_fft", route2.parallel_fft, true, source("parallel_fft"));
@@ -410,8 +494,7 @@ int main(int argc, char **argv)
 
         const auto loaded_config = gatzk::util::load_config(config_path);
         const ExclusiveFormalRunLock formal_run_lock(
-            std::filesystem::current_path()
-            / "runs" / ".gatzk_run.lock");
+            std::filesystem::current_path() / "runs" / ".gatzk_run.lock");
         const auto absolute_config_path = std::filesystem::absolute(config_path).string();
         gatzk::util::set_route2_options(route2);
 
@@ -423,7 +506,12 @@ int main(int argc, char **argv)
                             bool export_artifacts = true,
                             bool log_benchmark = true)
         {
-            const auto row_start = std::chrono::steady_clock::now();
+            ScopedFormalTimingDiagnosticsSuppression
+                timed_diagnostics_suppression(
+                    log_benchmark);
+
+            const auto row_start =
+                std::chrono::steady_clock::now();
             const auto cuda_kernel_count_at_start =
                 gatzk::algebra::cuda_kernel_invocation_count();
             gatzk::protocol::RunMetrics metrics;
@@ -452,13 +540,13 @@ int main(int argc, char **argv)
                                        ? "barycentric_weights,packed_weighted_evaluation,lookup_histogram_size_aware,opening_witness_field_fold_size_aware,KZG_G1_MSM_size_aware,opening_witness_MSM_size_aware"
                                        : "none";
             metrics.gpu_fallback_stages =
-    metrics.compute_backend_name == "cuda_hotspots"
-        ? "pairing,NTT_IFFT,quotient_materialization,small_opening_folds,small_domains"
-        : "not_requested";
+                metrics.compute_backend_name == "cuda_hotspots"
+                    ? "pairing,NTT_IFFT,quotient_materialization,small_opening_folds,small_domains"
+                    : "not_requested";
             metrics.gpu_fallback_reason =
-    metrics.compute_backend_name == "cuda_hotspots"
-        ? "CUDA G1 MSM uses resident cached or bounded streamed execution; stable-SRS and sparse-compacted MSM stay on CUDA; pairing, transforms, and non-MSM small work remain CPU"
-        : "cpu backend run";
+                metrics.compute_backend_name == "cuda_hotspots"
+                    ? "CUDA G1 MSM uses resident cached or bounded streamed execution; stable-SRS and sparse-compacted MSM stay on CUDA; pairing, transforms, and non-MSM small work remain CPU"
+                    : "cpu backend run";
             metrics.gpu_acceleration_status = metrics.compute_backend_name == "cuda_hotspots"
                                                   ? std::string("enabled_cuda_hotspots; accelerated_stages=barycentric_weights,packed_weighted_evaluation,lookup_histogram_size_aware,opening_witness_field_fold_size_aware,KZG_G1_MSM_size_aware,opening_witness_MSM_size_aware; cpu_fallback=pairing,small_opening_folds,small_domains; runtime_present=") + std::string(metrics.gpu_runtime_present ? "true" : "false")
                                                   : std::string("not_requested_cpu_run");
@@ -478,11 +566,10 @@ int main(int argc, char **argv)
             append_note(metrics, "compute_backend=" + metrics.compute_backend_name);
             append_note(
                 metrics,
-                "execution_scope="
-                    + std::string(
-                        metrics.compute_backend_name == "cuda_hotspots"
-                            ? "partial_cuda_hotspots_with_cpu_fallback"
-                            : "full_cpu"));
+                "execution_scope=" + std::string(
+                                         metrics.compute_backend_name == "cuda_hotspots"
+                                             ? "partial_cuda_hotspots_with_cpu_fallback"
+                                             : "full_cpu"));
             if (metrics.compute_backend_name == "cuda_hotspots")
             {
                 append_note(metrics, "cuda_routing=size_aware");
@@ -512,89 +599,40 @@ int main(int argc, char **argv)
             const auto trace = gatzk::protocol::build_trace(context, &metrics);
             const auto trace_elapsed_ms =
                 std::chrono::duration<double, std::milli>(
-                    std::chrono::steady_clock::now() - trace_start).count();
+                    std::chrono::steady_clock::now() - trace_start)
+                    .count();
             metrics.lookup_trace_ms =
-                metrics.lookup_table_pack_ms
-                + metrics.lookup_query_pack_ms
-                + metrics.lookup_key_build_ms
-                + metrics.lookup_multiplicity_ms
-                + metrics.lookup_inverse_ms
-                + metrics.lookup_accumulator_ms
-                + metrics.lookup_state_machine_ms
-                + metrics.lookup_selector_mask_ms
-                + metrics.lookup_public_helper_ms
-                + metrics.lookup_copy_convert_ms;
+                metrics.lookup_table_pack_ms + metrics.lookup_query_pack_ms + metrics.lookup_key_build_ms + metrics.lookup_multiplicity_ms + metrics.lookup_inverse_ms + metrics.lookup_accumulator_ms + metrics.lookup_state_machine_ms + metrics.lookup_selector_mask_ms + metrics.lookup_public_helper_ms + metrics.lookup_copy_convert_ms;
             const auto trace_other_ms = clamp_non_negative(
-                metrics.trace_generation_ms
-                - metrics.hidden_head_trace_ms
-                - metrics.output_head_trace_ms);
+                metrics.trace_generation_ms - metrics.hidden_head_trace_ms - metrics.output_head_trace_ms);
             progress(
-                mode_label + ":trace:done:ms="
-                + format_ms(trace_elapsed_ms));
+                mode_label + ":trace:done:ms=" + format_ms(trace_elapsed_ms));
             progress(
-                mode_label + ":trace:profile"
-                + ":commit_dynamic_ms=" + format_ms(metrics.commit_dynamic_ms)
-                + ":materialization_ms="
-                + format_ms(metrics.dynamic_polynomial_materialization_ms)
-                + ":msm_ms=" + format_ms(metrics.dynamic_commit_msm_ms)
-                + ":derived_point_ms="
-                + format_ms(metrics.derived_commitment_point_ms)
-                + ":trace_generation_ms="
-                + format_ms(metrics.trace_generation_ms)
-                + ":forward_ms=" + format_ms(metrics.forward_ms)
-                + ":lookup_inverse_ms="
-                + format_ms(metrics.lookup_inverse_ms)
-                + ":lookup_accumulator_ms="
-                + format_ms(metrics.lookup_accumulator_ms)
-                + ":lookup_pack_ms="
-                + format_ms(
-                    metrics.lookup_query_pack_ms
-                    + metrics.lookup_multiplicity_ms
-                    + metrics.lookup_key_build_ms)
-                + ":lookup_nested_total_ms="
-                + format_ms(metrics.lookup_trace_ms)
-                + ":hidden_stage_ms="
-                + format_ms(metrics.hidden_head_trace_ms)
-                + ":output_stage_ms="
-                + format_ms(metrics.output_head_trace_ms)
-                + ":trace_other_ms="
-                + format_ms(trace_other_ms)
-                + ":finalize_ms="
-                + format_ms(metrics.trace_finalize_ms));
+                mode_label + ":trace:profile" + ":commit_dynamic_ms=" + format_ms(metrics.commit_dynamic_ms) + ":materialization_ms=" + format_ms(metrics.dynamic_polynomial_materialization_ms) + ":msm_ms=" + format_ms(metrics.dynamic_commit_msm_ms) + ":derived_point_ms=" + format_ms(metrics.derived_commitment_point_ms) + ":trace_generation_ms=" + format_ms(metrics.trace_generation_ms) + ":forward_ms=" + format_ms(metrics.forward_ms) + ":lookup_inverse_ms=" + format_ms(metrics.lookup_inverse_ms) + ":lookup_accumulator_ms=" + format_ms(metrics.lookup_accumulator_ms) + ":lookup_pack_ms=" + format_ms(metrics.lookup_query_pack_ms + metrics.lookup_multiplicity_ms + metrics.lookup_key_build_ms) + ":lookup_nested_total_ms=" + format_ms(metrics.lookup_trace_ms) + ":hidden_stage_ms=" + format_ms(metrics.hidden_head_trace_ms) + ":output_stage_ms=" + format_ms(metrics.output_head_trace_ms) + ":trace_other_ms=" + format_ms(trace_other_ms) + ":finalize_ms=" + format_ms(metrics.trace_finalize_ms));
             metrics.reference_forward_ms = metrics.forward_ms;
             progress(mode_label + ":prove:start");
             const auto proof = gatzk::protocol::prove(context, trace, &metrics);
             const auto serialization_start = std::chrono::steady_clock::now();
             const auto proof_bytes = gatzk::protocol::serialize_proof(proof);
             metrics.proof_serialization_ms = std::chrono::duration<double, std::milli>(
-                std::chrono::steady_clock::now() - serialization_start).count();
+                                                 std::chrono::steady_clock::now() - serialization_start)
+                                                 .count();
             const auto prover_pipeline_end = std::chrono::steady_clock::now();
             progress(mode_label + ":prove:done");
             metrics.lookup_trace_ms =
-                metrics.lookup_table_pack_ms
-                + metrics.lookup_query_pack_ms
-                + metrics.lookup_key_build_ms
-                + metrics.lookup_multiplicity_ms
-                + metrics.lookup_inverse_ms
-                + metrics.lookup_accumulator_ms
-                + metrics.lookup_state_machine_ms
-                + metrics.lookup_selector_mask_ms
-                + metrics.lookup_public_helper_ms
-                + metrics.lookup_copy_convert_ms;
+                metrics.lookup_table_pack_ms + metrics.lookup_query_pack_ms + metrics.lookup_key_build_ms + metrics.lookup_multiplicity_ms + metrics.lookup_inverse_ms + metrics.lookup_accumulator_ms + metrics.lookup_state_machine_ms + metrics.lookup_selector_mask_ms + metrics.lookup_public_helper_ms + metrics.lookup_copy_convert_ms;
             metrics.trace_misc_ms =
                 metrics.route_pack_residual_ms + metrics.selector_padding_residual_ms + metrics.public_poly_residual_ms + metrics.hidden_output_object_residual_ms + metrics.shared_helper_build_ms + metrics.field_conversion_residual_ms + metrics.copy_move_residual_ms + metrics.trace_finalize_ms;
             // build_trace and prove interleave ordinary prover work with commitment
             // point generation.  Measure the contiguous formal prover pipeline once,
             // then partition it into two mutually exclusive metrics.
             metrics.commitment_time_ms =
-                metrics.dynamic_commit_msm_ms
-                + metrics.derived_commitment_point_ms
-                + metrics.quotient_commitment_ms;
+                metrics.dynamic_commit_msm_ms + metrics.derived_commitment_point_ms + metrics.quotient_commitment_ms;
             const auto prover_pipeline_ms =
                 std::chrono::duration<double, std::milli>(
-                    prover_pipeline_end - trace_start).count();
-            if (metrics.commitment_time_ms < 0.0
-                || metrics.commitment_time_ms > prover_pipeline_ms + 1.0)
+                    prover_pipeline_end - trace_start)
+                    .count();
+            if (metrics.commitment_time_ms < 0.0 || metrics.commitment_time_ms > prover_pipeline_ms + 1.0)
             {
                 throw std::runtime_error(
                     "formal commitment timing escaped the prover pipeline");
@@ -605,8 +643,7 @@ int main(int argc, char **argv)
             const auto prove_without_finalize_ms = prove_accounted_ms(metrics);
             const auto prove_overlap_tolerance_ms =
                 std::max(1.0, metrics.prove_time_ms * 0.02);
-            if (prove_without_finalize_ms
-                > metrics.prove_time_ms + prove_overlap_tolerance_ms)
+            if (prove_without_finalize_ms > metrics.prove_time_ms + prove_overlap_tolerance_ms)
             {
                 throw std::runtime_error(
                     "nested prover timers overlap the exclusive formal timing boundary");
@@ -620,16 +657,14 @@ int main(int argc, char **argv)
             const auto parse_start = std::chrono::steady_clock::now();
             const auto parsed_proof = gatzk::protocol::parse_proof(context, proof_bytes);
             metrics.proof_parse_ms = std::chrono::duration<double, std::milli>(
-                std::chrono::steady_clock::now() - parse_start).count();
+                                         std::chrono::steady_clock::now() - parse_start)
+                                         .count();
             const auto accepted = gatzk::protocol::verify(context, parsed_proof, &metrics);
             const auto verify_end = std::chrono::steady_clock::now();
             progress(mode_label + ":verify:done");
             metrics.verify_time_ms = std::chrono::duration<double, std::milli>(verify_end - verify_start).count();
             metrics.verify_misc_ms = clamp_non_negative(
-                metrics.verify_time_ms - metrics.proof_parse_ms
-                - metrics.verify_metadata_ms - metrics.verify_transcript_ms
-                - metrics.verify_domain_opening_ms - metrics.verify_quotient_ms
-                - metrics.verify_external_opening_ms);
+                metrics.verify_time_ms - metrics.proof_parse_ms - metrics.verify_metadata_ms - metrics.verify_transcript_ms - metrics.verify_domain_opening_ms - metrics.verify_quotient_ms - metrics.verify_external_opening_ms);
             metrics.verify_accounted_ms = verify_accounted_ms(metrics);
             metrics.verify_accounting_gap_ms = metrics.verify_time_ms - metrics.verify_accounted_ms;
             metrics.proof_size_bytes = proof_bytes.size();
@@ -639,10 +674,7 @@ int main(int argc, char **argv)
             metrics.payload_audit_ms = std::chrono::duration<double, std::milli>(audit_end - audit_start).count();
             const auto reference_start = std::chrono::steady_clock::now();
             const bool reference_consistent =
-                !trace.reference_quant_logits_hash.empty()
-                && trace.reference_quant_logits_hash == trace.secure_trace_logits_hash
-                && trace.public_logits == parsed_proof.public_logits
-                && private_plain_count == 0;
+                !trace.reference_quant_logits_hash.empty() && trace.reference_quant_logits_hash == trace.secure_trace_logits_hash && trace.public_logits == parsed_proof.public_logits && private_plain_count == 0;
             metrics.cpu_gpu_reference_consistency_passed = reference_consistent;
             const auto reference_end = std::chrono::steady_clock::now();
             metrics.reference_consistency_ms =
@@ -657,21 +689,12 @@ int main(int argc, char **argv)
             {
                 throw std::runtime_error(
                     "reference consistency check failed"
-                    " (reference_hash_present="
-                    + std::string(
+                    " (reference_hash_present=" +
+                    std::string(
                         trace.reference_quant_logits_hash.empty()
-                            ? "false" : "true")
-                    + ", reference_matches_secure="
-                    + std::string(
-                        trace.reference_quant_logits_hash
-                                == trace.secure_trace_logits_hash
-                            ? "true" : "false")
-                    + ", proof_output_matches_trace="
-                    + std::string(
-                        trace.public_logits == parsed_proof.public_logits
-                            ? "true" : "false")
-                    + ", private_plain_count="
-                    + std::to_string(private_plain_count) + ")");
+                            ? "false"
+                            : "true") +
+                    ", reference_matches_secure=" + std::string(trace.reference_quant_logits_hash == trace.secure_trace_logits_hash ? "true" : "false") + ", proof_output_matches_trace=" + std::string(trace.public_logits == parsed_proof.public_logits ? "true" : "false") + ", private_plain_count=" + std::to_string(private_plain_count) + ")");
             }
             if (!tamper_rejected)
             {
@@ -680,9 +703,7 @@ int main(int argc, char **argv)
             metrics.total_wall_clock_ms =
                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - row_start).count();
             metrics.formal_time_sum_ms =
-                metrics.commitment_time_ms
-                + metrics.prove_time_ms
-                + metrics.verify_time_ms;
+                metrics.commitment_time_ms + metrics.prove_time_ms + metrics.verify_time_ms;
             metrics.non_formal_overhead_ms = clamp_non_negative(
                 metrics.total_wall_clock_ms - metrics.formal_time_sum_ms);
             const auto cuda_kernel_count_at_end =
@@ -705,14 +726,11 @@ int main(int argc, char **argv)
                 else
                 {
                     metrics.gpu_used_for =
-                        "partial_size_aware_hotspots; kernel_invocations="
-                        + std::to_string(metrics.gpu_kernel_invocation_count);
+                        "partial_size_aware_hotspots; kernel_invocations=" + std::to_string(metrics.gpu_kernel_invocation_count);
                     metrics.gpu_acceleration_status =
-                        "partial_cuda_hotspots_executed; kernels_executed="
-                        + std::to_string(metrics.gpu_kernel_invocation_count)
-                        + "; gpu_field_fold=opening_witness_size_aware"
-                          "; gpu_g1_msm=dense_immutable_srs_size_aware"
-                          "; cpu_fallback=pairing,NTT_IFFT,quotient_materialization,small_or_sparse_KZG_MSM,small_opening_folds,small_domains";
+                        "partial_cuda_hotspots_executed; kernels_executed=" + std::to_string(metrics.gpu_kernel_invocation_count) + "; gpu_field_fold=opening_witness_size_aware"
+                                                                                                                                    "; gpu_g1_msm=dense_immutable_srs_size_aware"
+                                                                                                                                    "; cpu_fallback=pairing,NTT_IFFT,quotient_materialization,small_or_sparse_KZG_MSM,small_opening_folds,small_domains";
                     append_note(metrics, "cuda_kernel_execution=partial_hotspots_only");
                 }
             }

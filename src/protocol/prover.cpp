@@ -1571,11 +1571,8 @@ namespace gatzk::protocol
             std::vector<std::size_t> interpolation_indices;
             std::vector<std::size_t> direct_indices;
 
-            interpolation_indices.reserve(
-                points.size());
-
-            direct_indices.reserve(
-                points.size());
+            interpolation_indices.reserve(points.size());
+            direct_indices.reserve(points.size());
 
             for (std::size_t point_index = 0;
                  point_index < points.size();
@@ -1593,7 +1590,6 @@ namespace gatzk::protocol
                 {
                     direct_indices.push_back(
                         point_index);
-
                     continue;
                 }
 
@@ -1611,9 +1607,6 @@ namespace gatzk::protocol
 
             constexpr std::size_t kFieldBytes = 32;
 
-            std::array<std::uint8_t, kFieldBytes>
-                bytes{};
-
             std::ifstream stream(
                 spilled.path,
                 std::ios::binary);
@@ -1625,8 +1618,12 @@ namespace gatzk::protocol
                     spilled.path);
             }
 
+            // Direct domain hits are sparse. Keep the O(number_of_points)
+            // seek route so a direct-only opening never scans the whole spill.
             if (interpolation_indices.empty())
             {
+                std::array<std::uint8_t, kFieldBytes> bytes{};
+
                 for (const auto point_index :
                      direct_indices)
                 {
@@ -1677,12 +1674,64 @@ namespace gatzk::protocol
                 spilled.size >=
                     (std::size_t{1} << 18);
 
+            constexpr std::size_t kStreamChunkSize =
+                std::size_t{1} << 20;
+
+            std::vector<FieldElement> chunk;
+            chunk.reserve(
+                std::min(
+                    kStreamChunkSize,
+                    spilled.size));
+
+            auto read_chunk =
+                [&](std::size_t count)
+            {
+                chunk.resize(count);
+
+                try
+                {
+                    algebra::read_field_elements_binary_into(
+                        stream,
+                        std::span<FieldElement>(
+                            chunk.data(),
+                            chunk.size()));
+                }
+                catch (const std::exception &error)
+                {
+                    throw std::runtime_error(
+                        "failed to stream spilled polynomial: " +
+                        spilled.path +
+                        ": " +
+                        error.what());
+                }
+            };
+
+            auto collect_direct_values =
+                [&](std::size_t offset,
+                    std::size_t count)
+            {
+                for (const auto point_index :
+                     direct_indices)
+                {
+                    const auto direct_index =
+                        *weights[point_index]
+                             ->direct_index;
+
+                    if (direct_index < offset ||
+                        direct_index >=
+                            offset + count)
+                    {
+                        continue;
+                    }
+
+                    values[point_index] =
+                        chunk[direct_index -
+                              offset];
+                }
+            };
+
             if (use_cuda_stream)
             {
-                constexpr std::size_t
-                    kCudaSpilledChunkSize =
-                        std::size_t{1} << 20;
-
                 std::vector<const mcl::Fr *>
                     interpolation_weights;
 
@@ -1702,7 +1751,7 @@ namespace gatzk::protocol
                         create_cuda_weighted_dot_session(
                             interpolation_weights,
                             spilled.size,
-                            kCudaSpilledChunkSize);
+                            kStreamChunkSize);
 
                 if (session == nullptr)
                 {
@@ -1710,61 +1759,23 @@ namespace gatzk::protocol
                         "CUDA spilled evaluation route was selected but unavailable");
                 }
 
-                std::vector<mcl::Fr> chunk(
-                    kCudaSpilledChunkSize);
-
                 for (std::size_t offset = 0;
                      offset < spilled.size;)
                 {
                     const auto count =
                         std::min(
-                            kCudaSpilledChunkSize,
+                            kStreamChunkSize,
                             spilled.size - offset);
 
-                    for (std::size_t local = 0;
-                         local < count;
-                         ++local)
-                    {
-                        stream.read(
-                            reinterpret_cast<char *>(
-                                bytes.data()),
-                            static_cast<std::streamsize>(
-                                bytes.size()));
-
-                        if (!stream)
-                        {
-                            throw std::runtime_error(
-                                "failed to stream spilled polynomial: " +
-                                spilled.path);
-                        }
-
-                        const auto value =
-                            FieldElement::
-                                from_little_endian_mod(
-                                    bytes.data(),
-                                    bytes.size());
-
-                        chunk[local] =
-                            value.native();
-
-                        const auto index =
-                            offset + local;
-
-                        for (const auto point_index :
-                             direct_indices)
-                        {
-                            if (*weights[point_index]
-                                     ->direct_index ==
-                                index)
-                            {
-                                values[point_index] =
-                                    value;
-                            }
-                        }
-                    }
+                    read_chunk(count);
+                    collect_direct_values(
+                        offset,
+                        count);
 
                     session->accumulate(
-                        chunk.data(),
+                        FieldElement::
+                            native_array_data(
+                                chunk.data()),
                         offset,
                         count);
 
@@ -1781,17 +1792,17 @@ namespace gatzk::protocol
                         "CUDA spilled evaluation result count mismatch");
                 }
 
-                for (std::size_t column = 0;
-                     column <
+                for (std::size_t result_index = 0;
+                     result_index <
                      interpolation_indices.size();
-                     ++column)
+                     ++result_index)
                 {
                     const auto point_index =
-                        interpolation_indices[column];
+                        interpolation_indices[result_index];
 
                     values[point_index] =
                         FieldElement::from_native(
-                            native_results[column]);
+                            native_results[result_index]);
 
                     if (!spilled
                              .zero_domain_blinder
@@ -1818,57 +1829,50 @@ namespace gatzk::protocol
                 sum.clear();
             }
 
-            for (std::size_t index = 0;
-                 index < spilled.size;
-                 ++index)
+            for (std::size_t offset = 0;
+                 offset < spilled.size;)
             {
-                stream.read(
-                    reinterpret_cast<char *>(
-                        bytes.data()),
-                    static_cast<std::streamsize>(
-                        bytes.size()));
+                const auto count =
+                    std::min(
+                        kStreamChunkSize,
+                        spilled.size - offset);
 
-                if (!stream)
-                {
-                    throw std::runtime_error(
-                        "failed to stream spilled polynomial: " +
-                        spilled.path);
-                }
+                read_chunk(count);
+                collect_direct_values(
+                    offset,
+                    count);
 
-                const auto value =
+                const auto *chunk_native =
                     FieldElement::
-                        from_little_endian_mod(
-                            bytes.data(),
-                            bytes.size());
+                        native_array_data(
+                            chunk.data());
 
-                for (const auto point_index :
-                     interpolation_indices)
+                for (std::size_t local = 0;
+                     local < count;
+                     ++local)
                 {
-                    mcl::Fr term;
+                    const auto global_index =
+                        offset + local;
 
-                    mcl::Fr::mul(
-                        term,
-                        value.native(),
-                        weights[point_index]
-                            ->native_weights[index]);
-
-                    mcl::Fr::add(
-                        native_sums[point_index],
-                        native_sums[point_index],
-                        term);
-                }
-
-                for (const auto point_index :
-                     direct_indices)
-                {
-                    if (*weights[point_index]
-                             ->direct_index ==
-                        index)
+                    for (const auto point_index :
+                         interpolation_indices)
                     {
-                        values[point_index] =
-                            value;
+                        mcl::Fr term;
+
+                        mcl::Fr::mul(
+                            term,
+                            chunk_native[local],
+                            weights[point_index]
+                                ->native_weights[global_index]);
+
+                        mcl::Fr::add(
+                            native_sums[point_index],
+                            native_sums[point_index],
+                            term);
                     }
                 }
+
+                offset += count;
             }
 
             for (const auto point_index :
@@ -1894,6 +1898,7 @@ namespace gatzk::protocol
 
             return values;
         }
+
         // proof 级 memoization 只缓存“当前 trace + 当前 Fiat-Shamir 挑战”派生出的值。
         // 这样既能避免同一点重复求值，又不会把不同 proof 实例的状态混在一起。
         class EvaluationMemoization

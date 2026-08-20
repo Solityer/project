@@ -29,6 +29,7 @@
 #include <openssl/rand.h>
 
 #include "gatzk/algebra/domain_evaluation.hpp"
+#include "gatzk/algebra/field_io.hpp"
 #include "gatzk/algebra/vector_ops.hpp"
 #include "gatzk/protocol/schema.hpp"
 #include "gatzk/util/logging.hpp"
@@ -2661,6 +2662,78 @@ namespace gatzk::crypto
                     });
             }
         }
+        template <typename Consumer>
+        void for_each_file_backed_semantic_source_chunk(
+            const OpeningSemanticSourceInfo &info,
+            const char *operation,
+            Consumer &&consumer)
+        {
+            if (!info.file_backed ||
+                info.file_path.empty())
+            {
+                throw std::runtime_error(
+                    std::string(operation) +
+                    " metadata is incomplete");
+            }
+
+            constexpr std::size_t kChunkSize =
+                std::size_t{1} << 20;
+
+            std::ifstream stream(
+                info.file_path,
+                std::ios::binary);
+
+            if (!stream)
+            {
+                throw std::runtime_error(
+                    "failed to open " +
+                    std::string(operation) +
+                    ": " +
+                    info.file_path);
+            }
+
+            std::vector<FieldElement> chunk;
+            chunk.reserve(
+                std::min(
+                    kChunkSize,
+                    info.value_count));
+
+            for (std::size_t offset = 0;
+                 offset < info.value_count;)
+            {
+                const auto count =
+                    std::min(
+                        kChunkSize,
+                        info.value_count - offset);
+
+                chunk.resize(count);
+
+                try
+                {
+                    algebra::read_field_elements_binary_into(
+                        stream,
+                        std::span<FieldElement>(
+                            chunk.data(),
+                            chunk.size()));
+                }
+                catch (const std::exception &error)
+                {
+                    throw std::runtime_error(
+                        "failed to read " +
+                        std::string(operation) +
+                        ": " +
+                        info.file_path +
+                        ": " +
+                        error.what());
+                }
+
+                consumer(
+                    chunk,
+                    offset);
+
+                offset += count;
+            }
+        }
 
         void accumulate_file_backed_semantic_source(
             FoldedEvaluationGroup *group,
@@ -2676,78 +2749,25 @@ namespace gatzk::crypto
                     "metadata is incomplete");
             }
 
-            constexpr std::size_t kChunkSize =
-                std::size_t{1} << 20;
-
-            std::ifstream stream(
-                info.file_path,
-                std::ios::binary);
-
-            if (!stream)
+            if (scale.is_zero())
             {
-                throw std::runtime_error(
-                    "failed to open semantic source: " +
-                    info.file_path);
+                return;
             }
 
-            std::vector<FieldElement>
-                chunk(kChunkSize);
-
-            std::array<std::uint8_t, 32>
-                bytes{};
-
-            for (std::size_t offset = 0;
-                 offset < info.value_count;)
-            {
-                const auto count =
-                    std::min(
-                        kChunkSize,
-                        info.value_count -
-                            offset);
-
-                for (std::size_t local = 0;
-                     local < count;
-                     ++local)
+            for_each_file_backed_semantic_source_chunk(
+                info,
+                "semantic source",
+                [&](const std::vector<FieldElement> &chunk,
+                    std::size_t offset)
                 {
-                    stream.read(
-                        reinterpret_cast<char *>(
-                            bytes.data()),
-                        static_cast<
-                            std::streamsize>(
-                            bytes.size()));
-
-                    if (!stream)
-                    {
-                        throw std::runtime_error(
-                            "failed to read semantic source: " +
-                            info.file_path);
-                    }
-
-                    chunk[local] =
-                        FieldElement::
-                            from_little_endian_mod(
-                                bytes.data(),
-                                bytes.size());
-                }
-
-                const std::vector<FieldElement>
-                    chunk_values(
-                        chunk.begin(),
-                        chunk.begin() +
-                            static_cast<
-                                std::ptrdiff_t>(
-                                count));
-
-                accumulate_streamed_evaluation_source(
-                    group,
-                    chunk_values,
-                    scale,
-                    info.file_path,
-                    worker_cap,
-                    offset);
-
-                offset += count;
-            }
+                    accumulate_streamed_evaluation_source(
+                        group,
+                        chunk,
+                        scale,
+                        info.file_path,
+                        worker_cap,
+                        offset);
+                });
         }
 
         void accumulate_file_backed_semantic_source_pair(
@@ -2766,80 +2786,28 @@ namespace gatzk::crypto
                     "metadata is incomplete");
             }
 
-            constexpr std::size_t kChunkSize =
-                std::size_t{1} << 20;
-
-            std::ifstream stream(
-                info.file_path,
-                std::ios::binary);
-
-            if (!stream)
+            if (first_scale.is_zero() &&
+                second_scale.is_zero())
             {
-                throw std::runtime_error(
-                    "failed to open paired semantic source: " +
-                    info.file_path);
+                return;
             }
 
-            std::vector<FieldElement>
-                chunk(kChunkSize);
-
-            std::array<std::uint8_t, 32>
-                bytes{};
-
-            for (std::size_t offset = 0;
-                 offset < info.value_count;)
-            {
-                const auto count =
-                    std::min(
-                        kChunkSize,
-                        info.value_count -
-                            offset);
-
-                for (std::size_t local = 0;
-                     local < count;
-                     ++local)
+            for_each_file_backed_semantic_source_chunk(
+                info,
+                "paired semantic source",
+                [&](const std::vector<FieldElement> &chunk,
+                    std::size_t offset)
                 {
-                    stream.read(
-                        reinterpret_cast<char *>(
-                            bytes.data()),
-                        static_cast<
-                            std::streamsize>(
-                            bytes.size()));
-
-                    if (!stream)
-                    {
-                        throw std::runtime_error(
-                            "failed to read paired semantic source: " +
-                            info.file_path);
-                    }
-
-                    chunk[local] =
-                        FieldElement::
-                            from_little_endian_mod(
-                                bytes.data(),
-                                bytes.size());
-                }
-
-                const std::vector<FieldElement>
-                    chunk_values(
-                        chunk.begin(),
-                        chunk.begin() +
-                            static_cast<
-                                std::ptrdiff_t>(
-                                count));
-
-                accumulate_streamed_evaluation_source_pair(
-                    first_group,
-                    second_group,
-                    chunk_values,
-                    first_scale,
-                    second_scale,
-                    info.file_path,
-                    worker_cap,
-                    offset);
-
-                offset += count;
-            }
+                    accumulate_streamed_evaluation_source_pair(
+                        first_group,
+                        second_group,
+                        chunk,
+                        first_scale,
+                        second_scale,
+                        info.file_path,
+                        worker_cap,
+                        offset);
+                });
         }
 
         FieldElement evaluate_with_shared_domain_weights(

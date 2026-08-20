@@ -145,6 +145,12 @@ namespace gatzk::protocol
             return std::getenv("GATZK_RUN_PROGRESS") != nullptr;
         }
 
+        bool detailed_profile_enabled()
+        {
+            return std::getenv("GATZK_DETAILED_PROFILE") != nullptr ||
+                   std::getenv("GATZK_RUN_PROGRESS") != nullptr;
+        }
+
         void progress_note(const std::string &label)
         {
             if (progress_enabled())
@@ -2278,26 +2284,50 @@ namespace gatzk::protocol
                     "dynamic commitment materialization requires ProtocolCompilerArtifact");
             }
             const auto compiler_artifact = trace.compiler_artifact;
-            const auto batch_progress_label = [&]()
+            const bool emit_progress =
+                progress_enabled();
+
+            const auto batch_progress_label =
+                emit_progress
+                    ? [&]()
             {
                 std::ostringstream out;
-                out << "trace:commit_batch:size=" << specs.size() << ":labels=";
-                const auto limit = std::min<std::size_t>(specs.size(), 6);
-                for (std::size_t i = 0; i < limit; ++i)
+                out << "trace:commit_batch:size="
+                    << specs.size()
+                    << ":labels=";
+
+                const auto limit =
+                    std::min<std::size_t>(
+                        specs.size(),
+                        6);
+
+                for (std::size_t i = 0;
+                     i < limit;
+                     ++i)
                 {
                     if (i != 0)
                     {
                         out << ',';
                     }
+
                     out << specs[i].name;
                 }
+
                 if (specs.size() > limit)
                 {
                     out << ",...";
                 }
+
                 return out.str();
-            }();
-            progress_note(batch_progress_label + ":start");
+            }()
+                    : std::string{};
+
+            if (emit_progress)
+            {
+                progress_note(
+                    batch_progress_label +
+                    ":start");
+            }
 
             const auto prepared_payload_budget =
                 dynamic_commitment_prepared_budget_bytes(
@@ -2594,8 +2624,12 @@ namespace gatzk::protocol
                 }
             }
 
-            progress_note(
-                batch_progress_label + ":materialized");
+            if (emit_progress)
+            {
+                progress_note(
+                    batch_progress_label +
+                    ":materialized");
+            }
 
             add_metric(metrics != nullptr ? &metrics->dynamic_polynomial_materialization_ms : nullptr, materialize_start);
 
@@ -2647,22 +2681,39 @@ namespace gatzk::protocol
                 }
             }
             add_metric(metrics != nullptr ? &metrics->dynamic_commit_pack_ms : nullptr, pack_start);
-            if (!deferred_linear_indices.empty())
+            if (!deferred_linear_indices.empty() &&
+                emit_progress)
             {
                 progress_note(
-                    batch_progress_label + ":linear_derived=" + std::to_string(deferred_linear_indices.size()) + ":msm_inputs=" + std::to_string(named_polynomials.size()));
+                    batch_progress_label +
+                    ":linear_derived=" +
+                    std::to_string(
+                        deferred_linear_indices.size()) +
+                    ":msm_inputs=" +
+                    std::to_string(
+                        named_polynomials.size()));
             }
 
             crypto::CommitBatchProfile polynomial_profile;
             if (!named_polynomials.empty())
             {
-                progress_note(batch_progress_label + ":msm:start");
+                if (emit_progress)
+                {
+                    progress_note(
+                        batch_progress_label +
+                        ":msm:start");
+                }
                 const auto commitments = crypto::KZG::commit_batch(
                     named_polynomials,
                     key,
                     &polynomial_profile,
                     trace.evaluation_commitment_cache.get());
-                progress_note(batch_progress_label + ":msm:done");
+                if (emit_progress)
+                {
+                    progress_note(
+                        batch_progress_label +
+                        ":msm:done");
+                }
                 progress_commit_batch_profile(batch_progress_label, polynomial_profile);
                 for (std::size_t i = 0; i < commitments.size(); ++i)
                 {
@@ -2752,80 +2803,222 @@ namespace gatzk::protocol
             }
             if (metrics != nullptr)
             {
-                metrics->dynamic_domain_convert_ms += polynomial_profile.evaluation_ms;
-                metrics->dynamic_commit_msm_ms += polynomial_profile.msm_ms;
-                std::unordered_map<std::string, crypto::CommitObjectProfile> object_profiles;
-                object_profiles.reserve(polynomial_profile.objects.size());
-                for (auto &object : polynomial_profile.objects)
+                metrics->dynamic_domain_convert_ms +=
+                    polynomial_profile.evaluation_ms;
+                metrics->dynamic_commit_msm_ms +=
+                    polynomial_profile.msm_ms;
+
+                if (detailed_profile_enabled())
                 {
-                    object_profiles.emplace(object.name, std::move(object));
-                }
-                for (auto &[name, object] : precomputed_object_profiles)
-                {
-                    object_profiles.emplace(name, std::move(object));
-                }
-                for (const auto &item : prepared)
-                {
-                    const auto profile_it = object_profiles.find(item.name);
-                    if (profile_it == object_profiles.end())
+                    std::unordered_map<
+                        std::string,
+                        crypto::CommitObjectProfile>
+                        object_profiles;
+
+                    object_profiles.reserve(
+                        polynomial_profile.objects.size() +
+                        precomputed_object_profiles.size());
+
+                    for (auto &object :
+                         polynomial_profile.objects)
                     {
-                        continue;
+                        object_profiles.emplace(
+                            object.name,
+                            std::move(object));
                     }
-                    const auto &object = profile_it->second;
-                    const auto vector_length = object.vector_length;
-                    const auto nonzero_count = object.nonzero_scalar_count;
-                    const auto domain_size = item.domain_size != 0 ? item.domain_size : vector_length;
-                    const auto zero_scalar_ratio = vector_length == 0
-                                                       ? 0.0
-                                                       : static_cast<double>(vector_length - std::min(vector_length, nonzero_count)) / static_cast<double>(vector_length);
-                    const auto padding_ratio =
-                        domain_size > vector_length
-                            ? static_cast<double>(domain_size - vector_length) / static_cast<double>(domain_size)
-                            : 0.0;
-                    const auto fingerprint = stable_hash(item.commitment.point.to_string());
-                    std::string duplicate_of;
-                    for (const auto &previous : metrics->dynamic_commitment_profiles)
+
+                    for (auto &[name, object] :
+                         precomputed_object_profiles)
                     {
-                        if (previous.commitment_fingerprint == fingerprint)
+                        object_profiles.emplace(
+                            name,
+                            std::move(object));
+                    }
+
+                    for (const auto &item : prepared)
+                    {
+                        const auto profile_it =
+                            object_profiles.find(
+                                item.name);
+
+                        if (profile_it ==
+                            object_profiles.end())
                         {
-                            duplicate_of = previous.label;
-                            break;
+                            continue;
                         }
+
+                        const auto &object =
+                            profile_it->second;
+
+                        const auto vector_length =
+                            object.vector_length;
+
+                        const auto nonzero_count =
+                            object.nonzero_scalar_count;
+
+                        const auto domain_size =
+                            item.domain_size != 0
+                                ? item.domain_size
+                                : vector_length;
+
+                        const auto zero_scalar_ratio =
+                            vector_length == 0
+                                ? 0.0
+                                : static_cast<double>(
+                                      vector_length -
+                                      std::min(
+                                          vector_length,
+                                          nonzero_count)) /
+                                      static_cast<double>(
+                                          vector_length);
+
+                        const auto padding_ratio =
+                            domain_size > vector_length
+                                ? static_cast<double>(
+                                      domain_size -
+                                      vector_length) /
+                                      static_cast<double>(
+                                          domain_size)
+                                : 0.0;
+
+                        const auto fingerprint =
+                            stable_hash(
+                                item.commitment
+                                    .point
+                                    .to_string());
+
+                        std::string duplicate_of;
+
+                        for (const auto &previous :
+                             metrics->dynamic_commitment_profiles)
+                        {
+                            if (previous
+                                    .commitment_fingerprint ==
+                                fingerprint)
+                            {
+                                duplicate_of =
+                                    previous.label;
+                                break;
+                            }
+                        }
+
+                        DynamicCommitmentObjectProfile
+                            dynamic_profile;
+
+                        dynamic_profile.label =
+                            item.name;
+
+                        dynamic_profile.dataset =
+                            metrics->dataset;
+
+                        dynamic_profile.domain =
+                            object.domain.empty()
+                                ? item.domain_name
+                                : object.domain;
+
+                        dynamic_profile.basis =
+                            object.basis;
+
+                        dynamic_profile.classification =
+                            dynamic_commitment_classification(
+                                item.name,
+                                item);
+
+                        dynamic_profile.ownership =
+                            dynamic_commitment_ownership(
+                                item.name);
+
+                        dynamic_profile.category =
+                            dynamic_commitment_category(
+                                item.name);
+
+                        dynamic_profile
+                            .optimization_opportunity =
+                            dynamic_commitment_opportunity(
+                                item,
+                                object,
+                                zero_scalar_ratio,
+                                padding_ratio);
+
+                        dynamic_profile.duplicate_of =
+                            duplicate_of;
+
+                        dynamic_profile
+                            .commitment_fingerprint =
+                            fingerprint;
+
+                        dynamic_profile.vector_length =
+                            vector_length;
+
+                        dynamic_profile.domain_size =
+                            domain_size;
+
+                        dynamic_profile
+                            .nonzero_scalar_count =
+                            nonzero_count;
+
+                        dynamic_profile
+                            .effective_scalar_count =
+                            object
+                                .effective_scalar_count;
+
+                        dynamic_profile
+                            .zero_scalar_ratio =
+                            zero_scalar_ratio;
+
+                        dynamic_profile.padding_ratio =
+                            padding_ratio;
+
+                        dynamic_profile
+                            .materialization_ms =
+                            item.materialization_ms;
+
+                        dynamic_profile.msm_ms =
+                            object.msm_ms;
+
+                        dynamic_profile
+                            .total_commitment_ms =
+                            item.materialization_ms +
+                            object.msm_ms;
+
+                        dynamic_profile.compact =
+                            item.compact;
+
+                        dynamic_profile
+                            .shared_or_borrowed =
+                            item.shared_or_borrowed;
+
+                        dynamic_profile.reused_shared =
+                            item.reused_shared;
+
+                        dynamic_profile
+                            .duplicates_another =
+                            !duplicate_of.empty();
+
+                        dynamic_profile
+                            .zero_scalar_skipping =
+                            object.zero_scalar_skipping;
+
+                        dynamic_profile
+                            .sparse_compaction =
+                            object.sparse_compaction;
+
+                        dynamic_profile
+                            .constant_tail_folding =
+                            object
+                                .constant_tail_folding;
+
+                        dynamic_profile
+                            .multithreaded_msm =
+                            object.multithreaded_msm;
+
+                        metrics->dynamic_commitment_profiles
+                            .push_back(
+                                std::move(
+                                    dynamic_profile));
                     }
-                    DynamicCommitmentObjectProfile dynamic_profile;
-                    dynamic_profile.label = item.name;
-                    dynamic_profile.dataset = metrics->dataset;
-                    dynamic_profile.domain = object.domain.empty() ? item.domain_name : object.domain;
-                    dynamic_profile.basis = object.basis;
-                    dynamic_profile.classification = dynamic_commitment_classification(item.name, item);
-                    dynamic_profile.ownership = dynamic_commitment_ownership(item.name);
-                    dynamic_profile.category = dynamic_commitment_category(item.name);
-                    dynamic_profile.optimization_opportunity =
-                        dynamic_commitment_opportunity(item, object, zero_scalar_ratio, padding_ratio);
-                    dynamic_profile.duplicate_of = duplicate_of;
-                    dynamic_profile.commitment_fingerprint = fingerprint;
-                    dynamic_profile.vector_length = vector_length;
-                    dynamic_profile.domain_size = domain_size;
-                    dynamic_profile.nonzero_scalar_count = nonzero_count;
-                    dynamic_profile.effective_scalar_count = object.effective_scalar_count;
-                    dynamic_profile.zero_scalar_ratio = zero_scalar_ratio;
-                    dynamic_profile.padding_ratio = padding_ratio;
-                    dynamic_profile.materialization_ms = item.materialization_ms;
-                    dynamic_profile.msm_ms = object.msm_ms;
-                    dynamic_profile.total_commitment_ms =
-                        item.materialization_ms + object.msm_ms;
-                    dynamic_profile.compact = item.compact;
-                    dynamic_profile.shared_or_borrowed = item.shared_or_borrowed;
-                    dynamic_profile.reused_shared = item.reused_shared;
-                    dynamic_profile.duplicates_another = !duplicate_of.empty();
-                    dynamic_profile.zero_scalar_skipping = object.zero_scalar_skipping;
-                    dynamic_profile.sparse_compaction = object.sparse_compaction;
-                    dynamic_profile.constant_tail_folding = object.constant_tail_folding;
-                    dynamic_profile.multithreaded_msm = object.multithreaded_msm;
-                    metrics->dynamic_commitment_profiles.push_back(std::move(dynamic_profile));
                 }
             }
-
             const auto copy_start = Clock::now();
             for (auto &item : prepared)
             {
@@ -2874,7 +3067,12 @@ namespace gatzk::protocol
             }
             add_metric(metrics != nullptr ? &metrics->dynamic_bundle_finalize_ms : nullptr, finalize_start);
             record_dynamic_commit_totals(metrics);
-            progress_note(batch_progress_label + ":done");
+            if (emit_progress)
+            {
+                progress_note(
+                    batch_progress_label +
+                    ":done");
+            }
         }
 
         const std::vector<FieldElement> &eval_data(const ProtocolContext &context, const std::string &name)
