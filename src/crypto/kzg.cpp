@@ -35,784 +35,6 @@
 #include "gatzk/protocol/schema.hpp"
 #include "gatzk/util/logging.hpp"
 #include "gatzk/util/route2.hpp"
-
-std::uint64_t load_u64_le_unaligned(
-    const std::uint8_t *bytes)
-{
-    std::uint64_t value = 0;
-
-    for (std::size_t i = 0; i < 8; ++i)
-    {
-        value |=
-            static_cast<std::uint64_t>(bytes[i])
-            << (8U * i);
-    }
-
-    return value;
-}
-
-std::vector<G1Point>
-load_pipelined_canonical_g1_vector_file_prefix(
-    const std::filesystem::path &path,
-    std::size_t file_size,
-    std::size_t expected_point_count,
-    std::size_t point_size,
-    std::size_t max_points,
-    std::string *actual_hash,
-    G1LoadWorkerFailureInfo &worker_failure)
-{
-    worker_failure = {};
-
-    constexpr std::size_t
-        kHeaderSize = 24;
-
-    constexpr std::size_t
-        kCanonicalWorkerChunkPoints =
-            1ULL << 16;
-
-    constexpr std::size_t
-        kHashBufferBytes =
-            8ULL << 20;
-
-    constexpr std::size_t
-        kMaximumPipelineSlots = 8;
-
-    if (point_size == 0 ||
-        expected_point_count >
-            (std::numeric_limits<std::size_t>::max() -
-             kHeaderSize) /
-                point_size)
-    {
-        throw std::runtime_error(
-            "canonical SRS G1 size overflow: " +
-            path.string());
-    }
-
-    const auto expected_size =
-        kHeaderSize +
-        expected_point_count * point_size;
-
-    if (expected_size != file_size)
-    {
-        throw std::runtime_error(
-            "canonical SRS G1 size mismatch: " +
-            path.string());
-    }
-
-    std::ifstream input(
-        path,
-        std::ios::binary);
-
-    if (!input)
-    {
-        throw std::runtime_error(
-            "failed to open canonical SRS G1 material: " +
-            path.string());
-    }
-
-    SHA256_CTX ctx;
-    SHA256_Init(&ctx);
-
-    auto read_hashed =
-        [&](void *destination,
-            std::size_t byte_count,
-            const char *label)
-    {
-        if (byte_count == 0)
-        {
-            return;
-        }
-
-        input.read(
-            static_cast<char *>(destination),
-            static_cast<std::streamsize>(
-                byte_count));
-
-        if (input.gcount() !=
-            static_cast<std::streamsize>(
-                byte_count))
-        {
-            throw std::runtime_error(
-                "truncated canonical SRS G1 material while reading " +
-                std::string(label) + ": " +
-                path.string());
-        }
-
-        SHA256_Update(
-            &ctx,
-            destination,
-            byte_count);
-    };
-
-    std::array<std::uint8_t, kHeaderSize>
-        header{};
-
-    read_hashed(
-        header.data(),
-        header.size(),
-        "header");
-
-    const std::array<std::uint8_t, 8>
-        expected_magic{{'G', 'A', 'T', 'Z',
-                        'K', 'G', '1', 'C'}};
-
-    if (std::memcmp(
-            header.data(),
-            expected_magic.data(),
-            expected_magic.size()) != 0)
-    {
-        throw std::runtime_error(
-            "canonical SRS G1 header mismatch: " +
-            path.string());
-    }
-
-    const auto encoded_point_count =
-        load_u64_le_unaligned(
-            header.data() + 8);
-
-    const auto encoded_point_size =
-        load_u64_le_unaligned(
-            header.data() + 16);
-
-    if (encoded_point_count !=
-            static_cast<std::uint64_t>(
-                expected_point_count) ||
-        encoded_point_size !=
-            static_cast<std::uint64_t>(
-                point_size))
-    {
-        throw std::runtime_error(
-            "canonical SRS G1 header changed while loading: " +
-            path.string());
-    }
-
-    const auto load_count =
-        max_points == 0
-            ? expected_point_count
-            : std::min(
-                  expected_point_count,
-                  max_points);
-
-    std::vector<G1Point> out(
-        load_count);
-
-    std::atomic<unsigned>
-        worker_failure_kind{
-            static_cast<unsigned>(
-                G1LoadWorkerFailure::None)};
-
-    std::atomic<std::size_t>
-        worker_failure_index{
-            std::numeric_limits<
-                std::size_t>::max()};
-
-    auto record_worker_failure =
-        [&](G1LoadWorkerFailure kind,
-            std::size_t index) noexcept
-    {
-        auto expected =
-            static_cast<unsigned>(
-                G1LoadWorkerFailure::None);
-
-        if (worker_failure_kind
-                .compare_exchange_strong(
-                    expected,
-                    static_cast<unsigned>(kind),
-                    std::memory_order_acq_rel,
-                    std::memory_order_acquire))
-        {
-            worker_failure_index.store(
-                index,
-                std::memory_order_release);
-        }
-    };
-
-    auto worker_failed =
-        [&]() noexcept
-    {
-        return worker_failure_kind.load(
-                   std::memory_order_acquire) !=
-               static_cast<unsigned>(
-                   G1LoadWorkerFailure::None);
-    };
-
-    auto validate_chunk =
-        [&](const std::uint8_t *bytes,
-            std::size_t begin,
-            std::size_t count,
-            std::vector<std::uint8_t>
-                &canonical_bytes)
-    {
-        try
-        {
-            for (std::size_t local = 0;
-                 local < count;
-                 ++local)
-            {
-                if (worker_failed())
-                {
-                    return;
-                }
-
-                const auto index =
-                    begin + local;
-
-                const auto *point_begin =
-                    bytes +
-                    local * point_size;
-
-                const auto consumed =
-                    out[index]
-                        .value
-                        .deserialize(
-                            point_begin,
-                            point_size);
-
-                if (consumed != point_size)
-                {
-                    record_worker_failure(
-                        G1LoadWorkerFailure::
-                            CanonicalDeserialize,
-                        index);
-                    return;
-                }
-
-                if (out[index]
-                        .value
-                        .isZero())
-                {
-                    record_worker_failure(
-                        G1LoadWorkerFailure::
-                            CanonicalIdentity,
-                        index);
-                    return;
-                }
-
-                const auto written =
-                    out[index]
-                        .value
-                        .serialize(
-                            canonical_bytes.data(),
-                            canonical_bytes.size());
-
-                if (written == 0)
-                {
-                    record_worker_failure(
-                        G1LoadWorkerFailure::
-                            CanonicalSerialize,
-                        index);
-                    return;
-                }
-
-                if (written != point_size ||
-                    std::memcmp(
-                        canonical_bytes.data(),
-                        point_begin,
-                        point_size) != 0)
-                {
-                    record_worker_failure(
-                        G1LoadWorkerFailure::
-                            CanonicalEncoding,
-                        index);
-                    return;
-                }
-            }
-        }
-        catch (...)
-        {
-            record_worker_failure(
-                G1LoadWorkerFailure::
-                    UnexpectedCanonical,
-                begin);
-        }
-    };
-
-    const auto cpu_count =
-        std::max<std::size_t>(
-            1,
-            std::thread::
-                hardware_concurrency());
-
-    const auto chunk_count =
-        load_count == 0
-            ? std::size_t{0}
-            : (load_count +
-               kCanonicalWorkerChunkPoints - 1) /
-                  kCanonicalWorkerChunkPoints;
-
-    const auto background_worker_count =
-        cpu_count > 1
-            ? std::min<std::size_t>(
-                  cpu_count - 1,
-                  chunk_count)
-            : std::size_t{0};
-
-    const auto maximum_chunk_points =
-        std::min<std::size_t>(
-            kCanonicalWorkerChunkPoints,
-            std::max<std::size_t>(
-                1,
-                load_count));
-
-    const auto maximum_chunk_bytes =
-        maximum_chunk_points *
-        point_size;
-
-    auto hash_unloaded_suffix =
-        [&]()
-    {
-        const auto unloaded_points =
-            expected_point_count -
-            load_count;
-
-        if (unloaded_points == 0)
-        {
-            return;
-        }
-
-        std::size_t remaining =
-            unloaded_points *
-            point_size;
-
-        auto buffer =
-            std::make_unique<
-                std::uint8_t[]>(
-                kHashBufferBytes);
-
-        while (remaining != 0)
-        {
-            const auto current =
-                std::min<std::size_t>(
-                    remaining,
-                    kHashBufferBytes);
-
-            read_hashed(
-                buffer.get(),
-                current,
-                "authenticated suffix");
-
-            remaining -= current;
-        }
-    };
-
-    if (load_count == 0)
-    {
-        hash_unloaded_suffix();
-
-        unsigned char
-            digest[SHA256_DIGEST_LENGTH];
-
-        SHA256_Final(
-            digest,
-            &ctx);
-
-        if (actual_hash != nullptr)
-        {
-            *actual_hash =
-                bytes_to_hex(
-                    digest,
-                    sizeof(digest));
-        }
-
-        return out;
-    }
-
-    // A single-core host uses the same authenticated bytes but does
-    // not need the producer/consumer queue.
-    if (background_worker_count == 0)
-    {
-        std::vector<std::uint8_t>
-            payload(
-                maximum_chunk_bytes);
-
-        std::vector<std::uint8_t>
-            canonical_bytes(
-                point_size);
-
-        for (std::size_t begin = 0;
-             begin < load_count;
-             begin +=
-             kCanonicalWorkerChunkPoints)
-        {
-            const auto current_count =
-                std::min<std::size_t>(
-                    kCanonicalWorkerChunkPoints,
-                    load_count - begin);
-
-            const auto current_bytes =
-                current_count *
-                point_size;
-
-            read_hashed(
-                payload.data(),
-                current_bytes,
-                "canonical G1 prefix chunk");
-
-            validate_chunk(
-                payload.data(),
-                begin,
-                current_count,
-                canonical_bytes);
-
-            if (worker_failed())
-            {
-                break;
-            }
-        }
-
-        if (!worker_failed())
-        {
-            hash_unloaded_suffix();
-
-            unsigned char
-                digest[SHA256_DIGEST_LENGTH];
-
-            SHA256_Final(
-                digest,
-                &ctx);
-
-            if (actual_hash != nullptr)
-            {
-                *actual_hash =
-                    bytes_to_hex(
-                        digest,
-                        sizeof(digest));
-            }
-        }
-
-        const auto recorded_failure =
-            static_cast<G1LoadWorkerFailure>(
-                worker_failure_kind.load(
-                    std::memory_order_acquire));
-
-        if (recorded_failure !=
-            G1LoadWorkerFailure::None)
-        {
-            worker_failure.kind =
-                recorded_failure;
-
-            worker_failure.index =
-                worker_failure_index.load(
-                    std::memory_order_acquire);
-        }
-
-        return out;
-    }
-
-    struct CanonicalChunkSlot
-    {
-        std::vector<std::uint8_t>
-            bytes;
-
-        std::size_t begin = 0;
-        std::size_t count = 0;
-    };
-
-    const auto slot_count =
-        std::min<std::size_t>(
-            kMaximumPipelineSlots,
-            std::max<std::size_t>(
-                2,
-                background_worker_count + 1));
-
-    std::vector<CanonicalChunkSlot>
-        slots(slot_count);
-
-    for (auto &slot : slots)
-    {
-        slot.bytes.resize(
-            maximum_chunk_bytes);
-    }
-
-    std::deque<std::size_t>
-        free_slots;
-
-    std::deque<std::size_t>
-        ready_slots;
-
-    for (std::size_t i = 0;
-         i < slot_count;
-         ++i)
-    {
-        free_slots.push_back(i);
-    }
-
-    std::mutex queue_mutex;
-    std::condition_variable
-        free_cv;
-    std::condition_variable
-        ready_cv;
-
-    bool producer_done = false;
-    std::atomic<bool>
-        cancel_requested{false};
-
-    auto validation_worker =
-        [&]()
-    {
-        std::vector<std::uint8_t>
-            canonical_bytes;
-
-        try
-        {
-            canonical_bytes.resize(
-                point_size);
-        }
-        catch (...)
-        {
-            record_worker_failure(
-                G1LoadWorkerFailure::
-                    UnexpectedCanonical,
-                0);
-            return;
-        }
-
-        while (true)
-        {
-            std::size_t slot_index = 0;
-
-            {
-                std::unique_lock<std::mutex>
-                    lock(queue_mutex);
-
-                ready_cv.wait(
-                    lock,
-                    [&]()
-                    {
-                        return producer_done ||
-                               !ready_slots.empty();
-                    });
-
-                if (ready_slots.empty())
-                {
-                    return;
-                }
-
-                slot_index =
-                    ready_slots.front();
-
-                ready_slots.pop_front();
-            }
-
-            auto &slot =
-                slots[slot_index];
-
-            if (!cancel_requested.load(
-                    std::memory_order_acquire) &&
-                !worker_failed())
-            {
-                validate_chunk(
-                    slot.bytes.data(),
-                    slot.begin,
-                    slot.count,
-                    canonical_bytes);
-            }
-
-            {
-                std::lock_guard<std::mutex>
-                    lock(queue_mutex);
-
-                free_slots.push_back(
-                    slot_index);
-            }
-
-            free_cv.notify_one();
-        }
-    };
-
-    std::vector<std::jthread>
-        workers;
-
-    workers.reserve(
-        background_worker_count);
-
-    try
-    {
-        for (std::size_t worker = 0;
-             worker <
-             background_worker_count;
-             ++worker)
-        {
-            workers.emplace_back(
-                validation_worker);
-        }
-    }
-    catch (...)
-    {
-        {
-            std::lock_guard<std::mutex>
-                lock(queue_mutex);
-
-            producer_done = true;
-        }
-
-        cancel_requested.store(
-            true,
-            std::memory_order_release);
-
-        ready_cv.notify_all();
-        free_cv.notify_all();
-
-        throw;
-    }
-
-    std::exception_ptr
-        producer_exception;
-
-    bool prefix_complete = true;
-
-    try
-    {
-        for (std::size_t begin = 0;
-             begin < load_count;
-             begin +=
-             kCanonicalWorkerChunkPoints)
-        {
-            std::size_t slot_index = 0;
-
-            {
-                std::unique_lock<std::mutex>
-                    lock(queue_mutex);
-
-                free_cv.wait(
-                    lock,
-                    [&]()
-                    {
-                        return worker_failed() ||
-                               !free_slots.empty();
-                    });
-
-                if (worker_failed())
-                {
-                    prefix_complete = false;
-                    break;
-                }
-
-                slot_index =
-                    free_slots.front();
-
-                free_slots.pop_front();
-            }
-
-            auto &slot =
-                slots[slot_index];
-
-            slot.begin = begin;
-
-            slot.count =
-                std::min<std::size_t>(
-                    kCanonicalWorkerChunkPoints,
-                    load_count - begin);
-
-            const auto current_bytes =
-                slot.count *
-                point_size;
-
-            read_hashed(
-                slot.bytes.data(),
-                current_bytes,
-                "canonical G1 prefix chunk");
-
-            {
-                std::lock_guard<std::mutex>
-                    lock(queue_mutex);
-
-                ready_slots.push_back(
-                    slot_index);
-            }
-
-            ready_cv.notify_one();
-        }
-
-        if (prefix_complete &&
-            !worker_failed())
-        {
-            // Workers consume the exact prefix bytes already entered
-            // into SHA-256 while this thread authenticates the suffix.
-            hash_unloaded_suffix();
-        }
-    }
-    catch (...)
-    {
-        producer_exception =
-            std::current_exception();
-
-        cancel_requested.store(
-            true,
-            std::memory_order_release);
-    }
-
-    {
-        std::lock_guard<std::mutex>
-            lock(queue_mutex);
-
-        producer_done = true;
-    }
-
-    ready_cv.notify_all();
-    free_cv.notify_all();
-
-    // After I/O and hashing finish, the caller also drains validation
-    // work instead of leaving one CPU unused.
-    validation_worker();
-
-    for (auto &worker : workers)
-    {
-        if (worker.joinable())
-        {
-            worker.join();
-        }
-    }
-
-    if (producer_exception)
-    {
-        std::rethrow_exception(
-            producer_exception);
-    }
-
-    const auto recorded_failure =
-        static_cast<G1LoadWorkerFailure>(
-            worker_failure_kind.load(
-                std::memory_order_acquire));
-
-    if (recorded_failure !=
-        G1LoadWorkerFailure::None)
-    {
-        worker_failure.kind =
-            recorded_failure;
-
-        worker_failure.index =
-            worker_failure_index.load(
-                std::memory_order_acquire);
-
-        return out;
-    }
-
-    if (!prefix_complete)
-    {
-        throw std::runtime_error(
-            "canonical SRS G1 validation stopped before prefix authentication completed: " +
-            path.string());
-    }
-
-    unsigned char
-        digest[SHA256_DIGEST_LENGTH];
-
-    SHA256_Final(
-        digest,
-        &ctx);
-
-    if (actual_hash != nullptr)
-    {
-        *actual_hash =
-            bytes_to_hex(
-                digest,
-                sizeof(digest));
-    }
-
-    return out;
-}
-
 namespace gatzk::crypto
 {
     namespace
@@ -1482,116 +704,6 @@ namespace gatzk::crypto
             return "unknown parallel SRS G1 validation failure: " + path.string();
         }
 
-#if defined(__linux__)
-        class ScopedReadOnlySrsMapping
-        {
-        public:
-            ScopedReadOnlySrsMapping(
-                const std::filesystem::path &path,
-                std::size_t expected_size)
-                : size_(expected_size)
-            {
-                fd_ = ::open(
-                    path.c_str(),
-                    O_RDONLY | O_CLOEXEC);
-
-                if (fd_ < 0)
-                {
-                    throw std::runtime_error(
-                        "failed to open SRS material for mmap: " +
-                        path.string() + ": " +
-                        std::strerror(errno));
-                }
-
-                struct stat st{};
-
-                if (::fstat(fd_, &st) != 0)
-                {
-                    const auto error =
-                        std::string(std::strerror(errno));
-
-                    ::close(fd_);
-                    fd_ = -1;
-
-                    throw std::runtime_error(
-                        "failed to stat SRS material for mmap: " +
-                        path.string() + ": " + error);
-                }
-
-                if (st.st_size < 0 ||
-                    static_cast<std::uint64_t>(st.st_size) !=
-                        static_cast<std::uint64_t>(expected_size))
-                {
-                    ::close(fd_);
-                    fd_ = -1;
-
-                    throw std::runtime_error(
-                        "SRS material changed while opening mmap: " +
-                        path.string());
-                }
-
-                mapping_ =
-                    ::mmap(
-                        nullptr,
-                        size_,
-                        PROT_READ,
-                        MAP_PRIVATE,
-                        fd_,
-                        0);
-
-                if (mapping_ == MAP_FAILED)
-                {
-                    mapping_ = nullptr;
-
-                    const auto error =
-                        std::string(std::strerror(errno));
-
-                    ::close(fd_);
-                    fd_ = -1;
-
-                    throw std::runtime_error(
-                        "failed to mmap SRS material: " +
-                        path.string() + ": " + error);
-                }
-            }
-
-            ~ScopedReadOnlySrsMapping()
-            {
-                if (mapping_ != nullptr)
-                {
-                    ::munmap(mapping_, size_);
-                }
-
-                if (fd_ >= 0)
-                {
-                    ::close(fd_);
-                }
-            }
-
-            ScopedReadOnlySrsMapping(
-                const ScopedReadOnlySrsMapping &) = delete;
-
-            ScopedReadOnlySrsMapping &
-            operator=(
-                const ScopedReadOnlySrsMapping &) = delete;
-
-            const std::uint8_t *data() const
-            {
-                return static_cast<const std::uint8_t *>(
-                    mapping_);
-            }
-
-            std::size_t size() const
-            {
-                return size_;
-            }
-
-        private:
-            int fd_ = -1;
-            void *mapping_ = nullptr;
-            std::size_t size_ = 0;
-        };
-
         std::uint64_t load_u64_le_unaligned(
             const std::uint8_t *bytes)
         {
@@ -1600,8 +712,7 @@ namespace gatzk::crypto
             for (std::size_t i = 0; i < 8; ++i)
             {
                 value |=
-                    static_cast<std::uint64_t>(
-                        bytes[i])
+                    static_cast<std::uint64_t>(bytes[i])
                     << (8U * i);
             }
 
@@ -1609,7 +720,7 @@ namespace gatzk::crypto
         }
 
         std::vector<G1Point>
-        load_mapped_canonical_g1_vector_file_prefix(
+        load_pipelined_canonical_g1_vector_file_prefix(
             const std::filesystem::path &path,
             std::size_t file_size,
             std::size_t expected_point_count,
@@ -1628,57 +739,20 @@ namespace gatzk::crypto
                     1ULL << 16;
 
             constexpr std::size_t
-                kMappedHashChunkBytes =
+                kHashBufferBytes =
                     8ULL << 20;
 
-            ScopedReadOnlySrsMapping mapping(
-                path,
-                file_size);
+            constexpr std::size_t
+                kMaximumPipelineSlots = 8;
 
-            const auto *file_bytes =
-                mapping.data();
-
-            const std::array<std::uint8_t, 8>
-                expected_magic{{'G', 'A', 'T', 'Z',
-                                'K', 'G', '1', 'C'}};
-
-            if (std::memcmp(
-                    file_bytes,
-                    expected_magic.data(),
-                    expected_magic.size()) != 0)
+            if (point_size == 0 ||
+                expected_point_count >
+                    (std::numeric_limits<std::size_t>::max() -
+                     kHeaderSize) /
+                        point_size)
             {
                 throw std::runtime_error(
-                    "canonical SRS G1 mmap header mismatch: " +
-                    path.string());
-            }
-
-            const auto mapped_point_count_u64 =
-                load_u64_le_unaligned(
-                    file_bytes + 8);
-
-            const auto mapped_point_size_u64 =
-                load_u64_le_unaligned(
-                    file_bytes + 16);
-
-            if (mapped_point_count_u64 !=
-                    static_cast<std::uint64_t>(
-                        expected_point_count) ||
-                mapped_point_size_u64 !=
-                    static_cast<std::uint64_t>(
-                        point_size))
-            {
-                throw std::runtime_error(
-                    "canonical SRS G1 changed while mapping: " +
-                    path.string());
-            }
-
-            if (expected_point_count >
-                (std::numeric_limits<std::size_t>::max() -
-                 kHeaderSize) /
-                    point_size)
-            {
-                throw std::runtime_error(
-                    "canonical SRS G1 mmap size overflow: " +
+                    "canonical SRS G1 size overflow: " +
                     path.string());
             }
 
@@ -1689,7 +763,94 @@ namespace gatzk::crypto
             if (expected_size != file_size)
             {
                 throw std::runtime_error(
-                    "canonical SRS G1 mmap size mismatch: " +
+                    "canonical SRS G1 size mismatch: " +
+                    path.string());
+            }
+
+            std::ifstream input(
+                path,
+                std::ios::binary);
+
+            if (!input)
+            {
+                throw std::runtime_error(
+                    "failed to open canonical SRS G1 material: " +
+                    path.string());
+            }
+
+            SHA256_CTX ctx;
+            SHA256_Init(&ctx);
+
+            auto read_hashed =
+                [&](void *destination,
+                    std::size_t byte_count,
+                    const char *label)
+            {
+                if (byte_count == 0)
+                {
+                    return;
+                }
+
+                input.read(
+                    static_cast<char *>(destination),
+                    static_cast<std::streamsize>(
+                        byte_count));
+
+                if (input.gcount() !=
+                    static_cast<std::streamsize>(
+                        byte_count))
+                {
+                    throw std::runtime_error(
+                        "truncated canonical SRS G1 material while reading " +
+                        std::string(label) + ": " +
+                        path.string());
+                }
+
+                SHA256_Update(
+                    &ctx,
+                    destination,
+                    byte_count);
+            };
+
+            std::array<std::uint8_t, kHeaderSize>
+                header{};
+
+            read_hashed(
+                header.data(),
+                header.size(),
+                "header");
+
+            const std::array<std::uint8_t, 8>
+                expected_magic{{'G', 'A', 'T', 'Z',
+                                'K', 'G', '1', 'C'}};
+
+            if (std::memcmp(
+                    header.data(),
+                    expected_magic.data(),
+                    expected_magic.size()) != 0)
+            {
+                throw std::runtime_error(
+                    "canonical SRS G1 header mismatch: " +
+                    path.string());
+            }
+
+            const auto encoded_point_count =
+                load_u64_le_unaligned(
+                    header.data() + 8);
+
+            const auto encoded_point_size =
+                load_u64_le_unaligned(
+                    header.data() + 16);
+
+            if (encoded_point_count !=
+                    static_cast<std::uint64_t>(
+                        expected_point_count) ||
+                encoded_point_size !=
+                    static_cast<std::uint64_t>(
+                        point_size))
+            {
+                throw std::runtime_error(
+                    "canonical SRS G1 header changed while loading: " +
                     path.string());
             }
 
@@ -1743,116 +904,85 @@ namespace gatzk::crypto
                            G1LoadWorkerFailure::None);
             };
 
-            std::atomic<std::size_t>
-                next_begin{0};
-
-            auto validation_worker =
-                [&]()
+            auto validate_chunk =
+                [&](const std::uint8_t *bytes,
+                    std::size_t begin,
+                    std::size_t count,
+                    std::vector<std::uint8_t>
+                        &canonical_bytes)
             {
-                std::size_t active_begin =
-                    std::numeric_limits<
-                        std::size_t>::max();
-
                 try
                 {
-                    std::vector<std::uint8_t>
-                        canonical_bytes(
-                            point_size);
-
-                    while (true)
+                    for (std::size_t local = 0;
+                         local < count;
+                         ++local)
                     {
                         if (worker_failed())
                         {
                             return;
                         }
 
-                        const auto begin =
-                            next_begin.fetch_add(
-                                kCanonicalWorkerChunkPoints,
-                                std::memory_order_relaxed);
+                        const auto index =
+                            begin + local;
 
-                        active_begin = begin;
+                        const auto *point_begin =
+                            bytes +
+                            local * point_size;
 
-                        if (begin >= load_count)
+                        const auto consumed =
+                            out[index]
+                                .value
+                                .deserialize(
+                                    point_begin,
+                                    point_size);
+
+                        if (consumed != point_size)
                         {
+                            record_worker_failure(
+                                G1LoadWorkerFailure::
+                                    CanonicalDeserialize,
+                                index);
                             return;
                         }
 
-                        const auto end =
-                            std::min<std::size_t>(
-                                load_count,
-                                begin +
-                                    kCanonicalWorkerChunkPoints);
-
-                        for (std::size_t index = begin;
-                             index < end;
-                             ++index)
+                        if (out[index]
+                                .value
+                                .isZero())
                         {
-                            if (worker_failed())
-                            {
-                                return;
-                            }
+                            record_worker_failure(
+                                G1LoadWorkerFailure::
+                                    CanonicalIdentity,
+                                index);
+                            return;
+                        }
 
-                            const auto *point_begin =
-                                file_bytes +
-                                kHeaderSize +
-                                index * point_size;
-
-                            const auto consumed =
-                                out[index]
-                                    .value
-                                    .deserialize(
-                                        point_begin,
-                                        point_size);
-
-                            if (consumed != point_size)
-                            {
-                                record_worker_failure(
-                                    G1LoadWorkerFailure::
-                                        CanonicalDeserialize,
-                                    index);
-                                return;
-                            }
-
-                            if (out[index]
-                                    .value
-                                    .isZero())
-                            {
-                                record_worker_failure(
-                                    G1LoadWorkerFailure::
-                                        CanonicalIdentity,
-                                    index);
-                                return;
-                            }
-
-                            const auto written =
-                                out[index]
-                                    .value
-                                    .serialize(
-                                        canonical_bytes.data(),
-                                        canonical_bytes.size());
-
-                            if (written == 0)
-                            {
-                                record_worker_failure(
-                                    G1LoadWorkerFailure::
-                                        CanonicalSerialize,
-                                    index);
-                                return;
-                            }
-
-                            if (written != point_size ||
-                                std::memcmp(
+                        const auto written =
+                            out[index]
+                                .value
+                                .serialize(
                                     canonical_bytes.data(),
-                                    point_begin,
-                                    point_size) != 0)
-                            {
-                                record_worker_failure(
-                                    G1LoadWorkerFailure::
-                                        CanonicalEncoding,
-                                    index);
-                                return;
-                            }
+                                    canonical_bytes.size());
+
+                        if (written == 0)
+                        {
+                            record_worker_failure(
+                                G1LoadWorkerFailure::
+                                    CanonicalSerialize,
+                                index);
+                            return;
+                        }
+
+                        if (written != point_size ||
+                            std::memcmp(
+                                canonical_bytes.data(),
+                                point_begin,
+                                point_size) != 0)
+                        {
+                            record_worker_failure(
+                                G1LoadWorkerFailure::
+                                    CanonicalEncoding,
+                                index);
+                            return;
                         }
                     }
                 }
@@ -1861,7 +991,7 @@ namespace gatzk::crypto
                     record_worker_failure(
                         G1LoadWorkerFailure::
                             UnexpectedCanonical,
-                        active_begin);
+                        begin);
                 }
             };
 
@@ -1878,10 +1008,6 @@ namespace gatzk::crypto
                        kCanonicalWorkerChunkPoints - 1) /
                           kCanonicalWorkerChunkPoints;
 
-            // Keep one execution context available for the mandatory
-            // full-file SHA-256 scan.  Once hashing completes the calling
-            // thread joins validation work, so all CPUs are used for the
-            // remaining canonical checks.
             const auto background_worker_count =
                 cpu_count > 1
                     ? std::min<std::size_t>(
@@ -1889,63 +1015,435 @@ namespace gatzk::crypto
                           chunk_count)
                     : std::size_t{0};
 
-            std::vector<std::thread> workers;
+            const auto maximum_chunk_points =
+                std::min<std::size_t>(
+                    kCanonicalWorkerChunkPoints,
+                    std::max<std::size_t>(
+                        1,
+                        load_count));
+
+            const auto maximum_chunk_bytes =
+                maximum_chunk_points *
+                point_size;
+
+            auto hash_unloaded_suffix =
+                [&]()
+            {
+                const auto unloaded_points =
+                    expected_point_count -
+                    load_count;
+
+                if (unloaded_points == 0)
+                {
+                    return;
+                }
+
+                std::size_t remaining =
+                    unloaded_points *
+                    point_size;
+
+                auto buffer =
+                    std::make_unique<
+                        std::uint8_t[]>(
+                        kHashBufferBytes);
+
+                while (remaining != 0)
+                {
+                    const auto current =
+                        std::min<std::size_t>(
+                            remaining,
+                            kHashBufferBytes);
+
+                    read_hashed(
+                        buffer.get(),
+                        current,
+                        "authenticated suffix");
+
+                    remaining -= current;
+                }
+            };
+
+            if (load_count == 0)
+            {
+                hash_unloaded_suffix();
+
+                unsigned char
+                    digest[SHA256_DIGEST_LENGTH];
+
+                SHA256_Final(
+                    digest,
+                    &ctx);
+
+                if (actual_hash != nullptr)
+                {
+                    *actual_hash =
+                        bytes_to_hex(
+                            digest,
+                            sizeof(digest));
+                }
+
+                return out;
+            }
+
+            // A single-core host uses the same authenticated bytes but does
+            // not need the producer/consumer queue.
+            if (background_worker_count == 0)
+            {
+                std::vector<std::uint8_t>
+                    payload(
+                        maximum_chunk_bytes);
+
+                std::vector<std::uint8_t>
+                    canonical_bytes(
+                        point_size);
+
+                for (std::size_t begin = 0;
+                     begin < load_count;
+                     begin +=
+                     kCanonicalWorkerChunkPoints)
+                {
+                    const auto current_count =
+                        std::min<std::size_t>(
+                            kCanonicalWorkerChunkPoints,
+                            load_count - begin);
+
+                    const auto current_bytes =
+                        current_count *
+                        point_size;
+
+                    read_hashed(
+                        payload.data(),
+                        current_bytes,
+                        "canonical G1 prefix chunk");
+
+                    validate_chunk(
+                        payload.data(),
+                        begin,
+                        current_count,
+                        canonical_bytes);
+
+                    if (worker_failed())
+                    {
+                        break;
+                    }
+                }
+
+                if (!worker_failed())
+                {
+                    hash_unloaded_suffix();
+
+                    unsigned char
+                        digest[SHA256_DIGEST_LENGTH];
+
+                    SHA256_Final(
+                        digest,
+                        &ctx);
+
+                    if (actual_hash != nullptr)
+                    {
+                        *actual_hash =
+                            bytes_to_hex(
+                                digest,
+                                sizeof(digest));
+                    }
+                }
+
+                const auto recorded_failure =
+                    static_cast<G1LoadWorkerFailure>(
+                        worker_failure_kind.load(
+                            std::memory_order_acquire));
+
+                if (recorded_failure !=
+                    G1LoadWorkerFailure::None)
+                {
+                    worker_failure.kind =
+                        recorded_failure;
+
+                    worker_failure.index =
+                        worker_failure_index.load(
+                            std::memory_order_acquire);
+                }
+
+                return out;
+            }
+
+            struct CanonicalChunkSlot
+            {
+                std::vector<std::uint8_t>
+                    bytes;
+
+                std::size_t begin = 0;
+                std::size_t count = 0;
+            };
+
+            const auto slot_count =
+                std::min<std::size_t>(
+                    kMaximumPipelineSlots,
+                    std::max<std::size_t>(
+                        2,
+                        background_worker_count + 1));
+
+            std::vector<CanonicalChunkSlot>
+                slots(slot_count);
+
+            for (auto &slot : slots)
+            {
+                slot.bytes.resize(
+                    maximum_chunk_bytes);
+            }
+
+            std::deque<std::size_t>
+                free_slots;
+
+            std::deque<std::size_t>
+                ready_slots;
+
+            for (std::size_t i = 0;
+                 i < slot_count;
+                 ++i)
+            {
+                free_slots.push_back(i);
+            }
+
+            std::mutex queue_mutex;
+            std::condition_variable
+                free_cv;
+            std::condition_variable
+                ready_cv;
+
+            bool producer_done = false;
+            std::atomic<bool>
+                cancel_requested{false};
+
+            auto validation_worker =
+                [&]()
+            {
+                std::vector<std::uint8_t>
+                    canonical_bytes;
+
+                try
+                {
+                    canonical_bytes.resize(
+                        point_size);
+                }
+                catch (...)
+                {
+                    record_worker_failure(
+                        G1LoadWorkerFailure::
+                            UnexpectedCanonical,
+                        0);
+
+                    cancel_requested.store(
+                        true,
+                        std::memory_order_release);
+
+                    free_cv.notify_all();
+                    ready_cv.notify_all();
+
+                    return;
+                }
+
+                while (true)
+                {
+                    std::size_t slot_index = 0;
+
+                    {
+                        std::unique_lock<std::mutex>
+                            lock(queue_mutex);
+
+                        ready_cv.wait(
+                            lock,
+                            [&]()
+                            {
+                                return producer_done ||
+                                       !ready_slots.empty();
+                            });
+
+                        if (ready_slots.empty())
+                        {
+                            return;
+                        }
+
+                        slot_index =
+                            ready_slots.front();
+
+                        ready_slots.pop_front();
+                    }
+
+                    auto &slot =
+                        slots[slot_index];
+
+                    if (!cancel_requested.load(
+                            std::memory_order_acquire) &&
+                        !worker_failed())
+                    {
+                        validate_chunk(
+                            slot.bytes.data(),
+                            slot.begin,
+                            slot.count,
+                            canonical_bytes);
+                    }
+
+                    {
+                        std::lock_guard<std::mutex>
+                            lock(queue_mutex);
+
+                        free_slots.push_back(
+                            slot_index);
+                    }
+
+                    free_cv.notify_one();
+                }
+            };
+
+            std::vector<std::jthread>
+                workers;
+
             workers.reserve(
                 background_worker_count);
 
-            for (std::size_t worker = 0;
-                 worker < background_worker_count;
-                 ++worker)
+            try
             {
-                workers.emplace_back(
-                    validation_worker);
+                for (std::size_t worker = 0;
+                     worker <
+                     background_worker_count;
+                     ++worker)
+                {
+                    workers.emplace_back(
+                        validation_worker);
+                }
+            }
+            catch (...)
+            {
+                {
+                    std::lock_guard<std::mutex>
+                        lock(queue_mutex);
+
+                    producer_done = true;
+                }
+
+                cancel_requested.store(
+                    true,
+                    std::memory_order_release);
+
+                ready_cv.notify_all();
+                free_cv.notify_all();
+
+                throw;
             }
 
-            // Hash exactly the authenticated file bytes.  Validation workers
-            // only read the same MAP_PRIVATE/PROT_READ mapping.
-            SHA256_CTX mapped_hash;
-            SHA256_Init(&mapped_hash);
+            std::exception_ptr
+                producer_exception;
 
-            std::size_t hash_offset = 0;
+            bool prefix_complete = true;
 
-            while (hash_offset < mapping.size())
+            try
             {
-                const auto chunk =
-                    std::min<std::size_t>(
-                        mapping.size() -
-                            hash_offset,
-                        kMappedHashChunkBytes);
+                for (std::size_t begin = 0;
+                     begin < load_count;
+                     begin +=
+                     kCanonicalWorkerChunkPoints)
+                {
+                    std::size_t slot_index = 0;
 
-                SHA256_Update(
-                    &mapped_hash,
-                    file_bytes + hash_offset,
-                    chunk);
+                    {
+                        std::unique_lock<std::mutex>
+                            lock(queue_mutex);
 
-                hash_offset += chunk;
+                        free_cv.wait(
+                            lock,
+                            [&]()
+                            {
+                                return worker_failed() ||
+                                       !free_slots.empty();
+                            });
+
+                        if (worker_failed())
+                        {
+                            prefix_complete = false;
+                            break;
+                        }
+
+                        slot_index =
+                            free_slots.front();
+
+                        free_slots.pop_front();
+                    }
+
+                    auto &slot =
+                        slots[slot_index];
+
+                    slot.begin = begin;
+
+                    slot.count =
+                        std::min<std::size_t>(
+                            kCanonicalWorkerChunkPoints,
+                            load_count - begin);
+
+                    const auto current_bytes =
+                        slot.count *
+                        point_size;
+
+                    read_hashed(
+                        slot.bytes.data(),
+                        current_bytes,
+                        "canonical G1 prefix chunk");
+
+                    {
+                        std::lock_guard<std::mutex>
+                            lock(queue_mutex);
+
+                        ready_slots.push_back(
+                            slot_index);
+                    }
+
+                    ready_cv.notify_one();
+                }
+
+                if (prefix_complete &&
+                    !worker_failed())
+                {
+                    // Workers consume the exact prefix bytes already entered
+                    // into SHA-256 while this thread authenticates the suffix.
+                    hash_unloaded_suffix();
+                }
+            }
+            catch (...)
+            {
+                producer_exception =
+                    std::current_exception();
+
+                cancel_requested.store(
+                    true,
+                    std::memory_order_release);
             }
 
-            unsigned char
-                digest[SHA256_DIGEST_LENGTH];
-
-            SHA256_Final(
-                digest,
-                &mapped_hash);
-
-            if (actual_hash != nullptr)
             {
-                *actual_hash =
-                    bytes_to_hex(
-                        digest,
-                        sizeof(digest));
+                std::lock_guard<std::mutex>
+                    lock(queue_mutex);
+
+                producer_done = true;
             }
 
-            // The hash thread now becomes another validation worker instead
-            // of leaving one CPU idle for the remainder of a full SRS load.
+            ready_cv.notify_all();
+            free_cv.notify_all();
+
+            // After I/O and hashing finish, the caller also drains validation
+            // work instead of leaving one CPU unused.
             validation_worker();
 
             for (auto &worker : workers)
             {
-                worker.join();
+                if (worker.joinable())
+                {
+                    worker.join();
+                }
+            }
+
+            if (producer_exception)
+            {
+                std::rethrow_exception(
+                    producer_exception);
             }
 
             const auto recorded_failure =
@@ -1962,11 +1460,35 @@ namespace gatzk::crypto
                 worker_failure.index =
                     worker_failure_index.load(
                         std::memory_order_acquire);
+
+                return out;
+            }
+
+            if (!prefix_complete)
+            {
+                throw std::runtime_error(
+                    "canonical SRS G1 validation stopped before prefix authentication completed: " +
+                    path.string());
+            }
+
+            unsigned char
+                digest[SHA256_DIGEST_LENGTH];
+
+            SHA256_Final(
+                digest,
+                &ctx);
+
+            if (actual_hash != nullptr)
+            {
+                *actual_hash =
+                    bytes_to_hex(
+                        digest,
+                        sizeof(digest));
             }
 
             return out;
         }
-#endif
+
         std::vector<G1Point> load_fixed_or_raw_g1_vector_file_prefix(
             const std::filesystem::path &path,
             std::streamoff file_size,
