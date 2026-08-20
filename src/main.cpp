@@ -541,14 +541,14 @@ int main(int argc, char **argv)
                                        : "none";
             metrics.gpu_fallback_stages =
                 metrics.compute_backend_name == "cuda_hotspots"
-                    ? "pairing,NTT_IFFT,quotient_materialization,small_opening_folds,small_domains"
+                    ? "pairing,NTT_IFFT,quotient_materialization,cold_singleton_stable_SRS_MSM,small_opening_folds,small_domains"
                     : "not_requested";
             metrics.gpu_fallback_reason =
                 metrics.compute_backend_name == "cuda_hotspots"
-                    ? "CUDA G1 MSM uses resident cached or bounded streamed execution; stable-SRS and sparse-compacted MSM stay on CUDA; pairing, transforms, and non-MSM small work remain CPU"
+                    ? "CUDA G1 MSM uses same-SRS batching and warm resident stable-SRS reuse; cold singleton stable-SRS MSMs may remain on CPU to avoid unamortized upload/cache preparation; selected large MSMs retain resident or bounded streamed CUDA execution; pairing, transforms, and non-MSM small work remain CPU"
                     : "cpu backend run";
             metrics.gpu_acceleration_status = metrics.compute_backend_name == "cuda_hotspots"
-                                                  ? std::string("enabled_cuda_hotspots; accelerated_stages=barycentric_weights,packed_weighted_evaluation,lookup_histogram_size_aware,opening_witness_field_fold_size_aware,KZG_G1_MSM_size_aware,opening_witness_MSM_size_aware; cpu_fallback=pairing,small_opening_folds,small_domains; runtime_present=") + std::string(metrics.gpu_runtime_present ? "true" : "false")
+                                                  ? std::string("enabled_cuda_hotspots; accelerated_stages=barycentric_weights,packed_weighted_evaluation,lookup_histogram_size_aware,opening_witness_field_fold_size_aware,KZG_G1_MSM_size_aware,opening_witness_MSM_size_aware; cpu_fallback=pairing,cold_singleton_stable_SRS_MSM,small_opening_folds,small_domains; runtime_present=") + std::string(metrics.gpu_runtime_present ? "true" : "false")
                                                   : std::string("not_requested_cpu_run");
             if (route2.fft_backend_upgrade && route2.fft_kernel_upgrade)
             {

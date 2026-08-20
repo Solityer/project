@@ -370,6 +370,36 @@ namespace gatzk::crypto
                 }
             }
 
+            void trim_to_bytes(
+                std::size_t maximum_bytes)
+            {
+                while (cached_bytes_ >
+                       maximum_bytes)
+                {
+                    if (entries_.empty())
+                    {
+                        throw std::runtime_error(
+                            "CUDA G1 MSM base-cache trim "
+                            "accounting underflow");
+                    }
+
+                    auto victim =
+                        std::min_element(
+                            entries_.begin(),
+                            entries_.end(),
+                            [](const auto &lhs,
+                               const auto &rhs)
+                            {
+                                return lhs.second.last_use <
+                                       rhs.second.last_use;
+                            });
+
+                    erase_entry(
+                        victim,
+                        "base-cache trim");
+                }
+            }
+
             // The caller holds the single CUDA-MSM execution lock, so lookup,
             // preparation, eviction, and use cannot race with another MSM.
             bls12_381::affine_t *get_or_prepare(
@@ -1515,6 +1545,73 @@ namespace gatzk::crypto
         }
 
     } // namespace
+
+    bool cuda_g1_msm_resident_prefix_available(
+        const G1Point *points,
+        std::size_t count,
+        std::size_t stable_srs_capacity)
+    {
+        if (!util::route2_options()
+                 .cuda_field_hotspots)
+        {
+            return false;
+        }
+
+        if (!algebra::cuda_backend_available())
+        {
+            throw std::runtime_error(
+                "CUDA G1 MSM residency probe requested "
+                "without an available CUDA runtime");
+        }
+
+        if (count == 0)
+        {
+            return true;
+        }
+
+        if (points == nullptr)
+        {
+            throw std::runtime_error(
+                "CUDA G1 MSM residency probe received "
+                "a null SRS pointer");
+        }
+
+        if (stable_srs_capacity < count)
+        {
+            throw std::runtime_error(
+                "CUDA G1 MSM residency probe received "
+                "an invalid SRS capacity");
+        }
+
+        std::lock_guard<std::mutex>
+            execution_lock(
+                cuda_msm_execution_mutex());
+
+        return DeviceBaseCache::instance()
+            .contains_usable_prefix(
+                points,
+                count,
+                stable_srs_capacity);
+    }
+
+    void trim_cuda_g1_msm_resident_cache(
+        std::size_t maximum_bytes)
+    {
+        if (!util::route2_options()
+                 .cuda_field_hotspots)
+        {
+            return;
+        }
+
+        std::lock_guard<std::mutex>
+            execution_lock(
+                cuda_msm_execution_mutex());
+
+        DeviceBaseCache::instance()
+            .trim_to_bytes(
+                maximum_bytes);
+    }
+
     void release_cuda_g1_msm_resident_cache()
     {
         if (!util::route2_options().cuda_field_hotspots)

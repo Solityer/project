@@ -801,6 +801,7 @@ namespace gatzk::crypto
         const algebra::FieldElement *scalars = nullptr;
         std::size_t count = 0;
         std::size_t stable_srs_capacity = 0;
+        bool executed_on_cuda = false;
         bool done = false;
         std::string error;
     };
@@ -815,7 +816,7 @@ namespace gatzk::crypto
         {
         }
 
-        void submit(
+        bool submit(
             G1Point *output,
             const G1Point *points,
             const algebra::FieldElement *scalars,
@@ -829,6 +830,7 @@ namespace gatzk::crypto
                 .count = count,
                 .stable_srs_capacity =
                     stable_srs_capacity,
+                .executed_on_cuda = false,
                 .done = false,
                 .error = {},
             };
@@ -856,6 +858,8 @@ namespace gatzk::crypto
                 throw std::runtime_error(
                     request.error);
             }
+
+            return request.executed_on_cuda;
         }
 
         void worker_finished()
@@ -972,6 +976,23 @@ namespace gatzk::crypto
                             auto *request =
                                 group.requests[offset];
 
+                            // A cold singleton cannot amortize SRS
+                            // normalization/upload/cache preparation.
+                            // Return it to the canonical CPU route.
+                            // If the immutable prefix is already resident,
+                            // CUDA reuse remains profitable and stays enabled.
+                            if (!cuda_g1_msm_resident_prefix_available(
+                                    request->points,
+                                    request->count,
+                                    request
+                                        ->stable_srs_capacity))
+                            {
+                                request->executed_on_cuda =
+                                    false;
+
+                                continue;
+                            }
+
                             if (!try_cuda_g1_msm(
                                     request->output,
                                     request->points,
@@ -982,9 +1003,12 @@ namespace gatzk::crypto
                                         ->stable_srs_capacity))
                             {
                                 throw std::runtime_error(
-                                    "CUDA MSM batch window "
-                                    "attempted a CPU fallback");
+                                    "CUDA resident singleton MSM "
+                                    "attempted an unexpected fallback");
                             }
+
+                            request->executed_on_cuda =
+                                true;
 
                             continue;
                         }
@@ -1022,6 +1046,15 @@ namespace gatzk::crypto
                             throw std::runtime_error(
                                 "CUDA same-SRS batch "
                                 "attempted a CPU fallback");
+                        }
+
+                        for (std::size_t batch = 0;
+                             batch < current_batch;
+                             ++batch)
+                        {
+                            group.requests[offset + batch]
+                                ->executed_on_cuda =
+                                true;
                         }
                     }
                     catch (const std::exception &error)
@@ -1198,14 +1231,12 @@ namespace gatzk::crypto
                     current_cuda_msm_batch_window();
                 batch_window != nullptr)
             {
-                batch_window->submit(
+                return batch_window->submit(
                     output,
                     points,
                     scalars,
                     count,
                     stable_srs_capacity);
-
-                return true;
             }
         }
 

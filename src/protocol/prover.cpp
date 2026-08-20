@@ -70,6 +70,31 @@ namespace gatzk::protocol
         thread_local std::size_t
             quotient_transform_worker_cap = 0;
 
+        thread_local std::vector<mcl::Fr>
+            quotient_coefficient_work;
+
+        class ScopedQuotientCoefficientScratchRelease
+        {
+        public:
+            ScopedQuotientCoefficientScratchRelease() =
+                default;
+
+            ScopedQuotientCoefficientScratchRelease(
+                const ScopedQuotientCoefficientScratchRelease &) =
+                delete;
+
+            ScopedQuotientCoefficientScratchRelease &
+            operator=(
+                const ScopedQuotientCoefficientScratchRelease &) =
+                delete;
+
+            ~ScopedQuotientCoefficientScratchRelease()
+            {
+                std::vector<mcl::Fr>().swap(
+                    quotient_coefficient_work);
+            }
+        };
+
         class ScopedQuotientTransformWorkerCap
         {
         public:
@@ -4083,38 +4108,33 @@ namespace gatzk::protocol
 
             if (usable_shift_powers != nullptr)
             {
-                for (std::size_t i = 0;
-                     i < coefficient_count;
-                     ++i)
-                {
-                    mcl::Fr::mul(
-                        work[i],
-                        coefficients[i],
-                        (*usable_shift_powers)[i]);
-                }
+                parallel_for_chunks_static(
+                    coefficient_count,
+                    std::size_t{1} << 18,
+                    quotient_transform_worker_cap,
+                    [&](std::size_t begin,
+                        std::size_t end)
+                    {
+                        for (std::size_t i = begin;
+                             i < end;
+                             ++i)
+                        {
+                            mcl::Fr::mul(
+                                work[i],
+                                coefficients[i],
+                                (*usable_shift_powers)[i]);
+                        }
+                    });
             }
             else
             {
-                mcl::Fr shift_power;
-                shift_power = 1;
-
-                const auto shift_native =
-                    shift.native();
-
-                for (std::size_t i = 0;
-                     i < coefficient_count;
-                     ++i)
-                {
-                    mcl::Fr::mul(
-                        work[i],
-                        coefficients[i],
-                        shift_power);
-
-                    mcl::Fr::mul(
-                        shift_power,
-                        shift_power,
-                        shift_native);
-                }
+                algebra::
+                    copy_scaled_by_geometric_powers_native(
+                        coefficients,
+                        work,
+                        coefficient_count,
+                        shift,
+                        quotient_transform_worker_cap);
             }
 
             for (std::size_t i = coefficient_count;
@@ -4136,8 +4156,8 @@ namespace gatzk::protocol
             FieldElement *output,
             bool preserve_even_odd_split_output = false)
         {
-            thread_local std::vector<mcl::Fr>
-                coefficient_work;
+            auto &coefficient_work =
+                quotient_coefficient_work;
 
             auto active_coefficient_size =
                 [](const std::vector<mcl::Fr> &values)
@@ -4292,12 +4312,45 @@ namespace gatzk::protocol
                 progress_note(std::string(progress_prefix) + ":shift_scale:start");
             }
 
-            const auto powers = inverse_shift_powers(values.size(), shift);
-            parallel_for_chunks_static(values.size(), 1ULL << 12, 0, [&](std::size_t begin, std::size_t end)
-                                       {
-                for (std::size_t i = begin; i < end; ++i) {
-                    mcl::Fr::mul(work[i], work[i], (*powers)[i]);
-                } });
+            constexpr std::size_t
+                kStreamingInverseScaleThreshold =
+                    std::size_t{1} << 23;
+
+            if (values.size() >=
+                kStreamingInverseScaleThreshold)
+            {
+                algebra::
+                    scale_by_geometric_powers_native(
+                        work,
+                        values.size(),
+                        shift.inv(),
+                        quotient_transform_worker_cap);
+            }
+            else
+            {
+                const auto powers =
+                    inverse_shift_powers(
+                        values.size(),
+                        shift);
+
+                parallel_for_chunks_static(
+                    values.size(),
+                    1ULL << 12,
+                    quotient_transform_worker_cap,
+                    [&](std::size_t begin,
+                        std::size_t end)
+                    {
+                        for (std::size_t i = begin;
+                             i < end;
+                             ++i)
+                        {
+                            mcl::Fr::mul(
+                                work[i],
+                                work[i],
+                                (*powers)[i]);
+                        }
+                    });
+            }
             if (!progress_prefix.empty())
             {
                 progress_note(std::string(progress_prefix) + ":shift_scale:done");
@@ -7197,21 +7250,6 @@ namespace gatzk::protocol
 
                 return retained;
             }
-
-            bool large_cuda_split_lane_route_enabled() const
-            {
-                if (label_ != "t_edge" ||
-                    target_size_ < (std::size_t{1} << 25) ||
-                    (target_size_ & 1U) != 0U ||
-                    !util::route2_options().cuda_field_hotspots)
-                {
-                    return false;
-                }
-
-                return algebra::should_use_cuda_ntt_pair(
-                    target_size_ / 2);
-            }
-
             bool can_preserve_split_lane_output(
                 const algebra::Polynomial &polynomial) const
             {
@@ -9384,22 +9422,26 @@ namespace gatzk::protocol
                 (void)name;
                 return coefficients_native_from_polynomial(polynomial);
             }
-
             const std::vector<mcl::Fr> &shift_powers()
             {
                 std::call_once(
                     shift_powers_once_,
                     [&]()
                     {
+                        // quotient cosets are 4x their authenticated
+                        // domain. The common paired transform consumes
+                        // at most the first half of the coset coefficient
+                        // range. Larger exceptional coefficient vectors
+                        // automatically use the geometric streaming path.
                         const auto power_count =
-                            large_cuda_split_lane_route_enabled()
+                            target_size_ >= 2
                                 ? target_size_ / 2
                                 : target_size_;
 
                         shift_powers_.resize(
                             power_count);
 
-                        if (target_size_ == 0)
+                        if (power_count == 0)
                         {
                             return;
                         }
@@ -9407,7 +9449,8 @@ namespace gatzk::protocol
                         algebra::geometric_powers_native(
                             shift_powers_.data(),
                             shift_powers_.size(),
-                            shift_);
+                            shift_,
+                            quotient_transform_worker_cap);
                     });
 
                 return shift_powers_;
@@ -9513,6 +9556,9 @@ namespace gatzk::protocol
 
             const auto materialize_one = [&](const std::string &label)
             {
+                const ScopedQuotientCoefficientScratchRelease
+                    coefficient_scratch_release;
+
                 const auto start = Clock::now();
                 progress_note("prove:quotient:" + label + ":start");
                 QuotientPolynomialMaterializer materializer(context, trace, challenges, label);
@@ -11393,13 +11439,21 @@ namespace gatzk::protocol
             if (route2.cuda_field_hotspots &&
                 large_quotient_working_set)
             {
-                progress_note(
-                    "prove:quotient:release_cuda_msm_cache:start");
+                constexpr std::size_t
+                    kRetainedCudaMsmBaseBytes =
+                        std::size_t{512} << 20;
 
-                crypto::release_cuda_g1_msm_resident_cache();
+                progress_note(
+                    "prove:quotient:trim_cuda_msm_cache:start");
+
+                crypto::trim_cuda_g1_msm_resident_cache(
+                    kRetainedCudaMsmBaseBytes);
 
                 progress_note(
-                    "prove:quotient:release_cuda_msm_cache:done");
+                    "prove:quotient:trim_cuda_msm_cache:done:"
+                    "maximum_bytes=" +
+                    std::to_string(
+                        kRetainedCudaMsmBaseBytes));
             }
 
             auto named_quotient_polynomials = materialize_quotient_polynomials(

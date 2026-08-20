@@ -201,7 +201,8 @@ namespace gatzk::algebra
     void geometric_powers_native(
         mcl::Fr *output,
         std::size_t size,
-        const FieldElement &base)
+        const FieldElement &base,
+        std::size_t max_worker_count)
     {
         if (size == 0)
         {
@@ -213,8 +214,9 @@ namespace gatzk::algebra
                 "geometric powers require a non-null output");
         }
         constexpr std::size_t kMinRowsPerTask = 1ULL << 12;
-        const auto available_workers = std::max<std::size_t>(
-            1, std::thread::hardware_concurrency());
+        const auto available_workers =
+            bounded_worker_count(
+                max_worker_count);
         const auto task_count = size < kMinRowsPerTask
                                     ? std::size_t{1}
                                     : std::min<std::size_t>(
@@ -246,6 +248,232 @@ namespace gatzk::algebra
                     }
                 }));
         }
+        for (auto &future : futures)
+        {
+            future.get();
+        }
+    }
+
+    void scale_by_geometric_powers_native(
+        mcl::Fr *values,
+        std::size_t size,
+        const FieldElement &base,
+        std::size_t max_worker_count)
+    {
+        if (size == 0)
+        {
+            return;
+        }
+
+        if (values == nullptr)
+        {
+            throw std::runtime_error(
+                "geometric in-place scaling requires a non-null buffer");
+        }
+
+        constexpr std::size_t kMinRowsPerWorker =
+            std::size_t{1} << 18;
+
+        const auto available_workers =
+            bounded_worker_count(
+                max_worker_count);
+
+        const auto worker_count =
+            std::min<std::size_t>({
+                8,
+                available_workers,
+                std::max<std::size_t>(
+                    1,
+                    (size + kMinRowsPerWorker - 1) /
+                        kMinRowsPerWorker),
+            });
+
+        const auto base_native =
+            base.native();
+
+        const auto scale_range =
+            [&](std::size_t begin,
+                std::size_t end)
+        {
+            auto power =
+                base.pow(
+                        static_cast<std::uint64_t>(
+                            begin))
+                    .native();
+
+            for (std::size_t index = begin;
+                 index < end;
+                 ++index)
+            {
+                mcl::Fr::mul(
+                    values[index],
+                    values[index],
+                    power);
+
+                mcl::Fr::mul(
+                    power,
+                    power,
+                    base_native);
+            }
+        };
+
+        if (worker_count <= 1)
+        {
+            scale_range(0, size);
+            return;
+        }
+
+        const auto chunk_size =
+            (size + worker_count - 1) /
+            worker_count;
+
+        std::vector<std::future<void>>
+            futures;
+
+        futures.reserve(worker_count);
+
+        for (std::size_t worker = 0;
+             worker < worker_count;
+             ++worker)
+        {
+            const auto begin =
+                worker * chunk_size;
+
+            const auto end =
+                std::min(
+                    size,
+                    begin + chunk_size);
+
+            if (begin >= end)
+            {
+                break;
+            }
+
+            futures.push_back(
+                std::async(
+                    std::launch::async,
+                    [&, begin, end]()
+                    {
+                        scale_range(
+                            begin,
+                            end);
+                    }));
+        }
+
+        for (auto &future : futures)
+        {
+            future.get();
+        }
+    }
+
+    void copy_scaled_by_geometric_powers_native(
+        const mcl::Fr *input,
+        mcl::Fr *output,
+        std::size_t size,
+        const FieldElement &base,
+        std::size_t max_worker_count)
+    {
+        if (size == 0)
+        {
+            return;
+        }
+
+        if (input == nullptr ||
+            output == nullptr)
+        {
+            throw std::runtime_error(
+                "geometric copy scaling requires non-null buffers");
+        }
+
+        constexpr std::size_t kMinRowsPerWorker =
+            std::size_t{1} << 18;
+
+        const auto available_workers =
+            bounded_worker_count(
+                max_worker_count);
+
+        const auto worker_count =
+            std::min<std::size_t>({
+                8,
+                available_workers,
+                std::max<std::size_t>(
+                    1,
+                    (size + kMinRowsPerWorker - 1) /
+                        kMinRowsPerWorker),
+            });
+
+        const auto base_native =
+            base.native();
+
+        const auto copy_range =
+            [&](std::size_t begin,
+                std::size_t end)
+        {
+            auto power =
+                base.pow(
+                        static_cast<std::uint64_t>(
+                            begin))
+                    .native();
+
+            for (std::size_t index = begin;
+                 index < end;
+                 ++index)
+            {
+                mcl::Fr::mul(
+                    output[index],
+                    input[index],
+                    power);
+
+                mcl::Fr::mul(
+                    power,
+                    power,
+                    base_native);
+            }
+        };
+
+        if (worker_count <= 1)
+        {
+            copy_range(0, size);
+            return;
+        }
+
+        const auto chunk_size =
+            (size + worker_count - 1) /
+            worker_count;
+
+        std::vector<std::future<void>>
+            futures;
+
+        futures.reserve(worker_count);
+
+        for (std::size_t worker = 0;
+             worker < worker_count;
+             ++worker)
+        {
+            const auto begin =
+                worker * chunk_size;
+
+            const auto end =
+                std::min(
+                    size,
+                    begin + chunk_size);
+
+            if (begin >= end)
+            {
+                break;
+            }
+
+            futures.push_back(
+                std::async(
+                    std::launch::async,
+                    [&, begin, end]()
+                    {
+                        copy_range(
+                            begin,
+                            end);
+                    }));
+        }
+
         for (auto &future : futures)
         {
             future.get();

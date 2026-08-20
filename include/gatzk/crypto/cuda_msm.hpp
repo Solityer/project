@@ -11,16 +11,7 @@ namespace gatzk::crypto
 {
     struct G1Point;
 
-    // Executes G1 MSM on CUDA when cuda_hotspots is active.
-    //
-    // Immutable SRS inputs retain the resident/cache fast path whenever the
-    // complete MSM fits the current resource envelope.  Oversized,
-    // memory-constrained, and temporary compacted inputs use bounded streamed
-    // CUDA execution.
-    //
-    // Returning false means CUDA MSM was not requested because the CPU backend
-    // is active.  Once cuda_hotspots selects MSM execution, the MSM stays on
-    // CUDA or fails closed; it does not silently fall back to a CPU MSM.
+    // Execute an MSM on CUDA after the execution router has selected CUDA.
     bool try_cuda_g1_msm(
         G1Point *output,
         const G1Point *points,
@@ -29,9 +20,8 @@ namespace gatzk::crypto
         bool stable_srs_bases,
         std::size_t stable_srs_capacity);
 
-    // Execution-only same-SRS batching.  Every batch member computes an
-    // independent MSM with its own scalar vector while reusing exactly the
-    // same immutable SRS point slice.  This changes scheduling only.
+    // Execute several independent scalar vectors against one immutable
+    // SRS point slice while sharing its CUDA residency/upload.
     bool try_cuda_g1_msm_same_bases_batch(
         G1Point *const *outputs,
         const G1Point *points,
@@ -40,12 +30,19 @@ namespace gatzk::crypto
         std::size_t batch_size,
         std::size_t stable_srs_capacity);
 
-    // Execution-only phase boundary hook.
-    //
-    // Large quotient construction needs the unified host-memory working set
-    // that may otherwise remain occupied by immutable SRS bases cached by
-    // earlier CUDA MSMs. Releasing this cache changes only CUDA resource
-    // residency; all SRS material remains available in the canonical host key
-    // and can be uploaded again by a later CUDA MSM.
+    // Execution-only residency probe used by the scheduling layer.
+    // A cold singleton SRS request may remain on CPU instead of paying an
+    // unamortized normalization/upload/cache-preparation cost.
+    bool cuda_g1_msm_resident_prefix_available(
+        const G1Point *points,
+        std::size_t count,
+        std::size_t stable_srs_capacity);
+
+    // Execution-only phase-boundary trim. Keep a bounded hot SRS subset while
+    // returning most CUDA memory to large quotient construction.
+    void trim_cuda_g1_msm_resident_cache(
+        std::size_t maximum_bytes);
+
+    // Fully release resident CUDA SRS material.
     void release_cuda_g1_msm_resident_cache();
 }

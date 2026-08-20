@@ -24,6 +24,19 @@ namespace gatzk::crypto
         return false;
     }
 
+    bool cuda_g1_msm_resident_prefix_available(
+        const G1Point *,
+        std::size_t,
+        std::size_t)
+    {
+        return false;
+    }
+
+    void trim_cuda_g1_msm_resident_cache(
+        std::size_t)
+    {
+    }
+
     void release_cuda_g1_msm_resident_cache()
     {
     }

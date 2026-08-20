@@ -134,13 +134,28 @@ namespace gatzk::algebra
     // 共享 NTT plan 缓存，供 quotient materialization 与可复用 prover-side material 转换使用。
     std::shared_ptr<const mcl::Ntt<mcl::Fr>> ntt_plan(std::size_t size);
 
-    // Fill [1, base, base^2, ...] with exact chunk-local starting powers.
-    // Large quotient coset transforms reuse this execution helper for their
-    // forward and inverse shift scalings.
     void geometric_powers_native(
         mcl::Fr *output,
         std::size_t size,
-        const FieldElement &base);
+        const FieldElement &base,
+        std::size_t max_worker_count = 0);
+
+    // Multiply an existing native field vector by
+    // [1, base, base^2, ...] without materializing that power vector.
+    void scale_by_geometric_powers_native(
+        mcl::Fr *values,
+        std::size_t size,
+        const FieldElement &base,
+        std::size_t max_worker_count = 0);
+
+    // Copy input to output while applying
+    // [1, base, base^2, ...], avoiding a persistent power table.
+    void copy_scaled_by_geometric_powers_native(
+        const mcl::Fr *input,
+        mcl::Fr *output,
+        std::size_t size,
+        const FieldElement &base,
+        std::size_t max_worker_count = 0);
 
     // Prepare the two half-size NTT lanes used to evaluate a coefficient
     // polynomial on the even and odd points of a doubled quotient coset.
