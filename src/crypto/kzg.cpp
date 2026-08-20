@@ -736,14 +736,18 @@ namespace gatzk::crypto
 
             constexpr std::size_t
                 kCanonicalWorkerChunkPoints =
-                    1ULL << 16;
+                    1ULL << 14;
 
             constexpr std::size_t
                 kHashBufferBytes =
                     8ULL << 20;
 
+            // Keep enough reusable canonical buffers to expose the same CPU
+            // parallelism as the former async loader without allowing temporary
+            // payload storage to grow without a deterministic bound.
             constexpr std::size_t
-                kMaximumPipelineSlots = 8;
+                kPipelineBufferBudgetBytes =
+                    256ULL << 20;
 
             if (point_size == 0 ||
                 expected_point_count >
@@ -1008,7 +1012,7 @@ namespace gatzk::crypto
                        kCanonicalWorkerChunkPoints - 1) /
                           kCanonicalWorkerChunkPoints;
 
-            const auto background_worker_count =
+            const auto desired_worker_count =
                 cpu_count > 1
                     ? std::min<std::size_t>(
                           cpu_count - 1,
@@ -1025,6 +1029,28 @@ namespace gatzk::crypto
             const auto maximum_chunk_bytes =
                 maximum_chunk_points *
                 point_size;
+
+            const auto max_slots_by_memory =
+                std::max<std::size_t>(
+                    1,
+                    kPipelineBufferBudgetBytes /
+                        std::max<std::size_t>(
+                            1,
+                            maximum_chunk_bytes));
+
+            const auto slot_count =
+                std::max<std::size_t>(
+                    1,
+                    std::min<std::size_t>(
+                        chunk_count,
+                        std::min<std::size_t>(
+                            desired_worker_count + 2,
+                            max_slots_by_memory)));
+
+            const auto background_worker_count =
+                std::min<std::size_t>(
+                    desired_worker_count,
+                    slot_count);
 
             auto hash_unloaded_suffix =
                 [&]()
@@ -1175,13 +1201,6 @@ namespace gatzk::crypto
                 std::size_t begin = 0;
                 std::size_t count = 0;
             };
-
-            const auto slot_count =
-                std::min<std::size_t>(
-                    kMaximumPipelineSlots,
-                    std::max<std::size_t>(
-                        2,
-                        background_worker_count + 1));
 
             std::vector<CanonicalChunkSlot>
                 slots(slot_count);
