@@ -50,15 +50,9 @@ namespace gatzk::crypto
             1ULL << 26;
 
         // ICICLE natively supports several MSMs sharing one point vector.
+        // Batch admission below is governed by the actual device/host memory
+        // envelope instead of a second fixed aggregate-scalar ceiling.
         constexpr std::size_t kMaxResidentCudaMsmBatchSize = 8;
-
-        // Bound aggregate batch working-set growth.  Large individual MSMs retain
-        // the ordinary resident/streamed path rather than forcing an oversized batch.
-        constexpr std::size_t kMaxDiscreteResidentBatchScalarCount =
-            1ULL << 24;
-
-        constexpr std::size_t kMaxIntegratedResidentBatchScalarCount =
-            1ULL << 25;
 
         constexpr std::size_t kPreferredStreamMsmChunkSize =
             1ULL << 20;
@@ -263,6 +257,116 @@ namespace gatzk::crypto
                     sizeof(mcl::Fr),
                     "Montgomery scalar staging"));
         }
+        void copy_mcl_montgomery_scalars_to_device(
+            bls12_381::scalar_t *output,
+            const algebra::FieldElement *input,
+            std::size_t count)
+        {
+            static_assert(
+                sizeof(bls12_381::scalar_t) == sizeof(mcl::Fr),
+                "ICICLE BLS12-381 scalar and mcl::Fr must have identical width");
+
+            static_assert(
+                sizeof(mcl::Fr) == 4 * sizeof(std::uint64_t),
+                "mcl::Fr must use four 64-bit limbs");
+
+            if (count == 0)
+            {
+                return;
+            }
+
+            if (output == nullptr || input == nullptr)
+            {
+                throw std::runtime_error(
+                    "CUDA G1 MSM device scalar staging received a null buffer");
+            }
+
+            const auto *native =
+                algebra::FieldElement::native_array_data(input);
+
+            const auto status =
+                cudaMemcpy(
+                    output,
+                    native,
+                    checked_byte_count(
+                        count,
+                        sizeof(mcl::Fr),
+                        "device Montgomery scalar staging"),
+                    cudaMemcpyHostToDevice);
+
+            if (status != cudaSuccess)
+            {
+                throw_cuda_error(
+                    "scalar upload",
+                    status);
+            }
+        }
+
+        class ScopedDeviceScalarBuffer
+        {
+        public:
+            explicit ScopedDeviceScalarBuffer(
+                std::size_t count)
+            {
+                if (count == 0)
+                {
+                    return;
+                }
+
+                const auto byte_count =
+                    checked_byte_count(
+                        count,
+                        sizeof(bls12_381::scalar_t),
+                        "resident device scalar buffer");
+
+                const auto status =
+                    cudaMalloc(
+                        reinterpret_cast<void **>(
+                            &device_scalars_),
+                        byte_count);
+
+                if (status == cudaErrorMemoryAllocation)
+                {
+                    (void)cudaGetLastError();
+
+                    throw CudaMsmResourcePressure(
+                        "CUDA G1 MSM resident device scalar allocation "
+                        "exhausted available memory");
+                }
+
+                if (status != cudaSuccess)
+                {
+                    throw_cuda_error(
+                        "resident scalar allocation",
+                        status);
+                }
+            }
+
+            ~ScopedDeviceScalarBuffer()
+            {
+                if (device_scalars_ != nullptr)
+                {
+                    (void)cudaFree(
+                        device_scalars_);
+                }
+            }
+
+            ScopedDeviceScalarBuffer(
+                const ScopedDeviceScalarBuffer &) = delete;
+
+            ScopedDeviceScalarBuffer &
+            operator=(
+                const ScopedDeviceScalarBuffer &) = delete;
+
+            bls12_381::scalar_t *data()
+            {
+                return device_scalars_;
+            }
+
+        private:
+            bls12_381::scalar_t *device_scalars_ =
+                nullptr;
+        };
 
         template <class MclField, class IcicleField>
         MclField to_mcl_field(const IcicleField &input)
@@ -643,24 +747,10 @@ namespace gatzk::crypto
                 return false;
             }
 
-            if (batch_size > 1)
+            if (batch_size >
+                kMaxResidentCudaMsmBatchSize)
             {
-                if (batch_size >
-                    kMaxResidentCudaMsmBatchSize)
-                {
-                    return false;
-                }
-
-                const auto max_batch_scalar_count =
-                    integrated
-                        ? kMaxIntegratedResidentBatchScalarCount
-                        : kMaxDiscreteResidentBatchScalarCount;
-
-                if (count >
-                    max_batch_scalar_count / batch_size)
-                {
-                    return false;
-                }
+                return false;
             }
 
             if (count >
@@ -796,7 +886,6 @@ namespace gatzk::crypto
 
             return true;
         }
-
         void execute_resident_cuda_msm(
             G1Point *output,
             const G1Point *points,
@@ -811,22 +900,11 @@ namespace gatzk::crypto
                     count,
                     stable_srs_capacity);
 
-            std::vector<bls12_381::scalar_t>
-                converted_scalars;
+            ScopedDeviceScalarBuffer
+                device_scalars(count);
 
-            try
-            {
-                converted_scalars.resize(count);
-            }
-            catch (const std::bad_alloc &)
-            {
-                throw CudaMsmResourcePressure(
-                    "CUDA G1 MSM resident scalar staging "
-                    "exhausted host memory");
-            }
-
-            copy_mcl_montgomery_scalars_to_icicle(
-                converted_scalars.data(),
+            copy_mcl_montgomery_scalars_to_device(
+                device_scalars.data(),
                 scalars,
                 count);
 
@@ -836,7 +914,7 @@ namespace gatzk::crypto
             config.are_points_on_device = true;
             config.are_points_montgomery_form = false;
 
-            config.are_scalars_on_device = false;
+            config.are_scalars_on_device = true;
             config.are_scalars_montgomery_form = true;
 
             config.are_results_on_device = false;
@@ -845,7 +923,7 @@ namespace gatzk::crypto
 
             const auto status =
                 bls12_381_msm_cuda(
-                    converted_scalars.data(),
+                    device_scalars.data(),
                     device_points,
                     static_cast<int>(count),
                     config,
@@ -872,7 +950,6 @@ namespace gatzk::crypto
 
             algebra::record_cuda_kernel_invocations(1);
         }
-
         void execute_resident_cuda_msm_batch(
             G1Point *const *outputs,
             const G1Point *points,
@@ -889,7 +966,8 @@ namespace gatzk::crypto
                     stable_srs_capacity);
 
             if (count >
-                std::numeric_limits<std::size_t>::max() / batch_size)
+                std::numeric_limits<std::size_t>::max() /
+                    batch_size)
             {
                 throw std::runtime_error(
                     "CUDA G1 MSM batch scalar-count overflow");
@@ -898,24 +976,22 @@ namespace gatzk::crypto
             const auto total_scalar_count =
                 count * batch_size;
 
-            std::vector<bls12_381::scalar_t>
-                batched_scalars;
+            ScopedDeviceScalarBuffer
+                device_scalars(
+                    total_scalar_count);
 
             std::vector<bls12_381::projective_t>
                 results;
 
             try
             {
-                batched_scalars.resize(
-                    total_scalar_count);
-
                 results.resize(
                     batch_size);
             }
             catch (const std::bad_alloc &)
             {
                 throw CudaMsmResourcePressure(
-                    "CUDA G1 MSM resident batch staging "
+                    "CUDA G1 MSM resident batch result staging "
                     "exhausted host memory");
             }
 
@@ -923,8 +999,9 @@ namespace gatzk::crypto
                  batch < batch_size;
                  ++batch)
             {
-                copy_mcl_montgomery_scalars_to_icicle(
-                    batched_scalars.data() + batch * count,
+                copy_mcl_montgomery_scalars_to_device(
+                    device_scalars.data() +
+                        batch * count,
                     scalar_vectors[batch],
                     count);
             }
@@ -941,14 +1018,14 @@ namespace gatzk::crypto
             config.are_points_on_device = true;
             config.are_points_montgomery_form = false;
 
-            config.are_scalars_on_device = false;
+            config.are_scalars_on_device = true;
             config.are_scalars_montgomery_form = true;
 
             config.are_results_on_device = false;
 
             const auto status =
                 bls12_381_msm_cuda(
-                    batched_scalars.data(),
+                    device_scalars.data(),
                     device_points,
                     static_cast<int>(count),
                     config,
@@ -981,7 +1058,6 @@ namespace gatzk::crypto
 
             algebra::record_cuda_kernel_invocations(1);
         }
-
         struct StreamMsmBuffers
         {
             bls12_381::affine_t *device_points = nullptr;

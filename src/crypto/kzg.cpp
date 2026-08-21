@@ -2904,6 +2904,50 @@ namespace gatzk::crypto
             return point;
         }
 
+        G1Point commit_borrowed_evaluation_point(
+            const std::string &name,
+            const std::vector<FieldElement> &values,
+            const std::shared_ptr<
+                algebra::RootOfUnityDomain> &domain,
+            const KZGProverKey &pk,
+            CommitObjectProfile *profile = nullptr,
+            const G1MSMExecutionOptions *msm_options = nullptr)
+        {
+            if (domain == nullptr)
+            {
+                throw std::runtime_error(
+                    "borrowed evaluation commitment is missing its domain: " +
+                    name);
+            }
+
+            if (values.size() != domain->size)
+            {
+                throw std::runtime_error(
+                    "borrowed evaluation commitment/domain size mismatch: " +
+                    name);
+            }
+
+            auto borrowed_values =
+                std::shared_ptr<
+                    const std::vector<FieldElement>>(
+                    &values,
+                    [](const std::vector<FieldElement> *) {});
+
+            auto polynomial =
+                algebra::Polynomial::
+                    from_shared_evaluations(
+                        name,
+                        std::move(
+                            borrowed_values),
+                        domain);
+
+            return commit_polynomial_point(
+                polynomial,
+                pk,
+                profile,
+                msm_options);
+        }
+
         Commitment make_commitment(
             const std::string &name,
             algebra::Polynomial polynomial,
@@ -5002,18 +5046,18 @@ namespace gatzk::crypto
                         coefficient_msm_start, Clock::now());
                 }
             }
+            thread_local std::vector<FieldElement>
+                opening_evaluation_scratch;
             for (const auto &group : plan.evaluation_groups)
             {
                 const auto inverse_start =
                     Clock::now();
 
-                std::vector<FieldElement>
-                    inverse_denominators(
-                        group.domain->size,
-                        FieldElement::zero());
+                opening_evaluation_scratch.resize(
+                    group.domain->size);
 
                 build_opening_inverse_denominators(
-                    &inverse_denominators,
+                    &opening_evaluation_scratch,
                     group.domain,
                     point,
                     worker_cap);
@@ -5029,57 +5073,125 @@ namespace gatzk::crypto
                         ->denominator_inverse_cache_misses +=
                         1;
                 }
-                const auto quotient_assembly_start = Clock::now();
-                std::vector<FieldElement> quotient_values(group.domain->size, FieldElement::zero());
-                auto *quotient_values_native = FieldElement::mutable_native_array_data(quotient_values.data());
+
+                const auto quotient_assembly_start =
+                    Clock::now();
+
+                auto *quotient_values_native =
+                    FieldElement::mutable_native_array_data(
+                        opening_evaluation_scratch.data());
+
                 mcl::Fr zero;
                 zero.clear();
+
                 mcl::Fr base_numerator;
-                mcl::Fr::sub(base_numerator, zero, group.scaled_claim_sums[point_index].native());
+
+                mcl::Fr::sub(
+                    base_numerator,
+                    zero,
+                    group.scaled_claim_sums[point_index]
+                        .native());
+
                 const auto *folded_values_native =
-                    FieldElement::native_array_data(group.folded_values.data());
-                parallel_for_chunks_capped(group.domain->size, 1ULL << 15, worker_cap, [&](std::size_t begin, std::size_t end)
-                                           {
-                    for (std::size_t row = begin; row < end; ++row)
+                    FieldElement::native_array_data(
+                        group.folded_values.data());
+
+                parallel_for_chunks_capped(
+                    group.domain->size,
+                    1ULL << 15,
+                    worker_cap,
+                    [&](std::size_t begin,
+                        std::size_t end)
                     {
-                        mcl::Fr native_numerator = base_numerator;
-                        mcl::Fr::add(
-                            native_numerator,
-                            native_numerator,
-                            folded_values_native[row]);
-                        mcl::Fr::mul(
-                            quotient_values_native[row],
-                            native_numerator,
-                            inverse_denominators[row].native());
-                    } });
+                        for (std::size_t row = begin;
+                             row < end;
+                             ++row)
+                        {
+                            mcl::Fr native_numerator =
+                                base_numerator;
+
+                            mcl::Fr::add(
+                                native_numerator,
+                                native_numerator,
+                                folded_values_native[row]);
+
+                            mcl::Fr::mul(
+                                quotient_values_native[row],
+                                native_numerator,
+                                quotient_values_native[row]);
+                        }
+                    });
+
                 if (profile != nullptr)
                 {
-                    profile->quotient_assembly_ms += elapsed_ms(
-                        quotient_assembly_start, Clock::now());
+                    profile->quotient_assembly_ms +=
+                        elapsed_ms(
+                            quotient_assembly_start,
+                            Clock::now());
                 }
-                const auto witness_msm_start = Clock::now();
-                CommitObjectProfile witness_commit_profile;
+
+                const auto witness_msm_start =
+                    Clock::now();
+
+                CommitObjectProfile
+                    witness_commit_profile;
+
                 out = g1_add(
                     out,
-                    commit_polynomial_point(
-                        algebra::Polynomial::from_evaluations(
-                            "folded_" + group.domain->name + "_witness",
-                            std::move(quotient_values),
-                            group.domain),
+                    commit_borrowed_evaluation_point(
+                        "folded_" +
+                            group.domain->name +
+                            "_witness",
+                        opening_evaluation_scratch,
+                        group.domain,
                         pk,
                         profile != nullptr
                             ? &witness_commit_profile
                             : nullptr,
                         msm_options));
-                if (profile != nullptr && progress_enabled())
+
+                if (profile != nullptr &&
+                    progress_enabled())
                 {
                     progress_note(
-                        "kzg:opening_witness_msm:domain=" + group.domain->name + ":input=" + std::to_string(witness_commit_profile.vector_length) + ":nonzero=" + std::to_string(witness_commit_profile.nonzero_scalar_count) + ":effective=" + std::to_string(witness_commit_profile.effective_scalar_count) + ":sparse=" + std::string(witness_commit_profile.sparse_compaction ? "true" : "false") + ":tail=" + std::string(witness_commit_profile.constant_tail_folding ? "true" : "false") + ":ms=" + std::to_string(witness_commit_profile.msm_ms));
+                        "kzg:opening_witness_msm:domain=" +
+                        group.domain->name +
+                        ":input=" +
+                        std::to_string(
+                            witness_commit_profile
+                                .vector_length) +
+                        ":nonzero=" +
+                        std::to_string(
+                            witness_commit_profile
+                                .nonzero_scalar_count) +
+                        ":effective=" +
+                        std::to_string(
+                            witness_commit_profile
+                                .effective_scalar_count) +
+                        ":sparse=" +
+                        std::string(
+                            witness_commit_profile
+                                    .sparse_compaction
+                                ? "true"
+                                : "false") +
+                        ":tail=" +
+                        std::string(
+                            witness_commit_profile
+                                    .constant_tail_folding
+                                ? "true"
+                                : "false") +
+                        ":ms=" +
+                        std::to_string(
+                            witness_commit_profile
+                                .msm_ms));
                 }
+
                 if (profile != nullptr)
                 {
-                    profile->witness_msm_ms += elapsed_ms(
-                        witness_msm_start, Clock::now());
+                    profile->witness_msm_ms +=
+                        elapsed_ms(
+                            witness_msm_start,
+                            Clock::now());
                 }
 
                 // The domain-value quotient above is the unique degree < n

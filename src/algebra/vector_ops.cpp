@@ -890,10 +890,18 @@ namespace gatzk::algebra
                 "INTT requires a non-null power-of-two field vector");
         }
 
-        constexpr std::size_t kCudaInttSize =
-            std::size_t{1} << 23;
+        constexpr std::size_t
+            kCudaInttMinimumSize =
+                std::size_t{1} << 23;
 
-        if (util::route2_options().cuda_field_hotspots && size == kCudaInttSize)
+        constexpr std::size_t
+            kCudaInttMaximumSize =
+                std::size_t{1} << 24;
+
+        if (util::route2_options()
+                .cuda_field_hotspots &&
+            size >= kCudaInttMinimumSize &&
+            size <= kCudaInttMaximumSize)
         {
             if (!try_cuda_intt_in_place(
                     values,
@@ -982,7 +990,11 @@ namespace gatzk::algebra
             auto run_transform =
                 [=](mcl::Fr *values)
             {
-                std::vector<mcl::Fr> scratch(size);
+                thread_local std::vector<mcl::Fr>
+                    scratch;
+
+                scratch.resize(
+                    size);
 
                 ntt_out_of_place_parallel_impl(
                     values,
@@ -990,9 +1002,9 @@ namespace gatzk::algebra
                     size,
                     per_transform_workers);
 
-                std::copy(
-                    scratch.begin(),
-                    scratch.end(),
+                std::copy_n(
+                    scratch.data(),
+                    size,
                     values);
             };
 
