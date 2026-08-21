@@ -50,9 +50,16 @@ namespace gatzk::crypto
             1ULL << 26;
 
         // ICICLE natively supports several MSMs sharing one point vector.
-        // Batch admission below is governed by the actual device/host memory
-        // envelope instead of a second fixed aggregate-scalar ceiling.
         constexpr std::size_t kMaxResidentCudaMsmBatchSize = 8;
+
+        // A direct resident batch is only worthwhile while the complete scalar
+        // working set remains bounded.  Larger batches keep the resident SRS
+        // bases but fall through to the bounded chunked/streamed routes.
+        constexpr std::size_t kMaxDiscreteResidentBatchScalarCount =
+            1ULL << 24;
+
+        constexpr std::size_t kMaxIntegratedResidentBatchScalarCount =
+            1ULL << 25;
 
         constexpr std::size_t kPreferredStreamMsmChunkSize =
             1ULL << 20;
@@ -727,7 +734,8 @@ namespace gatzk::crypto
             const G1Point *points,
             std::size_t count,
             std::size_t stable_srs_capacity,
-            std::size_t batch_size = 1)
+            std::size_t batch_size = 1,
+            bool bounded_integrated_scalar_staging = false)
         {
             if (batch_size == 0)
             {
@@ -754,7 +762,8 @@ namespace gatzk::crypto
             }
 
             if (count >
-                std::numeric_limits<std::size_t>::max() / batch_size)
+                std::numeric_limits<std::size_t>::max() /
+                    batch_size)
             {
                 throw std::runtime_error(
                     "CUDA G1 MSM batch scalar-count overflow");
@@ -763,12 +772,31 @@ namespace gatzk::crypto
             const auto total_scalar_count =
                 count * batch_size;
 
-            // Integrated/UMA execution keeps the immutable SRS bases resident,
-            // but feeds ICICLE with bounded host-side scalar chunks.  Do not
-            // charge the admission guard for a full duplicated scalar batch
-            // that the UMA path no longer materializes.
-            const auto resident_scalar_count =
-                integrated
+            // Direct resident execution must be admitted against the complete
+            // scalar working set.  This restores the resource contract of the
+            // 20-Aug fast path instead of pretending that a full resident MSM
+            // only owns one 2^20 scalar chunk.
+            if (!bounded_integrated_scalar_staging &&
+                batch_size > 1)
+            {
+                const auto max_batch_scalar_count =
+                    integrated
+                        ? kMaxIntegratedResidentBatchScalarCount
+                        : kMaxDiscreteResidentBatchScalarCount;
+
+                if (total_scalar_count >
+                    max_batch_scalar_count)
+                {
+                    return false;
+                }
+            }
+
+            // The bounded staging mode is used only by the UMA cached-base
+            // chunked fallback.  Its immutable bases remain resident, while
+            // scalar staging is intentionally limited to one chunk.
+            const auto staged_scalar_count =
+                integrated &&
+                        bounded_integrated_scalar_staging
                     ? std::min(
                           count,
                           kPreferredStreamMsmChunkSize) *
@@ -783,9 +811,11 @@ namespace gatzk::crypto
 
             const auto scalar_bytes =
                 checked_byte_count(
-                    resident_scalar_count,
+                    staged_scalar_count,
                     sizeof(bls12_381::scalar_t),
-                    "resident scalar staging");
+                    bounded_integrated_scalar_staging
+                        ? "bounded resident scalar staging"
+                        : "resident scalars");
 
             const bool already_resident =
                 cache.contains_usable_prefix(
@@ -798,10 +828,6 @@ namespace gatzk::crypto
                     ? std::size_t{0}
                     : base_bytes;
 
-            // On integrated UMA, cudaMemGetInfo() is not used as a hard admission
-            // ceiling.  Host MemAvailable plus a large reserve provides the
-            // pre-admission guard; actual CUDA/ICICLE allocations remain the
-            // authoritative fail-closed resource check.
             if (integrated)
             {
                 const auto host =
@@ -898,6 +924,7 @@ namespace gatzk::crypto
 
             return true;
         }
+
         void execute_resident_cuda_msm(
             G1Point *output,
             const G1Point *points,
@@ -912,34 +939,73 @@ namespace gatzk::crypto
                     count,
                     stable_srs_capacity);
 
-            ScopedDeviceScalarBuffer
-                device_scalars(count);
-
-            copy_mcl_montgomery_scalars_to_device(
-                device_scalars.data(),
-                scalars,
-                count);
-
             auto config =
                 msm::default_msm_config();
 
             config.are_points_on_device = true;
             config.are_points_montgomery_form = false;
-
-            config.are_scalars_on_device = true;
             config.are_scalars_montgomery_form = true;
-
             config.are_results_on_device = false;
 
             bls12_381::projective_t result;
+            cudaError_t status = cudaSuccess;
 
-            const auto status =
-                bls12_381_msm_cuda(
+            if (cuda_msm_device_is_integrated())
+            {
+                // On UMA the 20-Aug path was faster when ICICLE consumed one
+                // complete host scalar vector.  Avoid an additional full-size
+                // cudaMalloc/cudaMemcpy staging buffer here.
+                std::vector<bls12_381::scalar_t>
+                    converted_scalars;
+
+                try
+                {
+                    converted_scalars.resize(count);
+                }
+                catch (const std::bad_alloc &)
+                {
+                    throw CudaMsmResourcePressure(
+                        "CUDA G1 MSM resident scalar staging "
+                        "exhausted host memory");
+                }
+
+                copy_mcl_montgomery_scalars_to_icicle(
+                    converted_scalars.data(),
+                    scalars,
+                    count);
+
+                config.are_scalars_on_device = false;
+
+                status =
+                    bls12_381_msm_cuda(
+                        converted_scalars.data(),
+                        device_points,
+                        static_cast<int>(count),
+                        config,
+                        &result);
+            }
+            else
+            {
+                // Dedicated-memory GPUs retain the explicit device-scalar
+                // staging introduced by the newer CUDA path.
+                ScopedDeviceScalarBuffer
+                    device_scalars(count);
+
+                copy_mcl_montgomery_scalars_to_device(
                     device_scalars.data(),
-                    device_points,
-                    static_cast<int>(count),
-                    config,
-                    &result);
+                    scalars,
+                    count);
+
+                config.are_scalars_on_device = true;
+
+                status =
+                    bls12_381_msm_cuda(
+                        device_scalars.data(),
+                        device_points,
+                        static_cast<int>(count),
+                        config,
+                        &result);
+            }
 
             if (status == cudaErrorMemoryAllocation)
             {
@@ -962,6 +1028,7 @@ namespace gatzk::crypto
 
             algebra::record_cuda_kernel_invocations(1);
         }
+
         void execute_resident_cuda_msm_batch(
             G1Point *const *outputs,
             const G1Point *points,
@@ -988,34 +1055,18 @@ namespace gatzk::crypto
             const auto total_scalar_count =
                 count * batch_size;
 
-            ScopedDeviceScalarBuffer
-                device_scalars(
-                    total_scalar_count);
-
             std::vector<bls12_381::projective_t>
                 results;
 
             try
             {
-                results.resize(
-                    batch_size);
+                results.resize(batch_size);
             }
             catch (const std::bad_alloc &)
             {
                 throw CudaMsmResourcePressure(
                     "CUDA G1 MSM resident batch result staging "
                     "exhausted host memory");
-            }
-
-            for (std::size_t batch = 0;
-                 batch < batch_size;
-                 ++batch)
-            {
-                copy_mcl_montgomery_scalars_to_device(
-                    device_scalars.data() +
-                        batch * count,
-                    scalar_vectors[batch],
-                    count);
             }
 
             auto config =
@@ -1029,19 +1080,76 @@ namespace gatzk::crypto
 
             config.are_points_on_device = true;
             config.are_points_montgomery_form = false;
-
-            config.are_scalars_on_device = true;
             config.are_scalars_montgomery_form = true;
-
             config.are_results_on_device = false;
 
-            const auto status =
-                bls12_381_msm_cuda(
-                    device_scalars.data(),
-                    device_points,
-                    static_cast<int>(count),
-                    config,
-                    results.data());
+            cudaError_t status = cudaSuccess;
+
+            if (cuda_msm_device_is_integrated())
+            {
+                std::vector<bls12_381::scalar_t>
+                    batched_scalars;
+
+                try
+                {
+                    batched_scalars.resize(
+                        total_scalar_count);
+                }
+                catch (const std::bad_alloc &)
+                {
+                    throw CudaMsmResourcePressure(
+                        "CUDA G1 MSM resident batch scalar staging "
+                        "exhausted host memory");
+                }
+
+                for (std::size_t batch = 0;
+                     batch < batch_size;
+                     ++batch)
+                {
+                    copy_mcl_montgomery_scalars_to_icicle(
+                        batched_scalars.data() +
+                            batch * count,
+                        scalar_vectors[batch],
+                        count);
+                }
+
+                config.are_scalars_on_device = false;
+
+                status =
+                    bls12_381_msm_cuda(
+                        batched_scalars.data(),
+                        device_points,
+                        static_cast<int>(count),
+                        config,
+                        results.data());
+            }
+            else
+            {
+                ScopedDeviceScalarBuffer
+                    device_scalars(
+                        total_scalar_count);
+
+                for (std::size_t batch = 0;
+                     batch < batch_size;
+                     ++batch)
+                {
+                    copy_mcl_montgomery_scalars_to_device(
+                        device_scalars.data() +
+                            batch * count,
+                        scalar_vectors[batch],
+                        count);
+                }
+
+                config.are_scalars_on_device = true;
+
+                status =
+                    bls12_381_msm_cuda(
+                        device_scalars.data(),
+                        device_points,
+                        static_cast<int>(count),
+                        config,
+                        results.data());
+            }
 
             if (status == cudaErrorMemoryAllocation)
             {
@@ -2030,51 +2138,37 @@ namespace gatzk::crypto
         auto &cache =
             DeviceBaseCache::instance();
 
+        const bool integrated =
+            cuda_msm_device_is_integrated();
+
+        // Primary route: one complete resident MSM.  This is the 20-Aug
+        // execution shape and avoids turning one large MSM into dozens of
+        // independent ICICLE launches.
         if (stable_srs_bases &&
             resident_cuda_msm_is_safe(
                 cache,
                 points,
                 count,
                 stable_srs_capacity,
-                1))
+                1,
+                false))
         {
             try
             {
-                if (cuda_msm_device_is_integrated())
+                execute_resident_cuda_msm(
+                    output,
+                    points,
+                    scalars,
+                    count,
+                    stable_srs_capacity,
+                    cache);
+
+                if (count >=
+                    (1ULL << 20))
                 {
-                    G1Point *outputs[1] = {
-                        output};
-
-                    const algebra::FieldElement *
-                        scalar_vectors[1] = {
-                            scalars};
-
-                    execute_cached_base_chunked_cuda_msm_batch(
-                        outputs,
-                        points,
-                        scalar_vectors,
-                        count,
-                        1,
-                        stable_srs_capacity,
-                        cache);
-                }
-                else
-                {
-                    execute_resident_cuda_msm(
-                        output,
-                        points,
-                        scalars,
-                        count,
-                        stable_srs_capacity,
-                        cache);
-
-                    if (count >=
-                        (1ULL << 20))
-                    {
-                        util::info(
-                            "cuda_msm route=resident count=" +
-                            std::to_string(count));
-                    }
+                    util::info(
+                        "cuda_msm route=resident count=" +
+                        std::to_string(count));
                 }
 
                 return true;
@@ -2089,6 +2183,49 @@ namespace gatzk::crypto
             }
         }
 
+        // UMA-only fallback: retain the immutable SRS bases but bound scalar
+        // staging.  This route is no longer the unconditional production path.
+        if (stable_srs_bases &&
+            integrated &&
+            resident_cuda_msm_is_safe(
+                cache,
+                points,
+                count,
+                stable_srs_capacity,
+                1,
+                true))
+        {
+            try
+            {
+                G1Point *outputs[1] = {
+                    output};
+
+                const algebra::FieldElement *
+                    scalar_vectors[1] = {
+                        scalars};
+
+                execute_cached_base_chunked_cuda_msm_batch(
+                    outputs,
+                    points,
+                    scalar_vectors,
+                    count,
+                    1,
+                    stable_srs_capacity,
+                    cache);
+
+                return true;
+            }
+            catch (const CudaMsmResourcePressure &)
+            {
+                cache.clear();
+            }
+            catch (const std::bad_alloc &)
+            {
+                cache.clear();
+            }
+        }
+
+        // First try bounded streaming while preserving useful resident SRS
         // First try bounded streaming while preserving useful resident SRS
         // material.  Only genuine resource pressure is allowed to evict the
         // resident cache and retry the same CUDA MSM.
@@ -2203,37 +2340,29 @@ namespace gatzk::crypto
 
         auto &cache =
             DeviceBaseCache::instance();
+        const bool integrated =
+            cuda_msm_device_is_integrated();
+
+        // Prefer one native ICICLE same-base batch while the complete scalar
+        // batch fits the direct resident envelope.
         if (resident_cuda_msm_is_safe(
                 cache,
                 points,
                 count,
                 stable_srs_capacity,
-                batch_size))
+                batch_size,
+                false))
         {
             try
             {
-                if (cuda_msm_device_is_integrated())
-                {
-                    execute_cached_base_chunked_cuda_msm_batch(
-                        outputs,
-                        points,
-                        scalar_vectors,
-                        count,
-                        batch_size,
-                        stable_srs_capacity,
-                        cache);
-                }
-                else
-                {
-                    execute_resident_cuda_msm_batch(
-                        outputs,
-                        points,
-                        scalar_vectors,
-                        count,
-                        batch_size,
-                        stable_srs_capacity,
-                        cache);
-                }
+                execute_resident_cuda_msm_batch(
+                    outputs,
+                    points,
+                    scalar_vectors,
+                    count,
+                    batch_size,
+                    stable_srs_capacity,
+                    cache);
 
                 return true;
             }
@@ -2247,6 +2376,41 @@ namespace gatzk::crypto
             }
         }
 
+        // If a complete UMA batch would exceed the bounded direct envelope,
+        // retain the cached bases and chunk only the scalar dimension.
+        if (integrated &&
+            resident_cuda_msm_is_safe(
+                cache,
+                points,
+                count,
+                stable_srs_capacity,
+                batch_size,
+                true))
+        {
+            try
+            {
+                execute_cached_base_chunked_cuda_msm_batch(
+                    outputs,
+                    points,
+                    scalar_vectors,
+                    count,
+                    batch_size,
+                    stable_srs_capacity,
+                    cache);
+
+                return true;
+            }
+            catch (const CudaMsmResourcePressure &)
+            {
+                cache.clear();
+            }
+            catch (const std::bad_alloc &)
+            {
+                cache.clear();
+            }
+        }
+
+        // Keep the CUDA execution lock while the shared-base
         // Keep the CUDA execution lock while the shared-base
         // streamed batch is active.  The point vector is uploaded
         // once per chunk for the whole batch.

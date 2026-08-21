@@ -990,11 +990,12 @@ namespace gatzk::algebra
             auto run_transform =
                 [=](mcl::Fr *values)
             {
-                thread_local std::vector<mcl::Fr>
-                    scratch;
-
-                scratch.resize(
-                    size);
+                // Keep transform scratch scoped to this quotient transform.
+                // The previous thread_local buffer could retain hundreds of
+                // MiB after quotient materialization and carry that memory
+                // pressure into KZG opening and verification.
+                std::vector<mcl::Fr>
+                    scratch(size);
 
                 ntt_out_of_place_parallel_impl(
                     values,

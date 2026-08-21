@@ -4828,9 +4828,6 @@ namespace gatzk::crypto
                 FieldElement::mutable_native_array_data(
                     inverse_denominators->data());
 
-            std::vector<mcl::Fr> prefixes(
-                domain->size);
-
             std::vector<mcl::Fr> chunk_products(
                 task_count);
 
@@ -4839,6 +4836,9 @@ namespace gatzk::crypto
 
             const auto omega_native =
                 domain->omega.native();
+
+            const auto omega_inverse_native =
+                domain->omega.inv().native();
 
             const auto run_chunks =
                 [&](const auto &fn)
@@ -4885,9 +4885,9 @@ namespace gatzk::crypto
                 }
             };
 
-            // One exponentiation per chunk, then walk the domain by
-            // multiplication. Build each chunk's prefix products in
-            // the same pass.
+            // Use the output array itself as the per-row prefix-product
+            // workspace.  The original denominator does not need to remain
+            // resident: it is regenerated in the reverse pass from omega^i.
             run_chunks(
                 [&](std::size_t task,
                     std::size_t begin,
@@ -4903,24 +4903,28 @@ namespace gatzk::crypto
                          row < end;
                          ++row)
                     {
+                        mcl::Fr denominator;
+
                         mcl::Fr::sub(
-                            denominator_native[row],
+                            denominator,
                             domain_point,
                             point_native);
 
-                        if (denominator_native[row].isZero())
+                        if (denominator.isZero())
                         {
                             throw std::runtime_error(
                                 "opening point overlaps evaluation domain; derivative witness path is not implemented");
                         }
 
-                        prefixes[row] =
+                        // Temporarily store the product of every denominator
+                        // preceding this row inside the eventual output slot.
+                        denominator_native[row] =
                             local_product;
 
                         mcl::Fr::mul(
                             local_product,
                             local_product,
-                            denominator_native[row]);
+                            denominator);
 
                         mcl::Fr::mul(
                             domain_point,
@@ -4932,8 +4936,8 @@ namespace gatzk::crypto
                         local_product;
                 });
 
-            // Reduce the per-chunk products and perform exactly one
-            // field inversion for the entire batch.
+            // Reduce the per-chunk products and perform exactly one field
+            // inversion for the complete domain.
             std::vector<mcl::Fr> chunk_prefixes(
                 task_count);
 
@@ -4954,6 +4958,7 @@ namespace gatzk::crypto
             }
 
             mcl::Fr suffix_inverse;
+
             mcl::Fr::inv(
                 suffix_inverse,
                 total_product);
@@ -4973,12 +4978,15 @@ namespace gatzk::crypto
                     suffix_inverse,
                     chunk_products[task]);
 
+                // Reuse the chunk-product slot for the inverse of the entire
+                // chunk product required by the reverse pass.
                 chunk_products[task] =
                     chunk_inverse;
             }
 
-            // Restore every denominator inverse independently inside
-            // each chunk.
+            // Reconstruct omega^row backwards.  This removes the previous
+            // full-size prefixes allocation while retaining exactly the same
+            // one-inversion batch-inversion result.
             run_chunks(
                 [&](std::size_t task,
                     std::size_t begin,
@@ -4987,10 +4995,13 @@ namespace gatzk::crypto
                     auto local_suffix =
                         chunk_products[task];
 
+                    auto domain_point =
+                        domain->point_at(end - 1).native();
+
                     for (std::size_t row = end;
                          row-- > begin;)
                     {
-                        const mcl::Fr original =
+                        const mcl::Fr prefix =
                             denominator_native[row];
 
                         mcl::Fr inverse;
@@ -4998,7 +5009,14 @@ namespace gatzk::crypto
                         mcl::Fr::mul(
                             inverse,
                             local_suffix,
-                            prefixes[row]);
+                            prefix);
+
+                        mcl::Fr denominator;
+
+                        mcl::Fr::sub(
+                            denominator,
+                            domain_point,
+                            point_native);
 
                         denominator_native[row] =
                             inverse;
@@ -5006,7 +5024,15 @@ namespace gatzk::crypto
                         mcl::Fr::mul(
                             local_suffix,
                             local_suffix,
-                            original);
+                            denominator);
+
+                        if (row > begin)
+                        {
+                            mcl::Fr::mul(
+                                domain_point,
+                                domain_point,
+                                omega_inverse_native);
+                        }
                     }
                 });
         }
@@ -5046,7 +5072,7 @@ namespace gatzk::crypto
                         coefficient_msm_start, Clock::now());
                 }
             }
-            thread_local std::vector<FieldElement>
+            std::vector<FieldElement>
                 opening_evaluation_scratch;
             for (const auto &group : plan.evaluation_groups)
             {
