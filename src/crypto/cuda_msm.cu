@@ -763,6 +763,18 @@ namespace gatzk::crypto
             const auto total_scalar_count =
                 count * batch_size;
 
+            // Integrated/UMA execution keeps the immutable SRS bases resident,
+            // but feeds ICICLE with bounded host-side scalar chunks.  Do not
+            // charge the admission guard for a full duplicated scalar batch
+            // that the UMA path no longer materializes.
+            const auto resident_scalar_count =
+                integrated
+                    ? std::min(
+                          count,
+                          kPreferredStreamMsmChunkSize) *
+                          batch_size
+                    : total_scalar_count;
+
             const auto base_bytes =
                 checked_byte_count(
                     count,
@@ -771,9 +783,9 @@ namespace gatzk::crypto
 
             const auto scalar_bytes =
                 checked_byte_count(
-                    total_scalar_count,
+                    resident_scalar_count,
                     sizeof(bls12_381::scalar_t),
-                    "resident scalars");
+                    "resident scalar staging");
 
             const bool already_resident =
                 cache.contains_usable_prefix(
@@ -1057,6 +1069,273 @@ namespace gatzk::crypto
             }
 
             algebra::record_cuda_kernel_invocations(1);
+        }
+
+        void execute_cached_base_chunked_cuda_msm_batch(
+            G1Point *const *outputs,
+            const G1Point *points,
+            const algebra::FieldElement *const *scalar_vectors,
+            std::size_t count,
+            std::size_t batch_size,
+            std::size_t stable_srs_capacity,
+            DeviceBaseCache &cache)
+        {
+            if (outputs == nullptr ||
+                points == nullptr ||
+                scalar_vectors == nullptr ||
+                batch_size == 0)
+            {
+                throw std::runtime_error(
+                    "CUDA cached-base chunked MSM received invalid input");
+            }
+
+            if (batch_size >
+                static_cast<std::size_t>(
+                    std::numeric_limits<int>::max()))
+            {
+                throw std::runtime_error(
+                    "CUDA cached-base chunked MSM batch size exceeds int");
+            }
+
+            for (std::size_t batch = 0;
+                 batch < batch_size;
+                 ++batch)
+            {
+                if (outputs[batch] == nullptr ||
+                    scalar_vectors[batch] == nullptr)
+                {
+                    throw std::runtime_error(
+                        "CUDA cached-base chunked MSM contains null member");
+                }
+            }
+
+            if (count == 0)
+            {
+                for (std::size_t batch = 0;
+                     batch < batch_size;
+                     ++batch)
+                {
+                    *outputs[batch] =
+                        g1_zero();
+                }
+
+                return;
+            }
+
+            auto *device_points =
+                cache.get_or_prepare(
+                    points,
+                    count,
+                    stable_srs_capacity);
+
+            const auto minimum_chunk =
+                std::min(
+                    count,
+                    kMinimumStreamMsmChunkSize);
+
+            auto chunk_size =
+                std::min(
+                    count,
+                    kPreferredStreamMsmChunkSize);
+
+            std::vector<bls12_381::scalar_t>
+                converted_scalars;
+
+            auto resize_scalar_staging =
+                [&]()
+            {
+                while (true)
+                {
+                    if (chunk_size >
+                        std::numeric_limits<std::size_t>::max() /
+                            batch_size)
+                    {
+                        throw std::runtime_error(
+                            "CUDA cached-base chunked MSM scalar-count overflow");
+                    }
+
+                    try
+                    {
+                        converted_scalars.resize(
+                            chunk_size *
+                            batch_size);
+
+                        return;
+                    }
+                    catch (const std::bad_alloc &)
+                    {
+                        if (chunk_size <=
+                            minimum_chunk)
+                        {
+                            throw CudaMsmResourcePressure(
+                                "CUDA cached-base chunked MSM cannot "
+                                "establish minimum scalar staging");
+                        }
+
+                        chunk_size =
+                            std::max(
+                                minimum_chunk,
+                                chunk_size / 2);
+                    }
+                }
+            };
+
+            resize_scalar_staging();
+
+            std::vector<bls12_381::projective_t>
+                results;
+
+            std::vector<G1Point>
+                totals(
+                    batch_size,
+                    g1_zero());
+
+            try
+            {
+                results.resize(
+                    batch_size);
+            }
+            catch (const std::bad_alloc &)
+            {
+                throw CudaMsmResourcePressure(
+                    "CUDA cached-base chunked MSM result staging "
+                    "exhausted host memory");
+            }
+
+            util::info(
+                "cuda_msm route=resident_chunked_batch"
+                " count=" +
+                std::to_string(count) +
+                " batch=" +
+                std::to_string(batch_size) +
+                " chunk=" +
+                std::to_string(chunk_size));
+
+            std::size_t offset = 0;
+
+            while (offset < count)
+            {
+                const auto current_count =
+                    std::min(
+                        chunk_size,
+                        count - offset);
+
+                for (std::size_t batch = 0;
+                     batch < batch_size;
+                     ++batch)
+                {
+                    copy_mcl_montgomery_scalars_to_icicle(
+                        converted_scalars.data() +
+                            batch * current_count,
+                        scalar_vectors[batch] +
+                            offset,
+                        current_count);
+                }
+
+                auto config =
+                    msm::default_msm_config();
+
+                config.points_size =
+                    static_cast<int>(
+                        current_count);
+
+                config.batch_size =
+                    static_cast<int>(
+                        batch_size);
+
+                config.are_points_on_device =
+                    true;
+
+                config.are_points_montgomery_form =
+                    false;
+
+                config.are_scalars_on_device =
+                    false;
+
+                config.are_scalars_montgomery_form =
+                    true;
+
+                config.are_results_on_device =
+                    false;
+
+                const auto status =
+                    bls12_381_msm_cuda(
+                        converted_scalars.data(),
+                        device_points + offset,
+                        static_cast<int>(
+                            current_count),
+                        config,
+                        results.data());
+
+                if (status ==
+                    cudaErrorMemoryAllocation)
+                {
+                    (void)cudaGetLastError();
+
+                    if (chunk_size <=
+                        minimum_chunk)
+                    {
+                        throw CudaMsmResourcePressure(
+                            "CUDA cached-base chunked MSM minimum "
+                            "chunk still exceeds available resources");
+                    }
+
+                    chunk_size =
+                        std::max(
+                            minimum_chunk,
+                            chunk_size / 2);
+
+                    resize_scalar_staging();
+
+                    util::info(
+                        "cuda_msm "
+                        "route=resident_chunked_batch_retry"
+                        " count=" +
+                        std::to_string(count) +
+                        " batch=" +
+                        std::to_string(batch_size) +
+                        " chunk=" +
+                        std::to_string(chunk_size));
+
+                    continue;
+                }
+
+                if (status !=
+                    cudaSuccess)
+                {
+                    throw_cuda_error(
+                        "cached-base chunked batch ICICLE execution",
+                        status);
+                }
+
+                for (std::size_t batch = 0;
+                     batch < batch_size;
+                     ++batch)
+                {
+                    const auto partial =
+                        to_mcl_point(
+                            results[batch]);
+
+                    mcl::G1::add(
+                        totals[batch].value,
+                        totals[batch].value,
+                        partial.value);
+                }
+
+                algebra::record_cuda_kernel_invocations(
+                    1);
+
+                offset +=
+                    current_count;
+            }
+
+            for (std::size_t batch = 0;
+                 batch < batch_size;
+                 ++batch)
+            {
+                *outputs[batch] =
+                    totals[batch];
+            }
         }
         struct StreamMsmBuffers
         {
@@ -1751,27 +2030,51 @@ namespace gatzk::crypto
         auto &cache =
             DeviceBaseCache::instance();
 
-        if (stable_srs_bases && resident_cuda_msm_is_safe(
-                                    cache,
-                                    points,
-                                    count,
-                                    stable_srs_capacity,
-                                    1))
+        if (stable_srs_bases &&
+            resident_cuda_msm_is_safe(
+                cache,
+                points,
+                count,
+                stable_srs_capacity,
+                1))
         {
             try
             {
-                execute_resident_cuda_msm(
-                    output,
-                    points,
-                    scalars,
-                    count,
-                    stable_srs_capacity,
-                    cache);
-
-                if (count >= (1ULL << 20))
+                if (cuda_msm_device_is_integrated())
                 {
-                    util::info(
-                        "cuda_msm route=resident count=" + std::to_string(count));
+                    G1Point *outputs[1] = {
+                        output};
+
+                    const algebra::FieldElement *
+                        scalar_vectors[1] = {
+                            scalars};
+
+                    execute_cached_base_chunked_cuda_msm_batch(
+                        outputs,
+                        points,
+                        scalar_vectors,
+                        count,
+                        1,
+                        stable_srs_capacity,
+                        cache);
+                }
+                else
+                {
+                    execute_resident_cuda_msm(
+                        output,
+                        points,
+                        scalars,
+                        count,
+                        stable_srs_capacity,
+                        cache);
+
+                    if (count >=
+                        (1ULL << 20))
+                    {
+                        util::info(
+                            "cuda_msm route=resident count=" +
+                            std::to_string(count));
+                    }
                 }
 
                 return true;
@@ -1900,7 +2203,6 @@ namespace gatzk::crypto
 
         auto &cache =
             DeviceBaseCache::instance();
-
         if (resident_cuda_msm_is_safe(
                 cache,
                 points,
@@ -1910,14 +2212,28 @@ namespace gatzk::crypto
         {
             try
             {
-                execute_resident_cuda_msm_batch(
-                    outputs,
-                    points,
-                    scalar_vectors,
-                    count,
-                    batch_size,
-                    stable_srs_capacity,
-                    cache);
+                if (cuda_msm_device_is_integrated())
+                {
+                    execute_cached_base_chunked_cuda_msm_batch(
+                        outputs,
+                        points,
+                        scalar_vectors,
+                        count,
+                        batch_size,
+                        stable_srs_capacity,
+                        cache);
+                }
+                else
+                {
+                    execute_resident_cuda_msm_batch(
+                        outputs,
+                        points,
+                        scalar_vectors,
+                        count,
+                        batch_size,
+                        stable_srs_capacity,
+                        cache);
+                }
 
                 return true;
             }
