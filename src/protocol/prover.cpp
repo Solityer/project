@@ -4031,46 +4031,29 @@ namespace gatzk::protocol
                 }
                 else
                 {
-                    mcl::Fr even_shift_power;
-                    even_shift_power = 1;
-
-                    mcl::Fr odd_shift_power;
-                    odd_shift_power = 1;
-
                     const auto root =
                         FieldElement::root_of_unity(
                             target_size);
 
-                    const auto even_shift_native =
-                        shift.native();
+                    // Fuse coefficient copy and geometric scaling directly
+                    // into the two paired-transform lanes.  This retains the
+                    // existing bounded parallel implementation and avoids a
+                    // persistent multi-GiB shift-power table.
+                    algebra::
+                        copy_scaled_by_geometric_powers_native(
+                            coefficients,
+                            even_work,
+                            coefficient_count,
+                            shift,
+                            quotient_transform_worker_cap);
 
-                    const auto odd_shift_native =
-                        (shift * root).native();
-
-                    for (std::size_t i = 0;
-                         i < coefficient_count;
-                         ++i)
-                    {
-                        mcl::Fr::mul(
-                            even_work[i],
-                            coefficients[i],
-                            even_shift_power);
-
-                        mcl::Fr::mul(
-                            odd_work[i],
-                            coefficients[i],
-                            odd_shift_power);
-
-                        mcl::Fr::mul(
-                            even_shift_power,
-                            even_shift_power,
-                            even_shift_native);
-
-                        mcl::Fr::mul(
-                            odd_shift_power,
-                            odd_shift_power,
-                            odd_shift_native);
-                    }
+                    algebra::
+                        copy_scaled_by_geometric_powers_native(
+                            coefficients,
+                            odd_work,
+                            coefficient_count,
+                            shift * root,
+                            quotient_transform_worker_cap);
                 }
 
                 for (std::size_t i = coefficient_count;
@@ -7254,12 +7237,53 @@ namespace gatzk::protocol
             bool can_preserve_split_lane_output(
                 const algebra::Polynomial &polynomial) const
             {
-                (void)polynomial;
+                // t_edge already has its dedicated device-resident fused
+                // executor.  Enable physical split-lane storage only for the
+                // genuinely large FH family where the generic host/tiered
+                // transform otherwise allocates two full half-size
+                // temporaries and then interleaves them into another full
+                // output vector.
+                if (label_ != "t_FH" ||
+                    target_size_ <
+                        (std::size_t{1} << 26) ||
+                    target_size_ < 2)
+                {
+                    return false;
+                }
 
-                // The production large-t_edge CUDA path is now handled by the
-                // device-resident quotient engine.  The old direct split-lane
-                // materialization remains available only to focused benchmarks.
-                return false;
+                const auto half_size =
+                    target_size_ / 2;
+
+                if (polynomial.basis ==
+                    algebra::
+                        PolynomialBasis::
+                            Coefficient)
+                {
+                    return polynomial.size() <=
+                           half_size;
+                }
+
+                if (polynomial.domain == nullptr)
+                {
+                    return false;
+                }
+
+                const auto domain_size =
+                    polynomial.domain->size;
+
+                if (domain_size >
+                    half_size)
+                {
+                    return false;
+                }
+
+                if (polynomial.zero_domain_blinder.size() >
+                    half_size - domain_size)
+                {
+                    return false;
+                }
+
+                return true;
             }
             QuotientCosetValuesPtr
             materialize_polynomial_coset(
@@ -9423,29 +9447,56 @@ namespace gatzk::protocol
                 (void)name;
                 return coefficients_native_from_polynomial(polynomial);
             }
-            const std::vector<mcl::Fr> &shift_powers()
+            const std::vector<mcl::Fr> &
+            shift_powers()
             {
                 std::call_once(
                     shift_powers_once_,
                     [&]()
                     {
-                        // quotient cosets are 4x their authenticated
-                        // domain. The common paired transform consumes
-                        // at most the first half of the coset coefficient
-                        // range. Larger exceptional coefficient vectors
-                        // automatically use the geometric streaming path.
+                        // Quotient cosets are 4x their authenticated domain.
+                        // A retained power table is useful on medium shapes
+                        // because many dependency transforms reuse it, but
+                        // 1-2 GiB tables on FH=2^24/2^25 cause more unified-
+                        // memory pressure than the saved geometric recurrence.
+                        constexpr std::size_t
+                            kMaximumRetainedShiftPowerBytes =
+                                std::size_t{512} << 20;
+
                         const auto power_count =
                             target_size_ >= 2
                                 ? target_size_ / 2
                                 : target_size_;
 
-                        shift_powers_.resize(
-                            power_count);
-
                         if (power_count == 0)
                         {
                             return;
                         }
+
+                        const auto maximum_count =
+                            kMaximumRetainedShiftPowerBytes /
+                            sizeof(mcl::Fr);
+
+                        if (power_count >
+                            maximum_count)
+                        {
+                            // Empty means that
+                            // coset_evaluate_coefficients_into()
+                            // uses its bounded streaming geometric-scaling
+                            // path instead of retaining a giant lookup table.
+                            progress_note(
+                                "prove:quotient:" +
+                                label_ +
+                                ":shift_powers:"
+                                "streaming:count=" +
+                                std::to_string(
+                                    power_count));
+
+                            return;
+                        }
+
+                        shift_powers_.resize(
+                            power_count);
 
                         algebra::geometric_powers_native(
                             shift_powers_.data(),
@@ -9456,7 +9507,6 @@ namespace gatzk::protocol
 
                 return shift_powers_;
             }
-
             const algebra::Polynomial *lookup_polynomial(const std::string &name) const
             {
                 if (const auto it = trace_.polynomials.find(name); it != trace_.polynomials.end())
@@ -9521,15 +9571,32 @@ namespace gatzk::protocol
             bool cuda_t_edge_transient_leaf_mode_ = false;
         };
 
-        std::vector<std::pair<std::string, algebra::Polynomial>> materialize_quotient_polynomials(
+        std::vector<std::pair<std::string, algebra::Polynomial>>
+        materialize_quotient_polynomials(
             const ProtocolContext &context,
             const TraceArtifacts &trace,
             const std::map<std::string, FieldElement> &challenges,
             const std::vector<std::string> &labels,
             RunMetrics *metrics)
         {
-            std::vector<std::pair<std::string, algebra::Polynomial>> out;
-            out.reserve(labels.size());
+            // One scratch lifetime for the complete quotient family.
+            //
+            // Sequential large-family materialization can now reuse the
+            // coefficient capacity produced by t_edge/FH instead of returning
+            // multi-hundred-MiB/GiB buffers to the allocator after every
+            // quotient. Worker-thread scratch remains thread_local and is
+            // naturally destroyed when each async worker exits.
+            const ScopedQuotientCoefficientScratchRelease
+                family_coefficient_scratch_release;
+
+            std::vector<
+                std::pair<
+                    std::string,
+                    algebra::Polynomial>>
+                out;
+
+            out.reserve(
+                labels.size());
 
             auto worker_count_for_labels = [&]()
             {
@@ -11724,21 +11791,67 @@ namespace gatzk::protocol
             if (route2.cuda_field_hotspots &&
                 large_quotient_working_set)
             {
+                // Scalar conversion buffers and streamed-MSM staging are not
+                // useful during quotient construction. Release those first
+                // without throwing away immutable SRS bases.
+                crypto::
+                    release_cuda_g1_msm_execution_workspace();
+
                 constexpr std::size_t
-                    kRetainedCudaMsmBaseBytes =
+                    kMinimumRetainedCudaMsmBaseBytes =
                         std::size_t{512} << 20;
 
-                progress_note(
-                    "prove:quotient:trim_cuda_msm_cache:start");
+                constexpr std::size_t
+                    kMaximumIntegratedRetainedCudaMsmBaseBytes =
+                        std::size_t{4} << 30;
 
-                crypto::trim_cuda_g1_msm_resident_cache(
-                    kRetainedCudaMsmBaseBytes);
+                std::size_t
+                    retained_cuda_msm_base_bytes =
+                        kMinimumRetainedCudaMsmBaseBytes;
+
+                if (crypto::
+                        cuda_g1_msm_integrated_memory_device())
+                {
+                    const auto host_budget =
+                        quotient_coset_memory_budget();
+
+                    if (host_budget.available_bytes >
+                        host_budget.reserve_bytes)
+                    {
+                        const auto live_after_reserve =
+                            host_budget.available_bytes -
+                            host_budget.reserve_bytes;
+
+                        // Give only 1/16 of currently safe host/unified
+                        // headroom to cross-phase SRS residency.  Quotient
+                        // cosets retain the dominant share while useful
+                        // PPI/OGBN Lagrange prefixes can survive.
+                        retained_cuda_msm_base_bytes =
+                            std::clamp(
+                                live_after_reserve /
+                                    std::size_t{16},
+                                kMinimumRetainedCudaMsmBaseBytes,
+                                kMaximumIntegratedRetainedCudaMsmBaseBytes);
+                    }
+                }
 
                 progress_note(
-                    "prove:quotient:trim_cuda_msm_cache:done:"
+                    "prove:quotient:"
+                    "trim_cuda_msm_cache:start:"
                     "maximum_bytes=" +
                     std::to_string(
-                        kRetainedCudaMsmBaseBytes));
+                        retained_cuda_msm_base_bytes));
+
+                crypto::
+                    trim_cuda_g1_msm_resident_cache(
+                        retained_cuda_msm_base_bytes);
+
+                progress_note(
+                    "prove:quotient:"
+                    "trim_cuda_msm_cache:done:"
+                    "maximum_bytes=" +
+                    std::to_string(
+                        retained_cuda_msm_base_bytes));
             }
 
             auto named_quotient_polynomials = materialize_quotient_polynomials(
@@ -11754,18 +11867,25 @@ namespace gatzk::protocol
             if (route2.cuda_field_hotspots)
             {
                 progress_note(
-                    "prove:quotient:release_cuda_transform_transients:start");
+                    "prove:quotient:"
+                    "release_cuda_transform_transients:start");
 
-                // All quotient coefficients are now canonical host-side prover
-                // material.  The device-resident t_edge executor and the CUDA NTT
-                // workspace/domain are no longer needed by quotient construction and
-                // must not compete with the following KZG MSM commitments.
+                // Quotient coefficients are now canonical host-side prover
+                // material. t_edge execution state and CUDA NTT workspace are
+                // dead, so release them before coefficient-SRS KZG waves.
                 release_cuda_t_edge_executor_cache();
 
                 algebra::release_cuda_ntt_workspace();
 
+                // Scalar/stream MSM staging is also phase-local.  Preserve
+                // resident immutable SRS bases: they are useful again for
+                // quotient commitments and, later, folded openings.
+                crypto::
+                    release_cuda_g1_msm_execution_workspace();
+
                 progress_note(
-                    "prove:quotient:release_cuda_transform_transients:done");
+                    "prove:quotient:"
+                    "release_cuda_transform_transients:done");
             }
 
             progress_note("prove:quotient:commit_batch:start");

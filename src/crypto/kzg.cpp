@@ -6907,11 +6907,21 @@ namespace gatzk::crypto
                             commit_one(
                                 index,
                                 &fallback_msm_options);
-
-                            completed[index] =
-                                true;
                         }
                     });
+
+                // std::vector<bool> is bit-packed.  Do not let worker
+                // threads update distinct proxy bits concurrently because
+                // those bits can share one underlying machine word.
+                //
+                // g1_parallel_msm_batch_workers() is synchronous and
+                // propagates worker failures, so every remaining object is
+                // known complete when control reaches this point.
+                for (const auto index :
+                     remaining_indices)
+                {
+                    completed[index] = true;
+                }
             }
             else
             {
@@ -6922,8 +6932,7 @@ namespace gatzk::crypto
                         index,
                         nullptr);
 
-                    completed[index] =
-                        true;
+                    completed[index] = true;
                 }
             }
         }
@@ -7316,11 +7325,14 @@ namespace gatzk::crypto
                             commit_one(
                                 index,
                                 &fallback_msm_options);
-
-                            completed[index] =
-                                true;
                         }
                     });
+
+                for (const auto index :
+                     remaining_indices)
+                {
+                    completed[index] = true;
+                }
             }
             else
             {
@@ -7331,8 +7343,7 @@ namespace gatzk::crypto
                         index,
                         nullptr);
 
-                    completed[index] =
-                        true;
+                    completed[index] = true;
                 }
             }
         }

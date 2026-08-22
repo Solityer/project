@@ -37,6 +37,25 @@ namespace gatzk::crypto
     {
     }
 
+    bool cuda_g1_msm_integrated_memory_device()
+    {
+        return false;
+    }
+
+    void trim_cuda_g1_msm_resident_cache(
+        std::size_t)
+    {
+    }
+
+    bool cuda_g1_msm_integrated_memory_device()
+    {
+        return false;
+    }
+
+    void release_cuda_g1_msm_execution_workspace()
+    {
+    }
+
     void release_cuda_g1_msm_resident_cache()
     {
     }

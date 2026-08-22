@@ -2281,6 +2281,85 @@ namespace gatzk::protocol
                         cache_it->second.all_zero;
                 }
             }
+
+            const auto semantic_domain_name =
+                polynomial.domain != nullptr
+                    ? polynomial.domain->name
+                    : std::string();
+
+            std::string semantic_spill_cache_key;
+
+            if (semantic_source_id != 0 &&
+                polynomial.shared_data != nullptr)
+            {
+                semantic_spill_cache_key =
+                    semantic_domain_name +
+                    ":" +
+                    std::to_string(
+                        polynomial.size()) +
+                    ":" +
+                    std::to_string(
+                        semantic_source_id);
+
+                if (auto cache_it =
+                        trace.semantic_spill_source_cache.find(
+                            semantic_spill_cache_key);
+                    cache_it !=
+                    trace.semantic_spill_source_cache.end())
+                {
+                    auto retained =
+                        cache_it->second.values.lock();
+
+                    const bool same_owner =
+                        retained != nullptr &&
+                        retained.get() ==
+                            polynomial.shared_data.get() &&
+                        !retained.owner_before(
+                            polynomial.shared_data) &&
+                        !polynomial.shared_data.owner_before(
+                            retained);
+
+                    if (same_owner &&
+                        cache_it->second.domain_name ==
+                            semantic_domain_name &&
+                        cache_it->second.size ==
+                            polynomial.size())
+                    {
+                        progress_note(
+                            "trace:spill_semantic_reuse:" +
+                            polynomial.name +
+                            ":source=" +
+                            std::to_string(
+                                semantic_source_id));
+
+                        return TraceArtifacts::
+                            SpilledEvaluationPolynomial{
+                                .path =
+                                    cache_it->second.path,
+                                .domain_name =
+                                    cache_it->second
+                                        .domain_name,
+                                .size =
+                                    cache_it->second.size,
+                                .semantic_source_id =
+                                    semantic_source_id,
+                                .compact_semantic_source_all_zero =
+                                    cache_it->second
+                                        .compact_semantic_source_all_zero,
+                                .zero_domain_blinder =
+                                    polynomial
+                                        .zero_domain_blinder,
+                            };
+                    }
+
+                    // The allocator may legally reuse a pointer after the
+                    // previous owner dies. Never use pointer identity without
+                    // validating the weak shared owner.
+                    trace.semantic_spill_source_cache.erase(
+                        cache_it);
+                }
+            }
+
             std::filesystem::path root_storage;
             const auto &root = ensure_trace_spill_directory(
                 trace, &root_storage);
@@ -2302,15 +2381,45 @@ namespace gatzk::protocol
                 throw std::runtime_error(
                     "failed to write spill file for polynomial " + polynomial.name + ": " + error.what());
             }
-            return TraceArtifacts::SpilledEvaluationPolynomial{
-                .path = path.string(),
-                .domain_name = polynomial.domain != nullptr ? polynomial.domain->name : std::string(),
-                .size = polynomial.size(),
-                .semantic_source_id = semantic_source_id,
-                .compact_semantic_source_all_zero =
-                    compact_semantic_source_all_zero,
-                .zero_domain_blinder = polynomial.zero_domain_blinder,
-            };
+            auto spilled =
+                TraceArtifacts::
+                    SpilledEvaluationPolynomial{
+                        .path = path.string(),
+                        .domain_name =
+                            semantic_domain_name,
+                        .size = polynomial.size(),
+                        .semantic_source_id =
+                            semantic_source_id,
+                        .compact_semantic_source_all_zero =
+                            compact_semantic_source_all_zero,
+                        .zero_domain_blinder =
+                            polynomial
+                                .zero_domain_blinder,
+                    };
+
+            if (!semantic_spill_cache_key.empty() &&
+                polynomial.shared_data != nullptr)
+            {
+                trace.semantic_spill_source_cache
+                    .insert_or_assign(
+                        semantic_spill_cache_key,
+                        TraceArtifacts::
+                            SemanticSpillSourceCacheEntry{
+                                .values =
+                                    polynomial.shared_data,
+                                .path =
+                                    spilled.path,
+                                .domain_name =
+                                    spilled.domain_name,
+                                .size =
+                                    spilled.size,
+                                .compact_semantic_source_all_zero =
+                                    spilled
+                                        .compact_semantic_source_all_zero,
+                            });
+            }
+
+            return spilled;
         }
 
         void detach_retained_aggregate_column_owner(
@@ -2404,6 +2513,36 @@ namespace gatzk::protocol
             const auto prepared_payload_budget =
                 dynamic_commitment_prepared_budget_bytes(
                     specs);
+
+            // Large shared columns are already owned by forward/lookup
+            // artifacts.  With keep_trace_payloads=false, materialization only
+            // creates a shared Polynomial view plus a tiny blinder; counting
+            // the complete source vector again here artificially fragments
+            // same-SRS commitment families.
+            //
+            // Borrowed columns are intentionally NOT treated this way because
+            // materialize_commitment() copies borrowed storage into an owned
+            // polynomial.
+            const auto prepared_payload_bytes_for_spec =
+                [&](const DynamicCommitmentSpec &spec)
+                -> std::size_t
+            {
+                constexpr std::size_t
+                    kSharedBackingThreshold = 1024;
+
+                if (!keep_trace_payloads &&
+                    spec.kind ==
+                        DynamicCommitmentKind::Column &&
+                    spec.shared_column_values != nullptr &&
+                    spec.shared_column_values->size() >=
+                        kSharedBackingThreshold)
+                {
+                    return 0;
+                }
+
+                return estimated_dynamic_commitment_payload_bytes(
+                    spec);
+            };
 
             if (specs.size() > 1)
             {
@@ -5887,55 +6026,311 @@ namespace gatzk::protocol
                 add_dynamic_commitment_batch(
                     trace,
                     {
-                        shared_column_spec(division_prefix + "Active", forward_artifacts, division.active, domains.edge),
-                        shared_column_spec(division_prefix + "X", forward_artifacts, division.x, domains.edge),
-                        shared_column_spec(division_prefix + "D", forward_artifacts, division.d, domains.edge),
-                        shared_column_spec(division_prefix + "Y", forward_artifacts, division.y, domains.edge),
-                        shared_column_spec(division_prefix + "Sigma", forward_artifacts, division.sigma, domains.edge),
-                        shared_column_spec(division_prefix + "Zero", forward_artifacts, division.z, domains.edge),
-                        shared_column_spec(division_prefix + "A", forward_artifacts, division.a, domains.edge),
-                        shared_column_spec(division_prefix + "A_inv", forward_artifacts, division.a_inv, domains.edge),
-                        shared_column_spec(division_prefix + "D_inv", forward_artifacts, division.d_inv, domains.edge),
-                        shared_column_spec(division_prefix + "Q", forward_artifacts, division.q, domains.edge),
-                        shared_column_spec(division_prefix + "R", forward_artifacts, division.r, domains.edge),
-                        shared_column_spec(division_prefix + "Delta", forward_artifacts, division.delta, domains.edge),
+                        shared_column_spec(
+                            division_prefix + "Active",
+                            forward_artifacts,
+                            division.active,
+                            domains.edge),
+                        shared_column_spec(
+                            division_prefix + "X",
+                            forward_artifacts,
+                            division.x,
+                            domains.edge),
+                        shared_column_spec(
+                            division_prefix + "D",
+                            forward_artifacts,
+                            division.d,
+                            domains.edge),
+                        shared_column_spec(
+                            division_prefix + "Y",
+                            forward_artifacts,
+                            division.y,
+                            domains.edge),
+                        shared_column_spec(
+                            division_prefix + "Sigma",
+                            forward_artifacts,
+                            division.sigma,
+                            domains.edge),
+                        shared_column_spec(
+                            division_prefix + "Zero",
+                            forward_artifacts,
+                            division.z,
+                            domains.edge),
+                        shared_column_spec(
+                            division_prefix + "A",
+                            forward_artifacts,
+                            division.a,
+                            domains.edge),
+                        shared_column_spec(
+                            division_prefix + "A_inv",
+                            forward_artifacts,
+                            division.a_inv,
+                            domains.edge),
+                        shared_column_spec(
+                            division_prefix + "D_inv",
+                            forward_artifacts,
+                            division.d_inv,
+                            domains.edge),
+                        shared_column_spec(
+                            division_prefix + "Q",
+                            forward_artifacts,
+                            division.q,
+                            domains.edge),
+                        shared_column_spec(
+                            division_prefix + "R",
+                            forward_artifacts,
+                            division.r,
+                            domains.edge),
+                        shared_column_spec(
+                            division_prefix + "Delta",
+                            forward_artifacts,
+                            division.delta,
+                            domains.edge),
                     },
                     context.kzg,
                     keep_trace_payloads,
                     metrics);
+
                 for (const auto *suffix : {
-                         "Active", "X", "D", "Y", "Sigma", "Zero",
-                         "A", "A_inv", "D_inv", "Q", "R", "Delta"})
+                         "Active",
+                         "X",
+                         "D",
+                         "Y",
+                         "Sigma",
+                         "Zero",
+                         "A",
+                         "A_inv",
+                         "D_inv",
+                         "Q",
+                         "R",
+                         "Delta"})
                 {
-                    const auto label = division_prefix + suffix;
-                    transcript.absorb_commitment(label, trace.commitments.at(label).point);
+                    const auto label =
+                        division_prefix + suffix;
+
+                    transcript.absorb_commitment(
+                        label,
+                        trace.commitments.at(
+                                             label)
+                            .point);
                 }
 
-                const auto &q_query = eval_data(context, selector_label);
-                const auto valid_count = static_cast<std::size_t>(std::count_if(
-                    q_query.begin(), q_query.end(), [](const FieldElement &value)
-                    { return !value.is_zero(); }));
-                const auto table = cached_single_lookup_table_shared(
-                    "signed-div-range", context.tables.range, domains.edge->size);
-                const auto active_count = std::max(context.tables.range.size(), valid_count);
-                for (const auto *value_name : {"A", "DMinus1", "Q", "R", "Delta"})
+                const auto &q_query =
+                    eval_data(
+                        context,
+                        selector_label);
+
+                const auto valid_count =
+                    static_cast<std::size_t>(
+                        std::count_if(
+                            q_query.begin(),
+                            q_query.end(),
+                            [](const FieldElement &value)
+                            {
+                                return !value.is_zero();
+                            }));
+
+                const auto table =
+                    cached_single_lookup_table_shared(
+                        "signed-div-range",
+                        context.tables.range,
+                        domains.edge->size);
+
+                const auto active_count =
+                    std::max(
+                        context.tables.range.size(),
+                        valid_count);
+
+                struct DivisionLimbDescriptor
                 {
-                    const auto &limb_columns = division.limbs.at(value_name);
-                    for (std::size_t limb = 0; limb < limb_columns.size(); ++limb)
+                    std::string value_name;
+                    std::size_t limb = 0;
+                };
+
+                std::vector<DivisionLimbDescriptor>
+                    descriptors;
+
+                for (const auto *value_name : {
+                         "A",
+                         "DMinus1",
+                         "Q",
+                         "R",
+                         "Delta"})
+                {
+                    const auto &limb_columns =
+                        division.limbs.at(
+                            value_name);
+
+                    for (std::size_t limb = 0;
+                         limb < limb_columns.size();
+                         ++limb)
                     {
-                        const auto limb_label = signed_division_limb_label(
-                            division_prefix, value_name, limb);
-                        const auto table_label = signed_division_range_label(
-                            division_prefix, value_name, limb, "Table");
-                        const auto query_label = signed_division_range_label(
-                            division_prefix, value_name, limb, "Query");
-                        const auto multiplicity_label = signed_division_range_label(
-                            division_prefix, value_name, limb, "m");
-                        const auto padded_limb_query = padded_column(
-                            limb_columns[limb],
-                            domains.edge->size);
-                        const auto multiplicity =
-                            std::make_shared<const std::vector<FieldElement>>(
+                        descriptors.push_back(
+                            DivisionLimbDescriptor{
+                                .value_name =
+                                    value_name,
+                                .limb =
+                                    limb,
+                            });
+                    }
+                }
+
+                // Keep the future first-round query/multiplicity material
+                // bounded while still allowing several independent first
+                // rounds to reach KZG::commit_batch together.
+                const auto maximum_size =
+                    std::numeric_limits<
+                        std::size_t>::max();
+
+                const auto edge_vector_bytes =
+                    domains.edge->size >
+                            maximum_size /
+                                sizeof(FieldElement)
+                        ? maximum_size
+                        : domains.edge->size *
+                              sizeof(FieldElement);
+
+                const auto pending_bytes_per_limb =
+                    edge_vector_bytes >
+                            maximum_size / 2
+                        ? maximum_size
+                        : edge_vector_bytes * 2;
+
+                constexpr std::size_t
+                    kMaximumFamilyWindow = 4;
+
+                constexpr std::size_t
+                    kMaximumFamilyAuxiliaryBytes =
+                        std::size_t{1} << 30;
+
+                const auto family_auxiliary_budget =
+                    std::min<std::size_t>(
+                        kMaximumFamilyAuxiliaryBytes,
+                        dynamic_commitment_prepared_budget_bytes());
+
+                const auto family_window =
+                    pending_bytes_per_limb == 0
+                        ? kMaximumFamilyWindow
+                        : std::max<std::size_t>(
+                              1,
+                              std::min<std::size_t>(
+                                  kMaximumFamilyWindow,
+                                  family_auxiliary_budget /
+                                      pending_bytes_per_limb));
+
+                progress_note(
+                    "trace:signed_division_family:" +
+                    division_prefix +
+                    ":objects=" +
+                    std::to_string(
+                        descriptors.size()) +
+                    ":window=" +
+                    std::to_string(
+                        family_window));
+
+                struct PendingDivisionRangeRound
+                {
+                    std::string value_name;
+                    std::size_t limb = 0;
+
+                    std::string limb_label;
+                    std::string table_label;
+                    std::string query_label;
+                    std::string multiplicity_label;
+
+                    std::vector<FieldElement>
+                        padded_limb_query;
+
+                    std::shared_ptr<
+                        const std::vector<FieldElement>>
+                        multiplicity;
+                };
+
+                for (std::size_t window_begin = 0;
+                     window_begin <
+                     descriptors.size();
+                     window_begin +=
+                     family_window)
+                {
+                    const auto window_end =
+                        std::min(
+                            descriptors.size(),
+                            window_begin +
+                                family_window);
+
+                    std::vector<
+                        PendingDivisionRangeRound>
+                        pending;
+
+                    pending.reserve(
+                        window_end -
+                        window_begin);
+
+                    std::vector<
+                        DynamicCommitmentSpec>
+                        first_round_specs;
+
+                    first_round_specs.reserve(
+                        (window_end -
+                         window_begin) *
+                        4);
+
+                    // Commitment computation for later members of this window
+                    // may happen early, but no future commitment is absorbed
+                    // into the transcript here. Fiat-Shamir order below stays
+                    // byte-for-byte identical to the canonical schedule.
+                    for (std::size_t position =
+                             window_begin;
+                         position <
+                         window_end;
+                         ++position)
+                    {
+                        const auto &descriptor =
+                            descriptors[position];
+
+                        const auto &limb_columns =
+                            division.limbs.at(
+                                descriptor.value_name);
+
+                        const auto &limb_column =
+                            limb_columns.at(
+                                descriptor.limb);
+
+                        const auto limb_label =
+                            signed_division_limb_label(
+                                division_prefix,
+                                descriptor.value_name,
+                                descriptor.limb);
+
+                        const auto table_label =
+                            signed_division_range_label(
+                                division_prefix,
+                                descriptor.value_name,
+                                descriptor.limb,
+                                "Table");
+
+                        const auto query_label =
+                            signed_division_range_label(
+                                division_prefix,
+                                descriptor.value_name,
+                                descriptor.limb,
+                                "Query");
+
+                        const auto multiplicity_label =
+                            signed_division_range_label(
+                                division_prefix,
+                                descriptor.value_name,
+                                descriptor.limb,
+                                "m");
+
+                        auto padded_limb_query =
+                            padded_column(
+                                limb_column,
+                                domains.edge->size);
+
+                        auto multiplicity =
+                            std::make_shared<
+                                const std::vector<FieldElement>>(
                                 build_single_lookup_multiplicity_for_packed_query(
                                     *range_index,
                                     padded_limb_query,
@@ -5943,79 +6338,185 @@ namespace gatzk::protocol
                                     valid_count,
                                     limb_label,
                                     metrics));
-                        add_dynamic_commitment_batch(
-                            trace,
-                            {
-                                shared_column_spec(
+
+                        first_round_specs.push_back(
+                            shared_column_spec(
+                                limb_label,
+                                forward_artifacts,
+                                limb_column,
+                                domains.edge));
+
+                        first_round_specs.push_back(
+                            column_spec(
+                                table_label,
+                                table,
+                                domains.edge));
+
+                        first_round_specs.push_back(
+                            shared_column_spec(
+                                query_label,
+                                forward_artifacts,
+                                limb_column,
+                                domains.edge));
+
+                        first_round_specs.push_back(
+                            column_spec(
+                                multiplicity_label,
+                                multiplicity,
+                                domains.edge));
+
+                        pending.push_back(
+                            PendingDivisionRangeRound{
+                                .value_name =
+                                    descriptor.value_name,
+                                .limb =
+                                    descriptor.limb,
+                                .limb_label =
                                     limb_label,
-                                    forward_artifacts,
-                                    limb_columns[limb],
-                                    domains.edge),
-                                column_spec(
+                                .table_label =
                                     table_label,
-                                    table,
-                                    domains.edge),
-                                shared_column_spec(
+                                .query_label =
                                     query_label,
-                                    forward_artifacts,
-                                    limb_columns[limb],
-                                    domains.edge),
-                                column_spec(
+                                .multiplicity_label =
                                     multiplicity_label,
-                                    multiplicity,
-                                    domains.edge),
-                            },
-                            context.kzg,
-                            keep_trace_payloads,
-                            metrics);
-                        for (const auto &label : {
-                                 limb_label, table_label, query_label, multiplicity_label})
+                                .padded_limb_query =
+                                    std::move(
+                                        padded_limb_query),
+                                .multiplicity =
+                                    std::move(
+                                        multiplicity),
+                            });
+                    }
+
+                    // This is the cross-call family merge.  The old code sent
+                    // one four-object batch per limb; the complete bounded
+                    // window now reaches KZG at once and can use the explicit
+                    // same-SRS wave scheduler installed in 1e2febc.
+                    add_dynamic_commitment_batch(
+                        trace,
+                        std::move(
+                            first_round_specs),
+                        context.kzg,
+                        keep_trace_payloads,
+                        metrics);
+
+                    // Formal transcript schedule remains exactly:
+                    //
+                    // first-round commitment(s) -> beta -> J/R commitment(s)
+                    //
+                    // for each limb in canonical order.
+                    for (auto &item :
+                         pending)
+                    {
+                        for (const auto *label : {
+                                 &item.limb_label,
+                                 &item.table_label,
+                                 &item.query_label,
+                                 &item.multiplicity_label})
                         {
-                            transcript.absorb_commitment(label, trace.commitments.at(label).point);
+                            transcript.absorb_commitment(
+                                *label,
+                                trace.commitments.at(
+                                                     *label)
+                                    .point);
                         }
-                        const auto beta_name = signed_division_beta_name(
-                            division_prefix, value_name, limb);
-                        const auto beta = transcript.challenge(beta_name);
-                        trace.challenges[beta_name] = beta;
-                        auto inverses = profiled_logup_inverse(
-                            *table,
-                            padded_limb_query,
-                            q_tbl_r,
-                            q_query,
-                            beta);
+
+                        const auto beta_name =
+                            signed_division_beta_name(
+                                division_prefix,
+                                item.value_name,
+                                item.limb);
+
+                        const auto beta =
+                            transcript.challenge(
+                                beta_name);
+
+                        trace.challenges[beta_name] =
+                            beta;
+
+                        auto inverses =
+                            profiled_logup_inverse(
+                                *table,
+                                item.padded_limb_query,
+                                q_tbl_r,
+                                q_query,
+                                beta);
+
                         auto accumulator =
                             profiled_logup_accumulator(
                                 inverses.table,
                                 inverses.query,
-                                *multiplicity,
+                                *item.multiplicity,
                                 q_tbl_r,
                                 q_query,
                                 active_count);
-                        const auto j_table_label = signed_division_range_label(
-                            division_prefix, value_name, limb, "J_tbl");
-                        const auto j_query_label = signed_division_range_label(
-                            division_prefix, value_name, limb, "J_qry");
-                        const auto accumulator_label = signed_division_range_label(
-                            division_prefix, value_name, limb, "R");
+
+                        const auto j_table_label =
+                            signed_division_range_label(
+                                division_prefix,
+                                item.value_name,
+                                item.limb,
+                                "J_tbl");
+
+                        const auto j_query_label =
+                            signed_division_range_label(
+                                division_prefix,
+                                item.value_name,
+                                item.limb,
+                                "J_qry");
+
+                        const auto accumulator_label =
+                            signed_division_range_label(
+                                division_prefix,
+                                item.value_name,
+                                item.limb,
+                                "R");
+
                         add_dynamic_commitment_batch(
                             trace,
                             {
-                                column_spec(j_table_label, std::move(inverses.table), domains.edge),
-                                column_spec(j_query_label, std::move(inverses.query), domains.edge),
-                                column_spec(accumulator_label, std::move(accumulator), domains.edge),
+                                column_spec(
+                                    j_table_label,
+                                    std::move(
+                                        inverses.table),
+                                    domains.edge),
+                                column_spec(
+                                    j_query_label,
+                                    std::move(
+                                        inverses.query),
+                                    domains.edge),
+                                column_spec(
+                                    accumulator_label,
+                                    std::move(
+                                        accumulator),
+                                    domains.edge),
                             },
                             context.kzg,
                             keep_trace_payloads,
                             metrics);
-                        for (const auto &label : {
-                                 j_table_label, j_query_label, accumulator_label})
+
+                        for (const auto *label : {
+                                 &j_table_label,
+                                 &j_query_label,
+                                 &accumulator_label})
                         {
-                            transcript.absorb_commitment(label, trace.commitments.at(label).point);
+                            transcript.absorb_commitment(
+                                *label,
+                                trace.commitments.at(
+                                                     *label)
+                                    .point);
                         }
+
+                        // Release the two large future-round auxiliaries as
+                        // soon as this limb crosses its challenge barrier.
+                        std::vector<FieldElement>()
+                            .swap(
+                                item.padded_limb_query);
+
+                        item.multiplicity.reset();
                     }
                 }
             };
-
             auto append_model_binding_blinder = [&](
                                                     const std::string &source_label,
                                                     const std::string &blinder_label,

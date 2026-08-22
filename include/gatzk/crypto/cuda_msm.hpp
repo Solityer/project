@@ -37,12 +37,22 @@ namespace gatzk::crypto
         const G1Point *points,
         std::size_t count,
         std::size_t stable_srs_capacity);
-
     // Execution-only phase-boundary trim. Keep a bounded hot SRS subset while
-    // returning most CUDA memory to large quotient construction.
+    // returning excess CUDA/unified memory to the next proving phase.
     void trim_cuda_g1_msm_resident_cache(
         std::size_t maximum_bytes);
 
-    // Fully release resident CUDA SRS material.
+    // True when the active CUDA MSM device uses integrated/unified physical
+    // memory. This is execution-only information and never changes KZG
+    // semantics or proof contents.
+    bool cuda_g1_msm_integrated_memory_device();
+
+    // Release transient scalar staging and streamed-MSM buffers while keeping
+    // immutable resident SRS bases alive for later quotient commitments and
+    // folded openings.
+    void release_cuda_g1_msm_execution_workspace();
+
+    // Final lifecycle release: resident SRS bases and every transient MSM
+    // workspace.
     void release_cuda_g1_msm_resident_cache();
 }
