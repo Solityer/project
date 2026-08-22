@@ -2252,46 +2252,6 @@ namespace gatzk::crypto
                 count,
                 stable_srs_capacity);
     }
-
-    bool cuda_g1_msm_integrated_memory_device()
-    {
-        if (!util::route2_options()
-                 .cuda_field_hotspots)
-        {
-            return false;
-        }
-
-        if (!algebra::cuda_backend_available())
-        {
-            return false;
-        }
-
-        return cuda_msm_device_is_integrated();
-    }
-
-    void release_cuda_g1_msm_execution_workspace()
-    {
-        if (!util::route2_options()
-                 .cuda_field_hotspots)
-        {
-            return;
-        }
-
-        std::lock_guard<std::mutex>
-            execution_lock(
-                cuda_msm_execution_mutex());
-
-        // These buffers are request/phase-local execution scratch.  Releasing
-        // them must not invalidate immutable SRS bases that are profitable
-        // again during quotient commitments and folded openings.
-        reusable_scalar_staging().release();
-        release_stream_msm_buffers();
-
-        util::info(
-            "cuda_msm transient execution workspace released; "
-            "resident SRS bases preserved");
-    }
-
     void trim_cuda_g1_msm_resident_cache(
         std::size_t maximum_bytes)
     {
@@ -2338,8 +2298,6 @@ namespace gatzk::crypto
             execution_lock(
                 cuda_msm_execution_mutex());
 
-        // Scalar conversion/staging buffers are phase-local. Keep immutable
-        // resident SRS bases alive across proving phases.
         reusable_scalar_staging().release();
         release_stream_msm_buffers();
 
@@ -2367,7 +2325,6 @@ namespace gatzk::crypto
         util::info(
             "cuda_msm resident SRS cache and execution workspace released");
     }
-
 }
 bool try_cuda_g1_msm(
     G1Point *output,

@@ -2551,7 +2551,7 @@ namespace gatzk::protocol
                 for (const auto &spec : specs)
                 {
                     const auto spec_bytes =
-                        estimated_dynamic_commitment_payload_bytes(
+                        prepared_payload_bytes_for_spec(
                             spec);
 
                     if (spec_bytes >
@@ -2598,7 +2598,7 @@ namespace gatzk::protocol
                     for (auto &spec : specs)
                     {
                         const auto spec_bytes =
-                            estimated_dynamic_commitment_payload_bytes(
+                            prepared_payload_bytes_for_spec(
                                 spec);
 
                         const bool exceeds_budget =

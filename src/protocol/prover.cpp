@@ -9624,12 +9624,13 @@ namespace gatzk::protocol
 
             const auto materialize_one = [&](const std::string &label)
             {
-                const ScopedQuotientCoefficientScratchRelease
-                    coefficient_scratch_release;
-
                 const auto start = Clock::now();
                 progress_note("prove:quotient:" + label + ":start");
-                QuotientPolynomialMaterializer materializer(context, trace, challenges, label);
+                QuotientPolynomialMaterializer materializer(
+                    context,
+                    trace,
+                    challenges,
+                    label);
                 auto polynomial = materializer.materialize(context.kzg);
                 progress_note("prove:quotient:" + label + ":done");
                 if (auto *metric = quotient_metric(metrics, label); metric != nullptr)
