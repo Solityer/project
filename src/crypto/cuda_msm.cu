@@ -375,6 +375,178 @@ namespace gatzk::crypto
                 nullptr;
         };
 
+        class ReusableScalarStaging
+        {
+        public:
+            ReusableScalarStaging() = default;
+
+            ~ReusableScalarStaging()
+            {
+                if (device_scalars_ != nullptr)
+                {
+                    (void)cudaFree(device_scalars_);
+                }
+            }
+
+            ReusableScalarStaging(
+                const ReusableScalarStaging &) = delete;
+
+            ReusableScalarStaging &
+            operator=(
+                const ReusableScalarStaging &) = delete;
+
+            std::size_t additional_host_bytes(
+                std::size_t count) const
+            {
+                if (count <= host_scalars_.capacity())
+                {
+                    return 0;
+                }
+
+                return checked_byte_count(
+                    count - host_scalars_.capacity(),
+                    sizeof(bls12_381::scalar_t),
+                    "reusable host scalar staging growth");
+            }
+
+            std::size_t additional_device_bytes(
+                std::size_t count) const
+            {
+                if (count <= device_capacity_)
+                {
+                    return 0;
+                }
+
+                return checked_byte_count(
+                    count - device_capacity_,
+                    sizeof(bls12_381::scalar_t),
+                    "reusable device scalar staging growth");
+            }
+
+            bls12_381::scalar_t *host(
+                std::size_t count)
+            {
+                try
+                {
+                    host_scalars_.resize(count);
+                }
+                catch (const std::bad_alloc &)
+                {
+                    throw CudaMsmResourcePressure(
+                        "CUDA G1 MSM reusable host scalar staging "
+                        "exhausted host memory");
+                }
+
+                return host_scalars_.data();
+            }
+
+            bls12_381::scalar_t *device(
+                std::size_t count)
+            {
+                if (count <= device_capacity_)
+                {
+                    return device_scalars_;
+                }
+
+                if (device_scalars_ != nullptr)
+                {
+                    const auto release_status =
+                        cudaFree(device_scalars_);
+
+                    device_scalars_ = nullptr;
+                    device_capacity_ = 0;
+
+                    if (release_status != cudaSuccess)
+                    {
+                        throw_cuda_error(
+                            "reusable device scalar release",
+                            release_status);
+                    }
+                }
+
+                if (count == 0)
+                {
+                    return nullptr;
+                }
+
+                const auto byte_count =
+                    checked_byte_count(
+                        count,
+                        sizeof(bls12_381::scalar_t),
+                        "reusable device scalar staging");
+
+                const auto status =
+                    cudaMalloc(
+                        reinterpret_cast<void **>(
+                            &device_scalars_),
+                        byte_count);
+
+                if (status == cudaErrorMemoryAllocation)
+                {
+                    (void)cudaGetLastError();
+
+                    device_scalars_ = nullptr;
+                    device_capacity_ = 0;
+
+                    throw CudaMsmResourcePressure(
+                        "CUDA G1 MSM reusable device scalar staging "
+                        "exhausted device memory");
+                }
+
+                if (status != cudaSuccess)
+                {
+                    throw_cuda_error(
+                        "reusable device scalar allocation",
+                        status);
+                }
+
+                device_capacity_ = count;
+                return device_scalars_;
+            }
+
+            void release()
+            {
+                std::vector<
+                    bls12_381::scalar_t>()
+                    .swap(host_scalars_);
+
+                if (device_scalars_ != nullptr)
+                {
+                    const auto status =
+                        cudaFree(device_scalars_);
+
+                    device_scalars_ = nullptr;
+                    device_capacity_ = 0;
+
+                    if (status != cudaSuccess)
+                    {
+                        throw_cuda_error(
+                            "reusable device scalar release",
+                            status);
+                    }
+                }
+            }
+
+        private:
+            std::vector<
+                bls12_381::scalar_t>
+                host_scalars_;
+
+            bls12_381::scalar_t
+                *device_scalars_ = nullptr;
+
+            std::size_t device_capacity_ = 0;
+        };
+
+        ReusableScalarStaging &
+        reusable_scalar_staging()
+        {
+            static ReusableScalarStaging staging;
+            return staging;
+        }
+
+        void release_stream_msm_buffers();
+
         template <class MclField, class IcicleField>
         MclField to_mcl_field(const IcicleField &input)
         {
@@ -772,10 +944,6 @@ namespace gatzk::crypto
             const auto total_scalar_count =
                 count * batch_size;
 
-            // Direct resident execution must be admitted against the complete
-            // scalar working set.  This restores the resource contract of the
-            // 20-Aug fast path instead of pretending that a full resident MSM
-            // only owns one 2^20 scalar chunk.
             if (!bounded_integrated_scalar_staging &&
                 batch_size > 1)
             {
@@ -791,9 +959,6 @@ namespace gatzk::crypto
                 }
             }
 
-            // The bounded staging mode is used only by the UMA cached-base
-            // chunked fallback.  Its immutable bases remain resident, while
-            // scalar staging is intentionally limited to one chunk.
             const auto staged_scalar_count =
                 integrated &&
                         bounded_integrated_scalar_staging
@@ -809,13 +974,17 @@ namespace gatzk::crypto
                     sizeof(bls12_381::affine_t),
                     "resident bases");
 
-            const auto scalar_bytes =
-                checked_byte_count(
-                    staged_scalar_count,
-                    sizeof(bls12_381::scalar_t),
-                    bounded_integrated_scalar_staging
-                        ? "bounded resident scalar staging"
-                        : "resident scalars");
+            auto &scalar_staging =
+                reusable_scalar_staging();
+
+            const auto incremental_scalar_bytes =
+                integrated
+                    ? scalar_staging
+                          .additional_host_bytes(
+                              staged_scalar_count)
+                    : scalar_staging
+                          .additional_device_bytes(
+                              staged_scalar_count);
 
             const bool already_resident =
                 cache.contains_usable_prefix(
@@ -834,12 +1003,13 @@ namespace gatzk::crypto
                     read_host_memory_info();
 
                 if (host.available_bytes !=
-                    std::numeric_limits<std::size_t>::max())
+                    std::numeric_limits<
+                        std::size_t>::max())
                 {
                     auto required_host =
                         checked_add(
                             new_base_bytes,
-                            scalar_bytes,
+                            incremental_scalar_bytes,
                             "integrated resident working set");
 
                     const auto reserve =
@@ -883,7 +1053,7 @@ namespace gatzk::crypto
             auto required_cuda =
                 checked_add(
                     new_base_bytes,
-                    scalar_bytes,
+                    incremental_scalar_bytes,
                     "resident CUDA requirement");
 
             required_cuda =
@@ -903,17 +1073,15 @@ namespace gatzk::crypto
                 read_host_memory_info();
 
             if (host.available_bytes !=
-                std::numeric_limits<std::size_t>::max())
+                std::numeric_limits<
+                    std::size_t>::max())
             {
-                auto required_host =
-                    checked_add(
-                        scalar_bytes,
-                        std::max<std::size_t>(
-                            kHostSafetyReserveBytes,
-                            host.total_bytes == 0
-                                ? kHostSafetyReserveBytes
-                                : host.total_bytes / 8),
-                        "resident host reserve");
+                const auto required_host =
+                    std::max<std::size_t>(
+                        kHostSafetyReserveBytes,
+                        host.total_bytes == 0
+                            ? kHostSafetyReserveBytes
+                            : host.total_bytes / 8);
 
                 if (host.available_bytes <
                     required_host)
@@ -924,7 +1092,6 @@ namespace gatzk::crypto
 
             return true;
         }
-
         void execute_resident_cuda_msm(
             G1Point *output,
             const G1Point *points,
@@ -933,6 +1100,8 @@ namespace gatzk::crypto
             std::size_t stable_srs_capacity,
             DeviceBaseCache &cache)
         {
+            release_stream_msm_buffers();
+
             auto *device_points =
                 cache.get_or_prepare(
                     points,
@@ -950,27 +1119,16 @@ namespace gatzk::crypto
             bls12_381::projective_t result;
             cudaError_t status = cudaSuccess;
 
+            auto &scalar_staging =
+                reusable_scalar_staging();
+
             if (cuda_msm_device_is_integrated())
             {
-                // On UMA the 20-Aug path was faster when ICICLE consumed one
-                // complete host scalar vector.  Avoid an additional full-size
-                // cudaMalloc/cudaMemcpy staging buffer here.
-                std::vector<bls12_381::scalar_t>
-                    converted_scalars;
-
-                try
-                {
-                    converted_scalars.resize(count);
-                }
-                catch (const std::bad_alloc &)
-                {
-                    throw CudaMsmResourcePressure(
-                        "CUDA G1 MSM resident scalar staging "
-                        "exhausted host memory");
-                }
+                auto *converted_scalars =
+                    scalar_staging.host(count);
 
                 copy_mcl_montgomery_scalars_to_icicle(
-                    converted_scalars.data(),
+                    converted_scalars,
                     scalars,
                     count);
 
@@ -978,7 +1136,7 @@ namespace gatzk::crypto
 
                 status =
                     bls12_381_msm_cuda(
-                        converted_scalars.data(),
+                        converted_scalars,
                         device_points,
                         static_cast<int>(count),
                         config,
@@ -986,13 +1144,11 @@ namespace gatzk::crypto
             }
             else
             {
-                // Dedicated-memory GPUs retain the explicit device-scalar
-                // staging introduced by the newer CUDA path.
-                ScopedDeviceScalarBuffer
-                    device_scalars(count);
+                auto *device_scalars =
+                    scalar_staging.device(count);
 
                 copy_mcl_montgomery_scalars_to_device(
-                    device_scalars.data(),
+                    device_scalars,
                     scalars,
                     count);
 
@@ -1000,7 +1156,7 @@ namespace gatzk::crypto
 
                 status =
                     bls12_381_msm_cuda(
-                        device_scalars.data(),
+                        device_scalars,
                         device_points,
                         static_cast<int>(count),
                         config,
@@ -1028,7 +1184,6 @@ namespace gatzk::crypto
 
             algebra::record_cuda_kernel_invocations(1);
         }
-
         void execute_resident_cuda_msm_batch(
             G1Point *const *outputs,
             const G1Point *points,
@@ -1038,6 +1193,8 @@ namespace gatzk::crypto
             std::size_t stable_srs_capacity,
             DeviceBaseCache &cache)
         {
+            release_stream_msm_buffers();
+
             auto *device_points =
                 cache.get_or_prepare(
                     points,
@@ -1055,7 +1212,8 @@ namespace gatzk::crypto
             const auto total_scalar_count =
                 count * batch_size;
 
-            std::vector<bls12_381::projective_t>
+            std::vector<
+                bls12_381::projective_t>
                 results;
 
             try
@@ -1085,29 +1243,21 @@ namespace gatzk::crypto
 
             cudaError_t status = cudaSuccess;
 
+            auto &scalar_staging =
+                reusable_scalar_staging();
+
             if (cuda_msm_device_is_integrated())
             {
-                std::vector<bls12_381::scalar_t>
-                    batched_scalars;
-
-                try
-                {
-                    batched_scalars.resize(
+                auto *batched_scalars =
+                    scalar_staging.host(
                         total_scalar_count);
-                }
-                catch (const std::bad_alloc &)
-                {
-                    throw CudaMsmResourcePressure(
-                        "CUDA G1 MSM resident batch scalar staging "
-                        "exhausted host memory");
-                }
 
                 for (std::size_t batch = 0;
                      batch < batch_size;
                      ++batch)
                 {
                     copy_mcl_montgomery_scalars_to_icicle(
-                        batched_scalars.data() +
+                        batched_scalars +
                             batch * count,
                         scalar_vectors[batch],
                         count);
@@ -1117,7 +1267,7 @@ namespace gatzk::crypto
 
                 status =
                     bls12_381_msm_cuda(
-                        batched_scalars.data(),
+                        batched_scalars,
                         device_points,
                         static_cast<int>(count),
                         config,
@@ -1125,8 +1275,8 @@ namespace gatzk::crypto
             }
             else
             {
-                ScopedDeviceScalarBuffer
-                    device_scalars(
+                auto *device_scalars =
+                    scalar_staging.device(
                         total_scalar_count);
 
                 for (std::size_t batch = 0;
@@ -1134,7 +1284,7 @@ namespace gatzk::crypto
                      ++batch)
                 {
                     copy_mcl_montgomery_scalars_to_device(
-                        device_scalars.data() +
+                        device_scalars +
                             batch * count,
                         scalar_vectors[batch],
                         count);
@@ -1144,7 +1294,7 @@ namespace gatzk::crypto
 
                 status =
                     bls12_381_msm_cuda(
-                        device_scalars.data(),
+                        device_scalars,
                         device_points,
                         static_cast<int>(count),
                         config,
@@ -1178,7 +1328,6 @@ namespace gatzk::crypto
 
             algebra::record_cuda_kernel_invocations(1);
         }
-
         void execute_cached_base_chunked_cuda_msm_batch(
             G1Point *const *outputs,
             const G1Point *points,
@@ -1447,14 +1596,20 @@ namespace gatzk::crypto
         }
         struct StreamMsmBuffers
         {
-            bls12_381::affine_t *device_points = nullptr;
+            bls12_381::affine_t *device_points =
+                nullptr;
 
-            std::vector<mcl::G1> normalized_points;
+            std::size_t device_point_capacity = 0;
 
-            std::vector<bls12_381::affine_t>
+            std::vector<mcl::G1>
+                normalized_points;
+
+            std::vector<
+                bls12_381::affine_t>
                 converted_points;
 
-            std::vector<bls12_381::scalar_t>
+            std::vector<
+                bls12_381::scalar_t>
                 converted_scalars;
 
             ~StreamMsmBuffers()
@@ -1473,6 +1628,7 @@ namespace gatzk::crypto
                         cudaFree(device_points);
 
                     device_points = nullptr;
+                    device_point_capacity = 0;
 
                     if (status != cudaSuccess)
                     {
@@ -1482,25 +1638,22 @@ namespace gatzk::crypto
                     }
                 }
 
-                std::vector<mcl::G1>().swap(
-                    normalized_points);
+                std::vector<mcl::G1>()
+                    .swap(normalized_points);
 
                 std::vector<
                     bls12_381::affine_t>()
-                    .swap(
-                        converted_points);
+                    .swap(converted_points);
 
                 std::vector<
                     bls12_381::scalar_t>()
-                    .swap(
-                        converted_scalars);
+                    .swap(converted_scalars);
             }
 
             bool prepare(
                 std::size_t chunk_size,
                 std::size_t scalar_batch_size = 1)
             {
-                release();
                 if (scalar_batch_size == 0 ||
                     chunk_size >
                         std::numeric_limits<
@@ -1509,6 +1662,7 @@ namespace gatzk::crypto
                 {
                     return false;
                 }
+
                 try
                 {
                     normalized_points.resize(
@@ -1523,8 +1677,30 @@ namespace gatzk::crypto
                 }
                 catch (const std::bad_alloc &)
                 {
-                    release();
                     return false;
+                }
+
+                if (device_point_capacity >=
+                        chunk_size &&
+                    device_points != nullptr)
+                {
+                    return true;
+                }
+
+                if (device_points != nullptr)
+                {
+                    const auto release_status =
+                        cudaFree(device_points);
+
+                    device_points = nullptr;
+                    device_point_capacity = 0;
+
+                    if (release_status != cudaSuccess)
+                    {
+                        throw_cuda_error(
+                            "stream base resize release",
+                            release_status);
+                    }
                 }
 
                 const auto base_bytes =
@@ -1544,7 +1720,9 @@ namespace gatzk::crypto
                 {
                     (void)cudaGetLastError();
 
-                    release();
+                    device_points = nullptr;
+                    device_point_capacity = 0;
+
                     return false;
                 }
 
@@ -1555,10 +1733,24 @@ namespace gatzk::crypto
                         status);
                 }
 
+                device_point_capacity =
+                    chunk_size;
+
                 return true;
             }
         };
 
+        StreamMsmBuffers &
+        stream_msm_buffers()
+        {
+            static StreamMsmBuffers buffers;
+            return buffers;
+        }
+
+        void release_stream_msm_buffers()
+        {
+            stream_msm_buffers().release();
+        }
         void upload_stream_msm_points(
             StreamMsmBuffers &buffers,
             const G1Point *points,
@@ -1636,7 +1828,10 @@ namespace gatzk::crypto
                     count,
                     kPreferredStreamMsmChunkSize);
 
-            StreamMsmBuffers buffers;
+            reusable_scalar_staging().release();
+
+            auto &buffers =
+                stream_msm_buffers();
 
             while (!buffers.prepare(chunk_size))
             {
@@ -1815,8 +2010,10 @@ namespace gatzk::crypto
                 std::min(
                     count,
                     kPreferredStreamMsmChunkSize);
+            reusable_scalar_staging().release();
 
-            StreamMsmBuffers buffers;
+            auto &buffers =
+                stream_msm_buffers();
 
             while (!buffers.prepare(
                 chunk_size,
@@ -2074,7 +2271,6 @@ namespace gatzk::crypto
             .trim_to_bytes(
                 maximum_bytes);
     }
-
     void release_cuda_g1_msm_resident_cache()
     {
         if (!util::route2_options().cuda_field_hotspots)
@@ -2087,8 +2283,12 @@ namespace gatzk::crypto
 
         DeviceBaseCache::instance().clear();
 
+        reusable_scalar_staging().release();
+
+        release_stream_msm_buffers();
+
         util::info(
-            "cuda_msm resident base cache released before large quotient");
+            "cuda_msm execution workspace released before large quotient");
     }
 
     bool try_cuda_g1_msm(

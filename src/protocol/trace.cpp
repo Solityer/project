@@ -1325,19 +1325,17 @@ namespace gatzk::protocol
         std::size_t dynamic_commitment_prepared_budget_bytes(
             const std::vector<DynamicCommitmentSpec> &specs)
         {
-            // A full 2^23 edge-domain FieldElement column is approximately
-            // 256 MiB. For this workload class, retaining three or four such
-            // objects in one prepared family creates an unnecessarily large
-            // host/UMA working set before KZG execution.
-            //
-            // Keep at most roughly two full large-edge columns prepared
-            // together. Smaller edge workloads and FH workloads retain the
-            // broader host-adaptive window from the no-argument helper.
             constexpr std::size_t kLargeEdgeDomainSize =
                 1ULL << 23;
 
-            constexpr std::size_t kLargeEdgeFamilyBudgetBytes =
+            constexpr std::size_t kMinimumLargeEdgeFamilyBudgetBytes =
                 512ULL * 1024ULL * 1024ULL;
+
+            constexpr std::size_t kMaximumLargeEdgeFamilyBudgetBytes =
+                1ULL * 1024ULL * 1024ULL * 1024ULL;
+
+            constexpr std::size_t kLargeEdgeHostReserveBytes =
+                16ULL * 1024ULL * 1024ULL * 1024ULL;
 
             const auto host_budget =
                 dynamic_commitment_prepared_budget_bytes();
@@ -1354,7 +1352,8 @@ namespace gatzk::protocol
             {
                 if (spec.domain != nullptr &&
                     spec.domain->name == "edge" &&
-                    spec.domain->size >= kLargeEdgeDomainSize)
+                    spec.domain->size >=
+                        kLargeEdgeDomainSize)
                 {
                     large_edge_family = true;
                 }
@@ -1379,17 +1378,90 @@ namespace gatzk::protocol
                 }
             }
 
-            if (!large_edge_family ||
-                total_payload_bytes <=
-                    kLargeEdgeFamilyBudgetBytes)
+            if (!large_edge_family)
             {
                 return host_budget;
             }
 
-            return std::min(
-                host_budget,
-                kLargeEdgeFamilyBudgetBytes);
+            std::size_t live_family_budget =
+                kMinimumLargeEdgeFamilyBudgetBytes;
+
+            std::ifstream input(
+                "/proc/meminfo");
+
+            if (input)
+            {
+                std::string line;
+
+                while (std::getline(
+                    input,
+                    line))
+                {
+                    std::istringstream row(line);
+
+                    std::string key;
+                    std::uint64_t kibibytes = 0;
+
+                    if (!(row >> key >> kibibytes) ||
+                        key != "MemAvailable:")
+                    {
+                        continue;
+                    }
+
+                    constexpr std::uint64_t kKiB =
+                        1024ULL;
+
+                    const auto max_size =
+                        static_cast<std::uint64_t>(
+                            std::numeric_limits<
+                                std::size_t>::max());
+
+                    if (kibibytes >
+                        max_size / kKiB)
+                    {
+                        live_family_budget =
+                            kMaximumLargeEdgeFamilyBudgetBytes;
+
+                        break;
+                    }
+
+                    const auto available_bytes =
+                        static_cast<std::size_t>(
+                            kibibytes * kKiB);
+
+                    if (available_bytes >
+                        kLargeEdgeHostReserveBytes)
+                    {
+                        const auto usable_bytes =
+                            available_bytes -
+                            kLargeEdgeHostReserveBytes;
+
+                        live_family_budget =
+                            std::clamp(
+                                usable_bytes /
+                                    std::size_t{8},
+                                kMinimumLargeEdgeFamilyBudgetBytes,
+                                kMaximumLargeEdgeFamilyBudgetBytes);
+                    }
+
+                    break;
+                }
+            }
+
+            const auto family_budget =
+                std::min(
+                    host_budget,
+                    live_family_budget);
+
+            if (total_payload_bytes <=
+                family_budget)
+            {
+                return host_budget;
+            }
+
+            return family_budget;
         }
+
         std::size_t
         dynamic_commitment_materialization_worker_count(
             const std::vector<DynamicCommitmentSpec> &specs,

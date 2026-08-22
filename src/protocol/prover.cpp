@@ -9634,13 +9634,297 @@ namespace gatzk::protocol
             }
             if (worker_count <= 1)
             {
-                for (const auto &label : labels)
+                const auto cpu_count =
+                    std::max<std::size_t>(
+                        1,
+                        std::thread::hardware_concurrency());
+
+                const auto fh_size =
+                    context.domains.fh != nullptr
+                        ? context.domains.fh->size
+                        : 0;
+
+                const auto edge_size =
+                    context.domains.edge != nullptr
+                        ? context.domains.edge->size
+                        : 0;
+
+                const bool large_family_serial_policy =
+                    context.model.has_real_multihead &&
+                    labels.size() > 1 &&
+                    (fh_size >= (1ULL << 25) ||
+                     edge_size >= (1ULL << 22));
+
+                if (!large_family_serial_policy)
                 {
-                    out.push_back(materialize_one(label));
+                    for (const auto &label : labels)
+                    {
+                        out.push_back(
+                            materialize_one(label));
+                    }
+
+                    return out;
                 }
+
+                const auto domain_size_for_label =
+                    [&](const std::string &label)
+                    -> std::size_t
+                {
+                    if (label == "t_FH")
+                    {
+                        return context.domains.fh != nullptr
+                                   ? context.domains.fh->size
+                                   : 0;
+                    }
+
+                    if (label == "t_edge")
+                    {
+                        return context.domains.edge != nullptr
+                                   ? context.domains.edge->size
+                                   : 0;
+                    }
+
+                    if (label == "t_in")
+                    {
+                        return context.domains.in != nullptr
+                                   ? context.domains.in->size
+                                   : 0;
+                    }
+
+                    if (label == "t_d" ||
+                        label == "t_d_h")
+                    {
+                        return context.domains.d != nullptr
+                                   ? context.domains.d->size
+                                   : 0;
+                    }
+
+                    if (label == "t_cat")
+                    {
+                        return context.domains.cat != nullptr
+                                   ? context.domains.cat->size
+                                   : 0;
+                    }
+
+                    if (label == "t_C")
+                    {
+                        return context.domains.c != nullptr
+                                   ? context.domains.c->size
+                                   : 0;
+                    }
+
+                    if (label == "t_N")
+                    {
+                        return context.domains.n != nullptr
+                                   ? context.domains.n->size
+                                   : 0;
+                    }
+
+                    return 0;
+                };
+
+                constexpr std::size_t
+                    kSerialQuotientDomainSize =
+                        1ULL << 22;
+
+                std::vector<std::size_t>
+                    heavy_indices;
+
+                std::vector<std::size_t>
+                    light_indices;
+
+                heavy_indices.reserve(
+                    labels.size());
+
+                light_indices.reserve(
+                    labels.size());
+
+                for (std::size_t index = 0;
+                     index < labels.size();
+                     ++index)
+                {
+                    if (domain_size_for_label(
+                            labels[index]) >=
+                        kSerialQuotientDomainSize)
+                    {
+                        heavy_indices.push_back(
+                            index);
+                    }
+                    else
+                    {
+                        light_indices.push_back(
+                            index);
+                    }
+                }
+
+                std::vector<
+                    std::optional<
+                        std::pair<
+                            std::string,
+                            algebra::Polynomial>>>
+                    results(
+                        labels.size());
+
+                const auto run_one =
+                    [&](std::size_t index)
+                {
+                    results[index] =
+                        materialize_one(
+                            labels[index]);
+                };
+
+                const auto t_edge_index =
+                    [&]() -> std::optional<std::size_t>
+                {
+                    const auto it =
+                        std::find(
+                            labels.begin(),
+                            labels.end(),
+                            "t_edge");
+
+                    if (it == labels.end())
+                    {
+                        return std::nullopt;
+                    }
+
+                    return static_cast<std::size_t>(
+                        std::distance(
+                            labels.begin(),
+                            it));
+                }();
+
+                if (t_edge_index.has_value() &&
+                    std::find(
+                        heavy_indices.begin(),
+                        heavy_indices.end(),
+                        *t_edge_index) !=
+                        heavy_indices.end())
+                {
+                    append_note(
+                        metrics,
+                        "quotient_large_family_t_edge_first=1");
+
+                    run_one(
+                        *t_edge_index);
+
+                    heavy_indices.erase(
+                        std::remove(
+                            heavy_indices.begin(),
+                            heavy_indices.end(),
+                            *t_edge_index),
+                        heavy_indices.end());
+                }
+
+                std::stable_sort(
+                    heavy_indices.begin(),
+                    heavy_indices.end(),
+                    [&](std::size_t lhs,
+                        std::size_t rhs)
+                    {
+                        return domain_size_for_label(
+                                   labels[lhs]) >
+                               domain_size_for_label(
+                                   labels[rhs]);
+                    });
+
+                for (const auto index :
+                     heavy_indices)
+                {
+                    run_one(index);
+                }
+
+                const auto light_worker_count =
+                    std::min<std::size_t>(
+                        light_indices.size(),
+                        std::min<std::size_t>(
+                            3,
+                            std::max<std::size_t>(
+                                1,
+                                cpu_count / 2)));
+
+                if (!light_indices.empty())
+                {
+                    append_note(
+                        metrics,
+                        "parallel_quotient_light_wave_workers=" +
+                            std::to_string(
+                                light_worker_count));
+                }
+
+                if (light_worker_count <= 1)
+                {
+                    for (const auto index :
+                         light_indices)
+                    {
+                        run_one(index);
+                    }
+                }
+                else
+                {
+                    std::atomic<std::size_t>
+                        next_light{0};
+
+                    std::vector<
+                        std::future<void>>
+                        futures;
+
+                    futures.reserve(
+                        light_worker_count);
+
+                    for (std::size_t worker = 0;
+                         worker <
+                         light_worker_count;
+                         ++worker)
+                    {
+                        futures.push_back(
+                            std::async(
+                                std::launch::async,
+                                [&]()
+                                {
+                                    while (true)
+                                    {
+                                        const auto position =
+                                            next_light
+                                                .fetch_add(
+                                                    1);
+
+                                        if (position >=
+                                            light_indices
+                                                .size())
+                                        {
+                                            break;
+                                        }
+
+                                        run_one(
+                                            light_indices[position]);
+                                    }
+                                }));
+                    }
+
+                    for (auto &future :
+                         futures)
+                    {
+                        future.get();
+                    }
+                }
+
+                for (auto &result :
+                     results)
+                {
+                    if (!result.has_value())
+                    {
+                        throw std::runtime_error(
+                            "missing large-family quotient "
+                            "materialization result");
+                    }
+
+                    out.push_back(
+                        std::move(
+                            *result));
+                }
+
                 return out;
             }
-
             append_note(metrics, "parallel_quotient_materialization_workers=" + std::to_string(worker_count));
             std::vector<std::optional<std::pair<std::string, algebra::Polynomial>>> results(labels.size());
             std::atomic<std::size_t> next{0};
@@ -12867,75 +13151,146 @@ namespace gatzk::protocol
                      : domain_group_indices)
                     .push_back(i);
             }
-            std::optional<
-                std::array<std::size_t, 2>>
-                shared_stream_domain_pair;
-
-            std::size_t
-                shared_stream_source_count = 0;
-
-            if (util::route2_options()
-                    .cuda_field_hotspots)
+            struct SharedStreamPairSelection
             {
-                std::unordered_map<
-                    std::string,
-                    std::vector<std::size_t>>
-                    groups_by_owner;
+                std::array<std::size_t, 2>
+                    groups{0, 0};
 
-                for (const auto index :
-                     domain_group_indices)
+                std::size_t shared_source_count = 0;
+
+                std::size_t estimated_work = 0;
+            };
+
+            const auto select_shared_stream_pairs =
+                [&](const std::vector<std::size_t> &candidates,
+                    bool require_same_owner)
+            {
+                std::vector<
+                    SharedStreamPairSelection>
+                    selections;
+
+                if (!util::route2_options()
+                         .cuda_field_hotspots ||
+                    candidates.size() < 2)
                 {
-                    groups_by_owner[point_groups[index]
-                                        .owner_block]
-                        .push_back(index);
+                    return selections;
                 }
 
-                std::size_t best_work = 0;
+                std::unordered_set<std::size_t>
+                    consumed;
 
-                for (const auto &[owner, indices] :
-                     groups_by_owner)
+                while (true)
                 {
-                    (void)owner;
+                    bool found = false;
 
-                    if (indices.size() != 2)
+                    SharedStreamPairSelection
+                        best;
+
+                    for (std::size_t lhs_position = 0;
+                         lhs_position <
+                         candidates.size();
+                         ++lhs_position)
                     {
-                        continue;
+                        const auto lhs =
+                            candidates[lhs_position];
+
+                        if (consumed.contains(lhs))
+                        {
+                            continue;
+                        }
+
+                        for (std::size_t rhs_position =
+                                 lhs_position + 1;
+                             rhs_position <
+                             candidates.size();
+                             ++rhs_position)
+                        {
+                            const auto rhs =
+                                candidates[rhs_position];
+
+                            if (consumed.contains(rhs))
+                            {
+                                continue;
+                            }
+
+                            if (require_same_owner &&
+                                point_groups[lhs]
+                                        .owner_block !=
+                                    point_groups[rhs]
+                                        .owner_block)
+                            {
+                                continue;
+                            }
+
+                            const auto shared =
+                                shared_file_backed_semantic_source_count(
+                                    lhs,
+                                    rhs);
+
+                            if (shared == 0)
+                            {
+                                continue;
+                            }
+
+                            const auto work =
+                                estimate_point_group_work(
+                                    lhs) +
+                                estimate_point_group_work(
+                                    rhs);
+
+                            if (!found ||
+                                shared >
+                                    best.shared_source_count ||
+                                (shared ==
+                                     best.shared_source_count &&
+                                 work >
+                                     best.estimated_work))
+                            {
+                                best.groups = {
+                                    lhs,
+                                    rhs,
+                                };
+
+                                best.shared_source_count =
+                                    shared;
+
+                                best.estimated_work =
+                                    work;
+
+                                found = true;
+                            }
+                        }
                     }
 
-                    const auto shared =
-                        shared_file_backed_semantic_source_count(
-                            indices[0],
-                            indices[1]);
-
-                    if (shared == 0)
+                    if (!found)
                     {
-                        continue;
+                        break;
                     }
 
-                    const auto work =
-                        estimate_point_group_work(
-                            indices[0]) +
-                        estimate_point_group_work(
-                            indices[1]);
+                    consumed.insert(
+                        best.groups[0]);
 
-                    if (!shared_stream_domain_pair
-                             .has_value() ||
-                        work > best_work)
-                    {
-                        shared_stream_domain_pair =
-                            std::array<std::size_t, 2>{
-                                indices[0],
-                                indices[1],
-                            };
+                    consumed.insert(
+                        best.groups[1]);
 
-                        shared_stream_source_count =
-                            shared;
-
-                        best_work = work;
-                    }
+                    selections.push_back(
+                        best);
                 }
-            }
 
+                return selections;
+            };
+
+            const auto
+                shared_stream_domain_pairs =
+                    select_shared_stream_pairs(
+                        domain_group_indices,
+                        true);
+
+            const auto
+                shared_stream_external_pairs =
+                    select_shared_stream_pairs(
+                        external_group_indices,
+                        false);
             const auto external_claim_assembly_ms =
                 elapsed_ms(
                     stage_start,
@@ -12944,13 +13299,12 @@ namespace gatzk::protocol
             const auto domain_witness_start =
                 Clock::now();
 
-            auto remaining_domain_group_indices =
-                domain_group_indices;
-
-            if (shared_stream_domain_pair.has_value())
+            auto open_shared_stream_pair =
+                [&](const SharedStreamPairSelection
+                        &selection)
             {
                 const auto pair =
-                    *shared_stream_domain_pair;
+                    selection.groups;
 
                 std::array<
                     std::vector<Commitment>,
@@ -12985,11 +13339,13 @@ namespace gatzk::protocol
                     const auto &group =
                         point_groups[pair[slot]];
 
-                    pair_commitments[slot].reserve(
-                        group.claims.size());
+                    pair_commitments[slot]
+                        .reserve(
+                            group.claims.size());
 
-                    pair_values[slot].reserve(
-                        group.claims.size());
+                    pair_values[slot]
+                        .reserve(
+                            group.claims.size());
 
                     for (const auto &claim :
                          group.claims)
@@ -13098,32 +13454,55 @@ namespace gatzk::protocol
                             .finalize_ms;
                 }
 
-                remaining_domain_group_indices.erase(
-                    std::remove_if(
-                        remaining_domain_group_indices
-                            .begin(),
-                        remaining_domain_group_indices
-                            .end(),
-                        [&](std::size_t index)
-                        {
-                            return index == pair[0] ||
-                                   index == pair[1];
-                        }),
-                    remaining_domain_group_indices
-                        .end());
-
                 progress_note(
                     "prove:opening:"
                     "shared_stream_pair:"
-                    "owner=" +
+                    "first_owner=" +
                     point_groups[pair[0]]
+                        .owner_block +
+                    ":second_owner=" +
+                    point_groups[pair[1]]
                         .owner_block +
                     ":shared_sources=" +
                     std::to_string(
-                        shared_stream_source_count) +
+                        selection
+                            .shared_source_count) +
                     ":ms=" +
                     std::to_string(
                         pair_wall_ms));
+            };
+
+            const auto erase_opened_pair =
+                [](std::vector<std::size_t> *indices,
+                   const std::array<std::size_t, 2>
+                       &pair)
+            {
+                indices->erase(
+                    std::remove_if(
+                        indices->begin(),
+                        indices->end(),
+                        [&](std::size_t index)
+                        {
+                            return index ==
+                                       pair[0] ||
+                                   index ==
+                                       pair[1];
+                        }),
+                    indices->end());
+            };
+
+            auto remaining_domain_group_indices =
+                domain_group_indices;
+
+            for (const auto &selection :
+                 shared_stream_domain_pairs)
+            {
+                open_shared_stream_pair(
+                    selection);
+
+                erase_opened_pair(
+                    &remaining_domain_group_indices,
+                    selection.groups);
             }
 
             (void)open_group_indices(
@@ -13133,17 +13512,82 @@ namespace gatzk::protocol
                 elapsed_ms(
                     domain_witness_start,
                     Clock::now());
-            for (const auto group_index : domain_group_indices)
+
+            for (const auto group_index :
+                 domain_group_indices)
             {
-                const auto &group = point_groups[group_index];
-                const auto &profile = opening_results[group_index].profile;
+                const auto &group =
+                    point_groups[group_index];
+
+                const auto &profile =
+                    opening_results[group_index]
+                        .profile;
+
                 progress_note(
-                    "prove:domain_witness:group:" + group.owner_block + ":ms=" + std::to_string(opening_results[group_index].elapsed_ms) + ":precompute_ms=" + std::to_string(profile.precompute_ms) + ":inverse_ms=" + std::to_string(profile.denominator_inverse_ms) + ":assembly_ms=" + std::to_string(profile.quotient_assembly_ms) + ":witness_msm_ms=" + std::to_string(profile.witness_msm_ms) + ":blinder_ms=" + std::to_string(profile.blinder_witness_ms) + ":workers=" + std::to_string(profile.point_msm_worker_cap) + ":outer_workers=" + std::to_string(profile.point_parallel_workers));
+                    "prove:domain_witness:group:" +
+                    group.owner_block +
+                    ":ms=" +
+                    std::to_string(
+                        opening_results[group_index]
+                            .elapsed_ms) +
+                    ":precompute_ms=" +
+                    std::to_string(
+                        profile.precompute_ms) +
+                    ":inverse_ms=" +
+                    std::to_string(
+                        profile
+                            .denominator_inverse_ms) +
+                    ":assembly_ms=" +
+                    std::to_string(
+                        profile
+                            .quotient_assembly_ms) +
+                    ":witness_msm_ms=" +
+                    std::to_string(
+                        profile
+                            .witness_msm_ms) +
+                    ":blinder_ms=" +
+                    std::to_string(
+                        profile
+                            .blinder_witness_ms) +
+                    ":workers=" +
+                    std::to_string(
+                        profile
+                            .point_msm_worker_cap) +
+                    ":outer_workers=" +
+                    std::to_string(
+                        profile
+                            .point_parallel_workers));
             }
+
             progress_note(
-                "prove:domain_witness:done:ms=" + std::to_string(domain_witness_wall_ms));
-            const auto external_witness_wall_ms = open_group_indices(
-                external_group_indices);
+                "prove:domain_witness:done:ms=" +
+                std::to_string(
+                    domain_witness_wall_ms));
+
+            auto remaining_external_group_indices =
+                external_group_indices;
+
+            const auto external_witness_start =
+                Clock::now();
+
+            for (const auto &selection :
+                 shared_stream_external_pairs)
+            {
+                open_shared_stream_pair(
+                    selection);
+
+                erase_opened_pair(
+                    &remaining_external_group_indices,
+                    selection.groups);
+            }
+
+            (void)open_group_indices(
+                remaining_external_group_indices);
+
+            const auto external_witness_wall_ms =
+                elapsed_ms(
+                    external_witness_start,
+                    Clock::now());
 
             proof.opening_groups.reserve(point_groups.size());
             for (std::size_t i = 0; i < point_groups.size(); ++i)
