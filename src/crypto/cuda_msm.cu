@@ -394,7 +394,6 @@ namespace gatzk::crypto
             ReusableScalarStaging &
             operator=(
                 const ReusableScalarStaging &) = delete;
-
             std::size_t additional_host_bytes(
                 std::size_t count) const
             {
@@ -404,7 +403,7 @@ namespace gatzk::crypto
                 }
 
                 return checked_byte_count(
-                    count - host_scalars_.capacity(),
+                    count,
                     sizeof(bls12_381::scalar_t),
                     "reusable host scalar staging growth");
             }
@@ -2376,10 +2375,12 @@ namespace gatzk::crypto
             catch (const CudaMsmResourcePressure &)
             {
                 cache.clear();
+                reusable_scalar_staging().release();
             }
             catch (const std::bad_alloc &)
             {
                 cache.clear();
+                reusable_scalar_staging().release();
             }
         }
 
@@ -2397,6 +2398,9 @@ namespace gatzk::crypto
         {
             try
             {
+                reusable_scalar_staging().release();
+                release_stream_msm_buffers();
+
                 G1Point *outputs[1] = {
                     output};
 
@@ -2418,10 +2422,12 @@ namespace gatzk::crypto
             catch (const CudaMsmResourcePressure &)
             {
                 cache.clear();
+                reusable_scalar_staging().release();
             }
             catch (const std::bad_alloc &)
             {
                 cache.clear();
+                reusable_scalar_staging().release();
             }
         }
 
@@ -2589,6 +2595,9 @@ namespace gatzk::crypto
         {
             try
             {
+                reusable_scalar_staging().release();
+                release_stream_msm_buffers();
+
                 execute_cached_base_chunked_cuda_msm_batch(
                     outputs,
                     points,
