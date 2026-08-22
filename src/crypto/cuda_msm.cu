@@ -2325,450 +2325,450 @@ namespace gatzk::crypto
         util::info(
             "cuda_msm resident SRS cache and execution workspace released");
     }
-}
-bool try_cuda_g1_msm(
-    G1Point *output,
-    const G1Point *points,
-    const algebra::FieldElement *scalars,
-    std::size_t count,
-    bool stable_srs_bases,
-    std::size_t stable_srs_capacity)
-{
-    // CPU backend retains the existing canonical CPU MSM.
-    if (!util::route2_options().cuda_field_hotspots)
+
+    bool try_cuda_g1_msm(
+        G1Point *output,
+        const G1Point *points,
+        const algebra::FieldElement *scalars,
+        std::size_t count,
+        bool stable_srs_bases,
+        std::size_t stable_srs_capacity)
     {
-        return false;
-    }
+        // CPU backend retains the existing canonical CPU MSM.
+        if (!util::route2_options().cuda_field_hotspots)
+        {
+            return false;
+        }
 
-    // In cuda_hotspots mode a genuine MSM is GPU-required.
-    if (!algebra::cuda_backend_available())
-    {
-        throw std::runtime_error(
-            "CUDA G1 MSM requested but CUDA runtime "
-            "is unavailable");
-    }
+        // In cuda_hotspots mode a genuine MSM is GPU-required.
+        if (!algebra::cuda_backend_available())
+        {
+            throw std::runtime_error(
+                "CUDA G1 MSM requested but CUDA runtime "
+                "is unavailable");
+        }
 
-    if (output == nullptr || (count != 0 && (points == nullptr || scalars == nullptr)))
-    {
-        throw std::runtime_error(
-            "CUDA G1 MSM selected with null input");
-    }
+        if (output == nullptr || (count != 0 && (points == nullptr || scalars == nullptr)))
+        {
+            throw std::runtime_error(
+                "CUDA G1 MSM selected with null input");
+        }
 
-    if (count == 0)
-    {
-        *output = g1_zero();
-        return true;
-    }
+        if (count == 0)
+        {
+            *output = g1_zero();
+            return true;
+        }
 
-    if (stable_srs_bases && stable_srs_capacity < count)
-    {
-        throw std::runtime_error(
-            "CUDA G1 MSM immutable SRS capacity "
-            "is smaller than MSM size");
-    }
+        if (stable_srs_bases && stable_srs_capacity < count)
+        {
+            throw std::runtime_error(
+                "CUDA G1 MSM immutable SRS capacity "
+                "is smaller than MSM size");
+        }
 
-    std::lock_guard<std::mutex> execution_lock(
-        cuda_msm_execution_mutex());
+        std::lock_guard<std::mutex> execution_lock(
+            cuda_msm_execution_mutex());
 
-    auto &cache =
-        DeviceBaseCache::instance();
+        auto &cache =
+            DeviceBaseCache::instance();
 
-    const bool integrated =
-        cuda_msm_device_is_integrated();
+        const bool integrated =
+            cuda_msm_device_is_integrated();
 
-    // Primary route: one complete resident MSM.
-    //
-    // Resource pressure in scalar staging must not invalidate an already
-    // prepared immutable SRS base cache.  Base residency and scalar
-    // workspace have independent lifetimes: preserving the former lets
-    // the bounded fallback reuse the expensive normalized/uploaded SRS
-    // instead of paying that cost a second time.
-    if (stable_srs_bases &&
-        resident_cuda_msm_is_safe(
-            cache,
-            points,
-            count,
-            stable_srs_capacity,
-            1,
-            false))
-    {
+        // Primary route: one complete resident MSM.
+        //
+        // Resource pressure in scalar staging must not invalidate an already
+        // prepared immutable SRS base cache.  Base residency and scalar
+        // workspace have independent lifetimes: preserving the former lets
+        // the bounded fallback reuse the expensive normalized/uploaded SRS
+        // instead of paying that cost a second time.
+        if (stable_srs_bases &&
+            resident_cuda_msm_is_safe(
+                cache,
+                points,
+                count,
+                stable_srs_capacity,
+                1,
+                false))
+        {
+            try
+            {
+                execute_resident_cuda_msm(
+                    output,
+                    points,
+                    scalars,
+                    count,
+                    stable_srs_capacity,
+                    cache);
+
+                if (count >=
+                    (1ULL << 20))
+                {
+                    util::info(
+                        "cuda_msm route=resident count=" +
+                        std::to_string(count));
+                }
+
+                return true;
+            }
+            catch (const CudaMsmResourcePressure &)
+            {
+                // The resident base preparation may already have completed.
+                // Drop only scalar workspace and preserve immutable SRS
+                // residency for the bounded fallback below.
+                reusable_scalar_staging().release();
+            }
+            catch (const std::bad_alloc &)
+            {
+                reusable_scalar_staging().release();
+            }
+        }
+
+        // UMA-only fallback: retain the immutable SRS bases while bounding
+        // scalar staging to one chunk.  If this path also encounters scalar
+        // pressure, keep the resident base cache alive; the final streamed
+        // route will evict it only if that memory is genuinely required.
+        if (stable_srs_bases &&
+            integrated &&
+            resident_cuda_msm_is_safe(
+                cache,
+                points,
+                count,
+                stable_srs_capacity,
+                1,
+                true))
+        {
+            try
+            {
+                reusable_scalar_staging().release();
+                release_stream_msm_buffers();
+
+                G1Point *outputs[1] = {
+                    output};
+
+                const algebra::FieldElement *
+                    scalar_vectors[1] = {
+                        scalars};
+
+                execute_cached_base_chunked_cuda_msm_batch(
+                    outputs,
+                    points,
+                    scalar_vectors,
+                    count,
+                    1,
+                    stable_srs_capacity,
+                    cache);
+
+                return true;
+            }
+            catch (const CudaMsmResourcePressure &)
+            {
+                reusable_scalar_staging().release();
+            }
+            catch (const std::bad_alloc &)
+            {
+                reusable_scalar_staging().release();
+            }
+        }
+
+        // First try bounded streaming while preserving useful resident SRS
+        // material.  Only genuine resource pressure is allowed to evict the
+        // resident cache and retry the same CUDA MSM.
         try
         {
-            execute_resident_cuda_msm(
+            execute_streamed_cuda_msm(
                 output,
                 points,
                 scalars,
-                count,
-                stable_srs_capacity,
-                cache);
-
-            if (count >=
-                (1ULL << 20))
-            {
-                util::info(
-                    "cuda_msm route=resident count=" +
-                    std::to_string(count));
-            }
+                count);
 
             return true;
         }
         catch (const CudaMsmResourcePressure &)
         {
-            // The resident base preparation may already have completed.
-            // Drop only scalar workspace and preserve immutable SRS
-            // residency for the bounded fallback below.
-            reusable_scalar_staging().release();
-        }
-        catch (const std::bad_alloc &)
-        {
-            reusable_scalar_staging().release();
-        }
-    }
+            cache.clear();
 
-    // UMA-only fallback: retain the immutable SRS bases while bounding
-    // scalar staging to one chunk.  If this path also encounters scalar
-    // pressure, keep the resident base cache alive; the final streamed
-    // route will evict it only if that memory is genuinely required.
-    if (stable_srs_bases &&
-        integrated &&
-        resident_cuda_msm_is_safe(
-            cache,
-            points,
-            count,
-            stable_srs_capacity,
-            1,
-            true))
-    {
-        try
-        {
-            reusable_scalar_staging().release();
-            release_stream_msm_buffers();
+            util::info(
+                "cuda_msm streamed resource pressure: "
+                "cleared resident base cache and retrying");
 
-            G1Point *outputs[1] = {
-                output};
-
-            const algebra::FieldElement *
-                scalar_vectors[1] = {
-                    scalars};
-
-            execute_cached_base_chunked_cuda_msm_batch(
-                outputs,
+            execute_streamed_cuda_msm(
+                output,
                 points,
-                scalar_vectors,
-                count,
-                1,
-                stable_srs_capacity,
-                cache);
+                scalars,
+                count);
 
             return true;
         }
-        catch (const CudaMsmResourcePressure &)
+    }
+
+    bool try_cuda_g1_msm_same_bases_batch(
+        G1Point *const *outputs,
+        const G1Point *points,
+        const algebra::FieldElement *const *scalar_vectors,
+        std::size_t count,
+        std::size_t batch_size,
+        std::size_t stable_srs_capacity)
+    {
+        if (!util::route2_options()
+                 .cuda_field_hotspots)
         {
-            reusable_scalar_staging().release();
+            return false;
         }
-        catch (const std::bad_alloc &)
-        {
-            reusable_scalar_staging().release();
-        }
-    }
 
-    // First try bounded streaming while preserving useful resident SRS
-    // material.  Only genuine resource pressure is allowed to evict the
-    // resident cache and retry the same CUDA MSM.
-    try
-    {
-        execute_streamed_cuda_msm(
-            output,
-            points,
-            scalars,
-            count);
-
-        return true;
-    }
-    catch (const CudaMsmResourcePressure &)
-    {
-        cache.clear();
-
-        util::info(
-            "cuda_msm streamed resource pressure: "
-            "cleared resident base cache and retrying");
-
-        execute_streamed_cuda_msm(
-            output,
-            points,
-            scalars,
-            count);
-
-        return true;
-    }
-}
-
-bool try_cuda_g1_msm_same_bases_batch(
-    G1Point *const *outputs,
-    const G1Point *points,
-    const algebra::FieldElement *const *scalar_vectors,
-    std::size_t count,
-    std::size_t batch_size,
-    std::size_t stable_srs_capacity)
-{
-    if (!util::route2_options()
-             .cuda_field_hotspots)
-    {
-        return false;
-    }
-
-    if (!algebra::cuda_backend_available())
-    {
-        throw std::runtime_error(
-            "CUDA G1 MSM batch requested but CUDA "
-            "runtime is unavailable");
-    }
-
-    if (batch_size == 0)
-    {
-        return true;
-    }
-
-    if (outputs == nullptr ||
-        scalar_vectors == nullptr ||
-        points == nullptr)
-    {
-        throw std::runtime_error(
-            "CUDA G1 MSM batch received null input");
-    }
-
-    if (stable_srs_capacity < count)
-    {
-        throw std::runtime_error(
-            "CUDA G1 MSM batch immutable SRS capacity "
-            "is smaller than MSM size");
-    }
-
-    for (std::size_t batch = 0;
-         batch < batch_size;
-         ++batch)
-    {
-        if (outputs[batch] == nullptr ||
-            scalar_vectors[batch] == nullptr)
+        if (!algebra::cuda_backend_available())
         {
             throw std::runtime_error(
-                "CUDA G1 MSM batch contains null member");
+                "CUDA G1 MSM batch requested but CUDA "
+                "runtime is unavailable");
         }
-    }
 
-    if (count == 0)
-    {
+        if (batch_size == 0)
+        {
+            return true;
+        }
+
+        if (outputs == nullptr ||
+            scalar_vectors == nullptr ||
+            points == nullptr)
+        {
+            throw std::runtime_error(
+                "CUDA G1 MSM batch received null input");
+        }
+
+        if (stable_srs_capacity < count)
+        {
+            throw std::runtime_error(
+                "CUDA G1 MSM batch immutable SRS capacity "
+                "is smaller than MSM size");
+        }
+
         for (std::size_t batch = 0;
              batch < batch_size;
              ++batch)
         {
-            *outputs[batch] =
-                g1_zero();
+            if (outputs[batch] == nullptr ||
+                scalar_vectors[batch] == nullptr)
+            {
+                throw std::runtime_error(
+                    "CUDA G1 MSM batch contains null member");
+            }
         }
 
-        return true;
-    }
-
-    if (batch_size == 1)
-    {
-        return try_cuda_g1_msm(
-            outputs[0],
-            points,
-            scalar_vectors[0],
-            count,
-            true,
-            stable_srs_capacity);
-    }
-
-    std::unique_lock<std::mutex>
-        execution_lock(
-            cuda_msm_execution_mutex());
-
-    auto &cache =
-        DeviceBaseCache::instance();
-    const bool integrated =
-        cuda_msm_device_is_integrated();
-
-    // Route 1: one native ICICLE same-base batch while the complete
-    // scalar working set fits the direct resident envelope.
-    if (resident_cuda_msm_is_safe(
-            cache,
-            points,
-            count,
-            stable_srs_capacity,
-            batch_size,
-            false))
-    {
-        try
-        {
-            execute_resident_cuda_msm_batch(
-                outputs,
-                points,
-                scalar_vectors,
-                count,
-                batch_size,
-                stable_srs_capacity,
-                cache);
-
-            return true;
-        }
-        catch (const CudaMsmResourcePressure &)
-        {
-            // Do not destroy a successfully prepared base prefix merely
-            // because the complete batched scalar staging was too large.
-            reusable_scalar_staging().release();
-        }
-        catch (const std::bad_alloc &)
-        {
-            reusable_scalar_staging().release();
-        }
-    }
-
-    // Route 2: full-width warm-resident wave.
-    //
-    // A large same-base batch can exceed the *aggregate* scalar envelope
-    // even though every individual MSM fits comfortably.  The old route
-    // immediately split the scalar dimension into 2^20 chunks, turning,
-    // for example, a 50M x 2 batch into roughly fifty ICICLE launches.
-    //
-    // When the SRS prefix is already resident, execute the independent
-    // scalar vectors as full-width MSMs one after another.  The expensive
-    // base normalization/upload is paid zero additional times and scalar
-    // staging is reused between members.
-    if (batch_size > 1 &&
-        cache.contains_usable_prefix(
-            points,
-            count,
-            stable_srs_capacity) &&
-        resident_cuda_msm_is_safe(
-            cache,
-            points,
-            count,
-            stable_srs_capacity,
-            1,
-            false))
-    {
-        try
+        if (count == 0)
         {
             for (std::size_t batch = 0;
                  batch < batch_size;
                  ++batch)
             {
-                execute_resident_cuda_msm(
-                    outputs[batch],
-                    points,
-                    scalar_vectors[batch],
-                    count,
-                    stable_srs_capacity,
-                    cache);
+                *outputs[batch] =
+                    g1_zero();
             }
-
-            util::info(
-                "cuda_msm route=resident_serial_batch count=" +
-                std::to_string(count) +
-                " batch=" +
-                std::to_string(batch_size));
 
             return true;
         }
-        catch (const CudaMsmResourcePressure &)
-        {
-            // Preserve the immutable bases.  Only the scalar workspace
-            // needs to be retired before the bounded route is attempted.
-            reusable_scalar_staging().release();
-        }
-        catch (const std::bad_alloc &)
-        {
-            reusable_scalar_staging().release();
-        }
-    }
 
-    // Route 3: on UMA, retain the cached SRS and bound only the scalar
-    // dimension when a full-width resident wave is not admissible.
-    if (integrated &&
-        resident_cuda_msm_is_safe(
-            cache,
-            points,
-            count,
-            stable_srs_capacity,
-            batch_size,
-            true))
-    {
+        if (batch_size == 1)
+        {
+            return try_cuda_g1_msm(
+                outputs[0],
+                points,
+                scalar_vectors[0],
+                count,
+                true,
+                stable_srs_capacity);
+        }
+
+        std::unique_lock<std::mutex>
+            execution_lock(
+                cuda_msm_execution_mutex());
+
+        auto &cache =
+            DeviceBaseCache::instance();
+        const bool integrated =
+            cuda_msm_device_is_integrated();
+
+        // Route 1: one native ICICLE same-base batch while the complete
+        // scalar working set fits the direct resident envelope.
+        if (resident_cuda_msm_is_safe(
+                cache,
+                points,
+                count,
+                stable_srs_capacity,
+                batch_size,
+                false))
+        {
+            try
+            {
+                execute_resident_cuda_msm_batch(
+                    outputs,
+                    points,
+                    scalar_vectors,
+                    count,
+                    batch_size,
+                    stable_srs_capacity,
+                    cache);
+
+                return true;
+            }
+            catch (const CudaMsmResourcePressure &)
+            {
+                // Do not destroy a successfully prepared base prefix merely
+                // because the complete batched scalar staging was too large.
+                reusable_scalar_staging().release();
+            }
+            catch (const std::bad_alloc &)
+            {
+                reusable_scalar_staging().release();
+            }
+        }
+
+        // Route 2: full-width warm-resident wave.
+        //
+        // A large same-base batch can exceed the *aggregate* scalar envelope
+        // even though every individual MSM fits comfortably.  The old route
+        // immediately split the scalar dimension into 2^20 chunks, turning,
+        // for example, a 50M x 2 batch into roughly fifty ICICLE launches.
+        //
+        // When the SRS prefix is already resident, execute the independent
+        // scalar vectors as full-width MSMs one after another.  The expensive
+        // base normalization/upload is paid zero additional times and scalar
+        // staging is reused between members.
+        if (batch_size > 1 &&
+            cache.contains_usable_prefix(
+                points,
+                count,
+                stable_srs_capacity) &&
+            resident_cuda_msm_is_safe(
+                cache,
+                points,
+                count,
+                stable_srs_capacity,
+                1,
+                false))
+        {
+            try
+            {
+                for (std::size_t batch = 0;
+                     batch < batch_size;
+                     ++batch)
+                {
+                    execute_resident_cuda_msm(
+                        outputs[batch],
+                        points,
+                        scalar_vectors[batch],
+                        count,
+                        stable_srs_capacity,
+                        cache);
+                }
+
+                util::info(
+                    "cuda_msm route=resident_serial_batch count=" +
+                    std::to_string(count) +
+                    " batch=" +
+                    std::to_string(batch_size));
+
+                return true;
+            }
+            catch (const CudaMsmResourcePressure &)
+            {
+                // Preserve the immutable bases.  Only the scalar workspace
+                // needs to be retired before the bounded route is attempted.
+                reusable_scalar_staging().release();
+            }
+            catch (const std::bad_alloc &)
+            {
+                reusable_scalar_staging().release();
+            }
+        }
+
+        // Route 3: on UMA, retain the cached SRS and bound only the scalar
+        // dimension when a full-width resident wave is not admissible.
+        if (integrated &&
+            resident_cuda_msm_is_safe(
+                cache,
+                points,
+                count,
+                stable_srs_capacity,
+                batch_size,
+                true))
+        {
+            try
+            {
+                reusable_scalar_staging().release();
+                release_stream_msm_buffers();
+
+                execute_cached_base_chunked_cuda_msm_batch(
+                    outputs,
+                    points,
+                    scalar_vectors,
+                    count,
+                    batch_size,
+                    stable_srs_capacity,
+                    cache);
+
+                return true;
+            }
+            catch (const CudaMsmResourcePressure &)
+            {
+                reusable_scalar_staging().release();
+            }
+            catch (const std::bad_alloc &)
+            {
+                reusable_scalar_staging().release();
+            }
+        }
+
+        // Keep the CUDA execution lock while the shared-base
+        // streamed batch is active.  The point vector is uploaded
+        // once per chunk for the whole batch.
         try
         {
-            reusable_scalar_staging().release();
-            release_stream_msm_buffers();
-
-            execute_cached_base_chunked_cuda_msm_batch(
+            execute_streamed_cuda_msm_same_bases_batch(
                 outputs,
                 points,
                 scalar_vectors,
                 count,
-                batch_size,
-                stable_srs_capacity,
-                cache);
+                batch_size);
 
             return true;
         }
         catch (const CudaMsmResourcePressure &)
         {
-            reusable_scalar_staging().release();
+            cache.clear();
+
+            util::info(
+                "cuda_msm streamed_batch "
+                "resource pressure: cleared "
+                "resident base cache and retrying");
+
+            execute_streamed_cuda_msm_same_bases_batch(
+                outputs,
+                points,
+                scalar_vectors,
+                count,
+                batch_size);
+
+            return true;
         }
         catch (const std::bad_alloc &)
         {
-            reusable_scalar_staging().release();
+            cache.clear();
+
+            util::info(
+                "cuda_msm streamed_batch "
+                "host staging pressure: cleared "
+                "resident base cache and retrying");
+
+            execute_streamed_cuda_msm_same_bases_batch(
+                outputs,
+                points,
+                scalar_vectors,
+                count,
+                batch_size);
+
+            return true;
         }
     }
-
-    // Keep the CUDA execution lock while the shared-base
-    // streamed batch is active.  The point vector is uploaded
-    // once per chunk for the whole batch.
-    try
-    {
-        execute_streamed_cuda_msm_same_bases_batch(
-            outputs,
-            points,
-            scalar_vectors,
-            count,
-            batch_size);
-
-        return true;
-    }
-    catch (const CudaMsmResourcePressure &)
-    {
-        cache.clear();
-
-        util::info(
-            "cuda_msm streamed_batch "
-            "resource pressure: cleared "
-            "resident base cache and retrying");
-
-        execute_streamed_cuda_msm_same_bases_batch(
-            outputs,
-            points,
-            scalar_vectors,
-            count,
-            batch_size);
-
-        return true;
-    }
-    catch (const std::bad_alloc &)
-    {
-        cache.clear();
-
-        util::info(
-            "cuda_msm streamed_batch "
-            "host staging pressure: cleared "
-            "resident base cache and retrying");
-
-        execute_streamed_cuda_msm_same_bases_batch(
-            outputs,
-            points,
-            scalar_vectors,
-            count,
-            batch_size);
-
-        return true;
-    }
-}
 }
