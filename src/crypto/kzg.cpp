@@ -2722,6 +2722,285 @@ namespace gatzk::crypto
             return it->second.get();
         }
 
+        struct SameSrsCommitWaveKey
+        {
+            const G1Point *points = nullptr;
+            std::size_t scalar_count = 0;
+            std::size_t storage_capacity = 0;
+
+            bool operator==(
+                const SameSrsCommitWaveKey &other) const
+            {
+                return points == other.points &&
+                       scalar_count == other.scalar_count &&
+                       storage_capacity == other.storage_capacity;
+            }
+        };
+
+        struct SameSrsCommitWave
+        {
+            SameSrsCommitWaveKey key;
+            std::vector<std::size_t> indices;
+        };
+
+        std::optional<SameSrsCommitWaveKey>
+        same_srs_commit_wave_key(
+            const algebra::Polynomial &polynomial,
+            const KZGProverKey &pk,
+            std::size_t estimated_work)
+        {
+            const auto &route =
+                util::route2_options();
+
+            if (!route.fast_msm ||
+                !route.cuda_field_hotspots)
+            {
+                return std::nullopt;
+            }
+
+            constexpr std::size_t
+                kMinimumExplicitWaveScalarCount =
+                    std::size_t{1} << 12;
+
+            if (polynomial.size() <
+                    kMinimumExplicitWaveScalarCount ||
+                polynomial.size() == 0)
+            {
+                return std::nullopt;
+            }
+
+            // The explicit same-SRS wave handles dense immutable-SRS MSMs.
+            // Sparse and constant-tail objects retain their specialized path,
+            // where compaction changes the effective point vector.
+            if (estimated_work !=
+                polynomial.size())
+            {
+                return std::nullopt;
+            }
+
+            if (polynomial.basis ==
+                algebra::PolynomialBasis::Coefficient)
+            {
+                if (pk.powers_g1 == nullptr)
+                {
+                    throw std::runtime_error(
+                        "missing coefficient proving SRS");
+                }
+
+                if (polynomial.size() >
+                        pk.powers_g1->size() ||
+                    polynomial.size() >
+                        pk.degree_bound + 1)
+                {
+                    throw std::runtime_error(
+                        "coefficient polynomial exceeds "
+                        "SRS degree bound: " +
+                        polynomial.name);
+                }
+
+                return SameSrsCommitWaveKey{
+                    .points =
+                        pk.powers_g1->data(),
+                    .scalar_count =
+                        polynomial.size(),
+                    .storage_capacity =
+                        pk.powers_g1->size(),
+                };
+            }
+
+            const auto *lagrange_srs =
+                evaluation_srs_points(
+                    polynomial,
+                    pk);
+
+            if (polynomial.size() >
+                lagrange_srs->size())
+            {
+                throw std::runtime_error(
+                    "evaluation polynomial exceeds "
+                    "Lagrange SRS domain size: " +
+                    polynomial.name);
+            }
+
+            return SameSrsCommitWaveKey{
+                .points =
+                    lagrange_srs->data(),
+                .scalar_count =
+                    polynomial.size(),
+                .storage_capacity =
+                    lagrange_srs->size(),
+            };
+        }
+
+        template <typename CommitOne>
+        std::vector<bool>
+        execute_cuda_same_srs_commit_waves(
+            const std::vector<
+                std::pair<
+                    std::string,
+                    const algebra::Polynomial *>>
+                &named_polynomials,
+            const KZGProverKey &pk,
+            const std::vector<std::size_t>
+                &estimated_work,
+            const std::vector<bool>
+                &excluded,
+            CommitOne &&commit_one)
+        {
+            if (named_polynomials.size() !=
+                    estimated_work.size() ||
+                named_polynomials.size() !=
+                    excluded.size())
+            {
+                throw std::runtime_error(
+                    "same-SRS commitment wave "
+                    "metadata shape mismatch");
+            }
+
+            std::vector<bool>
+                completed(
+                    named_polynomials.size(),
+                    false);
+
+            if (!util::route2_options()
+                     .cuda_field_hotspots ||
+                !util::route2_options()
+                     .fast_msm)
+            {
+                return completed;
+            }
+
+            std::vector<SameSrsCommitWave>
+                waves;
+
+            waves.reserve(
+                named_polynomials.size());
+
+            for (std::size_t index = 0;
+                 index <
+                 named_polynomials.size();
+                 ++index)
+            {
+                if (excluded[index])
+                {
+                    continue;
+                }
+
+                const auto *polynomial =
+                    named_polynomials[index]
+                        .second;
+
+                if (polynomial == nullptr)
+                {
+                    throw std::runtime_error(
+                        "null polynomial in "
+                        "same-SRS commitment wave");
+                }
+
+                const auto key =
+                    same_srs_commit_wave_key(
+                        *polynomial,
+                        pk,
+                        estimated_work[index]);
+
+                if (!key.has_value())
+                {
+                    continue;
+                }
+
+                auto found =
+                    std::find_if(
+                        waves.begin(),
+                        waves.end(),
+                        [&](const SameSrsCommitWave
+                                &wave)
+                        {
+                            return wave.key ==
+                                   *key;
+                        });
+
+                if (found ==
+                    waves.end())
+                {
+                    waves.push_back(
+                        SameSrsCommitWave{
+                            .key = *key,
+                            .indices = {
+                                index},
+                        });
+                }
+                else
+                {
+                    found->indices
+                        .push_back(
+                            index);
+                }
+            }
+
+            // Large prefixes first.  Preparing the maximum useful prefix for
+            // one immutable SRS storage allows later smaller prefixes to hit
+            // the already-resident base cache instead of upgrading it again.
+            std::stable_sort(
+                waves.begin(),
+                waves.end(),
+                [](const SameSrsCommitWave &lhs,
+                   const SameSrsCommitWave &rhs)
+                {
+                    return lhs.key.scalar_count >
+                           rhs.key.scalar_count;
+                });
+
+            constexpr std::size_t
+                kMaximumCudaSameSrsWaveSize = 8;
+
+            for (auto &wave : waves)
+            {
+                if (wave.indices.size() < 2)
+                {
+                    continue;
+                }
+
+                std::size_t offset = 0;
+
+                while (offset + 1 <
+                       wave.indices.size())
+                {
+                    const auto batch_size =
+                        std::min<std::size_t>(
+                            kMaximumCudaSameSrsWaveSize,
+                            wave.indices.size() -
+                                offset);
+
+                    if (batch_size < 2)
+                    {
+                        break;
+                    }
+
+                    g1_parallel_msm_batch_workers(
+                        batch_size,
+                        [&](std::size_t worker)
+                        {
+                            commit_one(
+                                wave.indices[offset +
+                                             worker]);
+                        });
+
+                    for (std::size_t local = 0;
+                         local < batch_size;
+                         ++local)
+                    {
+                        completed[wave.indices[offset +
+                                               local]] = true;
+                    }
+
+                    offset +=
+                        batch_size;
+                }
+            }
+
+            return completed;
+        }
+
         // KZG多项式承诺主函数
         G1Point commit_polynomial_point(
             const algebra::Polynomial &polynomial,
@@ -6224,117 +6503,499 @@ namespace gatzk::crypto
     }
 
     std::vector<Commitment> KZG::commit_batch(
-        const std::vector<std::pair<std::string, const algebra::Polynomial *>> &named_polynomials,
+        const std::vector<
+            std::pair<
+                std::string,
+                const algebra::Polynomial *>>
+            &named_polynomials,
         const KZGKeyPair &key,
         CommitBatchProfile *profile,
         EvaluationCommitmentCache *reuse_cache)
     {
-        std::vector<Commitment> out(named_polynomials.size());
-        std::vector<CommitObjectProfile> object_profiles(named_polynomials.size());
-        const auto msm_start = Clock::now();
-        const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
-        std::size_t total_scalar_count = 0;
-        std::size_t max_scalar_count = 0;
-        std::size_t uncached_msm_count = 0;
-        for (const auto &[name, polynomial] : named_polynomials)
+        const auto object_count =
+            named_polynomials.size();
+
+        std::vector<Commitment>
+            out(object_count);
+
+        std::vector<CommitObjectProfile>
+            object_profiles(
+                object_count);
+
+        std::vector<std::size_t>
+            estimated_work(
+                object_count,
+                0);
+
+        std::vector<bool>
+            preexisting_cache_hit(
+                object_count,
+                false);
+
+        const auto msm_start =
+            Clock::now();
+
+        for (std::size_t index = 0;
+             index < object_count;
+             ++index)
         {
+            const auto &[name, polynomial] =
+                named_polynomials[index];
+
             if (polynomial == nullptr)
             {
-                throw std::runtime_error("null polynomial in KZG::commit_batch: " + name);
+                throw std::runtime_error(
+                    "null polynomial in "
+                    "KZG::commit_batch: " +
+                    name);
             }
-            const auto estimated_work = estimated_commitment_msm_work(*polynomial);
-            total_scalar_count += estimated_work;
-            max_scalar_count = std::max(max_scalar_count, estimated_work);
-            bool cache_hit = false;
-            if (reuse_cache != nullptr && polynomial->basis == algebra::PolynomialBasis::Evaluation && polynomial->shared_data != nullptr)
+
+            estimated_work[index] =
+                estimated_commitment_msm_work(
+                    *polynomial);
+
+            if (reuse_cache != nullptr &&
+                polynomial->basis ==
+                    algebra::
+                        PolynomialBasis::
+                            Evaluation &&
+                polynomial->shared_data !=
+                    nullptr)
             {
                 const auto *lagrange_srs =
-                    evaluation_srs_points(*polynomial, key.pk);
+                    evaluation_srs_points(
+                        *polynomial,
+                        key.pk);
+
                 G1Point cached_point;
-                cache_hit = reuse_cache->lookup_semantic(
-                    polynomial->domain.get(),
-                    lagrange_srs,
-                    polynomial->shared_data,
-                    &cached_point);
-            }
-            if (!cache_hit)
-            {
-                ++uncached_msm_count;
+
+                preexisting_cache_hit[index] =
+                    reuse_cache
+                        ->lookup_semantic(
+                            polynomial
+                                ->domain
+                                .get(),
+                            lagrange_srs,
+                            polynomial
+                                ->shared_data,
+                            &cached_point);
             }
         }
-        const auto outer_worker_count = commit_batch_outer_worker_count(
-            named_polynomials.size(),
-            total_scalar_count,
-            max_scalar_count,
-            cpu_count);
-        const G1MSMExecutionOptions msm_options{
-            .max_worker_count = outer_worker_count > 1
-                                    ? std::max<std::size_t>(
-                                          1,
-                                          cpu_count / std::max<std::size_t>(
-                                                          1,
-                                                          std::min(
-                                                              outer_worker_count,
-                                                              uncached_msm_count)))
-                                    : 0,
-        };
-        auto commit_one = [&](std::size_t index)
+
+        // Within one KZG call, several independently blinded objects may share
+        // exactly the same immutable semantic evaluation vector.  The old
+        // concurrent scheduler could let all of them miss the cache at once
+        // and duplicate the same MSM.  Elect one representative before any
+        // worker is launched; aliases are committed only after that
+        // representative has populated the semantic cache.
+        struct SemanticRepresentative
         {
-            const auto &[name, polynomial] = named_polynomials[index];
-            CommitObjectProfile object_profile;
-            out[index] = make_commitment(
-                name,
-                *polynomial,
-                key.pk,
-                profile != nullptr ? &object_profile : nullptr,
-                outer_worker_count > 1 ? &msm_options : nullptr,
-                reuse_cache);
-            if (profile != nullptr)
-            {
-                object_profiles[index] = std::move(object_profile);
-            }
+            const algebra::
+                RootOfUnityDomain
+                    *domain = nullptr;
+
+            const std::vector<G1Point>
+                *lagrange_srs = nullptr;
+
+            const std::vector<FieldElement>
+                *values = nullptr;
+
+            std::size_t index = 0;
         };
 
-        if (outer_worker_count > 1)
+        std::vector<
+            SemanticRepresentative>
+            semantic_representatives;
+
+        std::vector<std::size_t>
+            semantic_alias_of(
+                object_count,
+                object_count);
+
+        if (reuse_cache != nullptr)
         {
-            const auto work_order = commitment_work_order(named_polynomials);
-            std::atomic<std::size_t> next{0};
-            g1_parallel_msm_batch_workers(
-                outer_worker_count,
-                [&](std::size_t)
+            for (std::size_t index = 0;
+                 index < object_count;
+                 ++index)
+            {
+                if (preexisting_cache_hit[index])
                 {
-                    while (true)
-                    {
-                        const auto index = next.fetch_add(1);
-                        if (index >= named_polynomials.size())
+                    continue;
+                }
+
+                const auto *polynomial =
+                    named_polynomials[index]
+                        .second;
+
+                if (polynomial->basis !=
+                        algebra::
+                            PolynomialBasis::
+                                Evaluation ||
+                    polynomial->shared_data ==
+                        nullptr)
+                {
+                    continue;
+                }
+
+                const auto *lagrange_srs =
+                    evaluation_srs_points(
+                        *polynomial,
+                        key.pk);
+
+                const auto *values =
+                    polynomial
+                        ->shared_data
+                        .get();
+
+                const auto found =
+                    std::find_if(
+                        semantic_representatives
+                            .begin(),
+                        semantic_representatives
+                            .end(),
+                        [&](const auto &candidate)
                         {
-                            break;
-                        }
-                        commit_one(work_order[index]);
-                    }
-                });
-        }
-        else
-        {
-            for (std::size_t index = 0; index < named_polynomials.size(); ++index)
-            {
-                commit_one(index);
-            }
-        }
-        if (profile != nullptr)
-        {
-            profile->msm_ms += elapsed_ms(msm_start, Clock::now());
-            for (auto &object_profile : object_profiles)
-            {
-                if (!object_profile.name.empty())
+                            return candidate.domain ==
+                                       polynomial
+                                           ->domain
+                                           .get() &&
+                                   candidate
+                                           .lagrange_srs ==
+                                       lagrange_srs &&
+                                   candidate.values ==
+                                       values;
+                        });
+
+                if (found ==
+                    semantic_representatives
+                        .end())
                 {
-                    profile->objects.push_back(std::move(object_profile));
+                    semantic_representatives
+                        .push_back(
+                            SemanticRepresentative{
+                                .domain =
+                                    polynomial
+                                        ->domain
+                                        .get(),
+                                .lagrange_srs =
+                                    lagrange_srs,
+                                .values =
+                                    values,
+                                .index =
+                                    index,
+                            });
+                }
+                else
+                {
+                    semantic_alias_of[index] =
+                        found->index;
                 }
             }
         }
+
+        const auto cpu_count =
+            std::max<std::size_t>(
+                1,
+                std::thread::
+                    hardware_concurrency());
+
+        auto commit_one =
+            [&](std::size_t index,
+                const G1MSMExecutionOptions
+                    *options)
+        {
+            const auto &[name, polynomial] =
+                named_polynomials[index];
+
+            CommitObjectProfile
+                object_profile;
+
+            out[index] =
+                make_commitment(
+                    name,
+                    *polynomial,
+                    key.pk,
+                    profile != nullptr
+                        ? &object_profile
+                        : nullptr,
+                    options,
+                    reuse_cache);
+
+            if (profile != nullptr)
+            {
+                object_profiles[index] =
+                    std::move(
+                        object_profile);
+            }
+        };
+
+        std::vector<bool>
+            completed(
+                object_count,
+                false);
+
+        // Already-cached semantic objects perform no large MSM. Resolve them
+        // before forming the CUDA waves.
+        for (std::size_t index = 0;
+             index < object_count;
+             ++index)
+        {
+            if (!preexisting_cache_hit[index])
+            {
+                continue;
+            }
+
+            commit_one(
+                index,
+                nullptr);
+
+            completed[index] = true;
+        }
+
+        std::vector<bool>
+            wave_excluded(
+                object_count,
+                false);
+
+        for (std::size_t index = 0;
+             index < object_count;
+             ++index)
+        {
+            wave_excluded[index] =
+                completed[index] ||
+                semantic_alias_of[index] !=
+                    object_count;
+        }
+
+        const G1MSMExecutionOptions
+            wave_msm_options{
+                .max_worker_count = 1,
+            };
+
+        const auto wave_completed =
+            execute_cuda_same_srs_commit_waves(
+                named_polynomials,
+                key.pk,
+                estimated_work,
+                wave_excluded,
+                [&](std::size_t index)
+                {
+                    commit_one(
+                        index,
+                        &wave_msm_options);
+                });
+
+        for (std::size_t index = 0;
+             index < object_count;
+             ++index)
+        {
+            completed[index] =
+                completed[index] ||
+                wave_completed[index];
+        }
+
+        // Preserve the previous scheduler for sparse/tail/singleton work.
+        // The explicit CUDA waves have already removed the large dense
+        // same-SRS families from this set.
+        std::vector<std::size_t>
+            remaining_indices;
+
+        std::size_t
+            remaining_total_work = 0;
+
+        std::size_t
+            remaining_max_work = 0;
+
+        std::size_t
+            remaining_uncached_count = 0;
+
+        for (std::size_t index = 0;
+             index < object_count;
+             ++index)
+        {
+            if (completed[index] ||
+                semantic_alias_of[index] !=
+                    object_count)
+            {
+                continue;
+            }
+
+            remaining_indices
+                .push_back(index);
+
+            remaining_total_work +=
+                estimated_work[index];
+
+            remaining_max_work =
+                std::max(
+                    remaining_max_work,
+                    estimated_work[index]);
+
+            if (estimated_work[index] != 0)
+            {
+                ++remaining_uncached_count;
+            }
+        }
+
+        if (!remaining_indices.empty())
+        {
+            const auto outer_worker_count =
+                commit_batch_outer_worker_count(
+                    remaining_indices.size(),
+                    remaining_total_work,
+                    remaining_max_work,
+                    cpu_count);
+
+            const G1MSMExecutionOptions
+                fallback_msm_options{
+                    .max_worker_count =
+                        outer_worker_count > 1
+                            ? std::max<std::size_t>(
+                                  1,
+                                  cpu_count /
+                                      std::max<std::size_t>(
+                                          1,
+                                          std::min(
+                                              outer_worker_count,
+                                              remaining_uncached_count)))
+                            : 0,
+                };
+
+            std::vector<
+                std::pair<
+                    std::string,
+                    const algebra::Polynomial *>>
+                remaining_view;
+
+            remaining_view.reserve(
+                remaining_indices.size());
+
+            for (const auto index :
+                 remaining_indices)
+            {
+                remaining_view.push_back(
+                    named_polynomials[index]);
+            }
+
+            if (outer_worker_count > 1)
+            {
+                const auto local_order =
+                    commitment_work_order(
+                        remaining_view);
+
+                std::atomic<std::size_t>
+                    next{0};
+
+                g1_parallel_msm_batch_workers(
+                    outer_worker_count,
+                    [&](std::size_t)
+                    {
+                        while (true)
+                        {
+                            const auto position =
+                                next.fetch_add(1);
+
+                            if (position >=
+                                local_order.size())
+                            {
+                                break;
+                            }
+
+                            const auto index =
+                                remaining_indices[local_order[position]];
+
+                            commit_one(
+                                index,
+                                &fallback_msm_options);
+
+                            completed[index] =
+                                true;
+                        }
+                    });
+            }
+            else
+            {
+                for (const auto index :
+                     remaining_indices)
+                {
+                    commit_one(
+                        index,
+                        nullptr);
+
+                    completed[index] =
+                        true;
+                }
+            }
+        }
+
+        // Semantic aliases intentionally run after their representative.  The
+        // representative has populated EvaluationCommitmentCache, so these
+        // objects reuse its evaluation component and pay only their own
+        // zero-domain blinder adjustment.
+        for (std::size_t index = 0;
+             index < object_count;
+             ++index)
+        {
+            if (semantic_alias_of[index] ==
+                object_count)
+            {
+                continue;
+            }
+
+            const auto representative =
+                semantic_alias_of[index];
+
+            if (!completed[representative])
+            {
+                throw std::runtime_error(
+                    "semantic commitment "
+                    "representative was not "
+                    "completed before its alias");
+            }
+
+            commit_one(
+                index,
+                nullptr);
+
+            completed[index] = true;
+        }
+
+        if (std::any_of(
+                completed.begin(),
+                completed.end(),
+                [](bool value)
+                {
+                    return !value;
+                }))
+        {
+            throw std::runtime_error(
+                "KZG commitment wave left "
+                "an object uncommitted");
+        }
+
+        if (profile != nullptr)
+        {
+            profile->msm_ms +=
+                elapsed_ms(
+                    msm_start,
+                    Clock::now());
+
+            for (auto &object_profile :
+                 object_profiles)
+            {
+                if (!object_profile
+                         .name.empty())
+                {
+                    profile->objects
+                        .push_back(
+                            std::move(
+                                object_profile));
+                }
+            }
+        }
+
         return out;
     }
-
     G1Point KZG::evaluation_commitment_component(
         const Commitment &commitment,
         const KZGKeyPair &key)
@@ -6410,107 +7071,308 @@ namespace gatzk::crypto
     }
 
     std::vector<Commitment> KZG::commit_owned_batch(
-        std::vector<std::pair<std::string, algebra::Polynomial>> &&named_polynomials,
+        std::vector<
+            std::pair<
+                std::string,
+                algebra::Polynomial>>
+            &&named_polynomials,
         const KZGKeyPair &key,
         CommitBatchProfile *profile,
         const std::string &progress_prefix)
     {
-        std::vector<Commitment> out(named_polynomials.size());
-        std::vector<CommitObjectProfile> object_profiles(named_polynomials.size());
-        const auto msm_start = Clock::now();
-        const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
-        std::size_t total_scalar_count = 0;
-        std::size_t max_scalar_count = 0;
-        std::vector<std::pair<std::string, const algebra::Polynomial *>> view;
-        view.reserve(named_polynomials.size());
-        for (const auto &[name, polynomial] : named_polynomials)
-        {
-            const auto estimated_work = estimated_commitment_msm_work(polynomial);
-            total_scalar_count += estimated_work;
-            max_scalar_count = std::max(max_scalar_count, estimated_work);
-            view.push_back({name, &polynomial});
-        }
+        const auto object_count =
+            named_polynomials.size();
 
-        const auto outer_worker_count = commit_batch_outer_worker_count(
-            named_polynomials.size(),
-            total_scalar_count,
-            max_scalar_count,
-            cpu_count);
-        const G1MSMExecutionOptions msm_options{
-            .max_worker_count = outer_worker_count > 1
-                                    ? std::max<std::size_t>(1, cpu_count / outer_worker_count)
-                                    : 0,
-        };
-        const auto work_order = outer_worker_count > 1 ? commitment_work_order(view) : std::vector<std::size_t>{};
-        auto commit_one = [&](std::size_t index)
-        {
-            auto &[name, polynomial] = named_polynomials[index];
-            if (!progress_prefix.empty())
-            {
-                progress_note(progress_prefix + ":" + name + ":start");
-            }
-            CommitObjectProfile object_profile;
-            polynomial.name = name;
-            auto material = std::make_shared<algebra::Polynomial>(std::move(polynomial));
-            out[index] = Commitment{
-                .name = name,
-                .point = commit_polynomial_point(
-                    *material,
-                    key.pk,
-                    profile != nullptr ? &object_profile : nullptr,
-                    outer_worker_count > 1 ? &msm_options : nullptr),
-                .opening_polynomial = material,
-            };
-            if (profile != nullptr)
-            {
-                object_profiles[index] = std::move(object_profile);
-            }
-            if (!progress_prefix.empty())
-            {
-                progress_note(progress_prefix + ":" + name + ":done");
-            }
-        };
+        std::vector<Commitment>
+            out(object_count);
 
-        if (outer_worker_count > 1)
+        std::vector<CommitObjectProfile>
+            object_profiles(
+                object_count);
+
+        std::vector<std::size_t>
+            estimated_work(
+                object_count,
+                0);
+
+        std::vector<
+            std::pair<
+                std::string,
+                const algebra::Polynomial *>>
+            view;
+
+        view.reserve(
+            object_count);
+
+        for (std::size_t index = 0;
+             index < object_count;
+             ++index)
         {
-            std::atomic<std::size_t> next{0};
-            g1_parallel_msm_batch_workers(
-                outer_worker_count,
-                [&](std::size_t)
+            auto &[name, polynomial] =
+                named_polynomials[index];
+
+            estimated_work[index] =
+                estimated_commitment_msm_work(
+                    polynomial);
+
+            view.push_back(
                 {
-                    while (true)
-                    {
-                        const auto order_index = next.fetch_add(1);
-                        if (order_index >= named_polynomials.size())
-                        {
-                            break;
-                        }
-                        commit_one(work_order[order_index]);
-                    }
+                    name,
+                    &polynomial,
                 });
         }
-        else
+
+        const auto msm_start =
+            Clock::now();
+
+        const auto cpu_count =
+            std::max<std::size_t>(
+                1,
+                std::thread::
+                    hardware_concurrency());
+
+        auto commit_one =
+            [&](std::size_t index,
+                const G1MSMExecutionOptions
+                    *options)
         {
-            for (std::size_t index = 0; index < named_polynomials.size(); ++index)
+            auto &[name, polynomial] =
+                named_polynomials[index];
+
+            if (!progress_prefix.empty())
             {
-                commit_one(index);
+                progress_note(
+                    progress_prefix +
+                    ":" +
+                    name +
+                    ":start");
             }
+
+            CommitObjectProfile
+                object_profile;
+
+            polynomial.name =
+                name;
+
+            auto material =
+                std::make_shared<
+                    algebra::Polynomial>(
+                    std::move(
+                        polynomial));
+
+            out[index] =
+                Commitment{
+                    .name = name,
+                    .point =
+                        commit_polynomial_point(
+                            *material,
+                            key.pk,
+                            profile != nullptr
+                                ? &object_profile
+                                : nullptr,
+                            options),
+                    .opening_polynomial =
+                        material,
+                };
+
+            if (profile != nullptr)
+            {
+                object_profiles[index] =
+                    std::move(
+                        object_profile);
+            }
+
+            if (!progress_prefix.empty())
+            {
+                progress_note(
+                    progress_prefix +
+                    ":" +
+                    name +
+                    ":done");
+            }
+        };
+
+        std::vector<bool>
+            excluded(
+                object_count,
+                false);
+
+        const G1MSMExecutionOptions
+            wave_msm_options{
+                .max_worker_count = 1,
+            };
+
+        auto completed =
+            execute_cuda_same_srs_commit_waves(
+                view,
+                key.pk,
+                estimated_work,
+                excluded,
+                [&](std::size_t index)
+                {
+                    commit_one(
+                        index,
+                        &wave_msm_options);
+                });
+
+        std::vector<std::size_t>
+            remaining_indices;
+
+        std::size_t
+            remaining_total_work = 0;
+
+        std::size_t
+            remaining_max_work = 0;
+
+        for (std::size_t index = 0;
+             index < object_count;
+             ++index)
+        {
+            if (completed[index])
+            {
+                continue;
+            }
+
+            remaining_indices
+                .push_back(index);
+
+            remaining_total_work +=
+                estimated_work[index];
+
+            remaining_max_work =
+                std::max(
+                    remaining_max_work,
+                    estimated_work[index]);
+        }
+
+        if (!remaining_indices.empty())
+        {
+            const auto outer_worker_count =
+                commit_batch_outer_worker_count(
+                    remaining_indices.size(),
+                    remaining_total_work,
+                    remaining_max_work,
+                    cpu_count);
+
+            const G1MSMExecutionOptions
+                fallback_msm_options{
+                    .max_worker_count =
+                        outer_worker_count > 1
+                            ? std::max<std::size_t>(
+                                  1,
+                                  cpu_count /
+                                      outer_worker_count)
+                            : 0,
+                };
+
+            std::vector<
+                std::pair<
+                    std::string,
+                    const algebra::Polynomial *>>
+                remaining_view;
+
+            remaining_view.reserve(
+                remaining_indices.size());
+
+            for (const auto index :
+                 remaining_indices)
+            {
+                remaining_view.push_back(
+                    {
+                        named_polynomials[index]
+                            .first,
+                        &named_polynomials[index]
+                             .second,
+                    });
+            }
+
+            if (outer_worker_count > 1)
+            {
+                const auto local_order =
+                    commitment_work_order(
+                        remaining_view);
+
+                std::atomic<std::size_t>
+                    next{0};
+
+                g1_parallel_msm_batch_workers(
+                    outer_worker_count,
+                    [&](std::size_t)
+                    {
+                        while (true)
+                        {
+                            const auto position =
+                                next.fetch_add(1);
+
+                            if (position >=
+                                local_order.size())
+                            {
+                                break;
+                            }
+
+                            const auto index =
+                                remaining_indices[local_order[position]];
+
+                            commit_one(
+                                index,
+                                &fallback_msm_options);
+
+                            completed[index] =
+                                true;
+                        }
+                    });
+            }
+            else
+            {
+                for (const auto index :
+                     remaining_indices)
+                {
+                    commit_one(
+                        index,
+                        nullptr);
+
+                    completed[index] =
+                        true;
+                }
+            }
+        }
+
+        if (std::any_of(
+                completed.begin(),
+                completed.end(),
+                [](bool value)
+                {
+                    return !value;
+                }))
+        {
+            throw std::runtime_error(
+                "owned KZG commitment wave "
+                "left an object uncommitted");
         }
 
         if (profile != nullptr)
         {
-            profile->msm_ms += elapsed_ms(msm_start, Clock::now());
-            for (auto &object_profile : object_profiles)
+            profile->msm_ms +=
+                elapsed_ms(
+                    msm_start,
+                    Clock::now());
+
+            for (auto &object_profile :
+                 object_profiles)
             {
-                if (!object_profile.name.empty())
+                if (!object_profile
+                         .name.empty())
                 {
-                    profile->objects.push_back(std::move(object_profile));
+                    profile->objects
+                        .push_back(
+                            std::move(
+                                object_profile));
                 }
             }
         }
+
         return out;
     }
-
     std::pair<Commitment, Commitment> KZG::reblind_domain_polynomial(
         const Commitment &long_term_anchor,
         const std::string &proof_local_name,

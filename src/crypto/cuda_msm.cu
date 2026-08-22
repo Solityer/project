@@ -2340,9 +2340,13 @@ namespace gatzk::crypto
         const bool integrated =
             cuda_msm_device_is_integrated();
 
-        // Primary route: one complete resident MSM.  This is the 20-Aug
-        // execution shape and avoids turning one large MSM into dozens of
-        // independent ICICLE launches.
+        // Primary route: one complete resident MSM.
+        //
+        // Resource pressure in scalar staging must not invalidate an already
+        // prepared immutable SRS base cache.  Base residency and scalar
+        // workspace have independent lifetimes: preserving the former lets
+        // the bounded fallback reuse the expensive normalized/uploaded SRS
+        // instead of paying that cost a second time.
         if (stable_srs_bases &&
             resident_cuda_msm_is_safe(
                 cache,
@@ -2374,18 +2378,21 @@ namespace gatzk::crypto
             }
             catch (const CudaMsmResourcePressure &)
             {
-                cache.clear();
+                // The resident base preparation may already have completed.
+                // Drop only scalar workspace and preserve immutable SRS
+                // residency for the bounded fallback below.
                 reusable_scalar_staging().release();
             }
             catch (const std::bad_alloc &)
             {
-                cache.clear();
                 reusable_scalar_staging().release();
             }
         }
 
-        // UMA-only fallback: retain the immutable SRS bases but bound scalar
-        // staging.  This route is no longer the unconditional production path.
+        // UMA-only fallback: retain the immutable SRS bases while bounding
+        // scalar staging to one chunk.  If this path also encounters scalar
+        // pressure, keep the resident base cache alive; the final streamed
+        // route will evict it only if that memory is genuinely required.
         if (stable_srs_bases &&
             integrated &&
             resident_cuda_msm_is_safe(
@@ -2421,17 +2428,14 @@ namespace gatzk::crypto
             }
             catch (const CudaMsmResourcePressure &)
             {
-                cache.clear();
                 reusable_scalar_staging().release();
             }
             catch (const std::bad_alloc &)
             {
-                cache.clear();
                 reusable_scalar_staging().release();
             }
         }
 
-        // First try bounded streaming while preserving useful resident SRS
         // First try bounded streaming while preserving useful resident SRS
         // material.  Only genuine resource pressure is allowed to evict the
         // resident cache and retry the same CUDA MSM.
@@ -2549,8 +2553,8 @@ namespace gatzk::crypto
         const bool integrated =
             cuda_msm_device_is_integrated();
 
-        // Prefer one native ICICLE same-base batch while the complete scalar
-        // batch fits the direct resident envelope.
+        // Route 1: one native ICICLE same-base batch while the complete
+        // scalar working set fits the direct resident envelope.
         if (resident_cuda_msm_is_safe(
                 cache,
                 points,
@@ -2574,16 +2578,77 @@ namespace gatzk::crypto
             }
             catch (const CudaMsmResourcePressure &)
             {
-                cache.clear();
+                // Do not destroy a successfully prepared base prefix merely
+                // because the complete batched scalar staging was too large.
+                reusable_scalar_staging().release();
             }
             catch (const std::bad_alloc &)
             {
-                cache.clear();
+                reusable_scalar_staging().release();
             }
         }
 
-        // If a complete UMA batch would exceed the bounded direct envelope,
-        // retain the cached bases and chunk only the scalar dimension.
+        // Route 2: full-width warm-resident wave.
+        //
+        // A large same-base batch can exceed the *aggregate* scalar envelope
+        // even though every individual MSM fits comfortably.  The old route
+        // immediately split the scalar dimension into 2^20 chunks, turning,
+        // for example, a 50M x 2 batch into roughly fifty ICICLE launches.
+        //
+        // When the SRS prefix is already resident, execute the independent
+        // scalar vectors as full-width MSMs one after another.  The expensive
+        // base normalization/upload is paid zero additional times and scalar
+        // staging is reused between members.
+        if (batch_size > 1 &&
+            cache.contains_usable_prefix(
+                points,
+                count,
+                stable_srs_capacity) &&
+            resident_cuda_msm_is_safe(
+                cache,
+                points,
+                count,
+                stable_srs_capacity,
+                1,
+                false))
+        {
+            try
+            {
+                for (std::size_t batch = 0;
+                     batch < batch_size;
+                     ++batch)
+                {
+                    execute_resident_cuda_msm(
+                        outputs[batch],
+                        points,
+                        scalar_vectors[batch],
+                        count,
+                        stable_srs_capacity,
+                        cache);
+                }
+
+                util::info(
+                    "cuda_msm route=resident_serial_batch count=" +
+                    std::to_string(count) +
+                    " batch=" +
+                    std::to_string(batch_size));
+
+                return true;
+            }
+            catch (const CudaMsmResourcePressure &)
+            {
+                // Preserve the immutable bases.  Only the scalar workspace
+                // needs to be retired before the bounded route is attempted.
+                reusable_scalar_staging().release();
+            }
+            catch (const std::bad_alloc &)
+            {
+                reusable_scalar_staging().release();
+            }
+        }
+
+        // Route 3: on UMA, retain the cached SRS and bound only the scalar
+        // dimension when a full-width resident wave is not admissible.
         if (integrated &&
             resident_cuda_msm_is_safe(
                 cache,
@@ -2611,15 +2676,14 @@ namespace gatzk::crypto
             }
             catch (const CudaMsmResourcePressure &)
             {
-                cache.clear();
+                reusable_scalar_staging().release();
             }
             catch (const std::bad_alloc &)
             {
-                cache.clear();
+                reusable_scalar_staging().release();
             }
         }
 
-        // Keep the CUDA execution lock while the shared-base
         // Keep the CUDA execution lock while the shared-base
         // streamed batch is active.  The point vector is uploaded
         // once per chunk for the whole batch.
