@@ -7744,6 +7744,26 @@ namespace gatzk::crypto
             std::to_string(
                 precompute_ms));
 
+        if (profiles != nullptr)
+        {
+            for (std::size_t group = 0;
+                 group < 2;
+                 ++group)
+            {
+                (*profiles)[group]
+                    .precompute_ms +=
+                    precompute_ms / 2.0;
+
+                if (execution_options != nullptr)
+                {
+                    (*profiles)[group]
+                        .point_msm_worker_cap =
+                        (*execution_options)[group]
+                            .msm.max_worker_count;
+                }
+            }
+        }
+
         std::array<
             std::vector<
                 std::vector<FieldElement>>,

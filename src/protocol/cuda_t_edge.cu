@@ -1345,6 +1345,61 @@ namespace gatzk::protocol
 
             void release_program_noexcept() noexcept
             {
+                if (device_instructions_ !=
+                    nullptr)
+                {
+                    (void)cudaFree(
+                        device_instructions_);
+                }
+
+                if (device_terms_ !=
+                    nullptr)
+                {
+                    (void)cudaFree(
+                        device_terms_);
+                }
+
+                if (device_constants_ !=
+                    nullptr)
+                {
+                    (void)cudaFree(
+                        device_constants_);
+                }
+
+                if (device_access_rotated_ !=
+                    nullptr)
+                {
+                    (void)cudaFree(
+                        device_access_rotated_);
+                }
+
+                if (device_access_slots_ !=
+                    nullptr)
+                {
+                    (void)cudaFree(
+                        device_access_slots_);
+                }
+
+                device_instructions_ =
+                    nullptr;
+
+                device_terms_ =
+                    nullptr;
+
+                device_constants_ =
+                    nullptr;
+
+                device_access_rotated_ =
+                    nullptr;
+
+                device_access_slots_ =
+                    nullptr;
+
+                program_ = nullptr;
+            }
+
+            void release_all_noexcept() noexcept
+            {
                 release_program_noexcept();
 
                 for (auto *slot :
@@ -1432,6 +1487,10 @@ namespace gatzk::protocol
 
             TEdgeProgramInstruction
                 *device_instructions_ =
+                    nullptr;
+
+            CudaTEdgeTermDescriptor
+                *device_terms_ =
                     nullptr;
 
             GpuFr *device_constants_ =
