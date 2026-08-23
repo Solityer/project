@@ -8175,6 +8175,12 @@ namespace gatzk::crypto
         }
 
         std::array<
+            std::vector<
+                std::vector<FieldElement>>,
+            2>
+            precomputed_inverse_denominators;
+
+        std::array<
             std::vector<std::uint8_t>,
             2>
             preassembled_quotient_flags;
@@ -8343,13 +8349,18 @@ namespace gatzk::crypto
 
             if (profiles != nullptr)
             {
-                // The paired inversion and both quotient assemblies share
-                // one physical pass. Split the shared wall time between the
-                // two point-group profiles so profile totals remain
-                // non-overlapping.
+                // One physical paired batch inversion constructs both
+                // quotient-scalar vectors.  Attribute one cache miss to the
+                // first group and one exact paired reuse to the second group.
+                // Split the shared wall time so aggregate wall accounting
+                // remains non-overlapping.
                 (*profiles)[0]
                     .denominator_inverse_ms +=
                     pair_build_ms / 2.0;
+
+                (*profiles)[0]
+                    .denominator_inverse_cache_misses +=
+                    1;
 
                 (*profiles)[1]
                     .denominator_inverse_reuse_ms +=

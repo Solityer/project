@@ -1170,6 +1170,22 @@ namespace gatzk::protocol
                         "invalid CUDA t_edge "
                         "leaf release");
                 }
+
+                // accumulate_terms() launches fused term kernels on the
+                // default stream.  Exact leaf materialization uses the
+                // dedicated non-blocking CUDA NTT stream.  Before a physical
+                // cache slot is overwritten, every term in the previous
+                // cache epoch must have finished reading that slot.
+                const auto status =
+                    cudaStreamSynchronize(0);
+
+                if (status !=
+                    cudaSuccess)
+                {
+                    throw_cuda_t_edge_error(
+                        "leaf epoch synchronization",
+                        status);
+                }
             }
 
             void finalize(

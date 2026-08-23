@@ -12416,15 +12416,18 @@ namespace gatzk::protocol
                     "release_cuda_transform_transients:start");
 
                 // Quotient coefficients are now canonical host-side prover
-                // material. t_edge execution state and CUDA NTT workspace are
-                // dead, so release them before coefficient-SRS KZG waves.
+                // material. FH/t_edge execution state and the CUDA NTT
+                // workspace are dead before coefficient-SRS KZG waves.
+                release_cuda_fh_executor_cache();
+
                 release_cuda_t_edge_executor_cache();
 
-                algebra::release_cuda_ntt_workspace();
+                algebra::
+                    release_cuda_ntt_workspace();
 
-                // Scalar/stream MSM staging is also phase-local.  Preserve
-                // resident immutable SRS bases: they are useful again for
-                // quotient commitments and, later, folded openings.
+                // Scalar/stream MSM staging is also phase-local. Preserve
+                // immutable resident SRS bases for quotient commitments and
+                // later folded openings.
                 crypto::
                     release_cuda_g1_msm_execution_workspace();
 
@@ -14327,6 +14330,8 @@ namespace gatzk::protocol
 
             algebra::
                 release_cuda_weighted_dot_cache();
+
+            release_cuda_fh_executor_cache();
 
             release_cuda_t_edge_executor_cache();
 
