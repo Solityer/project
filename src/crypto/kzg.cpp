@@ -5322,7 +5322,11 @@ namespace gatzk::crypto
             const KZGProverKey &pk,
             BatchOpeningProfile *profile = nullptr,
             std::size_t worker_cap = 0,
-            const G1MSMExecutionOptions *msm_options = nullptr)
+            const G1MSMExecutionOptions *msm_options = nullptr,
+            std::vector<
+                std::vector<FieldElement>>
+                *precomputed_inverse_denominators =
+                    nullptr)
         {
             auto out = g1_zero();
             const auto &coefficient_scaled_claim_sum = plan.coefficient_scaled_claim_sums[point_index];
@@ -5353,30 +5357,71 @@ namespace gatzk::crypto
             }
             std::vector<FieldElement>
                 opening_evaluation_scratch;
-            for (const auto &group : plan.evaluation_groups)
+
+            for (std::size_t group_index = 0;
+                 group_index <
+                 plan.evaluation_groups.size();
+                 ++group_index)
             {
-                const auto inverse_start =
-                    Clock::now();
+                const auto &group =
+                    plan.evaluation_groups[group_index];
 
-                opening_evaluation_scratch.resize(
-                    group.domain->size);
+                bool reused_inverse = false;
 
-                build_opening_inverse_denominators(
-                    &opening_evaluation_scratch,
-                    group.domain,
-                    point,
-                    worker_cap);
-
-                if (profile != nullptr)
+                if (precomputed_inverse_denominators !=
+                        nullptr &&
+                    group_index <
+                        precomputed_inverse_denominators
+                            ->size())
                 {
-                    profile->denominator_inverse_ms +=
-                        elapsed_ms(
-                            inverse_start,
-                            Clock::now());
+                    auto &prepared =
+                        (*precomputed_inverse_denominators)
+                            [group_index];
 
-                    profile
-                        ->denominator_inverse_cache_misses +=
-                        1;
+                    if (!prepared.empty())
+                    {
+                        if (prepared.size() !=
+                            group.domain->size)
+                        {
+                            throw std::runtime_error(
+                                "precomputed opening "
+                                "inverse/domain shape "
+                                "mismatch");
+                        }
+
+                        opening_evaluation_scratch =
+                            std::move(prepared);
+
+                        reused_inverse = true;
+                    }
+                }
+
+                if (!reused_inverse)
+                {
+                    const auto inverse_start =
+                        Clock::now();
+
+                    opening_evaluation_scratch.resize(
+                        group.domain->size);
+
+                    build_opening_inverse_denominators(
+                        &opening_evaluation_scratch,
+                        group.domain,
+                        point,
+                        worker_cap);
+
+                    if (profile != nullptr)
+                    {
+                        profile
+                            ->denominator_inverse_ms +=
+                            elapsed_ms(
+                                inverse_start,
+                                Clock::now());
+
+                        profile
+                            ->denominator_inverse_cache_misses +=
+                            1;
+                    }
                 }
 
                 const auto quotient_assembly_start =
@@ -7699,24 +7744,218 @@ namespace gatzk::crypto
             std::to_string(
                 precompute_ms));
 
-        if (profiles != nullptr)
-        {
-            for (std::size_t group = 0;
-                 group < 2;
-                 ++group)
-            {
-                (*profiles)[group]
-                    .precompute_ms +=
-                    precompute_ms / 2.0;
+        std::array<
+            std::vector<
+                std::vector<FieldElement>>,
+            2>
+            precomputed_inverse_denominators;
 
-                if (execution_options != nullptr)
-                {
-                    (*profiles)[group]
-                        .point_msm_worker_cap =
-                        (*execution_options)[group]
-                            .msm.max_worker_count;
-                }
+        for (std::size_t group = 0;
+             group < 2;
+             ++group)
+        {
+            precomputed_inverse_denominators[group]
+                .resize(
+                    folded.plans[group]
+                        .evaluation_groups.size());
+        }
+
+        const auto same_domain =
+            [](const auto &lhs,
+               const auto &rhs)
+        {
+            return lhs != nullptr &&
+                   rhs != nullptr &&
+                   lhs->name == rhs->name &&
+                   lhs->size == rhs->size &&
+                   lhs->omega == rhs->omega;
+        };
+
+        const auto pair_field_worker_cap =
+            [&]()
+        {
+            if (field_worker_caps[0] == 0)
+            {
+                return field_worker_caps[1];
             }
+
+            if (field_worker_caps[1] == 0)
+            {
+                return field_worker_caps[0];
+            }
+
+            return std::min(
+                field_worker_caps[0],
+                field_worker_caps[1]);
+        }();
+
+        for (std::size_t first_index = 0;
+             first_index <
+             folded.plans[0]
+                 .evaluation_groups.size();
+             ++first_index)
+        {
+            const auto &first_group =
+                folded.plans[0]
+                    .evaluation_groups[first_index];
+
+            const auto domain =
+                first_group.domain;
+
+            if (domain == nullptr ||
+                points[1] !=
+                    points[0] *
+                        domain->omega)
+            {
+                continue;
+            }
+
+            const auto second_it =
+                std::find_if(
+                    folded.plans[1]
+                        .evaluation_groups.begin(),
+                    folded.plans[1]
+                        .evaluation_groups.end(),
+                    [&](const auto &candidate)
+                    {
+                        return same_domain(
+                            domain,
+                            candidate.domain);
+                    });
+
+            if (second_it ==
+                folded.plans[1]
+                    .evaluation_groups.end())
+            {
+                continue;
+            }
+
+            const auto second_index =
+                static_cast<std::size_t>(
+                    std::distance(
+                        folded.plans[1]
+                            .evaluation_groups.begin(),
+                        second_it));
+
+            auto &second_inverse =
+                precomputed_inverse_denominators
+                    [1][second_index];
+
+            if (!second_inverse.empty())
+            {
+                continue;
+            }
+
+            auto &first_inverse =
+                precomputed_inverse_denominators
+                    [0][first_index];
+
+            first_inverse.resize(
+                domain->size);
+
+            const auto build_start =
+                Clock::now();
+
+            build_opening_inverse_denominators(
+                &first_inverse,
+                domain,
+                points[0],
+                field_worker_caps[0]);
+
+            const auto build_ms =
+                elapsed_ms(
+                    build_start,
+                    Clock::now());
+
+            second_inverse.resize(
+                domain->size);
+
+            const auto reuse_start =
+                Clock::now();
+
+            const auto *first_native =
+                FieldElement::
+                    native_array_data(
+                        first_inverse.data());
+
+            auto *second_native =
+                FieldElement::
+                    mutable_native_array_data(
+                        second_inverse.data());
+
+            const auto omega_inverse =
+                domain->omega.inv().native();
+
+            parallel_for_chunks_capped(
+                domain->size,
+                std::size_t{1} << 15,
+                pair_field_worker_cap,
+                [&](std::size_t begin,
+                    std::size_t end)
+                {
+                    for (std::size_t row =
+                             begin;
+                         row < end;
+                         ++row)
+                    {
+                        const auto source_row =
+                            row == 0
+                                ? domain->size - 1
+                                : row - 1;
+
+                        mcl::Fr::mul(
+                            second_native[row],
+                            first_native[source_row],
+                            omega_inverse);
+                    }
+                });
+
+            const auto reuse_ms =
+                elapsed_ms(
+                    reuse_start,
+                    Clock::now());
+
+            if (profiles != nullptr)
+            {
+                (*profiles)[0]
+                    .denominator_inverse_ms +=
+                    build_ms;
+
+                (*profiles)[0]
+                    .denominator_inverse_cache_misses +=
+                    1;
+
+                (*profiles)[0]
+                    .finalize_ms +=
+                    build_ms;
+
+                (*profiles)[1]
+                    .denominator_inverse_reuse_ms +=
+                    reuse_ms;
+
+                (*profiles)[1]
+                    .denominator_inverse_reuse_hits +=
+                    1;
+
+                (*profiles)[1]
+                    .finalize_ms +=
+                    reuse_ms;
+            }
+
+            progress_note(
+                "kzg:opening:"
+                "rotated_denominator_reuse:"
+                "domain=" +
+                domain->name +
+                ":size=" +
+                std::to_string(
+                    domain->size) +
+                ":build_ms=" +
+                std::to_string(
+                    build_ms) +
+                ":reuse_ms=" +
+                std::to_string(
+                    reuse_ms));
         }
 
         std::array<G1Point, 2> witnesses{
@@ -7739,7 +7978,6 @@ namespace gatzk::crypto
                 profiles != nullptr
                     ? &(*profiles)[group]
                     : nullptr;
-
             witnesses[group] =
                 open_single_point_fold(
                     folded.plans[group],
@@ -7748,7 +7986,8 @@ namespace gatzk::crypto
                     key.pk,
                     profile,
                     field_worker_caps[group],
-                    msm_options);
+                    msm_options,
+                    &precomputed_inverse_denominators[group]);
 
             if (profile != nullptr)
             {
@@ -7759,24 +7998,12 @@ namespace gatzk::crypto
             }
         };
 
-        auto first_future =
-            std::async(
-                std::launch::async,
-                [&]()
-                {
-                    open_one(0);
-                });
-
-        auto second_future =
-            std::async(
-                std::launch::async,
-                [&]()
-                {
-                    open_one(1);
-                });
-
-        first_future.get();
-        second_future.get();
+        g1_parallel_msm_batch_workers(
+            2,
+            [&](std::size_t group)
+            {
+                open_one(group);
+            });
 
         return witnesses;
     }

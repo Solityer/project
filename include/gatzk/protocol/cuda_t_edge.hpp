@@ -41,8 +41,9 @@ namespace gatzk::protocol
             const mcl::Fr *values,
             std::size_t count) = 0;
 
-        virtual void accumulate_term(
-            std::size_t term_index,
+        virtual void accumulate_terms(
+            std::size_t term_begin,
+            std::size_t term_end,
             const std::vector<std::uint32_t> &access_slots) = 0;
 
         virtual void release_leaf(

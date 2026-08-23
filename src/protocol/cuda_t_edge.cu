@@ -84,12 +84,21 @@ namespace gatzk::protocol
             return output;
         }
 
+        struct CudaTEdgeTermDescriptor
+        {
+            std::size_t instruction_begin = 0;
+            std::size_t instruction_end = 0;
+
+            GpuFr alpha_scale{};
+        };
+
+        template <std::size_t StackCapacity>
         __global__ void
-        t_edge_term_kernel(
-            const TEdgeProgramInstruction
-                *instructions,
-            std::size_t instruction_begin,
-            std::size_t instruction_end,
+        t_edge_term_batch_kernel(
+            const TEdgeProgramInstruction *instructions,
+            const CudaTEdgeTermDescriptor *terms,
+            std::size_t term_begin,
+            std::size_t term_end,
             const GpuFr *constants,
             GpuFr *const *leaf_slots,
             const std::uint8_t *leaf_split_layout,
@@ -97,9 +106,12 @@ namespace gatzk::protocol
             const std::uint8_t *access_rotated,
             std::size_t rotation_step,
             std::size_t target_size,
-            GpuFr alpha_scale,
             GpuFr *quotient)
         {
+            static_assert(
+                StackCapacity <=
+                kMaximumProgramStackDepth);
+
             const auto point =
                 static_cast<std::size_t>(
                     blockIdx.x) *
@@ -111,141 +123,162 @@ namespace gatzk::protocol
                 return;
             }
 
-            GpuFr stack[kMaximumProgramStackDepth];
+            GpuFr quotient_value =
+                quotient[point];
 
-            std::size_t stack_size = 0;
+            GpuFr stack[StackCapacity];
 
-            for (std::size_t index =
-                     instruction_begin;
-                 index < instruction_end;
-                 ++index)
+            for (std::size_t term_index =
+                     term_begin;
+                 term_index < term_end;
+                 ++term_index)
             {
-                const auto instruction =
-                    instructions[index];
+                const auto term =
+                    terms[term_index];
 
-                switch (instruction.opcode)
+                std::size_t stack_size = 0;
+
+                for (std::size_t index =
+                         term.instruction_begin;
+                     index <
+                     term.instruction_end;
+                     ++index)
                 {
-                case TEdgeProgramOpcode::
-                    LoadAccess:
-                {
-                    const auto access =
-                        instruction.operand;
+                    const auto instruction =
+                        instructions[index];
 
-                    const auto slot =
-                        access_slots[access];
-
-                    const auto logical_index =
-                        access_rotated[access] != 0
-                            ? (point +
-                               rotation_step) &
-                                  (target_size - 1U)
-                            : point;
-                    std::size_t physical_index =
-                        logical_index;
-
-                    if (leaf_split_layout[slot] != 0)
+                    switch (instruction.opcode)
                     {
-                        const auto half_size =
-                            target_size / 2;
+                    case TEdgeProgramOpcode::
+                        LoadAccess:
+                    {
+                        const auto access =
+                            instruction.operand;
 
-                        physical_index =
-                            logical_index / 2 +
-                            ((logical_index & 1U) != 0U
-                                 ? half_size
-                                 : 0);
+                        const auto slot =
+                            access_slots[access];
+
+                        const auto logical_index =
+                            access_rotated[access] != 0
+                                ? (point +
+                                   rotation_step) &
+                                      (target_size -
+                                       1U)
+                                : point;
+
+                        std::size_t
+                            physical_index =
+                                logical_index;
+
+                        if (leaf_split_layout[slot] !=
+                            0)
+                        {
+                            const auto half_size =
+                                target_size / 2;
+
+                            physical_index =
+                                logical_index / 2 +
+                                ((logical_index &
+                                  1U) != 0U
+                                     ? half_size
+                                     : 0);
+                        }
+
+                        stack[stack_size++] =
+                            leaf_slots[slot]
+                                      [physical_index];
+
+                        break;
                     }
 
-                    stack[stack_size++] =
-                        leaf_slots[slot]
-                                  [physical_index];
+                    case TEdgeProgramOpcode::
+                        LoadConstant:
+                    {
+                        stack[stack_size++] =
+                            constants[instruction.operand];
 
-                    break;
+                        break;
+                    }
+
+                    case TEdgeProgramOpcode::Add:
+                    {
+                        const auto rhs =
+                            stack[--stack_size];
+
+                        const auto lhs =
+                            stack[--stack_size];
+
+                        stack[stack_size++] =
+                            algebra::gpu::fr_add(
+                                lhs,
+                                rhs);
+
+                        break;
+                    }
+
+                    case TEdgeProgramOpcode::
+                        Subtract:
+                    {
+                        const auto rhs =
+                            stack[--stack_size];
+
+                        const auto lhs =
+                            stack[--stack_size];
+
+                        stack[stack_size++] =
+                            algebra::gpu::fr_sub(
+                                lhs,
+                                rhs);
+
+                        break;
+                    }
+
+                    case TEdgeProgramOpcode::
+                        Multiply:
+                    {
+                        const auto rhs =
+                            stack[--stack_size];
+
+                        const auto lhs =
+                            stack[--stack_size];
+
+                        stack[stack_size++] =
+                            algebra::gpu::fr_mul(
+                                lhs,
+                                rhs);
+
+                        break;
+                    }
+
+                    case TEdgeProgramOpcode::
+                        Negate:
+                    {
+                        stack[stack_size - 1] =
+                            algebra::gpu::fr_sub(
+                                algebra::gpu::
+                                    fr_zero(),
+                                stack[stack_size -
+                                      1]);
+
+                        break;
+                    }
+                    }
                 }
 
-                case TEdgeProgramOpcode::
-                    LoadConstant:
-                {
-                    stack[stack_size++] =
-                        constants[instruction.operand];
+                const auto contribution =
+                    algebra::gpu::fr_mul(
+                        stack[0],
+                        term.alpha_scale);
 
-                    break;
-                }
-
-                case TEdgeProgramOpcode::Add:
-                {
-                    const auto rhs =
-                        stack[--stack_size];
-
-                    const auto lhs =
-                        stack[--stack_size];
-
-                    stack[stack_size++] =
-                        algebra::gpu::fr_add(
-                            lhs,
-                            rhs);
-
-                    break;
-                }
-
-                case TEdgeProgramOpcode::
-                    Subtract:
-                {
-                    const auto rhs =
-                        stack[--stack_size];
-
-                    const auto lhs =
-                        stack[--stack_size];
-
-                    stack[stack_size++] =
-                        algebra::gpu::fr_sub(
-                            lhs,
-                            rhs);
-
-                    break;
-                }
-
-                case TEdgeProgramOpcode::
-                    Multiply:
-                {
-                    const auto rhs =
-                        stack[--stack_size];
-
-                    const auto lhs =
-                        stack[--stack_size];
-
-                    stack[stack_size++] =
-                        algebra::gpu::fr_mul(
-                            lhs,
-                            rhs);
-
-                    break;
-                }
-
-                case TEdgeProgramOpcode::
-                    Negate:
-                {
-                    stack[stack_size - 1] =
-                        algebra::gpu::fr_sub(
-                            algebra::gpu::
-                                fr_zero(),
-                            stack[stack_size - 1]);
-
-                    break;
-                }
-                }
+                quotient_value =
+                    algebra::gpu::fr_add(
+                        quotient_value,
+                        contribution);
             }
 
-            const auto contribution =
-                algebra::gpu::fr_mul(
-                    stack[0],
-                    alpha_scale);
-
             quotient[point] =
-                algebra::gpu::fr_add(
-                    quotient[point],
-                    contribution);
+                quotient_value;
         }
-
         __global__ void
         t_edge_finalize_kernel(
             GpuFr *quotient,
@@ -617,6 +650,66 @@ namespace gatzk::protocol
                             status);
                     }
 
+                    std::vector<
+                        CudaTEdgeTermDescriptor>
+                        term_descriptors(
+                            program.terms.size());
+
+                    for (std::size_t index = 0;
+                         index <
+                         program.terms.size();
+                         ++index)
+                    {
+                        const auto &term =
+                            program.terms[index];
+
+                        term_descriptors[index] =
+                            CudaTEdgeTermDescriptor{
+                                .instruction_begin =
+                                    term.instruction_begin,
+                                .instruction_end =
+                                    term.instruction_end,
+                                .alpha_scale =
+                                    gpu_field(
+                                        term.alpha_scale),
+                            };
+                    }
+
+                    status =
+                        cudaMalloc(
+                            reinterpret_cast<void **>(
+                                &device_terms_),
+                            checked_bytes(
+                                term_descriptors.size(),
+                                sizeof(
+                                    CudaTEdgeTermDescriptor),
+                                "terms"));
+
+                    if (status != cudaSuccess)
+                    {
+                        throw_cuda_t_edge_error(
+                            "term allocation",
+                            status);
+                    }
+
+                    status =
+                        cudaMemcpy(
+                            device_terms_,
+                            term_descriptors.data(),
+                            checked_bytes(
+                                term_descriptors.size(),
+                                sizeof(
+                                    CudaTEdgeTermDescriptor),
+                                "terms"),
+                            cudaMemcpyHostToDevice);
+
+                    if (status != cudaSuccess)
+                    {
+                        throw_cuda_t_edge_error(
+                            "term upload",
+                            status);
+                    }
+
                     if (!program.constants.empty())
                     {
                         status =
@@ -909,41 +1002,69 @@ namespace gatzk::protocol
                 }
             }
 
-            void accumulate_term(
-                std::size_t term_index,
+            void accumulate_terms(
+                std::size_t term_begin,
+                std::size_t term_end,
                 const std::vector<
                     std::uint32_t>
                     &access_slots)
                 override
             {
                 if (program_ == nullptr ||
-                    term_index >=
+                    term_begin >= term_end ||
+                    term_end >
                         program_->terms.size() ||
                     access_slots.size() !=
                         program_->accesses.size())
                 {
                     throw std::runtime_error(
                         "invalid CUDA t_edge "
-                        "term invocation");
+                        "term-batch invocation");
                 }
 
-                const auto &term =
-                    program_->terms[term_index];
+                std::size_t
+                    maximum_stack_depth = 0;
 
-                for (const auto access :
-                     term.required_accesses)
+                for (std::size_t term_index =
+                         term_begin;
+                     term_index < term_end;
+                     ++term_index)
                 {
-                    if (access >=
-                            access_slots.size() ||
-                        access_slots[access] ==
-                            kInvalidLeafSlot ||
-                        access_slots[access] >=
-                            cache_slot_count_)
+                    const auto &term =
+                        program_
+                            ->terms[term_index];
+
+                    maximum_stack_depth =
+                        std::max(
+                            maximum_stack_depth,
+                            term.maximum_stack_depth);
+
+                    for (const auto access :
+                         term.required_accesses)
                     {
-                        throw std::runtime_error(
-                            "CUDA t_edge term has "
-                            "an unbound leaf");
+                        if (access >=
+                                access_slots.size() ||
+                            access_slots[access] ==
+                                kInvalidLeafSlot ||
+                            access_slots[access] >=
+                                cache_slot_count_)
+                        {
+                            throw std::runtime_error(
+                                "CUDA t_edge term "
+                                "batch has an "
+                                "unbound leaf");
+                        }
                     }
+                }
+
+                if (maximum_stack_depth == 0 ||
+                    maximum_stack_depth >
+                        kMaximumProgramStackDepth)
+                {
+                    throw std::runtime_error(
+                        "CUDA t_edge term "
+                        "batch has invalid "
+                        "stack depth");
                 }
 
                 auto status =
@@ -981,26 +1102,48 @@ namespace gatzk::protocol
                         "overflow");
                 }
 
-                const auto alpha_scale =
-                    gpu_field(
-                        term.alpha_scale);
-
-                t_edge_term_kernel<<<
+                const auto block_count =
                     static_cast<unsigned>(
-                        block_count_size),
-                    kBlockSize>>>(
-                    device_instructions_,
-                    term.instruction_begin,
-                    term.instruction_end,
-                    device_constants_,
-                    device_leaf_table_,
-                    device_leaf_split_layout_,
-                    device_access_slots_,
-                    device_access_rotated_,
-                    rotation_step_,
-                    target_size_,
-                    alpha_scale,
-                    device_quotient_);
+                        block_count_size);
+
+                if (maximum_stack_depth <= 4)
+                {
+                    launch_term_batch<4>(
+                        term_begin,
+                        term_end,
+                        block_count);
+                }
+                else if (
+                    maximum_stack_depth <= 8)
+                {
+                    launch_term_batch<8>(
+                        term_begin,
+                        term_end,
+                        block_count);
+                }
+                else if (
+                    maximum_stack_depth <= 16)
+                {
+                    launch_term_batch<16>(
+                        term_begin,
+                        term_end,
+                        block_count);
+                }
+                else if (
+                    maximum_stack_depth <= 32)
+                {
+                    launch_term_batch<32>(
+                        term_begin,
+                        term_end,
+                        block_count);
+                }
+                else
+                {
+                    launch_term_batch<64>(
+                        term_begin,
+                        term_end,
+                        block_count);
+                }
 
                 status =
                     cudaGetLastError();
@@ -1008,7 +1151,7 @@ namespace gatzk::protocol
                 if (status != cudaSuccess)
                 {
                     throw_cuda_t_edge_error(
-                        "term kernel launch",
+                        "term-batch kernel launch",
                         status);
                 }
 
@@ -1016,7 +1159,6 @@ namespace gatzk::protocol
                     record_cuda_kernel_invocations(
                         1);
             }
-
             void release_leaf(
                 std::size_t slot)
                 override
@@ -1174,52 +1316,34 @@ namespace gatzk::protocol
             }
 
         private:
-            void release_program_noexcept() noexcept
+            template <std::size_t StackCapacity>
+            void launch_term_batch(
+                std::size_t term_begin,
+                std::size_t term_end,
+                unsigned block_count)
             {
-                if (device_instructions_ !=
-                    nullptr)
-                {
-                    (void)cudaFree(
-                        device_instructions_);
-                }
+                constexpr unsigned
+                    kBlockSize = 256;
 
-                if (device_constants_ !=
-                    nullptr)
-                {
-                    (void)cudaFree(
-                        device_constants_);
-                }
-
-                if (device_access_rotated_ !=
-                    nullptr)
-                {
-                    (void)cudaFree(
-                        device_access_rotated_);
-                }
-
-                if (device_access_slots_ !=
-                    nullptr)
-                {
-                    (void)cudaFree(
-                        device_access_slots_);
-                }
-
-                device_instructions_ =
-                    nullptr;
-
-                device_constants_ =
-                    nullptr;
-
-                device_access_rotated_ =
-                    nullptr;
-
-                device_access_slots_ =
-                    nullptr;
-
-                program_ = nullptr;
+                t_edge_term_batch_kernel<
+                    StackCapacity><<<
+                    block_count,
+                    kBlockSize>>>(
+                    device_instructions_,
+                    device_terms_,
+                    term_begin,
+                    term_end,
+                    device_constants_,
+                    device_leaf_table_,
+                    device_leaf_split_layout_,
+                    device_access_slots_,
+                    device_access_rotated_,
+                    rotation_step_,
+                    target_size_,
+                    device_quotient_);
             }
 
-            void release_all_noexcept() noexcept
+            void release_program_noexcept() noexcept
             {
                 release_program_noexcept();
 

@@ -5902,6 +5902,33 @@ namespace gatzk::protocol
 
                 try
                 {
+                    std::size_t
+                        pending_term_begin = 0;
+
+                    std::size_t
+                        launched_term_batches = 0;
+
+                    const auto
+                        flush_pending_terms =
+                            [&](std::size_t term_end)
+                    {
+                        if (pending_term_begin >=
+                            term_end)
+                        {
+                            return;
+                        }
+
+                        executor->accumulate_terms(
+                            pending_term_begin,
+                            term_end,
+                            access_slots);
+
+                        pending_term_begin =
+                            term_end;
+
+                        ++launched_term_batches;
+                    };
+
                     for (std::size_t term_index = 0;
                          term_index <
                          program.terms.size();
@@ -6051,6 +6078,13 @@ namespace gatzk::protocol
                             if (!slot_labels[selected_slot]
                                      .empty())
                             {
+                                // Every pending term still sees the
+                                // current physical leaf assignment.
+                                // Execute the complete epoch before
+                                // overwriting any cache slot.
+                                flush_pending_terms(
+                                    term_index);
+
                                 clear_label_mapping(
                                     slot_labels[selected_slot]);
 
@@ -6069,10 +6103,6 @@ namespace gatzk::protocol
                                 label,
                                 selected_slot);
                         }
-
-                        executor->accumulate_term(
-                            term_index,
-                            access_slots);
 
                         for (const auto &label :
                              required)
@@ -6120,6 +6150,19 @@ namespace gatzk::protocol
                             ++cursor;
                         }
                     }
+
+                    flush_pending_terms(
+                        program.terms.size());
+
+                    progress_note(
+                        "prove:quotient:t_edge:"
+                        "cuda_term_fusion:"
+                        "terms=" +
+                        std::to_string(
+                            program.terms.size()) +
+                        ":kernel_batches=" +
+                        std::to_string(
+                            launched_term_batches));
 
                     std::vector<FieldElement>
                         output(
@@ -13349,7 +13392,19 @@ namespace gatzk::protocol
                                     lhs,
                                     rhs);
 
-                            if (shared == 0)
+                            const bool
+                                same_owner_execution_pair =
+                                    require_same_owner &&
+                                    point_groups[lhs]
+                                            .owner_block ==
+                                        point_groups[rhs]
+                                            .owner_block &&
+                                    !trace
+                                         .spilled_polynomials
+                                         .empty();
+
+                            if (shared == 0 &&
+                                !same_owner_execution_pair)
                             {
                                 continue;
                             }
