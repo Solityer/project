@@ -10,11 +10,15 @@
   "fiat_shamir": "SHA-256 domain-separated hash-to-field",
   "verifier_model": "semi-honest",
   "privacy_policy": "model_and_trace_hidden",
+  "privacy_profile_status": "unsupported_privacy_profile",
+  "formal_experiment_eligible": false,
+  "blocker": "the governing protocol requires a multi-session ZK argument for reusable registered-model commitments; only the paper-native single-session semi-honest boundary is implemented",
   "freshness": {
     "model_commitment_blinders": "independent and fixed at registration",
     "dynamic_commitment_blinders": "independent per proof from OS CSPRNG",
     "sumcheck_masks": "independent per operation and proof from OS CSPRNG",
     "proof_nonce": "fresh 256-bit OS CSPRNG"
   },
-  "independent_verification": "verifier reads only PP, public statement, registered-model VK and proof envelope"
+  "independent_verification": "verifier reads only PP, public statement, registered-model VK and proof envelope",
+  "implemented_privacy_boundary": "paper_native_single_session_semi_honest"
 }

@@ -34,20 +34,23 @@ def npow(n):return max(2,1<<(max(1,n)-1).bit_length())
 def hx(v):return '0x'+(int(v)%FR).to_bytes(32,'big').hex()
 def digest(path):return hashlib.sha256(path.read_bytes()).hexdigest()
 
-def load_features(cache,n,d):
+def load_features(cache,n,d,scale):
  p=cache/'features.txt'
  if p.exists():
   out=np.zeros((n,d),dtype=np.int64)
   with p.open() as f:
    if tuple(map(int,f.readline().split()))!=(n,d):raise ValueError('feature header mismatch')
    for row,line in enumerate(f):
+    seen=set()
     for item in line.split():
-     col,val=item.split(':',1);out[row,int(col)]=q(float(val),1)
+     col,val=item.split(':',1);col=int(col)
+     if not 0<=col<d or col in seen:raise ValueError('features.txt column malformed')
+     seen.add(col);out[row,col]=q(float(val),scale)
   if row+1!=n:raise ValueError('feature row count mismatch')
   return out,p
  raw=np.load(cache/'features.npy',mmap_mode='r')
  if raw.shape!=(n,d):raise ValueError('feature shape mismatch')
- out=np.where(raw>=0,np.floor(raw+.5),np.ceil(raw-.5)).astype(np.int64)
+ scaled=raw*scale;out=np.where(scaled>=0,np.floor(scaled+.5),np.ceil(scaled-.5)).astype(np.int64)
  return out,cache/'features.npy'
 def load_edges(cache,n):
  raw=[]
@@ -55,8 +58,12 @@ def load_edges(cache,n):
   p=list(map(int,line.split()));g,s,d=(0,p[0],p[1]) if len(p)==2 else tuple(p)
   raw.append((g,s,d,stable))
  ptr=list(map(int,(cache/'node_ptr.txt').read_text().split())) if (cache/'node_ptr.txt').exists() else [0,n]
+ if not ptr or ptr[0]!=0 or ptr[-1]!=n or any(a>=b for a,b in zip(ptr,ptr[1:])):raise ValueError('invalid node_ptr')
  gid=np.zeros(n,dtype=np.int64)
  for g,(lo,hi) in enumerate(zip(ptr,ptr[1:])):gid[lo:hi]=g
+ for g,s,d,_ in raw:
+  if not (0<=s<n and 0<=d<n):raise ValueError('edge endpoint out of range')
+  if not (0<=g<len(ptr)-1) or int(gid[s])!=g or int(gid[d])!=g:raise ValueError('cross-graph edge or graph_id mismatch')
  loops={s for _,s,d,_ in raw if s==d}
  for node in range(n):
   if node not in loops:raw.append((int(gid[node]),node,node,len(raw)))
@@ -64,7 +71,9 @@ def load_edges(cache,n):
  src=np.asarray([e[1] for e in raw],dtype=np.int64);dst=np.asarray([e[2] for e in raw],dtype=np.int64)
  start=np.zeros(len(raw),dtype=np.int64);end=np.zeros(len(raw),dtype=np.int64)
  for i in range(len(raw)):start[i]=int(i==0 or dst[i-1]!=dst[i]);end[i]=int(i+1==len(raw) or dst[i+1]!=dst[i])
- return src,dst,start,end
+ edge_ptr=[0]
+ for graph_id in range(len(ptr)-1):edge_ptr.append(edge_ptr[-1]+sum(1 for g,_,_,_ in raw if g==graph_id))
+ return src,dst,start,end,np.asarray(ptr,dtype=np.int64),np.asarray(edge_ptr,dtype=np.int64)
 def load_tensors(path):
  tok=path.read_text().split();i=0;out={}
  while i<len(tok):
@@ -218,21 +227,29 @@ def main():
  ap=argparse.ArgumentParser();ap.add_argument('--config',type=Path,required=True);ap.add_argument('--project-root',type=Path,required=True);ap.add_argument('--preflight',type=Path,required=True);ap.add_argument('--pp-id',required=True);ap.add_argument('--output',type=Path,required=True);a=ap.parse_args()
  c=cfg(a.config);root=a.project_root.resolve();report=json.loads(a.preflight.read_text());
  if report['status']!='accepted':raise SystemExit('canonical adapter refuses a preflight-rejected formal instance')
- cache=root/c['cache'];cp=root/c['checkpoint_bundle'];manifest=json.loads((cp/'manifest.json').read_text());raw=load_tensors(cp/'tensors.txt');n=int((cache/'meta.cfg').read_text().split('num_nodes = ')[1].splitlines()[0]);d=int((cache/'meta.cfg').read_text().split('num_features = ')[1].splitlines()[0]);H,feature_path=load_features(cache,n,d);src,dst,start,end=load_edges(cache,n);tables=report['static_tables'];width=max(2,int(c['range_bits'])+16);b=Builder();Hname=b.tensor('public.features',H,H.shape,'Public');b.tensor('public.edge_src',src,src.shape,'Public');b.tensor('public.edge_dst',dst,dst.shape,'Public')
- hidden=[]
- for spec in manifest['hidden_head_specs']:
-  W=np.asarray([q(v,16) for v in raw[spec['seq_kernel']][1]],dtype=object).reshape(d,int(manifest['hidden_layers'][0]['head_dim']));aa=np.asarray([q(v,16) for v in raw[spec['attn_src_kernel']][1]],dtype=object);ad=np.asarray([q(v,16) for v in raw[spec['attn_dst_kernel']][1]],dtype=object);prefix=f"hidden.layer_0.head_{spec['local_head_index']}";hidden.append(build_head(b,prefix,H,Hname,W,aa,ad,src,dst,start,end,True,None,tables,width))
- H2=np.concatenate([x[0] for x in hidden],axis=1);H2n=b.tensor('hidden.concat',H2,H2.shape,'DynamicPrivate');logical=H2.size;rows=npow(logical);cols=[];cursor=0
- for head,(vals,name) in enumerate(hidden):
-  for j in range(vals.shape[1]):
-   idx=(np.arange(n)*vals.shape[1]+j).tolist();outidx=(np.arange(n)*H2.shape[1]+cursor+j).tolist();b.op('hidden_concat',f'hidden.concat.head_{head}.col_{j}',n,[b.explicit('head',name,idx,npow(n)),b.explicit('concat',H2n,outidx,npow(n))],[S(X(1),X(0))])
-  cursor+=vals.shape[1]
+ cache=root/c['cache'];cp=root/c['checkpoint_bundle'];manifest=json.loads((cp/'manifest.json').read_text());raw=load_tensors(cp/'tensors.txt');n=int((cache/'meta.cfg').read_text().split('num_nodes = ')[1].splitlines()[0]);d=int((cache/'meta.cfg').read_text().split('num_features = ')[1].splitlines()[0]);H,feature_path=load_features(cache,n,d,int(c['feature_scale']));src,dst,start,end,node_ptr,edge_ptr=load_edges(cache,n);tables=report['static_tables'];width=max(2,int(c['range_bits'])+16);b=Builder();Hname=b.tensor('public.features',H,H.shape,'Public');b.tensor('public.edge_src',src,src.shape,'Public');b.tensor('public.edge_dst',dst,dst.shape,'Public');b.tensor('public.node_ptr',node_ptr,node_ptr.shape,'Public');b.tensor('public.edge_ptr',edge_ptr,edge_ptr.shape,'Public')
+ expected=report['public_instance']
+ if [int(x) for x in node_ptr]!=expected['node_ptr'] or [int(x) for x in edge_ptr]!=expected['edge_ptr'] or len(src)!=expected['edge_count']:raise ValueError('canonical topology differs from authenticated preflight instance')
+ H2,H2n=H,Hname
+ hidden_specs=manifest['hidden_head_specs']
+ for layer_meta in manifest['hidden_layers']:
+  layer=int(layer_meta['layer_index']);layer_specs=sorted((x for x in hidden_specs if int(x['layer_index'])==layer),key=lambda x:int(x['local_head_index']))
+  if len(layer_specs)!=int(layer_meta['head_count']) or H2.shape[1]!=int(layer_meta['input_dim']):raise ValueError(f'hidden layer {layer} manifest dimension mismatch')
+  hidden=[]
+  for spec in layer_specs:
+   dout=int(layer_meta['head_dim']);W=np.asarray([q(v,int(c['hidden_weight_scale'])) for v in raw[spec['seq_kernel']][1]],dtype=object).reshape(H2.shape[1],dout);aa=np.asarray([q(v,int(c['hidden_attention_scale'])) for v in raw[spec['attn_src_kernel']][1]],dtype=object);ad=np.asarray([q(v,int(c['hidden_attention_scale'])) for v in raw[spec['attn_dst_kernel']][1]],dtype=object);prefix=f"hidden.layer_{layer}.head_{spec['local_head_index']}";hidden.append(build_head(b,prefix,H2,H2n,W,aa,ad,src,dst,start,end,True,None,tables,width))
+  next_h=np.concatenate([x[0] for x in hidden],axis=1);next_name=b.tensor(f'hidden.layer_{layer}.concat',next_h,next_h.shape,'DynamicPrivate');cursor=0
+  for head,(vals,name) in enumerate(hidden):
+   for j in range(vals.shape[1]):
+    idx=(np.arange(n)*vals.shape[1]+j).tolist();outidx=(np.arange(n)*next_h.shape[1]+cursor+j).tolist();b.op('hidden_concat',f'hidden.layer_{layer}.concat.head_{head}.col_{j}',n,[b.explicit('head',name,idx,npow(n)),b.explicit('concat',next_name,outidx,npow(n))],[S(X(1),X(0))])
+   cursor+=vals.shape[1]
+  H2,H2n=next_h,next_name
  outputs=[]
  for spec in manifest['output_head_specs']:
-  classes=int(manifest['C']);W=np.asarray([q(v,16) for v in raw[spec['seq_kernel']][1]],dtype=object).reshape(H2.shape[1],classes);aa=np.asarray([q(v,1) for v in raw[spec['attn_src_kernel']][1]],dtype=object);ad=np.asarray([q(v,1) for v in raw[spec['attn_dst_kernel']][1]],dtype=object);bias=np.asarray([q(v,16) for v in raw[spec['output_bias']][1]],dtype=object);prefix=f"output.head_{spec['head_index']}";outputs.append(build_head(b,prefix,H2,H2n,W,aa,ad,src,dst,start,end,False,bias,tables,width))
+  classes=int(manifest['C']);W=np.asarray([q(v,int(c['output_weight_scale'])) for v in raw[spec['seq_kernel']][1]],dtype=object).reshape(H2.shape[1],classes);aa=np.asarray([q(v,int(c['output_attention_scale'])) for v in raw[spec['attn_src_kernel']][1]],dtype=object);ad=np.asarray([q(v,int(c['output_attention_scale'])) for v in raw[spec['attn_dst_kernel']][1]],dtype=object);bias=np.asarray([q(v,int(c['output_bias_scale'])) for v in raw[spec['output_bias']][1]],dtype=object);prefix=f"output.head_{spec['head_index']}";outputs.append(build_head(b,prefix,H2,H2n,W,aa,ad,src,dst,start,end,False,bias,tables,width))
  heads=[x[0] for x in outputs];ysum=sum(heads[1:],heads[0].copy());ysn=b.tensor('output.head_sum',ysum,ysum.shape,'DynamicPrivate');final=np.asarray([sdiv(int(v),len(heads)) for v in ysum.reshape(-1)],dtype=object).reshape(ysum.shape);yn=b.tensor('public.logits',final,final.shape,'Public');nd=final.size;rows=npow(nd);cols=[b.affine(f'head_{i}',name,0,1,nd,rows) for i,(_,name) in enumerate(outputs)]+[b.affine('sum',ysn,0,1,nd,rows)];b.op('head_sum_final_average','output.head_sum',nd,cols,[S(X(len(outputs)),sumexpr([X(i) for i in range(len(outputs))]))]);kn=b.tensor('public.k_out',[len(outputs)]*nd,(nd,),'Public');add_div(b,'output.final_average',ysn,kn,yn,ysum.reshape(-1),np.full(nd,len(outputs),dtype=object),width);b.ops[-1]['operation_kind']='head_sum_final_average';b.op('public_logits_terminal','output.public_logits',nd,[b.affine('private_sum',yn,0,1,nd,rows),b.affine('public_y',yn,0,1,nd,rows)],[S(X(0),X(1))])
  families={x['operation_kind'] for x in b.ops};missing=set(['projection_matmul','attention_dot','public_sparse_route','score_add','lrelu_indexed_public_table','exact_group_max','exp_indexed_public_table','group_sum','inverse_alpha','u_message_hadamard','alpha_message_hadamard','field_aggregate','integer_numerator','dual_aggregate_consistency','signed_round_div','elu_indexed_public_table','hidden_concat','output_bias','head_sum_final_average','public_logits_terminal'])-families
  if missing:raise ValueError('canonical relation family missing: '+','.join(sorted(missing)))
- obj={'schema':'zkDL_gat_canonical_adapter_v2','dataset':c['dataset'],'pp_id':a.pp_id,'graph_features_digest':report['graph_features_digest'],'topology_digest':report['topology_digest'],'quant_cfg_id':report['quant_cfg_id'],'static_tables_id':report['static_tables_id'],'integer_bound_ledger_id':report['ledger']['integer_bound_ledger_id'],'model_arch_id':manifest['model_arch_id'],'model_param_id':manifest['model_param_id'],'public_logits':[int(x) for x in final.reshape(-1)],'tensor_families':b.spec,'operation_families':b.ops,'tensors':dict(sorted(b.tensors.items())),'source_input_id':''}
+ obj={'schema':'zkDL_gat_canonical_adapter_v2','dataset':c['dataset'],'pp_id':a.pp_id,'node_count':n,'edge_count':len(src),'graph_count':len(node_ptr)-1,'feature_dim':d,'class_count':int(manifest['C']),'public_features':[int(x) for x in H.reshape(-1)],'node_ptr':[int(x) for x in node_ptr],'edge_ptr':[int(x) for x in edge_ptr],'src':[int(x) for x in src],'dst':[int(x) for x in dst],'graph_features_digest':report['graph_features_digest'],'topology_digest':report['topology_digest'],'quant_cfg_id':report['quant_cfg_id'],'static_tables_id':report['static_tables_id'],'integer_bound_ledger_id':report['ledger']['integer_bound_ledger_id'],'model_arch_id':manifest['model_arch_id'],'model_param_id':manifest['model_param_id'],'public_logits':[int(x) for x in final.reshape(-1)],'tensor_families':b.spec,'operation_families':b.ops,'tensors':dict(sorted(b.tensors.items())),'source_input_id':''}
  canonical=json.dumps(obj,separators=(',',':'),ensure_ascii=False).encode();obj['source_input_id']='sha256:'+hashlib.sha256(b'zkDL-GAT-canonical-adapter-input-v2\0'+canonical).hexdigest();a.output.parent.mkdir(parents=True,exist_ok=True);a.output.write_text(json.dumps(obj,separators=(',',':'))+'\n');print('CANONICAL_ADAPTER_OK',obj['source_input_id'],'max_tensor_len',max(x['logical_len'] for x in b.spec))
 if __name__=='__main__':main()

@@ -1,45 +1,27 @@
 #!/usr/bin/env python3
+"""Official entry point; refuses the non-formal retained research graft."""
 from __future__ import annotations
 
 import argparse
-import os
-import pathlib
+import subprocess
 import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
-def _ensure_numpy_python() -> None:
-    try:
-        import numpy  # noqa: F401
-        return
-    except ModuleNotFoundError:
-        venv_python = pathlib.Path("/home/pzh/project/.venv/bin/python")
-        if venv_python.exists() and pathlib.Path(sys.executable) != venv_python:
-            os.execv(str(venv_python), [str(venv_python), *sys.argv])
-        raise
-
-
-def main() -> None:
-    _ensure_numpy_python()
-    zk_root = pathlib.Path(__file__).resolve().parents[1]
-    sys.path.insert(0, str(zk_root / "src"))
-    from zkgpt_gat.runner import run_many, selected_backends, selected_datasets
-
-    parser = argparse.ArgumentParser(description="Run independent GAT-ZKML-zkGPT baseline experiments")
-    parser.add_argument("--project-root", default="/home/pzh/project")
-    parser.add_argument("--results-dir", default=str(zk_root / "results"))
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Run formal GAT-ZKML-zkGPT experiments")
+    parser.add_argument("--project-root", default=str(ROOT.parents[1]))
+    parser.add_argument("--results-dir", default=str(ROOT / "results"))
     parser.add_argument("--datasets", default="all")
     parser.add_argument("--backends", default="all")
     parser.add_argument("--force", action="store_true")
-    args = parser.parse_args()
-    run_many(
-        datasets=selected_datasets(args.datasets),
-        backends=selected_backends(args.backends),
-        project_root=pathlib.Path(args.project_root).resolve(),
-        zk_root=zk_root,
-        results_dir=pathlib.Path(args.results_dir).resolve(),
-        force=args.force,
-    )
+    parser.parse_args()
+    return subprocess.run(
+        [sys.executable, ROOT / "scripts" / "formal_preflight.py"], cwd=ROOT, check=False
+    ).returncode
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

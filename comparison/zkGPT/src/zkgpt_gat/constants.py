@@ -3,11 +3,11 @@ from __future__ import annotations
 DATASET_ORDER = ["cora", "citeseer", "pubmed", "ppi", "ogbn-arxiv"]
 
 CONFIG_BY_DATASET = {
-    "cora": "cora_full.cfg",
-    "citeseer": "citeseer_full.cfg",
-    "pubmed": "pubmed_full.cfg",
-    "ppi": "ppi_batch_formal.cfg",
-    "ogbn-arxiv": "ogbn_arxiv_full.cfg",
+    "cora": "cora_secure.cfg",
+    "citeseer": "citeseer_secure.cfg",
+    "pubmed": "pubmed_secure.cfg",
+    "ppi": "ppi_secure.cfg",
+    "ogbn-arxiv": "ogbn_arxiv_secure.cfg",
 }
 
 CONFIG_DATASET_VALUE = {
@@ -54,4 +54,7 @@ METADATA_FIELD_ORDER = [
     "matrix_proof_cfg_id",
 ]
 
-COMMITMENT_ORDER = ["com_T_H", "com_W", "com_base", "com_comp", "com_psq", "com_qry"]
+# The retained research graft uses a seven-segment layout and private com_T_H;
+# it is intentionally not the protocol's formal X|W|Aux|L commitment order.
+REFERENCE_GRAFT_COMMITMENT_ORDER = ["com_T_H", "com_W", "com_base", "com_comp", "com_psq", "com_qry"]
+COMMITMENT_ORDER = REFERENCE_GRAFT_COMMITMENT_ORDER

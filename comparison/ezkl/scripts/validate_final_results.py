@@ -40,6 +40,10 @@ def formal_digest(domain: str, role: str, payload: bytes) -> str:
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
+def canonical_json(payload: object) -> bytes:
+    return json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode()
+
+
 def round_away(value: float) -> int:
     return int(value + 0.5) if value >= 0 else int(value - 0.5)
 
@@ -184,7 +188,9 @@ def main() -> int:
         security = json.loads((run_dir / "security_profile.json").read_text(encoding="utf-8"))
         spec = json.loads((run_dir / "graph_attention_spec.json").read_text(encoding="utf-8"))
         settings = json.loads((run_dir / "settings.json").read_text(encoding="utf-8"))
+        compiled = json.loads((run_dir / "network.compiled").read_text(encoding="utf-8"))
         statement = json.loads((run_dir / "public_statement.json").read_text(encoding="utf-8"))
+        registration = json.loads((run_dir / "model_registration.json").read_text(encoding="utf-8"))
         aux = json.loads((run_dir / "backend_aux_table_spec.json").read_text(encoding="utf-8"))
         main_table = json.loads((run_dir / "formal_table_spec.json").read_text(encoding="utf-8"))
         main_id = main_table.get("canonical_digest")
@@ -195,6 +201,37 @@ def main() -> int:
         if any(payload.get("backend_aux_tables_id") != aux_id for payload in
                (manifest, circuit, spec, settings, statement, verify)):
             failures.append(f"{manifest_path}: backend auxiliary table identity mismatch")
+        settings_for_id = dict(settings)
+        settings_id = settings_for_id.get("settings_id")
+        settings_for_id["settings_id"] = ""
+        if settings_id != formal_digest(
+                "formal_gat_settings", "canonical_json", canonical_json(settings_for_id)):
+            failures.append(f"{manifest_path}: domain-separated settings identity mismatch")
+        compiled_for_id = dict(compiled)
+        compiled_id = compiled_for_id.get("compiled_circuit_id")
+        compiled_for_id["compiled_circuit_id"] = ""
+        if compiled_id != formal_digest(
+                "compiled_gat_circuit", "canonical_json", canonical_json(compiled_for_id)):
+            failures.append(f"{manifest_path}: domain-separated compiled circuit identity mismatch")
+        if any(payload.get("compiled_circuit_id") != compiled_id for payload in
+               (circuit, statement, verify)):
+            failures.append(f"{manifest_path}: compiled circuit cross-binding mismatch")
+        expected_bounds_id = formal_digest(
+            "registered_model_bounds", "canonical_json",
+            canonical_json(registration.get("parameter_bounds", {})),
+        )
+        if (registration.get("model_bounds_digest") != expected_bounds_id
+                or compiled.get("ledger", {}).get("model_bounds_digest") != expected_bounds_id):
+            failures.append(f"{manifest_path}: registered model bounds identity mismatch")
+        expected_vk_id = formal_digest(
+            "halo2_verification_key", "serialized_bytes", (run_dir / "vk.key").read_bytes()
+        )
+        expected_pk_id = formal_digest(
+            "halo2_proving_key", "serialized_bytes", (run_dir / "pk.key").read_bytes()
+        )
+        if (circuit.get("vk_id") != expected_vk_id or statement.get("vk_id") != expected_vk_id
+                or verify.get("vk_id") != expected_vk_id or circuit.get("pk_id") != expected_pk_id):
+            failures.append(f"{manifest_path}: domain-separated proving/verifying key identity mismatch")
         failures.extend(validate_table_artifacts(run_dir))
         security_bytes = (run_dir / "security_profile.json").read_text(encoding="utf-8").rstrip("\r\n").encode()
         security_id = formal_digest("ezkl_security_profile", "canonical_json", security_bytes)
@@ -234,6 +271,11 @@ def main() -> int:
         )
         if manifest.get("runtime_device_marker") != expected_device:
             failures.append(f"{manifest_path}: runtime device marker mismatch")
+        if manifest.get("device") == "cuda":
+            if (manifest.get("gpu_backend_execution")
+                    != "halo2_icicle_backend_selected_and_proof_verified"
+                    or manifest.get("gpu_kernel_telemetry") != "not_instrumented"):
+                failures.append(f"{manifest_path}: CUDA backend execution marker mismatch")
     if not args.allow_incomplete:
         for dataset, device in sorted(expected - present):
             failures.append(f"missing required matrix cell: {dataset}/{device}")

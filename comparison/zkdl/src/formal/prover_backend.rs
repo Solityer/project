@@ -29,9 +29,13 @@ impl ProverBackend {
             "cpu" => Ok(Self::Cpu),
             "gpu" => {
                 #[cfg(feature = "gpu")]
-                { Ok(Self::Gpu(crate::gpu::GpuProvider::open()?)) }
+                {
+                    Ok(Self::Gpu(crate::gpu::GpuProvider::open()?))
+                }
                 #[cfg(not(feature = "gpu"))]
-                { bail!("GPU proof requested from CPU-only binary; build the formal GPU binary with --features gpu") }
+                {
+                    bail!("GPU proof requested from CPU-only binary; build the formal GPU binary with --features gpu")
+                }
             }
             _ => bail!("device must be cpu|gpu"),
         }
@@ -53,11 +57,18 @@ impl ProverBackend {
         }
     }
 
-    pub fn fold_scalars(&self, values: &[Scalar], left: Scalar, right: Scalar) -> Result<Vec<Scalar>> {
+    pub fn fold_scalars(
+        &self,
+        values: &[Scalar],
+        left: Scalar,
+        right: Scalar,
+    ) -> Result<Vec<Scalar>> {
         match self {
             Self::Cpu => {
                 let half = values.len() / 2;
-                Ok((0..half).map(|i| values[i] * left + values[i + half] * right).collect())
+                Ok((0..half)
+                    .map(|i| values[i] * left + values[i + half] * right)
+                    .collect())
             }
             #[cfg(feature = "gpu")]
             Self::Gpu(gpu) => gpu.fold_scalars(values, left, right),
@@ -68,7 +79,9 @@ impl ProverBackend {
         match self {
             Self::Cpu => {
                 let half = values.len() / 2;
-                (0..half).map(|i| values[i].mul(left)?.add(values[i + half].mul(right)?)).collect()
+                (0..half)
+                    .map(|i| values[i].mul(left)?.add(values[i + half].mul(right)?))
+                    .collect()
             }
             #[cfg(feature = "gpu")]
             Self::Gpu(gpu) => gpu.fold_points(values, left, right),
@@ -77,14 +90,20 @@ impl ProverBackend {
 
     #[cfg(feature = "gpu")]
     pub fn gpu(&self) -> Option<&crate::gpu::GpuProvider> {
-        match self { Self::Gpu(gpu) => Some(gpu), Self::Cpu => None }
+        match self {
+            Self::Gpu(gpu) => Some(gpu),
+            Self::Cpu => None,
+        }
     }
 
     pub fn finish_gpu(&self) -> Result<Option<GpuTelemetry>> {
         match self {
             Self::Cpu => Ok(None),
             #[cfg(feature = "gpu")]
-            Self::Gpu(gpu) => { gpu.ensure_formal_prover_coverage()?; Ok(Some(gpu.telemetry())) }
+            Self::Gpu(gpu) => {
+                gpu.ensure_formal_prover_coverage()?;
+                Ok(Some(gpu.telemetry()))
+            }
         }
     }
 }

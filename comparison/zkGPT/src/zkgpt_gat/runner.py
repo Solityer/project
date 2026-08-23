@@ -12,6 +12,7 @@ from .config import generated_config, load_app_config
 from .constants import DATASET_ORDER, PROOF_BACKEND_ID, PROTOCOL_ID
 from .data import load_dataset, normalize_graph
 from .forward import forward_full
+from .formal_gate import require_formal_experiment
 from .model import load_model
 from .proof import artifact_ids, build_proof
 from .util import digest_json, ensure_dir, write_json
@@ -120,6 +121,7 @@ def run_one(
     results_dir: pathlib.Path,
     force: bool,
 ) -> Dict[str, Any]:
+    require_formal_experiment()
     config_path = generated_config(dataset_name, backend, project_root, zk_root)
     config = load_app_config(config_path, project_root)
     artifact_dir = results_dir / backend / dataset_name
@@ -348,6 +350,7 @@ def run_many(
     results_dir: pathlib.Path,
     force: bool,
 ) -> List[Dict[str, Any]]:
+    require_formal_experiment()
     ensure_dir(zk_root / "runs_tmp")
     rows: List[Dict[str, Any]] = []
     for backend in backends:

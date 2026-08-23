@@ -49,7 +49,8 @@ def main() -> int:
                 "downsized_srs_k": payload.get("downsized_srs_k"),
                 "proving_srs_sha256": payload.get("proving_srs_sha256"),
                 "verification_srs_sha256": payload.get("verification_srs_sha256"),
-                "gpu_kernel_execution": payload.get("gpu_kernel_execution"),
+                "gpu_backend_execution": payload.get("gpu_backend_execution"),
+                "gpu_kernel_telemetry": payload.get("gpu_kernel_telemetry"),
                 "manifest": str(path.relative_to(ROOT)),
             }
         )

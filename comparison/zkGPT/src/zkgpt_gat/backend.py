@@ -10,7 +10,7 @@ from .util import digest_json, read_json, stable_env, write_json
 
 
 def gpu_proof_hot_path_binary(zk_root: pathlib.Path) -> pathlib.Path:
-    return zk_root / "build" / "zkgpt_cuda_proof_hot_path"
+    return zk_root / "build" / "zkgpt_cuda_reference_reducer"
 
 
 def _run_gpu_reduce_file(zk_root: pathlib.Path, input_path: pathlib.Path, label: str) -> Dict[str, Any]:

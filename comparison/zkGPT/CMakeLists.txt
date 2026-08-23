@@ -10,25 +10,26 @@ include_directories(3rd/mcl/include)
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 
 add_custom_target(
-    gat_zkgpt_check
-    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/scripts/gat_zkgpt_experiment.py --help
-    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/scripts/audit_formal_proof_semantics.py --source-only
+    gat_zkgpt_formal_preflight
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/scripts/formal_preflight.py --source-only
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-    COMMENT "Checking GAT-ZKML-zkGPT experiment entrypoint"
+    COMMENT "Fail-closed check for the currently unsupported formal zkGPT route"
 )
 
 add_custom_target(
-    zkgpt_cuda_backend
+    zkgpt_cuda_reference_reducer
     COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/build_cuda_backend.sh
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-    COMMENT "Building zkGPT CUDA proof hot-path backend"
+    COMMENT "Building the non-formal retained CUDA u64 reference reducer"
 )
 
-add_executable(zkgpt_hyrax_mle backend/native/hyrax_mle_cli.cpp)
-target_include_directories(zkgpt_hyrax_mle PRIVATE 3rd/mcl/include)
-target_link_libraries(zkgpt_hyrax_mle PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/3rd/mcl/lib/libmcl.a)
-target_compile_options(zkgpt_hyrax_mle PRIVATE -fno-pic -fno-pie)
-target_link_options(zkgpt_hyrax_mle PRIVATE -no-pie)
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/3rd/mcl/include/mcl/bn.hpp" AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/3rd/mcl/lib/libmcl.a")
+    add_executable(zkgpt_hyrax_reference_cli backend/native/hyrax_mle_cli.cpp)
+    target_include_directories(zkgpt_hyrax_reference_cli PRIVATE 3rd/mcl/include)
+    target_link_libraries(zkgpt_hyrax_reference_cli PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/3rd/mcl/lib/libmcl.a)
+    target_compile_options(zkgpt_hyrax_reference_cli PRIVATE -fno-pic -fno-pie)
+    target_link_options(zkgpt_hyrax_reference_cli PRIVATE -no-pie)
+endif()
 
 option(ZKGPT_BUILD_LEGACY_LLM_DEMO "Build the original zkGPT LLM demo against 3rd/mcl" OFF)
 if(ZKGPT_BUILD_LEGACY_LLM_DEMO)

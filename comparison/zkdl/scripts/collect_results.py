@@ -1,63 +1,98 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import argparse
 import csv
 import json
-import subprocess
-import sys
 from pathlib import Path
-from typing import Any
-
 
 ROOT = Path(__file__).resolve().parents[1]
-RESULTS = ROOT / "zkdl_gat_outputs" / "results"
-FINAL_JSON = RESULTS / "final_zkdl_results.json"
-FINAL_CSV = RESULTS / "final_zkdl_results.csv"
-FINAL_REPORT = RESULTS / "final_zkdl_report.md"
+DATASETS = ["cora", "citeseer", "pubmed", "ppi", "ogbn-arxiv"]
+DEVICES = ["cpu", "gpu"]
 
 
-def read_json(path: Path) -> dict[str, Any]:
-    return json.loads(path.read_text(encoding="utf-8"))
-
-
-def write_json(path: Path, payload: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+def read_json(path: Path) -> dict:
+    if not path.is_file():
+        return {}
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise ValueError(f"JSON object required: {path}")
+    return value
 
 
 def main() -> int:
-    completed = subprocess.run([sys.executable, "tools/update_zkdl_gat_results.py"], cwd=ROOT, check=False)
-    latest = read_json(RESULTS / "latest.json")
-    rows = latest.get("rows", [])
-    write_json(
-        FINAL_JSON,
-        {
-            "baseline": "zkdl",
-            "generated_at": latest.get("generated_at"),
-            "rows": rows,
-            "source": "zkdl_gat_outputs/results/latest.json",
-        },
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--runs", type=Path, default=ROOT / "runs")
+    parser.add_argument("--output", type=Path, default=ROOT / "results")
+    args = parser.parse_args()
+    runs = args.runs.resolve()
+    output = args.output.resolve()
+    base = ROOT.resolve()
+    for path, label in ((runs, "runs"), (output, "output")):
+        if path != base and base not in path.parents:
+            raise SystemExit(f"{label} must stay inside comparison/zkdl")
+    rows = []
+    for dataset in DATASETS:
+        for device in DEVICES:
+            path = runs / dataset / device / "warm" / "result.json"
+            row = read_json(path) or {
+                "dataset": dataset,
+                "device": device,
+                "status": "missing",
+                "proof_generated": False,
+                "verified": False,
+                "formal_experiment_eligible": False,
+                "blocker": f"missing result: {path.relative_to(base)}",
+            }
+            if row.get("dataset") != dataset or row.get("device") != device:
+                raise SystemExit(f"result key mismatch: {path}")
+            rows.append(row)
+    payload = {
+        "schema": "zkDL_gat_result_matrix_v1",
+        "baseline": "zkdl",
+        "privacy_profile_status": "unsupported_privacy_profile",
+        "formal_experiment_eligible": False,
+        "rows": rows,
+    }
+    output.mkdir(parents=True, exist_ok=True)
+    (output / "final_zkdl_results.json").write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
-    fields = ["device", "dataset", "status", "benchmark_mode", "commitment_time_ms", "prove_time_ms", "verify_time_ms", "proof_size_bytes", "blocker"]
-    with FINAL_CSV.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fields, lineterminator="\n")
+    fields = [
+        "device",
+        "dataset",
+        "status",
+        "proof_generated",
+        "verified",
+        "adapter_time_ms",
+        "compile_time_ms",
+        "prove_time_ms",
+        "verify_time_ms",
+        "proof_size_bytes",
+        "privacy_profile_status",
+        "formal_experiment_eligible",
+        "blocker",
+    ]
+    with (output / "final_zkdl_results.csv").open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields, extrasaction="ignore", lineterminator="\n")
         writer.writeheader()
-        for row in rows:
-            writer.writerow({field: row.get(field, "") for field in fields})
+        writer.writerows(rows)
     lines = [
-        "# zkDL Final Local Results",
+        "# zkDL formal result matrix",
         "",
-        "| device | dataset | status | commitment_time_ms | prove_time_ms | verify_time_ms | proof_size_bytes |",
-        "| --- | --- | --- | ---: | ---: | ---: | ---: |",
+        "Strict reusable-model privacy status: `unsupported_privacy_profile`.",
+        "",
+        "| dataset | device | status | verified | prove ms | verify ms | proof bytes |",
+        "| --- | --- | --- | --- | ---: | ---: | ---: |",
     ]
     for row in rows:
         lines.append(
-            f"| {row.get('device')} | {row.get('dataset')} | {row.get('status')} | "
-            f"{row.get('commitment_time_ms')} | {row.get('prove_time_ms')} | "
-            f"{row.get('verify_time_ms')} | {row.get('proof_size_bytes')} |"
+            f"| {row.get('dataset')} | {row.get('device')} | {row.get('status')} | "
+            f"{row.get('verified')} | {row.get('prove_time_ms', '')} | "
+            f"{row.get('verify_time_ms', '')} | {row.get('proof_size_bytes', '')} |"
         )
-    FINAL_REPORT.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return completed.returncode
+    (output / "final_zkdl_report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return 0
 
 
 if __name__ == "__main__":

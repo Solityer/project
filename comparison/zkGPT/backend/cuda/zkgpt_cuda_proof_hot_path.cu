@@ -83,7 +83,7 @@ int main(int argc, char** argv)
 {
     try {
         if (argc != 4) {
-            std::cerr << "usage: zkgpt_cuda_proof_hot_path <u64-input> <output-json> <label>\n";
+            std::cerr << "usage: zkgpt_cuda_reference_reducer <u64-input> <output-json> <label>\n";
             return 2;
         }
         int count = 0;

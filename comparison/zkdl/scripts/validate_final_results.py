@@ -1,94 +1,109 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import argparse
+import hashlib
 import json
-import sys
 from pathlib import Path
-from typing import Any
-
 
 ROOT = Path(__file__).resolve().parents[1]
-OUT = ROOT / "zkdl_gat_outputs"
-RESULTS = OUT / "results"
-RUNS = OUT / "runs"
 DATASETS = ["cora", "citeseer", "pubmed", "ppi", "ogbn-arxiv"]
 DEVICES = ["cpu", "gpu"]
 
 
-def read_json(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {}
+def read_json(path: Path) -> dict:
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
         return {}
-    return data if isinstance(data, dict) else {}
+    return value if isinstance(value, dict) else {}
 
 
-def write_json(path: Path, payload: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-
-
-def run_dir(dataset: str, device: str) -> Path:
-    return RUNS / dataset / device / "warm"
-
-
-def validate() -> dict[str, Any]:
-    errors: list[str] = []
-    latest = read_json(RESULTS / "latest.json")
-    rows = latest.get("rows", [])
-    if not isinstance(rows, list) or len(rows) != 10:
-        errors.append("latest_json_row_count_not_10")
-    by_key = {(row.get("device"), row.get("dataset")): row for row in rows if isinstance(row, dict)}
-    for device in DEVICES:
-        for dataset in DATASETS:
-            label = f"{dataset}/{device}"
-            row = by_key.get((device, dataset))
-            if row is None:
-                errors.append(f"{label}:missing_latest_row")
-            elif row.get("status") != "ok":
-                errors.append(f"{label}:status_not_ok:{row.get('status')}")
-            root = run_dir(dataset, device)
-            proof = read_json(root / "full_proof_manifest.json")
-            verifier = read_json(root / "full_verifier_manifest.json")
-            metadata = read_json(root / "formal_artifacts" / "zkdl_full_chain_public_metadata.json")
-            proof_object = root / "formal_artifacts" / "zkdl_full_proof_object.txt"
-            relations = proof.get("relations", []) if isinstance(proof.get("relations"), list) else []
-            checks = {
-                "proof_generated": proof.get("proof_generated") is True and verifier.get("proof_generated") is True,
-                "verified": proof.get("verified") is True and verifier.get("verified") is True,
-                "full_dataset": proof.get("is_full_dataset") is True,
-                "missing_relations_empty": proof.get("missing_relations") == [] and verifier.get("missing_relations") == [],
-                "verifier_reads_witness_false": verifier.get("verifier_reads_witness") is False,
-                "witness_included_false": proof.get("witness_included_in_proof") is False and verifier.get("witness_included_in_proof") is False,
-                "proof_object_exists": proof_object.exists() and proof_object.stat().st_size > 0,
-                "metadata_exists": bool(metadata),
-                "relations_present": bool(relations),
-                "proof_size_split": int(proof.get("proof_size_bytes", 0) or 0) == sum(int(item.get("proof_size_bytes", 0) or 0) for item in relations if isinstance(item, dict)),
-            }
-            if device == "gpu":
-                checks["gpu_major_subroutine"] = bool(relations)
-            for name, passed in checks.items():
-                if not passed:
-                    errors.append(f"{label}:{name}")
-    for name in ["final_zkdl_results.json", "final_zkdl_results.csv", "final_zkdl_report.md"]:
-        if not (RESULTS / name).exists():
-            errors.append(f"missing_{name}")
-    return {"baseline": "zkdl", "status": "passed" if not errors else "failed", "errors": errors}
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def main() -> int:
-    audit = validate()
-    write_json(RESULTS / "local_validation.json", audit)
-    if audit["status"] == "passed":
-        print("zkdl_final_validation=OK rows=10")
-        return 0
-    print(f"zkdl_final_validation=FAILED errors={len(audit['errors'])}")
-    for error in audit["errors"][:30]:
-        print(f"- {error}")
-    return 1
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--runs", type=Path, default=ROOT / "runs")
+    parser.add_argument("--output", type=Path, default=ROOT / "results" / "local_validation.json")
+    args = parser.parse_args()
+    runs = args.runs.resolve()
+    output = args.output.resolve()
+    base = ROOT.resolve()
+    for path in (runs, output):
+        if path != base and base not in path.parents:
+            raise SystemExit("validation paths must stay inside comparison/zkdl")
+    errors: list[str] = []
+    verified_rows = 0
+    for dataset in DATASETS:
+        for device in DEVICES:
+            label = f"{dataset}/{device}"
+            run = runs / dataset / device / "warm"
+            result = read_json(run / "result.json")
+            proof = read_json(run / "proof_manifest.json")
+            verifier = read_json(run / "verifier_manifest.json")
+            preflight = read_json(run / "formal_artifacts" / "preflight.json")
+            proof_path = run / "formal_artifacts" / "proof.bin"
+            checks = {
+                "result_key": result.get("dataset") == dataset and result.get("device") == device,
+                "accepted_preflight": preflight.get("status") == "accepted",
+                "proof_generated": result.get("proof_generated") is True and proof.get("proof_generated") is True,
+                "verified": result.get("verified") is True and verifier.get("verified") is True,
+                "independent_verifier": verifier.get("independent_verifier") is True,
+                "verifier_reads_witness_false": verifier.get("verifier_reads_witness") is False,
+                "context_match": all(
+                    proof.get(key) == verifier.get(key) == result.get(key)
+                    for key in ("statement_id", "model_registry_id", "device", "proof_sha256", "proof_size_bytes")
+                ),
+                "proof_file": proof_path.is_file()
+                and proof_path.stat().st_size == proof.get("proof_size_bytes")
+                and sha256(proof_path) == proof.get("proof_sha256"),
+                "privacy_status_explicit": result.get("privacy_profile_status") == "unsupported_privacy_profile"
+                and result.get("formal_experiment_eligible") is False,
+            }
+            if device == "gpu":
+                telemetry = proof.get("gpu_telemetry") or {}
+                checks["gpu_provider"] = telemetry.get("provider_id") == "zkDL-native-CUDA-BLS12-381-v1"
+                checks["gpu_kat"] = telemetry.get("cross_backend_kat_passed") is True
+                checks["gpu_kernel_coverage"] = all(
+                    int(telemetry.get(key, 0)) > 0
+                    for key in (
+                        "msm_kernel_invocations",
+                        "field_inner_product_invocations",
+                        "scalar_fold_invocations",
+                        "point_fold_invocations",
+                        "sumcheck_kernel_invocations",
+                    )
+                ) and verifier.get("gpu_telemetry_validated") is True
+            failed = [name for name, passed in checks.items() if not passed]
+            if failed:
+                errors.extend(f"{label}:{name}" for name in failed)
+            else:
+                verified_rows += 1
+    audit = {
+        "schema": "zkDL_gat_local_validation_v1",
+        "baseline": "zkdl",
+        "verified_rows": verified_rows,
+        "expected_rows": 10,
+        "computational_validation": "passed" if not errors else "failed",
+        "privacy_profile_status": "unsupported_privacy_profile",
+        "formal_experiment_eligible": False,
+        "status": "privacy_blocked" if not errors else "failed",
+        "errors": errors,
+    }
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(audit, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    if errors:
+        print(f"zkdl_final_validation=FAILED errors={len(errors)}")
+        return 1
+    print("zkdl_computational_validation=OK rows=10 privacy_profile=UNSUPPORTED")
+    return 2
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())

@@ -21,6 +21,9 @@ canonical private model cells 计算。
 Verifier 从单独的 `public_statement.json` 重建 instances，并检查 settings、compiled
 circuit、VK、table digest、integer ledger、model registration 与 `CircuitRef` 的绑定；
 proof 内序列化的 instances 只允许与重建值完全一致，不能充当 statement 来源。
+settings、compiled circuit、模型注册 bounds、PK/VK 和 witness trace 均使用各自独立的
+domain-separated canonical identity；CSR CLI 参数必须指向已登记的 v2 manifest，且该
+manifest 的维度、最大入度与 `csr_segment_layout.bin` 必须逐项一致。
 
 ## Canonical adapter artifacts
 
@@ -112,6 +115,11 @@ python3 scripts/validate_final_results.py
 `verify_passed=true` 的 run 才会进入 `results/formal_results.{json,csv}`；未验证、失败或
 中断的 manifest 会被明确排除。`scripts/run_until_complete.sh` 只重试缺失的正式矩阵
 cell，不改变 relation、backend 或输入。
+
+CUDA run 还要求独立 GPU build 成功选择 ICICLE CUDA device，并把
+`gpu_backend_execution=halo2_icicle_backend_selected_and_proof_verified` 写入 manifest；
+当前 Halo2 fork 没有逐 kernel counter，因此另行记录
+`gpu_kernel_telemetry=not_instrumented`，不把 backend selection 伪称为 kernel telemetry。
 
 validator 默认要求配置中全部 dataset × `{cpu,cuda}` cells；只检查已经存在的工件时需
 显式使用 `python3 scripts/validate_final_results.py --allow-incomplete`。每个正式 run 还会

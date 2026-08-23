@@ -199,7 +199,8 @@ __global__ void sumcheck_contributions_kernel(
                         if(column>=column_count){atomicExch(device_error,8U);return;}
                         const Fr low=columns[std::size_t(column)*row_count+row];const Fr high=columns[std::size_t(column)*row_count+row+half];
                         const Fr bit=blstrs__scalar__Scalar_add(blstrs__scalar__Scalar_mul(low,one_minus_x),blstrs__scalar__Scalar_mul(high,x));
-                        const bool selected=((table_row>>(bit_count-1U-bit_position))&1U)!=0;
+                        // The canonical adapter emits bit_0 first.
+                        const bool selected=((table_row>>bit_position)&1U)!=0;
                         weight=blstrs__scalar__Scalar_mul(weight,selected?bit:blstrs__scalar__Scalar_sub(blstrs__scalar__Scalar_ONE,bit));
                     }
                     table_value=blstrs__scalar__Scalar_add(table_value,blstrs__scalar__Scalar_mul(lookup_values[value_begin+table_row],weight));

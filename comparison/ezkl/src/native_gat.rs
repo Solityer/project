@@ -116,6 +116,17 @@ struct CsrLayout {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+struct CsrLayoutManifest {
+    layout_kind: String,
+    payload: String,
+    node_count: usize,
+    edge_count: usize,
+    graph_count: usize,
+    max_in_degree: usize,
+    absolute_ids_in_payload: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct QuantConfig {
     rounding_mode: String,
     limb_bits: u32,
@@ -320,6 +331,7 @@ struct ArtifactPaths {
 struct FormalPlan {
     kind: String,
     program_version: String,
+    program_lanes: usize,
     route_id: String,
     dataset: String,
     node_count: usize,
@@ -374,6 +386,7 @@ struct FormalSettings {
     backend_aux_tables_id: String,
     security_profile_id: String,
     program_version: String,
+    program_lanes: usize,
     settings_id: String,
 }
 
@@ -957,6 +970,14 @@ fn sha256_file(path: &Path) -> Result<String, EZKLError> {
     Ok(sha256_bytes(&fs::read(path)?))
 }
 
+fn formal_file_id(domain: &str, path: &Path) -> Result<String, EZKLError> {
+    Ok(formal_domain_hash(
+        domain,
+        "serialized_bytes",
+        &fs::read(path)?,
+    ))
+}
+
 fn formal_domain_hash_fields(domain: &str, fields: &[(&str, &[u8])]) -> String {
     fn append_field(out: &mut Vec<u8>, value: &[u8]) {
         out.extend_from_slice(&(value.len() as u64).to_le_bytes());
@@ -1175,8 +1196,12 @@ fn validate_quant(quant: &QuantConfig) -> Result<(), EZKLError> {
     Ok(())
 }
 
-fn canonical_digest<T: Serialize>(value: &T) -> Result<String, EZKLError> {
-    Ok(sha256_bytes(&serde_json::to_vec(value)?))
+fn canonical_object_id<T: Serialize>(domain: &str, value: &T) -> Result<String, EZKLError> {
+    Ok(formal_domain_hash(
+        domain,
+        "canonical_json",
+        &serde_json::to_vec(value)?,
+    ))
 }
 
 fn is_tagged_sha256(value: &str) -> bool {
@@ -1397,10 +1422,12 @@ fn validate_settings(
     }
     let mut unhashed = settings.clone();
     let supplied = std::mem::take(&mut unhashed.settings_id);
-    if canonical_digest(&unhashed)? != supplied {
+    if canonical_object_id("formal_gat_settings", &unhashed)? != supplied {
         return Err("settings identity mismatch".into());
     }
-    if settings.security_profile_id != security_profile_id || settings.program_version != PLAN_KIND
+    if settings.security_profile_id != security_profile_id
+        || settings.program_version != PLAN_KIND
+        || settings.program_lanes != PROGRAM_LANES
     {
         return Err("settings security/program identity mismatch".into());
     }
@@ -1418,7 +1445,8 @@ fn validate_registration(
         || registration.canonical_parameter_count == 0
         || registration.canonical_parameter_digest.is_empty()
         || registration.registered_model_hash != plan.registered_model_hash
-        || canonical_digest(&registration.parameter_bounds)? != registration.model_bounds_digest
+        || canonical_object_id("registered_model_bounds", &registration.parameter_bounds)?
+            != registration.model_bounds_digest
         || registration.model_bounds_digest != plan.ledger.model_bounds_digest
     {
         return Err("canonical model registration identity mismatch".into());
@@ -2591,6 +2619,9 @@ fn validate_plan(plan: &FormalPlan) -> Result<(), EZKLError> {
     if plan.kind != PLAN_KIND || plan.program_version != PLAN_KIND {
         return Err("not a formal fixed GAT program".into());
     }
+    if plan.program_lanes != PROGRAM_LANES {
+        return Err("compiled program lane layout does not match this binary".into());
+    }
     if [
         &plan.graph_hash,
         &plan.checkpoint_hash,
@@ -2673,7 +2704,7 @@ fn validate_plan(plan: &FormalPlan) -> Result<(), EZKLError> {
     if !plan.compiled_circuit_id.is_empty() {
         let mut unhashed = plan.clone();
         let supplied = std::mem::take(&mut unhashed.compiled_circuit_id);
-        if canonical_digest(&unhashed)? != supplied {
+        if canonical_object_id("compiled_gat_circuit", &unhashed)? != supplied {
             return Err("compiled circuit identity mismatch".into());
         }
     }
@@ -2995,7 +3026,7 @@ fn read_usize_vec(bytes: &mut &[u8]) -> Result<Vec<usize>, EZKLError> {
         .collect()
 }
 
-fn read_csr_payload(path: &Path) -> Result<CsrLayout, EZKLError> {
+fn read_csr_binary(path: &Path) -> Result<CsrLayout, EZKLError> {
     let payload = fs::read(path)?;
     if payload.len() < 12 || &payload[..12] != b"EZKLGATCSR2\n" {
         return Err("invalid canonical CSR payload magic".into());
@@ -3024,6 +3055,35 @@ fn read_csr_payload(path: &Path) -> Result<CsrLayout, EZKLError> {
         edge_ptr,
         absolute_ids,
     })
+}
+
+fn read_csr_layout(path: &Path) -> Result<CsrLayout, EZKLError> {
+    let manifest: CsrLayoutManifest = read_json(path)?;
+    if manifest.layout_kind != "csr_dst_segment_ragged_v2"
+        || manifest.payload != "csr_segment_layout.bin"
+        || !manifest.absolute_ids_in_payload
+    {
+        return Err("unregistered or unsafe canonical CSR layout manifest".into());
+    }
+    let payload_path = path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(&manifest.payload);
+    let layout = read_csr_binary(&payload_path)?;
+    if (
+        manifest.node_count,
+        manifest.edge_count,
+        manifest.graph_count,
+        manifest.max_in_degree,
+    ) != (
+        layout.node_count,
+        layout.edge_count,
+        layout.graph_count,
+        layout.max_in_degree,
+    ) {
+        return Err("canonical CSR manifest and binary payload disagree".into());
+    }
+    Ok(layout)
 }
 
 fn canonical_model_values(
@@ -3185,7 +3245,7 @@ pub(crate) fn graph_gat_gen_settings(
     max_logrows: Option<u32>,
 ) -> Result<String, EZKLError> {
     let spec: GraphSpec = read_json(&spec_path)?;
-    let csr = read_csr_payload(&csr_layout_path.with_file_name("csr_segment_layout.bin"))?;
+    let csr = read_csr_layout(&csr_layout_path)?;
     if (spec.node_count, spec.edge_count, spec.graph_count)
         != (csr.node_count, csr.edge_count, csr.graph_count)
     {
@@ -3228,9 +3288,10 @@ pub(crate) fn graph_gat_gen_settings(
         backend_aux_tables_id: spec.backend_aux_tables_id,
         security_profile_id,
         program_version: PLAN_KIND.to_owned(),
+        program_lanes: PROGRAM_LANES,
         settings_id: String::new(),
     };
-    settings.settings_id = canonical_digest(&settings)?;
+    settings.settings_id = canonical_object_id("formal_gat_settings", &settings)?;
     write_json(&settings_path, &settings)?;
     Ok(serde_json::to_string(&settings)?)
 }
@@ -3251,7 +3312,7 @@ pub(crate) fn graph_gat_compile(
         )?;
     }
     let spec: GraphSpec = read_json(&spec_path)?;
-    let csr = read_csr_payload(&csr_layout_path.with_file_name("csr_segment_layout.bin"))?;
+    let csr = read_csr_layout(&csr_layout_path)?;
     if csr.absolute_ids.len() != csr.node_count {
         return Err("canonical CSR payload is missing absolute node identities".into());
     }
@@ -3397,11 +3458,14 @@ pub(crate) fn graph_gat_compile(
     let model_hash =
         PoseidonChip::<PoseidonSpec, POSEIDON_WIDTH, POSEIDON_RATE>::run(model_fields)?[0][0];
     let model_hash_hex = fr_hex(model_hash);
-    let parameter_digest = sha256_bytes(
-        &model_values
-            .iter()
-            .flat_map(|value| value.to_le_bytes())
-            .collect::<Vec<_>>(),
+    let parameter_bytes = model_values
+        .iter()
+        .flat_map(|value| value.to_le_bytes())
+        .collect::<Vec<_>>();
+    let parameter_digest = formal_domain_hash(
+        "canonical_model_parameters",
+        "signed_i128_le",
+        &parameter_bytes,
     );
     if registration.canonical_parameter_count != 0
         && registration.canonical_parameter_count != model_values.len()
@@ -3415,7 +3479,8 @@ pub(crate) fn graph_gat_compile(
     }
     registration.canonical_parameter_count = model_values.len();
     registration.canonical_parameter_digest = parameter_digest;
-    registration.model_bounds_digest = canonical_digest(&registration.parameter_bounds)?;
+    registration.model_bounds_digest =
+        canonical_object_id("registered_model_bounds", &registration.parameter_bounds)?;
     if !ledger.model_bounds_digest.is_empty()
         && ledger.model_bounds_digest != registration.model_bounds_digest
     {
@@ -3433,6 +3498,7 @@ pub(crate) fn graph_gat_compile(
     let mut plan = FormalPlan {
         kind: PLAN_KIND.to_owned(),
         program_version: PLAN_KIND.to_owned(),
+        program_lanes: PROGRAM_LANES,
         route_id: spec.route_id,
         dataset: spec.dataset,
         node_count: spec.node_count,
@@ -3474,7 +3540,7 @@ pub(crate) fn graph_gat_compile(
         logrows: settings.logrows,
     };
     validate_plan(&plan)?;
-    plan.compiled_circuit_id = canonical_digest(&plan)?;
+    plan.compiled_circuit_id = canonical_object_id("compiled_gat_circuit", &plan)?;
     write_json(&compiled_circuit_path, &plan)?;
     Ok(serde_json::to_string(&plan)?)
 }
@@ -3600,8 +3666,8 @@ pub(crate) fn graph_gat_setup(
         manifest_kind: "ezkl_formal_gat_circuit_manifest_v1".to_owned(),
         compiled_circuit_id: plan.compiled_circuit_id.clone(),
         settings_id: plan.settings_id.clone(),
-        vk_id: sha256_file(&vk_path)?,
-        pk_id: sha256_file(&pk_path)?,
+        vk_id: formal_file_id("halo2_verification_key", &vk_path)?,
+        pk_id: formal_file_id("halo2_proving_key", &pk_path)?,
         security_profile_id: plan.security_profile_id.clone(),
         quant_cfg_id: plan.quant_cfg_id.clone(),
         static_tables_id: plan.static_tables_id.clone(),
@@ -3793,7 +3859,11 @@ pub(crate) fn graph_gat_gen_witness(
     let witness = FormalWitness {
         kind: WITNESS_KIND.to_owned(),
         compiled_circuit_id: plan.compiled_circuit_id,
-        logical_trace_digest: sha256_bytes(values.join("\n").as_bytes()),
+        logical_trace_digest: formal_domain_hash(
+            "formal_gat_witness",
+            "field_elements",
+            values.join("\n").as_bytes(),
+        ),
         values,
         public_statement_path: public_statement_path.display().to_string(),
     };
@@ -3813,7 +3883,13 @@ fn program_with_serialized_witness(
     if witness.kind != WITNESS_KIND || witness.compiled_circuit_id != plan.compiled_circuit_id {
         return Err("formal witness/circuit identity mismatch".into());
     }
-    if witness.logical_trace_digest != sha256_bytes(witness.values.join("\n").as_bytes()) {
+    if witness.logical_trace_digest
+        != formal_domain_hash(
+            "formal_gat_witness",
+            "field_elements",
+            witness.values.join("\n").as_bytes(),
+        )
+    {
         return Err("formal witness trace digest mismatch".into());
     }
     let mut program = build_program(plan, None, None)?;
@@ -3848,7 +3924,7 @@ pub(crate) fn graph_gat_prove(
         || circuit_manifest.quant_cfg_id != plan.quant_cfg_id
         || circuit_manifest.static_tables_id != plan.static_tables_id
         || circuit_manifest.backend_aux_tables_id != plan.backend_aux_tables_id
-        || circuit_manifest.pk_id != sha256_file(&pk_path)?
+        || circuit_manifest.pk_id != formal_file_id("halo2_proving_key", &pk_path)?
         || Path::new(&circuit_manifest.proving_srs_path)
             != fs::canonicalize(native_srs_path(&pk_path))?
         || circuit_manifest.device_build != device_marker
@@ -3940,7 +4016,7 @@ pub(crate) fn graph_gat_verify(
         || settings.security_profile_id != plan.security_profile_id
         || circuit_manifest.compiled_circuit_id != plan.compiled_circuit_id
         || circuit_manifest.settings_id != plan.settings_id
-        || circuit_manifest.vk_id != sha256_file(&vk_path)?
+        || circuit_manifest.vk_id != formal_file_id("halo2_verification_key", &vk_path)?
         || Path::new(&circuit_manifest.verification_srs_path)
             != fs::canonicalize(native_srs_path(&vk_path))?
         || statement.vk_id != circuit_manifest.vk_id

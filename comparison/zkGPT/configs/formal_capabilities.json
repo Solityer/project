@@ -1,0 +1,52 @@
+{
+  "schema": "zkGPT_gat_formal_capabilities_v1",
+  "protocol_id": "GAT-ZKML-zkGPT",
+  "formal_experiment_eligible": false,
+  "privacy_profile_status": "unsupported_privacy_profile",
+  "cpu_formal_path": "unsupported",
+  "gpu_formal_path": "unsupported",
+  "implemented_reference_code": "non_formal_research_graft",
+  "required_privacy_extension_profile_id": "masked_full_multi_session_v1",
+  "blockers": [
+    {
+      "id": "missing_masked_full_composition",
+      "kind": "protocol_security_argument",
+      "detail": "No composable multi-session masking construction covers GKR, dedicated MatMul, native Lasso, lookup/input consistency, input combine, and W/Aux/L terminal openings while reusing com_W."
+    },
+    {
+      "id": "missing_native_lasso",
+      "kind": "formal_implementation",
+      "detail": "The retained Python graft uses digests, sampled table evaluations, and direct accumulators; it is not the complete native Lasso commitment/Sumcheck/opening argument required by the protocol."
+    },
+    {
+      "id": "missing_ml_friendly_gkr",
+      "kind": "formal_implementation",
+      "detail": "The retained relation checks are host-generated residual and product-sum objects, not a verifier-replayed ML-friendly layered GKR proof bound to the four-segment input layer."
+    },
+    {
+      "id": "missing_four_segment_terminal_binding",
+      "kind": "formal_implementation",
+      "detail": "The retained seven-segment graft does not implement X|W|Aux|L with 00/01/10/11 selectors, lookup/input consistency, and native com_W/com_aux/com_L terminal openings at the combined point."
+    },
+    {
+      "id": "non_native_commitment_path",
+      "kind": "formal_implementation",
+      "detail": "The active Python path replaces BN254 group commitments with field-linear values and deterministic blinders; the mcl Hyrax reference CLI is not connected to the runner and its blinders are also deterministic."
+    },
+    {
+      "id": "non_exact_integer_forward",
+      "kind": "formal_implementation",
+      "detail": "The retained forward path uses floating-point normalization/activations and approximate rescale residuals instead of the protocol's exact integer tables and SignedRoundDiv relation."
+    },
+    {
+      "id": "missing_cuda_formal_prover",
+      "kind": "formal_implementation",
+      "detail": "The CUDA component is a u64 digest/reduction kernel over CPU-generated proof words, not GPU execution of Hyrax, Lasso, MatMul Sumcheck, or GKR proving primitives."
+    },
+    {
+      "id": "missing_mcl_dependency",
+      "kind": "external_dependency",
+      "detail": "The declared 3rd/mcl submodule is unpopulated, so the retained native BN254 reference CLI cannot be built in the current checkout."
+    }
+  ]
+}

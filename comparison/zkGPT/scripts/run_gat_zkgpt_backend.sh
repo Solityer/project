@@ -14,8 +14,4 @@ if [[ $# -gt 0 ]]; then
 fi
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-if [[ "${BACKEND}" == "gpu" || "${BACKEND}" == "all" ]]; then
-  "${ROOT}/scripts/build_cuda_backend.sh"
-fi
 "${ROOT}/scripts/gat_zkgpt_experiment.py" --datasets "${DATASETS}" --backends "${BACKEND}" "$@"
-

@@ -36,17 +36,21 @@ def public_feature_bound(cache:Path,scale:int):
   if '=' in line:
    k,v=line.split('=',1);meta[k.strip()]=v.strip()
  n=int(meta['num_nodes']);d=int(meta['num_features'])
- bound=0
+ bound=0;digest_state=hashlib.sha256();digest_state.update(b'zkDL-GAT-public-features-v1\0');digest_state.update(struct.pack('>QQ',n,d))
  if (cache/'features.txt').exists():
   with (cache/'features.txt').open() as f:
    if list(map(int,f.readline().split()))!=[n,d]:raise ValueError('features.txt header mismatch')
    rows=0
    for line in f:
-    vals=[float(x.split(':',1)[1]) for x in line.split()]
-    for v in vals:bound=max(bound,abs(q(v,scale)))
+    dense=[0]*d;seen=set()
+    for item in line.split():
+     column,value=item.split(':',1);column=int(column)
+     if not 0<=column<d or column in seen:raise ValueError('features.txt column malformed')
+     seen.add(column);dense[column]=q(float(value),scale)
+    for quantized in dense:
+     bound=max(bound,abs(quantized));digest_state.update(struct.pack('>q',quantized))
     rows+=1
    if rows!=n:raise ValueError('features.txt row count mismatch')
-  digest=sha(cache/'features.txt')
  else:
   with (cache/'features.npy').open('rb') as f:
    if f.read(6)!=b'\x93NUMPY':raise ValueError('bad npy magic')
@@ -59,9 +63,9 @@ def public_feature_bound(cache:Path,scale:int):
     raw=f.read(d*width)
     if len(raw)!=d*width:raise ValueError('truncated features.npy')
     vals=struct.unpack('<'+fmt*d,raw)
-    for v in vals:bound=max(bound,abs(q(v,scale)))
-  digest=sha(cache/'features.npy')
- return bound,digest,n,d
+    for v in vals:
+     quantized=q(v,scale);bound=max(bound,abs(quantized));digest_state.update(struct.pack('>q',quantized))
+ return bound,digest_state.hexdigest(),n,d
 def graph_info(cache:Path,n:int):
  edges=[]
  for stable,line in enumerate((cache/'edges.txt').read_text().splitlines()):
@@ -85,9 +89,15 @@ def graph_info(cache:Path,n:int):
  edges.sort(key=lambda e:(e[0],e[2],e[3]));deg=[0]*n
  for _,_,d,_ in edges:deg[d]+=1
  if min(deg)<1:raise ValueError('self-loop normalization failed')
- h=hashlib.sha256()
- for g,s,d,_ in edges:h.update(g.to_bytes(8,'big'));h.update(s.to_bytes(8,'big'));h.update(d.to_bytes(8,'big'))
- return len(edges),max(deg),h.hexdigest()
+ edge_ptr=[0]
+ for graph_id in range(len(node_ptr)-1):
+  edge_ptr.append(edge_ptr[-1]+sum(1 for g,_,_,_ in edges if g==graph_id))
+ src=[s for _,s,_,_ in edges];dst=[d for _,_,d,_ in edges]
+ h=hashlib.sha256();h.update(b'zkDL-GAT-public-topology-v1\0');h.update(struct.pack('>QQQ',n,len(edges),len(node_ptr)-1))
+ for values in (node_ptr,edge_ptr,src,dst):
+  h.update(struct.pack('>Q',len(values)))
+  for value in values:h.update(struct.pack('>Q',value))
+ return len(edges),max(deg),h.hexdigest(),node_ptr,edge_ptr
 def signed_round_bound(a:int,d_min:int):return (2*a+d_min)//(2*d_min)
 def lrelu(x:int):return x if x>=0 else -signed_round_bound(-x,5)
 def elu(x:int):return x if x>=0 else q(16.0*(math.exp(x/16.0)-1.0),1)
@@ -115,7 +125,7 @@ def main():
  if out!=base and base not in out.parents:raise SystemExit('output must stay inside comparison/zkdl')
  c=cfg(a.config);cache=root/c['cache'];cp=root/c['checkpoint_bundle'];manifest=json.loads((cp/'manifest.json').read_text());ts=tensors(cp/'tensors.txt')
  scale_keys=['feature_scale','hidden_weight_scale','hidden_attention_scale','hidden_projection_scale','delta_scale','exp_scale','hidden_recovery_num_scale','hidden_recovery_den_scale','elu_input_scale','elu_output_scale','agg_scale','output_weight_scale','output_attention_scale','output_projection_scale','output_pre_scale','output_head_scale','output_bias_scale','output_scale']
- scales={k:int(c[k]) for k in scale_keys};bh,features_digest,n,d=public_feature_bound(cache,scales['feature_scale']);e,maxdeg,topo_digest=graph_info(cache,n)
+ scales={k:int(c[k]) for k in scale_keys};bh,features_digest,n,d=public_feature_bound(cache,scales['feature_scale']);e,maxdeg,topo_digest,node_ptr,edge_ptr=graph_info(cache,n)
  large=c['batching_rule']=='whole_graph_single' and (e>=(1<<18) or n*d>=(1<<24));tables=static_table_profile(int(c['range_bits']),large,manifest['static_table_id']);lmin=tables['lrelu']['min'];lmax=tables['lrelu']['max'];exp_max=tables['exp']['max'];elu_min=tables['elu']['min'];elu_max=tables['elu']['max']
  failures=[];heads=[];current_bh=bh
  hidden_by_layer={}
@@ -139,7 +149,7 @@ def main():
   heads.append(rec)
  ledger={'schema':'zkDL_gat_integer_bound_ledger_v2','dataset':c['dataset'],'node_count':n,'edge_count':e,'max_in_degree':maxdeg,'range_bits':int(c['range_bits']),'table_domains':{'lrelu':[lmin,lmax],'elu':[elu_min,elu_max],'exp':[0,exp_max]},'scales':scales,'heads':heads,'field':'BLS12-381-Fr','field_fit':'all listed integers must be below the canonical signed BLS12-381 half-modulus; formal compiler rechecks actual witness values','failures':failures}
  canonical=json.dumps(ledger,sort_keys=True,separators=(',',':')).encode();ledger['integer_bound_ledger_id']='sha256:'+hashlib.sha256(canonical).hexdigest()
- report={'status':'accepted' if not failures else 'rejected_table_domain','dataset':c['dataset'],'graph_features_digest':'sha256:'+features_digest,'topology_digest':'sha256:'+topo_digest,'checkpoint_manifest_sha256':sha(cp/'manifest.json'),'checkpoint_tensors_sha256':sha(cp/'tensors.txt'),'source_quant_cfg_id':manifest['quant_cfg_id'],'quant_cfg_id':'sha256:'+hashlib.sha256(json.dumps(scales,sort_keys=True,separators=(',',':')).encode()).hexdigest(),'static_tables_id':tables['static_tables_id'],'static_tables':tables,'model_arch_id':manifest['model_arch_id'],'model_param_id':manifest['model_param_id'],'ledger':ledger}
+ report={'status':'accepted' if not failures else 'rejected_table_domain','dataset':c['dataset'],'graph_features_digest':'sha256:'+features_digest,'topology_digest':'sha256:'+topo_digest,'public_instance':{'node_count':n,'edge_count':e,'graph_count':len(node_ptr)-1,'feature_dim':d,'class_count':int(manifest['C']),'node_ptr':node_ptr,'edge_ptr':edge_ptr},'checkpoint_manifest_sha256':sha(cp/'manifest.json'),'checkpoint_tensors_sha256':sha(cp/'tensors.txt'),'source_quant_cfg_id':manifest['quant_cfg_id'],'quant_cfg_id':'sha256:'+hashlib.sha256(json.dumps(scales,sort_keys=True,separators=(',',':')).encode()).hexdigest(),'static_tables_id':tables['static_tables_id'],'static_tables':tables,'model_arch_id':manifest['model_arch_id'],'model_param_id':manifest['model_param_id'],'ledger':ledger}
  out.parent.mkdir(parents=True,exist_ok=True);out.write_text(json.dumps(report,indent=2)+'\n')
  if failures:raise SystemExit('preflight rejected formal instance: '+failures[0])
  print('PREFLIGHT_OK',ledger['integer_bound_ledger_id'])

@@ -34,6 +34,7 @@ from .field import (
     quantize_float,
     to_field_int,
 )
+from .formal_gate import require_formal_experiment
 from .forward import ForwardTrace, HeadTrace, _group_starts, elu, leaky_relu
 from .matrix_sumcheck import prove_product_sum, verify_product_sum
 from .model import AttentionHead, Model
@@ -2513,6 +2514,7 @@ def build_proof(
     gpu_state: Dict[str, Any],
     paths: Dict[str, pathlib.Path],
 ) -> ProofArtifacts:
+    require_formal_experiment()
     started = time.perf_counter()
     artifact_dir = paths["artifact_dir"]
     ensure_dir(artifact_dir)

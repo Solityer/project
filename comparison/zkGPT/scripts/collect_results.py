@@ -3,58 +3,59 @@ from __future__ import annotations
 
 import csv
 import json
-import subprocess
-import sys
 from pathlib import Path
-from typing import Any
-
 
 ROOT = Path(__file__).resolve().parents[1]
-RESULTS = ROOT / "results"
-
-
-def read_json(path: Path) -> dict[str, Any]:
-    return json.loads(path.read_text(encoding="utf-8"))
-
-
-def write_json(path: Path, payload: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+DATASETS = ["cora", "citeseer", "pubmed", "ppi", "ogbn-arxiv"]
+BACKENDS = ["cpu", "gpu"]
 
 
 def main() -> int:
-    rc = subprocess.run([sys.executable, "scripts/rebuild_summary_from_artifacts.py"], cwd=ROOT, check=False).returncode
-    summary = read_json(RESULTS / "summary.json")
-    rows = summary.get("rows", [])
-    write_json(
-        RESULTS / "final_zkgpt_results.json",
+    capabilities = json.loads((ROOT / "configs" / "formal_capabilities.json").read_text(encoding="utf-8"))
+    blocker_ids = [item["id"] for item in capabilities["blockers"]]
+    rows = [
         {
-            "baseline": "zkGPT",
-            "generated_at": summary.get("generated_at"),
-            "rows": rows,
-            "source": "results/summary.json",
-        },
+            "dataset": dataset,
+            "backend": backend,
+            "status": "unsupported_privacy_profile",
+            "proof_generated": False,
+            "verified": False,
+            "formal_experiment_eligible": False,
+            "blockers": blocker_ids,
+        }
+        for backend in BACKENDS
+        for dataset in DATASETS
+    ]
+    payload = {
+        "schema": "zkGPT_gat_formal_result_matrix_v1",
+        "baseline": "zkGPT",
+        "status": "unsupported_privacy_profile",
+        "formal_experiment_eligible": False,
+        "rows": rows,
+    }
+    results = ROOT / "results"
+    results.mkdir(parents=True, exist_ok=True)
+    (results / "final_zkgpt_results.json").write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
-    fields = ["dataset", "backend", "status", "N", "E", "G_batch", "commitment_time_ms", "prove_time_ms", "verify_time_ms", "proof_size_bytes", "gpu_hot_path_status", "cpu_fallback"]
-    with (RESULTS / "final_zkgpt_results.csv").open("w", encoding="utf-8", newline="") as handle:
+    fields = ["dataset", "backend", "status", "proof_generated", "verified", "formal_experiment_eligible", "blockers"]
+    with (results / "final_zkgpt_results.csv").open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields, lineterminator="\n")
         writer.writeheader()
-        for row in rows:
-            writer.writerow({field: row.get(field, "") for field in fields})
+        writer.writerows(rows)
     lines = [
-        "# zkGPT Final Local Results",
+        "# zkGPT formal result matrix",
         "",
-        "| backend | dataset | status | prove_time_ms | verify_time_ms | proof_size_bytes | gpu_hot_path_status |",
-        "| --- | --- | --- | ---: | ---: | ---: | --- |",
+        "No formal result is accepted. The strict profile is `unsupported_privacy_profile`.",
+        "",
+        "| backend | dataset | status | proof generated | verified |",
+        "| --- | --- | --- | --- | --- |",
     ]
-    for row in rows:
-        lines.append(
-            f"| {row.get('backend')} | {row.get('dataset')} | {row.get('status')} | "
-            f"{row.get('prove_time_ms')} | {row.get('verify_time_ms')} | "
-            f"{row.get('proof_size_bytes')} | {row.get('gpu_hot_path_status', '')} |"
-        )
-    (RESULTS / "final_zkgpt_report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return rc
+    lines.extend(
+        f"| {row['backend']} | {row['dataset']} | {row['status']} | false | false |" for row in rows
+    )
+    (results / "final_zkgpt_report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return 0
 
 
 if __name__ == "__main__":

@@ -247,7 +247,7 @@ namespace gat_ezkl
             {"cora_full", "cora_full.cfg", "cora", "Cora"},
             {"citeseer_full", "citeseer_full.cfg", "citeseer", "Citeseer"},
             {"pubmed_full", "pubmed_full.cfg", "pubmed", "Pubmed"},
-            {"ppi_full_formal", "ppi_batch_formal.cfg", "ppi", "PPI"},
+            {"ppi_full_formal", "ppi_full.cfg", "ppi", "PPI"},
             {"ogbn_arxiv_full", "ogbn_arxiv_full.cfg", "ogbn_arxiv", "ogbn-arxiv"},
         };
     }

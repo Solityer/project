@@ -260,9 +260,35 @@ def main() -> int:
         (logs / f"{stage}.stderr.log").write_text(stderr, encoding="utf-8")
 
     verify = json.loads(paths["verify"].read_text(encoding="utf-8"))
-    if verify.get("verify_passed") is not True:
-        raise RuntimeError("independent Halo2 verification did not return verify_passed=true")
     circuit_manifest = json.loads((run_dir / "circuit_manifest.json").read_text(encoding="utf-8"))
+    expected_device_marker = (
+        "halo2_icicle_cuda_device_0" if args.device == "cuda" else "halo2_cpu"
+    )
+    required_verify_bindings = {
+        "verify_passed": True,
+        "native_halo2_verification": True,
+        "independent_public_statement_reconstruction": True,
+        "proof_instances_trusted": False,
+        "compiled_circuit_id": circuit_manifest.get("compiled_circuit_id"),
+        "settings_id": circuit_manifest.get("settings_id"),
+        "vk_id": circuit_manifest.get("vk_id"),
+        "static_tables_id": manifest["static_tables_id"],
+        "backend_aux_tables_id": manifest["backend_aux_tables_id"],
+        "prover_device_build": expected_device_marker,
+        "full_gat_forward_in_ezkl_proof": True,
+        "strict_public_input_equivalent": True,
+    }
+    mismatched = {
+        key: {"expected": expected, "actual": verify.get(key)}
+        for key, expected in required_verify_bindings.items()
+        if verify.get(key) != expected
+    }
+    if mismatched:
+        manifest["status"] = "failed"
+        manifest["failure_step"] = "verify_result_binding"
+        manifest["failure"] = mismatched
+        write_json(manifest_path, manifest)
+        raise RuntimeError(f"independent Halo2 verifier output binding mismatch: {mismatched}")
     manifest.update(
         {
             "status": "verified",
@@ -272,7 +298,7 @@ def main() -> int:
             "public_statement_sha256": sha256(paths["statement"]),
             "compiled_circuit_sha256": sha256(paths["compiled"]),
             "vk_sha256": sha256(paths["vk"]),
-            "runtime_device_marker": verify.get("prover_device_build"),
+            "runtime_device_marker": expected_device_marker,
             "verification_runtime_marker": verify.get("verification_runtime_marker"),
             "source_srs_sha256": circuit_manifest.get("source_srs_sha256"),
             "source_srs_k": circuit_manifest.get("source_srs_k"),
@@ -281,7 +307,11 @@ def main() -> int:
             "verification_srs_sha256": circuit_manifest.get("verification_srs_sha256"),
             "proving_srs_path": circuit_manifest.get("proving_srs_path"),
             "verification_srs_path": circuit_manifest.get("verification_srs_path"),
-            "gpu_kernel_execution": "待正式实验验证" if args.device == "cuda" else "not_applicable",
+            "gpu_backend_execution": (
+                "halo2_icicle_backend_selected_and_proof_verified"
+                if args.device == "cuda" else "not_applicable"
+            ),
+            "gpu_kernel_telemetry": "not_instrumented" if args.device == "cuda" else "not_applicable",
         }
     )
     write_json(manifest_path, manifest)
