@@ -1158,7 +1158,7 @@ namespace gatzk::protocol
                 check_kernel(
                     "finalize kernel");
 
-                status =
+                const auto status =
                     cudaStreamSynchronize(0);
 
                 if (status !=
