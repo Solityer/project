@@ -1308,6 +1308,12 @@ namespace gatzk::protocol
                         status);
                 }
 
+                // All fused terms have finished and the quotient numerator is now
+                // complete.  Leaf storage is dead before the final coefficient INTT;
+                // releasing it here prevents a 24-slot cache from overlapping the
+                // two-vector final NTT workspace.
+                release_leaf_storage_noexcept();
+
                 const bool executed =
                     algebra::
                         cuda_coset_device_to_coefficients_exact(
@@ -1359,6 +1365,44 @@ namespace gatzk::protocol
                     device_quotient_);
             }
 
+            void release_leaf_storage_noexcept() noexcept
+            {
+                for (auto &slot :
+                     device_leaf_slots_)
+                {
+                    if (slot != nullptr)
+                    {
+                        (void)cudaFree(
+                            slot);
+
+                        slot = nullptr;
+                    }
+                }
+
+                device_leaf_slots_.clear();
+
+                if (device_leaf_table_ !=
+                    nullptr)
+                {
+                    (void)cudaFree(
+                        device_leaf_table_);
+
+                    device_leaf_table_ =
+                        nullptr;
+                }
+
+                if (device_leaf_split_layout_ !=
+                    nullptr)
+                {
+                    (void)cudaFree(
+                        device_leaf_split_layout_);
+
+                    device_leaf_split_layout_ =
+                        nullptr;
+                }
+
+                host_leaf_split_layout_.clear();
+            }
             void release_program_noexcept() noexcept
             {
                 if (device_instructions_ !=
@@ -1418,30 +1462,7 @@ namespace gatzk::protocol
             {
                 release_program_noexcept();
 
-                for (auto *slot :
-                     device_leaf_slots_)
-                {
-                    if (slot != nullptr)
-                    {
-                        (void)cudaFree(slot);
-                    }
-                }
-
-                device_leaf_slots_.clear();
-
-                if (device_leaf_table_ !=
-                    nullptr)
-                {
-                    (void)cudaFree(
-                        device_leaf_table_);
-                }
-
-                if (device_leaf_split_layout_ !=
-                    nullptr)
-                {
-                    (void)cudaFree(
-                        device_leaf_split_layout_);
-                }
+                release_leaf_storage_noexcept();
 
                 if (device_quotient_ !=
                     nullptr)
@@ -1552,7 +1573,6 @@ namespace gatzk::protocol
         return algebra::
             cuda_field_hotspots_available();
     }
-
     bool cuda_t_edge_executor_can_admit(
         std::size_t target_size,
         std::size_t cache_slot_count)
@@ -1588,17 +1608,30 @@ namespace gatzk::protocol
             cache_slot_count *
             leaf_bytes;
 
+        // Leaf materialization now needs one target-sized NTT staging
+        // vector.  Quotient accumulation needs one persistent quotient.
+        if (leaf_bytes >
+            std::numeric_limits<
+                std::size_t>::max() /
+                2)
+        {
+            return false;
+        }
+
+        const auto quotient_and_workspace =
+            2 * leaf_bytes;
+
         if (leaf_cache_bytes >
             std::numeric_limits<
                 std::size_t>::max() -
-                leaf_bytes)
+                quotient_and_workspace)
         {
             return false;
         }
 
         const auto required_bytes =
             leaf_cache_bytes +
-            leaf_bytes;
+            quotient_and_workspace;
 
         int device = 0;
 
@@ -1606,7 +1639,8 @@ namespace gatzk::protocol
             cudaGetDevice(
                 &device);
 
-        if (status != cudaSuccess)
+        if (status !=
+            cudaSuccess)
         {
             (void)cudaGetLastError();
             return false;
@@ -1620,7 +1654,8 @@ namespace gatzk::protocol
                 cudaDevAttrIntegrated,
                 device);
 
-        if (status != cudaSuccess)
+        if (status !=
+            cudaSuccess)
         {
             (void)cudaGetLastError();
             return false;
@@ -1649,6 +1684,7 @@ namespace gatzk::protocol
                         line);
 
                     std::string key;
+
                     unsigned long long
                         value_kib = 0;
 
@@ -1699,52 +1735,48 @@ namespace gatzk::protocol
                 }
             }
 
-            if (host_available_bytes !=
+            if (host_available_bytes ==
                 std::numeric_limits<
                     std::size_t>::max())
             {
-                constexpr std::size_t
-                    kMinimumIntegratedReserve =
-                        std::size_t{8}
-                        << 30;
-
-                constexpr std::size_t
-                    kIntegratedTransformHeadroom =
-                        std::size_t{3}
-                        << 30;
-
-                const auto reserve_bytes =
-                    std::max(
-                        kMinimumIntegratedReserve,
-                        host_total_bytes == 0
-                            ? kMinimumIntegratedReserve
-                            : host_total_bytes /
-                                  16);
-
-                if (host_available_bytes <=
-                    reserve_bytes +
-                        kIntegratedTransformHeadroom)
-                {
-                    return false;
-                }
-
-                const auto safely_usable =
-                    host_available_bytes -
-                    reserve_bytes -
-                    kIntegratedTransformHeadroom;
-
-                if (required_bytes >
-                    safely_usable)
-                {
-                    return false;
-                }
+                return false;
             }
 
-            // UMA 上 cudaMemGetInfo() 不能代表可回收
-            // page cache / shared DRAM 的真实可用量。
-            // 上面的 MemAvailable 仅做预 admission；
-            // cudaMalloc 仍是最终 fail-closed 检查。
-            return true;
+            constexpr std::size_t
+                kMinimumHostReserve =
+                    std::size_t{16}
+                    << 30;
+
+            const auto host_reserve =
+                std::max(
+                    kMinimumHostReserve,
+                    host_total_bytes == 0
+                        ? kMinimumHostReserve
+                        : host_total_bytes / 8);
+
+            if (host_available_bytes <=
+                host_reserve)
+            {
+                return false;
+            }
+
+            const auto host_usable =
+                host_available_bytes -
+                host_reserve;
+
+            // Canonical coefficient output is target-sized.
+            if (leaf_bytes >
+                host_usable)
+            {
+                return false;
+            }
+
+            if (required_bytes >
+                host_usable -
+                    leaf_bytes)
+            {
+                return false;
+            }
         }
 
         std::size_t free_bytes = 0;
@@ -1755,31 +1787,33 @@ namespace gatzk::protocol
                 &free_bytes,
                 &total_bytes);
 
-        if (status != cudaSuccess)
+        if (status !=
+            cudaSuccess)
         {
             (void)cudaGetLastError();
             return false;
         }
 
-        constexpr std::size_t
-            kMinimumCudaReserveBytes =
-                std::size_t{4} << 30;
-
-        const auto reserve_bytes =
-            std::max(
-                kMinimumCudaReserveBytes,
-                total_bytes / 8);
+        const auto driver_reserve =
+            integrated != 0
+                ? std::max(
+                      std::size_t{24} << 30,
+                      total_bytes / 8)
+                : std::max(
+                      std::size_t{8} << 30,
+                      total_bytes / 8);
 
         if (free_bytes <=
-            reserve_bytes)
+            driver_reserve)
         {
             return false;
         }
 
         return required_bytes <=
                free_bytes -
-                   reserve_bytes;
+                   driver_reserve;
     }
+
     void release_cuda_t_edge_executor_cache()
     {
     }

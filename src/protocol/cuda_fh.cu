@@ -1158,7 +1158,7 @@ namespace gatzk::protocol
                 check_kernel(
                     "finalize kernel");
 
-                auto status =
+                status =
                     cudaStreamSynchronize(0);
 
                 if (status !=
@@ -1168,6 +1168,13 @@ namespace gatzk::protocol
                         "finalize synchronization",
                         status);
                 }
+
+                // No FH pointwise pass reads a leaf after the numerator has been
+                // multiplied by Z_FH^{-1}.  Release all four target-sized leaves
+                // before the final paired INTT allocates its second workspace vector.
+                // This removes the largest avoidable CUDA peak without changing the
+                // quotient values or coefficient result.
+                release_leaf_storage_noexcept();
 
                 const bool executed =
                     algebra::
@@ -1195,6 +1202,22 @@ namespace gatzk::protocol
         private:
             static constexpr unsigned
                 kBlockSize = 256;
+            void release_leaf_storage_noexcept() noexcept
+            {
+                for (auto &slot :
+                     device_leaf_slots_)
+                {
+                    if (slot != nullptr)
+                    {
+                        (void)cudaFree(
+                            slot);
+
+                        slot = nullptr;
+                    }
+                }
+
+                split_layout_.fill(0);
+            }
 
             void validate_slot(
                 std::size_t slot) const
@@ -1262,15 +1285,7 @@ namespace gatzk::protocol
 
             void release_all_noexcept() noexcept
             {
-                for (auto *slot :
-                     device_leaf_slots_)
-                {
-                    if (slot != nullptr)
-                    {
-                        (void)cudaFree(
-                            slot);
-                    }
-                }
+                release_leaf_storage_noexcept();
 
                 if (device_quotient_ !=
                     nullptr)
@@ -1464,23 +1479,24 @@ namespace gatzk::protocol
                 sizeof(GpuFr),
                 "admission leaf");
 
+        // Four FH leaves + quotient remain resident during pointwise
+        // quotient accumulation.
         const auto persistent_bytes =
             checked_bytes(
                 kFHLeafCacheSlots + 1,
                 leaf_bytes,
                 "persistent working set");
 
-        const auto ntt_workspace_bytes =
-            checked_bytes(
-                2,
-                leaf_bytes,
-                "NTT workspace");
+        // Exact leaf materialization now retains only one target-sized
+        // CUDA staging vector.  The caller-owned leaf is the NTT output.
+        const auto transform_workspace_bytes =
+            leaf_bytes;
 
         const auto required_bytes =
             checked_add(
                 persistent_bytes,
-                ntt_workspace_bytes,
-                "complete working set");
+                transform_workspace_bytes,
+                "complete FH CUDA working set");
 
         int device = 0;
 
@@ -1510,6 +1526,9 @@ namespace gatzk::protocol
             return false;
         }
 
+        // UMA still shares physical DRAM with the host.  Keep enough host
+        // headroom for the target-sized coefficient output and the rest of
+        // the prover before considering CUDA admission.
         if (integrated != 0)
         {
             const auto memory =
@@ -1523,28 +1542,48 @@ namespace gatzk::protocol
             }
 
             constexpr std::size_t
-                kMinimumReserve =
-                    std::size_t{16}
+                kMinimumHostReserve =
+                    std::size_t{24}
                     << 30;
 
-            const auto reserve =
+            const auto host_reserve =
                 std::max(
-                    kMinimumReserve,
+                    kMinimumHostReserve,
                     memory.total == 0
-                        ? kMinimumReserve
+                        ? kMinimumHostReserve
                         : memory.total / 8);
 
             if (memory.available <=
-                reserve)
+                host_reserve)
             {
                 return false;
             }
 
-            return required_bytes <=
-                   memory.available -
-                       reserve;
+            const auto host_usable =
+                memory.available -
+                host_reserve;
+
+            // materialize_cuda_t_fh_coefficients() allocates the canonical
+            // host coefficient vector before final device->host INTT.
+            if (leaf_bytes >
+                host_usable)
+            {
+                return false;
+            }
+
+            if (required_bytes >
+                host_usable -
+                    leaf_bytes)
+            {
+                return false;
+            }
         }
 
+        // cudaMemGetInfo is required even on UMA.  MemAvailable tells us
+        // whether shared DRAM can be reclaimed; cudaMemGetInfo tells us
+        // whether the NVIDIA driver can actually satisfy cudaMalloc.
+        // The previous implementation skipped this check on GB10, which
+        // allowed admission followed by NV_ERR_NO_MEMORY.
         std::size_t free_bytes = 0;
         std::size_t total_bytes = 0;
 
@@ -1560,26 +1599,25 @@ namespace gatzk::protocol
             return false;
         }
 
-        constexpr std::size_t
-            kMinimumReserve =
-                std::size_t{8} << 30;
-
-        const auto reserve =
-            std::max(
-                kMinimumReserve,
-                total_bytes / 8);
+        const auto driver_reserve =
+            integrated != 0
+                ? std::max(
+                      std::size_t{24} << 30,
+                      total_bytes / 8)
+                : std::max(
+                      std::size_t{8} << 30,
+                      total_bytes / 8);
 
         if (free_bytes <=
-            reserve)
+            driver_reserve)
         {
             return false;
         }
 
         return required_bytes <=
                free_bytes -
-                   reserve;
+                   driver_reserve;
     }
-
     void release_cuda_fh_executor_cache()
     {
     }

@@ -194,69 +194,123 @@ namespace gatzk::algebra
                 release();
             }
 
-            bool ensure(
+            void ensure_stream(
+                int current_device)
+            {
+                if (stream != nullptr &&
+                    device == current_device)
+                {
+                    return;
+                }
+
+                release();
+
+                device = current_device;
+
+                const auto status =
+                    cudaStreamCreateWithFlags(
+                        &stream,
+                        cudaStreamNonBlocking);
+
+                if (status != cudaSuccess)
+                {
+                    stream = nullptr;
+                    device = -1;
+
+                    throw_cuda_ntt_error(
+                        "stream creation",
+                        status);
+                }
+            }
+
+            bool ensure_input_only(
                 std::size_t required_bytes,
                 int current_device)
             {
-                if (stream == nullptr ||
-                    device != current_device)
+                ensure_stream(
+                    current_device);
+
+                // Device-output exact transforms write their final NTT result
+                // directly into the caller-owned leaf.  They therefore need only
+                // one persistent target-sized staging vector.
+                if (output != nullptr)
                 {
-                    release();
-
-                    device = current_device;
-
                     auto status =
-                        cudaStreamCreateWithFlags(
-                            &stream,
-                            cudaStreamNonBlocking);
+                        cudaFreeAsync(
+                            output,
+                            stream);
 
                     if (status != cudaSuccess)
                     {
-                        stream = nullptr;
-                        device = -1;
-
                         throw_cuda_ntt_error(
-                            "stream creation",
+                            "unused output workspace release",
+                            status);
+                    }
+
+                    output = nullptr;
+
+                    status =
+                        cudaStreamSynchronize(
+                            stream);
+
+                    if (status != cudaSuccess)
+                    {
+                        throw_cuda_ntt_error(
+                            "unused output workspace release synchronization",
                             status);
                     }
                 }
 
-                if (capacity_bytes >= required_bytes &&
-                    input != nullptr &&
-                    output != nullptr)
+                if (capacity_bytes >=
+                        required_bytes &&
+                    input != nullptr)
                 {
                     return true;
                 }
 
                 if (input != nullptr)
                 {
-                    (void)cudaFreeAsync(
-                        input,
-                        stream);
+                    const auto status =
+                        cudaFreeAsync(
+                            input,
+                            stream);
+
+                    if (status != cudaSuccess)
+                    {
+                        throw_cuda_ntt_error(
+                            "input workspace resize release",
+                            status);
+                    }
+
                     input = nullptr;
-                }
 
-                if (output != nullptr)
-                {
-                    (void)cudaFreeAsync(
-                        output,
-                        stream);
-                    output = nullptr;
-                }
+                    const auto sync_status =
+                        cudaStreamSynchronize(
+                            stream);
 
-                (void)cudaStreamSynchronize(stream);
+                    if (sync_status !=
+                        cudaSuccess)
+                    {
+                        throw_cuda_ntt_error(
+                            "input workspace resize synchronization",
+                            sync_status);
+                    }
+                }
 
                 capacity_bytes = 0;
 
                 auto status =
                     cudaMallocAsync(
-                        reinterpret_cast<void **>(&input),
+                        reinterpret_cast<void **>(
+                            &input),
                         required_bytes,
                         stream);
 
-                if (status == cudaErrorMemoryAllocation)
+                if (status ==
+                    cudaErrorMemoryAllocation)
                 {
                     (void)cudaGetLastError();
+
                     input = nullptr;
                     return false;
                 }
@@ -268,36 +322,101 @@ namespace gatzk::algebra
                         status);
                 }
 
-                status =
-                    cudaMallocAsync(
-                        reinterpret_cast<void **>(&output),
-                        required_bytes,
-                        stream);
+                capacity_bytes =
+                    required_bytes;
 
-                if (status != cudaSuccess)
+                return true;
+            }
+
+            bool ensure(
+                std::size_t required_bytes,
+                int current_device)
+            {
+                ensure_stream(
+                    current_device);
+
+                if (capacity_bytes <
+                        required_bytes ||
+                    input == nullptr)
                 {
-                    (void)cudaFreeAsync(
-                        input,
-                        stream);
+                    if (input != nullptr)
+                    {
+                        (void)cudaFreeAsync(
+                            input,
+                            stream);
+
+                        input = nullptr;
+                    }
+
+                    if (output != nullptr)
+                    {
+                        (void)cudaFreeAsync(
+                            output,
+                            stream);
+
+                        output = nullptr;
+                    }
 
                     (void)cudaStreamSynchronize(
                         stream);
 
-                    input = nullptr;
-                    output = nullptr;
+                    capacity_bytes = 0;
 
-                    if (status == cudaErrorMemoryAllocation)
+                    auto status =
+                        cudaMallocAsync(
+                            reinterpret_cast<void **>(
+                                &input),
+                            required_bytes,
+                            stream);
+
+                    if (status ==
+                        cudaErrorMemoryAllocation)
                     {
                         (void)cudaGetLastError();
+
+                        input = nullptr;
                         return false;
                     }
 
+                    if (status != cudaSuccess)
+                    {
+                        throw_cuda_ntt_error(
+                            "persistent input allocation",
+                            status);
+                    }
+
+                    capacity_bytes =
+                        required_bytes;
+                }
+
+                if (output != nullptr)
+                {
+                    return true;
+                }
+
+                const auto status =
+                    cudaMallocAsync(
+                        reinterpret_cast<void **>(
+                            &output),
+                        required_bytes,
+                        stream);
+
+                if (status ==
+                    cudaErrorMemoryAllocation)
+                {
+                    (void)cudaGetLastError();
+
+                    output = nullptr;
+                    return false;
+                }
+
+                if (status != cudaSuccess)
+                {
                     throw_cuda_ntt_error(
                         "persistent output allocation",
                         status);
                 }
 
-                capacity_bytes = required_bytes;
                 return true;
             }
 
@@ -333,7 +452,6 @@ namespace gatzk::algebra
                 device = -1;
             }
         };
-
         CudaNttWorkspace &cuda_ntt_workspace()
         {
             thread_local CudaNttWorkspace workspace;
@@ -865,7 +983,7 @@ namespace gatzk::algebra
             auto &workspace =
                 cuda_ntt_workspace();
 
-            if (!workspace.ensure(
+            if (!workspace.ensure_input_only(
                     total_bytes,
                     device))
             {
@@ -1105,9 +1223,14 @@ namespace gatzk::algebra
             }
         }
 
+        // The caller-owned leaf is dead until the final forward transform.
+        // Reuse its prefix as the source-domain coefficient scratch instead
+        // of retaining a second target-sized CUDA workspace.
         if (!run_cuda_ntt_device(
                 workspace.input,
-                workspace.output,
+                reinterpret_cast<
+                    IcicleScalar *>(
+                    device_output),
                 domain_size,
                 1,
                 ntt::NTTDir::kInverse,
@@ -1121,7 +1244,7 @@ namespace gatzk::algebra
         {
             status =
                 cudaMemcpyAsync(
-                    workspace.output +
+                    device_output +
                         domain_size,
                     zero_domain_blinder,
                     checked_ntt_bytes(
@@ -1184,12 +1307,12 @@ namespace gatzk::algebra
                 stream>>>(
                 reinterpret_cast<
                     const GpuFr *>(
-                    workspace.output),
+                    device_output),
                 domain_size,
                 domain_size,
                 reinterpret_cast<
                     const GpuFr *>(
-                    workspace.output +
+                    device_output +
                     domain_size),
                 blinder_count,
                 active_count,
@@ -1301,7 +1424,7 @@ namespace gatzk::algebra
                 target_size,
                 1);
 
-        if (!workspace.ensure(
+        if (!workspace.ensure_input_only(
                 total_bytes,
                 device))
         {
@@ -1329,7 +1452,7 @@ namespace gatzk::algebra
         {
             status =
                 cudaMemcpyAsync(
-                    workspace.output,
+                    device_output,
                     coefficients,
                     checked_ntt_bytes(
                         coefficient_count,
@@ -1377,7 +1500,7 @@ namespace gatzk::algebra
                 stream>>>(
                 reinterpret_cast<
                     const GpuFr *>(
-                    workspace.output),
+                    device_output),
                 coefficient_count,
                 coefficient_count,
                 nullptr,
@@ -1486,7 +1609,7 @@ namespace gatzk::algebra
                 target_size,
                 1);
 
-        if (!workspace.ensure(
+        if (!workspace.ensure_input_only(
                 total_bytes,
                 device))
         {
