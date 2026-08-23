@@ -46,7 +46,7 @@ namespace gatzk::algebra
         // Deliberately do not initialize a 2^32 ICICLE domain: the additional
         // twiddle storage would be unnecessary for the production quotient path.
         constexpr std::size_t kMaximumCudaNttSize =
-            std::size_t{1} << 24;
+            std::size_t{1} << 26;
 
         // Preserve workspace/headroom after persistent ICICLE twiddles and the
         // explicit input/output buffers have been accounted for.
@@ -496,6 +496,74 @@ namespace gatzk::algebra
                         odd_shift);
             }
         }
+        __global__ void
+        prepare_constant_prefix_coset_lanes_kernel(
+            GpuFr coefficient,
+            std::size_t coefficient_count,
+            GpuFr shift,
+            GpuFr odd_shift,
+            GpuFr *even_output,
+            GpuFr *odd_output)
+        {
+            const auto chunk =
+                static_cast<std::size_t>(
+                    blockIdx.x) *
+                    blockDim.x +
+                threadIdx.x;
+
+            const auto begin =
+                chunk *
+                kCosetPowerChunkElements;
+
+            if (begin >= coefficient_count)
+            {
+                return;
+            }
+
+            const auto end =
+                min(
+                    coefficient_count,
+                    begin +
+                        kCosetPowerChunkElements);
+
+            auto even_power =
+                fr_pow_u64(
+                    shift,
+                    static_cast<std::uint64_t>(
+                        begin));
+
+            auto odd_power =
+                fr_pow_u64(
+                    odd_shift,
+                    static_cast<std::uint64_t>(
+                        begin));
+
+            for (std::size_t index = begin;
+                 index < end;
+                 ++index)
+            {
+                even_output[index] =
+                    algebra::gpu::fr_mul(
+                        coefficient,
+                        even_power);
+
+                odd_output[index] =
+                    algebra::gpu::fr_mul(
+                        coefficient,
+                        odd_power);
+
+                even_power =
+                    algebra::gpu::fr_mul(
+                        even_power,
+                        shift);
+
+                odd_power =
+                    algebra::gpu::fr_mul(
+                        odd_power,
+                        odd_shift);
+            }
+        }
+
         __global__ void
         split_even_odd_kernel(
             const GpuFr *input,
@@ -1363,6 +1431,170 @@ namespace gatzk::algebra
         {
             throw_cuda_ntt_error(
                 "coefficient coset synchronization",
+                status);
+        }
+
+        return true;
+    }
+
+    bool cuda_coset_lagrange_first_to_device_exact(
+        std::size_t domain_size,
+        const FieldElement &shift,
+        mcl::Fr *device_output,
+        std::size_t target_size)
+    {
+        if (device_output == nullptr ||
+            domain_size == 0 ||
+            target_size < 2 ||
+            (domain_size &
+             (domain_size - 1U)) != 0U ||
+            (target_size &
+             (target_size - 1U)) != 0U ||
+            target_size % domain_size != 0)
+        {
+            return false;
+        }
+
+        const auto half_size =
+            target_size / 2;
+
+        if (domain_size > half_size ||
+            half_size >
+                kMaximumCudaNttSize)
+        {
+            return false;
+        }
+
+        int device = 0;
+
+        auto status =
+            cudaGetDevice(
+                &device);
+
+        if (status != cudaSuccess)
+        {
+            throw_cuda_ntt_error(
+                "device lookup",
+                status);
+        }
+
+        auto &workspace =
+            cuda_ntt_workspace();
+
+        const auto total_bytes =
+            checked_ntt_bytes(
+                target_size,
+                1);
+
+        if (!workspace.ensure(
+                total_bytes,
+                device))
+        {
+            return false;
+        }
+
+        const auto stream =
+            workspace.stream;
+
+        status =
+            cudaMemsetAsync(
+                workspace.input,
+                0,
+                total_bytes,
+                stream);
+
+        if (status != cudaSuccess)
+        {
+            throw_cuda_ntt_error(
+                "L0 coset lane clear",
+                status);
+        }
+
+        const auto root =
+            FieldElement::
+                root_of_unity(
+                    target_size);
+
+        const auto odd_shift =
+            shift * root;
+
+        const auto inverse_domain_size =
+            FieldElement(
+                static_cast<std::uint64_t>(
+                    domain_size))
+                .inv();
+
+        const auto chunk_count =
+            (domain_size +
+             kCosetPowerChunkElements -
+             1) /
+            kCosetPowerChunkElements;
+
+        constexpr unsigned
+            kBlockSize = 256;
+
+        const auto block_count =
+            static_cast<unsigned>(
+                (chunk_count +
+                 kBlockSize - 1) /
+                kBlockSize);
+
+        if (block_count != 0)
+        {
+            prepare_constant_prefix_coset_lanes_kernel<<<
+                block_count,
+                kBlockSize,
+                0,
+                stream>>>(
+                gpu_field(
+                    inverse_domain_size),
+                domain_size,
+                gpu_field(
+                    shift),
+                gpu_field(
+                    odd_shift),
+                reinterpret_cast<GpuFr *>(
+                    workspace.input),
+                reinterpret_cast<GpuFr *>(
+                    workspace.input +
+                    half_size));
+
+            status =
+                cudaGetLastError();
+
+            if (status != cudaSuccess)
+            {
+                throw_cuda_ntt_error(
+                    "L0 coset lane preparation",
+                    status);
+            }
+
+            record_cuda_kernel_invocations(
+                1);
+        }
+
+        if (!run_cuda_ntt_device(
+                workspace.input,
+                reinterpret_cast<
+                    IcicleScalar *>(
+                    device_output),
+                half_size,
+                2,
+                ntt::NTTDir::kForward,
+                device,
+                stream))
+        {
+            return false;
+        }
+
+        status =
+            cudaStreamSynchronize(
+                stream);
+
+        if (status != cudaSuccess)
+        {
+            throw_cuda_ntt_error(
+                "L0 coset synchronization",
                 status);
         }
 

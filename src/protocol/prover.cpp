@@ -56,6 +56,7 @@
 #include "gatzk/util/logging.hpp"
 #include "gatzk/util/route2.hpp"
 #include "gatzk/protocol/verifier.hpp"
+#include "gatzk/protocol/cuda_fh.hpp"
 #include "gatzk/protocol/cuda_t_edge.hpp"
 #include "gatzk/protocol/t_edge_program.hpp"
 
@@ -176,6 +177,14 @@ namespace gatzk::protocol
                 {
                     algebra::
                         release_cuda_weighted_dot_cache();
+                }
+                catch (...)
+                {
+                }
+
+                try
+                {
+                    release_cuda_fh_executor_cache();
                 }
                 catch (...)
                 {
@@ -5386,23 +5395,40 @@ namespace gatzk::protocol
                 }
             }
 
-            static std::size_t
+            std::size_t
             cuda_t_edge_leaf_cache_slot_count(
                 const TEdgeBoundProgram &program)
+                const
             {
                 constexpr std::size_t
                     kBaselineLeafCacheSlots = 8;
 
-                std::size_t slot_count =
+                constexpr std::size_t
+                    kPreferredLeafCacheSlots = 24;
+
+                std::size_t minimum_slot_count =
                     kBaselineLeafCacheSlots;
+
+                std::unordered_set<std::string>
+                    unique_labels;
+
+                unique_labels.reserve(
+                    program.accesses.size());
+
+                for (const auto &access :
+                     program.accesses)
+                {
+                    unique_labels.insert(
+                        access.label);
+                }
 
                 for (const auto &term :
                      program.terms)
                 {
-                    std::vector<std::string>
-                        labels;
+                    std::unordered_set<std::string>
+                        term_labels;
 
-                    labels.reserve(
+                    term_labels.reserve(
                         term.required_accesses
                             .size());
 
@@ -5417,29 +5443,44 @@ namespace gatzk::protocol
                                 "access index overflow");
                         }
 
-                        const auto &label =
+                        term_labels.insert(
                             program
                                 .accesses[access_index]
-                                .label;
-
-                        if (std::find(
-                                labels.begin(),
-                                labels.end(),
-                                label) ==
-                            labels.end())
-                        {
-                            labels.push_back(
-                                label);
-                        }
+                                .label);
                     }
 
-                    slot_count =
+                    minimum_slot_count =
                         std::max(
-                            slot_count,
-                            labels.size());
+                            minimum_slot_count,
+                            term_labels.size());
                 }
 
-                return slot_count;
+                const auto maximum_useful_slots =
+                    std::max(
+                        minimum_slot_count,
+                        unique_labels.size());
+
+                auto candidate =
+                    std::min(
+                        maximum_useful_slots,
+                        std::max(
+                            minimum_slot_count,
+                            kPreferredLeafCacheSlots));
+
+                while (candidate >
+                       minimum_slot_count)
+                {
+                    if (cuda_t_edge_executor_can_admit(
+                            target_size_,
+                            candidate))
+                    {
+                        return candidate;
+                    }
+
+                    --candidate;
+                }
+
+                return minimum_slot_count;
             }
             bool should_use_cuda_t_edge_engine()
                 const
@@ -5482,6 +5523,27 @@ namespace gatzk::protocol
                 return cuda_t_edge_executor_can_admit(
                     target_size_,
                     cache_slot_count);
+            }
+
+            bool should_use_cuda_fh_engine()
+                const
+            {
+                if (label_ != "t_FH" ||
+                    target_size_ <
+                        (std::size_t{1} << 26) ||
+                    !full_graph_feature_identity_enabled(
+                        context_) ||
+                    !util::route2_options()
+                         .cuda_field_hotspots ||
+                    !algebra::
+                        cuda_field_hotspots_available() ||
+                    !cuda_fh_executor_available())
+                {
+                    return false;
+                }
+
+                return cuda_fh_executor_can_admit(
+                    target_size_);
             }
 
             void reset_cuda_t_edge_transient_leaf_state()
@@ -5530,6 +5592,18 @@ namespace gatzk::protocol
                 const auto leaf_cache_slots =
                     cuda_t_edge_leaf_cache_slot_count(
                         program);
+                progress_note(
+                    "prove:quotient:t_edge:"
+                    "cuda_leaf_cache:"
+                    "slots=" +
+                    std::to_string(
+                        leaf_cache_slots) +
+                    ":accesses=" +
+                    std::to_string(
+                        program.accesses.size()) +
+                    ":terms=" +
+                    std::to_string(
+                        program.terms.size()));
 
                 auto executor =
                     create_cuda_t_edge_executor(
@@ -6192,7 +6266,356 @@ namespace gatzk::protocol
                     throw;
                 }
             }
+            std::vector<FieldElement>
+            materialize_cuda_t_fh_coefficients()
+            {
+                if (!fh_parameters_.has_value())
+                {
+                    throw std::runtime_error(
+                        "CUDA FH route is missing quotient parameters");
+                }
 
+                auto executor =
+                    create_cuda_fh_executor(
+                        domain_->size,
+                        target_size_,
+                        shift_,
+                        domain_->omega,
+                        fh_parameters_
+                            ->alpha_quot,
+                        fh_parameters_
+                            ->beta_feat);
+
+                if (executor == nullptr)
+                {
+                    throw std::runtime_error(
+                        "CUDA FH route was selected but executor is unavailable");
+                }
+
+                constexpr std::size_t
+                    kUploadChunkElements =
+                        std::size_t{1} << 20;
+
+                std::vector<FieldElement>
+                    staging(
+                        std::min(
+                            target_size_,
+                            kUploadChunkElements));
+
+                const auto
+                    try_materialize_direct_gpu_leaf =
+                        [&](const std::string &label,
+                            std::size_t slot)
+                    -> bool
+                {
+                    if (const auto *polynomial =
+                            lookup_polynomial(
+                                label);
+                        polynomial != nullptr)
+                    {
+                        if (polynomial->basis ==
+                                algebra::
+                                    PolynomialBasis::
+                                        Evaluation &&
+                            polynomial->domain !=
+                                nullptr &&
+                            polynomial->domain
+                                    ->size ==
+                                domain_->size &&
+                            polynomial->domain
+                                    ->omega ==
+                                domain_->omega)
+                        {
+                            const auto &values =
+                                polynomial->values();
+
+                            const auto *blinder =
+                                polynomial
+                                        ->zero_domain_blinder
+                                        .empty()
+                                    ? nullptr
+                                    : FieldElement::
+                                          native_array_data(
+                                              polynomial
+                                                  ->zero_domain_blinder
+                                                  .data());
+
+                            return executor
+                                ->materialize_evaluation_leaf(
+                                    slot,
+                                    FieldElement::
+                                        native_array_data(
+                                            values.data()),
+                                    values.size(),
+                                    blinder,
+                                    polynomial
+                                        ->zero_domain_blinder
+                                        .size());
+                        }
+
+                        if (polynomial->basis ==
+                            algebra::
+                                PolynomialBasis::
+                                    Coefficient)
+                        {
+                            const auto &coefficients =
+                                polynomial->values();
+
+                            return executor
+                                ->materialize_coefficient_leaf(
+                                    slot,
+                                    FieldElement::
+                                        native_array_data(
+                                            coefficients
+                                                .data()),
+                                    coefficients.size());
+                        }
+                    }
+
+                    const auto spilled_it =
+                        trace_.spilled_polynomials
+                            .find(label);
+
+                    if (spilled_it !=
+                            trace_
+                                .spilled_polynomials
+                                .end() &&
+                        spilled_it->second
+                                .domain_name ==
+                            domain_->name)
+                    {
+                        auto source_values =
+                            load_spilled_values(
+                                spilled_it->second);
+
+                        const auto *blinder =
+                            spilled_it->second
+                                    .zero_domain_blinder
+                                    .empty()
+                                ? nullptr
+                                : FieldElement::
+                                      native_array_data(
+                                          spilled_it
+                                              ->second
+                                              .zero_domain_blinder
+                                              .data());
+
+                        return executor
+                            ->materialize_evaluation_leaf(
+                                slot,
+                                FieldElement::
+                                    native_array_data(
+                                        source_values
+                                            .data()),
+                                source_values.size(),
+                                blinder,
+                                spilled_it->second
+                                    .zero_domain_blinder
+                                    .size());
+                    }
+
+                    return false;
+                };
+
+                const auto materialize_label =
+                    [&](const std::string &label,
+                        std::size_t slot)
+                {
+                    if (try_materialize_direct_gpu_leaf(
+                            label,
+                            slot))
+                    {
+                        return;
+                    }
+
+                    auto values =
+                        coset_values_ptr(
+                            label);
+
+                    if (values == nullptr ||
+                        values->size() !=
+                            target_size_)
+                    {
+                        throw std::runtime_error(
+                            "CUDA FH materialized leaf "
+                            "has wrong size: " +
+                            label);
+                    }
+
+                    for (std::size_t offset = 0;
+                         offset <
+                         target_size_;)
+                    {
+                        const auto count =
+                            std::min(
+                                staging.size(),
+                                target_size_ -
+                                    offset);
+
+                        values->copy_logical_range(
+                            offset,
+                            count,
+                            staging.data());
+
+                        executor
+                            ->upload_leaf_chunk(
+                                slot,
+                                offset,
+                                FieldElement::
+                                    native_array_data(
+                                        staging.data()),
+                                count);
+
+                        offset +=
+                            count;
+                    }
+                };
+
+                progress_note(
+                    "prove:quotient:t_FH:"
+                    "cuda_device_resident:"
+                    "boundary:start");
+
+                if (!executor
+                         ->materialize_lagrange_first_leaf(
+                             0))
+                {
+                    throw std::runtime_error(
+                        "CUDA FH L0 materialization was not admitted");
+                }
+
+                progress_note(
+                    "prove:quotient:t_FH:"
+                    "cuda_device_resident:"
+                    "boundary:done");
+
+                // Pass 1:
+                //
+                //   t0
+                // + alpha * (1-Llast)*(R_next-R)
+                // + alpha^2 * t2
+                materialize_label(
+                    "P_R_feat",
+                    1);
+
+                executor
+                    ->accumulate_accumulator(
+                        0,
+                        1);
+
+                progress_note(
+                    "prove:quotient:t_FH:"
+                    "cuda_device_resident:"
+                    "accumulator:queued");
+
+                // Pass 2:
+                //
+                // alpha * (1-Llast) *
+                // (-Q_tbl*m*J_tbl)
+                materialize_label(
+                    "P_Q_tbl_feat",
+                    1);
+
+                materialize_label(
+                    "P_m_feat",
+                    2);
+
+                materialize_label(
+                    "P_J_tbl_feat",
+                    3);
+
+                executor
+                    ->accumulate_table_grand_product(
+                        0,
+                        1,
+                        2,
+                        3);
+
+                progress_note(
+                    "prove:quotient:t_FH:"
+                    "cuda_device_resident:"
+                    "table_grand_product:queued");
+
+                // Pass 3:
+                //
+                // alpha^3 * t3
+                // + alpha^4 * t4
+                materialize_label(
+                    "P_Table_feat",
+                    2);
+
+                executor
+                    ->accumulate_table_lookup(
+                        1,
+                        2,
+                        3);
+
+                progress_note(
+                    "prove:quotient:t_FH:"
+                    "cuda_device_resident:"
+                    "table_lookup:queued");
+
+                // Pass 4:
+                //
+                // alpha * (1-Llast) *
+                // (Q_qry*J_qry)
+                materialize_label(
+                    "P_Q_qry_feat",
+                    1);
+
+                materialize_label(
+                    "P_J_qry_feat",
+                    3);
+
+                executor
+                    ->accumulate_query_grand_product(
+                        0,
+                        1,
+                        3);
+
+                progress_note(
+                    "prove:quotient:t_FH:"
+                    "cuda_device_resident:"
+                    "query_grand_product:queued");
+
+                // Pass 5:
+                //
+                // alpha^5 * t5
+                // + alpha^6 * t6
+                materialize_label(
+                    "P_Query_feat",
+                    2);
+
+                executor
+                    ->accumulate_query_lookup(
+                        1,
+                        2,
+                        3);
+
+                progress_note(
+                    "prove:quotient:t_FH:"
+                    "cuda_device_resident:"
+                    "query_lookup:queued");
+
+                std::vector<FieldElement>
+                    output(
+                        target_size_,
+                        FieldElement::zero());
+
+                executor
+                    ->finalize_coefficients(
+                        output.data(),
+                        output.size());
+
+                trim_field_coefficients(
+                    &output);
+
+                progress_note(
+                    "prove:quotient:t_FH:"
+                    "cuda_device_resident:done");
+
+                return output;
+            }
             algebra::Polynomial materialize(const crypto::KZGKeyPair &key)
             {
                 if (target_size_ > key.pk.degree_bound + 1)
@@ -6379,11 +6802,17 @@ namespace gatzk::protocol
                 const bool cuda_t_edge_route =
                     should_use_cuda_t_edge_engine();
 
+                const bool cuda_t_fh_route =
+                    should_use_cuda_fh_engine();
+
                 std::vector<FieldElement>
                     quotient_values;
 
                 std::vector<FieldElement>
                     cuda_t_edge_coefficients;
+
+                std::vector<FieldElement>
+                    cuda_t_fh_coefficients;
 
                 if (cuda_t_edge_route)
                 {
@@ -6396,6 +6825,19 @@ namespace gatzk::protocol
 
                     progress_note(
                         "prove:quotient:t_edge:"
+                        "cuda_device_resident:done");
+                }
+                else if (cuda_t_fh_route)
+                {
+                    progress_note(
+                        "prove:quotient:t_FH:"
+                        "cuda_device_resident:start");
+
+                    cuda_t_fh_coefficients =
+                        materialize_cuda_t_fh_coefficients();
+
+                    progress_note(
+                        "prove:quotient:t_FH:"
                         "cuda_device_resident:done");
                 }
                 else
@@ -6472,7 +6914,9 @@ namespace gatzk::protocol
                     // Keep it out of the formal path until equivalence is proved by
                     // a pointwise regression over every registered constraint term.
                 }
-                else if (label_ == "t_FH")
+                else if (
+                    label_ == "t_FH" &&
+                    !cuda_t_fh_route)
                 {
                     // The point evaluator runs up to 32 workers.  Letting those
                     // workers discover a cold FH dependency independently causes
@@ -6531,7 +6975,9 @@ namespace gatzk::protocol
                         "prove:quotient:t_edge:"
                         "evaluate:start");
                 }
-                else if (label_ == "t_FH")
+                else if (
+                    label_ == "t_FH" &&
+                    !cuda_t_fh_route)
                 {
                     progress_note("prove:quotient:t_FH:evaluate:start");
                 }
@@ -6542,7 +6988,8 @@ namespace gatzk::protocol
                 const auto point_evaluation_start =
                     Clock::now();
 
-                if (!cuda_t_edge_route)
+                if (!cuda_t_edge_route &&
+                    !cuda_t_fh_route)
                 {
                     std::vector<FieldElement>
                         quotient_zero_inverses;
@@ -7023,7 +7470,8 @@ namespace gatzk::protocol
 
                 if (label_ == "t_edge")
                 {
-                    if (!cuda_t_edge_route)
+                    if (!cuda_t_edge_route &&
+                        !cuda_t_fh_route)
                     {
                         progress_note(
                             "prove:quotient:t_edge:"
@@ -7038,7 +7486,9 @@ namespace gatzk::protocol
                         "prove:quotient:t_edge:"
                         "coefficients:start");
                 }
-                else if (label_ == "t_FH")
+                else if (
+                    label_ == "t_FH" &&
+                    !cuda_t_fh_route)
                 {
                     progress_note(
                         "prove:quotient:t_FH:evaluate:done:ms=" + std::to_string(elapsed_ms(
@@ -7066,6 +7516,12 @@ namespace gatzk::protocol
                         std::move(
                             cuda_t_edge_coefficients);
                 }
+                else if (cuda_t_fh_route)
+                {
+                    coefficients =
+                        std::move(
+                            cuda_t_fh_coefficients);
+                }
                 else
                 {
                     coefficients =
@@ -7080,7 +7536,9 @@ namespace gatzk::protocol
                         "prove:quotient:t_edge:coefficients:done:ms=" + std::to_string(elapsed_ms(
                                                                             coefficient_start, Clock::now())));
                 }
-                else if (label_ == "t_FH")
+                else if (
+                    label_ == "t_FH" &&
+                    !cuda_t_fh_route)
                 {
                     progress_note(
                         "prove:quotient:t_FH:coefficients:done:ms=" + std::to_string(elapsed_ms(
@@ -9926,7 +10384,50 @@ namespace gatzk::protocol
                             *t_edge_index),
                         heavy_indices.end());
                 }
+                const auto t_fh_index =
+                    [&]() -> std::optional<
+                              std::size_t>
+                {
+                    const auto it =
+                        std::find(
+                            labels.begin(),
+                            labels.end(),
+                            "t_FH");
 
+                    if (it ==
+                        labels.end())
+                    {
+                        return std::nullopt;
+                    }
+
+                    return static_cast<
+                        std::size_t>(
+                        std::distance(
+                            labels.begin(),
+                            it));
+                }();
+
+                if (t_fh_index.has_value() &&
+                    std::find(
+                        heavy_indices.begin(),
+                        heavy_indices.end(),
+                        *t_fh_index) !=
+                        heavy_indices.end())
+                {
+                    append_note(
+                        metrics,
+                        "quotient_large_family_t_FH_second=1");
+
+                    run_one(
+                        *t_fh_index);
+
+                    heavy_indices.erase(
+                        std::remove(
+                            heavy_indices.begin(),
+                            heavy_indices.end(),
+                            *t_fh_index),
+                        heavy_indices.end());
+                }
                 std::stable_sort(
                     heavy_indices.begin(),
                     heavy_indices.end(),

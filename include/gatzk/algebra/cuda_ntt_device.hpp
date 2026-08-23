@@ -44,6 +44,24 @@ namespace gatzk::algebra
         mcl::Fr *device_output,
         std::size_t target_size);
 
+    // Materialize the first Lagrange basis polynomial L_0 of a
+    // root-of-unity domain directly on the shifted quotient coset.
+    //
+    // L_0 has coefficient vector:
+    //
+    //   [1/n, 1/n, ..., 1/n]
+    //
+    // of length domain_size.  Constructing it directly avoids a full
+    // host-side evaluation vector and source-domain INTT.
+    //
+    // device_output uses the same [even lane][odd lane] layout as the
+    // other exact CUDA coset materializers.
+    bool cuda_coset_lagrange_first_to_device_exact(
+        std::size_t domain_size,
+        const FieldElement &shift,
+        mcl::Fr *device_output,
+        std::size_t target_size);
+
     // Canonical logical coset evaluations already resident on CUDA:
     //
     // device evaluations
