@@ -8282,7 +8282,17 @@ namespace gatzk::crypto
                             .begin(),
                         second_it));
 
-            if (preassembled_quotient_flags
+            auto &first_prepared =
+                precomputed_inverse_denominators
+                    [0][first_index];
+
+            auto &second_prepared =
+                precomputed_inverse_denominators
+                    [1][second_index];
+
+            if (!first_prepared.empty() ||
+                !second_prepared.empty() ||
+                preassembled_quotient_flags
                         [0][first_index] != 0 ||
                 preassembled_quotient_flags
                         [1][second_index] != 0)
@@ -8290,6 +8300,129 @@ namespace gatzk::crypto
                 continue;
             }
 
+            // The canonical domain-opening pair is (z, z * omega).
+            // For this case the second inverse-denominator vector is
+            // exactly a rotated/scaled view of the first one.  Preserve
+            // the specialized O(n) reuse path instead of invoking the
+            // more expensive generic two-point quotient fusion.
+            if (points[1] ==
+                points[0] *
+                    domain->omega)
+            {
+                first_prepared.resize(
+                    domain->size);
+
+                const auto build_start =
+                    Clock::now();
+
+                build_opening_inverse_denominators(
+                    &first_prepared,
+                    domain,
+                    points[0],
+                    field_worker_caps[0]);
+
+                const auto build_ms =
+                    elapsed_ms(
+                        build_start,
+                        Clock::now());
+
+                second_prepared.resize(
+                    domain->size);
+
+                const auto reuse_start =
+                    Clock::now();
+
+                const auto *first_native =
+                    FieldElement::
+                        native_array_data(
+                            first_prepared.data());
+
+                auto *second_native =
+                    FieldElement::
+                        mutable_native_array_data(
+                            second_prepared.data());
+
+                const auto omega_inverse =
+                    domain->omega
+                        .inv()
+                        .native();
+
+                parallel_for_chunks_capped(
+                    domain->size,
+                    std::size_t{1} << 15,
+                    pair_field_worker_cap,
+                    [&](std::size_t begin,
+                        std::size_t end)
+                    {
+                        for (std::size_t row =
+                                 begin;
+                             row < end;
+                             ++row)
+                        {
+                            const auto source_row =
+                                row == 0
+                                    ? domain->size - 1
+                                    : row - 1;
+
+                            mcl::Fr::mul(
+                                second_native[row],
+                                first_native[source_row],
+                                omega_inverse);
+                        }
+                    });
+
+                const auto reuse_ms =
+                    elapsed_ms(
+                        reuse_start,
+                        Clock::now());
+
+                if (profiles != nullptr)
+                {
+                    (*profiles)[0]
+                        .denominator_inverse_ms +=
+                        build_ms;
+
+                    (*profiles)[0]
+                        .denominator_inverse_cache_misses +=
+                        1;
+
+                    (*profiles)[0]
+                        .finalize_ms +=
+                        build_ms;
+
+                    (*profiles)[1]
+                        .denominator_inverse_reuse_ms +=
+                        reuse_ms;
+
+                    (*profiles)[1]
+                        .denominator_inverse_reuse_hits +=
+                        1;
+
+                    (*profiles)[1]
+                        .finalize_ms +=
+                        reuse_ms;
+                }
+
+                progress_note(
+                    "kzg:opening:"
+                    "rotated_denominator_reuse:"
+                    "domain=" +
+                    domain->name +
+                    ":size=" +
+                    std::to_string(
+                        domain->size) +
+                    ":build_ms=" +
+                    std::to_string(
+                        build_ms) +
+                    ":reuse_ms=" +
+                    std::to_string(
+                        reuse_ms));
+
+                continue;
+            }
+
+            // Non-rotated same-domain pairs still use the generic paired
+            // construction validated by the stage-2 equivalence test.
             const auto &second_group =
                 folded.plans[1]
                     .evaluation_groups[second_index];
@@ -8305,26 +8438,18 @@ namespace gatzk::crypto
                     "paired opening group is missing its scaled claim");
             }
 
-            auto &first_quotient =
-                precomputed_inverse_denominators
-                    [0][first_index];
-
-            auto &second_quotient =
-                precomputed_inverse_denominators
-                    [1][second_index];
-
-            first_quotient.resize(
+            first_prepared.resize(
                 domain->size);
 
-            second_quotient.resize(
+            second_prepared.resize(
                 domain->size);
 
             const auto pair_build_start =
                 Clock::now();
 
             build_paired_opening_quotients(
-                &first_quotient,
-                &second_quotient,
+                &first_prepared,
+                &second_prepared,
                 domain,
                 points[0],
                 points[1],
@@ -8349,11 +8474,6 @@ namespace gatzk::crypto
 
             if (profiles != nullptr)
             {
-                // One physical paired batch inversion constructs both
-                // quotient-scalar vectors.  Attribute one cache miss to the
-                // first group and one exact paired reuse to the second group.
-                // Split the shared wall time so aggregate wall accounting
-                // remains non-overlapping.
                 (*profiles)[0]
                     .denominator_inverse_ms +=
                     pair_build_ms / 2.0;
@@ -8390,125 +8510,124 @@ namespace gatzk::crypto
                 ":wall_ms=" +
                 std::to_string(
                     pair_build_ms));
-        }
-        std::array<G1Point, 2> witnesses{
-            g1_zero(),
-            g1_zero(),
-        };
+            std::array<G1Point, 2> witnesses{
+                g1_zero(),
+                g1_zero(),
+            };
 
-        const auto open_one =
-            [&](std::size_t group)
-        {
-            const auto local_start =
-                Clock::now();
-
-            const auto *msm_options =
-                execution_options != nullptr
-                    ? &(*execution_options)[group].msm
-                    : nullptr;
-
-            auto *profile =
-                profiles != nullptr
-                    ? &(*profiles)[group]
-                    : nullptr;
-            witnesses[group] =
-                open_single_point_fold(
-                    folded.plans[group],
-                    0,
-                    points[group],
-                    key.pk,
-                    profile,
-                    field_worker_caps[group],
-                    msm_options,
-                    &precomputed_inverse_denominators[group],
-                    &preassembled_quotient_flags[group]);
-
-            if (profile != nullptr)
+            const auto open_one =
+                [&](std::size_t group)
             {
-                profile->finalize_ms +=
-                    elapsed_ms(
-                        local_start,
-                        Clock::now());
+                const auto local_start =
+                    Clock::now();
+
+                const auto *msm_options =
+                    execution_options != nullptr
+                        ? &(*execution_options)[group].msm
+                        : nullptr;
+
+                auto *profile =
+                    profiles != nullptr
+                        ? &(*profiles)[group]
+                        : nullptr;
+                witnesses[group] =
+                    open_single_point_fold(
+                        folded.plans[group],
+                        0,
+                        points[group],
+                        key.pk,
+                        profile,
+                        field_worker_caps[group],
+                        msm_options,
+                        &precomputed_inverse_denominators[group],
+                        &preassembled_quotient_flags[group]);
+
+                if (profile != nullptr)
+                {
+                    profile->finalize_ms +=
+                        elapsed_ms(
+                            local_start,
+                            Clock::now());
+                }
+            };
+
+            g1_parallel_msm_batch_workers(
+                2,
+                [&](std::size_t group)
+                {
+                    open_one(group);
+                });
+
+            return witnesses;
+        }
+
+        bool KZG::verify_point_group(
+            const std::vector<Commitment> &commitments,
+            const FieldElement &point,
+            const std::vector<FieldElement> &claimed_values,
+            const FieldElement &folding_challenge,
+            const G1Point &witness,
+            const KZGVerifierKey &vk)
+        {
+            if (commitments.empty() || commitments.size() != claimed_values.size())
+            {
+                throw std::runtime_error("point-group verification shape mismatch");
             }
-        };
-
-        g1_parallel_msm_batch_workers(
-            2,
-            [&](std::size_t group)
+            if (folding_challenge.is_zero())
             {
-                open_one(group);
-            });
+                throw std::runtime_error(
+                    "point-group verification folding challenge must be non-zero");
+            }
 
-        return witnesses;
-    }
+            const auto powers = folding_powers(folding_challenge, commitments.size());
+            const auto folded_commitments = folded_commitment_points(
+                commitments, powers);
+            mcl::Fr sum;
+            sum.clear();
+            for (std::size_t i = 0; i < claimed_values.size(); ++i)
+            {
+                mcl::Fr product;
+                mcl::Fr::mul(
+                    product,
+                    claimed_values[i].native(),
+                    powers[i].native());
+                mcl::Fr::add(sum, sum, product);
+            }
+            const auto folded_value = FieldElement::from_native(sum);
+            const auto numerator = g1_sub(
+                folded_commitments,
+                g1_mul(vk.g1_generator, folded_value));
+            return verify_pairing_equation(numerator, witness, point, vk);
+        }
 
-    bool KZG::verify_point_group(
-        const std::vector<Commitment> &commitments,
-        const FieldElement &point,
-        const std::vector<FieldElement> &claimed_values,
-        const FieldElement &folding_challenge,
-        const G1Point &witness,
-        const KZGVerifierKey &vk)
-    {
-        if (commitments.empty() || commitments.size() != claimed_values.size())
+        bool KZG::verify_domain_divisibility(
+            const Commitment &proof_local,
+            const Commitment &long_term_anchor,
+            const Commitment &blinder,
+            const std::string &domain_name,
+            const KZGVerifierKey &vk)
         {
-            throw std::runtime_error("point-group verification shape mismatch");
-        }
-        if (folding_challenge.is_zero())
-        {
-            throw std::runtime_error(
-                "point-group verification folding challenge must be non-zero");
-        }
-
-        const auto powers = folding_powers(folding_challenge, commitments.size());
-        const auto folded_commitments = folded_commitment_points(
-            commitments, powers);
-        mcl::Fr sum;
-        sum.clear();
-        for (std::size_t i = 0; i < claimed_values.size(); ++i)
-        {
-            mcl::Fr product;
-            mcl::Fr::mul(
-                product,
-                claimed_values[i].native(),
-                powers[i].native());
-            mcl::Fr::add(sum, sum, product);
-        }
-        const auto folded_value = FieldElement::from_native(sum);
-        const auto numerator = g1_sub(
-            folded_commitments,
-            g1_mul(vk.g1_generator, folded_value));
-        return verify_pairing_equation(numerator, witness, point, vk);
-    }
-
-    bool KZG::verify_domain_divisibility(
-        const Commitment &proof_local,
-        const Commitment &long_term_anchor,
-        const Commitment &blinder,
-        const std::string &domain_name,
-        const KZGVerifierKey &vk)
-    {
-        const auto zero_it = vk.domain_zero_g2.find(domain_name);
-        if (zero_it == vk.domain_zero_g2.end() || blinder.point == g1_zero())
-        {
-            return false;
-        }
-        const auto tau_to_domain_size = g2_add(zero_it->second, vk.g2_one);
-        const auto shifted = g1_add(
-            g1_sub(proof_local.point, long_term_anchor.point),
-            blinder.point);
-        if (util::route2_options().fast_verify_pairing && vk.g2_one_prepared != nullptr)
-        {
-            return pairing_product_is_one_mixed_prepared(
+            const auto zero_it = vk.domain_zero_g2.find(domain_name);
+            if (zero_it == vk.domain_zero_g2.end() || blinder.point == g1_zero())
+            {
+                return false;
+            }
+            const auto tau_to_domain_size = g2_add(zero_it->second, vk.g2_one);
+            const auto shifted = g1_add(
+                g1_sub(proof_local.point, long_term_anchor.point),
+                blinder.point);
+            if (util::route2_options().fast_verify_pairing && vk.g2_one_prepared != nullptr)
+            {
+                return pairing_product_is_one_mixed_prepared(
+                    blinder.point,
+                    tau_to_domain_size,
+                    g1_neg(shifted),
+                    *vk.g2_one_prepared);
+            }
+            return pairing_equal(
                 blinder.point,
                 tau_to_domain_size,
-                g1_neg(shifted),
-                *vk.g2_one_prepared);
+                shifted,
+                vk.g2_one);
         }
-        return pairing_equal(
-            blinder.point,
-            tau_to_domain_size,
-            shifted,
-            vk.g2_one);
     }
-}

@@ -1,6 +1,7 @@
 #include <cuda_runtime.h>
 
 #include <array>
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -47,6 +48,12 @@ namespace gatzk::algebra
         // twiddle storage would be unnecessary for the production quotient path.
         constexpr std::size_t kMaximumCudaNttSize =
             std::size_t{1} << 26;
+        constexpr std::size_t kDefaultCudaNttDomainSize =
+            std::size_t{1} << 24;
+
+        static_assert(
+            kDefaultCudaNttDomainSize <=
+            kMaximumCudaNttSize);
 
         // Preserve workspace/headroom after persistent ICICLE twiddles and the
         // explicit input/output buffers have been accounted for.
@@ -66,14 +73,17 @@ namespace gatzk::algebra
             static std::mutex mutex;
             return mutex;
         }
-        std::array<bool, device_context::MAX_DEVICES> &
-        cuda_ntt_domain_initialized()
+        std::array<
+            std::size_t,
+            device_context::MAX_DEVICES> &
+        cuda_ntt_domain_capacity()
         {
             static std::array<
-                bool,
+                std::size_t,
                 device_context::MAX_DEVICES>
-                initialized{};
-            return initialized;
+                capacity{};
+
+            return capacity;
         }
 
         [[noreturn]] void throw_cuda_ntt_error(
@@ -97,16 +107,23 @@ namespace gatzk::algebra
 
             return size * batch_size * sizeof(mcl::Fr);
         }
-
-        IcicleScalar protocol_maximum_root()
+        IcicleScalar protocol_root_for_size(
+            std::size_t size)
         {
-            // Use the protocol's exact MCL root rather than assuming that a
-            // backend-specific primitive-root convention is identical.
+            if (size < 2 ||
+                (size & (size - 1U)) != 0U ||
+                size > kMaximumCudaNttSize)
+            {
+                throw std::runtime_error(
+                    "invalid CUDA NTT domain size");
+            }
+
             const auto root =
                 FieldElement::root_of_unity(
-                    kMaximumCudaNttSize);
+                    size);
 
-            std::array<std::uint8_t, 64> bytes{};
+            std::array<std::uint8_t, 64>
+                bytes{};
 
             if (root.native().getLittleEndian(
                     bytes.data(),
@@ -119,41 +136,105 @@ namespace gatzk::algebra
             IcicleScalar output{};
 
             static_assert(
-                sizeof(output.limbs_storage.limbs) == sizeof(mcl::Fr));
+                sizeof(
+                    output.limbs_storage.limbs) ==
+                sizeof(mcl::Fr));
 
             std::memcpy(
                 output.limbs_storage.limbs,
                 bytes.data(),
-                sizeof(output.limbs_storage.limbs));
+                sizeof(
+                    output.limbs_storage.limbs));
 
             return output;
         }
-
         void ensure_cuda_ntt_domain(
             int device,
+            std::size_t required_size,
             device_context::DeviceContext &ctx)
         {
             if (device < 0 ||
-                static_cast<std::size_t>(device) >=
+                static_cast<std::size_t>(
+                    device) >=
                     device_context::MAX_DEVICES)
             {
                 throw std::runtime_error(
                     "CUDA quotient NTT received an invalid device id");
             }
 
+            if (required_size < 2 ||
+                (required_size &
+                 (required_size - 1U)) != 0U ||
+                required_size >
+                    kMaximumCudaNttSize)
+            {
+                throw std::runtime_error(
+                    "CUDA quotient NTT received an invalid domain size");
+            }
+
+            const auto requested_capacity =
+                std::max(
+                    required_size,
+                    kDefaultCudaNttDomainSize);
+
             std::lock_guard<std::mutex> lock(
                 cuda_ntt_domain_mutex());
 
-            auto &initialized =
-                cuda_ntt_domain_initialized();
+            auto &capacities =
+                cuda_ntt_domain_capacity();
 
-            if (initialized[static_cast<std::size_t>(device)])
+            const auto device_index =
+                static_cast<std::size_t>(
+                    device);
+
+            auto &current_capacity =
+                capacities[device_index];
+
+            if (current_capacity >=
+                requested_capacity)
             {
                 return;
             }
 
+            if (current_capacity != 0)
+            {
+                auto status =
+                    cudaDeviceSynchronize();
+
+                if (status != cudaSuccess)
+                {
+                    throw_cuda_ntt_error(
+                        "domain upgrade pre-synchronization",
+                        status);
+                }
+
+                status =
+                    bls12_381_release_domain(
+                        ctx);
+
+                if (status != cudaSuccess)
+                {
+                    throw_cuda_ntt_error(
+                        "domain upgrade release",
+                        status);
+                }
+
+                status =
+                    cudaDeviceSynchronize();
+
+                if (status != cudaSuccess)
+                {
+                    throw_cuda_ntt_error(
+                        "domain upgrade release synchronization",
+                        status);
+                }
+
+                current_capacity = 0;
+            }
+
             auto primitive_root =
-                protocol_maximum_root();
+                protocol_root_for_size(
+                    requested_capacity);
 
             const auto status =
                 bls12_381_initialize_domain(
@@ -169,7 +250,8 @@ namespace gatzk::algebra
             }
 
             const auto sync_status =
-                cudaStreamSynchronize(ctx.stream);
+                cudaStreamSynchronize(
+                    ctx.stream);
 
             if (sync_status != cudaSuccess)
             {
@@ -178,7 +260,8 @@ namespace gatzk::algebra
                     sync_status);
             }
 
-            initialized[static_cast<std::size_t>(device)] = true;
+            current_capacity =
+                requested_capacity;
         }
         struct CudaNttWorkspace
         {
@@ -832,6 +915,7 @@ namespace gatzk::algebra
 
             ensure_cuda_ntt_domain(
                 device,
+                size,
                 ctx);
 
             auto config =
@@ -1981,13 +2065,13 @@ namespace gatzk::algebra
             std::lock_guard<std::mutex> lock(
                 cuda_ntt_domain_mutex());
 
-            auto &initialized =
-                cuda_ntt_domain_initialized();
+            auto &capacities =
+                cuda_ntt_domain_capacity();
 
             const auto device_index =
                 static_cast<std::size_t>(device);
 
-            if (initialized[device_index])
+            if (capacities[device_index] != 0)
             {
                 // release_domain frees twiddle material shared by every NTT on
                 // this device.  All quotient transforms must be complete before
@@ -2032,8 +2116,8 @@ namespace gatzk::algebra
                         status);
                 }
 
-                initialized[device_index] =
-                    false;
+                capacities[device_index] =
+                    0;
             }
         }
 
