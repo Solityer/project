@@ -1,7 +1,6 @@
 #include <cuda_runtime.h>
 
 #include <array>
-#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -47,13 +46,7 @@ namespace gatzk::algebra
         // Deliberately do not initialize a 2^32 ICICLE domain: the additional
         // twiddle storage would be unnecessary for the production quotient path.
         constexpr std::size_t kMaximumCudaNttSize =
-            std::size_t{1} << 26;
-        constexpr std::size_t kDefaultCudaNttDomainSize =
             std::size_t{1} << 24;
-
-        static_assert(
-            kDefaultCudaNttDomainSize <=
-            kMaximumCudaNttSize);
 
         // Preserve workspace/headroom after persistent ICICLE twiddles and the
         // explicit input/output buffers have been accounted for.
@@ -73,17 +66,14 @@ namespace gatzk::algebra
             static std::mutex mutex;
             return mutex;
         }
-        std::array<
-            std::size_t,
-            device_context::MAX_DEVICES> &
-        cuda_ntt_domain_capacity()
+        std::array<bool, device_context::MAX_DEVICES> &
+        cuda_ntt_domain_initialized()
         {
             static std::array<
-                std::size_t,
+                bool,
                 device_context::MAX_DEVICES>
-                capacity{};
-
-            return capacity;
+                initialized{};
+            return initialized;
         }
 
         [[noreturn]] void throw_cuda_ntt_error(
@@ -107,23 +97,16 @@ namespace gatzk::algebra
 
             return size * batch_size * sizeof(mcl::Fr);
         }
-        IcicleScalar protocol_root_for_size(
-            std::size_t size)
-        {
-            if (size < 2 ||
-                (size & (size - 1U)) != 0U ||
-                size > kMaximumCudaNttSize)
-            {
-                throw std::runtime_error(
-                    "invalid CUDA NTT domain size");
-            }
 
+        IcicleScalar protocol_maximum_root()
+        {
+            // Use the protocol's exact MCL root rather than assuming that a
+            // backend-specific primitive-root convention is identical.
             const auto root =
                 FieldElement::root_of_unity(
-                    size);
+                    kMaximumCudaNttSize);
 
-            std::array<std::uint8_t, 64>
-                bytes{};
+            std::array<std::uint8_t, 64> bytes{};
 
             if (root.native().getLittleEndian(
                     bytes.data(),
@@ -136,105 +119,41 @@ namespace gatzk::algebra
             IcicleScalar output{};
 
             static_assert(
-                sizeof(
-                    output.limbs_storage.limbs) ==
-                sizeof(mcl::Fr));
+                sizeof(output.limbs_storage.limbs) == sizeof(mcl::Fr));
 
             std::memcpy(
                 output.limbs_storage.limbs,
                 bytes.data(),
-                sizeof(
-                    output.limbs_storage.limbs));
+                sizeof(output.limbs_storage.limbs));
 
             return output;
         }
+
         void ensure_cuda_ntt_domain(
             int device,
-            std::size_t required_size,
             device_context::DeviceContext &ctx)
         {
             if (device < 0 ||
-                static_cast<std::size_t>(
-                    device) >=
+                static_cast<std::size_t>(device) >=
                     device_context::MAX_DEVICES)
             {
                 throw std::runtime_error(
                     "CUDA quotient NTT received an invalid device id");
             }
 
-            if (required_size < 2 ||
-                (required_size &
-                 (required_size - 1U)) != 0U ||
-                required_size >
-                    kMaximumCudaNttSize)
-            {
-                throw std::runtime_error(
-                    "CUDA quotient NTT received an invalid domain size");
-            }
-
-            const auto requested_capacity =
-                std::max(
-                    required_size,
-                    kDefaultCudaNttDomainSize);
-
             std::lock_guard<std::mutex> lock(
                 cuda_ntt_domain_mutex());
 
-            auto &capacities =
-                cuda_ntt_domain_capacity();
+            auto &initialized =
+                cuda_ntt_domain_initialized();
 
-            const auto device_index =
-                static_cast<std::size_t>(
-                    device);
-
-            auto &current_capacity =
-                capacities[device_index];
-
-            if (current_capacity >=
-                requested_capacity)
+            if (initialized[static_cast<std::size_t>(device)])
             {
                 return;
             }
 
-            if (current_capacity != 0)
-            {
-                auto status =
-                    cudaDeviceSynchronize();
-
-                if (status != cudaSuccess)
-                {
-                    throw_cuda_ntt_error(
-                        "domain upgrade pre-synchronization",
-                        status);
-                }
-
-                status =
-                    bls12_381_release_domain(
-                        ctx);
-
-                if (status != cudaSuccess)
-                {
-                    throw_cuda_ntt_error(
-                        "domain upgrade release",
-                        status);
-                }
-
-                status =
-                    cudaDeviceSynchronize();
-
-                if (status != cudaSuccess)
-                {
-                    throw_cuda_ntt_error(
-                        "domain upgrade release synchronization",
-                        status);
-                }
-
-                current_capacity = 0;
-            }
-
             auto primitive_root =
-                protocol_root_for_size(
-                    requested_capacity);
+                protocol_maximum_root();
 
             const auto status =
                 bls12_381_initialize_domain(
@@ -250,8 +169,7 @@ namespace gatzk::algebra
             }
 
             const auto sync_status =
-                cudaStreamSynchronize(
-                    ctx.stream);
+                cudaStreamSynchronize(ctx.stream);
 
             if (sync_status != cudaSuccess)
             {
@@ -260,8 +178,7 @@ namespace gatzk::algebra
                     sync_status);
             }
 
-            current_capacity =
-                requested_capacity;
+            initialized[static_cast<std::size_t>(device)] = true;
         }
         struct CudaNttWorkspace
         {
@@ -277,123 +194,69 @@ namespace gatzk::algebra
                 release();
             }
 
-            void ensure_stream(
-                int current_device)
-            {
-                if (stream != nullptr &&
-                    device == current_device)
-                {
-                    return;
-                }
-
-                release();
-
-                device = current_device;
-
-                const auto status =
-                    cudaStreamCreateWithFlags(
-                        &stream,
-                        cudaStreamNonBlocking);
-
-                if (status != cudaSuccess)
-                {
-                    stream = nullptr;
-                    device = -1;
-
-                    throw_cuda_ntt_error(
-                        "stream creation",
-                        status);
-                }
-            }
-
-            bool ensure_input_only(
+            bool ensure(
                 std::size_t required_bytes,
                 int current_device)
             {
-                ensure_stream(
-                    current_device);
-
-                // Device-output exact transforms write their final NTT result
-                // directly into the caller-owned leaf.  They therefore need only
-                // one persistent target-sized staging vector.
-                if (output != nullptr)
+                if (stream == nullptr ||
+                    device != current_device)
                 {
+                    release();
+
+                    device = current_device;
+
                     auto status =
-                        cudaFreeAsync(
-                            output,
-                            stream);
+                        cudaStreamCreateWithFlags(
+                            &stream,
+                            cudaStreamNonBlocking);
 
                     if (status != cudaSuccess)
                     {
+                        stream = nullptr;
+                        device = -1;
+
                         throw_cuda_ntt_error(
-                            "unused output workspace release",
-                            status);
-                    }
-
-                    output = nullptr;
-
-                    status =
-                        cudaStreamSynchronize(
-                            stream);
-
-                    if (status != cudaSuccess)
-                    {
-                        throw_cuda_ntt_error(
-                            "unused output workspace release synchronization",
+                            "stream creation",
                             status);
                     }
                 }
 
-                if (capacity_bytes >=
-                        required_bytes &&
-                    input != nullptr)
+                if (capacity_bytes >= required_bytes &&
+                    input != nullptr &&
+                    output != nullptr)
                 {
                     return true;
                 }
 
                 if (input != nullptr)
                 {
-                    const auto status =
-                        cudaFreeAsync(
-                            input,
-                            stream);
-
-                    if (status != cudaSuccess)
-                    {
-                        throw_cuda_ntt_error(
-                            "input workspace resize release",
-                            status);
-                    }
-
+                    (void)cudaFreeAsync(
+                        input,
+                        stream);
                     input = nullptr;
-
-                    const auto sync_status =
-                        cudaStreamSynchronize(
-                            stream);
-
-                    if (sync_status !=
-                        cudaSuccess)
-                    {
-                        throw_cuda_ntt_error(
-                            "input workspace resize synchronization",
-                            sync_status);
-                    }
                 }
+
+                if (output != nullptr)
+                {
+                    (void)cudaFreeAsync(
+                        output,
+                        stream);
+                    output = nullptr;
+                }
+
+                (void)cudaStreamSynchronize(stream);
 
                 capacity_bytes = 0;
 
                 auto status =
                     cudaMallocAsync(
-                        reinterpret_cast<void **>(
-                            &input),
+                        reinterpret_cast<void **>(&input),
                         required_bytes,
                         stream);
 
-                if (status ==
-                    cudaErrorMemoryAllocation)
+                if (status == cudaErrorMemoryAllocation)
                 {
                     (void)cudaGetLastError();
-
                     input = nullptr;
                     return false;
                 }
@@ -405,101 +268,36 @@ namespace gatzk::algebra
                         status);
                 }
 
-                capacity_bytes =
-                    required_bytes;
+                status =
+                    cudaMallocAsync(
+                        reinterpret_cast<void **>(&output),
+                        required_bytes,
+                        stream);
 
-                return true;
-            }
-
-            bool ensure(
-                std::size_t required_bytes,
-                int current_device)
-            {
-                ensure_stream(
-                    current_device);
-
-                if (capacity_bytes <
-                        required_bytes ||
-                    input == nullptr)
+                if (status != cudaSuccess)
                 {
-                    if (input != nullptr)
-                    {
-                        (void)cudaFreeAsync(
-                            input,
-                            stream);
-
-                        input = nullptr;
-                    }
-
-                    if (output != nullptr)
-                    {
-                        (void)cudaFreeAsync(
-                            output,
-                            stream);
-
-                        output = nullptr;
-                    }
+                    (void)cudaFreeAsync(
+                        input,
+                        stream);
 
                     (void)cudaStreamSynchronize(
                         stream);
 
-                    capacity_bytes = 0;
+                    input = nullptr;
+                    output = nullptr;
 
-                    auto status =
-                        cudaMallocAsync(
-                            reinterpret_cast<void **>(
-                                &input),
-                            required_bytes,
-                            stream);
-
-                    if (status ==
-                        cudaErrorMemoryAllocation)
+                    if (status == cudaErrorMemoryAllocation)
                     {
                         (void)cudaGetLastError();
-
-                        input = nullptr;
                         return false;
                     }
 
-                    if (status != cudaSuccess)
-                    {
-                        throw_cuda_ntt_error(
-                            "persistent input allocation",
-                            status);
-                    }
-
-                    capacity_bytes =
-                        required_bytes;
-                }
-
-                if (output != nullptr)
-                {
-                    return true;
-                }
-
-                const auto status =
-                    cudaMallocAsync(
-                        reinterpret_cast<void **>(
-                            &output),
-                        required_bytes,
-                        stream);
-
-                if (status ==
-                    cudaErrorMemoryAllocation)
-                {
-                    (void)cudaGetLastError();
-
-                    output = nullptr;
-                    return false;
-                }
-
-                if (status != cudaSuccess)
-                {
                     throw_cuda_ntt_error(
                         "persistent output allocation",
                         status);
                 }
 
+                capacity_bytes = required_bytes;
                 return true;
             }
 
@@ -535,6 +333,7 @@ namespace gatzk::algebra
                 device = -1;
             }
         };
+
         CudaNttWorkspace &cuda_ntt_workspace()
         {
             thread_local CudaNttWorkspace workspace;
@@ -698,74 +497,6 @@ namespace gatzk::algebra
             }
         }
         __global__ void
-        prepare_constant_prefix_coset_lanes_kernel(
-            GpuFr coefficient,
-            std::size_t coefficient_count,
-            GpuFr shift,
-            GpuFr odd_shift,
-            GpuFr *even_output,
-            GpuFr *odd_output)
-        {
-            const auto chunk =
-                static_cast<std::size_t>(
-                    blockIdx.x) *
-                    blockDim.x +
-                threadIdx.x;
-
-            const auto begin =
-                chunk *
-                kCosetPowerChunkElements;
-
-            if (begin >= coefficient_count)
-            {
-                return;
-            }
-
-            const auto end =
-                min(
-                    coefficient_count,
-                    begin +
-                        kCosetPowerChunkElements);
-
-            auto even_power =
-                fr_pow_u64(
-                    shift,
-                    static_cast<std::uint64_t>(
-                        begin));
-
-            auto odd_power =
-                fr_pow_u64(
-                    odd_shift,
-                    static_cast<std::uint64_t>(
-                        begin));
-
-            for (std::size_t index = begin;
-                 index < end;
-                 ++index)
-            {
-                even_output[index] =
-                    algebra::gpu::fr_mul(
-                        coefficient,
-                        even_power);
-
-                odd_output[index] =
-                    algebra::gpu::fr_mul(
-                        coefficient,
-                        odd_power);
-
-                even_power =
-                    algebra::gpu::fr_mul(
-                        even_power,
-                        shift);
-
-                odd_power =
-                    algebra::gpu::fr_mul(
-                        odd_power,
-                        odd_shift);
-            }
-        }
-
-        __global__ void
         split_even_odd_kernel(
             const GpuFr *input,
             GpuFr *even_output,
@@ -915,7 +646,6 @@ namespace gatzk::algebra
 
             ensure_cuda_ntt_domain(
                 device,
-                size,
                 ctx);
 
             auto config =
@@ -1063,9 +793,13 @@ namespace gatzk::algebra
                     return false;
                 }
             }
-            auto &workspace = cuda_ntt_workspace();
 
-            if (!workspace.ensure(total_bytes, device))
+            auto &workspace =
+                cuda_ntt_workspace();
+
+            if (!workspace.ensure(
+                    total_bytes,
+                    device))
             {
                 return false;
             }
@@ -1259,7 +993,7 @@ namespace gatzk::algebra
                 target_size,
                 1);
 
-        if (!workspace.ensure_input_only(
+        if (!workspace.ensure(
                 total_bytes,
                 device))
         {
@@ -1303,14 +1037,9 @@ namespace gatzk::algebra
             }
         }
 
-        // The caller-owned leaf is dead until the final forward transform.
-        // Reuse its prefix as the source-domain coefficient scratch instead
-        // of retaining a second target-sized CUDA workspace.
         if (!run_cuda_ntt_device(
                 workspace.input,
-                reinterpret_cast<
-                    IcicleScalar *>(
-                    device_output),
+                workspace.output,
                 domain_size,
                 1,
                 ntt::NTTDir::kInverse,
@@ -1324,7 +1053,7 @@ namespace gatzk::algebra
         {
             status =
                 cudaMemcpyAsync(
-                    device_output +
+                    workspace.output +
                         domain_size,
                     zero_domain_blinder,
                     checked_ntt_bytes(
@@ -1387,12 +1116,12 @@ namespace gatzk::algebra
                 stream>>>(
                 reinterpret_cast<
                     const GpuFr *>(
-                    device_output),
+                    workspace.output),
                 domain_size,
                 domain_size,
                 reinterpret_cast<
                     const GpuFr *>(
-                    device_output +
+                    workspace.output +
                     domain_size),
                 blinder_count,
                 active_count,
@@ -1504,7 +1233,7 @@ namespace gatzk::algebra
                 target_size,
                 1);
 
-        if (!workspace.ensure_input_only(
+        if (!workspace.ensure(
                 total_bytes,
                 device))
         {
@@ -1532,7 +1261,7 @@ namespace gatzk::algebra
         {
             status =
                 cudaMemcpyAsync(
-                    device_output,
+                    workspace.output,
                     coefficients,
                     checked_ntt_bytes(
                         coefficient_count,
@@ -1580,7 +1309,7 @@ namespace gatzk::algebra
                 stream>>>(
                 reinterpret_cast<
                     const GpuFr *>(
-                    device_output),
+                    workspace.output),
                 coefficient_count,
                 coefficient_count,
                 nullptr,
@@ -1634,170 +1363,6 @@ namespace gatzk::algebra
         {
             throw_cuda_ntt_error(
                 "coefficient coset synchronization",
-                status);
-        }
-
-        return true;
-    }
-
-    bool cuda_coset_lagrange_first_to_device_exact(
-        std::size_t domain_size,
-        const FieldElement &shift,
-        mcl::Fr *device_output,
-        std::size_t target_size)
-    {
-        if (device_output == nullptr ||
-            domain_size == 0 ||
-            target_size < 2 ||
-            (domain_size &
-             (domain_size - 1U)) != 0U ||
-            (target_size &
-             (target_size - 1U)) != 0U ||
-            target_size % domain_size != 0)
-        {
-            return false;
-        }
-
-        const auto half_size =
-            target_size / 2;
-
-        if (domain_size > half_size ||
-            half_size >
-                kMaximumCudaNttSize)
-        {
-            return false;
-        }
-
-        int device = 0;
-
-        auto status =
-            cudaGetDevice(
-                &device);
-
-        if (status != cudaSuccess)
-        {
-            throw_cuda_ntt_error(
-                "device lookup",
-                status);
-        }
-
-        auto &workspace =
-            cuda_ntt_workspace();
-
-        const auto total_bytes =
-            checked_ntt_bytes(
-                target_size,
-                1);
-
-        if (!workspace.ensure_input_only(
-                total_bytes,
-                device))
-        {
-            return false;
-        }
-
-        const auto stream =
-            workspace.stream;
-
-        status =
-            cudaMemsetAsync(
-                workspace.input,
-                0,
-                total_bytes,
-                stream);
-
-        if (status != cudaSuccess)
-        {
-            throw_cuda_ntt_error(
-                "L0 coset lane clear",
-                status);
-        }
-
-        const auto root =
-            FieldElement::
-                root_of_unity(
-                    target_size);
-
-        const auto odd_shift =
-            shift * root;
-
-        const auto inverse_domain_size =
-            FieldElement(
-                static_cast<std::uint64_t>(
-                    domain_size))
-                .inv();
-
-        const auto chunk_count =
-            (domain_size +
-             kCosetPowerChunkElements -
-             1) /
-            kCosetPowerChunkElements;
-
-        constexpr unsigned
-            kBlockSize = 256;
-
-        const auto block_count =
-            static_cast<unsigned>(
-                (chunk_count +
-                 kBlockSize - 1) /
-                kBlockSize);
-
-        if (block_count != 0)
-        {
-            prepare_constant_prefix_coset_lanes_kernel<<<
-                block_count,
-                kBlockSize,
-                0,
-                stream>>>(
-                gpu_field(
-                    inverse_domain_size),
-                domain_size,
-                gpu_field(
-                    shift),
-                gpu_field(
-                    odd_shift),
-                reinterpret_cast<GpuFr *>(
-                    workspace.input),
-                reinterpret_cast<GpuFr *>(
-                    workspace.input +
-                    half_size));
-
-            status =
-                cudaGetLastError();
-
-            if (status != cudaSuccess)
-            {
-                throw_cuda_ntt_error(
-                    "L0 coset lane preparation",
-                    status);
-            }
-
-            record_cuda_kernel_invocations(
-                1);
-        }
-
-        if (!run_cuda_ntt_device(
-                workspace.input,
-                reinterpret_cast<
-                    IcicleScalar *>(
-                    device_output),
-                half_size,
-                2,
-                ntt::NTTDir::kForward,
-                device,
-                stream))
-        {
-            return false;
-        }
-
-        status =
-            cudaStreamSynchronize(
-                stream);
-
-        if (status != cudaSuccess)
-        {
-            throw_cuda_ntt_error(
-                "L0 coset synchronization",
                 status);
         }
 
@@ -2065,13 +1630,13 @@ namespace gatzk::algebra
             std::lock_guard<std::mutex> lock(
                 cuda_ntt_domain_mutex());
 
-            auto &capacities =
-                cuda_ntt_domain_capacity();
+            auto &initialized =
+                cuda_ntt_domain_initialized();
 
             const auto device_index =
                 static_cast<std::size_t>(device);
 
-            if (capacities[device_index] != 0)
+            if (initialized[device_index])
             {
                 // release_domain frees twiddle material shared by every NTT on
                 // this device.  All quotient transforms must be complete before
@@ -2116,8 +1681,8 @@ namespace gatzk::algebra
                         status);
                 }
 
-                capacities[device_index] =
-                    0;
+                initialized[device_index] =
+                    false;
             }
         }
 

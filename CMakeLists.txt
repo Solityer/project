@@ -74,7 +74,6 @@ set(GATZK_SOURCES
     src/util/config.cpp
     src/util/logging.cpp
     src/util/route2.cpp
-    src/protocol/cuda_fh_stub.cpp
     src/protocol/cuda_t_edge_stub.cpp
 )
 
@@ -83,13 +82,11 @@ if(GATZK_ENABLE_CUDA_BACKEND)
         src/algebra/cuda_backend.cu
         src/algebra/cuda_ntt.cu
         src/crypto/cuda_msm.cu
-        src/protocol/cuda_fh.cu
         src/protocol/cuda_t_edge.cu
     )
 
     list(REMOVE_ITEM GATZK_SOURCES
         src/crypto/cuda_msm_stub.cpp
-        src/protocol/cuda_fh_stub.cpp
         src/protocol/cuda_t_edge_stub.cpp)
 
     set(GATZK_ICICLE_ROOT "${PROJECT_SOURCE_DIR}/third_party/icicle")

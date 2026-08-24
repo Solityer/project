@@ -5315,387 +5315,6 @@ namespace gatzk::crypto
                     }
                 });
         }
-        void build_paired_opening_quotients(
-            std::vector<FieldElement> *first_quotient,
-            std::vector<FieldElement> *second_quotient,
-            const std::shared_ptr<
-                algebra::RootOfUnityDomain> &domain,
-            const FieldElement &first_point,
-            const FieldElement &second_point,
-            const std::vector<FieldElement>
-                &first_folded_values,
-            const std::vector<FieldElement>
-                &second_folded_values,
-            const FieldElement &first_claim,
-            const FieldElement &second_claim,
-            std::size_t worker_cap)
-        {
-            if (first_quotient == nullptr ||
-                second_quotient == nullptr ||
-                domain == nullptr ||
-                first_quotient->size() !=
-                    domain->size ||
-                second_quotient->size() !=
-                    domain->size ||
-                first_folded_values.size() !=
-                    domain->size ||
-                second_folded_values.size() !=
-                    domain->size)
-            {
-                throw std::runtime_error(
-                    "paired opening quotient/domain shape mismatch");
-            }
-
-            auto *first_native =
-                FieldElement::
-                    mutable_native_array_data(
-                        first_quotient->data());
-
-            auto *second_native =
-                FieldElement::
-                    mutable_native_array_data(
-                        second_quotient->data());
-
-            const auto *first_folded_native =
-                FieldElement::
-                    native_array_data(
-                        first_folded_values.data());
-
-            const auto *second_folded_native =
-                FieldElement::
-                    native_array_data(
-                        second_folded_values.data());
-
-            const auto first_point_native =
-                first_point.native();
-
-            const auto second_point_native =
-                second_point.native();
-
-            const auto first_claim_native =
-                first_claim.native();
-
-            const auto second_claim_native =
-                second_claim.native();
-
-            const auto cpu_count =
-                std::max<std::size_t>(
-                    1,
-                    std::thread::
-                        hardware_concurrency());
-
-            const auto available_workers =
-                worker_cap == 0
-                    ? cpu_count
-                    : std::min<std::size_t>(
-                          cpu_count,
-                          worker_cap);
-
-            constexpr std::size_t
-                kMinRowsPerTask =
-                    1ULL << 18;
-
-            const auto requested_task_count =
-                std::max<std::size_t>(
-                    1,
-                    (domain->size +
-                     kMinRowsPerTask - 1) /
-                        kMinRowsPerTask);
-
-            const auto task_count =
-                std::max<std::size_t>(
-                    1,
-                    std::min(
-                        available_workers,
-                        requested_task_count));
-
-            const auto chunk_size =
-                (domain->size +
-                 task_count - 1) /
-                task_count;
-
-            std::vector<mcl::Fr>
-                chunk_products(
-                    task_count);
-
-            const auto omega_native =
-                domain->omega.native();
-
-            const auto omega_inverse_native =
-                domain->omega
-                    .inv()
-                    .native();
-
-            const auto run_chunks =
-                [&](const auto &fn)
-            {
-                if (task_count == 1)
-                {
-                    fn(
-                        std::size_t{0},
-                        std::size_t{0},
-                        domain->size);
-
-                    return;
-                }
-
-                std::vector<
-                    std::future<void>>
-                    futures;
-
-                futures.reserve(
-                    task_count);
-
-                for (std::size_t task = 0;
-                     task < task_count;
-                     ++task)
-                {
-                    const auto begin =
-                        task *
-                        chunk_size;
-
-                    const auto end =
-                        std::min(
-                            domain->size,
-                            begin +
-                                chunk_size);
-
-                    futures.push_back(
-                        std::async(
-                            std::launch::async,
-                            [&, task, begin, end]
-                            {
-                                fn(
-                                    task,
-                                    begin,
-                                    end);
-                            }));
-                }
-
-                for (auto &future :
-                     futures)
-                {
-                    future.get();
-                }
-            };
-
-            // first_quotient temporarily stores each row's prefix
-            // product for:
-            //
-            //   (omega^i-a)(omega^i-b)
-            //
-            // so one batch inversion serves both opening points.
-            run_chunks(
-                [&](std::size_t task,
-                    std::size_t begin,
-                    std::size_t end)
-                {
-                    mcl::Fr local_product;
-                    local_product = 1;
-
-                    auto domain_point =
-                        domain
-                            ->point_at(begin)
-                            .native();
-
-                    for (std::size_t row = begin;
-                         row < end;
-                         ++row)
-                    {
-                        mcl::Fr first_denominator;
-                        mcl::Fr second_denominator;
-                        mcl::Fr denominator_product;
-
-                        mcl::Fr::sub(
-                            first_denominator,
-                            domain_point,
-                            first_point_native);
-
-                        mcl::Fr::sub(
-                            second_denominator,
-                            domain_point,
-                            second_point_native);
-
-                        if (first_denominator
-                                .isZero() ||
-                            second_denominator
-                                .isZero())
-                        {
-                            throw std::runtime_error(
-                                "paired opening point overlaps evaluation domain");
-                        }
-
-                        mcl::Fr::mul(
-                            denominator_product,
-                            first_denominator,
-                            second_denominator);
-
-                        first_native[row] =
-                            local_product;
-
-                        mcl::Fr::mul(
-                            local_product,
-                            local_product,
-                            denominator_product);
-
-                        mcl::Fr::mul(
-                            domain_point,
-                            domain_point,
-                            omega_native);
-                    }
-
-                    chunk_products[task] =
-                        local_product;
-                });
-
-            std::vector<mcl::Fr>
-                chunk_prefixes(
-                    task_count);
-
-            mcl::Fr total_product;
-            total_product = 1;
-
-            for (std::size_t task = 0;
-                 task < task_count;
-                 ++task)
-            {
-                chunk_prefixes[task] =
-                    total_product;
-
-                mcl::Fr::mul(
-                    total_product,
-                    total_product,
-                    chunk_products[task]);
-            }
-
-            mcl::Fr suffix_inverse;
-
-            mcl::Fr::inv(
-                suffix_inverse,
-                total_product);
-
-            for (std::size_t task =
-                     task_count;
-                 task-- > 0;)
-            {
-                mcl::Fr chunk_inverse;
-
-                mcl::Fr::mul(
-                    chunk_inverse,
-                    suffix_inverse,
-                    chunk_prefixes[task]);
-
-                mcl::Fr::mul(
-                    suffix_inverse,
-                    suffix_inverse,
-                    chunk_products[task]);
-
-                chunk_products[task] =
-                    chunk_inverse;
-            }
-
-            // During the reverse batch-inversion pass, immediately
-            // multiply the two numerators by their corresponding
-            // denominator inverses. No standalone inverse vector survives
-            // and no later whole-domain quotient-assembly scan is needed.
-            run_chunks(
-                [&](std::size_t task,
-                    std::size_t begin,
-                    std::size_t end)
-                {
-                    auto local_suffix =
-                        chunk_products[task];
-
-                    auto domain_point =
-                        domain
-                            ->point_at(
-                                end - 1)
-                            .native();
-
-                    for (std::size_t row = end;
-                         row-- > begin;)
-                    {
-                        const auto prefix =
-                            first_native[row];
-
-                        mcl::Fr inverse_product;
-
-                        mcl::Fr::mul(
-                            inverse_product,
-                            local_suffix,
-                            prefix);
-
-                        mcl::Fr first_denominator;
-                        mcl::Fr second_denominator;
-                        mcl::Fr denominator_product;
-
-                        mcl::Fr::sub(
-                            first_denominator,
-                            domain_point,
-                            first_point_native);
-
-                        mcl::Fr::sub(
-                            second_denominator,
-                            domain_point,
-                            second_point_native);
-
-                        mcl::Fr::mul(
-                            denominator_product,
-                            first_denominator,
-                            second_denominator);
-
-                        mcl::Fr first_inverse;
-                        mcl::Fr second_inverse;
-
-                        mcl::Fr::mul(
-                            first_inverse,
-                            second_denominator,
-                            inverse_product);
-
-                        mcl::Fr::mul(
-                            second_inverse,
-                            first_denominator,
-                            inverse_product);
-
-                        mcl::Fr first_numerator;
-                        mcl::Fr second_numerator;
-
-                        mcl::Fr::sub(
-                            first_numerator,
-                            first_folded_native[row],
-                            first_claim_native);
-
-                        mcl::Fr::sub(
-                            second_numerator,
-                            second_folded_native[row],
-                            second_claim_native);
-
-                        mcl::Fr::mul(
-                            first_native[row],
-                            first_numerator,
-                            first_inverse);
-
-                        mcl::Fr::mul(
-                            second_native[row],
-                            second_numerator,
-                            second_inverse);
-
-                        mcl::Fr::mul(
-                            local_suffix,
-                            local_suffix,
-                            denominator_product);
-
-                        if (row > begin)
-                        {
-                            mcl::Fr::mul(
-                                domain_point,
-                                domain_point,
-                                omega_inverse_native);
-                        }
-                    }
-                });
-        }
-
         G1Point open_single_point_fold(
             const FoldedOpeningPlan &plan,
             std::size_t point_index,
@@ -5703,14 +5322,7 @@ namespace gatzk::crypto
             const KZGProverKey &pk,
             BatchOpeningProfile *profile = nullptr,
             std::size_t worker_cap = 0,
-            const G1MSMExecutionOptions *msm_options = nullptr,
-            std::vector<
-                std::vector<FieldElement>>
-                *precomputed_inverse_denominators =
-                    nullptr,
-            const std::vector<std::uint8_t>
-                *preassembled_quotient_flags =
-                    nullptr)
+            const G1MSMExecutionOptions *msm_options = nullptr)
         {
             auto out = g1_zero();
             const auto &coefficient_scaled_claim_sum = plan.coefficient_scaled_claim_sums[point_index];
@@ -5741,153 +5353,86 @@ namespace gatzk::crypto
             }
             std::vector<FieldElement>
                 opening_evaluation_scratch;
-
-            for (std::size_t group_index = 0;
-                 group_index <
-                 plan.evaluation_groups.size();
-                 ++group_index)
+            for (const auto &group : plan.evaluation_groups)
             {
-                const auto &group =
-                    plan.evaluation_groups[group_index];
+                const auto inverse_start =
+                    Clock::now();
 
-                bool reused_inverse = false;
+                opening_evaluation_scratch.resize(
+                    group.domain->size);
 
-                bool preassembled_quotient =
-                    false;
+                build_opening_inverse_denominators(
+                    &opening_evaluation_scratch,
+                    group.domain,
+                    point,
+                    worker_cap);
 
-                if (precomputed_inverse_denominators !=
-                        nullptr &&
-                    group_index <
-                        precomputed_inverse_denominators
-                            ->size())
+                if (profile != nullptr)
                 {
-                    auto &prepared =
-                        (*precomputed_inverse_denominators)
-                            [group_index];
+                    profile->denominator_inverse_ms +=
+                        elapsed_ms(
+                            inverse_start,
+                            Clock::now());
 
-                    if (!prepared.empty())
-                    {
-                        if (prepared.size() !=
-                            group.domain->size)
-                        {
-                            throw std::runtime_error(
-                                "precomputed opening "
-                                "inverse/domain shape "
-                                "mismatch");
-                        }
-
-                        opening_evaluation_scratch =
-                            std::move(prepared);
-
-                        reused_inverse = true;
-
-                        if (preassembled_quotient_flags !=
-                                nullptr &&
-                            group_index <
-                                preassembled_quotient_flags
-                                    ->size())
-                        {
-                            preassembled_quotient =
-                                (*preassembled_quotient_flags)
-                                    [group_index] != 0;
-                        }
-                    }
+                    profile
+                        ->denominator_inverse_cache_misses +=
+                        1;
                 }
 
-                if (!reused_inverse)
-                {
-                    const auto inverse_start =
-                        Clock::now();
+                const auto quotient_assembly_start =
+                    Clock::now();
 
-                    opening_evaluation_scratch.resize(
-                        group.domain->size);
+                auto *quotient_values_native =
+                    FieldElement::mutable_native_array_data(
+                        opening_evaluation_scratch.data());
 
-                    build_opening_inverse_denominators(
-                        &opening_evaluation_scratch,
-                        group.domain,
-                        point,
-                        worker_cap);
+                mcl::Fr zero;
+                zero.clear();
 
-                    if (profile != nullptr)
+                mcl::Fr base_numerator;
+
+                mcl::Fr::sub(
+                    base_numerator,
+                    zero,
+                    group.scaled_claim_sums[point_index]
+                        .native());
+
+                const auto *folded_values_native =
+                    FieldElement::native_array_data(
+                        group.folded_values.data());
+
+                parallel_for_chunks_capped(
+                    group.domain->size,
+                    1ULL << 15,
+                    worker_cap,
+                    [&](std::size_t begin,
+                        std::size_t end)
                     {
-                        profile
-                            ->denominator_inverse_ms +=
-                            elapsed_ms(
-                                inverse_start,
-                                Clock::now());
-
-                        profile
-                            ->denominator_inverse_cache_misses +=
-                            1;
-                    }
-                }
-
-                if (!preassembled_quotient)
-                {
-                    const auto
-                        quotient_assembly_start =
-                            Clock::now();
-
-                    auto *quotient_values_native =
-                        FieldElement::
-                            mutable_native_array_data(
-                                opening_evaluation_scratch
-                                    .data());
-
-                    mcl::Fr zero;
-                    zero.clear();
-
-                    mcl::Fr base_numerator;
-
-                    mcl::Fr::sub(
-                        base_numerator,
-                        zero,
-                        group
-                            .scaled_claim_sums[point_index]
-                            .native());
-
-                    const auto *folded_values_native =
-                        FieldElement::
-                            native_array_data(
-                                group.folded_values
-                                    .data());
-
-                    parallel_for_chunks_capped(
-                        group.domain->size,
-                        1ULL << 15,
-                        worker_cap,
-                        [&](std::size_t begin,
-                            std::size_t end)
+                        for (std::size_t row = begin;
+                             row < end;
+                             ++row)
                         {
-                            for (std::size_t row =
-                                     begin;
-                                 row < end;
-                                 ++row)
-                            {
-                                mcl::Fr
-                                    native_numerator =
-                                        base_numerator;
+                            mcl::Fr native_numerator =
+                                base_numerator;
 
-                                mcl::Fr::add(
-                                    native_numerator,
-                                    native_numerator,
-                                    folded_values_native[row]);
+                            mcl::Fr::add(
+                                native_numerator,
+                                native_numerator,
+                                folded_values_native[row]);
 
-                                mcl::Fr::mul(
-                                    quotient_values_native[row],
-                                    native_numerator,
-                                    quotient_values_native[row]);
-                            }
-                        });
+                            mcl::Fr::mul(
+                                quotient_values_native[row],
+                                native_numerator,
+                                quotient_values_native[row]);
+                        }
+                    });
 
-                    if (profile != nullptr)
-                    {
-                        profile
-                            ->quotient_assembly_ms +=
-                            elapsed_ms(
-                                quotient_assembly_start,
-                                Clock::now());
-                    }
+                if (profile != nullptr)
+                {
+                    profile->quotient_assembly_ms +=
+                        elapsed_ms(
+                            quotient_assembly_start,
+                            Clock::now());
                 }
 
                 const auto witness_msm_start =
@@ -8174,344 +7719,6 @@ namespace gatzk::crypto
             }
         }
 
-        std::array<
-            std::vector<
-                std::vector<FieldElement>>,
-            2>
-            precomputed_inverse_denominators;
-
-        std::array<
-            std::vector<std::uint8_t>,
-            2>
-            preassembled_quotient_flags;
-
-        for (std::size_t group = 0;
-             group < 2;
-             ++group)
-        {
-            const auto group_count =
-                folded.plans[group]
-                    .evaluation_groups
-                    .size();
-
-            precomputed_inverse_denominators[group]
-                .resize(
-                    group_count);
-
-            preassembled_quotient_flags[group]
-                .assign(
-                    group_count,
-                    0);
-        }
-
-        const auto same_domain =
-            [](const auto &lhs,
-               const auto &rhs)
-        {
-            return lhs != nullptr &&
-                   rhs != nullptr &&
-                   lhs->name == rhs->name &&
-                   lhs->size == rhs->size &&
-                   lhs->omega == rhs->omega;
-        };
-
-        const auto pair_field_worker_cap =
-            [&]()
-        {
-            if (field_worker_caps[0] == 0)
-            {
-                return field_worker_caps[1];
-            }
-
-            if (field_worker_caps[1] == 0)
-            {
-                return field_worker_caps[0];
-            }
-
-            return std::min(
-                field_worker_caps[0],
-                field_worker_caps[1]);
-        }();
-        for (std::size_t first_index = 0;
-             first_index <
-             folded.plans[0]
-                 .evaluation_groups
-                 .size();
-             ++first_index)
-        {
-            const auto &first_group =
-                folded.plans[0]
-                    .evaluation_groups[first_index];
-
-            const auto domain =
-                first_group.domain;
-
-            if (domain == nullptr)
-            {
-                continue;
-            }
-
-            const auto second_it =
-                std::find_if(
-                    folded.plans[1]
-                        .evaluation_groups
-                        .begin(),
-                    folded.plans[1]
-                        .evaluation_groups
-                        .end(),
-                    [&](const auto &candidate)
-                    {
-                        return same_domain(
-                            domain,
-                            candidate.domain);
-                    });
-
-            if (second_it ==
-                folded.plans[1]
-                    .evaluation_groups
-                    .end())
-            {
-                continue;
-            }
-
-            const auto second_index =
-                static_cast<std::size_t>(
-                    std::distance(
-                        folded.plans[1]
-                            .evaluation_groups
-                            .begin(),
-                        second_it));
-
-            auto &first_prepared =
-                precomputed_inverse_denominators
-                    [0][first_index];
-
-            auto &second_prepared =
-                precomputed_inverse_denominators
-                    [1][second_index];
-
-            if (!first_prepared.empty() ||
-                !second_prepared.empty() ||
-                preassembled_quotient_flags
-                        [0][first_index] != 0 ||
-                preassembled_quotient_flags
-                        [1][second_index] != 0)
-            {
-                continue;
-            }
-
-            // The canonical domain-opening pair is (z, z * omega).
-            // For this case the second inverse-denominator vector is
-            // exactly a rotated/scaled view of the first one.  Preserve
-            // the specialized O(n) reuse path instead of invoking the
-            // more expensive generic two-point quotient fusion.
-            if (points[1] ==
-                points[0] *
-                    domain->omega)
-            {
-                first_prepared.resize(
-                    domain->size);
-
-                const auto build_start =
-                    Clock::now();
-
-                build_opening_inverse_denominators(
-                    &first_prepared,
-                    domain,
-                    points[0],
-                    field_worker_caps[0]);
-
-                const auto build_ms =
-                    elapsed_ms(
-                        build_start,
-                        Clock::now());
-
-                second_prepared.resize(
-                    domain->size);
-
-                const auto reuse_start =
-                    Clock::now();
-
-                const auto *first_native =
-                    FieldElement::
-                        native_array_data(
-                            first_prepared.data());
-
-                auto *second_native =
-                    FieldElement::
-                        mutable_native_array_data(
-                            second_prepared.data());
-
-                const auto omega_inverse =
-                    domain->omega
-                        .inv()
-                        .native();
-
-                parallel_for_chunks_capped(
-                    domain->size,
-                    std::size_t{1} << 15,
-                    pair_field_worker_cap,
-                    [&](std::size_t begin,
-                        std::size_t end)
-                    {
-                        for (std::size_t row =
-                                 begin;
-                             row < end;
-                             ++row)
-                        {
-                            const auto source_row =
-                                row == 0
-                                    ? domain->size - 1
-                                    : row - 1;
-
-                            mcl::Fr::mul(
-                                second_native[row],
-                                first_native[source_row],
-                                omega_inverse);
-                        }
-                    });
-
-                const auto reuse_ms =
-                    elapsed_ms(
-                        reuse_start,
-                        Clock::now());
-
-                if (profiles != nullptr)
-                {
-                    (*profiles)[0]
-                        .denominator_inverse_ms +=
-                        build_ms;
-
-                    (*profiles)[0]
-                        .denominator_inverse_cache_misses +=
-                        1;
-
-                    (*profiles)[0]
-                        .finalize_ms +=
-                        build_ms;
-
-                    (*profiles)[1]
-                        .denominator_inverse_reuse_ms +=
-                        reuse_ms;
-
-                    (*profiles)[1]
-                        .denominator_inverse_reuse_hits +=
-                        1;
-
-                    (*profiles)[1]
-                        .finalize_ms +=
-                        reuse_ms;
-                }
-
-                progress_note(
-                    "kzg:opening:"
-                    "rotated_denominator_reuse:"
-                    "domain=" +
-                    domain->name +
-                    ":size=" +
-                    std::to_string(
-                        domain->size) +
-                    ":build_ms=" +
-                    std::to_string(
-                        build_ms) +
-                    ":reuse_ms=" +
-                    std::to_string(
-                        reuse_ms));
-
-                continue;
-            }
-
-            // Non-rotated same-domain pairs still use the generic paired
-            // construction validated by the stage-2 equivalence test.
-            const auto &second_group =
-                folded.plans[1]
-                    .evaluation_groups[second_index];
-
-            if (first_group
-                    .scaled_claim_sums
-                    .empty() ||
-                second_group
-                    .scaled_claim_sums
-                    .empty())
-            {
-                throw std::runtime_error(
-                    "paired opening group is missing its scaled claim");
-            }
-
-            first_prepared.resize(
-                domain->size);
-
-            second_prepared.resize(
-                domain->size);
-
-            const auto pair_build_start =
-                Clock::now();
-
-            build_paired_opening_quotients(
-                &first_prepared,
-                &second_prepared,
-                domain,
-                points[0],
-                points[1],
-                first_group.folded_values,
-                second_group.folded_values,
-                first_group
-                    .scaled_claim_sums[0],
-                second_group
-                    .scaled_claim_sums[0],
-                pair_field_worker_cap);
-
-            const auto pair_build_ms =
-                elapsed_ms(
-                    pair_build_start,
-                    Clock::now());
-
-            preassembled_quotient_flags
-                [0][first_index] = 1;
-
-            preassembled_quotient_flags
-                [1][second_index] = 1;
-
-            if (profiles != nullptr)
-            {
-                (*profiles)[0]
-                    .denominator_inverse_ms +=
-                    pair_build_ms / 2.0;
-
-                (*profiles)[0]
-                    .denominator_inverse_cache_misses +=
-                    1;
-
-                (*profiles)[1]
-                    .denominator_inverse_reuse_ms +=
-                    pair_build_ms / 2.0;
-
-                (*profiles)[1]
-                    .denominator_inverse_reuse_hits +=
-                    1;
-
-                (*profiles)[0]
-                    .finalize_ms +=
-                    pair_build_ms / 2.0;
-
-                (*profiles)[1]
-                    .finalize_ms +=
-                    pair_build_ms / 2.0;
-            }
-
-            progress_note(
-                "kzg:opening:"
-                "paired_denominator_quotient_fusion:"
-                "domain=" +
-                domain->name +
-                ":size=" +
-                std::to_string(
-                    domain->size) +
-                ":wall_ms=" +
-                std::to_string(
-                    pair_build_ms));
-        }
-
         std::array<G1Point, 2> witnesses{
             g1_zero(),
             g1_zero(),
@@ -8532,6 +7739,7 @@ namespace gatzk::crypto
                 profiles != nullptr
                     ? &(*profiles)[group]
                     : nullptr;
+
             witnesses[group] =
                 open_single_point_fold(
                     folded.plans[group],
@@ -8540,9 +7748,7 @@ namespace gatzk::crypto
                     key.pk,
                     profile,
                     field_worker_caps[group],
-                    msm_options,
-                    &precomputed_inverse_denominators[group],
-                    &preassembled_quotient_flags[group]);
+                    msm_options);
 
             if (profile != nullptr)
             {
@@ -8553,12 +7759,24 @@ namespace gatzk::crypto
             }
         };
 
-        g1_parallel_msm_batch_workers(
-            2,
-            [&](std::size_t group)
-            {
-                open_one(group);
-            });
+        auto first_future =
+            std::async(
+                std::launch::async,
+                [&]()
+                {
+                    open_one(0);
+                });
+
+        auto second_future =
+            std::async(
+                std::launch::async,
+                [&]()
+                {
+                    open_one(1);
+                });
+
+        first_future.get();
+        second_future.get();
 
         return witnesses;
     }
