@@ -135,12 +135,13 @@ namespace gatzk::protocol
         const std::vector<algebra::FieldElement> *precomputed_alpha_powers = nullptr,
         const TEdgeEvaluationPlan *evaluation_plan = nullptr,
         const QuotientBoundaryValues *boundary_values = nullptr);
-
     algebra::FieldElement evaluate_t_n(
         const ProtocolContext &context,
         const std::map<std::string, algebra::FieldElement> &challenges,
         const EvalFn &eval,
-        const algebra::FieldElement &z);
+        const algebra::FieldElement &z,
+        const TEdgeEvaluationPlan *evaluation_plan = nullptr,
+        const QuotientBoundaryValues *boundary_values = nullptr);
 
     algebra::FieldElement evaluate_t_in(
         const ProtocolContext &context,

@@ -5327,7 +5327,8 @@ namespace gatzk::protocol
                         power *= alpha;
                     }
                 }
-                if (label_ == "t_edge")
+                if (label_ == "t_edge" ||
+                    label_ == "t_N")
                 {
                     edge_evaluation_plan_ = build_t_edge_evaluation_plan(
                         context_, challenges_);
@@ -5403,32 +5404,16 @@ namespace gatzk::protocol
                 constexpr std::size_t
                     kBaselineLeafCacheSlots = 8;
 
-                constexpr std::size_t
-                    kPreferredLeafCacheSlots = 24;
-
-                std::size_t minimum_slot_count =
+                std::size_t slot_count =
                     kBaselineLeafCacheSlots;
-
-                std::unordered_set<std::string>
-                    unique_labels;
-
-                unique_labels.reserve(
-                    program.accesses.size());
-
-                for (const auto &access :
-                     program.accesses)
-                {
-                    unique_labels.insert(
-                        access.label);
-                }
 
                 for (const auto &term :
                      program.terms)
                 {
-                    std::unordered_set<std::string>
-                        term_labels;
+                    std::vector<std::string>
+                        labels;
 
-                    term_labels.reserve(
+                    labels.reserve(
                         term.required_accesses
                             .size());
 
@@ -5443,44 +5428,29 @@ namespace gatzk::protocol
                                 "access index overflow");
                         }
 
-                        term_labels.insert(
+                        const auto &label =
                             program
                                 .accesses[access_index]
-                                .label);
+                                .label;
+
+                        if (std::find(
+                                labels.begin(),
+                                labels.end(),
+                                label) ==
+                            labels.end())
+                        {
+                            labels.push_back(
+                                label);
+                        }
                     }
 
-                    minimum_slot_count =
+                    slot_count =
                         std::max(
-                            minimum_slot_count,
-                            term_labels.size());
+                            slot_count,
+                            labels.size());
                 }
 
-                const auto maximum_useful_slots =
-                    std::max(
-                        minimum_slot_count,
-                        unique_labels.size());
-
-                auto candidate =
-                    std::min(
-                        maximum_useful_slots,
-                        std::max(
-                            minimum_slot_count,
-                            kPreferredLeafCacheSlots));
-
-                while (candidate >
-                       minimum_slot_count)
-                {
-                    if (cuda_t_edge_executor_can_admit(
-                            target_size_,
-                            candidate))
-                    {
-                        return candidate;
-                    }
-
-                    --candidate;
-                }
-
-                return minimum_slot_count;
+                return slot_count;
             }
             bool should_use_cuda_t_edge_engine()
                 const
@@ -5524,13 +5494,12 @@ namespace gatzk::protocol
                     target_size_,
                     cache_slot_count);
             }
-
             bool should_use_cuda_fh_engine()
                 const
             {
                 if (label_ != "t_FH" ||
                     target_size_ <
-                        (std::size_t{1} << 26) ||
+                        (std::size_t{1} << 27) ||
                     !full_graph_feature_identity_enabled(
                         context_) ||
                     !util::route2_options()
@@ -6775,7 +6744,13 @@ namespace gatzk::protocol
                     }
                     else if (label_ == "t_N")
                     {
-                        return evaluate_t_n(context_, challenges_, eval, z);
+                        return evaluate_t_n(
+                            context_,
+                            challenges_,
+                            eval,
+                            z,
+                            edge_evaluation_plan_.get(),
+                            boundary_values);
                     }
                     else if (label_ == "t_in")
                     {
@@ -7006,7 +6981,9 @@ namespace gatzk::protocol
                     const auto boundary_shifted_zero =
                         shift_.pow(domain_->size);
 
-                    if (label_ == "t_edge" || label_ == "t_FH")
+                    if (label_ == "t_edge" ||
+                        label_ == "t_FH" ||
+                        label_ == "t_N")
                     {
                         if (target_size_ % domain_->size != 0)
                         {
@@ -7051,7 +7028,9 @@ namespace gatzk::protocol
                                          static_cast<std::uint64_t>(
                                              begin));
 
-                        if (label_ == "t_edge" || label_ == "t_FH")
+                        if (label_ == "t_edge" ||
+                            label_ == "t_FH" ||
+                            label_ == "t_N")
                         {
                             if (denominator_products == nullptr)
                             {
