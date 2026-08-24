@@ -29,10 +29,50 @@ def lrelu(x):return x if x>=0 else -sdiv(-x,5)
 def elu(x):return x if x>=0 else q(16.0*(math.exp(x/16.0)-1.0),1)
 def expneg(x):
  if x<0:raise ValueError('negative ExpMap input')
- return max(0,q(16.0*math.exp(-x/256.0),1))
+ return max(1,q(16.0*math.exp(-x/256.0),1))
 def npow(n):return max(2,1<<(max(1,n)-1).bit_length())
 def hx(v):return '0x'+(int(v)%FR).to_bytes(32,'big').hex()
 def digest(path):return hashlib.sha256(path.read_bytes()).hexdigest()
+def sha256_tagged(domain,payload):return 'sha256:'+hashlib.sha256(domain+payload).hexdigest()
+def static_table_rows_digest(ops):
+ entries=set()
+ def visit(expr):
+  if 'PublicTableLookup' in expr:
+   table=expr['PublicTableLookup'];vals=tuple(int(v)%FR for v in table['values']);bits=tuple(int(v) for v in table['bit_columns']);entries.add((vals,bits));return
+  for key in ('Add','Sub','Mul'):
+   if key in expr:
+    visit(expr[key][0]);visit(expr[key][1]);return
+ for op in ops:
+  for expr in op['residuals']:visit(expr)
+ ordered=sorted(entries,key=lambda item:(len(item[0]),item[0],len(item[1]),item[1]))
+ h=hashlib.sha256();h.update(b'zkDL-GAT-registry-static-table-rows-v1\0')
+ for vals,bits in ordered:
+  h.update(struct.pack('>Q',len(vals)))
+  for value in vals:h.update(int(value).to_bytes(32,'big'))
+  h.update(struct.pack('>Q',len(bits)))
+  for bit in bits:h.update(struct.pack('>I',bit))
+ return 'sha256:'+h.hexdigest()
+def registered_family_set_digest(spec):
+ h=hashlib.sha256();h.update(b'zkDL-GAT-registered-family-set-v1\0')
+ for tensor in spec:
+  if tensor['visibility']!='RegisteredModel':continue
+  fid=tensor['family_id'].encode();h.update(struct.pack('>Q',len(fid)));h.update(fid)
+  h.update(struct.pack('>QQ',int(tensor['logical_len']),int(tensor['padded_len'])))
+  shape=tensor['logical_shape'];h.update(struct.pack('>Q',len(shape)))
+  for value in shape:h.update(struct.pack('>Q',int(value)))
+  order=tensor['mle_order'];h.update(struct.pack('>Q',len(order)))
+  for value in order:
+   raw=value.encode();h.update(struct.pack('>Q',len(raw)));h.update(raw)
+ return 'sha256:'+h.hexdigest()
+def canonical_tensor_digest(spec,tensors):
+ h=hashlib.sha256();h.update(b'zkDL-GAT-canonical-tensor-v1\0')
+ for tensor in spec:
+  fid=tensor['family_id'].encode();h.update(struct.pack('>Q',len(fid)));h.update(fid)
+  values=tensors[fid.decode()];h.update(struct.pack('>Q',len(values)))
+  for value in values:
+   raw=int(value,0) if isinstance(value,str) else int(value)
+   h.update((raw%FR).to_bytes(32,'big'))
+ return 'sha256:'+h.hexdigest()
 
 def load_features(cache,n,d,scale):
  p=cache/'features.txt'
@@ -108,9 +148,28 @@ class Builder:
  def explicit(self,name,family,index,rows):return self.view(name,family,{'Explicit':[int(x) for x in index]+[0]*(rows-len(index))})
  def public(self,name,values,rows):return {'column_id':name,'source':{'Public':list(map(int,values))+[0]*(rows-len(values))}}
  def op(self,kind,label,logical,columns,residuals,degree=None):
-  rows=npow(logical);columns=list(columns)+[self.public('valid',[1]*logical,rows)];v=len(columns)-1;res=[valid(x,v) for x in residuals]
+  base=npow(logical);rows=base*2
+  normalized=[]
+  for column in list(columns):
+   source=column['source']
+   if 'Public' in source:
+    values=list(source['Public'])+[0]*(rows-len(source['Public']))
+    column={'column_id':column['column_id'],'source':{'Public':values}}
+   elif 'TensorView' in source:
+    view=source['TensorView']['canonical_index_by_row']
+    if 'Affine' in view:
+     affine=view['Affine']
+     view={'PaddedAffine':{'offset':int(affine['offset']),'stride':int(affine['stride']),'logical_rows':int(logical),'padding_index':0}}
+     column={'column_id':column['column_id'],'source':{'TensorView':{'family_id':source['TensorView']['family_id'],'canonical_index_by_row':view}}}
+    elif 'Explicit' in view:
+     view={'Explicit':list(view['Explicit'])+[0]*max(0,rows-len(view['Explicit']))}
+     column={'column_id':column['column_id'],'source':{'TensorView':{'family_id':source['TensorView']['family_id'],'canonical_index_by_row':view}}}
+   normalized.append(column)
+  columns=normalized+[self.public('valid',[1]*logical,rows),self.public('domain_selector',[1]*logical,rows)]
+  valid_index=len(columns)-2;selector_index=len(columns)-1
+  res=[M(X(selector_index),valid(x,valid_index)) for x in residuals]
   deg=max((expr_degree(x) for x in res),default=1)+1
-  self.ops.append({'family_id':label,'operation_kind':kind,'rows':rows,'degree_bound':max(degree or deg,deg),'columns':columns,'residuals':res,'requires_line8':sum('TensorView' in c['source'] for c in columns)>1})
+  self.ops.append({'family_id':label,'operation_kind':kind,'rows':rows,'real_rows':logical,'degree_bound':max(degree or deg,deg),'columns':columns,'residuals':res,'requires_line8':sum('TensorView' in c['source'] for c in columns)>1})
 
 def expr_degree(e):
  if 'Const' in e:return 0
@@ -144,18 +203,18 @@ def add_dot(b,kind,label,left_name,right_name,out_name,n,d,left_public=False):
  cols.append(b.affine('out',out_name,0,1,n,rows));products=[M(X(2*k),X(2*k+1)) for k in range(d)];b.op(kind,label,n,cols,[S(X(2*d),sumexpr(products))])
 
 def div_aux(x,d):
- data={k:[] for k in ['sigma','z','a','a_inv','d_inv','q','r','delta','y']}
+ data={k:[] for k in ['sigma','z','a','d','a_inv','d_inv','q','r','delta','y']}
  for xv,dv in zip(np.asarray(x,dtype=object).reshape(-1),np.asarray(d,dtype=object).reshape(-1)):
   xv=int(xv);dv=int(dv);yv=sdiv(xv,dv);a=abs(xv);qv=abs(yv);sig=int(xv<0);z=int(a==0);r=2*a+dv-2*dv*qv;delta=2*dv-1-r
-  vals=(sig,z,a,0 if z else hx(field_inverse(a)),hx(field_inverse(dv)),qv,r,delta,yv)
+  vals=(sig,z,a,dv,0 if z else hx(field_inverse(a)),hx(field_inverse(dv)),qv,r,delta,yv)
   for k,v in zip(data,vals):data[k].append(v)
  return data
 def bits_for(values,width):return [np.asarray([(int(v)>>j)&1 for v in values],dtype=np.int64) for j in range(width)]
 def add_div(b,label,xname,dname,yname,x,d,width):
  aux=div_aux(x,d);logical=len(aux['a']);rows=npow(logical);names={}
- for k in ['sigma','z','a','a_inv','d_inv','q','r','delta']:names[k]=b.tensor(f'{label}.{k}',aux[k],(logical,),'DynamicPrivate')
+ for k in ['sigma','z','a','d','a_inv','d_inv','q','r','delta']:names[k]=b.tensor(f'{label}.{k}',aux[k],(logical,),'DynamicPrivate')
  bitnames={}
- for k in ['a','q','r','delta']:
+ for k in ['a','d','q','r','delta']:
   bitnames[k]=[b.tensor(f'{label}.{k}_bit_{j}',v,(logical,),'DynamicPrivate') for j,v in enumerate(bits_for(aux[k],width))]
  cols=[b.affine('x',xname,0,1,logical,rows),b.affine('d',dname,0,1,logical,rows),b.affine('y',yname,0,1,logical,rows)]
  pos={}
@@ -164,7 +223,7 @@ def add_div(b,label,xname,dname,yname,x,d,width):
  for k,arr in bitnames.items():
   bitpos[k]=[]
   for j,n in enumerate(arr):bitpos[k].append(len(cols));cols.append(b.affine(f'{k}_bit_{j}',n,0,1,logical,rows))
- sig=X(pos['sigma']);z=X(pos['z']);a=X(pos['a']);ainv=X(pos['a_inv']);dinv=X(pos['d_inv']);qq=X(pos['q']);rr=X(pos['r']);dd=X(1)
+ sig=X(pos['sigma']);z=X(pos['z']);a=X(pos['a']);dd=X(pos['d']);ainv=X(pos['a_inv']);dinv=X(pos['d_inv']);qq=X(pos['q']);rr=X(pos['r'])
  sign=S(C(1),M(C(2),sig));res=[S(X(0),M(sign,a)),S(X(2),M(sign,qq)),M(sig,S(sig,C(1))),M(z,S(z,C(1))),M(z,a),S(M(a,ainv),S(C(1),z)),M(z,sig),M(z,ainv),S(M(dd,dinv),C(1)),S(A(M(C(2),a),dd),A(M(C(2),M(dd,qq)),rr)),S(A(rr,X(pos['delta'])),S(M(C(2),dd),C(1)))]
  for k in bitpos:
   res.append(S(X(pos[k]),sumexpr([M(C(1<<j),X(ci)) for j,ci in enumerate(bitpos[k])])))
@@ -227,7 +286,7 @@ def main():
  ap=argparse.ArgumentParser();ap.add_argument('--config',type=Path,required=True);ap.add_argument('--project-root',type=Path,required=True);ap.add_argument('--preflight',type=Path,required=True);ap.add_argument('--pp-id',required=True);ap.add_argument('--output',type=Path,required=True);a=ap.parse_args()
  c=cfg(a.config);root=a.project_root.resolve();report=json.loads(a.preflight.read_text());
  if report['status']!='accepted':raise SystemExit('canonical adapter refuses a preflight-rejected formal instance')
- cache=root/c['cache'];cp=root/c['checkpoint_bundle'];manifest=json.loads((cp/'manifest.json').read_text());raw=load_tensors(cp/'tensors.txt');n=int((cache/'meta.cfg').read_text().split('num_nodes = ')[1].splitlines()[0]);d=int((cache/'meta.cfg').read_text().split('num_features = ')[1].splitlines()[0]);H,feature_path=load_features(cache,n,d,int(c['feature_scale']));src,dst,start,end,node_ptr,edge_ptr=load_edges(cache,n);tables=report['static_tables'];width=max(2,int(c['range_bits'])+16);b=Builder();Hname=b.tensor('public.features',H,H.shape,'Public');b.tensor('public.edge_src',src,src.shape,'Public');b.tensor('public.edge_dst',dst,dst.shape,'Public');b.tensor('public.node_ptr',node_ptr,node_ptr.shape,'Public');b.tensor('public.edge_ptr',edge_ptr,edge_ptr.shape,'Public')
+ cache=root/c['cache'];cp=root/c['checkpoint_bundle'];manifest=json.loads((cp/'manifest.json').read_text());raw=load_tensors(cp/'tensors.txt');n=int((cache/'meta.cfg').read_text().split('num_nodes = ')[1].splitlines()[0]);d=int((cache/'meta.cfg').read_text().split('num_features = ')[1].splitlines()[0]);H,feature_path=load_features(cache,n,d,int(c['feature_scale']));src,dst,start,end,node_ptr,edge_ptr=load_edges(cache,n);tables=report['static_tables'];width=max(2,int(report['ledger'].get('bit_width',int(c['range_bits'])+16)));b=Builder();Hname=b.tensor('public.features',H,H.shape,'Public');b.tensor('public.edge_src',src,src.shape,'Public');b.tensor('public.edge_dst',dst,dst.shape,'Public');b.tensor('public.node_ptr',node_ptr,node_ptr.shape,'Public');b.tensor('public.edge_ptr',edge_ptr,edge_ptr.shape,'Public')
  expected=report['public_instance']
  if [int(x) for x in node_ptr]!=expected['node_ptr'] or [int(x) for x in edge_ptr]!=expected['edge_ptr'] or len(src)!=expected['edge_count']:raise ValueError('canonical topology differs from authenticated preflight instance')
  H2,H2n=H,Hname
@@ -247,9 +306,12 @@ def main():
  outputs=[]
  for spec in manifest['output_head_specs']:
   classes=int(manifest['C']);W=np.asarray([q(v,int(c['output_weight_scale'])) for v in raw[spec['seq_kernel']][1]],dtype=object).reshape(H2.shape[1],classes);aa=np.asarray([q(v,int(c['output_attention_scale'])) for v in raw[spec['attn_src_kernel']][1]],dtype=object);ad=np.asarray([q(v,int(c['output_attention_scale'])) for v in raw[spec['attn_dst_kernel']][1]],dtype=object);bias=np.asarray([q(v,int(c['output_bias_scale'])) for v in raw[spec['output_bias']][1]],dtype=object);prefix=f"output.head_{spec['head_index']}";outputs.append(build_head(b,prefix,H2,H2n,W,aa,ad,src,dst,start,end,False,bias,tables,width))
- heads=[x[0] for x in outputs];ysum=sum(heads[1:],heads[0].copy());ysn=b.tensor('output.head_sum',ysum,ysum.shape,'DynamicPrivate');final=np.asarray([sdiv(int(v),len(heads)) for v in ysum.reshape(-1)],dtype=object).reshape(ysum.shape);yn=b.tensor('public.logits',final,final.shape,'Public');nd=final.size;rows=npow(nd);cols=[b.affine(f'head_{i}',name,0,1,nd,rows) for i,(_,name) in enumerate(outputs)]+[b.affine('sum',ysn,0,1,nd,rows)];b.op('head_sum_final_average','output.head_sum',nd,cols,[S(X(len(outputs)),sumexpr([X(i) for i in range(len(outputs))]))]);kn=b.tensor('public.k_out',[len(outputs)]*nd,(nd,),'Public');add_div(b,'output.final_average',ysn,kn,yn,ysum.reshape(-1),np.full(nd,len(outputs),dtype=object),width);b.ops[-1]['operation_kind']='head_sum_final_average';b.op('public_logits_terminal','output.public_logits',nd,[b.affine('private_sum',yn,0,1,nd,rows),b.affine('public_y',yn,0,1,nd,rows)],[S(X(0),X(1))])
+ heads=[x[0] for x in outputs];ysum=sum(heads[1:],heads[0].copy());ysn=b.tensor('output.head_sum',ysum,ysum.shape,'DynamicPrivate');final=np.asarray([sdiv(int(v),len(heads)) for v in ysum.reshape(-1)],dtype=object).reshape(ysum.shape);final_private=b.tensor('output.final_logits',final,final.shape,'DynamicPrivate');yn=b.tensor('public.logits',final,final.shape,'Public');nd=final.size;rows=npow(nd);cols=[b.affine(f'head_{i}',name,0,1,nd,rows) for i,(_,name) in enumerate(outputs)]+[b.affine('sum',ysn,0,1,nd,rows)];b.op('head_sum_final_average','output.head_sum',nd,cols,[S(X(len(outputs)),sumexpr([X(i) for i in range(len(outputs))]))]);kn=b.tensor('public.k_out',[len(outputs)]*nd,(nd,),'Public');add_div(b,'output.final_average',ysn,kn,final_private,ysum.reshape(-1),np.full(nd,len(outputs),dtype=object),width);b.ops[-1]['operation_kind']='head_sum_final_average';b.op('public_logits_terminal','output.public_logits',nd,[b.affine('private_final',final_private,0,1,nd,rows),b.affine('public_y',yn,0,1,nd,rows)],[S(X(0),X(1))])
  families={x['operation_kind'] for x in b.ops};missing=set(['projection_matmul','attention_dot','public_sparse_route','score_add','lrelu_indexed_public_table','exact_group_max','exp_indexed_public_table','group_sum','inverse_alpha','u_message_hadamard','alpha_message_hadamard','field_aggregate','integer_numerator','dual_aggregate_consistency','signed_round_div','elu_indexed_public_table','hidden_concat','output_bias','head_sum_final_average','public_logits_terminal'])-families
  if missing:raise ValueError('canonical relation family missing: '+','.join(sorted(missing)))
- obj={'schema':'zkDL_gat_canonical_adapter_v2','dataset':c['dataset'],'pp_id':a.pp_id,'node_count':n,'edge_count':len(src),'graph_count':len(node_ptr)-1,'feature_dim':d,'class_count':int(manifest['C']),'public_features':[int(x) for x in H.reshape(-1)],'node_ptr':[int(x) for x in node_ptr],'edge_ptr':[int(x) for x in edge_ptr],'src':[int(x) for x in src],'dst':[int(x) for x in dst],'graph_features_digest':report['graph_features_digest'],'topology_digest':report['topology_digest'],'quant_cfg_id':report['quant_cfg_id'],'static_tables_id':report['static_tables_id'],'integer_bound_ledger_id':report['ledger']['integer_bound_ledger_id'],'model_arch_id':manifest['model_arch_id'],'model_param_id':manifest['model_param_id'],'public_logits':[int(x) for x in final.reshape(-1)],'tensor_families':b.spec,'operation_families':b.ops,'tensors':dict(sorted(b.tensors.items())),'source_input_id':''}
+ tensor_digest=canonical_tensor_digest(b.spec,b.tensors)
+ shape_payload={'hidden_layers':manifest['hidden_layers'],'hidden_head_specs':manifest['hidden_head_specs'],'output_head_specs':manifest['output_head_specs'],'class_count':int(manifest['C']),'feature_dim':d}
+ model_shape_id='sha256:'+hashlib.sha256(json.dumps(shape_payload,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+ obj={'schema':'zkDL_gat_canonical_adapter_v2','dataset':c['dataset'],'pp_id':a.pp_id,'node_count':n,'edge_count':len(src),'graph_count':len(node_ptr)-1,'feature_dim':d,'class_count':int(manifest['C']),'public_features':[int(x) for x in H.reshape(-1)],'node_ptr':[int(x) for x in node_ptr],'edge_ptr':[int(x) for x in edge_ptr],'src':[int(x) for x in src],'dst':[int(x) for x in dst],'graph_features_digest':report['graph_features_digest'],'topology_digest':report['topology_digest'],'checkpoint_manifest_id':'sha256:'+digest(cp/'manifest.json'),'canonical_tensor_digest':tensor_digest,'model_shape_id':model_shape_id,'commitment_set_id':registered_family_set_digest(b.spec),'quant_cfg_id':report['quant_cfg_id'],'static_tables_id':report['static_tables_id'],'static_table_rows_id':static_table_rows_digest(b.ops),'static_table_profile':tables,'integer_bound_ledger_id':report['ledger']['integer_bound_ledger_id'],'integer_bound_ledger':report['ledger'],'model_arch_id':manifest['model_arch_id'],'model_param_id':manifest['model_param_id'],'public_logits':[int(x) for x in final.reshape(-1)],'tensor_families':b.spec,'operation_families':b.ops,'tensors':dict(sorted(b.tensors.items())),'source_input_id':''}
  canonical=json.dumps(obj,separators=(',',':'),ensure_ascii=False).encode();obj['source_input_id']='sha256:'+hashlib.sha256(b'zkDL-GAT-canonical-adapter-input-v2\0'+canonical).hexdigest();a.output.parent.mkdir(parents=True,exist_ok=True);a.output.write_text(json.dumps(obj,separators=(',',':'))+'\n');print('CANONICAL_ADAPTER_OK',obj['source_input_id'],'max_tensor_len',max(x['logical_len'] for x in b.spec))
 if __name__=='__main__':main()

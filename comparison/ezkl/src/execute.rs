@@ -177,6 +177,7 @@ pub async fn run(command: Commands) -> Result<String, EZKLError> {
             settings_path,
             vk_path,
             output,
+            device,
         } => crate::native_gat::graph_gat_verify(
             compiled_circuit,
             proof_path,
@@ -184,6 +185,7 @@ pub async fn run(command: Commands) -> Result<String, EZKLError> {
             settings_path,
             vk_path,
             output,
+            device,
         ),
         Commands::GenSettings {
             model,
@@ -1369,11 +1371,6 @@ pub(crate) async fn create_evm_verifier(
     let params =
         load_params_verifier::<KZGCommitmentScheme<Bn256>>(srs_path, settings.run_args.logrows)?;
 
-    let num_instance = settings.total_instances();
-    // create a scales array that is the same length as the number of instances, all populated with 0
-    let scales = vec![0; num_instance.len()];
-    // let poseidon_instance = settings.module_sizes.num_instances().iter().sum::<usize>();
-
     let vk = load_vk::<KZGCommitmentScheme<Bn256>, GraphCircuit>(vk_path, settings)?;
     trace!("params computed");
 
@@ -1381,10 +1378,6 @@ pub(crate) async fn create_evm_verifier(
         &params,
         &vk,
         halo2_solidity_verifier::BatchOpenScheme::Bdfg21,
-        &num_instance,
-        &scales,
-        0,
-        0,
     );
     let (verifier_solidity, name) = if reusable {
         (generator.render_separately()?.0, "Halo2VerifierReusable") // ignore the rendered vk artifact for now and generate it in create_evm_vka
@@ -1417,14 +1410,6 @@ pub(crate) async fn create_evm_vka(
     let params =
         load_params_verifier::<KZGCommitmentScheme<Bn256>>(srs_path, settings.run_args.logrows)?;
 
-    let num_poseidon_instance = settings.module_sizes.num_instances().iter().sum::<usize>();
-    let num_fixed_point_instance = settings
-        .model_instance_shapes
-        .iter()
-        .map(|x| x.iter().product::<usize>())
-        .collect_vec();
-
-    let scales = settings.get_model_instance_scales();
     let vk = load_vk::<KZGCommitmentScheme<Bn256>, GraphCircuit>(vk_path, settings)?;
     trace!("params computed");
     // assert that the decimals must be less than or equal to 38 to prevent overflow
@@ -1436,10 +1421,6 @@ pub(crate) async fn create_evm_vka(
         &params,
         &vk,
         halo2_solidity_verifier::BatchOpenScheme::Bdfg21,
-        &num_fixed_point_instance,
-        &scales,
-        decimals,
-        num_poseidon_instance,
     );
 
     let vka_words: Vec<[u8; 32]> = generator.render_separately_vka_words()?.1;

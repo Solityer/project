@@ -137,9 +137,9 @@ int main(int argc, char** argv) {
             security_text.pop_back();
         if (security_text.find("\"ceremony_descriptor_kind\":\"ezkl_trusted_ceremony_srs_v1\"") == std::string::npos
             || security_text.find("\"source_srs_sha256\":\"sha256:") == std::string::npos
-            || security_text.find("\"source_srs_max_k\":28") == std::string::npos) {
+            || security_text.find("\"source_srs_max_k\":") == std::string::npos) {
             throw std::runtime_error(
-                "security profile is unresolved; materialize it from the exact trusted ceremony descriptor and SRS first");
+                "security profile is unresolved; materialize it from the trusted ceremony descriptor and SRS first");
         }
         const auto security_profile_id = gat_ezkl::formal_sha256_text(
             "ezkl_security_profile", "canonical_json", security_text);

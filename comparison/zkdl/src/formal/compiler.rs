@@ -89,6 +89,7 @@ pub struct IntegerOperationFamily {
     pub family_id: String,
     pub operation_kind: String,
     pub rows: usize,
+    pub real_rows: usize,
     pub degree_bound: usize,
     pub columns: Vec<IntegerOperationColumn>,
     pub residuals: Vec<IntegerExpr>,
@@ -112,9 +113,16 @@ pub struct RelationCompilerInput {
     pub dst: Vec<usize>,
     pub graph_features_digest: String,
     pub topology_digest: String,
+    pub checkpoint_manifest_id: String,
+    pub canonical_tensor_digest: String,
+    pub model_shape_id: String,
+    pub commitment_set_id: String,
     pub quant_cfg_id: String,
     pub static_tables_id: String,
+    pub static_table_rows_id: String,
+    pub static_table_profile: serde_json::Value,
     pub integer_bound_ledger_id: String,
+    pub integer_bound_ledger: serde_json::Value,
     pub model_arch_id: String,
     pub model_param_id: String,
     pub public_logits: Vec<i64>,
@@ -143,6 +151,21 @@ pub fn compile(input: RelationCompilerInput) -> Result<(PublicStatement, Witness
         input.source_input_id == source_digest(&input)?,
         "canonical adapter source digest mismatch"
     );
+    for value in [
+        &input.checkpoint_manifest_id,
+        &input.canonical_tensor_digest,
+        &input.model_shape_id,
+        &input.commitment_set_id,
+        &input.static_table_rows_id,
+    ] {
+        ensure!(
+            value
+                .strip_prefix("sha256:")
+                .map(|x| x.len() == 64 && x.bytes().all(|b| b.is_ascii_hexdigit()))
+                == Some(true),
+            "canonical adapter metadata digest malformed"
+        );
+    }
     let operations = input
         .operation_families
         .iter()
@@ -151,6 +174,7 @@ pub fn compile(input: RelationCompilerInput) -> Result<(PublicStatement, Witness
                 family_id: o.family_id.clone(),
                 operation_kind: o.operation_kind.clone(),
                 rows: o.rows,
+                real_rows: o.real_rows,
                 degree_bound: o.degree_bound,
                 columns: o
                     .columns
@@ -249,10 +273,15 @@ pub fn compile(input: RelationCompilerInput) -> Result<(PublicStatement, Witness
     .seal()?;
     let witness = WitnessPackage {
         registry_id: registry.registry_id.clone(),
+        canonical_tensor_digest: input.canonical_tensor_digest.clone(),
         tensors: private_tensors,
         witness_id: input.source_input_id.clone(),
     };
     witness.validate(&registry)?;
+    ensure!(
+        witness.computed_canonical_tensor_digest(&registry)? == input.canonical_tensor_digest,
+        "canonical tensor digest does not match relation input"
+    );
     let statement = PublicStatement {
         protocol_id: "GAT-ZKML-zkDL".into(),
         proof_task: "node_classification_full_gat".into(),
@@ -274,9 +303,15 @@ pub fn compile(input: RelationCompilerInput) -> Result<(PublicStatement, Witness
         registry,
         graph_features_digest: input.graph_features_digest,
         topology_digest: input.topology_digest,
+        checkpoint_manifest_id: input.checkpoint_manifest_id,
+        model_shape_id: input.model_shape_id,
+        commitment_set_id: input.commitment_set_id,
         quant_cfg_id: input.quant_cfg_id,
         static_tables_id: input.static_tables_id,
+        static_table_rows_id: input.static_table_rows_id,
+        static_table_profile: input.static_table_profile,
         integer_bound_ledger_id: input.integer_bound_ledger_id,
+        integer_bound_ledger: input.integer_bound_ledger,
         model_arch_id: input.model_arch_id,
         model_param_id: input.model_param_id,
         public_logits: input.public_logits,

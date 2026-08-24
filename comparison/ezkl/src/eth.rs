@@ -187,7 +187,8 @@ pub async fn register_vka_via_rv(
 ) -> Result<Vec<u8>, EthError> {
     let (client, _) = setup_eth_backend(rpc_url, private_key).await?;
 
-    let encoded = encode_register_vk_calldata(vka_words);
+    let encoded = encode_register_vk_calldata(vka_words)
+        .map_err(|error| EthError::EvmVerificationError(error.to_string()))?;
 
     debug!(
         "encoded register vka calldata: {:#?}",

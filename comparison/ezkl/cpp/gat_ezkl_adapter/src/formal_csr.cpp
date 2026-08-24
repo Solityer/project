@@ -11,6 +11,8 @@
 namespace gat_ezkl {
 namespace {
 
+constexpr const char* kFormalRoute = "ezkl_gat_native_compressed_csr_attention_full";
+
 void write_u64(std::ofstream& output, std::uint64_t value) {
     output.write(reinterpret_cast<const char*>(&value), sizeof(value));
 }
@@ -93,6 +95,9 @@ void write_formal_csr_graph_artifacts(
     const std::string& formal_static_tables_id,
     const std::string& backend_aux_tables_id,
     const std::string& security_profile_id) {
+    if (route_id != kFormalRoute) {
+        throw std::runtime_error("formal CSR exporter received an unregistered GAT route");
+    }
     if (graph.absolute_ids.size() != graph.node_count) {
         throw std::runtime_error("formal CSR is missing canonical absolute node identities");
     }

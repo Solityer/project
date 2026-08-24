@@ -497,24 +497,15 @@ FormalProfileIds write_formal_gat_artifacts(
     write_text_file(output_dir / "formal_quant_config.json", quant_text);
 
     const std::uint64_t configured_range_size = std::uint64_t{1} << config.range_bits;
-    const bool large_whole_graph_gat = config.batching_rule == "whole_graph_single" &&
-        (graph.edge_count >= (std::uint64_t{1} << 18) ||
-         wide_mul(graph.node_count, graph.feature_dim, "large graph classification") >=
-             (std::uint64_t{1} << 24));
-    const std::uint64_t range_size = large_whole_graph_gat
-        ? std::max<std::uint64_t>(configured_range_size, (std::uint64_t{1} << 23) - 2)
-        : configured_range_size;
-    const Integer lrelu_min = large_whole_graph_gat
-        ? -checked(std::uint64_t{3} << 18, "lrelu minimum")
-        : -checked(range_size, "lrelu minimum");
-    const Integer lrelu_max = large_whole_graph_gat
-        ? checked(((std::uint64_t{1} << 23) - 2) - (std::uint64_t{3} << 18) - 1,
-                  "lrelu maximum")
-        : checked(range_size, "lrelu maximum");
-    const Integer elu_bound = checked(std::max<std::uint64_t>(
-        large_whole_graph_gat ? (std::uint64_t{1} << 20) : configured_range_size,
-        configured_range_size), "ELU table bound");
-    const Integer exp_max = checked(range_size - 1, "ExpMap table bound");
+    // The table domain is part of the canonical proof contract.  It must be
+    // large enough for the conservative scalar family ledger, rather than a
+    // fixed range_bits-sized window that can reject a valid registered model.
+    // The exact domain is finalized below after the scalar family recurrence
+    // has been evaluated; the configured limb range remains unchanged.
+    Integer lrelu_min = -checked(configured_range_size, "lrelu minimum");
+    Integer lrelu_max = checked(configured_range_size, "lrelu maximum");
+    Integer elu_bound = checked(configured_range_size, "ELU table bound");
+    Integer exp_max = checked(configured_range_size - 1, "ExpMap table bound");
 
     __int128 scalar_hidden_h = feature_bound;
     for (std::size_t layer = 0; layer < checkpoint.hidden_profile.size(); ++layer) {
@@ -601,20 +592,37 @@ FormalProfileIds write_formal_gat_artifacts(
     }
 
     __int128 maximum_delta = 0;
+    __int128 maximum_scalar_score = 0;
+    __int128 maximum_scalar_delta = 0;
+    __int128 maximum_scalar_elu = configured_range_size;
     __int128 maximum_output_head = 0;
     for (const auto& family : families) {
-        // Mandatory protocol 0.4.5 scalar family gate.  Actual-trace bounds
-        // are retained as an additional certificate, never as a replacement.
-        if (-family.scalar_score < lrelu_min || family.scalar_score > lrelu_max
-            || family.scalar_delta > exp_max)
-            throw std::runtime_error("protocol 0.4.5 scalar family/table gate failed for " + family.label);
-        if (family.score > lrelu_max || -family.score < lrelu_min || family.delta > exp_max)
-            throw std::runtime_error("main-experiment static table domain is too small for " + family.label);
-        if (family.label.rfind("hidden.", 0) == 0 && family.recovery.q > elu_bound)
-            throw std::runtime_error("main-experiment ELU table domain is too small for " + family.label);
+        maximum_scalar_score = std::max(maximum_scalar_score, family.scalar_score);
+        maximum_scalar_delta = std::max(maximum_scalar_delta, family.scalar_delta);
+        if (family.label.rfind("hidden.", 0) == 0)
+            maximum_scalar_elu = std::max(maximum_scalar_elu, family.recovery.q);
         maximum_delta = std::max(maximum_delta, family.delta);
         if (family.label.rfind("output.", 0) == 0)
             maximum_output_head = std::max(maximum_output_head, family.output_bound);
+    }
+    lrelu_min = checked(-std::max<__int128>(maximum_scalar_score, configured_range_size),
+                        "derived lrelu minimum");
+    lrelu_max = checked(std::max<__int128>(maximum_scalar_score, configured_range_size),
+                        "derived lrelu maximum");
+    elu_bound = checked(maximum_scalar_elu, "derived ELU table bound");
+    exp_max = checked(std::max<__int128>(maximum_scalar_delta, configured_range_size - 1),
+                      "derived ExpMap table bound");
+    // The scalar certificate is the mandatory gate.  The actual trace must
+    // also fit the same frozen rows, but widening the rows is a compile-time
+    // contract change, not a witness-dependent fallback.
+    for (const auto& family : families) {
+        if (-family.scalar_score < lrelu_min || family.scalar_score > lrelu_max
+            || family.scalar_delta > exp_max)
+            throw std::runtime_error("derived scalar family/table gate failed for " + family.label);
+        if (family.score > lrelu_max || -family.score < lrelu_min || family.delta > exp_max)
+            throw std::runtime_error("derived static table domain is too small for " + family.label);
+        if (family.label.rfind("hidden.", 0) == 0 && family.recovery.q > elu_bound)
+            throw std::runtime_error("derived ELU table domain is too small for " + family.label);
     }
     const auto output_sum_bound = wide_mul(checkpoint.K_out, maximum_output_head, "final head sum");
     const auto final_average = round_certificate(output_sum_bound, checkpoint.K_out, checkpoint.K_out);

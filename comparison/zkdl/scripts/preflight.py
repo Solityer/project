@@ -101,22 +101,31 @@ def graph_info(cache:Path,n:int):
 def signed_round_bound(a:int,d_min:int):return (2*a+d_min)//(2*d_min)
 def lrelu(x:int):return x if x>=0 else -signed_round_bound(-x,5)
 def elu(x:int):return x if x>=0 else q(16.0*(math.exp(x/16.0)-1.0),1)
-def exp_neg(x:int):return max(0,q(16.0*math.exp(-x/256.0),1))
-def static_table_profile(range_bits:int,large:bool,source_id:str):
+def exp_neg(x:int):return max(1,q(16.0*math.exp(-x/256.0),1))
+def division_bounds(bx:int,bd:int,bq:int):
+ ba=abs(int(bx));bd=abs(int(bd));bq=abs(int(bq))
+ if bd<=0:raise ValueError('SignedRoundDiv denominator bound must be positive')
+ br=2*ba+bd+2*bd*bq
+ bdelta=2*bd-1+br
+ return {'B_a':ba,'B_d':bd,'B_q':bq,'B_r':br,'B_delta':bdelta,'B_2a_plus_d':2*ba+bd,'B_2dq_plus_r':2*bd*bq+br,'B_r_plus_delta':br+bdelta}
+def static_table_profile(range_bits:int,source_id:str,lrelu_bound:int,elu_bound:int,exp_bound:int):
  configured=1<<range_bits
- range_size=max(configured,(1<<23)-2) if large else configured
- lmin=-(3<<18) if large else -range_size
- lmax=((1<<23)-2)-(3<<18)-1 if large else range_size
- elu_bound=max((1<<20) if large else configured,configured)
- exp_max=range_size-1
+ # range_bits is a lower bound.  The actual table domains are derived from
+ # the conservative integer ledger below, so valid large instances are not
+ # rejected by a fixed preflight range.
+ lbound=max(configured,abs(int(lrelu_bound)))
+ ebound=max(configured,abs(int(elu_bound)))
+ exp_max=max(configured-1,int(exp_bound))
+ lmin=-lbound
+ lmax=lbound
  h=hashlib.sha256();h.update(b'zkDL-GAT-static-table-rows-v1\0')
  counts={}
- for kind,lo,hi,fn in [('lrelu',lmin,lmax,lrelu),('elu',-elu_bound,elu_bound,elu),('exp',0,exp_max,exp_neg)]:
+ for kind,lo,hi,fn in [('lrelu',lmin,lmax,lrelu),('elu',-ebound,ebound,elu),('exp',0,exp_max,exp_neg)]:
   counts[kind]=hi-lo+1
   h.update(kind.encode()+b'\0')
   for x in range(lo,hi+1):h.update(struct.pack('>qq',x,fn(x)))
  rows_digest='sha256:'+h.hexdigest()
- spec={'schema':'zkDL_gat_static_tables_v1','source_static_table_id':source_id,'generator_id':'main_gatzk_quantized_tables_v1','rounding_mode':'nearest_ties_away','canonical_order':'kind_then_signed_input_ascending','lrelu':{'min':lmin,'max':lmax,'input_scale':256,'output_scale':256,'rows':counts['lrelu']},'elu':{'min':-elu_bound,'max':elu_bound,'input_scale':16,'output_scale':16,'rows':counts['elu']},'exp':{'min':0,'max':exp_max,'input_scale':256,'output_scale':16,'rows':counts['exp']},'rows_digest':rows_digest}
+ spec={'schema':'zkDL_gat_static_tables_v1','source_static_table_id':source_id,'generator_id':'main_gatzk_quantized_tables_v1','rounding_mode':'nearest_ties_away','canonical_order':'kind_then_signed_input_ascending','lrelu':{'min':lmin,'max':lmax,'input_scale':256,'output_scale':256,'rows':counts['lrelu']},'elu':{'min':-ebound,'max':ebound,'input_scale':16,'output_scale':16,'rows':counts['elu']},'exp':{'min':0,'max':exp_max,'input_scale':256,'output_scale':16,'rows':counts['exp']},'rows_digest':rows_digest}
  canonical=json.dumps(spec,sort_keys=True,separators=(',',':')).encode();spec['static_tables_id']='sha256:'+hashlib.sha256(b'zkDL-GAT-static-table-profile-v1\0'+canonical).hexdigest()
  return spec
 def main():
@@ -126,30 +135,52 @@ def main():
  c=cfg(a.config);cache=root/c['cache'];cp=root/c['checkpoint_bundle'];manifest=json.loads((cp/'manifest.json').read_text());ts=tensors(cp/'tensors.txt')
  scale_keys=['feature_scale','hidden_weight_scale','hidden_attention_scale','hidden_projection_scale','delta_scale','exp_scale','hidden_recovery_num_scale','hidden_recovery_den_scale','elu_input_scale','elu_output_scale','agg_scale','output_weight_scale','output_attention_scale','output_projection_scale','output_pre_scale','output_head_scale','output_bias_scale','output_scale']
  scales={k:int(c[k]) for k in scale_keys};bh,features_digest,n,d=public_feature_bound(cache,scales['feature_scale']);e,maxdeg,topo_digest,node_ptr,edge_ptr=graph_info(cache,n)
- large=c['batching_rule']=='whole_graph_single' and (e>=(1<<18) or n*d>=(1<<24));tables=static_table_profile(int(c['range_bits']),large,manifest['static_table_id']);lmin=tables['lrelu']['min'];lmax=tables['lrelu']['max'];exp_max=tables['exp']['max'];elu_min=tables['elu']['min'];elu_max=tables['elu']['max']
  failures=[];heads=[];current_bh=bh
  hidden_by_layer={}
  for spec in manifest['hidden_head_specs']:hidden_by_layer.setdefault(int(spec['layer_index']),[]).append(spec)
  for layer,layer_meta in enumerate(manifest['hidden_layers']):
   next_bounds=[];din=int(layer_meta['input_dim']);dh=int(layer_meta['head_dim'])
   for spec in hidden_by_layer[layer]:
-   bw=qmax(ts[spec['seq_kernel']][1],scales['hidden_weight_scale']);bas=qmax(ts[spec['attn_src_kernel']][1],scales['hidden_attention_scale']);bad=qmax(ts[spec['attn_dst_kernel']][1],scales['hidden_attention_scale']);bhp=din*current_bh*bw;bes=dh*bhp*bas;bed=dh*bhp*bad;bs=bes+bed;bz=max(abs(lrelu(-bs)),abs(lrelu(bs)));bdelta=2*bz;bu=max(exp_neg(x) for x in (0,bdelta));bsum=maxdeg*bu;bhnum=maxdeg*bu*bhp;bx=scales['hidden_recovery_num_scale']*bhnum;bd=scales['hidden_recovery_den_scale']*bsum;bq=signed_round_bound(bx,max(1,bd))
+   bw=qmax(ts[spec['seq_kernel']][1],scales['hidden_weight_scale']);bas=qmax(ts[spec['attn_src_kernel']][1],scales['hidden_attention_scale']);bad=qmax(ts[spec['attn_dst_kernel']][1],scales['hidden_attention_scale']);bhp=din*current_bh*bw;bes=dh*bhp*bas;bed=dh*bhp*bad;bs=bes+bed;bz=max(abs(lrelu(-bs)),abs(lrelu(bs)));bdelta=2*bz;bu=exp_neg(0);bsum=maxdeg*bu;bhnum=maxdeg*bu*bhp;bx=scales['hidden_recovery_num_scale']*bhnum;bd=scales['hidden_recovery_den_scale']*bsum;bq=signed_round_bound(bx,bd)
    rec={'kind':'hidden','layer':layer,'head':int(spec['local_head_index']),'B_H':current_bh,'B_W':bw,'B_a_src':bas,'B_a_dst':bad,'B_H_prime':bhp,'B_E_src':bes,'B_E_dst':bed,'B_S':bs,'B_delta_raw':bdelta,'B_U':bu,'B_Sum':bsum,'B_H_num':bhnum,'B_x_div':bx,'B_d_div':bd,'B_q_div':bq}
-   if -bs<lmin or bs>lmax:failures.append(f"hidden[{layer},{spec['local_head_index']}] LReLU domain [-{bs},{bs}] exceeds [{lmin},{lmax}]")
-   if bdelta>exp_max:failures.append(f"hidden[{layer},{spec['local_head_index']}] ExpMap delta bound {bdelta} exceeds [0,{exp_max}]")
-   if -bq<elu_min or bq>elu_max:failures.append(f"hidden[{layer},{spec['local_head_index']}] ELU input bound [-{bq},{bq}] exceeds [{elu_min},{elu_max}]")
+   rec.update(division_bounds(bx,bd,bq))
    heads.append(rec);next_bounds.append(max(abs(elu(-bq)),abs(elu(bq))))
   current_bh=max(next_bounds)
  din=int(manifest['hidden_layers'][-1]['head_count'])*int(manifest['hidden_layers'][-1]['head_dim']);classes=int(manifest['C'])
  for spec in manifest['output_head_specs']:
-  bw=qmax(ts[spec['seq_kernel']][1],scales['output_weight_scale']);bas=qmax(ts[spec['attn_src_kernel']][1],scales['output_attention_scale']);bad=qmax(ts[spec['attn_dst_kernel']][1],scales['output_attention_scale']);bb=qmax(ts[spec['output_bias']][1],scales['output_bias_scale']);byp=din*current_bh*bw;bes=classes*byp*bas;bed=classes*byp*bad;bs=bes+bed;bz=max(abs(lrelu(-bs)),abs(lrelu(bs)));bdelta=2*bz;bu=max(exp_neg(x) for x in (0,bdelta));bsum=maxdeg*bu;bnum=maxdeg*bu*byp;bx=scales['output_pre_scale']*bnum;bd=scales['output_projection_scale']*bsum;bq=signed_round_bound(bx,max(1,bd));balign=signed_round_bound(scales['output_head_scale']*bq,scales['output_pre_scale']);bhead=balign+bb
+  bw=qmax(ts[spec['seq_kernel']][1],scales['output_weight_scale']);bas=qmax(ts[spec['attn_src_kernel']][1],scales['output_attention_scale']);bad=qmax(ts[spec['attn_dst_kernel']][1],scales['output_attention_scale']);bb=qmax(ts[spec['output_bias']][1],scales['output_bias_scale']);byp=din*current_bh*bw;bes=classes*byp*bas;bed=classes*byp*bad;bs=bes+bed;bz=max(abs(lrelu(-bs)),abs(lrelu(bs)));bdelta=2*bz;bu=exp_neg(0);bsum=maxdeg*bu;bnum=maxdeg*bu*byp;bx=scales['output_pre_scale']*bnum;bd=scales['output_projection_scale']*bsum;bq=signed_round_bound(bx,bd);balign=signed_round_bound(scales['output_head_scale']*bq,scales['output_pre_scale']);bhead=balign+bb
   rec={'kind':'output','head':int(spec['head_index']),'B_H':current_bh,'B_W':bw,'B_a_src':bas,'B_a_dst':bad,'B_b':bb,'B_Y_prime':byp,'B_E_src':bes,'B_E_dst':bed,'B_S':bs,'B_delta_raw':bdelta,'B_U':bu,'B_Sum':bsum,'B_Y_num':bnum,'B_x_div':bx,'B_d_div':bd,'B_q_div':bq,'B_Y_head':bhead}
-  if -bs<lmin or bs>lmax:failures.append(f"output[{spec['head_index']}] LReLU domain [-{bs},{bs}] exceeds [{lmin},{lmax}]")
-  if bdelta>exp_max:failures.append(f"output[{spec['head_index']}] ExpMap delta bound {bdelta} exceeds [0,{exp_max}]")
+  rec.update(division_bounds(bx,bd,bq))
   heads.append(rec)
- ledger={'schema':'zkDL_gat_integer_bound_ledger_v2','dataset':c['dataset'],'node_count':n,'edge_count':e,'max_in_degree':maxdeg,'range_bits':int(c['range_bits']),'table_domains':{'lrelu':[lmin,lmax],'elu':[elu_min,elu_max],'exp':[0,exp_max]},'scales':scales,'heads':heads,'field':'BLS12-381-Fr','field_fit':'all listed integers must be below the canonical signed BLS12-381 half-modulus; formal compiler rechecks actual witness values','failures':failures}
+  # Output alignment is a second SignedRoundDiv family (denominator 16)
+  # and must receive its own certified integer bounds.
+  balign_x=scales['output_head_scale']*bq
+  balign=signed_round_bound(balign_x,16)
+  alignment={'kind':'output_alignment','head':int(spec['head_index']),'B_x':balign_x,'B_d':16,'B_q':balign}
+  alignment.update(division_bounds(balign_x,16,balign));heads.append(alignment)
+ # The final public output is another division over the sum of all output
+ # heads; include it in the same ledger as every per-head division.
+ output_head_bound=sum(int(head['B_Y_head']) for head in heads if head['kind']=='output')
+ output_count=len(manifest['output_head_specs'])
+ if output_count <= 0:raise ValueError('checkpoint manifest has no output heads')
+ final_q=signed_round_bound(output_head_bound,output_count)
+ final_average={'kind':'output_average','head_count':output_count,'B_x':output_head_bound,'B_d':output_count,'B_q':final_q}
+ final_average.update(division_bounds(output_head_bound,output_count,final_q));heads.append(final_average)
+ max_score=max((abs(int(head['B_S'])) for head in heads if 'B_S' in head),default=0)
+ max_delta=max((int(head['B_delta_raw']) for head in heads if 'B_delta_raw' in head),default=0)
+ max_elu=max((abs(int(head['B_q_div'])) for head in heads if head['kind']=='hidden'),default=0)
+ tables=static_table_profile(int(c['range_bits']),manifest['static_table_id'],max_score,max_elu,max_delta);lmin=tables['lrelu']['min'];lmax=tables['lrelu']['max'];exp_max=tables['exp']['max'];elu_min=tables['elu']['min'];elu_max=tables['elu']['max']
+ for head in heads:
+  if 'B_S' in head and (-int(head['B_S'])<lmin or int(head['B_S'])>lmax):failures.append(f"{head['kind']}[{head.get('layer','')},{head.get('head','')}] LReLU domain exceeds derived table")
+  if 'B_delta_raw' in head and int(head['B_delta_raw'])>exp_max:failures.append(f"{head['kind']}[{head.get('layer','')},{head.get('head','')}] ExpMap domain exceeds derived table")
+  if head['kind']=='hidden' and (-int(head['B_q_div'])<elu_min or int(head['B_q_div'])>elu_max):failures.append(f"hidden[{head.get('layer','')},{head['head']}] ELU domain exceeds derived table")
+ field_half=int('73eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001',16)//2
+ max_bound=max((int(value) for head in heads for key,value in head.items() if key.startswith('B_') and isinstance(value,(int,float))),default=0)
+ if max_bound>=field_half:failures.append('conservative integer ledger exceeds signed BLS12-381 field half-modulus')
+ bit_width=max(2,max_bound.bit_length()+1)
+ ledger={'schema':'zkDL_gat_integer_bound_ledger_v3','dataset':c['dataset'],'node_count':n,'edge_count':e,'max_in_degree':maxdeg,'range_bits':int(c['range_bits']),'bit_width':bit_width,'table_domains':{'lrelu':[lmin,lmax],'elu':[elu_min,elu_max],'exp':[0,exp_max]},'scales':scales,'heads':heads,'field':'BLS12-381-Fr','field_half_modulus':str(field_half),'field_fit':'every declared B_a/B_q/B_r/B_delta/B_d and composite equality bound is below the signed field half-modulus; the Rust compiler rechecks each serialized witness value','failures':failures}
  canonical=json.dumps(ledger,sort_keys=True,separators=(',',':')).encode();ledger['integer_bound_ledger_id']='sha256:'+hashlib.sha256(canonical).hexdigest()
- report={'status':'accepted' if not failures else 'rejected_table_domain','dataset':c['dataset'],'graph_features_digest':'sha256:'+features_digest,'topology_digest':'sha256:'+topo_digest,'public_instance':{'node_count':n,'edge_count':e,'graph_count':len(node_ptr)-1,'feature_dim':d,'class_count':int(manifest['C']),'node_ptr':node_ptr,'edge_ptr':edge_ptr},'checkpoint_manifest_sha256':sha(cp/'manifest.json'),'checkpoint_tensors_sha256':sha(cp/'tensors.txt'),'source_quant_cfg_id':manifest['quant_cfg_id'],'quant_cfg_id':'sha256:'+hashlib.sha256(json.dumps(scales,sort_keys=True,separators=(',',':')).encode()).hexdigest(),'static_tables_id':tables['static_tables_id'],'static_tables':tables,'model_arch_id':manifest['model_arch_id'],'model_param_id':manifest['model_param_id'],'ledger':ledger}
+ report={'status':'accepted' if not failures else 'rejected_integer_bound','dataset':c['dataset'],'graph_features_digest':'sha256:'+features_digest,'topology_digest':'sha256:'+topo_digest,'public_instance':{'node_count':n,'edge_count':e,'graph_count':len(node_ptr)-1,'feature_dim':d,'class_count':int(manifest['C']),'node_ptr':node_ptr,'edge_ptr':edge_ptr},'checkpoint_manifest_sha256':sha(cp/'manifest.json'),'checkpoint_tensors_sha256':sha(cp/'tensors.txt'),'source_quant_cfg_id':manifest['quant_cfg_id'],'quant_cfg_id':'sha256:'+hashlib.sha256(json.dumps(scales,sort_keys=True,separators=(',',':')).encode()).hexdigest(),'static_tables_id':tables['static_tables_id'],'static_tables':tables,'model_arch_id':manifest['model_arch_id'],'model_param_id':manifest['model_param_id'],'ledger':ledger}
  out.parent.mkdir(parents=True,exist_ok=True);out.write_text(json.dumps(report,indent=2)+'\n')
  if failures:raise SystemExit('preflight rejected formal instance: '+failures[0])
  print('PREFLIGHT_OK',ledger['integer_bound_ledger_id'])

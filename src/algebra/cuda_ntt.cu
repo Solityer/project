@@ -979,13 +979,9 @@ namespace gatzk::algebra
                     return false;
                 }
             }
+            auto &workspace = cuda_ntt_workspace();
 
-            auto &workspace =
-                cuda_ntt_workspace();
-
-            if (!workspace.ensure_input_only(
-                    total_bytes,
-                    device))
+            if (!workspace.ensure(total_bytes, device))
             {
                 return false;
             }
@@ -1179,7 +1175,7 @@ namespace gatzk::algebra
                 target_size,
                 1);
 
-        if (!workspace.ensure(
+        if (!workspace.ensure_input_only(
                 total_bytes,
                 device))
         {

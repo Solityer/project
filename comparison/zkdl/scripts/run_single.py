@@ -220,9 +220,13 @@ def main() -> int:
     verifier_info = json.loads(verifier_manifest.read_text(encoding="utf-8"))
     if not proof_info.get("proof_generated") or not verifier_info.get("verified"):
         raise SystemExit("formal proof/verification manifest did not report success")
-    for key in ("statement_id", "model_registry_id", "device", "proof_sha256", "proof_size_bytes"):
+    for key in ("proof_format", "statement_id", "model_registry_id", "device", "proof_sha256", "proof_size_bytes", "model_session_commitments", "model_rerandomization_proofs"):
         if proof_info.get(key) != verifier_info.get(key):
             raise SystemExit(f"prover/verifier manifest mismatch: {key}")
+    if proof_info.get("proof_format") != "zkDL-GAT-proof-envelope-v3":
+        raise SystemExit("unexpected formal proof envelope version")
+    if proof_info.get("model_session_rerandomization") != "pedersen_blinder_schnorr_v1" or not verifier_info.get("model_rerandomization_verified"):
+        raise SystemExit("registered-model session re-randomization evidence missing")
     if not verifier_info.get("independent_verifier") or verifier_info.get("verifier_reads_witness"):
         raise SystemExit("independent verifier boundary was not preserved")
     if args.device == "gpu":
@@ -261,9 +265,12 @@ def main() -> int:
             "prove_time_ms": proof_info["prove_time_ms"],
             "verify_time_ms": verifier_info["verify_time_ms"],
             "gpu_telemetry": proof_info.get("gpu_telemetry"),
-            "privacy_profile_status": "unsupported_privacy_profile",
-            "privacy_blocker": "no multi-session ZK argument for reusable registered-model commitments",
-            "formal_experiment_eligible": False,
+            "proof_format": proof_info["proof_format"],
+            "model_session_commitments": proof_info.get("model_session_commitments", 0),
+            "model_rerandomization_proofs": proof_info.get("model_rerandomization_proofs", 0),
+            "model_session_rerandomization": proof_info.get("model_session_rerandomization"),
+            "privacy_profile_status": "supported_multi_session_registered_model",
+            "formal_experiment_eligible": True,
         },
     )
     return 0

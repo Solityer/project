@@ -524,6 +524,9 @@ pub enum Commands {
         /// The path to write verify result JSON.
         #[arg(short = 'O', long, default_value = "verify.json", value_hint = clap::ValueHint::FilePath)]
         output: PathBuf,
+        /// Verifier backend. `cuda` is fail-closed and requires the gpu-accelerated build.
+        #[arg(long, default_value = "cpu", value_parser = ["cpu", "cuda"])]
+        device: String,
     },
 
     /// Generates the witness from an input file.

@@ -68,7 +68,12 @@ def np_digest(array: Any, h: hashlib._Hash | None = None, label: str = "") -> st
     h.update(label.encode("utf-8"))
     h.update(str(arr.shape).encode("ascii"))
     h.update(str(arr.dtype).encode("ascii"))
-    h.update(memoryview(arr).cast("B"))
+    if arr.dtype == object:
+        for value in arr.ravel().tolist():
+            h.update(str(value).encode("ascii"))
+            h.update(b",")
+    else:
+        h.update(memoryview(arr).cast("B"))
     return h.hexdigest() if local else ""
 
 
@@ -118,4 +123,3 @@ def stable_env() -> Dict[str, str]:
     env = os.environ.copy()
     env.setdefault("PYTHONHASHSEED", "0")
     return env
-

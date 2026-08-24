@@ -11,6 +11,7 @@ import math
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+FORMAL_ROUTE_ID = "ezkl_gat_native_compressed_csr_attention_full"
 REQUIRED = (
     "graph_attention_spec.json", "csr_segment_layout.bin", "node_features.i64.bin",
     "model_parameters.i64.txt", "formal_quant_config.json", "formal_table_spec.json",
@@ -110,16 +111,20 @@ def validate_table_artifacts(run_dir: Path) -> list[str]:
             failures.append(f"{run_dir}: {domain} canonical digest mismatch")
         profile["canonical_digest"] = supplied
     configured = 1 << quant["limb_bits"]
-    large = spec.get("batching_rule") == "whole_graph_single" and (
-        spec["edge_count"] >= (1 << 18) or spec["node_count"] * spec["feature_dim"] >= (1 << 24)
-    )
-    range_size = max(configured, (1 << 23) - 2) if large else configured
-    lrelu_min = -(3 << 18) if large else -configured
-    lrelu_max = ((1 << 23) - 2) - (3 << 18) - 1 if large else configured
-    elu_bound = max(configured, 1 << 20) if large else configured
-    expected_main = (lrelu_min, lrelu_max, -elu_bound, elu_bound, range_size - 1)
-    actual_main = (main.get("lrelu_min"), main.get("lrelu_max"), main.get("elu_min"),
-                   main.get("elu_max"), main.get("exp_max"))
+    # Table domains are derived from the registered scalar family ledger.
+    # `range_bits` fixes limb rows, but must not silently cap score/ExpMap
+    # domains for a valid model.
+    lrelu_min = main.get("lrelu_min")
+    lrelu_max = main.get("lrelu_max")
+    elu_min = main.get("elu_min")
+    elu_max = main.get("elu_max")
+    exp_max = main.get("exp_max")
+    if not all(isinstance(value, int) for value in
+               (lrelu_min, lrelu_max, elu_min, elu_max, exp_max)):
+        failures.append(f"{run_dir}: non-integer main table domain")
+        return failures
+    if lrelu_min >= lrelu_max or elu_min >= elu_max or exp_max < 0:
+        failures.append(f"{run_dir}: empty main table domain")
     expected_metadata = {
         "generator_id": "main_gatzk_quantized_tables_v1",
         "profile_version": "main_gatzk_table_profile_v1",
@@ -129,15 +134,26 @@ def validate_table_artifacts(run_dir: Path) -> list[str]:
         "lrelu_scale": 256, "elu_input_scale": 16, "elu_output_scale": 16,
         "exp_input_scale": 256, "exp_output_scale": 16,
     }
-    if actual_main != expected_main or any(main.get(key) != value for key, value in expected_metadata.items()):
-        failures.append(f"{run_dir}: main table domain selection mismatch")
+    if any(main.get(key) != value for key, value in expected_metadata.items()):
+        failures.append(f"{run_dir}: main table metadata mismatch")
     failures.extend(validate_rows(
         run_dir / main["rows_path"], "formal_static_table_rows", main["rows_digest"],
-        {2: (lrelu_min, lrelu_max), 3: (-elu_bound, elu_bound), 4: (0, range_size - 1)},
+        {2: (lrelu_min, lrelu_max), 3: (elu_min, elu_max), 4: (0, exp_max)},
     ))
+    ledger = json.loads((run_dir / "integer_bound_ledger.json").read_text(encoding="utf-8"))
+    for family in ledger.get("families", []):
+        label = family.get("label", "<unknown>")
+        score_bound = abs(family.get("scalar_score", 0))
+        if lrelu_min > -score_bound or lrelu_max < score_bound:
+            failures.append(f"{run_dir}: LReLU table does not cover scalar family {label}")
+        if family.get("scalar_delta", 0) > exp_max:
+            failures.append(f"{run_dir}: ExpMap table does not cover scalar family {label}")
+        if label.startswith("hidden."):
+            recovery_bound = family.get("recovery", {}).get("q", 0)
+            if elu_min > -recovery_bound or elu_max < recovery_bound:
+                failures.append(f"{run_dir}: ELU table does not cover scalar family {label}")
     required_aux = max(
-        max((family.get("delta", 0) + 1 for family in
-             json.loads((run_dir / "integer_bound_ledger.json").read_text(encoding="utf-8"))["families"]),
+        max((family.get("delta", 0) + 1 for family in ledger["families"]),
             default=0),
         json.loads((run_dir / "csr_segment_layout.json").read_text(encoding="utf-8"))["max_in_degree"] - 1,
     )
@@ -193,6 +209,9 @@ def main() -> int:
         registration = json.loads((run_dir / "model_registration.json").read_text(encoding="utf-8"))
         aux = json.loads((run_dir / "backend_aux_table_spec.json").read_text(encoding="utf-8"))
         main_table = json.loads((run_dir / "formal_table_spec.json").read_text(encoding="utf-8"))
+        for payload in (manifest, spec, settings, compiled, statement, verify):
+            if payload.get("route_id") != FORMAL_ROUTE_ID:
+                failures.append(f"{manifest_path}: formal route identity mismatch")
         main_id = main_table.get("canonical_digest")
         if any(payload.get("static_tables_id") != main_id for payload in
                (manifest, circuit, spec, settings, statement, verify)):
@@ -255,6 +274,9 @@ def main() -> int:
         if (circuit.get("source_srs_sha256") != security.get("source_srs_sha256") or
                 circuit.get("source_srs_k") != security.get("source_srs_max_k")):
             failures.append(f"{manifest_path}: SRS differs from resolved security profile")
+        if (not isinstance(circuit.get("source_srs_k"), int)
+                or circuit.get("source_srs_k", 0) < settings.get("logrows", 0)):
+            failures.append(f"{manifest_path}: source SRS k does not cover compiled logrows")
         source_srs = Path(str(circuit.get("source_srs_path", "")))
         if not source_srs.is_file() or circuit.get("source_srs_sha256") != "sha256:" + digest(source_srs):
             failures.append(f"{manifest_path}: source SRS bytes/provenance mismatch")
@@ -271,10 +293,14 @@ def main() -> int:
         )
         if manifest.get("runtime_device_marker") != expected_device:
             failures.append(f"{manifest_path}: runtime device marker mismatch")
+        if verify.get("verification_device_runtime_marker") != expected_device:
+            failures.append(f"{manifest_path}: verification device marker mismatch")
         if manifest.get("device") == "cuda":
             if (manifest.get("gpu_backend_execution")
                     != "halo2_icicle_backend_selected_and_proof_verified"
-                    or manifest.get("gpu_kernel_telemetry") != "not_instrumented"):
+                    or manifest.get("gpu_kernel_telemetry") != "icicle_cuda_device_initialized"
+                    or verify.get("gpu_verification_backend")
+                    != "halo2_icicle_cuda_verify_backend_invoked"):
                 failures.append(f"{manifest_path}: CUDA backend execution marker mismatch")
     if not args.allow_incomplete:
         for dataset, device in sorted(expected - present):

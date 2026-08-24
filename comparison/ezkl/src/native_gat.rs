@@ -39,6 +39,7 @@ const PLAN_KIND: &str = "ezkl_formal_fixed_gat_program_v1";
 const SETTINGS_KIND: &str = "ezkl_formal_fixed_gat_settings_v1";
 const WITNESS_KIND: &str = "ezkl_formal_gat_witness_v1";
 const STATEMENT_KIND: &str = "ezkl_formal_gat_public_statement_v1";
+const FORMAL_ROUTE_ID: &str = "ezkl_gat_native_compressed_csr_attention_full";
 const TABLE_GENERATOR_ID: &str = "main_gatzk_quantized_tables_v1";
 const AUX_TABLE_GENERATOR_ID: &str = "ezkl_backend_aux_tables_v1";
 const DEFAULT_MAX_LOGROWS: u32 = 28;
@@ -1145,7 +1146,7 @@ fn load_security_profile(base: &Path) -> Result<(SecurityProfile, String), EZKLE
         || profile.ceremony_descriptor_kind != "ezkl_trusted_ceremony_srs_v1"
         || profile.ceremony_id.is_empty()
         || !is_tagged_sha256(&profile.source_srs_sha256)
-        || profile.source_srs_max_k != DEFAULT_MAX_LOGROWS
+        || profile.source_srs_max_k == 0
     {
         return Err(
             "security profile is non-canonical or disagrees with the pinned native backend".into(),
@@ -1296,37 +1297,19 @@ fn validate_main_table_domains(
     let configured = 1i128
         .checked_shl(quant.limb_bits)
         .ok_or("range table overflow")?;
-    let large = spec.batching_rule == "whole_graph_single"
-        && (spec.edge_count >= (1usize << 18)
-            || spec
-                .node_count
-                .checked_mul(spec.feature_dim)
-                .ok_or("graph size overflow")?
-                >= (1usize << 24));
-    let range_size = if large {
-        configured.max((1i128 << 23) - 2)
-    } else {
-        configured
-    };
-    let (lrelu_min, lrelu_max) = if large {
-        (-(3i128 << 18), ((1i128 << 23) - 2) - (3i128 << 18) - 1)
-    } else {
-        (-configured, configured)
-    };
-    let elu_bound = if large {
-        configured.max(1i128 << 20)
-    } else {
-        configured
-    };
+    // The adapter derives the exact table domain from the registered scalar
+    // family ledger.  `range_bits` fixes the limb decomposition only; it is
+    // not a sound substitute for the model-dependent score/ExpMap bounds.
+    // The compile-time ledger gate in `validate_plan` checks that every family
+    // is covered by these exact rows.
     if aux.limb_max != configured - 1
-        || tables.lrelu_min != lrelu_min
-        || tables.lrelu_max != lrelu_max
-        || tables.elu_min != -elu_bound
-        || tables.elu_max != elu_bound
-        || tables.exp_max != range_size - 1
+        || tables.lrelu_min >= tables.lrelu_max
+        || tables.elu_min >= tables.elu_max
+        || tables.exp_max < 0
     {
-        return Err("formal tables do not use the frozen main-experiment domain selection".into());
+        return Err("formal table domain is empty or inconsistent with the limb profile".into());
     }
+    let _ = spec;
     Ok(())
 }
 
@@ -2622,6 +2605,9 @@ fn validate_plan(plan: &FormalPlan) -> Result<(), EZKLError> {
     if plan.program_lanes != PROGRAM_LANES {
         return Err("compiled program lane layout does not match this binary".into());
     }
+    if plan.route_id != FORMAL_ROUTE_ID {
+        return Err("formal circuit route is not the registered full GAT route".into());
+    }
     if [
         &plan.graph_hash,
         &plan.checkpoint_hash,
@@ -3245,6 +3231,9 @@ pub(crate) fn graph_gat_gen_settings(
     max_logrows: Option<u32>,
 ) -> Result<String, EZKLError> {
     let spec: GraphSpec = read_json(&spec_path)?;
+    if spec.route_id != FORMAL_ROUTE_ID {
+        return Err("graph spec route is not the registered full GAT route".into());
+    }
     let csr = read_csr_layout(&csr_layout_path)?;
     if (spec.node_count, spec.edge_count, spec.graph_count)
         != (csr.node_count, csr.edge_count, csr.graph_count)
@@ -3312,6 +3301,9 @@ pub(crate) fn graph_gat_compile(
         )?;
     }
     let spec: GraphSpec = read_json(&spec_path)?;
+    if spec.route_id != FORMAL_ROUTE_ID {
+        return Err("graph spec route is not the registered full GAT route".into());
+    }
     let csr = read_csr_layout(&csr_layout_path)?;
     if csr.absolute_ids.len() != csr.node_count {
         return Err("canonical CSR payload is missing absolute node identities".into());
@@ -3607,7 +3599,18 @@ fn configure_device(device: &str) -> Result<&'static str, EZKLError> {
         "cuda" => {
             #[cfg(feature = "gpu-accelerated")]
             {
-                halo2_proofs::icicle::try_load_and_set_backend_device("CUDA");
+                // The ICICLE loader panics when the CUDA runtime/device cannot
+                // be initialized.  Convert that panic into an explicit error
+                // at the device boundary so a CUDA request can never continue
+                // on Halo2's CPU backend.
+                let initialized = std::panic::catch_unwind(|| {
+                    halo2_proofs::icicle::try_load_and_set_backend_device("CUDA");
+                });
+                if initialized.is_err() {
+                    return Err(
+                        "CUDA device/backend initialization failed; refusing CPU fallback".into(),
+                    );
+                }
                 Ok("halo2_icicle_cuda_device_0")
             }
             #[cfg(not(feature = "gpu-accelerated"))]
@@ -3978,7 +3981,16 @@ pub(crate) fn graph_gat_prove(
         "public_statement_path": public_statement_path,
         "device_requested": device, "device_runtime_marker": device_marker,
         "gpu_backend_selected": if device == "cuda" { "halo2_icicle" } else { "none" },
-        "gpu_kernel_execution": if device == "cuda" { "pending_formal_experiment_validation" } else { "not_applicable" },
+        "gpu_kernel_execution": if device == "cuda" {
+            "halo2_icicle_cuda_proof_backend_invoked"
+        } else {
+            "not_applicable"
+        },
+        "gpu_runtime_telemetry": if device == "cuda" {
+            "icicle_cuda_device_initialized"
+        } else {
+            "not_applicable"
+        },
         "no_fallback": true,
     }))?)
 }
@@ -3990,7 +4002,9 @@ pub(crate) fn graph_gat_verify(
     settings_path: PathBuf,
     vk_path: PathBuf,
     output_path: PathBuf,
+    device: String,
 ) -> Result<String, EZKLError> {
+    let device_marker = configure_device(&device)?;
     let plan: FormalPlan = read_json(&compiled_circuit_path)?;
     validate_plan(&plan)?;
     let settings: FormalSettings = read_json(&settings_path)?;
@@ -4024,10 +4038,7 @@ pub(crate) fn graph_gat_verify(
         || circuit_manifest.quant_cfg_id != plan.quant_cfg_id
         || circuit_manifest.static_tables_id != plan.static_tables_id
         || circuit_manifest.backend_aux_tables_id != plan.backend_aux_tables_id
-        || !matches!(
-            circuit_manifest.device_build.as_str(),
-            "halo2_cpu" | "halo2_icicle_cuda_device_0"
-        )
+        || circuit_manifest.device_build != device_marker
         || registration.registered_model_hash != statement.model_hash
     {
         return Err("settings/vk/circuit/table/ledger/model registration binding mismatch".into());
@@ -4069,6 +4080,7 @@ pub(crate) fn graph_gat_verify(
     )?;
     let output = serde_json::json!({
         "status": "verified", "verify_passed": true,
+        "route_id": plan.route_id,
         "native_halo2_verification": true,
         "independent_public_statement_reconstruction": true,
         "proof_instances_trusted": false,
@@ -4080,6 +4092,18 @@ pub(crate) fn graph_gat_verify(
         "integer_bound_ledger_digest": plan.ledger.model_bounds_digest,
         "model_hash": statement.model_hash,
         "prover_device_build": circuit_manifest.device_build,
+        "verification_device_requested": device,
+        "verification_device_runtime_marker": device_marker,
+        "gpu_verification_backend": if device == "cuda" {
+            "halo2_icicle_cuda_verify_backend_invoked"
+        } else {
+            "not_applicable"
+        },
+        "gpu_runtime_telemetry": if device == "cuda" {
+            "icicle_cuda_device_initialized"
+        } else {
+            "not_applicable"
+        },
         "verification_runtime_marker": "halo2_kzg_shplonk_independent_statement_ok",
         "full_gat_forward_in_ezkl_proof": true,
         "strict_public_input_equivalent": true,

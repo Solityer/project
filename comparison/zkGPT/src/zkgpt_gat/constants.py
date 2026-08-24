@@ -3,11 +3,11 @@ from __future__ import annotations
 DATASET_ORDER = ["cora", "citeseer", "pubmed", "ppi", "ogbn-arxiv"]
 
 CONFIG_BY_DATASET = {
-    "cora": "cora_secure.cfg",
-    "citeseer": "citeseer_secure.cfg",
-    "pubmed": "pubmed_secure.cfg",
-    "ppi": "ppi_secure.cfg",
-    "ogbn-arxiv": "ogbn_arxiv_secure.cfg",
+    "cora": "cora_full.cfg",
+    "citeseer": "citeseer_full.cfg",
+    "pubmed": "pubmed_full.cfg",
+    "ppi": "ppi_batch_formal.cfg",
+    "ogbn-arxiv": "ogbn_arxiv_full.cfg",
 }
 
 CONFIG_DATASET_VALUE = {
@@ -18,20 +18,21 @@ CONFIG_DATASET_VALUE = {
     "ogbn-arxiv": "ogbn_arxiv",
 }
 
-PROTOCOL_ID = "gat-zkgpt-v1"
+PROTOCOL_ID = "GAT-ZKML-zkGPT"
 PROOF_BACKEND_ID = "zkgpt-style-gkr-lasso-matmul-hyrax-mle"
 ENCODING_ID = "gat-zkgpt-fixed-order-v1"
-PADDING_RULE_ID = "zero-pad+selector-mask"
-CIRCUIT_LAYOUT_ID = "gat-zkgpt-seven-segment-layout-v1"
-LASSO_CFG_ID = "gat-zkgpt-lasso-lrelu-elu-exp-range-structured-limbs-v1"
-MATRIX_PROOF_CFG_ID = "gat-zkgpt-batched-matmul-sumcheck-v1"
-COMMITMENT_BACKEND_ID = "bn254-field-hyrax-mle-openmasked-v2"
+PADDING_RULE_ID = "protocol-defined-family-padding+selector-mask-v1"
+CIRCUIT_LAYOUT_ID = "gat-zkgpt-four-segment-Xpub-W-Aux-L-v1"
+LASSO_CFG_ID = "gat-zkgpt-native-lasso-packed-tuples-range-padding-v1"
+MATRIX_PROOF_CFG_ID = "gat-zkgpt-dedicated-exact-integer-matmul-sumcheck-v1"
+COMMITMENT_BACKEND_ID = "zkGPT-hyrax-mle-evaluation-commitment-v2"
 
 TRANSCRIPT_DOMAIN_ORDER = [
     "gat-zkgpt/meta",
     "gat-zkgpt/model-commit",
     "gat-zkgpt/static-table",
-    "gat-zkgpt/input-commit",
+    "gat-zkgpt/input-commit/aux",
+    "gat-zkgpt/input-commit/lasso",
     "gat-zkgpt/lasso",
     "gat-zkgpt/matmul",
     "gat-zkgpt/gkr",
@@ -54,7 +55,7 @@ METADATA_FIELD_ORDER = [
     "matrix_proof_cfg_id",
 ]
 
-# The retained research graft uses a seven-segment layout and private com_T_H;
-# it is intentionally not the protocol's formal X|W|Aux|L commitment order.
-REFERENCE_GRAFT_COMMITMENT_ORDER = ["com_T_H", "com_W", "com_base", "com_comp", "com_psq", "com_qry"]
-COMMITMENT_ORDER = REFERENCE_GRAFT_COMMITMENT_ORDER
+# X_pub is reconstructed by the verifier and is intentionally uncommitted.
+# W is registered preprocessing state; Aux and L are fresh per-inference
+# segments.  This order is part of the public input-layer selector relation.
+COMMITMENT_ORDER = ["com_W", "com_Aux", "com_L"]

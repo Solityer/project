@@ -10,6 +10,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 RUNS = ROOT / "runs"
 RESULTS = ROOT / "results"
+FORMAL_ROUTE_ID = "ezkl_gat_native_compressed_csr_attention_full"
 
 
 def main() -> int:
@@ -21,6 +22,15 @@ def main() -> int:
         if payload.get("verify_passed") is not True or payload.get("status") != "verified":
             excluded.append(
                 {**identity, "status": payload.get("status"), "manifest": str(path.relative_to(ROOT))}
+            )
+            continue
+        if payload.get("route_id") != FORMAL_ROUTE_ID:
+            excluded.append(
+                {
+                    **identity,
+                    "status": "formal_route_mismatch",
+                    "manifest": str(path.relative_to(ROOT)),
+                }
             )
             continue
         timings = payload.get("timings_ms", {})

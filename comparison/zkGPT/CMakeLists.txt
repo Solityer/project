@@ -13,14 +13,14 @@ add_custom_target(
     gat_zkgpt_formal_preflight
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/scripts/formal_preflight.py --source-only
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-    COMMENT "Fail-closed check for the currently unsupported formal zkGPT route"
+    COMMENT "Source/configuration check for the native formal zkGPT route"
 )
 
 add_custom_target(
-    zkgpt_cuda_reference_reducer
+    zkgpt_cuda_native_prover
     COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/build_cuda_backend.sh
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-    COMMENT "Building the non-formal retained CUDA u64 reference reducer"
+    COMMENT "Building the CUDA proof-primitives backend"
 )
 
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/3rd/mcl/include/mcl/bn.hpp" AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/3rd/mcl/lib/libmcl.a")

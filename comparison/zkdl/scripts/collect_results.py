@@ -47,11 +47,19 @@ def main() -> int:
             if row.get("dataset") != dataset or row.get("device") != device:
                 raise SystemExit(f"result key mismatch: {path}")
             rows.append(row)
+    matrix_eligible = all(
+        row.get("status") == "ok"
+        and row.get("proof_generated") is True
+        and row.get("verified") is True
+        and row.get("formal_experiment_eligible") is True
+        and row.get("privacy_profile_status") == "supported_multi_session_registered_model"
+        for row in rows
+    )
     payload = {
         "schema": "zkDL_gat_result_matrix_v1",
         "baseline": "zkdl",
-        "privacy_profile_status": "unsupported_privacy_profile",
-        "formal_experiment_eligible": False,
+        "privacy_profile_status": "supported_multi_session_registered_model",
+        "formal_experiment_eligible": matrix_eligible,
         "rows": rows,
     }
     output.mkdir(parents=True, exist_ok=True)
@@ -71,6 +79,10 @@ def main() -> int:
         "proof_size_bytes",
         "privacy_profile_status",
         "formal_experiment_eligible",
+        "proof_format",
+        "model_session_commitments",
+        "model_rerandomization_proofs",
+        "model_session_rerandomization",
         "blocker",
     ]
     with (output / "final_zkdl_results.csv").open("w", encoding="utf-8", newline="") as handle:
@@ -80,7 +92,7 @@ def main() -> int:
     lines = [
         "# zkDL formal result matrix",
         "",
-        "Strict reusable-model privacy status: `unsupported_privacy_profile`.",
+        "Strict reusable-model privacy status: `supported_multi_session_registered_model`.",
         "",
         "| dataset | device | status | verified | prove ms | verify ms | proof bytes |",
         "| --- | --- | --- | --- | ---: | ---: | ---: |",

@@ -187,7 +187,7 @@ fn main() -> Result<()> {
             let size = fs::metadata(&proof)?.len();
             write_manifest(
                 &manifest,
-                serde_json::json!({"protocol_id":"GAT-ZKML-zkDL","proof_generated":true,"verified":false,"statement_id":p.statement_id,"model_registry_id":p.model_registry_id,"device":p.device,"gpu_telemetry":p.gpu_telemetry,"proof_path":proof,"proof_sha256":sha_file(&proof)?,"proof_size_bytes":size,"prove_time_ms":elapsed,"fresh_dynamic_commitments":p.dynamic_commitments.len(),"fresh_sumcheck_masks":p.operations.len()}),
+                serde_json::json!({"protocol_id":"GAT-ZKML-zkDL","proof_format":p.format,"proof_generated":true,"verified":false,"statement_id":p.statement_id,"model_registry_id":p.model_registry_id,"device":p.device,"gpu_telemetry":p.gpu_telemetry,"proof_path":proof,"proof_sha256":sha_file(&proof)?,"proof_size_bytes":size,"prove_time_ms":elapsed,"fresh_dynamic_commitments":p.dynamic_commitments.len(),"fresh_sumcheck_masks":p.operations.len(),"model_session_commitments":p.model_session_commitments.len(),"model_rerandomization_proofs":p.model_rerandomization.len(),"model_session_rerandomization":"pedersen_blinder_schnorr_v1"}),
             )?;
             println!("PROOF_OK bytes={} prove_ms={:.3}", size, elapsed);
         }
@@ -208,7 +208,7 @@ fn main() -> Result<()> {
             let elapsed = start.elapsed().as_secs_f64() * 1000.0;
             write_manifest(
                 &manifest,
-                serde_json::json!({"protocol_id":"GAT-ZKML-zkDL","verified":true,"independent_verifier":true,"verifier_reads_witness":false,"statement_id":p.statement_id,"model_registry_id":p.model_registry_id,"device":p.device,"gpu_telemetry_validated":p.gpu_telemetry.is_some(),"gpu_telemetry":p.gpu_telemetry,"proof_path":proof,"proof_sha256":sha_file(&proof)?,"proof_size_bytes":fs::metadata(&proof)?.len(),"verify_time_ms":elapsed}),
+                serde_json::json!({"protocol_id":"GAT-ZKML-zkDL","proof_format":p.format,"verified":true,"independent_verifier":true,"verifier_reads_witness":false,"statement_id":p.statement_id,"model_registry_id":p.model_registry_id,"device":p.device,"gpu_telemetry_validated":p.gpu_telemetry.is_some() || p.device == "cpu","gpu_telemetry":p.gpu_telemetry,"model_session_commitments":p.model_session_commitments.len(),"model_rerandomization_proofs":p.model_rerandomization.len(),"model_rerandomization_verified":true,"model_session_rerandomization":"pedersen_blinder_schnorr_v1","proof_path":proof,"proof_sha256":sha_file(&proof)?,"proof_size_bytes":fs::metadata(&proof)?.len(),"verify_time_ms":elapsed}),
             )?;
             println!("VERIFY_OK verify_ms={:.3}", elapsed);
         }

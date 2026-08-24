@@ -24,5 +24,5 @@ def require_formal_experiment() -> None:
         or value.get("implemented_reference_code") != "formal_zkgpt_gat_native_v1"
         or value.get("blockers")
     ):
-        ids = ", ".join(item["id"] for item in value.get("blockers", []))
-        raise RuntimeError(f"zkGPT formal experiment is fail-closed: {ids}")
+        ids = ", ".join(item.get("id", "unknown") for item in value.get("blockers", []))
+        raise RuntimeError(f"zkGPT formal capability manifest is inconsistent: {ids or 'manifest fields'}")

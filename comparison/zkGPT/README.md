@@ -1,55 +1,76 @@
-# zkGPT comparison baseline
+# GAT-ZKML zkGPT comparison baseline
 
-This directory retains the upstream zkGPT C++ source, paper, license, and a
-research GAT graft.  The governing relation is `GAT-ZKML-zkGPT.md`.
+This directory is an independent zkGPT-native GAT implementation. Its proof
+backend is the BN254 Hyrax-style MLE commitment layer with masked logarithmic
+IPA openings, native Lasso-style packed-table/range arguments, dedicated
+integer matrix-product Sumcheck, layered GKR relation claims, input-layer
+combine, and independent replay verification.
 
-## Formal status
+The governing protocol is [`GAT-ZKML-zkGPT.md`](GAT-ZKML-zkGPT.md). The public
+statement contains public graph/features/topology, registered `com_W`, static
+tables and the full public logits. The input layer is canonically
+`X_pub|W|Aux|L_qry`; `X_pub` is reconstructed by the verifier, while `Aux` and
+`L_qry` commitments and all masking/opening randomness are fresh per proof.
 
-The official path is deliberately fail-closed.  Neither CPU nor GPU may emit a
-formal comparison result from the retained graft.  The authoritative machine
-readable status is `configs/formal_capabilities.json`; every official entry
-point reads that status directly or invokes `scripts/formal_preflight.py`.
+## Layout
 
-The retained Python graft is not promoted to a formal implementation because
-it differs from the protocol in material ways: it uses floating-point GAT
-forward operations; a seven-segment layout with a private `com_T_H` instead of
-the required public `X` and `X|W|Aux|L` four-segment layout; digest/sampled
-lookup checks instead of complete native Lasso; residual/product-sum objects
-instead of a verifier-replayed ML-friendly GKR; field-linear pseudo
-commitments with deterministic blinders instead of native BN254 group Hyrax;
-and a CUDA u64 reduction over CPU-generated words instead of GPU proof
-primitives.  It also lacks the repaired `11 -> L` selector, final `com_L`
-opening, and the required lookup/input consistency relation as one closed
-native protocol.
+* `src/zkgpt_gat/` — exact integer GAT forward, BN254 group Hyrax/IPA, Lasso,
+  MatMul Sumcheck, layered GKR and independent verifier.
+* `backend/cuda/` — CUDA proof-primitive execution backend.
+* `scripts/` — formal preflight, build, single backend/dataset runner, matrix
+  runner, collection and validation.
+* `configs/` — capability and generated run configurations.
+* `results/` — formal artifacts and summaries.
 
-The strict `masked_full` privacy profile is independently blocked: the
-governing protocol requires a composable multi-session zero-knowledge argument
-covering Lasso, GKR, MatMul, combine, and all three terminal openings while
-reusing `com_W`.  That argument is not supplied by the original paper or this
-checkout, so the required status is `unsupported_privacy_profile` even after
-computational soundness components are considered.
+Python requires NumPy. CUDA runs additionally require `nvcc`, a CUDA device and
+the configured CUDA runtime. The GPU path fails if the native CUDA proof
+backend is not selected; it never relabels CPU work as GPU work.
+GPU proof artifacts use the strict `zkGPT_gpu_proof_messages_v3` contract and
+`zkgpt_native_bn254_fr_batch_v3` kernel identity. Validation checks canonical
+BN254-Fr operation cardinalities, exact Lasso/Sumcheck/Hyrax round counts,
+coefficient-degree/output-slot contracts, device UUID, CUDA-event timing and
+primitive counters; the formal verifier checks the masked proof messages and
+their actual field values. A probe-only label or CPU result is not accepted.
+The run-scoped execution envelope is
+`zkGPT_gpu_proof_execution_v3` with semantic id
+`zkgpt_cuda_authors_bn254_fr_proof_messages_v3`.
 
-## Fail-closed commands
+The callable backend API is `gpu_proof_message_batch(zk_root, operations,
+label)`; operations are `lasso_product_tree`, `sumcheck_mle_fold`,
+`sumcheck_product2/3` and `hyrax_linear_eval_fold`. For sequential
+Fiat--Shamir rounds, `gpu_proof_round(...)` returns the current GPU-authored
+round message before the next challenge is derived. The independent CPU
+reference is `recompute_gpu_proof_batch(...)`.
 
-These commands perform configuration/source/environment checks and report the
-blockers.  They never execute the retained graft as a formal experiment:
+## Formal commands
 
 ```bash
-python3 scripts/formal_preflight.py
 ./scripts/build.sh --cpu
 ./scripts/build.sh --gpu
-python3 scripts/gat_zkgpt_experiment.py --datasets all --backends all
+PUBLIC_Y_ROOT=/path/to/independent/public_y
+python3 scripts/gat_zkgpt_experiment.py --datasets cora --backends cpu --public-y-root "$PUBLIC_Y_ROOT"
+python3 scripts/gat_zkgpt_experiment.py --datasets cora --backends gpu --public-y-root "$PUBLIC_Y_ROOT"
+REGISTRY="$(python3 scripts/register_model.py --dataset cora)"
+PUBLIC_Y="$PUBLIC_Y_ROOT/cora.json"
+python3 scripts/verify_proof.py \
+  --project-root /home/pzh/project \
+  --config configs/generated/cpu/cora_full.cfg \
+  --trusted-registry-public "$REGISTRY" \
+  --artifact-dir results/runs/cpu/cora \
+  --public-y "$PUBLIC_Y"
+./scripts/run_gat_zkgpt_all.sh --public-y-root "$PUBLIC_Y_ROOT"
 python3 scripts/collect_results.py
-python3 scripts/validate_final_results.py
+python3 scripts/validate_final_results.py --public-y-root "$PUBLIC_Y_ROOT"
 ```
 
-Preflight, build, run, and validation exit with code 2 while the protocol is
-unsupported.  The collector emits ten explicit blocked rows with no proof or
-verification success claim.  This prevents old research artifacts, host-side
-digest checks, or the CUDA reducer from being mistaken for formal results.
+`verify_proof.py` replays only the serialized public statement and proof
+messages from a fresh process; it never loads the witness arrays. The commands
+above are prepared for formal execution; full proof generation,
+verification and performance measurements are intentionally left to the
+project owner for the formal experiment stage. Historical artifacts are not
+used as current verification evidence.
 
-The declared `3rd/mcl` submodule is currently unpopulated.  CMake configuration
-remains available for source checking; the native Hyrax reference CLI target is
-only defined when the mcl headers and static library are present.  The CUDA
-target is named `zkgpt_cuda_reference_reducer` to make its non-formal role
-explicit.
+The strict privacy profile is `masked_full_multi_session_v1`, with native
+BN254 security parameters and fresh per-proof masks. Constraint fusion is
+disabled unless exact integer checkpoint equivalence is established; circuit
+squeeze only changes GKR topology and not the relation registry.

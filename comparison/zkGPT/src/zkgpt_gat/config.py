@@ -144,7 +144,11 @@ def parse_int_list(value: str) -> List[int]:
 
 
 def generated_config(dataset: str, backend: str, project_root: pathlib.Path, zk_root: pathlib.Path) -> pathlib.Path:
-    source = project_root / "configs" / CONFIG_BY_DATASET[dataset]
+    # Formal comparison configurations are immutable baseline-local templates.
+    # Runtime must not import the main experiment's configuration files.
+    source = zk_root / "configs" / "formal" / CONFIG_BY_DATASET[dataset]
+    if not source.is_file():
+        raise FileNotFoundError(f"missing baseline-local formal config: {source}")
     entries = read_config(source)
     entries["dataset"] = CONFIG_DATASET_VALUE[dataset]
     entries["data_root"] = str(project_root / "data")
@@ -160,4 +164,3 @@ def generated_config(dataset: str, backend: str, project_root: pathlib.Path, zk_
 
 def load_app_config(path: pathlib.Path, project_root: pathlib.Path) -> AppConfig:
     return AppConfig(entries=read_config(path), path=path.resolve(), project_root=project_root.resolve())
-

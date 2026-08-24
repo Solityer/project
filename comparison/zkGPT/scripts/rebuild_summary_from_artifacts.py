@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compatibility wrapper for the fail-closed formal collector."""
+"""Compatibility entry point for rebuilding the result summary from artifacts."""
 from __future__ import annotations
 
 import subprocess

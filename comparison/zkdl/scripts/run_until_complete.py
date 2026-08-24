@@ -74,14 +74,15 @@ def main() -> int:
     validation = subprocess.run(
         [sys.executable, ROOT / "scripts" / "validate_final_results.py"], cwd=ROOT, check=False
     )
+    matrix_eligible = validation.returncode == 0
     write_state(
         state,
-        status="privacy_blocked" if validation.returncode == 2 else "complete" if validation.returncode == 0 else "failed",
+        status="complete" if matrix_eligible else "failed",
         phase="validation",
         completed_rows=completed_rows,
         validator_return_code=validation.returncode,
-        privacy_profile_status="unsupported_privacy_profile",
-        formal_experiment_eligible=False,
+        privacy_profile_status="supported_multi_session_registered_model",
+        formal_experiment_eligible=matrix_eligible,
     )
     return validation.returncode
 

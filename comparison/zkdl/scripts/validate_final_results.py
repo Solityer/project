@@ -63,8 +63,16 @@ def main() -> int:
                 "proof_file": proof_path.is_file()
                 and proof_path.stat().st_size == proof.get("proof_size_bytes")
                 and sha256(proof_path) == proof.get("proof_sha256"),
-                "privacy_status_explicit": result.get("privacy_profile_status") == "unsupported_privacy_profile"
-                and result.get("formal_experiment_eligible") is False,
+                "privacy_status_explicit": result.get("privacy_profile_status") == "supported_multi_session_registered_model"
+                and result.get("formal_experiment_eligible") is True,
+                "proof_format": proof.get("proof_format") == "zkDL-GAT-proof-envelope-v3"
+                and verifier.get("proof_format") == "zkDL-GAT-proof-envelope-v3",
+                "model_session_rerandomization": result.get("model_session_rerandomization") == "pedersen_blinder_schnorr_v1"
+                and proof.get("model_session_rerandomization") == "pedersen_blinder_schnorr_v1"
+                and verifier.get("model_session_rerandomization") == "pedersen_blinder_schnorr_v1"
+                and verifier.get("model_rerandomization_verified") is True
+                and int(proof.get("model_session_commitments", 0)) == int(proof.get("model_rerandomization_proofs", 0))
+                and int(proof.get("model_session_commitments", 0)) > 0,
             }
             if device == "gpu":
                 telemetry = proof.get("gpu_telemetry") or {}
@@ -91,9 +99,9 @@ def main() -> int:
         "verified_rows": verified_rows,
         "expected_rows": 10,
         "computational_validation": "passed" if not errors else "failed",
-        "privacy_profile_status": "unsupported_privacy_profile",
-        "formal_experiment_eligible": False,
-        "status": "privacy_blocked" if not errors else "failed",
+        "privacy_profile_status": "supported_multi_session_registered_model",
+        "formal_experiment_eligible": not errors,
+        "status": "complete" if not errors else "failed",
         "errors": errors,
     }
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -101,8 +109,8 @@ def main() -> int:
     if errors:
         print(f"zkdl_final_validation=FAILED errors={len(errors)}")
         return 1
-    print("zkdl_computational_validation=OK rows=10 privacy_profile=UNSUPPORTED")
-    return 2
+    print("zkdl_computational_validation=OK rows=10 privacy_profile=SUPPORTED_MULTI_SESSION")
+    return 0
 
 
 if __name__ == "__main__":

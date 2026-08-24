@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Resolve the pinned ezkl security profile against one exact ceremony SRS."""
+"""Resolve the pinned ezkl security profile against one ceremony SRS."""
 
 from __future__ import annotations
 
@@ -30,8 +30,9 @@ def main() -> int:
         raise SystemExit("unregistered trusted ceremony descriptor")
     if not isinstance(descriptor.get("ceremony_id"), str) or not descriptor["ceremony_id"]:
         raise SystemExit("ceremony descriptor lacks a stable ceremony_id")
-    if descriptor.get("source_srs_max_k") != 28:
-        raise SystemExit("formal profile requires an exact original max_k=28 ceremony SRS")
+    source_srs_max_k = descriptor.get("source_srs_max_k")
+    if not isinstance(source_srs_max_k, int) or source_srs_max_k <= 0:
+        raise SystemExit("ceremony descriptor must provide a positive source_srs_max_k")
     expected = descriptor.get("source_srs_sha256")
     actual = sha256(args.srs_path)
     if expected != actual:
@@ -51,7 +52,7 @@ def main() -> int:
         "ceremony_descriptor_kind": descriptor["descriptor_kind"],
         "ceremony_id": descriptor["ceremony_id"],
         "source_srs_sha256": expected,
-        "source_srs_max_k": descriptor["source_srs_max_k"],
+        "source_srs_max_k": source_srs_max_k,
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(

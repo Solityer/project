@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compatibility wrapper for the authoritative fail-closed preflight."""
+"""Compatibility entry point for the source/configuration preflight."""
 from __future__ import annotations
 
 import subprocess

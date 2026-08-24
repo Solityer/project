@@ -68,7 +68,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", type=Path)
     parser.add_argument("--dataset-root", type=Path)
     parser.add_argument("--checkpoint", type=Path)
-    parser.add_argument("--srs-path", type=Path, required=True, help="exact trusted ceremony max_k=28 KZG SRS")
+    parser.add_argument("--srs-path", type=Path, required=True,
+                        help="trusted ceremony KZG SRS whose declared source_srs_max_k covers the circuit")
     parser.add_argument("--ceremony-descriptor", type=Path, required=True,
                         help="descriptor binding the ceremony id, exact SRS SHA-256 and original max_k")
     parser.add_argument("--output-dir", type=Path)
@@ -238,6 +239,7 @@ def main() -> int:
                 "--proof-path", str(paths["proof"]), "--public-statement",
                 str(paths["statement"]), "--settings-path", str(paths["settings"]),
                 "--vk-path", str(paths["vk"]), "--output", str(paths["verify"]),
+                "--device", args.device,
             ],
         ),
     ]
@@ -275,6 +277,15 @@ def main() -> int:
         "static_tables_id": manifest["static_tables_id"],
         "backend_aux_tables_id": manifest["backend_aux_tables_id"],
         "prover_device_build": expected_device_marker,
+        "verification_device_runtime_marker": expected_device_marker,
+        "gpu_verification_backend": (
+            "halo2_icicle_cuda_verify_backend_invoked"
+            if args.device == "cuda" else "not_applicable"
+        ),
+        "gpu_runtime_telemetry": (
+            "icicle_cuda_device_initialized"
+            if args.device == "cuda" else "not_applicable"
+        ),
         "full_gat_forward_in_ezkl_proof": True,
         "strict_public_input_equivalent": True,
     }
@@ -300,6 +311,7 @@ def main() -> int:
             "vk_sha256": sha256(paths["vk"]),
             "runtime_device_marker": expected_device_marker,
             "verification_runtime_marker": verify.get("verification_runtime_marker"),
+            "verification_device_runtime_marker": verify.get("verification_device_runtime_marker"),
             "source_srs_sha256": circuit_manifest.get("source_srs_sha256"),
             "source_srs_k": circuit_manifest.get("source_srs_k"),
             "downsized_srs_k": circuit_manifest.get("downsized_srs_k"),
@@ -311,7 +323,7 @@ def main() -> int:
                 "halo2_icicle_backend_selected_and_proof_verified"
                 if args.device == "cuda" else "not_applicable"
             ),
-            "gpu_kernel_telemetry": "not_instrumented" if args.device == "cuda" else "not_applicable",
+            "gpu_kernel_telemetry": verify.get("gpu_runtime_telemetry", "not_applicable"),
         }
     )
     write_json(manifest_path, manifest)

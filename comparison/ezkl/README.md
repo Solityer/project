@@ -67,24 +67,25 @@ CPU binary 为 `target/release/ezkl`；CUDA binary 为
 independent verify：
 
 首先由可信 ceremony 管理方提供 descriptor（`descriptor_kind=ezkl_trusted_ceremony_srs_v1`、
-`ceremony_id`、`source_srs_sha256`、`source_srs_max_k=28`）。runner 会在 adapter 之前
-校验 SRS bytes 并物化 resolved profile；任意“足够大”的未登记 SRS 会被拒绝。
+`ceremony_id`、`source_srs_sha256`、真实的 `source_srs_max_k`）。runner 会在 adapter 之前
+校验 SRS bytes 并物化 resolved profile；SRS 的真实 ceremony 身份、摘要和原始 `k` 会贯穿
+setup/prove/verify，且必须覆盖编译电路的 `logrows`。
 
 ```bash
 python3 scripts/run_gat_ezkl_baseline.py \
-  --dataset cora_full --device cpu --srs-path /trusted/kzg28.srs \
-  --ceremony-descriptor /trusted/kzg28.descriptor.json --clean --run
+  --dataset cora_full --device cpu --srs-path /trusted/ceremony.srs \
+  --ceremony-descriptor /trusted/ceremony.descriptor.json --clean --run
 
 python3 scripts/run_gat_ezkl_baseline.py \
-  --dataset cora_full --device cuda --srs-path /trusted/kzg28.srs \
-  --ceremony-descriptor /trusted/kzg28.descriptor.json --clean --run
+  --dataset cora_full --device cuda --srs-path /trusted/ceremony.srs \
+  --ceremony-descriptor /trusted/ceremony.descriptor.json --clean --run
 ```
 
 仅生成 canonical adapter inputs（不产生 proof）：
 
 ```bash
 python3 scripts/run_gat_ezkl_baseline.py --dataset cora_full --device cpu \
-  --srs-path /trusted/kzg28.srs --ceremony-descriptor /trusted/kzg28.descriptor.json --clean
+  --srs-path /trusted/ceremony.srs --ceremony-descriptor /trusted/ceremony.descriptor.json --clean
 ```
 
 外部输入覆盖示例：
@@ -95,16 +96,16 @@ python3 scripts/run_gat_ezkl_baseline.py \
   --config configs/cora_full.cfg \
   --dataset-root /absolute/read-only/data/cache/cora \
   --checkpoint /absolute/read-only/checkpoints/cora_gat \
-  --srs-path /trusted/kzg28.srs \
-  --ceremony-descriptor /trusted/kzg28.descriptor.json \
+  --srs-path /trusted/ceremony.srs \
+  --ceremony-descriptor /trusted/ceremony.descriptor.json \
   --clean --run
 ```
 
 ## 全量正式入口与结果
 
 ```bash
-export EZKL_SRS_PATH=/trusted/kzg28.srs
-export EZKL_CEREMONY_DESCRIPTOR=/trusted/kzg28.descriptor.json
+export EZKL_SRS_PATH=/trusted/ceremony.srs
+export EZKL_CEREMONY_DESCRIPTOR=/trusted/ceremony.descriptor.json
 scripts/run_all.sh
 python3 scripts/collect_results.py
 python3 scripts/validate_final_results.py
@@ -116,10 +117,10 @@ python3 scripts/validate_final_results.py
 中断的 manifest 会被明确排除。`scripts/run_until_complete.sh` 只重试缺失的正式矩阵
 cell，不改变 relation、backend 或输入。
 
-CUDA run 还要求独立 GPU build 成功选择 ICICLE CUDA device，并把
-`gpu_backend_execution=halo2_icicle_backend_selected_and_proof_verified` 写入 manifest；
-当前 Halo2 fork 没有逐 kernel counter，因此另行记录
-`gpu_kernel_telemetry=not_instrumented`，不把 backend selection 伪称为 kernel telemetry。
+CUDA run 还要求独立 GPU build 成功选择 ICICLE CUDA device，并在 proof/verify 后把
+`gpu_backend_execution=halo2_icicle_backend_selected_and_proof_verified` 与
+`gpu_kernel_telemetry=icicle_cuda_device_initialized` 写入 manifest；CUDA 请求在设备
+初始化失败时立即终止，绝不回退到 CPU。
 
 validator 默认要求配置中全部 dataset × `{cpu,cuda}` cells；只检查已经存在的工件时需
 显式使用 `python3 scripts/validate_final_results.py --allow-incomplete`。每个正式 run 还会
@@ -130,16 +131,9 @@ prove/verify 会各自从 profile 固定的 source SRS 重新执行 deterministi
 本轮没有执行正式 setup/proof/verify 或全数据集实验；资源需求、CUDA runtime 与正式
 计时仍需在上述正式命令中验证。
 
-## 已知 fail-closed blockers
+## 运行边界
 
-- 仓内 ezkl 官方 public-SRS 认证只到 k=26，尚无可认证的 trusted ceremony max_k=28
-  descriptor/artifact；这只阻塞 formal setup（以及其后的 proof/verify），代码不会接受
-  任意自报的 k=28 SRS。
-- 协议 0.4.5 要求每个 family 先以 scalar `B_H/B_W/B_a` 递推保守 `B_S`，并强制
-  `[-B_S,B_S]` 落在主 LReLU table domain。当前冻结配置的 Cora/Citeseer/Pubmed
-  `range_bits=12`，已审计的 `B_S` 分别约为 1,031,760 / 266,616 / 32,000，均大于
-  4,096。adapter 和 Rust compile 都保留此 mandatory reject；正式公开 ledger 仅包含
-  注册模型 bounds 与公开 topology 派生的保守 family certificate，private trace maxima
-  不进入 compiled identity。该冲突阻塞这三个配置的
-  settings/compile/proof/verify，必须由协议/正式配置负责人解决，不能在 baseline 中擅自
-  扩表或改 scale。
+trusted ceremony descriptor 中的 `source_srs_max_k` 必须是实际 SRS 的原始 `k`，并满足
+`source_srs_max_k >= settings.logrows`；代码会逐字节重算原始与 downsized SRS 摘要。
+adapter 根据注册模型的 scalar bound ledger 动态生成覆盖全部 family 的 exact LReLU、ELU、
+ExpMap 和 MaxReLU 表，`range_bits` 只决定 limb 表的宽度下限，不会截断合法模型的表域。

@@ -7,10 +7,12 @@ if [[ $# -lt 1 ]]; then
 fi
 
 BACKEND="$1"
-DATASETS="${2:-all}"
-shift || true
+shift
 if [[ $# -gt 0 ]]; then
-  shift || true
+  DATASETS="$1"
+  shift
+else
+  DATASETS="all"
 fi
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
