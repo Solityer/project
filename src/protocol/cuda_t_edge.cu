@@ -264,10 +264,7 @@ namespace gatzk::protocol
                 return;
             }
 
-            quotient[index] =
-                algebra::gpu::fr_mul(
-                    quotient[index],
-                    zero_inverse_cycle[index % cycle_size]);
+            quotient[index] = algebra::gpu::fr_mul(quotient[index], zero_inverse_cycle[index % cycle_size]);
         }
 
         class CudaTEdgeExecutorImpl final
