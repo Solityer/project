@@ -6,6 +6,7 @@
 #include <regex>
 #include <sstream>
 #include <stdexcept>
+#include <cmath>
 
 namespace gat_ezkl 
 {
@@ -137,6 +138,20 @@ namespace gat_ezkl
             }
         }
 
+        void require_zero_tensor(const CheckpointBundle& bundle, const std::string& name,
+                                 const char* context) {
+            const auto found = bundle.tensors.find(name);
+            if (found == bundle.tensors.end()) {
+                throw std::runtime_error("checkpoint tensor missing from tensors.txt: " + name);
+            }
+            for (const double value : found->second.values) {
+                if (!std::isfinite(value) || value != 0.0) {
+                    throw std::runtime_error(std::string(context)
+                                             + " contains a non-zero unused private bias: " + name);
+                }
+            }
+        }
+
     }  // namespace
 
     // 从 bundle_root 目录加载完整 checkpoint（manifest.json + tensors.txt）
@@ -203,6 +218,12 @@ namespace gat_ezkl
             require_tensor(bundle, head.attn_src_bias);
             require_tensor(bundle, head.attn_dst_bias);
             require_tensor(bundle, head.output_bias);
+            // The native formal circuit has no hidden attention/output-bias
+            // argument.  Non-zero values would therefore be private freedom
+            // outside H(W); reject them instead of silently dropping them.
+            require_zero_tensor(bundle, head.attn_src_bias, "hidden head");
+            require_zero_tensor(bundle, head.attn_dst_bias, "hidden head");
+            require_zero_tensor(bundle, head.output_bias, "hidden head");
         }
         for (const auto& head : bundle.output_heads) 
         {

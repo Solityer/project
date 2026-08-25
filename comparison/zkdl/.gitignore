@@ -1,4 +1,5 @@
 /build/
+/target/
 /bin/
 /artifacts/
 /results/*
@@ -7,3 +8,5 @@
 /runs/*
 !/runs/.gitkeep
 /zkdl_gat_outputs/
+__pycache__/
+*.py[cod]

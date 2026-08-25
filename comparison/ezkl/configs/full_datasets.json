@@ -3,41 +3,41 @@
     {
       "run_id": "cora_full",
       "config": "configs/cora_full.cfg",
-      "dataset_root": "/home/pzh/project/data/cache/cora",
-      "checkpoint": "/home/pzh/project/artifacts/checkpoints/cora_gat",
-      "run_dir": "runs/cora_full",
+      "dataset_root": "data/cache/cora",
+      "checkpoint": "artifacts/checkpoints/cora_gat",
+      "run_dir": "results/runs",
       "order": 1
     },
     {
       "run_id": "citeseer_full",
       "config": "configs/citeseer_full.cfg",
-      "dataset_root": "/home/pzh/project/data/cache/citeseer",
-      "checkpoint": "/home/pzh/project/artifacts/checkpoints/citeseer_gat",
-      "run_dir": "runs/citeseer_full",
+      "dataset_root": "data/cache/citeseer",
+      "checkpoint": "artifacts/checkpoints/citeseer_gat",
+      "run_dir": "results/runs",
       "order": 2
     },
     {
       "run_id": "pubmed_full",
       "config": "configs/pubmed_full.cfg",
-      "dataset_root": "/home/pzh/project/data/cache/pubmed",
-      "checkpoint": "/home/pzh/project/artifacts/checkpoints/pubmed_gat",
-      "run_dir": "runs/pubmed_full",
+      "dataset_root": "data/cache/pubmed",
+      "checkpoint": "artifacts/checkpoints/pubmed_gat",
+      "run_dir": "results/runs",
       "order": 3
     },
     {
       "run_id": "ppi_full_formal",
       "config": "configs/ppi_full.cfg",
-      "dataset_root": "/home/pzh/project/data/cache/ppi",
-      "checkpoint": "/home/pzh/project/artifacts/checkpoints/ppi_gat",
-      "run_dir": "runs/ppi_full_formal",
+      "dataset_root": "data/cache/ppi",
+      "checkpoint": "artifacts/checkpoints/ppi_gat",
+      "run_dir": "results/runs",
       "order": 4
     },
     {
       "run_id": "ogbn_arxiv_full",
       "config": "configs/ogbn_arxiv_full.cfg",
-      "dataset_root": "/home/pzh/project/data/cache/ogbn_arxiv",
-      "checkpoint": "/home/pzh/project/artifacts/checkpoints/ogbn_arxiv_gat",
-      "run_dir": "runs/ogbn_arxiv_full",
+      "dataset_root": "data/cache/ogbn_arxiv",
+      "checkpoint": "artifacts/checkpoints/ogbn_arxiv_gat",
+      "run_dir": "results/runs",
       "order": 5
     }
   ]

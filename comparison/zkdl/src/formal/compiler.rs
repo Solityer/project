@@ -129,6 +129,8 @@ pub struct RelationCompilerInput {
     pub tensor_families: Vec<TensorFamilySpec>,
     pub operation_families: Vec<IntegerOperationFamily>,
     pub tensors: BTreeMap<String, Vec<FieldValue>>,
+    pub resource_manifest_id: String,
+    pub config_sha256: String,
     pub source_input_id: String,
 }
 
@@ -157,6 +159,8 @@ pub fn compile(input: RelationCompilerInput) -> Result<(PublicStatement, Witness
         &input.model_shape_id,
         &input.commitment_set_id,
         &input.static_table_rows_id,
+        &input.resource_manifest_id,
+        &input.config_sha256,
     ] {
         ensure!(
             value
@@ -315,6 +319,8 @@ pub fn compile(input: RelationCompilerInput) -> Result<(PublicStatement, Witness
         model_arch_id: input.model_arch_id,
         model_param_id: input.model_param_id,
         public_logits: input.public_logits,
+        resource_manifest_id: input.resource_manifest_id,
+        config_sha256: input.config_sha256,
         statement_id: String::new(),
     }
     .seal()?;

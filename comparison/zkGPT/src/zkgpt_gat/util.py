@@ -5,6 +5,8 @@ import hashlib
 import json
 import os
 import pathlib
+import stat
+import tempfile
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, Iterator
@@ -43,8 +45,54 @@ def file_id(path: pathlib.Path) -> Dict[str, Any]:
 
 
 def write_json(path: pathlib.Path, data: Any) -> None:
+    """Write JSON without following a hostile artifact-file alias.
+
+    Production proof files are rewritten during a rerun, so ``O_EXCL`` alone
+    is insufficient.  Validate an existing destination as a one-link regular
+    file, write a fresh regular temporary file in the same directory, and
+    atomically replace the destination.  ``os.replace`` replaces a symlink
+    itself rather than following it; refusing pre-existing symlinks, hardlinks,
+    FIFOs, and other special files keeps the write path fail-closed.
+    """
+    path = pathlib.Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2, sort_keys=True, ensure_ascii=True) + "\n", encoding="utf-8")
+    try:
+        parent_info = path.parent.lstat()
+    except OSError as exc:
+        raise OSError(f"cannot inspect JSON output directory: {path.parent}") from exc
+    if stat.S_ISLNK(parent_info.st_mode) or not stat.S_ISDIR(parent_info.st_mode):
+        raise OSError(f"JSON output parent must be a real directory: {path.parent}")
+
+    try:
+        existing = path.lstat()
+    except FileNotFoundError:
+        existing = None
+    except OSError as exc:
+        raise OSError(f"cannot inspect JSON output: {path}") from exc
+    if existing is not None:
+        if stat.S_ISLNK(existing.st_mode):
+            raise OSError(f"JSON output must not be a symlink: {path}")
+        if not stat.S_ISREG(existing.st_mode):
+            raise OSError(f"JSON output must be a regular file: {path}")
+        if existing.st_nlink != 1:
+            raise OSError(f"JSON output hardlink count must be one: {path}")
+
+    payload = (json.dumps(data, indent=2, sort_keys=True, ensure_ascii=True) + "\n").encode("utf-8")
+    temporary: str | None = None
+    try:
+        fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        temporary = None
+    finally:
+        if temporary is not None:
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
 
 
 def read_json(path: pathlib.Path) -> Dict[str, Any]:

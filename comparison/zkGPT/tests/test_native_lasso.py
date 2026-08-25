@@ -6,7 +6,7 @@ import tempfile
 import unittest
 
 from zkgpt_gat.native_hyrax import NativeHyrax
-from zkgpt_gat.native_lasso import prove_lasso, verify_lasso
+from zkgpt_gat.native_lasso import _layout, prove_lasso, verify_lasso
 from zkgpt_gat.transcript import Transcript
 from zkgpt_gat.util import digest_json
 
@@ -42,6 +42,19 @@ class NativeLassoTest(unittest.TestCase):
             "static_table_registry_digest": digest_json({"T_range": "toy"}),
         }
         return metadata, {"T_range": [0, 1]}, [0, 1]
+
+    def test_padded_count_one_is_rejected_by_native_layout_and_verifier(self):
+        metadata, tables, _vector = self._statement()
+        family = metadata["Layout_in"]["segments"][0]["lasso_families"][0]
+        family["padded_count"] = 1
+        with self.assertRaises(ValueError):
+            _layout(family, len(tables["T_range"]))
+        self.assertFalse(
+            verify_lasso(
+                {}, metadata, tables, {},
+                transcript=Transcript("native-lasso-test"), canonical_source_sink=[],
+            )
+        )
 
     def test_fresh_lc_memory_argument_and_tamper(self):
         metadata, tables, vector = self._statement()

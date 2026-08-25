@@ -1,0 +1,53 @@
+{
+  "schema": "zkGPT_static_tables_descriptor_v1",
+  "static_tables_id": "tables:lrelu+elu+exp+range",
+  "quant_cfg_id": "exact_integer_gat_v1",
+  "families": [
+    "T_LReLU",
+    "T_ELU",
+    "T_exp",
+    "T_range"
+  ],
+  "content": {
+    "protocol_id": "GAT-ZKML-zkGPT",
+    "encoding_id": "Pack_f_offset_base_v1",
+    "canonical_row_order": "ascending signed x; row=(x,y,Pack_f(x,y))",
+    "function_evaluators": {
+      "T_LReLU": {
+        "table_id": "T_LReLU",
+        "function": "LeakyReLU",
+        "evaluation_rule": "y=x if x>=0 else round(0.2*x)",
+        "evaluator_id": "signed_fixed_point_leaky_relu_alpha_0p2_nearest_q",
+        "input_scale": 256,
+        "output_scale": 256,
+        "domain_policy": "signed fixed-point representatives certified by integer_bound_ledger"
+      },
+      "T_ELU": {
+        "table_id": "T_ELU",
+        "function": "ELU",
+        "evaluation_rule": "y=x if x>=0 else round(exp(x)-1)",
+        "evaluator_id": "signed_fixed_point_elu_expm1_nearest_q",
+        "input_scale": 16,
+        "output_scale": 16,
+        "domain_policy": "signed fixed-point representatives certified by integer_bound_ledger"
+      },
+      "T_exp": {
+        "table_id": "T_exp",
+        "function": "ExpMap",
+        "evaluation_rule": "y=round(exp(-x)) for nonnegative x",
+        "evaluator_id": "signed_fixed_point_exp_neg_nearest_q",
+        "input_scale": 256,
+        "output_scale": 16,
+        "domain_policy": "nonnegative stable-softmax differences certified by integer_bound_ledger"
+      }
+    },
+    "range_table": {
+      "table_id": "T_range",
+      "table_kind": "materialized_fixed_range_table",
+      "entry_policy": "all limbs in [0,2^range_bits-1]",
+      "range_bits": 12
+    }
+  },
+  "content_digest": "027f1b529c64638b13888c919b4f4ebc07234da4898e245c14511367b77bbd97",
+  "descriptor_digest": "84ad4f14fa96f66b7f9f6a49fdee986530d16c07aa7b2a1794499170ba0118d3"
+}

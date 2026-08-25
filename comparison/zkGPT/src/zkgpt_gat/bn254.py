@@ -157,11 +157,46 @@ def generator_vector(label: str, count: int, suffix: str = "G") -> List[G1Point]
 
 
 def multi_scalar_mul(points: Sequence[G1Point], scalars: Iterable[int]) -> G1Point:
-    result = G1Point.zero()
-    for point, scalar in zip(points, scalars):
-        if int(scalar) % BN254_FR_MODULUS:
-            result = result + (int(scalar) * point)
-    return result
+    """Compute a batch MSM with Jacobian Pippenger buckets.
+
+    The baseline's Hyrax path performs many MSMs over the same BN254 G1
+    vectors.  Repeated affine ``point + scalar * point`` operations are
+    correct but spend one field inversion per addition; the bucket route
+    keeps additions in Jacobian coordinates and converts only the result.
+    It is the same native commitment arithmetic and leaves the serialized
+    Hyrax protocol unchanged.
+    """
+    entries = [
+        (point, int(scalar) % BN254_FR_MODULUS)
+        for point, scalar in zip(points, scalars)
+        if not point.infinity and int(scalar) % BN254_FR_MODULUS
+    ]
+    if not entries:
+        return G1Point.zero()
+
+    # Four-bit windows keep the bucket table small for the short vectors used
+    # by the native proof while avoiding a large setup-time allocation.
+    window = 4
+    mask = (1 << window) - 1
+    max_bits = max(scalar.bit_length() for _, scalar in entries)
+    max_shift = ((max_bits + window - 1) // window - 1) * window
+    result = (0, 1, 0)
+    for shift in range(max_shift, -1, -window):
+        for _ in range(window):
+            result = _jacobian_double(*result)
+        buckets = [(0, 1, 0) for _ in range(1 << window)]
+        for point, scalar in entries:
+            digit = (scalar >> shift) & mask
+            if digit:
+                buckets[digit] = _jacobian_add(
+                    *buckets[digit], point.x % BN254_FQ_MODULUS,
+                    point.y % BN254_FQ_MODULUS, 1,
+                )
+        running = (0, 1, 0)
+        for digit in range(mask, 0, -1):
+            running = _jacobian_add(*running, *buckets[digit])
+            result = _jacobian_add(*result, *running)
+    return _jacobian_to_affine(*result)
 
 
 def derive_nonzero_challenge(domain: str, payload: Any) -> int:

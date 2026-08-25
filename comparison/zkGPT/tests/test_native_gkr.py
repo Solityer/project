@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import pathlib
 import tempfile
 import unittest
@@ -132,6 +133,46 @@ class NativeGKRTests(unittest.TestCase):
                 context={"test": "product"},
             ))
             self.assertEqual(prover.digest, verifier.digest)
+
+    def test_double_aggregate_product_tamper_is_rejected(self) -> None:
+        n_in = 16
+        sums = [2, 3, 5]
+        h_agg_pre = [7, 11, 13]
+        double_aggregate = [left * right for left, right in zip(sums, h_agg_pre)]
+        vector = sums + h_agg_pre + double_aggregate + [0] * (n_in - 9)
+        layout = {"N_in": n_in, "segments": [{"name": "Aux", "arrays": [
+            {"name": "Sum", "offset": 0, "length": 3, "shape": [3]},
+            {"name": "H_agg_pre", "offset": 3, "length": 3, "shape": [3]},
+            {"name": "double_aggregate", "offset": 6, "length": 3, "shape": [3]},
+        ]}]}
+        spec = ProductGateSpec(
+            "hidden.l1.h0.double_aggregate_product",
+            identity_oracle("Aux", "double_aggregate", 3),
+            identity_oracle("Aux", "Sum", 3),
+            identity_oracle("Aux", "H_agg_pre", 3),
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            hyrax = NativeHyrax(root)
+            registration = hyrax.commit_vector("Aux", vector, root)
+            public_registration = {key: value for key, value in registration.items() if key != "blind"}
+            proof = prove_product_gate(
+                spec, layout=layout, vectors={"Aux": vector}, registrations={"Aux": registration},
+                params=hyrax_value_params(n_in), hyrax=hyrax, work_dir=root,
+                transcript=Transcript("test/double-aggregate"), context={"test": "double-aggregate"},
+            )
+            self.assertTrue(verify_product_gate(
+                proof, spec, layout=layout, registrations={"Aux": public_registration},
+                params=hyrax_value_params(n_in), transcript=Transcript("test/double-aggregate"),
+                context={"test": "double-aggregate"},
+            ))
+            tampered = copy.deepcopy(proof)
+            tampered["spec"]["label"] = "attacker-selected-double-aggregate"
+            self.assertFalse(verify_product_gate(
+                tampered, spec, layout=layout, registrations={"Aux": public_registration},
+                params=hyrax_value_params(n_in), transcript=Transcript("test/double-aggregate"),
+                context={"test": "double-aggregate"},
+            ))
 
     def test_public_zero_sentinel_is_not_python_negative_index(self) -> None:
         n_in = 8

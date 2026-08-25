@@ -6,8 +6,15 @@ import argparse
 import json
 import pathlib
 import shutil
+import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+
+from zkgpt_gat.constants import DATASET_ORDER  # noqa: E402
+from zkgpt_gat.formal_gate import formal_gate_status  # noqa: E402
+from zkgpt_gat.resources import check_resource_layout, read_resource_manifest, validate_static_table_descriptor  # noqa: E402
+from zkgpt_gat.config import read_config  # noqa: E402
 
 
 def main() -> int:
@@ -19,12 +26,11 @@ def main() -> int:
     base = ROOT.resolve()
     if output != base and base not in output.parents:
         raise SystemExit("output must stay inside comparison/zkGPT")
-    capabilities = json.loads((ROOT / "configs" / "formal_capabilities.json").read_text(encoding="utf-8"))
-    proof_source = (ROOT / "src" / "zkgpt_gat" / "proof.py").read_text(encoding="utf-8")
-    hyrax_source = (ROOT / "src" / "zkgpt_gat" / "native_hyrax.py").read_text(encoding="utf-8")
-    bn_source = (ROOT / "src" / "zkgpt_gat" / "bn254.py").read_text(encoding="utf-8")
-    gpu_execution_source = (ROOT / "src" / "zkgpt_gat" / "gpu_execution.py").read_text(encoding="utf-8")
-    cuda_source = (ROOT / "backend" / "cuda" / "zkgpt_cuda_proof_hot_path.cu").read_text(encoding="utf-8")
+    # The capability manifest is a source/configuration input.  Its formal
+    # blocker is intentionally reported, but source-only mode must not turn it
+    # into a source failure or inspect any staged dataset/model resource.
+    gate = formal_gate_status()
+    capabilities = gate.get("capabilities") or {}
     environment = {
         "python3": shutil.which("python3") is not None,
         "numpy": False,
@@ -37,51 +43,89 @@ def main() -> int:
         environment["numpy"] = True
     except ModuleNotFoundError:
         pass
+    module_checks = {}
+    for module_name in (
+        "zkgpt_gat.proof", "zkgpt_gat.native_hyrax", "zkgpt_gat.native_lasso",
+        "zkgpt_gat.native_matmul", "zkgpt_gat.native_gkr", "zkgpt_gat.gpu_execution",
+    ):
+        try:
+            __import__(module_name)
+            module_checks[module_name] = True
+        except Exception:
+            module_checks[module_name] = False
     source_checks = {
-        "four_segment_layout": '"X_pub", "W", "Aux", "L_qry"' in proof_source,
-        "group_hyrax": "bn254-g1-pedersen-hyrax-ipa-v1" in hyrax_source and "hyrax-mle-ipa-v1" in hyrax_source,
-        "bn254_group_arithmetic": "class G1Point" in bn_source and "is_on_curve" in bn_source,
-        "exact_integer_tables": "_fixed_exp" in proof_source and "_integer_bound_ledger" in proof_source,
-        "native_lasso": "lasso" in proof_source.lower() and "structured_table_opening" in proof_source,
-        "layered_gkr": "_prove_gkr" in proof_source and "_verify_gkr" in proof_source,
-        "terminal_openings": "_verify_formal" in proof_source and "verify_open_payload" in proof_source,
-        "cuda_proof_backend": (
-            "zkgpt_native_bn254_fr_batch_v3" in cuda_source
-            and "ZKGPT_GPU_BATCH_V3" in cuda_source
-            and "zkGPT_gpu_proof_messages_v3" in cuda_source
-            and "product2_round_coefficients_kernel" in cuda_source
-            and "product3_round_coefficients_kernel" in cuda_source
-            and "lasso_grand_product" in cuda_source
-            and "matmul_sumcheck" in cuda_source
-            and "gkr_relation" in cuda_source
-            and "fr_modulus" in cuda_source
-            and "cudaDeviceSynchronize" in cuda_source
-        ),
-        "gpu_execution_contract": (
-            'GPU_EXECUTION_SCHEMA = "zkGPT_gpu_proof_execution_v3"' in gpu_execution_source
-            and 'GPU_EXECUTION_SEMANTICS = "zkgpt_cuda_authors_bn254_fr_proof_messages_v3"' in gpu_execution_source
-            and '"cuda_event_elapsed_ms"' in gpu_execution_source
-            and '"gpu_uuid"' in gpu_execution_source
-            and "validate_gpu_execution_evidence" in gpu_execution_source
-        ),
+        "capability_manifest": gate.get("status") == "READY" and isinstance(capabilities, dict),
+        "native_python_modules": all(module_checks.values()),
+        "cuda_backend_source": (ROOT / "backend" / "cuda" / "zkgpt_cuda_proof_hot_path.cu").is_file(),
+        "cuda_build_entrypoint": (ROOT / "scripts" / "build_cuda_backend.sh").is_file(),
+        "static_table_descriptor": (ROOT / "resources" / "static_tables" / "exact_integer_gat_v1.json").is_file(),
     }
-    missing = [name for name, passed in source_checks.items() if not passed]
+    config_errors: list[str] = []
+    for config_path in sorted((ROOT / "configs" / "formal").glob("*.cfg")) + sorted((ROOT / "configs" / "generated").glob("*/*.cfg")):
+        try:
+            entries = read_config(config_path)
+            if not entries.get("dataset"):
+                config_errors.append(f"config_missing_dataset:{config_path.relative_to(ROOT)}")
+        except (OSError, ValueError) as exc:
+            config_errors.append(f"config_invalid:{config_path.relative_to(ROOT)}:{exc}")
+    source_checks["formal_configs"] = not config_errors
+    try:
+        read_resource_manifest(ROOT)
+        validate_static_table_descriptor(ROOT)
+        source_checks["resource_manifest_config"] = True
+    except (OSError, ValueError, TypeError):
+        source_checks["resource_manifest_config"] = False
+    source_missing = [name for name, passed in source_checks.items() if not passed]
+    source_missing.extend(config_errors)
+    resource_errors: list[str] = []
+    if args.source_only:
+        # No staged-resource check, no formal gate requirement, and no dataset
+        # or checkpoint load is permitted in this mode.
+        resource_report = {"skipped": True, "reason": "source_only"}
+        resources_ready = False
+    else:
+        try:
+            resource_report = check_resource_layout(ROOT, DATASET_ORDER, require_staged=True)
+            resources_ready = all(item.get("staged") is True for item in resource_report.get("datasets", {}).values())
+            if not resources_ready:
+                resource_errors.append("one or more formal dataset/model resource bundles are not staged")
+        except (OSError, ValueError, TypeError) as exc:
+            resource_report = {"schema": "zkGPT_baseline_resource_manifest_v1", "datasets": {}}
+            resources_ready = False
+            resource_errors.append(f"resource_check_failed:{exc}")
+    blockers = source_missing + resource_errors
+    if not args.source_only:
+        blockers = list(gate.get("errors", [])) + blockers
+    source_ready = not source_missing
+    formal_eligible = source_ready and resources_ready and gate["status"] == "READY"
+    if not args.source_only and gate["status"] != "READY" and not gate.get("errors"):
+        blockers.append("formal capability gate is blocked")
+    if not args.source_only and not resources_ready and not resource_errors:
+        blockers.append("resources_ready is false")
+    if not args.source_only and not formal_eligible and not blockers:
+        blockers.append("formal experiment eligibility is false")
     report = {
         "schema": "zkGPT_gat_formal_preflight_v3",
-        "status": "ready" if not missing else "source_incomplete",
-        "formal_experiment_eligible": bool(capabilities.get("formal_experiment_eligible")) and not missing,
+        "status": "source_ready" if args.source_only and source_ready else ("ready" if formal_eligible else "blocked"),
+        "source_ready": source_ready,
+        "resources_ready": resources_ready,
+        "formal_experiment_eligible": formal_eligible,
+        "gate": gate,
         "privacy_profile_status": capabilities.get("privacy_profile_status"),
         "cpu_formal_path": capabilities.get("cpu_formal_path"),
         "gpu_formal_path": capabilities.get("gpu_formal_path"),
         "environment": environment,
         "source_checks": source_checks,
-        "source_incomplete": missing,
-        "blockers": capabilities.get("blockers", []),
+        "module_checks": module_checks,
+        "source_incomplete": source_missing,
+        "resource_check": resource_report,
+        "blockers": blockers,
+        "mode": "source_only" if args.source_only else "formal",
     }
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(f"zkGPT_formal_preflight={report['status']} cpu={report['cpu_formal_path']} gpu={report['gpu_formal_path']}")
-    return 0 if report["formal_experiment_eligible"] else 1
+    return 0 if (report["source_ready"] if args.source_only else report["formal_experiment_eligible"]) else 1
 
 
 if __name__ == "__main__":

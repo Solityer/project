@@ -1,36 +1,51 @@
 # zkGPT formal experiment commands
 
 This baseline implements the native four-segment `X_pub|W|Aux|L_qry` path.
-Run the source preflight and one-time model registration before the formal
-matrix:
+Run the commands from `/home/pzh/project/comparison/zkGPT`.  Resource
+preparation creates only baseline-local directories and the canonical
+registration manifest.  The project owner must stage each complete dataset,
+checkpoint bundle and public-Y file under the declared baseline-local paths;
+no command below imports resources from the main experiment or another
+baseline.
 
 ```bash
+cd /home/pzh/project/comparison/zkGPT
+python3 scripts/prepare_resources.py
+# Owner stages data/cache/{cora,citeseer,pubmed,ppi,ogbn_arxiv}/,
+# artifacts/checkpoints/*_gat/, and resources/public_y/*.json.
+# The command creates only empty baseline-local layout directories, including
+# results/model_registry/ and artifacts/private_setup/model_registry/.
+python3 scripts/prepare_resources.py --check
 python3 scripts/formal_preflight.py --source-only
-REGISTRY="$(python3 scripts/register_model.py --dataset cora)"
+python3 scripts/formal_preflight.py
+./scripts/build.sh --cpu
+./scripts/build.sh --gpu
+for dataset in cora citeseer pubmed ppi ogbn-arxiv; do
+  python3 scripts/register_model.py --dataset "$dataset"
+done
 ```
 
-Run CPU and GPU matrices separately, then collect and validate artifacts:
+Each registration is one-time setup: after the capability gate, staged-resource
+check and identity/path checks, it reads that dataset's checkpoint and writes
+the authenticated public `com_W` descriptor under `results/model_registry/`.
+Hyrax blinders remain only in the baseline-local private setup root under
+`artifacts/private_setup/model_registry/`; the independent verifier receives
+only the public registry file.
+
+The owner then runs each single cell (or the matrix runner).  Every single-cell
+manifest is written only after a real proof and fresh independent verifier
+return `VERIFY_OK`:
 
 ```bash
-PUBLIC_Y_ROOT=/path/to/independent/public_y
-python3 scripts/gat_zkgpt_experiment.py --datasets all --backends cpu --public-y-root "$PUBLIC_Y_ROOT" --force
-python3 scripts/gat_zkgpt_experiment.py --datasets all --backends gpu --public-y-root "$PUBLIC_Y_ROOT" --force
-PUBLIC_Y="$PUBLIC_Y_ROOT/cora.json"
-python3 scripts/verify_proof.py \
-  --project-root /home/pzh/project \
-  --config configs/generated/cpu/cora_full.cfg \
-  --trusted-registry-public "$REGISTRY" \
-  --artifact-dir results/runs/cpu/cora \
-  --public-y "$PUBLIC_Y"
-python3 scripts/verify_proof.py \
-  --project-root /home/pzh/project \
-  --config configs/generated/gpu/cora_full.cfg \
-  --trusted-registry-public "$REGISTRY" \
-  --artifact-dir results/runs/gpu/cora \
-  --public-y "$PUBLIC_Y"
-python3 scripts/collect_results.py
-python3 scripts/validate_final_results.py --public-y-root "$PUBLIC_Y_ROOT"
+python3 scripts/gat_zkgpt_experiment.py --datasets cora --backends cpu
+python3 scripts/gat_zkgpt_experiment.py --datasets cora --backends gpu
+# Repeat the two commands for citeseer, pubmed, ppi, and ogbn-arxiv.
 ```
+
+The runner accepts `--results-dir` only when it names this baseline's exact
+`results/` root.  Each cell is written to the canonical
+`results/runs/<backend>/<dataset>/` directory; sibling aliases and the old
+`results/<backend>/` layout are rejected.
 
 The GPU command requires a CUDA device and the built
 `build/zkgpt_cuda_native_prover`; no CPU substitution is performed.
@@ -42,3 +57,18 @@ checks the actual masked field messages. The run-scoped execution envelope is
 `zkGPT_gpu_proof_execution_v3`.
 The artifact also records the CUDA device UUID and a
 `cudaEventElapsedTime` measurement for the native invocation.
+
+After all five CPU and five GPU cells are completed by the owner, collect and
+run the strict matrix-level final validator:
+
+```bash
+python3 scripts/collect_results.py
+python3 scripts/validate_final_results.py
+```
+
+The collector fresh-replays every present cell and rejects test fixtures,
+synthetic caches, stopped/partial artifacts, `FAILED_DIAGNOSTIC` states, and
+duplicate proof names.  The final validator requires exactly 5×2 real cells,
+fresh replay evidence, and multi-session privacy checks.  Neither tool is a
+substitute for a real single-cell proof/verify, and this preparation stage
+does not claim any formal dataset result.

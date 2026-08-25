@@ -18,6 +18,8 @@ use crate::pfsys::{
 };
 use crate::tensor::{Tensor, ValTensor, ValType};
 use crate::EZKLError;
+#[cfg(all(feature = "gpu-accelerated", not(target_arch = "wasm32")))]
+use crate::gpu_telemetry;
 use halo2_proofs::circuit::{Layouter, SimpleFloorPlanner, Value};
 use halo2_proofs::plonk::{
     Advice, Circuit, Column, ConstraintSystem, Error, Expression, Instance, Selector, TableColumn,
@@ -43,7 +45,17 @@ const FORMAL_ROUTE_ID: &str = "ezkl_gat_native_compressed_csr_attention_full";
 const TABLE_GENERATOR_ID: &str = "main_gatzk_quantized_tables_v1";
 const AUX_TABLE_GENERATOR_ID: &str = "ezkl_backend_aux_tables_v1";
 const DEFAULT_MAX_LOGROWS: u32 = 28;
+const FORMAL_SOURCE_SRS_MAX_K: u32 = 28;
 const PROGRAM_LANES: usize = 32;
+const FORMAL_SEMANTIC_VERSION: &str = "ezkl_formal_gat_semantics_v2";
+const FORMAL_OPERATION_REGISTRY_JSON: &str =
+    include_str!("../configs/formal_operation_registry.json");
+
+// The build script hashes this file into an authenticated compile-time value.
+// It is deliberately included in every formal plan and security profile so a
+// relation implementation change cannot reuse an old circuit identity.
+const FORMAL_SOURCE_ID: &str = env!("EZKL_FORMAL_SOURCE_ID");
+const FORMAL_VENDOR_TREE_ID: &str = env!("EZKL_VENDOR_TREE_ID");
 
 type Var = usize;
 
@@ -319,6 +331,9 @@ struct SecurityProfile {
     ceremony_id: String,
     source_srs_sha256: String,
     source_srs_max_k: u32,
+    semantic_version: String,
+    operation_registry_id: String,
+    semantic_source_id: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -371,6 +386,9 @@ struct FormalPlan {
     compiled_circuit_id: String,
     security_profile_id: String,
     security_profile: SecurityProfile,
+    semantic_version: String,
+    operation_registry_id: String,
+    semantic_source_id: String,
     logrows: u32,
 }
 
@@ -388,6 +406,9 @@ struct FormalSettings {
     security_profile_id: String,
     program_version: String,
     program_lanes: usize,
+    semantic_version: String,
+    operation_registry_id: String,
+    semantic_source_id: String,
     settings_id: String,
 }
 
@@ -999,6 +1020,14 @@ fn formal_domain_hash(domain: &str, role: &str, bytes: &[u8]) -> String {
     formal_domain_hash_fields(domain, &[(role, bytes)])
 }
 
+fn formal_operation_registry_id() -> String {
+    formal_domain_hash(
+        "ezkl_formal_operation_registry",
+        "canonical_json",
+        FORMAL_OPERATION_REGISTRY_JSON.trim_end_matches(['\r', '\n']).as_bytes(),
+    )
+}
+
 fn encode_u64_vector(values: &[usize]) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(8 + values.len() * 8);
     bytes.extend_from_slice(&(values.len() as u64).to_le_bytes());
@@ -1146,7 +1175,11 @@ fn load_security_profile(base: &Path) -> Result<(SecurityProfile, String), EZKLE
         || profile.ceremony_descriptor_kind != "ezkl_trusted_ceremony_srs_v1"
         || profile.ceremony_id.is_empty()
         || !is_tagged_sha256(&profile.source_srs_sha256)
-        || profile.source_srs_max_k == 0
+        || profile.source_srs_max_k != FORMAL_SOURCE_SRS_MAX_K
+        || profile.semantic_version != FORMAL_SEMANTIC_VERSION
+        || profile.operation_registry_id != formal_operation_registry_id()
+        || profile.semantic_source_id != FORMAL_SOURCE_ID
+        || !is_tagged_sha256(&profile.semantic_source_id)
     {
         return Err(
             "security profile is non-canonical or disagrees with the pinned native backend".into(),
@@ -1411,6 +1444,9 @@ fn validate_settings(
     if settings.security_profile_id != security_profile_id
         || settings.program_version != PLAN_KIND
         || settings.program_lanes != PROGRAM_LANES
+        || settings.semantic_version != FORMAL_SEMANTIC_VERSION
+        || settings.operation_registry_id != formal_operation_registry_id()
+        || settings.semantic_source_id != FORMAL_SOURCE_ID
     {
         return Err("settings security/program identity mismatch".into());
     }
@@ -1764,20 +1800,57 @@ fn range_decompose(
     Ok(())
 }
 
+fn signed_range_decompose(
+    program: &mut FormalProgram,
+    value: Var,
+    bound: i128,
+    limb_bits: u32,
+    zero: Var,
+    one: Var,
+) -> Result<(), EZKLError> {
+    if bound < 0 {
+        return Err("signed model bound must be non-negative".into());
+    }
+    let known_value = program.integer_values[value];
+    let magnitude_value = known_value
+        .map(|candidate| {
+            candidate
+                .checked_abs()
+                .ok_or("signed model parameter absolute-value overflow")
+        })
+        .transpose()?;
+    if magnitude_value.is_some_and(|candidate| candidate > bound) {
+        return Err("model parameter exceeds its canonical signed ledger bound".into());
+    }
+
+    // The sign and magnitude are witness values, but both are constrained in
+    // the circuit.  This makes a serialized witness substitution unable to
+    // replace a signed integer by an arbitrary field representative.
+    let sign_value = known_value.map(|candidate| i128::from(candidate < 0));
+    let sign = program.witness(sign_value);
+    let magnitude = program.witness(magnitude_value);
+    program.boolean(sign);
+    let minus_two = program.constant(-2);
+    let signed_one = program.mul_add(sign, minus_two, one)?;
+    let signed_magnitude = program.mul(signed_one, magnitude, zero)?;
+    program.assert_equal(signed_magnitude, value, one, zero);
+    range_decompose(program, magnitude, bound, limb_bits, zero)
+}
+
 fn model_var(
     program: &mut FormalProgram,
     value: Option<i128>,
-    _bound: i128,
-    _limb_bits: u32,
-    _zero: Var,
-    _one: Var,
+    bound: i128,
+    limb_bits: u32,
+    zero: Var,
+    one: Var,
 ) -> Result<Var, EZKLError> {
     let var = program.witness(value);
+    signed_range_decompose(program, var, bound, limb_bits, zero, one)?;
     program.model_vars.push(var);
-    // Protocol 0.5.1: canonical model-family bounds are recomputed and
-    // authenticated during trusted setup.  Inference binds the same private
-    // model through in-circuit Poseidon H(W), without repeating a range proof
-    // for every parameter.
+    // H(W) consumes this exact canonical signed value (not a separately
+    // reconstructed host tensor), while the signed range constraints above
+    // authenticate its integer representative in the Halo2 relation.
     Ok(var)
 }
 
@@ -1872,6 +1945,11 @@ fn signed_round_div(
     let d_min = program.constant(bounds.d_min);
     let neg_d_min = program.mul(d_min, minus_one, zero)?;
     let d_above_min = program.add(d, neg_d_min, one)?;
+    // `d_min` is a dynamic-denominator lower-bound certificate.  The
+    // decomposition is part of the relation (not merely a host-side check):
+    // it constrains `d - d_min` to the non-negative interval
+    // `[0, d - d_min]`, so a witness cannot replace the denominator by a
+    // smaller field representative.
     range_decompose(
         program,
         d_above_min,
@@ -2602,6 +2680,12 @@ fn validate_plan(plan: &FormalPlan) -> Result<(), EZKLError> {
     if plan.kind != PLAN_KIND || plan.program_version != PLAN_KIND {
         return Err("not a formal fixed GAT program".into());
     }
+    if plan.semantic_version != FORMAL_SEMANTIC_VERSION
+        || plan.operation_registry_id != formal_operation_registry_id()
+        || plan.semantic_source_id != FORMAL_SOURCE_ID
+    {
+        return Err("formal relation semantic/operation identity mismatch".into());
+    }
     if plan.program_lanes != PROGRAM_LANES {
         return Err("compiled program lane layout does not match this binary".into());
     }
@@ -2675,6 +2759,15 @@ fn validate_plan(plan: &FormalPlan) -> Result<(), EZKLError> {
         || plan.ledger.max_in_degree == 0
     {
         return Err("integer bound ledger is absent or not field-fit verified".into());
+    }
+    if plan.security_profile.source_srs_max_k != FORMAL_SOURCE_SRS_MAX_K
+        || plan.logrows > FORMAL_SOURCE_SRS_MAX_K
+        || plan.logrows == 0
+        || plan.security_profile.semantic_version != plan.semantic_version
+        || plan.security_profile.operation_registry_id != plan.operation_registry_id
+        || plan.security_profile.semantic_source_id != plan.semantic_source_id
+    {
+        return Err("formal SRS/security/semantic profile is not exact and authenticated".into());
     }
     if plan.security_profile_id
         != formal_domain_hash(
@@ -3224,7 +3317,8 @@ fn plan_dir(path: &Path) -> PathBuf {
         .to_path_buf()
 }
 
-pub(crate) fn graph_gat_gen_settings(
+/// Generate the authenticated Halo2 settings for the formal GAT route.
+pub fn graph_gat_gen_settings(
     spec_path: PathBuf,
     csr_layout_path: PathBuf,
     settings_path: PathBuf,
@@ -3278,6 +3372,9 @@ pub(crate) fn graph_gat_gen_settings(
         security_profile_id,
         program_version: PLAN_KIND.to_owned(),
         program_lanes: PROGRAM_LANES,
+        semantic_version: FORMAL_SEMANTIC_VERSION.to_owned(),
+        operation_registry_id: formal_operation_registry_id(),
+        semantic_source_id: FORMAL_SOURCE_ID.to_owned(),
         settings_id: String::new(),
     };
     settings.settings_id = canonical_object_id("formal_gat_settings", &settings)?;
@@ -3285,7 +3382,8 @@ pub(crate) fn graph_gat_gen_settings(
     Ok(serde_json::to_string(&settings)?)
 }
 
-pub(crate) fn graph_gat_compile(
+/// Compile the canonical formal GAT relation and bind its public artifacts.
+pub fn graph_gat_compile(
     spec_path: PathBuf,
     csr_layout_path: PathBuf,
     settings_path: PathBuf,
@@ -3529,6 +3627,9 @@ pub(crate) fn graph_gat_compile(
         compiled_circuit_id: String::new(),
         security_profile_id,
         security_profile,
+        semantic_version: FORMAL_SEMANTIC_VERSION.to_owned(),
+        operation_registry_id: formal_operation_registry_id(),
+        semantic_source_id: FORMAL_SOURCE_ID.to_owned(),
         logrows: settings.logrows,
     };
     validate_plan(&plan)?;
@@ -3555,8 +3656,11 @@ fn validate_resolved_srs_files(
     let mut params = crate::pfsys::srs::load_srs_prover::<KZGCommitmentScheme<Bn256>>(
         source_path.to_path_buf(),
     )?;
-    if params.k() != plan.security_profile.source_srs_max_k
+    if params.k() != FORMAL_SOURCE_SRS_MAX_K
+        || params.k() != plan.security_profile.source_srs_max_k
         || manifest.source_srs_k != plan.security_profile.source_srs_max_k
+        || plan.logrows == 0
+        || plan.logrows > FORMAL_SOURCE_SRS_MAX_K
         || plan.logrows > params.k()
     {
         return Err("source SRS k differs from the resolved security profile".into());
@@ -3611,6 +3715,16 @@ fn configure_device(device: &str) -> Result<&'static str, EZKLError> {
                         "CUDA device/backend initialization failed; refusing CPU fallback".into(),
                     );
                 }
+                let active = icicle_runtime::runtime::get_active_device()
+                    .map_err(|error| format!("CUDA active-device telemetry failed: {error:?}"))?;
+                if active.get_device_type() != "CUDA" || active.id != 0 {
+                    return Err("CUDA backend did not report the requested active device".into());
+                }
+                if !icicle_runtime::runtime::is_device_available(&active) {
+                    return Err("CUDA backend reports the requested device unavailable".into());
+                }
+                gpu_telemetry::ensure_available()
+                    .map_err(|error| EZKLError::from(error))?;
                 Ok("halo2_icicle_cuda_device_0")
             }
             #[cfg(not(feature = "gpu-accelerated"))]
@@ -3620,7 +3734,8 @@ fn configure_device(device: &str) -> Result<&'static str, EZKLError> {
     }
 }
 
-pub(crate) fn graph_gat_setup(
+/// Generate the native Halo2 proving and verification keys for formal GAT.
+pub fn graph_gat_setup(
     compiled_circuit_path: PathBuf,
     vk_path: PathBuf,
     pk_path: PathBuf,
@@ -3649,6 +3764,7 @@ pub(crate) fn graph_gat_setup(
     let mut params = crate::pfsys::srs::load_srs_prover::<KZGCommitmentScheme<Bn256>>(srs_path)?;
     let source_srs_k = params.k();
     if source_srs_sha256 != plan.security_profile.source_srs_sha256
+        || source_srs_k != FORMAL_SOURCE_SRS_MAX_K
         || source_srs_k != plan.security_profile.source_srs_max_k
         || source_srs_k < plan.logrows
     {
@@ -3796,7 +3912,8 @@ fn validate_statement(plan: &FormalPlan, statement: &PublicStatement) -> Result<
     Ok(())
 }
 
-pub(crate) fn graph_gat_gen_witness(
+/// Reconstruct a full formal GAT witness and its independent public statement.
+pub fn graph_gat_gen_witness(
     compiled_circuit_path: PathBuf,
     output_path: PathBuf,
     public_statement_path: PathBuf,
@@ -3907,7 +4024,8 @@ fn program_with_serialized_witness(
     Ok(program)
 }
 
-pub(crate) fn graph_gat_prove(
+/// Produce a native Halo2 KZG/SHPLONK proof for the formal GAT relation.
+pub fn graph_gat_prove(
     compiled_circuit_path: PathBuf,
     witness_path: PathBuf,
     public_statement_path: PathBuf,
@@ -3956,7 +4074,15 @@ pub(crate) fn graph_gat_prove(
     if params.k() != plan.logrows {
         return Err("proving SRS k does not match compiled circuit".into());
     }
-    let snark = create_proof_circuit::<
+    #[cfg(feature = "gpu-accelerated")]
+    let gpu_scope = if device == "cuda" {
+        Some(gpu_telemetry::Scope::begin("formal_prove").map_err(EZKLError::from)?)
+    } else {
+        None
+    };
+#[cfg(not(feature = "gpu-accelerated"))]
+    let _gpu_scope: Option<()> = None;
+    let proof_result = create_proof_circuit::<
         KZGCommitmentScheme<Bn256>,
         _,
         ProverSHPLONK<_>,
@@ -3973,29 +4099,35 @@ pub(crate) fn graph_gat_prove(
         CheckMode::SAFE,
         None,
         None,
-    )?;
+    );
+    #[cfg(feature = "gpu-accelerated")]
+    let gpu_runtime_telemetry = gpu_scope
+        .map(|scope| scope.finish().map_err(EZKLError::from))
+        .transpose()?;
+    #[cfg(not(feature = "gpu-accelerated"))]
+    let gpu_runtime_telemetry: Option<()> = None;
+    let snark = proof_result?;
     snark.save(&proof_path)?;
     Ok(serde_json::to_string(&serde_json::json!({
         "status": "proof_created", "proof_path": proof_path,
+        "semantic_source_id": FORMAL_SOURCE_ID,
+        "formal_source_manifest_id": FORMAL_SOURCE_ID,
+        "source_tree_digest": FORMAL_SOURCE_ID,
+        "vendor_tree_digest": FORMAL_VENDOR_TREE_ID,
         "compiled_circuit_id": plan.compiled_circuit_id,
         "public_statement_path": public_statement_path,
         "device_requested": device, "device_runtime_marker": device_marker,
-        "gpu_backend_selected": if device == "cuda" { "halo2_icicle" } else { "none" },
-        "gpu_kernel_execution": if device == "cuda" {
-            "halo2_icicle_cuda_proof_backend_invoked"
-        } else {
-            "not_applicable"
-        },
-        "gpu_runtime_telemetry": if device == "cuda" {
-            "icicle_cuda_device_initialized"
-        } else {
-            "not_applicable"
-        },
+        "prover_backend": if device == "cuda" { "cuda_icicle" } else { "cpu" },
+        "gpu_kernel_execution": if device == "cuda" { "cupti_activity_kernel_scope" } else { "not_applicable" },
+        "gpu_prove_telemetry": gpu_runtime_telemetry
+            .map(|telemetry| serde_json::to_value(telemetry).unwrap())
+            .unwrap_or_else(|| serde_json::json!("not_applicable")),
         "no_fallback": true,
     }))?)
 }
 
-pub(crate) fn graph_gat_verify(
+/// Independently reconstruct the public statement and verify a formal GAT proof.
+pub fn graph_gat_verify(
     compiled_circuit_path: PathBuf,
     proof_path: PathBuf,
     public_statement_path: PathBuf,
@@ -4004,7 +4136,13 @@ pub(crate) fn graph_gat_verify(
     output_path: PathBuf,
     device: String,
 ) -> Result<String, EZKLError> {
-    let device_marker = configure_device(&device)?;
+    // Verification is deliberately a fresh CPU process, including for a
+    // CUDA proving cell.  The GPU binary is never allowed to claim or route
+    // verification through a CUDA backend.
+    if device != "cpu" {
+        return Err("formal verifier requires device=cpu (independent CPU verification)".into());
+    }
+    let device_marker = configure_device("cpu")?;
     let plan: FormalPlan = read_json(&compiled_circuit_path)?;
     validate_plan(&plan)?;
     let settings: FormalSettings = read_json(&settings_path)?;
@@ -4038,7 +4176,10 @@ pub(crate) fn graph_gat_verify(
         || circuit_manifest.quant_cfg_id != plan.quant_cfg_id
         || circuit_manifest.static_tables_id != plan.static_tables_id
         || circuit_manifest.backend_aux_tables_id != plan.backend_aux_tables_id
-        || circuit_manifest.device_build != device_marker
+        || !matches!(
+            circuit_manifest.device_build.as_str(),
+            "halo2_cpu" | "halo2_icicle_cuda_device_0"
+        )
         || registration.registered_model_hash != statement.model_hash
     {
         return Err("settings/vk/circuit/table/ledger/model registration binding mismatch".into());
@@ -4065,7 +4206,7 @@ pub(crate) fn graph_gat_verify(
         return Err("verification SRS k does not match compiled circuit".into());
     }
     let strategy = KZGSingleStrategy::new(params.verifier_params());
-    verify_proof_circuit::<
+    let verify_result = verify_proof_circuit::<
         VerifierSHPLONK<_>,
         KZGCommitmentScheme<Bn256>,
         KZGSingleStrategy<_>,
@@ -4077,9 +4218,19 @@ pub(crate) fn graph_gat_verify(
         &vk,
         strategy,
         1 << plan.logrows,
-    )?;
+    );
+    verify_result?;
+    let prover_backend = if circuit_manifest.device_build == "halo2_icicle_cuda_device_0" {
+        "cuda_icicle"
+    } else {
+        "cpu"
+    };
     let output = serde_json::json!({
         "status": "verified", "verify_passed": true,
+        "semantic_source_id": FORMAL_SOURCE_ID,
+        "formal_source_manifest_id": FORMAL_SOURCE_ID,
+        "source_tree_digest": FORMAL_SOURCE_ID,
+        "vendor_tree_digest": FORMAL_VENDOR_TREE_ID,
         "route_id": plan.route_id,
         "native_halo2_verification": true,
         "independent_public_statement_reconstruction": true,
@@ -4092,18 +4243,10 @@ pub(crate) fn graph_gat_verify(
         "integer_bound_ledger_digest": plan.ledger.model_bounds_digest,
         "model_hash": statement.model_hash,
         "prover_device_build": circuit_manifest.device_build,
-        "verification_device_requested": device,
+        "prover_backend": prover_backend,
+        "verifier_backend": "cpu_independent",
+        "verification_device_requested": "cpu",
         "verification_device_runtime_marker": device_marker,
-        "gpu_verification_backend": if device == "cuda" {
-            "halo2_icicle_cuda_verify_backend_invoked"
-        } else {
-            "not_applicable"
-        },
-        "gpu_runtime_telemetry": if device == "cuda" {
-            "icicle_cuda_device_initialized"
-        } else {
-            "not_applicable"
-        },
         "verification_runtime_marker": "halo2_kzg_shplonk_independent_statement_ok",
         "full_gat_forward_in_ezkl_proof": true,
         "strict_public_input_equivalent": true,

@@ -104,17 +104,13 @@ enum Command {
     },
 }
 fn sha_file(path: &Path) -> Result<String> {
-    let b = fs::read(path)?;
+    let b = read_bytes(path)?;
     let mut h = Sha256::new();
     h.update(b);
     Ok(hex::encode(h.finalize()))
 }
 fn write_manifest(path: &Path, value: serde_json::Value) -> Result<()> {
-    if let Some(p) = path.parent() {
-        fs::create_dir_all(p)?;
-    }
-    fs::write(path, serde_json::to_vec_pretty(&value)?)?;
-    Ok(())
+    write_bytes_atomic(path, &serde_json::to_vec_pretty(&value)?, false)
 }
 fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -161,8 +157,7 @@ fn main() -> Result<()> {
             let s: PublicStatement = read_bin(&statement)?;
             let w: WitnessPackage = read_bin(&witness)?;
             let (r, secret) = register_model(&ppv, &s, &w, certified_bounds_id)?;
-            write_bin(&model_registry, &r, false)?;
-            write_bin(&model_secret, &secret, true)?;
+            write_model_registration_atomic(&model_registry, &r, &model_secret, &secret)?;
             println!("REGISTER_MODEL_OK registry_id={}", r.registry_object_id);
         }
         Command::Prove {
@@ -225,7 +220,8 @@ fn main() -> Result<()> {
             statement,
             witness,
         } => {
-            let raw: compiler::RelationCompilerInput = serde_json::from_slice(&fs::read(&input)?)?;
+            let raw: compiler::RelationCompilerInput =
+                serde_json::from_slice(&read_bytes(&input)?)?;
             let (s, w) = compiler::compile(raw)?;
             write_bin(&statement, &s, false)?;
             write_bin(&witness, &w, true)?;

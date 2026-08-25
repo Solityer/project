@@ -84,7 +84,10 @@ def build_input_layout(
             ]:
                 raise ValueError("Lasso family offsets do not match canonical L_qry arrays")
             for family, array in zip(families, descriptor["arrays"]):
-                if family.get("family") != array.get("name") or int(family.get("padded_count", -1)) != int(array.get("length", -2)):
+                padded_count = int(family.get("padded_count", -1))
+                if padded_count < 2 or padded_count & (padded_count - 1):
+                    raise ValueError("Lasso family padded_count must be a power of two >= 2")
+                if family.get("family") != array.get("name") or padded_count != int(array.get("length", -2)):
                     raise ValueError("Lasso family registry does not match L_qry array layout")
             descriptor["lasso_families"] = families
     padded = {

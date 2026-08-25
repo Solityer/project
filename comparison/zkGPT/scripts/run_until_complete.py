@@ -14,14 +14,13 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run all zkGPT datasets/backends")
     parser.add_argument("--force", action="store_true")
-    parser.add_argument("--public-y-root", required=True, help="independent public-Y file or per-dataset directory")
     args = parser.parse_args()
-    command = [sys.executable, str(ROOT / "scripts" / "gat_zkgpt_experiment.py"), "--datasets", "all", "--backends", "all", "--public-y-root", args.public_y_root]
+    command = [sys.executable, str(ROOT / "scripts" / "gat_zkgpt_experiment.py"), "--datasets", "all", "--backends", "all"]
     if args.force:
         command.append("--force")
     run = subprocess.run(command, cwd=ROOT, check=False)
-    collect = subprocess.run([sys.executable, str(ROOT / "scripts" / "collect_results.py")], cwd=ROOT, check=False)
-    validate = subprocess.run([sys.executable, str(ROOT / "scripts" / "validate_final_results.py"), "--public-y-root", args.public_y_root], cwd=ROOT, check=False)
+    collect = subprocess.run([sys.executable, str(ROOT / "scripts" / "collect_results.py"), "--results-dir", str(ROOT / "results")], cwd=ROOT, check=False)
+    validate = subprocess.run([sys.executable, str(ROOT / "scripts" / "validate_final_results.py"), "--results-dir", str(ROOT / "results")], cwd=ROOT, check=False)
     state = {
         "schema": "zkGPT_gat_matrix_state_v2",
         "status": "complete" if run.returncode == 0 and collect.returncode == 0 and validate.returncode == 0 else "incomplete",

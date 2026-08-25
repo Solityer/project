@@ -10,17 +10,123 @@ import struct
 import math
 from pathlib import Path
 
+from resource_policy import (  # noqa: E402
+    CELL_ARTIFACTS,
+    DATASET_ORDER,
+    canonical_cell_dir,
+    validate_cell_inventory,
+)
+from build_identity_contract import identity_digest, validate_build_identity  # noqa: E402
+from formal_source_manifest import formal_source_id  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[1]
 FORMAL_ROUTE_ID = "ezkl_gat_native_compressed_csr_attention_full"
-REQUIRED = (
-    "graph_attention_spec.json", "csr_segment_layout.bin", "node_features.i64.bin",
-    "model_parameters.i64.txt", "formal_quant_config.json", "formal_table_spec.json",
-    "formal_main_tables.i64.bin", "backend_aux_table_spec.json", "backend_aux_tables.i64.bin",
-    "security_profile.json",
-    "integer_bound_ledger.json", "model_registration.json", "settings.json",
-    "network.compiled", "vk.key", "pk.key", "witness.json", "public_statement.json",
-    "proof.json", "verify.json", "circuit_manifest.json", "pk.srs", "vk.srs",
-)
+FORMAL_SOURCE_SRS_MAX_K = 28
+FORMAL_SEMANTIC_VERSION = "ezkl_formal_gat_semantics_v2"
+REQUIRED = tuple(sorted(CELL_ARTIFACTS - {"run_manifest.json"}))
+
+
+def _valid_cuda_prove_telemetry(payload: object) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    return (
+        payload.get("schema") == "ezkl_cuda_kernel_telemetry_v1"
+        and payload.get("scope") == "formal_prove"
+        and isinstance(payload.get("kernel_count"), int)
+        and payload.get("kernel_count", 0) > 0
+        and payload.get("dropped_records") == 0
+        and payload.get("active_device_id") == 0
+        and bool(payload.get("scope_nonce"))
+        and payload.get("scope_end_ns", 0) >= payload.get("scope_start_ns", 1)
+        and isinstance(payload.get("kernel_names"), list)
+        and bool(payload.get("kernel_names"))
+        and all(
+            isinstance(kernel, dict)
+            and kernel.get("name")
+            and kernel.get("category")
+            and isinstance(kernel.get("count"), int)
+            and kernel.get("count", 0) > 0
+            and kernel.get("device_id") == 0
+            for kernel in payload.get("kernel_names", [])
+        )
+        and sum(kernel["count"] for kernel in payload["kernel_names"])
+        == payload["kernel_count"]
+    )
+
+
+def validate_matrix_records(
+    records: list[dict[str, object]],
+    *,
+    allow_incomplete: bool = False,
+    fixture: bool = False,
+) -> list[str]:
+    """Validate matrix indexing and backend claims independently of artifacts.
+
+    ``fixture=True`` is reserved for tests-only mock contracts.  It never
+    accepts or emits a production proof/verification result and additionally
+    requires explicit fixture attestations for source, SRS, resources, and
+    proof digest/size binding.
+    """
+
+    expected = {(name, device) for name in DATASET_ORDER for device in ("cpu", "cuda")}
+    seen: set[tuple[object, object]] = set()
+    failures: list[str] = []
+    for record in records:
+        if fixture and record.get("fixture_kind") != "tests_only_mock_contract_v1":
+            failures.append("fixture record is not explicitly tests-only")
+        dataset = record.get("dataset")
+        device = record.get("device")
+        cell = (dataset, device)
+        if cell not in expected:
+            failures.append(f"unknown matrix cell: {dataset}/{device}")
+            continue
+        if cell in seen:
+            failures.append(f"duplicate matrix cell: {dataset}/{device}")
+        seen.add(cell)
+        if fixture:
+            if record.get("verified_flag") is not True:
+                failures.append(f"fixture cell is not verified: {dataset}/{device}")
+            attestation = record.get("attestation")
+            if not isinstance(attestation, dict):
+                failures.append(f"fixture attestation missing: {dataset}/{device}")
+            else:
+                if attestation.get("build_identity_bound") is not True:
+                    failures.append(f"fixture build identity binding missing: {dataset}/{device}")
+                if attestation.get("source_bound") is not True:
+                    failures.append(f"fixture source binding missing: {dataset}/{device}")
+                if attestation.get("source_srs_k") != FORMAL_SOURCE_SRS_MAX_K:
+                    failures.append(f"fixture source SRS k mismatch: {dataset}/{device}")
+                if attestation.get("config_bound") is not True:
+                    failures.append(f"fixture config binding missing: {dataset}/{device}")
+                if attestation.get("resource_bound") is not True:
+                    failures.append(f"fixture resource binding missing: {dataset}/{device}")
+                if not isinstance(attestation.get("proof_size_bytes"), int) or attestation.get("proof_size_bytes", 0) <= 0:
+                    failures.append(f"fixture proof size is invalid: {dataset}/{device}")
+                if not isinstance(attestation.get("proof_sha256"), str) or not attestation["proof_sha256"].startswith("sha256:"):
+                    failures.append(f"fixture proof digest is invalid: {dataset}/{device}")
+            if device == "cpu":
+                if record.get("gpu_prove_telemetry") != "not_applicable":
+                    failures.append(f"CPU fixture carries GPU telemetry: {dataset}")
+                if record.get("verifier_backend") != "cpu_independent":
+                    failures.append(f"CPU fixture verifier is not independent: {dataset}")
+            elif (
+                record.get("gpu_backend_execution") != "cuda_icicle_prove_only"
+                or not _valid_cuda_prove_telemetry(record.get("gpu_prove_telemetry"))
+                or record.get("verifier_backend") != "cpu_independent"
+            ):
+                failures.append(f"CUDA fixture telemetry/verifier contract mismatch: {dataset}")
+        elif not allow_incomplete and (
+            record.get("status") != "verified" or record.get("verify_passed") is not True
+        ):
+            failures.append(f"required matrix cell is not verified: {dataset}/{device}")
+        if not fixture and device == "cpu" and record.get("gpu_prove_telemetry") != "not_applicable":
+            failures.append(f"CPU result carries GPU prove telemetry: {dataset}")
+        if not fixture and device == "cuda" and not _valid_cuda_prove_telemetry(record.get("gpu_prove_telemetry")):
+            failures.append(f"CUDA result lacks valid prove telemetry: {dataset}")
+    if not allow_incomplete:
+        for dataset, device in sorted(expected - seen):
+            failures.append(f"missing required matrix cell: {dataset}/{device}")
+    return failures
 
 
 def digest(path: Path) -> str:
@@ -43,6 +149,13 @@ def formal_digest(domain: str, role: str, payload: bytes) -> str:
 
 def canonical_json(payload: object) -> bytes:
     return json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode()
+
+
+def operation_registry_id() -> str:
+    return formal_digest(
+        "ezkl_formal_operation_registry", "canonical_json",
+        (ROOT / "configs" / "formal_operation_registry.json").read_bytes().rstrip(b"\r\n"),
+    )
 
 
 def round_away(value: float) -> int:
@@ -180,8 +293,14 @@ def main() -> int:
     dataset_cfg = json.loads((ROOT / "configs" / "full_datasets.json").read_text(encoding="utf-8"))
     expected = {(entry["run_id"], device) for entry in dataset_cfg["datasets"] for device in ("cpu", "cuda")}
     present: set[tuple[str, str]] = set()
-    for manifest_path in sorted((ROOT / "runs").glob("*/*/run_manifest.json")):
+    matrix_records: list[dict[str, object]] = []
+    for manifest_path in sorted((ROOT / "results" / "runs").glob("*/*/run_manifest.json")):
+        if manifest_path.is_symlink() or not manifest_path.is_file() or manifest_path.stat().st_nlink != 1:
+            failures.append(f"{manifest_path}: unsafe manifest file")
+            continue
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if isinstance(manifest, dict):
+            matrix_records.append(manifest)
         cell = (manifest.get("dataset"), manifest.get("device"))
         if cell in expected:
             present.add(cell)
@@ -191,13 +310,75 @@ def main() -> int:
             continue
         verified_count += 1
         run_dir = manifest_path.parent
+        try:
+            expected_cell = canonical_cell_dir(ROOT, str(manifest.get("device")), str(manifest.get("dataset")))
+            if run_dir.resolve() != expected_cell.resolve():
+                failures.append(f"{manifest_path}: canonical result cell path mismatch")
+            validate_cell_inventory(run_dir)
+        except (OSError, ValueError) as exc:
+            failures.append(f"{manifest_path}: exact artifact inventory failure: {exc}")
+            continue
         missing = [name for name in REQUIRED if not (run_dir / name).is_file()]
         if missing:
             failures.append(f"{manifest_path}: missing {', '.join(missing)}")
             continue
+        device = manifest.get("device")
+        if device not in ("cpu", "cuda"):
+            failures.append(f"{manifest_path}: invalid formal backend")
+            continue
+        expected_source_id = formal_source_id(ROOT)
+        expected_prover_binary = ROOT / (
+            "target-gpu/release/ezkl_formal" if device == "cuda" else "target/release/ezkl_formal"
+        )
+        verifier_binary = ROOT / "target/release/ezkl_formal"
+        adapter_binary = ROOT / "build_gat_adapter" / "gat_ezkl_export"
+        try:
+            prover_identity_path = ROOT / "build_identity" / f"{device}.json"
+            verifier_identity_path = ROOT / "build_identity" / "cpu.json"
+            prover_identity = validate_build_identity(
+                ROOT, prover_identity_path, backend=str(device),
+                binary=expected_prover_binary, adapter=adapter_binary,
+            )
+            verifier_identity = validate_build_identity(
+                ROOT, verifier_identity_path, backend="cpu",
+                binary=verifier_binary, adapter=adapter_binary,
+            )
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            failures.append(f"{manifest_path}: build identity validation failed: {exc}")
+            continue
+        if manifest.get("formal_semantic_source_id") != expected_source_id:
+            failures.append(f"{manifest_path}: stale formal semantic source identity")
+        if manifest.get("formal_source_manifest") != prover_identity["formal_source_manifest"]:
+            failures.append(f"{manifest_path}: recursive formal source inventory mismatch")
+        if manifest.get("prover_build_identity_sha256") != identity_digest(prover_identity_path):
+            failures.append(f"{manifest_path}: prover build identity digest mismatch")
+        if manifest.get("verifier_build_identity_sha256") != identity_digest(verifier_identity_path):
+            failures.append(f"{manifest_path}: verifier build identity digest mismatch")
+        for prefix, identity in (("prover", prover_identity), ("verifier", verifier_identity)):
+            if manifest.get(f"{prefix}_formal_semantic_source_id") != identity["formal_semantic_source_id"]:
+                failures.append(f"{manifest_path}: {prefix} semantic source binding mismatch")
+            if manifest.get(f"{prefix}_source_tree_digest") != identity["source_tree_digest"]:
+                failures.append(f"{manifest_path}: {prefix} source tree binding mismatch")
+            if manifest.get(f"{prefix}_dependency_lock_digest") != identity["dependency_lock_digest"]:
+                failures.append(f"{manifest_path}: {prefix} dependency lock binding mismatch")
         verify = json.loads((run_dir / "verify.json").read_text(encoding="utf-8"))
         if verify.get("verify_passed") is not True:
             failures.append(f"{manifest_path}: independent verifier marker absent")
+        for payload, label in ((manifest, "manifest"), (verify, "verify")):
+            for field in ("semantic_source_id", "formal_source_manifest_id", "source_tree_digest"):
+                if payload.get(field) != expected_source_id:
+                    failures.append(f"{manifest_path}: {label} {field} is not current")
+            if payload.get("vendor_tree_digest") != prover_identity["vendor_tree_digest"]:
+                failures.append(f"{manifest_path}: {label} vendor tree binding mismatch")
+        prove_metadata = manifest.get("prove_metadata")
+        verify_metadata = manifest.get("verify_metadata")
+        for metadata, label in ((prove_metadata, "prove_metadata"), (verify_metadata, "verify_metadata")):
+            if not isinstance(metadata, dict):
+                failures.append(f"{manifest_path}: missing {label}")
+                continue
+            for field in ("semantic_source_id", "formal_source_manifest_id", "source_tree_digest"):
+                if metadata.get(field) != expected_source_id:
+                    failures.append(f"{manifest_path}: {label} {field} is not current")
         if verify.get("proof_instances_trusted") is not False:
             failures.append(f"{manifest_path}: verifier trusted proof-carried instances")
         circuit = json.loads((run_dir / "circuit_manifest.json").read_text(encoding="utf-8"))
@@ -254,6 +435,16 @@ def main() -> int:
         failures.extend(validate_table_artifacts(run_dir))
         security_bytes = (run_dir / "security_profile.json").read_text(encoding="utf-8").rstrip("\r\n").encode()
         security_id = formal_digest("ezkl_security_profile", "canonical_json", security_bytes)
+        if (security.get("source_srs_max_k") != FORMAL_SOURCE_SRS_MAX_K
+                or security.get("semantic_version") != FORMAL_SEMANTIC_VERSION
+                or security.get("operation_registry_id") != operation_registry_id()
+                or security.get("semantic_source_id") != expected_source_id):
+            failures.append(f"{manifest_path}: exact SRS/semantic security profile binding absent")
+        for payload in (settings, compiled):
+            if (payload.get("semantic_version") != FORMAL_SEMANTIC_VERSION
+                    or payload.get("operation_registry_id") != operation_registry_id()
+                    or payload.get("semantic_source_id") != expected_source_id):
+                failures.append(f"{manifest_path}: semantic source/operation binding mismatch")
         if any(payload.get(field) != security_id for payload, field in (
             (manifest, "ezkl_security_profile_id"), (circuit, "security_profile_id"),
             (spec, "security_profile_id"), (settings, "security_profile_id"),
@@ -272,9 +463,12 @@ def main() -> int:
         if not str(circuit.get("source_srs_sha256", "")).startswith("sha256:"):
             failures.append(f"{manifest_path}: source SRS provenance absent")
         if (circuit.get("source_srs_sha256") != security.get("source_srs_sha256") or
+                circuit.get("source_srs_k") != FORMAL_SOURCE_SRS_MAX_K or
                 circuit.get("source_srs_k") != security.get("source_srs_max_k")):
             failures.append(f"{manifest_path}: SRS differs from resolved security profile")
         if (not isinstance(circuit.get("source_srs_k"), int)
+                or settings.get("logrows", 0) <= 0
+                or settings.get("logrows", 0) > FORMAL_SOURCE_SRS_MAX_K
                 or circuit.get("source_srs_k", 0) < settings.get("logrows", 0)):
             failures.append(f"{manifest_path}: source SRS k does not cover compiled logrows")
         source_srs = Path(str(circuit.get("source_srs_path", "")))
@@ -291,17 +485,55 @@ def main() -> int:
         expected_device = (
             "halo2_icicle_cuda_device_0" if manifest.get("device") == "cuda" else "halo2_cpu"
         )
+        expected_prover_backend = "cuda_icicle" if manifest.get("device") == "cuda" else "cpu"
         if manifest.get("runtime_device_marker") != expected_device:
             failures.append(f"{manifest_path}: runtime device marker mismatch")
-        if verify.get("verification_device_runtime_marker") != expected_device:
-            failures.append(f"{manifest_path}: verification device marker mismatch")
+        if manifest.get("prover_backend") != expected_prover_backend:
+            failures.append(f"{manifest_path}: prover backend identity mismatch")
+        if manifest.get("verifier_backend") != "cpu_independent":
+            failures.append(f"{manifest_path}: verifier backend is not independent CPU")
+        if verify.get("prover_backend") != expected_prover_backend:
+            failures.append(f"{manifest_path}: verifier prover-backend binding mismatch")
+        if verify.get("verifier_backend") != "cpu_independent":
+            failures.append(f"{manifest_path}: verifier backend is not independent CPU")
+        if verify.get("verification_device_runtime_marker") != "halo2_cpu":
+            failures.append(f"{manifest_path}: verification device marker is not CPU")
+        if "gpu_runtime_telemetry" in verify or "gpu_verification_backend" in verify:
+            failures.append(f"{manifest_path}: verifier carries forbidden GPU telemetry/claim")
         if manifest.get("device") == "cuda":
-            if (manifest.get("gpu_backend_execution")
-                    != "halo2_icicle_backend_selected_and_proof_verified"
-                    or manifest.get("gpu_kernel_telemetry") != "icicle_cuda_device_initialized"
-                    or verify.get("gpu_verification_backend")
-                    != "halo2_icicle_cuda_verify_backend_invoked"):
+            prove_telemetry = manifest.get("gpu_prove_telemetry")
+            telemetry_valid = (
+                isinstance(prove_telemetry, dict)
+                and prove_telemetry.get("schema") == "ezkl_cuda_kernel_telemetry_v1"
+                and prove_telemetry.get("scope") == "formal_prove"
+                and isinstance(prove_telemetry.get("kernel_count"), int)
+                and prove_telemetry.get("kernel_count", 0) > 0
+                and prove_telemetry.get("dropped_records") == 0
+                and prove_telemetry.get("active_device_id") == 0
+                and prove_telemetry.get("scope_nonce")
+                and prove_telemetry.get("scope_end_ns", 0)
+                >= prove_telemetry.get("scope_start_ns", 1)
+                and isinstance(prove_telemetry.get("kernel_names"), list)
+                and prove_telemetry.get("kernel_names")
+                and all(
+                    isinstance(kernel, dict)
+                    and kernel.get("name")
+                    and kernel.get("category")
+                    and isinstance(kernel.get("count"), int)
+                    and kernel.get("count", 0) > 0
+                    and kernel.get("device_id") == 0
+                    for kernel in prove_telemetry.get("kernel_names", [])
+                )
+                and sum(
+                    kernel["count"] for kernel in prove_telemetry["kernel_names"]
+                )
+                == prove_telemetry["kernel_count"]
+            )
+            if manifest.get("gpu_backend_execution") != "cuda_icicle_prove_only" or not telemetry_valid:
                 failures.append(f"{manifest_path}: CUDA backend execution marker mismatch")
+        elif manifest.get("gpu_prove_telemetry") != "not_applicable":
+            failures.append(f"{manifest_path}: CPU result carries GPU prove telemetry")
+    failures.extend(validate_matrix_records(matrix_records, allow_incomplete=args.allow_incomplete))
     if not args.allow_incomplete:
         for dataset, device in sorted(expected - present):
             failures.append(f"missing required matrix cell: {dataset}/{device}")

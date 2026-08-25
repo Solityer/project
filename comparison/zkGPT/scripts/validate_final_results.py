@@ -1,168 +1,206 @@
 #!/usr/bin/env python3
-"""Independent artifact/manifest validator for the formal result matrix."""
+"""Independent matrix-level validator for the formal zkGPT results."""
 from __future__ import annotations
 
-import json
-import hashlib
 import argparse
+import json
+import pathlib
 import subprocess
 import sys
-from pathlib import Path
+from typing import Any
 
-ROOT = Path(__file__).resolve().parents[1]
-PROJECT = ROOT.parents[1]
+ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from zkgpt_gat.gpu_execution import validate_gpu_execution_evidence
+from zkgpt_gat.constants import DATASET_ORDER, PROOF_BACKEND_ID, PROTOCOL_ID  # noqa: E402
+from zkgpt_gat.config import read_config  # noqa: E402
+from zkgpt_gat.privacy import check_multi_session_profiles, registration_identity_fingerprint  # noqa: E402
+from zkgpt_gat.registry import canonical_registry_public_path  # noqa: E402
+from zkgpt_gat.result_validation import (  # noqa: E402
+    ResultValidationError,
+    canonical_artifact_dir,
+    canonical_manifest_path,
+    required_artifact_file,
+    resolve_inside,
+    resolve_results_dir,
+    validate_canonical_cell_dir_from_path,
+    validate_artifact,
+    validate_matrix_rows,
+)
+from zkgpt_gat.util import write_json  # noqa: E402
 
 
-def _config_entries(path: Path) -> dict[str, str]:
-    entries: dict[str, str] = {}
+def _config_value(path: pathlib.Path, key: str, default: str) -> str:
     for raw in path.read_text(encoding="utf-8").splitlines():
         line = raw.split("#", 1)[0].strip()
         if line and "=" in line:
-            key, value = line.split("=", 1)
-            entries[key.strip()] = value.strip()
-    return entries
+            name, value = line.split("=", 1)
+            if name.strip() == key:
+                return value.strip()
+    return default
 
 
-def _resolve_public_y(config_path: Path, dataset: str, backend: str, project_root: Path, public_y_root: Path) -> Path:
-    entries = _config_entries(config_path)
-    candidates: list[Path] = []
-    configured = entries.get("public_y_path")
-    if configured:
-        path = Path(configured)
-        candidates.append(path if path.is_absolute() else project_root / path)
-    root = public_y_root.expanduser().resolve()
-    if root.is_file():
-        candidates.append(root)
-    elif root.is_dir():
-        candidates.extend(root / name for name in (
-            f"{dataset}.json", f"{dataset}.npy", f"{dataset}.txt",
-            f"{backend}/{dataset}.json", f"{backend}/{dataset}.npy", f"{backend}/{dataset}.txt",
-        ))
-    else:
-        raise FileNotFoundError(f"public-Y root does not exist: {root}")
-    reference = Path(entries.get("reference_output_dir", ""))
-    if not reference.is_absolute():
-        reference = project_root / reference
-    candidates.extend(reference / name for name in ("public_y.json", "public_y.npy", "Y.json", "Y.npy", "logits.npy"))
-    existing: list[Path] = []
-    seen: set[Path] = set()
-    for candidate in candidates:
-        resolved = candidate.expanduser().resolve()
-        if resolved not in seen and resolved.is_file():
-            seen.add(resolved)
-            existing.append(resolved)
-    if len(existing) != 1:
-        raise RuntimeError(f"expected exactly one independent public-Y source for {dataset}/{backend}, found {len(existing)}: {existing}")
-    return existing[0]
+def _replay(root: pathlib.Path, artifact_dir: pathlib.Path, manifest: dict[str, Any]) -> str | None:
+    expected_artifact_dir = canonical_artifact_dir(
+        root, str(manifest.get("backend", "")), str(manifest.get("dataset", ""))
+    )
+    try:
+        artifact_dir = validate_canonical_cell_dir_from_path(root, artifact_dir)
+    except ResultValidationError as exc:
+        return str(exc)
+    if artifact_dir != expected_artifact_dir:
+        return "artifact directory is not canonical results/runs/backend/dataset"
+    config = resolve_inside(root, manifest.get("config", ""), "config")
+    config_entries = read_config(config)
+    registry = canonical_registry_public_path(
+        root, config_entries.get("model_param_id", "")
+    )
+    public_y = resolve_inside(root, _config_value(config, "public_y_path", ""), "canonical public Y")
+    command = [
+        sys.executable,
+        str(root / "scripts" / "verify_proof.py"),
+        "--project-root", str(root),
+        "--config", str(config),
+        "--trusted-registry-public", str(registry),
+        "--artifact-dir", str(artifact_dir),
+        "--public-y", str(public_y),
+    ]
+    completed = subprocess.run(command, cwd=root, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+    if completed.returncode != 0:
+        return (completed.stdout + "\n" + completed.stderr).strip()
+    return None
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+def _read_object(path: pathlib.Path, label: str) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ResultValidationError(f"cannot read {label}: {path}: {exc}") from exc
+    if not isinstance(value, dict):
+        raise ResultValidationError(f"{label} must be a JSON object: {path}")
+    return value
+
+
+def _load_privacy_session(artifact_dir: pathlib.Path) -> tuple[str, dict[str, Any]]:
+    """Load the authenticated public bundle used for multi-session checks.
+
+    The caller invokes this only after strict artifact validation and a fresh
+    independent verifier replay.  This function therefore only assembles the
+    already validated wire objects; it never accepts a naked profile or a
+    profile copied out of a different proof payload.
+    """
+
+    metadata = _read_object(required_artifact_file(artifact_dir, "metadata.json"), "metadata")
+    commitments = _read_object(required_artifact_file(artifact_dir, "commitments.json"), "commitments")
+    proof_payload = _read_object(required_artifact_file(artifact_dir, "proof_payload.json"), "proof payload")
+    transcript = _read_object(required_artifact_file(artifact_dir, "transcript.json"), "transcript")
+    pre_digest = transcript.get("pre_profile_transcript_digest")
+    if not isinstance(pre_digest, str) or len(pre_digest) != 64:
+        raise ResultValidationError("privacy session transcript pre-profile digest is missing")
+    items = commitments.get("items")
+    if not isinstance(items, dict) or not isinstance(items.get("com_W"), dict):
+        raise ResultValidationError("privacy session com_W registration is missing")
+    com_w = registration_identity_fingerprint(items["com_W"], segment="com_W")
+    return com_w, {
+        "metadata": metadata,
+        "commitments": commitments,
+        "proof_payload": proof_payload,
+        "transcript": transcript,
+        "pre_profile_transcript_digest": pre_digest,
+    }
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Validate the final zkGPT result matrix with the strict external verifier")
-    parser.add_argument("--project-root", type=Path, default=PROJECT)
-    parser.add_argument("--public-y-root", type=Path, required=True, help="independent public-Y file or directory")
+    parser = argparse.ArgumentParser(description="Validate the complete zkGPT 5x2 result matrix")
+    parser.add_argument("--results-dir", type=pathlib.Path, default=ROOT / "results")
     args = parser.parse_args()
-    project_root = args.project_root.expanduser().resolve()
-    result_path = ROOT / "results" / "final_zkgpt_results.json"
+    try:
+        results_dir = resolve_results_dir(ROOT, args.results_dir)
+    except ResultValidationError as exc:
+        raise SystemExit(str(exc)) from exc
+    result_path = results_dir / "final_zkgpt_results.json"
     errors: list[str] = []
-    if not result_path.exists():
+    rows: list[dict[str, Any]] = []
+    validated_artifacts: list[pathlib.Path] = []
+    if not result_path.is_file():
         errors.append("result_matrix_missing")
-        rows = []
     else:
-        result = json.loads(result_path.read_text(encoding="utf-8"))
-        rows = result.get("rows", [])
-        if len(rows) != 10:
-            errors.append("matrix_row_count_not_10")
-        expected_pairs = {
-            (backend, dataset)
-            for backend in ("cpu", "gpu")
-            for dataset in ("cora", "citeseer", "pubmed", "ppi", "ogbn-arxiv")
-        }
-        actual_pairs = {(str(row.get("backend")), str(row.get("dataset"))) for row in rows}
-        if actual_pairs != expected_pairs:
-            errors.append("matrix_dataset_backend_coverage_invalid")
-        for row in rows:
-            dataset = row.get("dataset")
-            backend = row.get("backend")
-            if row.get("status") != "VERIFY_OK" or row.get("proof_generated") is not True or row.get("verified") is not True:
-                errors.append(f"run_not_verified:{dataset}/{backend}")
-            manifest_path = ROOT / "results" / "runs" / str(backend) / str(dataset) / "run_manifest.json"
-            if row.get("status") == "VERIFY_OK" and not manifest_path.exists():
+        try:
+            result = json.loads(result_path.read_text(encoding="utf-8"))
+            if not isinstance(result, dict) or result.get("schema") != "zkGPT_gat_formal_result_matrix_v4":
+                errors.append("result_matrix_schema_invalid")
+            if result.get("baseline") != "zkGPT" or result.get("protocol_id") != PROTOCOL_ID or result.get("proof_backend_id") != PROOF_BACKEND_ID:
+                errors.append("result_matrix_identity_invalid")
+            if result.get("status") != "complete" or result.get("formal_experiment_eligible") is not True:
+                errors.append("result_matrix_not_complete")
+            rows = result.get("rows", []) if isinstance(result, dict) else []
+            validate_matrix_rows(rows)
+        except (OSError, json.JSONDecodeError, TypeError, ValueError, ResultValidationError) as exc:
+            errors.append(f"result_matrix_invalid:{exc}")
+    row_map = {(str(row.get("backend")), str(row.get("dataset"))): row for row in rows}
+    for backend in ("cpu", "gpu"):
+        for dataset in DATASET_ORDER:
+            key = (backend, dataset)
+            manifest_path = canonical_manifest_path(ROOT, backend, dataset)
+            if key not in row_map:
+                errors.append(f"matrix_row_missing:{dataset}/{backend}")
+                continue
+            if not manifest_path.is_file():
                 errors.append(f"manifest_missing:{dataset}/{backend}")
                 continue
-            if not manifest_path.exists():
-                continue
-            artifact_dir = manifest_path.parent
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            metadata_path = artifact_dir / "metadata.json"
-            metadata = json.loads(metadata_path.read_text(encoding="utf-8")) if metadata_path.is_file() else {}
-            config_value = manifest.get("config")
-            config_path = Path(str(config_value)) if config_value else Path()
-            if not config_path.is_absolute():
-                config_path = project_root / config_path
-            registry_value = metadata.get("model_registry", {}).get("public_path")
-            registry_path = ROOT / str(registry_value) if registry_value and not Path(str(registry_value)).is_absolute() else Path(str(registry_value or ""))
             try:
-                public_y_path = _resolve_public_y(config_path, str(dataset), str(backend), project_root, args.public_y_root)
-            except (OSError, RuntimeError, ValueError) as exc:
-                errors.append(f"independent_context_inputs_invalid:{dataset}/{backend}:{exc}")
-                continue
-            replay = subprocess.run(
-                [
-                    sys.executable,
-                    str(ROOT / "scripts" / "verify_proof.py"),
-                    "--project-root", str(project_root),
-                    "--config", str(config_path),
-                    "--trusted-registry-public", str(registry_path),
-                    "--artifact-dir", str(artifact_dir),
-                    "--public-y", str(public_y_path),
-                ],
-                cwd=str(ROOT),
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                check=False,
+                row = validate_artifact(ROOT, manifest_path, dataset, backend)
+                expected = row_map[key]
+                for field in ("status", "verified", "proof_generated", "run_digest", "proof_digest", "proof_size_bytes"):
+                    if expected.get(field) != row.get(field):
+                        raise ResultValidationError(f"matrix row {field} mismatch")
+                replay_error = _replay(ROOT, manifest_path.parent, row["manifest"])
+                if replay_error:
+                    errors.append(f"independent_replay_failed:{dataset}/{backend}:{replay_error}")
+                else:
+                    # Replay is fresh-process evidence; re-check all recorded
+                    # digests and report-derived fields after it completes.
+                    validate_artifact(ROOT, manifest_path, dataset, backend)
+                    validated_artifacts.append(manifest_path.parent)
+            except (OSError, json.JSONDecodeError, TypeError, ValueError, KeyError, ResultValidationError) as exc:
+                errors.append(f"artifact_validation_failed:{dataset}/{backend}:{exc}")
+
+    # All ten cells must pass their individual checks and fresh verifier replay
+    # before their real proof bundles are composed.  Grouping by the
+    # authenticated com_W fingerprint permits independent model registrations
+    # while still enforcing multi-session freshness for every reused model.
+    privacy_groups: dict[str, list[dict[str, Any]]] = {}
+    for artifact_dir in validated_artifacts:
+        try:
+            com_w, session = _load_privacy_session(artifact_dir)
+            privacy_groups.setdefault(com_w, []).append(session)
+        except (OSError, json.JSONDecodeError, TypeError, ValueError, KeyError, ResultValidationError) as exc:
+            errors.append(f"privacy_session_load_failed:{artifact_dir.relative_to(ROOT)}:{exc}")
+    privacy_group_audit: list[dict[str, Any]] = []
+    for com_w, sessions in sorted(privacy_groups.items()):
+        privacy_check = check_multi_session_profiles(sessions)
+        if privacy_check.get("status") != "VERIFY_OK":
+            errors.append(
+                f"multi_session_privacy_failed:{com_w}:{privacy_check.get('reason', 'unknown')}"
             )
-            if replay.returncode != 0:
-                errors.append(f"independent_replay_failed:{dataset}/{backend}")
-                continue
-            independent_path = artifact_dir / "independent_verification.json"
-            independent = json.loads(independent_path.read_text(encoding="utf-8")) if independent_path.is_file() else {}
-            if independent.get("status") != "VERIFY_OK":
-                errors.append(f"independent_status_failed:{dataset}/{backend}")
-            if manifest.get("independent_verification_sha256") != _sha256(independent_path):
-                errors.append(f"independent_digest_mismatch:{dataset}/{backend}")
-            if manifest.get("full_gat_forward_proved") is not True or manifest.get("final_logits_bound") is not True or manifest.get("scope_mismatch") is not False:
-                errors.append(f"proof_scope_invalid:{dataset}/{backend}")
-            if backend == "gpu":
-                gpu = manifest.get("gpu_backend", {})
-                gpu_contract_valid, gpu_contract_errors = validate_gpu_execution_evidence(gpu)
-                if not gpu_contract_valid:
-                    errors.append(
-                        f"gpu_proof_primitives_invalid:{dataset}/{backend}:"
-                        + ",".join(gpu_contract_errors)
-                    )
+        privacy_group_audit.append({
+            "com_W_fingerprint": com_w,
+            "session_count": len(sessions),
+            "status": privacy_check.get("status"),
+            "reason": privacy_check.get("reason", ""),
+        })
     audit = {
-        "schema": "zkGPT_gat_formal_validation_v3",
+        "schema": "zkGPT_gat_formal_validation_v4",
         "baseline": "zkGPT",
         "status": "verified" if not errors else "not_verified",
         "formal_experiment_eligible": not errors,
         "errors": errors,
         "rows_checked": len(rows),
+        "replay_required": True,
+        "privacy_groups": privacy_group_audit,
     }
-    output = ROOT / "results" / "local_validation.json"
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(audit, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    results_dir.mkdir(parents=True, exist_ok=True)
+    write_json(results_dir / "local_validation.json", audit)
     print(f"zkgpt_formal_validation={audit['status']} errors={len(errors)}")
     return 0 if not errors else 1
 

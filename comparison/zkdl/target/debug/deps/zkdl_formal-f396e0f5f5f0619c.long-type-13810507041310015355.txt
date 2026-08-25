@@ -1,1 +1,0 @@
-std::iter::Map<std::slice::Iter<'_, Point>, fn(Point) -> Result<[u8; 144], anyhow::Error> {Point::to_raw_p1}>

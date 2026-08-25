@@ -45,6 +45,19 @@ def next_power_of_two(value: int) -> int:
     return out
 
 
+def sumcheck_domain(count: int) -> int:
+    """Return the power-of-two domain used by a committed Sumcheck.
+
+    The native MatMul and GKR product relations both need at least one
+    variable so that a one-element relation still has a real Sumcheck round.
+    Keep that padding rule in one field-level helper; callers retain their
+    real output/index cardinality and only pad the relation oracle with zero.
+    """
+    if isinstance(count, bool) or not isinstance(count, int) or count <= 0:
+        raise ValueError("Sumcheck domain count must be a positive integer")
+    return next_power_of_two(max(2, count))
+
+
 def log2_power_of_two(value: int) -> int:
     value = int(value)
     if value <= 0 or value & (value - 1):

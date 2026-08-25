@@ -5,7 +5,7 @@ import pathlib
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
-from .field import BN254_FR_MODULUS, next_power_of_two, to_field_int
+from .field import BN254_FR_MODULUS, next_power_of_two, sumcheck_domain, to_field_int
 from .gpu_execution import active_product_coefficients
 from .input_oracle import equality_weights
 from .native_hyrax import NativeHyrax, _point, verify_batched_linear_claim_payload
@@ -399,7 +399,7 @@ def prove_product_gate(
     context: Mapping[str, Any],
 ) -> dict[str, Any]:
     count = len(spec.target.index_map)
-    domain = next_power_of_two(count)
+    domain = sumcheck_domain(count)
     variables = domain.bit_length() - 1
     output_point = [
         transcript.challenge_scalar(f"{spec.label}/output-point/{index}")
@@ -504,7 +504,7 @@ def verify_product_gate(
         if proof["protocol"] != PRODUCT_PROTOCOL_ID or proof["spec"] != spec.descriptor():
             return False
         count = len(spec.target.index_map)
-        domain = next_power_of_two(count)
+        domain = sumcheck_domain(count)
         variables = domain.bit_length() - 1
         output_point = [
             transcript.challenge_scalar(f"{spec.label}/output-point/{index}")

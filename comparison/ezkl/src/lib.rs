@@ -151,11 +151,19 @@ pub mod graph;
     not(all(target_arch = "wasm32", target_os = "unknown"))
 ))]
 pub mod logger;
-#[cfg(all(feature = "ezkl", not(target_arch = "wasm32")))]
-#[allow(missing_docs)]
-pub(crate) mod native_gat;
+#[cfg(all(
+    any(feature = "ezkl", feature = "formal"),
+    not(target_arch = "wasm32")
+))]
+pub mod native_gat;
 /// Tools for proofs and verification used by cli
 pub mod pfsys;
+#[cfg(all(
+    any(feature = "ezkl", feature = "formal"),
+    feature = "gpu-accelerated",
+    not(target_arch = "wasm32")
+))]
+pub(crate) mod gpu_telemetry;
 /// srs sha hashes
 #[cfg(all(
     feature = "ezkl",

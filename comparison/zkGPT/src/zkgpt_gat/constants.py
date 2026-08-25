@@ -20,6 +20,9 @@ CONFIG_DATASET_VALUE = {
 
 PROTOCOL_ID = "GAT-ZKML-zkGPT"
 PROOF_BACKEND_ID = "zkgpt-style-gkr-lasso-matmul-hyrax-mle"
+ROUNDING_MODE_NEAREST = "nearest_ties_away"
+ROUNDING_MODE_TOWARD_ZERO = "toward_zero"
+ROUNDING_MODES = (ROUNDING_MODE_NEAREST, ROUNDING_MODE_TOWARD_ZERO)
 ENCODING_ID = "gat-zkgpt-fixed-order-v1"
 PADDING_RULE_ID = "protocol-defined-family-padding+selector-mask-v1"
 CIRCUIT_LAYOUT_ID = "gat-zkgpt-four-segment-Xpub-W-Aux-L-v1"
@@ -46,6 +49,7 @@ METADATA_FIELD_ORDER = [
     "model_param_id",
     "static_table_id",
     "quant_cfg_id",
+    "rounding_mode",
     "domain_cfg",
     "dim_cfg",
     "encoding_id",

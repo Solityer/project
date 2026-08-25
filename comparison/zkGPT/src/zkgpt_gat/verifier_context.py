@@ -24,6 +24,12 @@ from .field import BN254_FR_MODULUS, next_power_of_two, to_field_int
 from .forward import _exp_map_fixed, _elu_table_value
 from .native_gkr import LinearGateSpec, LinearTerm, OracleRef, ProductGateSpec, identity_oracle
 from .model import QUANT_SCALE_PROFILES
+from .registry import canonical_registry_public_path, require_registry_transaction_id
+from .resources import STATIC_TABLE_DESCRIPTOR_RELATIVE_PATH, validate_static_table_descriptor
+from .rounding import (
+    validate_rounding_mode,
+)
+from .bound_ledger import build_integer_bound_ledger
 from .util import digest_file, digest_json
 
 _FIELD_HALF = (BN254_FR_MODULUS - 1) // 2
@@ -47,6 +53,22 @@ def _file(path: pathlib.Path, label: str) -> pathlib.Path:
     if not path.is_file():
         raise ContextError(f"{label} does not exist or is not a file: {path}")
     return path
+
+
+def _owned_file(path: pathlib.Path, label: str) -> pathlib.Path:
+    """Load a verifier input only from an owned one-link regular file."""
+    raw = pathlib.Path(path).expanduser()
+    try:
+        info = raw.lstat()
+    except OSError as exc:
+        raise ContextError(f"cannot inspect {label}: {raw}") from exc
+    import stat
+
+    if stat.S_ISLNK(info.st_mode):
+        raise ContextError(f"{label} must not be a symlink: {raw}")
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+        raise ContextError(f"{label} must be an owned regular file: {raw}")
+    return _file(raw, label)
 
 
 def _directory(path: pathlib.Path, label: str) -> pathlib.Path:
@@ -145,6 +167,58 @@ def _dimensions(manifest: Mapping[str, Any]) -> Tuple[List[Dict[str, int]], int,
     return hidden, classes, k_out, layers
 
 
+def _canonical_model_architecture(manifest: Mapping[str, Any]) -> Dict[str, Any]:
+    """Extract only the public architecture portion of a checkpoint manifest.
+
+    A checkpoint manifest is a public input to the independent verifier, but
+    it is still an untrusted JSON document.  Native checkpoint manifests may
+    carry loader hints, tensor names, digests, or other producer-only fields;
+    none of those fields are part of the verifier's model binding.  Keep only
+    the dimensions and identifiers needed to rebuild the GAT relation.  In
+    particular, never copy a raw manifest (or a tensor/value field from it)
+    into the public statement or setup context.
+    """
+    hidden, classes, k_out, layers = _dimensions(manifest)
+    model_arch_id = str(manifest.get("model_arch_id", ""))
+    if not model_arch_id:
+        raise ContextError("model manifest has no model_arch_id")
+    d_in_profile = manifest.get("d_in_profile")
+    if not isinstance(d_in_profile, (list, tuple)) or not d_in_profile:
+        raise ContextError("model manifest has no d_in_profile")
+    try:
+        canonical_d_in = [int(value) for value in d_in_profile]
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ContextError("model manifest d_in_profile is not integral") from exc
+    if any(value <= 0 for value in canonical_d_in):
+        raise ContextError("model manifest d_in_profile contains a non-positive dimension")
+    output_average_rule = str(manifest.get("output_average_rule", ""))
+    if not output_average_rule:
+        raise ContextError("model manifest has no output_average_rule")
+    if output_average_rule != "per_head_bias_then_arithmetic_mean":
+        raise ContextError("model manifest output_average_rule is not the canonical GAT rule")
+    return {
+        "model_arch_id": model_arch_id,
+        "hidden_layers": [
+            {
+                "layer_index": int(item["layer_index"]),
+                "input_dim": int(item["input_dim"]),
+                "head_count": int(item["head_count"]),
+                "head_dim": int(item["head_dim"]),
+            }
+            for item in hidden
+        ],
+        # Output-head specs are reduced to their public cardinality.  Raw
+        # tensor-name fields that may accompany these entries are deliberately
+        # not retained.
+        "output_head_specs": [{"head_index": index} for index in range(k_out)],
+        "C": classes,
+        "K_out": k_out,
+        "L": layers,
+        "d_in_profile": canonical_d_in,
+        "output_average_rule": output_average_rule,
+    }
+
+
 def _model_arrays(manifest: Mapping[str, Any]) -> List[Dict[str, Any]]:
     hidden, classes, _, _ = _dimensions(manifest); previous = int(manifest.get("d_in_profile", [0])[0])
     if previous <= 0: raise ContextError("model manifest has no positive input dimension")
@@ -166,15 +240,35 @@ def _model_arrays(manifest: Mapping[str, Any]) -> List[Dict[str, Any]]:
 
 
 def _validate_registry(path: pathlib.Path, artifact: pathlib.Path, root: pathlib.Path, manifest: Mapping[str, Any], identities: Mapping[str, str]) -> Dict[str, Any]:
-    path = _file(path, "trusted model registry public file")
+    path = _owned_file(path, "trusted model registry public file")
     if _inside(path, artifact): raise ContextError("trusted registry public file must not be inside proof artifact")
     if not _inside(path, root): raise ContextError("trusted registry public file must be inside project-root")
+    expected_path = canonical_registry_public_path(root, identities["model_param_id"]).resolve()
+    if path.resolve() != expected_path:
+        raise ContextError(f"trusted model registry path is not canonical for config model identity: {expected_path}")
     registry = _json(path, "trusted model registry")
     if registry.get("protocol") != "zkGPT-native-model-registration-v1": raise ContextError("trusted registry protocol mismatch")
+    if set(registry) != {
+        "protocol", "model_param_id", "model_arch_id", "registration_binding",
+        "registration_binding_digest", "registration_transaction_id", "commitment_backend",
+        "entries", "registry_digest",
+    }:
+        raise ContextError("trusted registry public schema contains private or unsupported fields")
+    try:
+        require_registry_transaction_id(registry.get("registration_transaction_id"))
+    except RuntimeError as exc:
+        raise ContextError(str(exc)) from exc
     payload = dict(registry); registry_digest = payload.pop("registry_digest", None)
     if registry_digest != digest_json(payload): raise ContextError("trusted registry digest is invalid")
     binding = registry.get("registration_binding", {})
     if not isinstance(binding, dict) or registry.get("registration_binding_digest") != digest_json(binding): raise ContextError("trusted registry binding digest is invalid")
+    if set(binding) != {
+        "protocol", "model_arch_id", "model_param_id", "quant_cfg_id", "rounding_mode",
+        "static_table_id", "layout", "segment_order", "padding_rule_id",
+        "integer_bound_ledger_digest", "Layout_in_digest", "N_in",
+        "registered_model_bounds", "arrays",
+    }:
+        raise ContextError("trusted registry binding schema contains private or unsupported fields")
     for key in ("model_arch_id", "model_param_id", "quant_cfg_id", "static_table_id"):
         top_level = registry.get(key)
         if top_level is not None and str(top_level) != str(identities[key]): raise ContextError(f"trusted registry {key} mismatch")
@@ -194,6 +288,8 @@ def _validate_registry(path: pathlib.Path, artifact: pathlib.Path, root: pathlib
         if shape_map.get(f"{prefix}.W") != bound.get("W_shape") or shape_map.get(f"{prefix}.a_src") != bound.get("a_src_shape") or shape_map.get(f"{prefix}.a_dst") != bound.get("a_dst_shape"): raise ContextError(f"trusted registry bound shape mismatch: {family}")
         if f"{prefix}.b_out" in shape_map and shape_map[f"{prefix}.b_out"] != bound.get("b_shape"): raise ContextError(f"trusted registry output bias shape mismatch: {family}")
     entry = entries["com_W"]
+    if set(entry) != {"backend", "parameter_id", "label", "vector_length", "commitment", "padded_length"}:
+        raise ContextError("trusted registry com_W entry contains private or unsupported fields")
     if not isinstance(entry, dict) or str(entry.get("label", "com_W")) != "com_W" or int(entry.get("vector_length", -1)) != int(binding.get("N_in", -2)) or int(entry.get("padded_length", -1)) != int(entry.get("vector_length", -2)): raise ContextError("trusted registry com_W entry mismatch")
     if entry.get("backend") not in {None, _HYRAX_BACKEND}: raise ContextError("trusted registry com_W backend mismatch")
     return registry
@@ -204,28 +300,34 @@ def _fixed_lrelu(value: int) -> int:
 
 
 def _ledger(
-    graph: LocalGraph, manifest: Mapping[str, Any], bounds: Mapping[str, Any],
+    graph: LocalGraph,
+    manifest: Mapping[str, Any],
+    bounds: Mapping[str, Any],
     quant_cfg_id: str,
+    rounding_mode: str,
+    range_bits: int = 12,
 ) -> Dict[str, Any]:
-    if quant_cfg_id not in QUANT_SCALE_PROFILES:
-        raise ContextError(f"unknown authenticated quantization profile: {quant_cfg_id}")
-    authenticated_quant_scales = dict(QUANT_SCALE_PROFILES[quant_cfg_id])
-    hidden, classes, _, _ = _dimensions(manifest); degree = max((int(v) for v in np.bincount(graph.dst, minlength=graph.num_nodes)), default=1); feature_bound = max((abs(_round_feature(float(v))) for v in np.ravel(graph.features)), default=0)
-    input_bound, input_scale = max(1, feature_bound), 1; hbounds: List[Dict[str, Any]] = []; obounds: List[Dict[str, Any]] = []
-    for layer in hidden:
-        outputs = []
-        for index in range(layer["head_count"]):
-            family = f"hidden.l{layer['layer_index'] + 1}.h{index}"; b = bounds[family]; w, src, dst = int(b["B_W"]), int(b["B_a_src"]), int(b["B_a_dst"]); hscale = input_scale * 16; hp = max(1, layer["input_dim"] * input_bound * max(1, w)); score = max(1, 2 * layer["head_dim"] * hp * max(src, dst)); z = max(abs(_fixed_lrelu(score)), abs(_fixed_lrelu(-score))); delta = 2 * z; exp_max = _exp_map_fixed(0); sum_bound = degree * exp_max; num = sum_bound * hp; dividend = 16 * num; denominator = hscale * sum_bound; quotient = max(1, (dividend + max(denominator, 1) - 1) // max(denominator, 1)); hbounds.append({"kind": "hidden", "layer": layer["layer_index"] + 1, "head": index, "B_H": input_bound, "B_W": w, "B_H_prime": hp, "B_a_src": src, "B_a_dst": dst, "B_S": score, "B_Z": z, "B_delta_raw": delta, "B_delta": delta, "B_U": exp_max, "B_Sum": sum_bound, "B_H_num": num, "S_H_prime": hscale, "S_agg_pre": 16, "B_x_div": dividend, "B_d_div": denominator, "B_a_div": dividend, "B_q_div": quotient, "B_r_div": max(0, denominator - 1), "B_delta_div": denominator, "B_d": denominator, "B_2a_plus_d": 2 * dividend + denominator, "B_2dq_plus_r": 2 * denominator * quotient + max(0, denominator - 1), "B_2d_minus_1": max(0, 2 * denominator - 1), "B_r_plus_delta": max(0, denominator - 1) + denominator}); outputs.append(max(1, quotient))
-        input_bound, input_scale = max(outputs, default=1), 16
-    previous = hidden[-1]["head_count"] * hidden[-1]["head_dim"]
-    for index in range(int(manifest["K_out"])):
-        family = f"output.h{index}"; b = bounds[family]; w, src, dst, bias = int(b["B_W"]), int(b["B_a_src"]), int(b["B_a_dst"]), int(b["B_b"]); yp = max(1, previous * input_bound * max(1, w)); score = max(1, 2 * classes * yp * max(src, dst)); z = max(abs(_fixed_lrelu(score)), abs(_fixed_lrelu(-score))); delta = 2 * z; exp_max = _exp_map_fixed(0); sum_bound = degree * exp_max; num = sum_bound * yp; dividend = 16 * num; denominator = 256 * sum_bound; quotient = max(1, (dividend + max(denominator, 1) - 1) // max(denominator, 1)); obounds.append({"kind": "output", "layer": "out", "head": index, "B_H": input_bound, "B_W": w, "B_Y_prime": yp, "B_a_src": src, "B_a_dst": dst, "B_b": bias, "B_S": score, "B_Z": z, "B_delta_raw": delta, "B_delta": delta, "B_U": exp_max, "B_Sum": sum_bound, "B_Y_num": num, "S_Y_prime": 256, "S_out_pre": 16, "B_x_div": dividend, "B_d_div": denominator, "B_a_div": dividend, "B_q_div": quotient, "B_r_div": max(0, denominator - 1), "B_delta_div": denominator, "B_d": denominator, "B_2a_plus_d": 2 * dividend + denominator, "B_2dq_plus_r": 2 * denominator * quotient + max(0, denominator - 1), "B_2d_minus_1": max(0, 2 * denominator - 1), "B_r_plus_delta": max(0, denominator - 1) + denominator})
-    values = [int(v) for item in hbounds + obounds for v in item.values() if isinstance(v, int)]; max_bound = max(values, default=1)
-    if max_bound >= _FIELD_HALF: raise ContextError("external integer-bound ledger exceeds BN254 field half")
-    out_sum = max(1, len(obounds) * max((int(item["B_q_div"]) for item in obounds), default=1)); divisions = []
-    for item in hbounds + obounds: divisions.append({"family": f"{item['kind']}.l{item['layer']}.h{item['head']}", "B_a": int(item["B_a_div"]), "B_q": int(item["B_q_div"]), "B_r": int(item["B_r_div"]), "B_delta": int(item["B_delta_div"]), "B_d": int(item["B_d"]), "B_2a_plus_d": int(item["B_2a_plus_d"]), "B_2dq_plus_r": int(item["B_2dq_plus_r"]), "B_2d_minus_1": int(item["B_2d_minus_1"]), "B_r_plus_delta": int(item["B_r_plus_delta"])})
-    divisions.append({"family": "output.final_average", "B_a": out_sum, "B_q": max(1, (out_sum + len(obounds) - 1) // max(1, len(obounds))), "B_r": max(0, len(obounds) - 1), "B_delta": max(1, len(obounds)), "B_d": max(1, len(obounds)), "B_2a_plus_d": 2 * out_sum + max(1, len(obounds)), "B_2dq_plus_r": 2 * max(1, len(obounds)) * max(1, (out_sum + len(obounds) - 1) // max(1, len(obounds))) + max(0, len(obounds) - 1), "B_2d_minus_1": max(1, 2 * len(obounds) - 1), "B_r_plus_delta": max(0, len(obounds) - 1) + max(1, len(obounds))})
-    return {"schema": "zkGPT_gat_integer_bound_ledger_v1", "field": "BN254-Fr", "field_half_modulus": str(_FIELD_HALF), "max_in_degree": degree, "feature_bound": feature_bound, "quant_cfg_id": quant_cfg_id, "authenticated_quant_scales": authenticated_quant_scales, "registered_model_bounds": copy.deepcopy(dict(bounds)), "bit_width": max(2, max_bound.bit_length()), "scales": {"S_input": 1, "S_W_hidden": 16, "S_W_output": 16, "S_a_hidden": 16, "S_a_output": 1, "S_delta": 256, "S_exp": 16, "S_agg_pre": 16, "S_agg": 16, "S_out_pre": 16, "S_out_head": 16, "S_out": 16, "S_inv": "field_exact", "S_alpha": "field_exact"}, "table_domains": {"lrelu": [-max((int(v["B_S"]) for v in hbounds + obounds), default=1), max((int(v["B_S"]) for v in hbounds + obounds), default=1)], "elu": [-max((int(v["B_q_div"]) for v in hbounds), default=1), max((int(v["B_q_div"]) for v in hbounds), default=1)], "exp": [0, max((int(v["B_delta_raw"]) for v in hbounds + obounds), default=1)]}, "heads": hbounds + obounds, "signed_round_divisions": divisions, "final_average": {"K_out": len(obounds), "B_Y_sum": out_sum, "denominator": max(1, len(obounds))}, "failures": []}
+    """Rebuild the exact producer ledger from external public inputs."""
+    mode = validate_rounding_mode(rounding_mode)
+    hidden, classes, k_out, _ = _dimensions(manifest)
+    hidden_profile = [
+        {"layer_index": int(item["layer_index"]), "head_count": int(item["head_count"]), "head_dim": int(item["head_dim"])}
+        for item in hidden
+    ]
+    return build_integer_bound_ledger(
+        mode=mode,
+        quant_cfg_id=quant_cfg_id,
+        authenticated_quant_scales=dict(QUANT_SCALE_PROFILES[quant_cfg_id]),
+        registered_model_bounds=bounds,
+        hidden_profile=hidden_profile,
+        d_in=[int(manifest["d_in_profile"][0])] + [int(item["head_count"]) * int(item["head_dim"]) for item in hidden],
+        classes=int(classes),
+        k_out=int(k_out),
+        max_degree=max((int(v) for v in np.bincount(graph.dst, minlength=graph.num_nodes)), default=1),
+        feature_bound=max((abs(_round_feature(float(v))) for v in np.ravel(graph.features)), default=0),
+        node_count=int(graph.num_nodes),
+        range_bits=int(range_bits),
+    )
 
 
 def _shape(name: str, shape: Sequence[int]) -> Tuple[str, Sequence[int]]: return name, [int(v) for v in shape]
@@ -244,8 +346,11 @@ def _division_gkr_names(prefix: str, shape: Sequence[int]) -> List[Tuple[str, Se
 def _head_aux_names(tag: str, n: int, e: int, width: int, *, output: bool) -> List[Tuple[str, Sequence[int]]]:
     out = [
         _shape(f"{tag}.H_prime", [n, width]),
-        _shape(f"{tag}.E_src", [e]),
-        _shape(f"{tag}.E_dst", [e]),
+        # E_src/E_dst are node-wise attention projections.  Edge routing
+        # selects their entries through public src/dst maps; they are not
+        # edge-length witness arrays even when E happens to equal N.
+        _shape(f"{tag}.E_src", [n]),
+        _shape(f"{tag}.E_dst", [n]),
         _shape(f"{tag}.S", [e]),
         _shape(f"{tag}.Z", [e]),
         _shape(f"{tag}.M", [n]),
@@ -272,7 +377,7 @@ def _head_aux_names(tag: str, n: int, e: int, width: int, *, output: bool) -> Li
         out.extend(_division_names(f"{tag}.SignedRoundDiv.scale_alignment", [n, width]))
         out.append(_shape(f"{tag}.Y_pre_aligned", [n, width]))
     out.extend(_shape(f"{tag}.gkr.{name}", shape) for name, shape in (
-        ("sum_inv", [n]), ("s_max_delta", [e]),
+        ("sum_inv", [n]), ("s_max_delta", [e]), ("double_aggregate", [n, width]),
     ))
     out.extend(_division_gkr_names(f"{tag}.SignedRoundDiv.aggregate", [n, width]))
     if output:
@@ -355,7 +460,7 @@ def _aux_arrays(
             if family["kind"] == "range":
                 out.append(_shape(
                     f"lasso.{family['family']}.range_bits",
-                    [int(family["padded_count"]), int(range_bits)],
+                    [int(family["padded_count"]), int(family["range_bits"])],
                 ))
     return out
 
@@ -368,11 +473,30 @@ def _logical(name: str, arrays: Sequence[Tuple[str, Sequence[int]]]) -> Dict[str
 
 
 def _families(graph: LocalGraph, manifest: Mapping[str, Any], bits: int, ledger: Mapping[str, Any]) -> List[Dict[str, Any]]:
-    hidden, classes, k_out, _ = _dimensions(manifest); n, e = int(graph.num_nodes), int(graph.src.size); limbs = max(1, (int(ledger["bit_width"]) + int(bits) - 1) // int(bits)); families: List[Dict[str, Any]] = []; offset = 0
+    hidden, classes, k_out, _ = _dimensions(manifest); n, e = int(graph.num_nodes), int(graph.src.size); families: List[Dict[str, Any]] = []; offset = 0
+    policy_map = ledger.get("range_family_policy", {}).get("families", {})
     def add(label: str, kind: str, count: int, table: str, signed: bool = False) -> None:
         nonlocal offset
-        real = int(count) if kind == "function" else int(count) * limbs; padded = next_power_of_two(max(1, real)); item = {"family": label, "kind": kind, "table_id": table, "offset": offset, "real_count": real, "padded_count": padded, "shape": [padded]}
-        if kind == "range": item.update({"range_bits": int(bits), "limbs_per_value": limbs, "signed_magnitude": bool(signed), "a_pad": "0", "Q_pad": {"zero_prefix": real, "one_suffix": padded - real}})
+        policy = policy_map.get(label) if kind == "range" else None
+        if kind == "range":
+            if not isinstance(policy, Mapping):
+                raise ContextError(f"missing canonical range-family policy: {label}")
+            if int(policy.get("range_bits", -1)) != int(bits):
+                raise ContextError(f"range-family bits differ from authenticated ledger: {label}")
+            limbs = int(policy.get("limb_count", 0))
+            bit_width = int(policy.get("bit_width", 0))
+            bound = int(policy.get("bound", -1))
+            if limbs <= 0 or bit_width <= 0 or bound < 0:
+                raise ContextError(f"invalid canonical range-family policy: {label}")
+        else:
+            limbs = 1; bit_width = 0; bound = 0
+        real = int(count) if kind == "function" else int(count) * limbs
+        # Keep the external descriptor in lockstep with the native prover:
+        # committed Sumcheck requires at least one round even for a one-query
+        # synthetic family.
+        padded = next_power_of_two(max(2, real))
+        item = {"family": label, "kind": kind, "table_id": table, "offset": offset, "real_count": real, "padded_count": padded, "shape": [padded]}
+        if kind == "range": item.update({"range_bits": int(bits), "bit_width": bit_width, "limbs_per_value": limbs, "bound": bound, "signed_magnitude": bool(signed), "a_pad": "0", "Q_pad": {"zero_prefix": real, "one_suffix": padded - real}})
         else: item.update({"a_pad": "0", "Q_pad": {"zero_prefix": real, "one_suffix": padded - real}})
         families.append(item); offset += padded
     for layer in hidden:
@@ -406,6 +530,7 @@ def _matrix_families(graph: LocalGraph, manifest: Mapping[str, Any]) -> List[Dic
             "output": {"segment": output[0], "array_name": output[1]},
             "residual": {"segment": residual[0], "array_name": residual[1]},
             "output_scale": 1,
+            "residual_semantics": "exact_zero",
         }
 
     for layer in hidden:
@@ -433,12 +558,19 @@ def _gkr_record(kind: str, spec: LinearGateSpec | ProductGateSpec) -> Dict[str, 
     return {"kind": kind, "spec": spec.descriptor()}
 
 
-def _native_division_records(prefix: str, count: int) -> List[Dict[str, Any]]:
+def _native_division_records(prefix: str, count: int, rounding_mode: str) -> List[Dict[str, Any]]:
+    rounding_mode = validate_rounding_mode(rounding_mode)
     aux = lambda name: identity_oracle("Aux", f"{prefix}.{name}", count)
     product = lambda name: identity_oracle("Aux", f"{prefix}.gkr.{name}", count)
     zero = (0,) * count
     one = (1,) * count
     inv_two = pow(2, BN254_FR_MODULUS - 2, BN254_FR_MODULUS)
+    if rounding_mode == "nearest_ties_away":
+        equation = ("nearest_equation", aux("a"), (LinearTerm(1, product("d_q")), LinearTerm(inv_two, aux("r")), LinearTerm(-inv_two, aux("d"))), (0,) * count)
+        slack_terms = ((LinearTerm(2, aux("d")), LinearTerm(-1, aux("r"))), (-1,) * count)
+    else:
+        equation = ("toward_zero_equation", aux("a"), (LinearTerm(1, product("d_q")), LinearTerm(1, aux("r"))), (0,) * count)
+        slack_terms = ((LinearTerm(1, aux("d")), LinearTerm(-1, aux("r"))), (-1,) * count)
     specs: List[Tuple[str, LinearGateSpec | ProductGateSpec]] = [
         ("product", ProductGateSpec(f"{prefix}.sigma_boolean", aux("sigma"), aux("sigma"), aux("sigma"))),
         ("product", ProductGateSpec(f"{prefix}.z_boolean", aux("z"), aux("z"), aux("z"))),
@@ -457,8 +589,8 @@ def _native_division_records(prefix: str, count: int) -> List[Dict[str, Any]]:
         ("linear", LinearGateSpec(f"{prefix}.z_a_zero", product("z_a"), (), zero)),
         ("linear", LinearGateSpec(f"{prefix}.z_sigma_zero", product("z_sigma"), (), zero)),
         ("linear", LinearGateSpec(f"{prefix}.z_a_inv_zero", product("z_a_inv"), (), zero)),
-        ("linear", LinearGateSpec(f"{prefix}.nearest_equation", aux("a"), (LinearTerm(1, product("d_q")), LinearTerm(inv_two, aux("r")), LinearTerm(-inv_two, aux("d"))), zero)),
-        ("linear", LinearGateSpec(f"{prefix}.rounding_slack", aux("delta"), (LinearTerm(2, aux("d")), LinearTerm(-1, aux("r"))), (-1,) * count)),
+        ("linear", LinearGateSpec(f"{prefix}.{equation[0]}", equation[1], equation[2], equation[3])),
+        ("linear", LinearGateSpec(f"{prefix}.rounding_slack", aux("delta"), slack_terms[0], slack_terms[1])),
     ]
     return [_gkr_record(kind, spec) for kind, spec in specs]
 
@@ -523,6 +655,11 @@ def _native_lasso_consistency_records(
                 )))
             continue
 
+        policy = ledger.get("range_family_policy", {}).get("families", {}).get(label)
+        if not isinstance(policy, Mapping):
+            raise ContextError(f"range family is absent from authenticated ledger: {label}")
+        if any(int(family.get(key, -1)) != int(policy.get(source, -2)) for key, source in (("range_bits", "range_bits"), ("bit_width", "bit_width"), ("limbs_per_value", "limb_count"), ("bound", "bound"))):
+            raise ContextError(f"range family geometry differs from authenticated ledger: {label}")
         limb_count = int(family["limbs_per_value"])
         base = 1 << int(family["range_bits"])
         bit_name = f"lasso.{label}.range_bits"
@@ -583,6 +720,7 @@ def _gkr_families(
     compares it byte-for-byte before the payload verifier runs.
     """
     hidden, classes, k_out, _ = _dimensions(manifest)
+    rounding_mode = validate_rounding_mode((ledger or {}).get("rounding_mode"))
     n, e = int(graph.num_nodes), int(graph.src.size)
     src = tuple(int(value) for value in graph.src)
     dst = tuple(int(value) for value in graph.dst)
@@ -645,6 +783,18 @@ def _gkr_families(
             _gkr_record("linear", LinearGateSpec(f"{prefix}.agg_num_terminal", identity_oracle("Aux", f"{prefix}.H_or_Y_agg_num", node_flat_count), (LinearTerm(1, aux("R_num", end_flat_maps)),), (0,) * node_flat_count)),
             _gkr_record("linear", LinearGateSpec(f"{prefix}.field_aggregate_terminal", identity_oracle("Aux", f"{prefix}.field_aggregate", node_flat_count), (LinearTerm(1, aux("R_field", end_flat_maps)),), (0,) * node_flat_count)),
             _gkr_record("linear", LinearGateSpec(f"{prefix}.field_aggregate_output", identity_oracle("Aux", f"{prefix}.H_agg_pre", node_flat_count), (LinearTerm(1, identity_oracle("Aux", f"{prefix}.field_aggregate", node_flat_count)),), (0,) * node_flat_count)),
+            _gkr_record("product", ProductGateSpec(
+                f"{prefix}.double_aggregate_product",
+                identity_oracle("Aux", f"{prefix}.gkr.double_aggregate", node_flat_count),
+                aux("Sum", tuple(row for row in range(n) for _ in range(width))),
+                identity_oracle("Aux", f"{prefix}.H_agg_pre", node_flat_count),
+            )),
+            _gkr_record("linear", LinearGateSpec(
+                f"{prefix}.double_aggregate_equality",
+                identity_oracle("Aux", f"{prefix}.H_or_Y_agg_num", node_flat_count),
+                (LinearTerm(1, identity_oracle("Aux", f"{prefix}.gkr.double_aggregate", node_flat_count)),),
+                (0,) * node_flat_count,
+            )),
         ])
         aggregate_prefix = f"{prefix}.SignedRoundDiv.aggregate"
         aggregate_count = n * width
@@ -654,11 +804,11 @@ def _gkr_families(
             _gkr_record("linear", LinearGateSpec(f"{aggregate_prefix}.denominator_wiring", identity_oracle("Aux", f"{aggregate_prefix}.d", aggregate_count), (LinearTerm(h_prime_scale, aux("Sum", repeated_nodes)),), (0,) * aggregate_count)),
             _gkr_record("linear", LinearGateSpec(f"{aggregate_prefix}.output_wiring", identity_oracle("Aux", f"{prefix}.SignedRoundDiv.output", aggregate_count), (LinearTerm(1, identity_oracle("Aux", f"{aggregate_prefix}.y", aggregate_count)),), (0,) * aggregate_count)),
         ])
-        records.extend(_native_division_records(aggregate_prefix, aggregate_count))
+        records.extend(_native_division_records(aggregate_prefix, aggregate_count, rounding_mode))
         if output:
             alignment_prefix = f"{prefix}.SignedRoundDiv.scale_alignment"
             alignment_count = n * width
-            records.extend(_native_division_records(alignment_prefix, alignment_count))
+            records.extend(_native_division_records(alignment_prefix, alignment_count, rounding_mode))
             records.extend([
                 _gkr_record("linear", LinearGateSpec(f"{alignment_prefix}.numerator_wiring", identity_oracle("Aux", f"{alignment_prefix}.x", alignment_count), (LinearTerm(16, identity_oracle("Aux", f"{prefix}.SignedRoundDiv.output", alignment_count)),), (0,) * alignment_count)),
                 _gkr_record("linear", LinearGateSpec(f"{alignment_prefix}.denominator_wiring", identity_oracle("Aux", f"{alignment_prefix}.d", alignment_count), (), (16,) * alignment_count)),
@@ -688,7 +838,7 @@ def _gkr_families(
         _gkr_record("linear", LinearGateSpec("output.final_average.numerator_wiring", identity_oracle("Aux", f"{final_prefix}.x", final_count), (LinearTerm(1, identity_oracle("Aux", "output.Y_sum", final_count)),), (0,) * final_count)),
         _gkr_record("linear", LinearGateSpec("output.final_average.denominator_wiring", identity_oracle("Aux", f"{final_prefix}.d", final_count), (), (int(k_out),) * final_count)),
     ])
-    records.extend(_native_division_records(final_prefix, final_count))
+    records.extend(_native_division_records(final_prefix, final_count, rounding_mode))
     records.extend([
         _gkr_record("linear", LinearGateSpec("output.final_average.public_tensor_binding", identity_oracle("Aux", "output.Y", final_count), (LinearTerm(1, identity_oracle("Aux", f"{final_prefix}.y", final_count)),), (0,) * final_count)),
         _gkr_record("linear", LinearGateSpec("output.external_public_Y", identity_oracle("Aux", "output.Y", final_count), (), values)),
@@ -706,6 +856,20 @@ def _gkr_families(
         _gkr_record("product", ProductGateSpec("rescale_rounding_range.sign_abs_product", residual("sign_abs"), residual("sign"), residual("abs"))),
         _gkr_record("linear", LinearGateSpec("rescale_rounding_range.signed_magnitude", residual("value"), (LinearTerm(1, residual("abs")), LinearTerm(-2, residual("sign_abs"))), (0,) * residual_count)),
     ])
+    for item in _matrix_families(graph, manifest):
+        matrix_spec = item["spec"]
+        shape = [int(value) for value in matrix_spec["shape"]]
+        residual_size = int(shape[0]) * int(shape[2])
+        residual_source = matrix_spec["residual"]
+        residual_oracle = identity_oracle(
+            str(residual_source["segment"]), str(residual_source["array_name"]), residual_size,
+        )
+        records.append(_gkr_record("linear", LinearGateSpec(
+            f"{matrix_spec['label']}.residual_zero",
+            residual_oracle,
+            (),
+            (0,) * residual_size,
+        )))
     if lasso_families is not None and ledger is not None:
         records.extend(_native_lasso_consistency_records(graph, manifest, lasso_families, ledger, int(range_bits)))
     return records
@@ -729,8 +893,12 @@ class VerifierContext:
         identities = self.expected_metadata["identities"]
         static_vk = {
             "schema": "zkGPT-static-table-vk-v1",
+            "rounding_mode": self.expected_metadata["rounding_mode"],
             "static_table_id": self.expected_metadata["static_table_id"],
             "quant_cfg_id": self.expected_metadata["quant_cfg_id"],
+            "static_table_descriptor_schema": self.expected_metadata["static_table_descriptor_schema"],
+            "static_table_content_digest": self.expected_metadata["static_table_content_digest"],
+            "static_table_descriptor_digest": self.expected_metadata["static_table_descriptor_digest"],
             "integer_bound_ledger_digest": self.expected_metadata["integer_bound_ledger_digest"],
             "table_registry_digest": self.expected_metadata.get("static_table_registry_digest", ""),
         }
@@ -744,6 +912,7 @@ class VerifierContext:
             "model_arch_id": identities["model_arch_id"],
             "model_param_id": identities["model_param_id"],
             "quant_cfg_id": identities["quant_cfg_id"],
+            "rounding_mode": self.expected_metadata["rounding_mode"],
             "static_table_id": identities["static_table_id"],
             "registry_digest": self.registry_public["registry_digest"],
             "Layout_in_digest": self.expected_metadata["Layout_in_digest"],
@@ -780,13 +949,15 @@ class VerifierContext:
                 if labels != expected_labels or len(labels) != len(set(labels)): errors.append("metadata Lasso family labels/order/cardinality mismatch")
                 else:
                     for item, expected in zip(actual, self.expected_lasso_families):
-                        for field in ("family", "kind", "table_id", "offset", "real_count", "padded_count"):
+                        for field in ("family", "kind", "table_id", "offset", "real_count", "padded_count", "range_bits", "bit_width", "limbs_per_value", "bound", "signed_magnitude"):
+                            if field not in item and field not in expected:
+                                continue
                             if item.get(field) != expected.get(field): errors.append(f"metadata Lasso family {expected['family']} {field} mismatch")
         static = metadata.get("static_table_registry", {})
         if set(static) != {"T_LReLU", "T_ELU", "T_exp", "T_range"} or metadata.get("static_table_registry_digest") != digest_json(static): errors.append("static table registry is missing, duplicated, or self-inconsistent")
         for key, table in static.items():
             expected_domains = self.expected_metadata["integer_bound_ledger"].get("table_domains", {})
-            if not isinstance(table, dict) or table.get("table_id") != key or table.get("quant_cfg_id") != self.expected_metadata["quant_cfg_id"] or table.get("static_table_id") != self.expected_metadata["static_table_id"] or table.get("encoding_id") != ENCODING_ID or table.get("range_bits") != int(self.expected_metadata["dim_cfg"]["B"]) or table.get("field_encoding_scale") != 1 or table.get("certified_table_domains") != expected_domains or table.get("integer_bound_ledger_digest") != self.expected_metadata["integer_bound_ledger_digest"]: errors.append(f"static table {key} descriptor mismatch")
+            if not isinstance(table, dict) or table.get("table_id") != key or table.get("quant_cfg_id") != self.expected_metadata["quant_cfg_id"] or table.get("rounding_mode") != self.expected_metadata["rounding_mode"] or table.get("static_table_id") != self.expected_metadata["static_table_id"] or table.get("static_table_descriptor_schema") != self.expected_metadata["static_table_descriptor_schema"] or table.get("static_table_content_digest") != self.expected_metadata["static_table_content_digest"] or table.get("static_table_descriptor_digest") != self.expected_metadata["static_table_descriptor_digest"] or table.get("encoding_id") != ENCODING_ID or table.get("range_bits") != int(self.expected_metadata["dim_cfg"]["B"]) or table.get("field_encoding_scale") != 1 or table.get("certified_table_domains") != expected_domains or table.get("integer_bound_ledger_digest") != self.expected_metadata["integer_bound_ledger_digest"]: errors.append(f"static table {key} descriptor mismatch")
         registry_metadata = metadata.get("model_registry")
         if registry_metadata != self.expected_metadata.get("model_registry") or metadata.get("model_registry_digest") != digest_json(registry_metadata): errors.append("metadata model registry is not the external trusted descriptor")
         return {"status": "VERIFY_OK" if not errors else "VERIFY_FAILED", "errors": errors, "context_digest": self.context_digest}
@@ -835,15 +1006,20 @@ def build_verifier_context(project_root: pathlib.Path, config_path: pathlib.Path
     root, artifact, config_path = _directory(project_root, "project-root"), _directory(artifact_dir, "artifact directory"), _file(config_path, "config")
     if _inside(config_path, artifact): raise ContextError("config must not be loaded from proof artifact")
     if not _inside(config_path, root): raise ContextError("config must be inside project-root")
-    config = load_app_config(config_path, root); manifest = _manifest(config.checkpoint_bundle); identities = {}
+    config = load_app_config(config_path, root)
+    static_descriptor = validate_static_table_descriptor(root)
+    if config.entries.get("static_table_descriptor_digest") != static_descriptor["descriptor_digest"]:
+        raise ContextError("formal config is not bound to the canonical static-table descriptor")
+    raw_manifest = _manifest(config.checkpoint_bundle)
+    manifest = _canonical_model_architecture(raw_manifest)
+    identities = {}
     configured_arch = str(config.entries.get("model_arch_id", ""))
     raw_arch = str(manifest.get("model_arch_id", ""))
     if not configured_arch or not raw_arch or configured_arch != raw_arch:
         raise ContextError("formal model architecture does not match the raw checkpoint manifest")
-    # The raw bundle is the authenticated checkpoint/architecture source.  Its
-    # fp32 export identifiers are intentionally not used as the formal
-    # comparison identity: model_param_id and quant_cfg_id are baseline-local
-    # config identities and are bound independently by the trusted registry.
+    # The public manifest supplies only the canonical architecture.  Model
+    # parameter/value binding is taken from the trusted public registry below;
+    # no raw tensor identity is used as a verifier input.
     for key in ("model_arch_id", "model_param_id", "quant_cfg_id", "static_table_id"):
         value = str(config.entries.get(key, ""))
         if not value:
@@ -858,18 +1034,31 @@ def build_verifier_context(project_root: pathlib.Path, config_path: pathlib.Path
     if int(config.k_out) != int(manifest.get("K_out", -1)) or int(config.num_classes) != int(manifest.get("C", -1)):
         raise ContextError("formal output cardinality does not match raw checkpoint architecture")
     dataset, graph = load_dataset(config), None
-    graph = normalize_graph(dataset, config); registry = _validate_registry(registry_public_path, artifact, root, manifest, identities); y_path = _file(public_y_path, "public Y")
+    graph = normalize_graph(dataset, config); registry = _validate_registry(registry_public_path, artifact, root, manifest, identities)
+    if registry.get("registration_binding", {}).get("rounding_mode") != config.rounding_mode:
+        raise ContextError("trusted registry SignedRoundDiv rounding_mode mismatch")
+    y_path = _file(public_y_path, "public Y")
     if _inside(y_path, artifact): raise ContextError("public Y must be outside proof artifact")
+    if not _inside(y_path, root):
+        raise ContextError("public Y must be inside baseline project-root")
     output = load_public_y(y_path); hidden, classes, k_out, layers = _dimensions(manifest); expected_shape = (graph.num_nodes, classes)
     if tuple(output.shape) != expected_shape: raise ContextError(f"public Y shape {tuple(output.shape)} != expected {expected_shape}")
-    y_digest = _array_digest("Y", output); binding = registry["registration_binding"]; bounds = binding.get("registered_model_bounds", {}); ledger = _ledger(graph, manifest, bounds, identities["quant_cfg_id"])
+    y_digest = _array_digest("Y", output); binding = registry["registration_binding"]; bounds = binding.get("registered_model_bounds", {}); rounding_mode = config.rounding_mode; ledger = _ledger(graph, manifest, bounds, identities["quant_cfg_id"], rounding_mode, config.range_bits)
     if binding.get("integer_bound_ledger_digest") != digest_json(ledger): raise ContextError("trusted registry bound ledger does not match external graph/model context")
     n_in, layout_digest = int(binding.get("N_in", 0)), str(binding.get("Layout_in_digest", ""))
     if n_in <= 0 or n_in & (n_in - 1) or len(layout_digest) != 64: raise ContextError("trusted registry has invalid Layout_in identity")
     dims, domain = _dims(config, dataset, graph, manifest, n_in); model_arrays = _model_arrays(manifest); lasso = _families(graph, manifest, config.range_bits, ledger); matrix = _matrix_families(graph, manifest); gkr = _gkr_families(graph, manifest, np.ravel(output).tolist(), lasso, ledger, config.range_bits)
-    zk_root = (root / "comparison" / "zkGPT").resolve(); registry_path = pathlib.Path(registry_public_path).resolve(); public_path = str(registry_path.relative_to(zk_root)) if _inside(registry_path, zk_root) else str(registry_path)
+    # ``project_root`` is the baseline root for the comparison CLI, not the
+    # repository root.  Registry/public-path identities therefore use this
+    # same canonical root and can never silently resolve through
+    # ``root/comparison/zkGPT``.
+    zk_root = root.resolve(); registry_path = pathlib.Path(registry_public_path).resolve()
+    if not _inside(registry_path, zk_root):
+        raise ContextError("trusted registry public file must be inside baseline project-root")
+    public_path = str(registry_path.relative_to(zk_root))
     registry_metadata = {"protocol": registry["protocol"], "registry_digest": registry["registry_digest"], "registration_binding_digest": registry["registration_binding_digest"], "public_path": public_path, "commitment_backend": registry["commitment_backend"], "public_descriptor": copy.deepcopy(registry)}
-    expected = {"protocol_id": PROTOCOL_ID, "proof_backend_id": PROOF_BACKEND_ID, "commitment_backend_id": COMMITMENT_BACKEND_ID, **identities, "domain_cfg": domain, "dim_cfg": dims, "encoding_id": ENCODING_ID, "padding_rule_id": PADDING_RULE_ID, "circuit_layout_id": CIRCUIT_LAYOUT_ID, "lasso_cfg_id": LASSO_CFG_ID, "matrix_proof_cfg_id": MATRIX_PROOF_CFG_ID, "dataset": config.entries.get("dataset"), "dataset_display_name": dataset.name, "task_type": graph.task_type, "report_unit": graph.report_unit, "batching_rule": graph.batching_rule, "self_loop_rule": graph.self_loop_rule, "edge_sort_rule": graph.edge_sort_rule, "chunking_rule": graph.chunking_rule, "full_dataset": graph.num_nodes == dataset.num_nodes, "X_pub_digest": _x_digest(graph, layers, classes, k_out), "public_input_layout": "X_pub=features+topology+selectors; X_pub is verifier-reconstructed and uncommitted", "public_output_policy": "Y is a public statement output claim and is not part of X_pub or any private commitment", "private_input_layout": "X_pub|W|Aux|L_qry", "segment_order": ["X_pub", "W", "Aux", "L_qry"], "privacy_extension_profile_id": "masked_full_multi_session_v1", "privacy_profile_status": "supported_multi_session_masked_full", "registered_model_commitment_scope": "canonical_integer_GAT_model_weights_with_layout_and_bound_ledger", "Layout_in_digest": layout_digest, "integer_bound_ledger": ledger, "integer_bound_ledger_digest": digest_json(ledger), "public_output_digest": y_digest, "model_registry": registry_metadata, "model_registry_digest": digest_json(registry_metadata), "identities": identities}
+    expected = {"protocol_id": PROTOCOL_ID, "proof_backend_id": PROOF_BACKEND_ID, "commitment_backend_id": COMMITMENT_BACKEND_ID, **identities, "static_table_descriptor_schema": static_descriptor["schema"], "static_table_content_digest": static_descriptor["content_digest"], "static_table_descriptor_digest": static_descriptor["descriptor_digest"], "static_table_descriptor_path": STATIC_TABLE_DESCRIPTOR_RELATIVE_PATH, "domain_cfg": domain, "dim_cfg": dims, "encoding_id": ENCODING_ID, "padding_rule_id": PADDING_RULE_ID, "circuit_layout_id": CIRCUIT_LAYOUT_ID, "lasso_cfg_id": LASSO_CFG_ID, "matrix_proof_cfg_id": MATRIX_PROOF_CFG_ID, "dataset": config.entries.get("dataset"), "dataset_display_name": dataset.name, "task_type": graph.task_type, "report_unit": graph.report_unit, "batching_rule": graph.batching_rule, "self_loop_rule": graph.self_loop_rule, "edge_sort_rule": graph.edge_sort_rule, "chunking_rule": graph.chunking_rule, "full_dataset": graph.num_nodes == dataset.num_nodes, "X_pub_digest": _x_digest(graph, layers, classes, k_out), "public_input_layout": "X_pub=features+topology+selectors; X_pub is verifier-reconstructed and uncommitted", "public_output_policy": "Y is a public statement output claim and is not part of X_pub or any private commitment", "private_input_layout": "X_pub|W|Aux|L_qry", "segment_order": ["X_pub", "W", "Aux", "L_qry"], "privacy_extension_profile_id": "masked_full_multi_session_v1", "privacy_profile_status": "supported_multi_session_masked_full", "registered_model_commitment_scope": "canonical_integer_GAT_model_weights_with_layout_and_bound_ledger", "Layout_in_digest": layout_digest, "integer_bound_ledger": ledger, "integer_bound_ledger_digest": digest_json(ledger), "public_output_digest": y_digest, "model_registry": registry_metadata, "model_registry_digest": digest_json(registry_metadata), "identities": identities}
+    expected["rounding_mode"] = rounding_mode
     features = np.asarray([_round_feature(value) for value in np.ravel(graph.features)], dtype=np.int64).reshape(graph.features.shape)
     public_graph = {
         "absolute_ids": [int(value) for value in graph.absolute_ids],
@@ -882,7 +1071,9 @@ def build_verifier_context(project_root: pathlib.Path, config_path: pathlib.Path
         "edge_sort_rule": graph.edge_sort_rule,
         "batching_rule": graph.batching_rule,
     }
-    statement = {"schema": "zkGPT_external_public_statement_v1", "protocol_id": PROTOCOL_ID, "config_sha256": digest_file(config_path), "model_manifest_sha256": digest_file(config.checkpoint_bundle / "manifest.json"), "checkpoint_tensors_sha256": digest_file(config.checkpoint_bundle / "tensors.txt"), "dataset": {"name": dataset.name, "N": graph.num_nodes, "E": int(graph.src.size), "C": classes, "topology_digest": _graph_digest(graph), "X_pub_digest": expected["X_pub_digest"]}, "model": {"identities": identities, "source_identities": {key: str(manifest.get(key, "")) for key in ("model_arch_id", "model_param_id", "quant_cfg_id", "static_table_id")}, "hidden_profile": dims["hidden_profile"], "K_out": k_out, "C": classes, "L": layers, "arrays": model_arrays}, "features": {"shape": list(features.shape), "values": [int(value) for value in features.ravel()]}, "graph": public_graph, "public_y": {"shape": list(expected_shape), "digest": y_digest, "file_sha256": digest_file(y_path), "values": [str(int(value)) for value in output.ravel()]}, "public_output": {"shape": list(expected_shape), "values": [str(int(value)) for value in output.ravel()]}, "registry": {"registry_digest": registry["registry_digest"], "binding_digest": registry["registration_binding_digest"], "file_sha256": digest_file(registry_path)}, "layout": {"schema": "zkGPT_gat_four_segment_layout_v1", "segment_order": ["X_pub", "W", "Aux", "L_qry"], "N_in": n_in, "Layout_in_digest": layout_digest, "families": [{key: item.get(key) for key in ("family", "kind", "table_id", "offset", "real_count", "padded_count", "shape")} for item in lasso]}, "domain_cfg": domain, "dim_cfg": dims, "integer_bound_ledger_digest": digest_json(ledger)}
+    statement = {"schema": "zkGPT_external_public_statement_v1", "protocol_id": PROTOCOL_ID, "config_sha256": digest_file(config_path), "model_architecture_digest": digest_json(manifest), "static_table_descriptor": {"schema": static_descriptor["schema"], "static_tables_id": static_descriptor["static_tables_id"], "quant_cfg_id": static_descriptor["quant_cfg_id"], "content_digest": static_descriptor["content_digest"], "descriptor_digest": static_descriptor["descriptor_digest"]}, "dataset": {"name": dataset.name, "N": graph.num_nodes, "E": int(graph.src.size), "C": classes, "topology_digest": _graph_digest(graph), "X_pub_digest": expected["X_pub_digest"]}, "model": {"identities": identities, "architecture": copy.deepcopy(manifest), "hidden_profile": dims["hidden_profile"], "K_out": k_out, "C": classes, "L": layers, "arrays": model_arrays}, "features": {"shape": list(features.shape), "values": [int(value) for value in features.ravel()]}, "graph": public_graph, "public_y": {"shape": list(expected_shape), "digest": y_digest, "file_sha256": digest_file(y_path), "values": [str(int(value)) for value in output.ravel()]}, "public_output": {"shape": list(expected_shape), "values": [str(int(value)) for value in output.ravel()]}, "registry": {"registry_digest": registry["registry_digest"], "binding_digest": registry["registration_binding_digest"], "file_sha256": digest_file(registry_path)}, "layout": {"schema": "zkGPT_gat_four_segment_layout_v1", "segment_order": ["X_pub", "W", "Aux", "L_qry"], "N_in": n_in, "Layout_in_digest": layout_digest, "families": [{key: item.get(key) for key in ("family", "kind", "table_id", "offset", "real_count", "padded_count", "shape")} for item in lasso]}, "domain_cfg": domain, "dim_cfg": dims, "integer_bound_ledger_digest": digest_json(ledger)}
+    statement["rounding_mode"] = rounding_mode
+    statement["integer_bound_ledger_digest"] = digest_json(ledger)
     statement["statement_digest"] = digest_json(statement)
     return VerifierContext(root, config_path, artifact, registry_path, y_path, config, dataset, graph, dict(manifest), registry, expected_shape, y_digest, expected, tuple(model_arrays), tuple(lasso), tuple(matrix), tuple(gkr), statement, digest_json(statement))
 
@@ -892,15 +1083,17 @@ def build_verifier_context(project_root: pathlib.Path, config_path: pathlib.Path
 def public_statement(graph: LocalGraph, trace: Any, metadata: Mapping[str, Any]) -> dict[str, Any]:
     output = np.asarray(trace.y, dtype=object); features = np.asarray(trace.input_features, dtype=np.int64)
     statement = {"schema": "zkGPT-gat-public-statement-v1", "dataset": metadata["dataset"], "dataset_display_name": metadata["dataset_display_name"], "task_type": graph.task_type, "features": {"shape": list(features.shape), "values": [int(v) for v in features.ravel()]}, "graph": {"absolute_ids": [int(v) for v in graph.absolute_ids], "src": [int(v) for v in graph.src], "dst": [int(v) for v in graph.dst], "node_ptr": graph.node_ptr.tolist(), "edge_ptr": graph.edge_ptr.tolist(), "edge_graph": [int(v) for v in graph.edge_graph], "self_loop_rule": graph.self_loop_rule, "edge_sort_rule": graph.edge_sort_rule, "batching_rule": graph.batching_rule}, "public_output": {"shape": list(output.shape), "values": [str(int(v)) for v in output.ravel()]}}
+    statement["rounding_mode"] = validate_rounding_mode(metadata.get("rounding_mode"))
+    statement["integer_bound_ledger_digest"] = metadata["integer_bound_ledger_digest"]
     statement["statement_digest"] = digest_json(statement); return statement
 
 
 def static_table_vk(metadata: Mapping[str, Any]) -> dict[str, Any]:
-    vk = {"schema": "zkGPT-static-table-vk-v1", "static_table_id": metadata["static_table_id"], "quant_cfg_id": metadata["quant_cfg_id"], "integer_bound_ledger_digest": metadata["integer_bound_ledger_digest"], "tables": metadata["static_table_registry"]}; vk["vk_digest"] = digest_json(vk); return vk
+    vk = {"schema": "zkGPT-static-table-vk-v1", "rounding_mode": validate_rounding_mode(metadata.get("rounding_mode")), "static_table_id": metadata["static_table_id"], "quant_cfg_id": metadata["quant_cfg_id"], "static_table_descriptor_schema": metadata["static_table_descriptor_schema"], "static_table_content_digest": metadata["static_table_content_digest"], "static_table_descriptor_digest": metadata["static_table_descriptor_digest"], "integer_bound_ledger_digest": metadata["integer_bound_ledger_digest"], "tables": metadata["static_table_registry"]}; vk["vk_digest"] = digest_json(vk); return vk
 
 
 def setup_context(metadata: Mapping[str, Any], registry: Mapping[str, Any], table_vk: Mapping[str, Any]) -> dict[str, Any]:
-    setup = {"schema": "zkGPT-gat-verifier-setup-v1", "protocol_id": PROTOCOL_ID, "proof_backend_id": PROOF_BACKEND_ID, "commitment_backend_id": COMMITMENT_BACKEND_ID, "circuit_layout_id": CIRCUIT_LAYOUT_ID, "model_arch_id": metadata["model_arch_id"], "model_param_id": metadata["model_param_id"], "quant_cfg_id": metadata["quant_cfg_id"], "static_table_id": metadata["static_table_id"], "registry_digest": registry["registry_digest"], "static_table_vk_digest": table_vk["vk_digest"], "Layout_in": metadata["Layout_in"], "Layout_in_digest": metadata["Layout_in_digest"], "domain_cfg": metadata["domain_cfg"], "dim_cfg": metadata["dim_cfg"], "integer_bound_ledger": metadata["integer_bound_ledger"], "integer_bound_ledger_digest": metadata["integer_bound_ledger_digest"]}; setup["setup_digest"] = digest_json(setup); return setup
+    setup = {"schema": "zkGPT-gat-verifier-setup-v1", "protocol_id": PROTOCOL_ID, "proof_backend_id": PROOF_BACKEND_ID, "commitment_backend_id": COMMITMENT_BACKEND_ID, "circuit_layout_id": CIRCUIT_LAYOUT_ID, "model_arch_id": metadata["model_arch_id"], "model_param_id": metadata["model_param_id"], "quant_cfg_id": metadata["quant_cfg_id"], "rounding_mode": validate_rounding_mode(metadata.get("rounding_mode")), "static_table_id": metadata["static_table_id"], "static_table_descriptor_schema": metadata["static_table_descriptor_schema"], "static_table_content_digest": metadata["static_table_content_digest"], "static_table_descriptor_digest": metadata["static_table_descriptor_digest"], "registry_digest": registry["registry_digest"], "static_table_vk_digest": table_vk["vk_digest"], "Layout_in": metadata["Layout_in"], "Layout_in_digest": metadata["Layout_in_digest"], "domain_cfg": metadata["domain_cfg"], "dim_cfg": metadata["dim_cfg"], "integer_bound_ledger": metadata["integer_bound_ledger"], "integer_bound_ledger_digest": metadata["integer_bound_ledger_digest"]}; setup["setup_digest"] = digest_json(setup); return setup
 
 
 def make_external_context(graph: LocalGraph, trace: Any, metadata: Mapping[str, Any], registry: Mapping[str, Any]) -> dict[str, Any]:
@@ -940,28 +1133,28 @@ def validate_external_context(metadata: Mapping[str, Any], context: Mapping[str,
         output_shape = tuple(int(value) for value in public_output["shape"])
         output_values = np.asarray([int(value) for value in public_output["values"]], dtype=object).reshape(output_shape)
         expected_shape = (int(metadata.get("dim_cfg", {}).get("N", -1)), int(metadata.get("dim_cfg", {}).get("C", -1)))
-        result["external_public_statement"] = bool(statement_ok and metadata.get("X_pub_digest") == x_digest and metadata.get("public_output_digest") == _array_digest("Y", output_values) and output_shape == expected_shape)
+        result["external_public_statement"] = bool(statement_ok and statement.get("schema") == "zkGPT_external_public_statement_v1" and statement.get("rounding_mode") == metadata.get("rounding_mode") and statement.get("integer_bound_ledger_digest") == metadata.get("integer_bound_ledger_digest") and metadata.get("X_pub_digest") == x_digest and metadata.get("public_output_digest") == _array_digest("Y", output_values) and output_shape == expected_shape)
 
         registry = dict(context["model_registry"])
         registry_digest = registry.pop("registry_digest", None)
         binding = registry.get("registration_binding", {})
         binding_digest = registry.get("registration_binding_digest")
-        result["external_model_registry"] = bool(registry_digest == digest_json(registry) and isinstance(binding, Mapping) and binding_digest == digest_json(binding) and context["model_registry"] == metadata.get("model_registry", {}).get("public_descriptor"))
+        result["external_model_registry"] = bool(registry_digest == digest_json(registry) and isinstance(binding, Mapping) and binding.get("rounding_mode") == metadata.get("rounding_mode") and binding_digest == digest_json(binding) and context["model_registry"] == metadata.get("model_registry", {}).get("public_descriptor"))
 
         tables = dict(context["static_table_vk"])
         vk_digest = tables.pop("vk_digest", None)
         table_vk_ok = vk_digest == digest_json(tables)
         if "tables" in tables:
-            table_vk_ok = table_vk_ok and tables["tables"] == metadata.get("static_table_registry")
+            table_vk_ok = table_vk_ok and tables.get("rounding_mode") == metadata.get("rounding_mode") and tables["tables"] == metadata.get("static_table_registry") and tables.get("static_table_descriptor_schema") == metadata.get("static_table_descriptor_schema") and tables.get("static_table_content_digest") == metadata.get("static_table_content_digest") and tables.get("static_table_descriptor_digest") == metadata.get("static_table_descriptor_digest")
         else:
-            table_vk_ok = table_vk_ok and tables.get("schema") == "zkGPT-static-table-vk-v1" and tables.get("static_table_id") == metadata.get("static_table_id") and tables.get("quant_cfg_id") == metadata.get("quant_cfg_id") and tables.get("integer_bound_ledger_digest") == metadata.get("integer_bound_ledger_digest")
+            table_vk_ok = table_vk_ok and tables.get("schema") == "zkGPT-static-table-vk-v1" and tables.get("rounding_mode") == metadata.get("rounding_mode") and tables.get("static_table_id") == metadata.get("static_table_id") and tables.get("quant_cfg_id") == metadata.get("quant_cfg_id") and tables.get("static_table_descriptor_schema") == metadata.get("static_table_descriptor_schema") and tables.get("static_table_content_digest") == metadata.get("static_table_content_digest") and tables.get("static_table_descriptor_digest") == metadata.get("static_table_descriptor_digest") and tables.get("integer_bound_ledger_digest") == metadata.get("integer_bound_ledger_digest")
         result["external_static_table_vk"] = bool(table_vk_ok)
 
         setup = dict(context["setup_context"])
         setup_digest = setup.pop("setup_digest", None)
         setup_ok = setup_digest == digest_json(setup)
         if setup.get("schema") == "zkGPT-gat-verifier-setup-v1":
-            setup_ok = setup_ok and setup.get("protocol_id") == metadata.get("protocol_id") and setup.get("proof_backend_id") == metadata.get("proof_backend_id") and setup.get("commitment_backend_id") == metadata.get("commitment_backend_id") and setup.get("circuit_layout_id") == metadata.get("circuit_layout_id") and setup.get("model_arch_id") == metadata.get("model_arch_id") and setup.get("model_param_id") == metadata.get("model_param_id") and setup.get("quant_cfg_id") == metadata.get("quant_cfg_id") and setup.get("static_table_id") == metadata.get("static_table_id") and setup.get("registry_digest") == metadata.get("model_registry", {}).get("registry_digest") and setup.get("Layout_in_digest") == metadata.get("Layout_in_digest") and setup.get("domain_cfg") == metadata.get("domain_cfg") and setup.get("dim_cfg") == metadata.get("dim_cfg") and setup.get("integer_bound_ledger_digest") == metadata.get("integer_bound_ledger_digest")
+            setup_ok = setup_ok and setup.get("protocol_id") == metadata.get("protocol_id") and setup.get("proof_backend_id") == metadata.get("proof_backend_id") and setup.get("commitment_backend_id") == metadata.get("commitment_backend_id") and setup.get("circuit_layout_id") == metadata.get("circuit_layout_id") and setup.get("model_arch_id") == metadata.get("model_arch_id") and setup.get("model_param_id") == metadata.get("model_param_id") and setup.get("quant_cfg_id") == metadata.get("quant_cfg_id") and setup.get("rounding_mode") == metadata.get("rounding_mode") and setup.get("static_table_id") == metadata.get("static_table_id") and setup.get("static_table_descriptor_schema") == metadata.get("static_table_descriptor_schema") and setup.get("static_table_content_digest") == metadata.get("static_table_content_digest") and setup.get("static_table_descriptor_digest") == metadata.get("static_table_descriptor_digest") and setup.get("registry_digest") == metadata.get("model_registry", {}).get("registry_digest") and setup.get("Layout_in_digest") == metadata.get("Layout_in_digest") and setup.get("domain_cfg") == metadata.get("domain_cfg") and setup.get("dim_cfg") == metadata.get("dim_cfg") and setup.get("integer_bound_ledger_digest") == metadata.get("integer_bound_ledger_digest")
         result["external_setup_context"] = bool(setup_ok)
         return result
     except (KeyError, TypeError, ValueError, OverflowError, IndexError):

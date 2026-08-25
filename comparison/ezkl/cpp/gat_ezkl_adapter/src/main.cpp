@@ -137,9 +137,12 @@ int main(int argc, char** argv) {
             security_text.pop_back();
         if (security_text.find("\"ceremony_descriptor_kind\":\"ezkl_trusted_ceremony_srs_v1\"") == std::string::npos
             || security_text.find("\"source_srs_sha256\":\"sha256:") == std::string::npos
-            || security_text.find("\"source_srs_max_k\":") == std::string::npos) {
+            || security_text.find("\"source_srs_max_k\":28") == std::string::npos
+            || security_text.find("\"semantic_version\":\"ezkl_formal_gat_semantics_v2\"") == std::string::npos
+            || security_text.find("\"operation_registry_id\":\"sha256:") == std::string::npos
+            || security_text.find("\"semantic_source_id\":\"sha256:") == std::string::npos) {
             throw std::runtime_error(
-                "security profile is unresolved; materialize it from the trusted ceremony descriptor and SRS first");
+                "security profile must bind trusted ceremony source_srs_max_k exactly 28");
         }
         const auto security_profile_id = gat_ezkl::formal_sha256_text(
             "ezkl_security_profile", "canonical_json", security_text);

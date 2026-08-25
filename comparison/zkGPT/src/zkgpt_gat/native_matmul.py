@@ -7,7 +7,7 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 
-from .field import BN254_FR_MODULUS, next_power_of_two, to_field_int
+from .field import BN254_FR_MODULUS, next_power_of_two, sumcheck_domain, to_field_int
 from .gpu_execution import active_product_coefficients
 from .input_oracle import equality_weights, public_array_mle
 from .native_hyrax import NativeHyrax, _point, verify_batched_linear_claim_payload
@@ -78,6 +78,7 @@ class MatMulSpec:
     output: TensorSource
     residual: TensorSource
     output_scale: int
+    residual_semantics: str = "exact_zero"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -88,18 +89,31 @@ class MatMulSpec:
             "output": self.output.to_dict(),
             "residual": self.residual.to_dict(),
             "output_scale": self.output_scale,
+            "residual_semantics": self.residual_semantics,
         }
 
 
-def _tensor_weights(shape: Sequence[int], axes: Sequence[Sequence[int]]) -> list[int]:
+def _tensor_weights(
+    shape: Sequence[int],
+    axes: Sequence[Sequence[int]],
+    *,
+    padded_axes: Sequence[bool] | None = None,
+) -> list[int]:
     if len(shape) != len(axes):
         raise ValueError("tensor weight rank mismatch")
+    if padded_axes is None:
+        padded_axes = (False,) * len(shape)
+    if len(shape) != len(padded_axes):
+        raise ValueError("tensor padding rank mismatch")
     per_axis: list[list[int]] = []
-    for length, point in zip(shape, axes):
-        domain = next_power_of_two(int(length))
+    for length, point, padded in zip(shape, axes, padded_axes):
+        length = int(length)
+        if length <= 0:
+            raise ValueError("tensor axis length must be positive")
+        domain = sumcheck_domain(length) if padded else next_power_of_two(length)
         if len(point) != domain.bit_length() - 1:
             raise ValueError("tensor axis MLE point has wrong dimension")
-        per_axis.append(equality_weights(point)[: int(length)])
+        per_axis.append(equality_weights(point)[:length])
     out = [1]
     for weights in per_axis:
         out = [left * right % BN254_FR_MODULUS for left in out for right in weights]
@@ -107,7 +121,12 @@ def _tensor_weights(shape: Sequence[int], axes: Sequence[Sequence[int]]) -> list
 
 
 def _segment_linear_weights(
-    layout: Mapping[str, Any], source: TensorSource, shape: Sequence[int], axes: Sequence[Sequence[int]]
+    layout: Mapping[str, Any],
+    source: TensorSource,
+    shape: Sequence[int],
+    axes: Sequence[Sequence[int]],
+    *,
+    padded_axes: Sequence[bool] | None = None,
 ) -> tuple[dict[int, int], dict[str, Any]]:
     segments = [item for item in layout.get("segments", []) if item.get("name") == source.segment]
     if len(segments) != 1:
@@ -126,7 +145,7 @@ def _segment_linear_weights(
         expected_length *= value
     if descriptor_length != expected_length:
         raise ValueError("MatMul source element count differs from Layout_in")
-    local = _tensor_weights(expected_shape, axes)
+    local = _tensor_weights(expected_shape, axes, padded_axes=padded_axes)
     if len(local) != int(descriptor["length"]):
         raise ValueError("MatMul linear form does not cover the entire tensor")
     offset = int(descriptor["offset"])
@@ -161,9 +180,15 @@ def _fold_right(right: np.ndarray, col_weights: Sequence[int], inner_domain: int
     return out
 
 
-def _public_tensor_eval(values: np.ndarray, shape: Sequence[int], axes: Sequence[Sequence[int]]) -> int:
+def _public_tensor_eval(
+    values: np.ndarray,
+    shape: Sequence[int],
+    axes: Sequence[Sequence[int]],
+    *,
+    padded_axes: Sequence[bool] | None = None,
+) -> int:
     flat = [to_field_int(int(value)) for value in np.ravel(np.asarray(values, dtype=object))]
-    weights = _tensor_weights(shape, axes)
+    weights = _tensor_weights(shape, axes, padded_axes=padded_axes)
     return sum(a * b for a, b in zip(flat, weights)) % BN254_FR_MODULUS
 
 
@@ -180,8 +205,9 @@ def _open_private(
     work_dir: pathlib.Path,
     transcript: Transcript,
     context: Mapping[str, Any],
+    padded_axes: Sequence[bool] | None = None,
 ):
-    weights, form = _segment_linear_weights(layout, source, shape, axes)
+    weights, form = _segment_linear_weights(layout, source, shape, axes, padded_axes=padded_axes)
     state = hyrax.commit_linear_claim_registered(
         label,
         vectors[source.segment],
@@ -215,6 +241,13 @@ def prove_matmul(
     n, k, m = spec.shape
     if left.shape != (n, k) or right.shape != (k, m) or output.shape != (n, m) or residual.shape != (n, m):
         raise ValueError(f"MatMul witness shape mismatch: {spec.label}")
+    if spec.output_scale != 1 or spec.residual_semantics != "exact_zero":
+        raise ValueError(f"unsupported native MatMul relation: {spec.label}")
+    if any(int(value) != 0 for value in np.ravel(np.asarray(residual, dtype=object))):
+        # Forward's projection and attention paths are exact integer
+        # products.  SignedRoundDiv is only used by aggregation/output
+        # alignment, so a nonzero matrix residual is not a rounding witness.
+        raise ValueError(f"native MatMul residual must be exactly zero: {spec.label}")
     row_point = [transcript.challenge_scalar(f"{spec.label}/row/{i}") for i in range(next_power_of_two(n).bit_length() - 1)]
     col_point = [transcript.challenge_scalar(f"{spec.label}/col/{i}") for i in range(next_power_of_two(m).bit_length() - 1)]
     row_weights = equality_weights(row_point)[:n]
@@ -234,7 +267,7 @@ def prove_matmul(
     initial_commitment = ValueCommitment(
         spec.output_scale * output_state.evaluation_commitment.point + residual_state.evaluation_commitment.point
     )
-    inner_domain = next_power_of_two(k)
+    inner_domain = sumcheck_domain(k)
     folded_left = _fold_left(left, row_weights, inner_domain)
     folded_right = _fold_right(right, col_weights, inner_domain)
     if sum(a * b for a, b in zip(folded_left, folded_right)) % BN254_FR_MODULUS != initial_value:
@@ -258,7 +291,9 @@ def prove_matmul(
         public_left = public_arrays.get(spec.left.array_name)
         if public_left is None:
             raise ValueError("missing external public MatMul input")
-        left_value = _public_tensor_eval(public_left, (n, k), (row_point, inner_point))
+        left_value = _public_tensor_eval(
+            public_left, (n, k), (row_point, inner_point), padded_axes=(False, True)
+        )
         left_commitment = ValueCommitment(left_value * params.U)
         left_blind = 0
         left_opening: dict[str, Any] = {"kind": "public", "source": spec.left.to_dict()}
@@ -267,6 +302,7 @@ def prove_matmul(
             f"{spec.label}/left", spec.left, (n, k), (row_point, inner_point),
             layout=layout, vectors=vectors, registrations=registrations, hyrax=hyrax,
             work_dir=work_dir, transcript=transcript, context=context,
+            padded_axes=(False, True),
         )
         left_value, left_blind, left_commitment = state.evaluation, state.blind, state.evaluation_commitment
         left_opening = {"kind": "private", "linear_form": form, "proof": state.proof}
@@ -274,6 +310,7 @@ def prove_matmul(
         f"{spec.label}/right", spec.right, (k, m), (inner_point, col_point),
         layout=layout, vectors=vectors, registrations=registrations, hyrax=hyrax,
         work_dir=work_dir, transcript=transcript, context=context,
+        padded_axes=(True, False),
     )
     multiplication = prove_multiplication(
         params,
@@ -292,6 +329,13 @@ def prove_matmul(
     return {
         "protocol": PROTOCOL_ID,
         "spec": spec.to_dict(),
+        "residual_binding": {
+            "protocol": "zkGPT/native-matmul-exact-zero-residual-v1",
+            "semantics": spec.residual_semantics,
+            "source": spec.residual.to_dict(),
+            "shape": [int(n), int(m)],
+            "value": "0",
+        },
         "row_point": [str(value) for value in row_point],
         "col_point": [str(value) for value in col_point],
         "output_opening": {"linear_form": output_form, "proof": output_state.proof},
@@ -314,9 +358,10 @@ def _verify_private(
     registrations: Mapping[str, Mapping[str, Any]],
     transcript: Transcript,
     context: Mapping[str, Any],
+    padded_axes: Sequence[bool] | None = None,
     source_sink: list[dict[str, Any]] | None = None,
 ) -> ValueCommitment | None:
-    weights, form = _segment_linear_weights(layout, source, shape, axes)
+    weights, form = _segment_linear_weights(layout, source, shape, axes, padded_axes=padded_axes)
     if payload.get("linear_form") != form:
         return None
     result = verify_batched_linear_claim_payload(
@@ -358,13 +403,22 @@ def verify_matmul(
     try:
         required = {
             "protocol", "spec", "row_point", "col_point", "output_opening", "residual_opening",
-            "sumcheck", "left_opening", "right_opening", "terminal_multiplication",
+            "sumcheck", "left_opening", "right_opening", "terminal_multiplication", "residual_binding",
         }
         if not isinstance(proof, Mapping) or set(proof) != required:
             return False
         if proof["protocol"] != PROTOCOL_ID or proof["spec"] != expected_spec.to_dict():
             return False
         n, k, m = expected_spec.shape
+        expected_residual_binding = {
+            "protocol": "zkGPT/native-matmul-exact-zero-residual-v1",
+            "semantics": "exact_zero",
+            "source": expected_spec.residual.to_dict(),
+            "shape": [int(n), int(m)],
+            "value": "0",
+        }
+        if proof.get("residual_binding") != expected_residual_binding:
+            return False
         row_point = [transcript.challenge_scalar(f"{expected_spec.label}/row/{i}") for i in range(next_power_of_two(n).bit_length() - 1)]
         col_point = [transcript.challenge_scalar(f"{expected_spec.label}/col/{i}") for i in range(next_power_of_two(m).bit_length() - 1)]
         if proof["row_point"] != [str(value) for value in row_point] or proof["col_point"] != [str(value) for value in col_point]:
@@ -382,7 +436,7 @@ def verify_matmul(
         if output_commitment is None or residual_commitment is None:
             return False
         initial = ValueCommitment(expected_spec.output_scale * output_commitment.point + residual_commitment.point)
-        inner_domain = next_power_of_two(k)
+        inner_domain = sumcheck_domain(k)
         sumcheck = verify_committed_sumcheck(
             f"{expected_spec.label}/inner-product",
             proof["sumcheck"],
@@ -399,7 +453,9 @@ def verify_matmul(
             public_left = public_arrays.get(expected_spec.left.array_name)
             if public_left is None:
                 return False
-            left_value = _public_tensor_eval(public_left, (n, k), (row_point, inner_point))
+            left_value = _public_tensor_eval(
+                public_left, (n, k), (row_point, inner_point), padded_axes=(False, True)
+            )
             left_commitment = ValueCommitment(left_value * params.U)
         else:
             if proof["left_opening"].get("kind") != "private":
@@ -407,6 +463,7 @@ def verify_matmul(
             left_commitment = _verify_private(
                 f"{expected_spec.label}/left", expected_spec.left, (n, k), (row_point, inner_point), proof["left_opening"],
                 layout=layout, registrations=registrations, transcript=transcript, context=context,
+                padded_axes=(False, True),
                 source_sink=source_sink,
             )
             if left_commitment is None:
@@ -414,6 +471,7 @@ def verify_matmul(
         right_commitment = _verify_private(
             f"{expected_spec.label}/right", expected_spec.right, (k, m), (inner_point, col_point), proof["right_opening"],
             layout=layout, registrations=registrations, transcript=transcript, context=context,
+            padded_axes=(True, False),
             source_sink=source_sink,
         )
         if right_commitment is None:

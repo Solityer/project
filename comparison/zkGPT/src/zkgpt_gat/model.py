@@ -7,6 +7,8 @@ from typing import Dict, List
 
 import numpy as np
 
+from .rounding import validate_rounding_mode
+
 
 QUANT_SCALE_PROFILES: Dict[str, Dict[str, int]] = {
     "exact_integer_gat_v1": {
@@ -77,6 +79,10 @@ class Model:
     static_table_id: str
     output_average_rule: str
     quant_scales: Dict[str, int]
+    # Manual/synthetic models retain the canonical nearest mode for backwards
+    # compatible construction; formal loaders always replace it with the
+    # explicit config value and validate it.
+    rounding_mode: str = "nearest_ties_away"
 
 
 def _load_text_tensors(path: pathlib.Path) -> Dict[str, np.ndarray]:
@@ -154,6 +160,7 @@ def load_model(
     model_param_id: str | None = None,
     quant_cfg_id: str | None = None,
     static_table_id: str | None = None,
+    rounding_mode: str | None = None,
 ) -> Model:
     """Load and validate the raw checkpoint, with optional formal identities.
 
@@ -171,6 +178,9 @@ def load_model(
     if resolved_quant_cfg not in QUANT_SCALE_PROFILES:
         raise ValueError(f"unsupported authenticated quantization profile: {resolved_quant_cfg}")
     quant_scales = dict(QUANT_SCALE_PROFILES[resolved_quant_cfg])
+    resolved_rounding_mode = validate_rounding_mode(
+        manifest.get("rounding_mode") if rounding_mode is None else rounding_mode
+    )
 
     hidden_layers: List[HiddenLayer] = []
     for layer_info in manifest["hidden_layers"]:
@@ -206,6 +216,7 @@ def load_model(
         static_table_id=str(manifest["static_table_id"] if static_table_id is None else static_table_id),
         output_average_rule=str(manifest["output_average_rule"]),
         quant_scales=quant_scales,
+        rounding_mode=resolved_rounding_mode,
     )
     _validate_model(model)
     return model

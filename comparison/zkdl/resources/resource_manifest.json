@@ -1,0 +1,35 @@
+{
+  "baseline": "zkdl",
+  "datasets": {
+    "citeseer": {
+      "cache": "resources/datasets/citeseer",
+      "checkpoint_bundle": "resources/models/citeseer_gat"
+    },
+    "cora": {
+      "cache": "resources/datasets/cora",
+      "checkpoint_bundle": "resources/models/cora_gat"
+    },
+    "ogbn-arxiv": {
+      "cache": "resources/datasets/ogbn_arxiv",
+      "checkpoint_bundle": "resources/models/ogbn_arxiv_gat"
+    },
+    "ppi": {
+      "cache": "resources/datasets/ppi",
+      "checkpoint_bundle": "resources/models/ppi_gat"
+    },
+    "pubmed": {
+      "cache": "resources/datasets/pubmed",
+      "checkpoint_bundle": "resources/models/pubmed_gat"
+    }
+  },
+  "manifest_id": "sha256:9ff58b2dcc7bb2b58a9b1767d3c83853d0be10fe15d2d48afd074600600c9c0d",
+  "pp": {
+    "path": "artifacts/setup/pp.bin",
+    "generation": "zkdl-formal setup --max-vector-len <power-of-two>"
+  },
+  "schema": "zkDL_gat_resource_manifest_v1",
+  "static_tables": {
+    "generation": "preflight derives and authenticates domains from the integer-bound ledger",
+    "scope": "baseline-local formal relation"
+  }
+}

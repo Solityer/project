@@ -11,6 +11,11 @@ from .data import LocalGraph
 from .model import AttentionHead, Model
 from .field import BN254_FR_MODULUS, to_field_int
 from .util import TimerBook, timed, update_digest_np
+from .rounding import (
+    ROUNDING_MODE_NEAREST,
+    signed_round_div,
+    validate_rounding_mode,
+)
 
 
 @dataclass
@@ -26,6 +31,7 @@ class SignedRoundDivTrace:
     q: np.ndarray
     r: np.ndarray
     delta: np.ndarray
+    rounding_mode: str
 
 
 @dataclass
@@ -157,17 +163,16 @@ def _safe_int_matmul(left: np.ndarray, right: np.ndarray) -> np.ndarray:
 
 
 def _round_div_away(numerator: int, denominator: int) -> int:
-    if denominator <= 0:
-        raise ValueError("SignedRoundDiv denominator must be positive")
-    sign = -1 if numerator < 0 else 1
-    value = abs(int(numerator))
-    quotient, remainder = divmod(value, int(denominator))
-    if 2 * remainder >= int(denominator):
-        quotient += 1
-    return sign * quotient
+    """Compatibility helper for callers that explicitly need nearest mode."""
+    return signed_round_div(numerator, denominator, ROUNDING_MODE_NEAREST)
 
 
-def _signed_round_div_trace(numerator: np.ndarray, denominator: np.ndarray) -> SignedRoundDivTrace:
+def _signed_round_div_trace(
+    numerator: np.ndarray,
+    denominator: np.ndarray,
+    rounding_mode: str,
+) -> SignedRoundDivTrace:
+    rounding_mode = validate_rounding_mode(rounding_mode)
     x_raw, d_raw = np.broadcast_arrays(np.asarray(numerator, dtype=object), np.asarray(denominator, dtype=object))
     shape = x_raw.shape
     arrays = {name: np.empty(shape, dtype=object) for name in ("y", "sigma", "z", "a", "a_inv", "d_inv", "q", "r", "delta")}
@@ -176,15 +181,19 @@ def _signed_round_div_trace(numerator: np.ndarray, denominator: np.ndarray) -> S
         d = int(d_raw[index])
         if d <= 0:
             raise ValueError("SignedRoundDiv denominator must be positive")
-        y = _round_div_away(x, d)
+        y = signed_round_div(x, d, rounding_mode)
         sigma = 1 if x < 0 else 0
         a = abs(x)
         q = abs(y)
         z = 1 if a == 0 else 0
-        r = 2 * a + d - 2 * d * q
-        delta = 2 * d - 1 - r
+        if rounding_mode == ROUNDING_MODE_NEAREST:
+            r = 2 * a + d - 2 * d * q
+            delta = 2 * d - 1 - r
+        else:
+            r = a - d * q
+            delta = d - 1 - r
         if r < 0 or delta < 0:
-            raise RuntimeError("nearest_ties_away SignedRoundDiv advice is inconsistent")
+            raise RuntimeError(f"{rounding_mode} SignedRoundDiv advice is inconsistent")
         arrays["y"][index] = y
         arrays["sigma"][index] = sigma
         arrays["z"][index] = z
@@ -206,6 +215,7 @@ def _signed_round_div_trace(numerator: np.ndarray, denominator: np.ndarray) -> S
         q=arrays["q"],
         r=arrays["r"],
         delta=arrays["delta"],
+        rounding_mode=rounding_mode,
     )
 
 
@@ -240,6 +250,7 @@ def attention_head_forward(
     h_prime_scale: int,
     aggregate_output_scale: int,
     output_head_scale: int,
+    rounding_mode: str,
 ) -> HeadTrace:
     src = graph.src
     dst = graph.dst
@@ -309,6 +320,7 @@ def attention_head_forward(
             aggregate_division = _signed_round_div_trace(
                 np.asarray(agg_num, dtype=object) * int(aggregate_output_scale),
                 division_denominator,
+                rounding_mode,
             )
             elu_in = aggregate_division.y
         with timed(timers, f"{tag}.activation_ms"):
@@ -316,6 +328,7 @@ def attention_head_forward(
                 scale_alignment_division = _signed_round_div_trace(
                     np.asarray(elu_in, dtype=object) * int(output_head_scale),
                     np.full(np.asarray(elu_in).shape, int(aggregate_output_scale), dtype=object),
+                    rounding_mode,
                 )
                 aligned = scale_alignment_division.y
                 h_agg = aligned + np.asarray(head.output_bias, dtype=object)[None, :]
@@ -373,7 +386,14 @@ def _digest_lasso(h: hashlib._Hash, trace: HeadTrace, include_elu: bool) -> None
         update_digest_np(h, f"{trace.tag}.L_ELU.y", trace.h_agg)
 
 
-def forward_full(graph: LocalGraph, model: Model) -> ForwardTrace:
+def forward_full(
+    graph: LocalGraph,
+    model: Model,
+    rounding_mode: str | None = None,
+) -> ForwardTrace:
+    rounding_mode = validate_rounding_mode(
+        model.rounding_mode if rounding_mode is None else rounding_mode
+    )
     timers = TimerBook({})
     base_hash = hashlib.sha256()
     lasso_hash = hashlib.sha256()
@@ -402,6 +422,7 @@ def forward_full(graph: LocalGraph, model: Model) -> ForwardTrace:
                 h_prime_scale=layer_input_scale * int(scales["hidden_weight"]),
                 aggregate_output_scale=int(scales["aggregate_output"]),
                 output_head_scale=int(scales["output_head"]),
+                rounding_mode=rounding_mode,
             )
             heads.append(trace)
             outputs.append(trace.h_agg)
@@ -432,6 +453,7 @@ def forward_full(graph: LocalGraph, model: Model) -> ForwardTrace:
             h_prime_scale=layer_input_scale * int(scales["output_weight"]),
             aggregate_output_scale=int(scales["aggregate_output"]),
             output_head_scale=int(scales["output_head"]),
+            rounding_mode=rounding_mode,
         )
         output_heads.append(trace)
         output_pre_bias.append(trace.output_aligned if trace.output_aligned is not None else trace.elu_in)
@@ -447,11 +469,16 @@ def forward_full(graph: LocalGraph, model: Model) -> ForwardTrace:
             y_pre = np.empty(pre_stack.shape[1:], dtype=object)
             y_sum = np.empty(value_stack.shape[1:], dtype=object)
             for index in np.ndindex(y_pre.shape):
-                y_pre[index] = _round_div_away(sum(int(item[index]) for item in pre_stack), len(output_pre_bias))
+                y_pre[index] = signed_round_div(
+                    sum(int(item[index]) for item in pre_stack),
+                    len(output_pre_bias),
+                    rounding_mode,
+                )
                 y_sum[index] = sum(int(item[index]) for item in value_stack)
             output_average_division = _signed_round_div_trace(
                 y_sum,
                 np.full(y_sum.shape, len(output_values), dtype=object),
+                rounding_mode,
             )
             y = output_average_division.y
         else:

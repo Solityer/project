@@ -1,0 +1,128 @@
+{
+  "baseline": "ezkl",
+  "dataset_execution_policy": "prepare_and_preflight_never_load_dataset_or_checkpoint_contents",
+  "datasets": {
+    "citeseer_full": {
+      "checkpoint": "artifacts/checkpoints/citeseer_gat",
+      "config": "configs/citeseer_full.cfg",
+      "dataset_root": "data/cache/citeseer",
+      "required_checkpoint_files": [
+        "manifest.json",
+        "tensors.txt"
+      ],
+      "required_dataset_files": [
+        "meta.cfg",
+        "edges.txt"
+      ],
+      "status": "awaiting_user_staged_resources"
+    },
+    "cora_full": {
+      "checkpoint": "artifacts/checkpoints/cora_gat",
+      "config": "configs/cora_full.cfg",
+      "dataset_root": "data/cache/cora",
+      "required_checkpoint_files": [
+        "manifest.json",
+        "tensors.txt"
+      ],
+      "required_dataset_files": [
+        "meta.cfg",
+        "edges.txt"
+      ],
+      "status": "awaiting_user_staged_resources"
+    },
+    "ogbn_arxiv_full": {
+      "checkpoint": "artifacts/checkpoints/ogbn_arxiv_gat",
+      "config": "configs/ogbn_arxiv_full.cfg",
+      "dataset_root": "data/cache/ogbn_arxiv",
+      "required_checkpoint_files": [
+        "manifest.json",
+        "tensors.txt"
+      ],
+      "required_dataset_files": [
+        "meta.cfg",
+        "edges.txt"
+      ],
+      "status": "awaiting_user_staged_resources"
+    },
+    "ppi_full_formal": {
+      "checkpoint": "artifacts/checkpoints/ppi_gat",
+      "config": "configs/ppi_full.cfg",
+      "dataset_root": "data/cache/ppi",
+      "required_checkpoint_files": [
+        "manifest.json",
+        "tensors.txt"
+      ],
+      "required_dataset_files": [
+        "meta.cfg",
+        "edges.txt",
+        "node_ptr.txt"
+      ],
+      "status": "awaiting_user_staged_resources"
+    },
+    "pubmed_full": {
+      "checkpoint": "artifacts/checkpoints/pubmed_gat",
+      "config": "configs/pubmed_full.cfg",
+      "dataset_root": "data/cache/pubmed",
+      "required_checkpoint_files": [
+        "manifest.json",
+        "tensors.txt"
+      ],
+      "required_dataset_files": [
+        "meta.cfg",
+        "edges.txt"
+      ],
+      "status": "awaiting_user_staged_resources"
+    }
+  },
+  "output_policy": {
+    "cell_root": "results/runs/<backend>/<dataset>",
+    "exact_cell_inventory": [
+      "adapter_manifest.json",
+      "backend_aux_table_spec.json",
+      "backend_aux_tables.i64.bin",
+      "canonical_forward.json",
+      "checkpoint_hash.txt",
+      "circuit_manifest.json",
+      "csr_segment_layout.bin",
+      "csr_segment_layout.json",
+      "formal_main_tables.i64.bin",
+      "formal_quant_config.json",
+      "formal_table_spec.json",
+      "graph_attention_spec.json",
+      "graph_hash.txt",
+      "integer_bound_ledger.json",
+      "metadata.json",
+      "model_parameters.i64.txt",
+      "model_registration.json",
+      "network.compiled",
+      "node_features.i64.bin",
+      "pk.key",
+      "pk.srs",
+      "proof.json",
+      "public_statement.json",
+      "run_manifest.json",
+      "security_profile.json",
+      "settings.json",
+      "shape_hash.txt",
+      "verify.json",
+      "vk.key",
+      "vk.srs",
+      "witness.json"
+    ],
+    "logs_root": "results/logs",
+    "temporary_root": "results/runs_tmp"
+  },
+  "root_policy": "dataset_and_checkpoint_resources_must_be_staged_below_baseline",
+  "route_id": "ezkl_gat_native_compressed_csr_attention_full",
+  "schema": "ezkl_formal_resource_manifest_v1",
+  "static_contract": {
+    "operation_registry": "configs/formal_operation_registry.json",
+    "required_configs": [
+      "configs/cora_full.cfg",
+      "configs/citeseer_full.cfg",
+      "configs/pubmed_full.cfg",
+      "configs/ppi_full.cfg",
+      "configs/ogbn_arxiv_full.cfg"
+    ]
+  }
+}

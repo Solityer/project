@@ -29,20 +29,32 @@ Each row performs preflight bound/table checks, creates or validates the local
 transparent Hyrax PP, runs the fixed canonical GAT adapter, compiles and checks
 the public statement, registers the model if no registration exists, proves on
 the selected device, independently verifies, cross-checks manifests, and emits
-`runs/<dataset>/<device>/warm/result.json`.
+an exact cell under `runs/<dataset>/<device>/warm/`.  The runner refuses
+external resource paths, symlinks, hard-links, stale cells, incomplete proofs,
+and extra cell artifacts.
+
+Before a formal run, stage the five baseline-local resource bundles.  This
+explicit preparation command is the only operation that may read a source
+checkout outside this directory:
 
 ```bash
-python3 scripts/run_single.py --dataset cora --device cpu --project-root /home/pzh/project
-python3 scripts/run_single.py --dataset cora --device gpu --project-root /home/pzh/project
-./scripts/run_all.sh --project-root /home/pzh/project
+python3 scripts/prepare_resources.py --source-root /path/to/project
+```
+
+```bash
+python3 scripts/run_single.py --dataset cora --device cpu
+python3 scripts/run_single.py --dataset cora --device gpu
+./scripts/run_all.sh
 python3 scripts/collect_results.py
 python3 scripts/validate_final_results.py
 ```
 
-The full serialized driver is `scripts/run_until_complete.sh`; it builds CPU and
-GPU, runs all ten rows, collects results, then validates them.  No runner writes
-outside this baseline.  Private witnesses, model opening secrets, proofs, and
-generated PP objects are ignored by Git.
+Run `scripts/build.sh --all` before the matrix if the CPU and GPU binaries are
+not already present.  The five-dataset matrix runner is `scripts/run_all.sh`;
+collection and matrix validation are separate commands and never manufacture
+proof or verification success.  No runner writes outside this baseline.
+Private witnesses, model opening secrets, proofs, and generated PP objects are
+ignored by Git.
 
 The statement binds canonical public features, graph/node and edge pointers,
 sorted self-loop-normalized topology, checkpoint manifest, model shape,

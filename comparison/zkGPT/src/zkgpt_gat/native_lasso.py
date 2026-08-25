@@ -36,6 +36,18 @@ LOCAL_COMBINE_ID = "zkGPT/native-lasso-local-claim-reduction-v1"
 REGISTRATION_FIELDS = {"backend", "parameter_id", "label", "vector_length", "commitment"}
 
 
+def _require_padded_count(family: Mapping[str, Any]) -> int:
+    """Require the native sumcheck domain to have at least one fold round."""
+
+    try:
+        query_count = int(family["padded_count"])
+    except (KeyError, TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("Lasso family padded_count is invalid") from exc
+    if query_count < 2 or query_count & (query_count - 1):
+        raise ValueError("Lasso family padded_count must be a power of two >= 2")
+    return query_count
+
+
 def _public_registration(registration: Mapping[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in registration.items() if key != "blind"}
 
@@ -58,7 +70,7 @@ def _layout_segment(name: str, arrays: Sequence[tuple[str, int]]) -> tuple[dict[
 
 
 def _layout(family: Mapping[str, Any], table_size: int) -> dict[str, Any]:
-    query_count = int(family["padded_count"])
+    query_count = _require_padded_count(family)
     address_width = max(1, (table_size - 1).bit_length())
     timestamp_width = max(1, query_count.bit_length())
     product_domain = next_power_of_two(query_count + table_size)
@@ -385,6 +397,7 @@ def prove_lasso(metadata: Mapping[str, Any], table_rows: Mapping[str, Sequence[i
     states: list[_FamilyState] = []
     local_hyrax = NativeHyrax(zk_root)
     for index, family in enumerate(families):
+        _require_padded_count(family)
         table = [to_field_int(value) for value in table_rows[str(family["table_id"])]]
         layout = _layout(family, len(table))
         descriptor = array_descriptor(canonical_layout, "L_qry", str(family["family"]))
@@ -436,6 +449,8 @@ def verify_lasso(proof: Mapping[str, Any], metadata: Mapping[str, Any], table_ro
     try:
         canonical_layout = metadata["Layout_in"]
         families = next(item for item in canonical_layout["segments"] if item["name"] == "L_qry")["lasso_families"]
+        for family in families:
+            _require_padded_count(family)
         header, wires = proof.get("lc_header"), proof.get("families")
         if set(proof) != {"protocol", "fixed_table_registry_digest", "lc_header", "families", "transcript_digest"} or proof.get("protocol") != PROTOCOL_ID or proof.get("fixed_table_registry_digest") != metadata["static_table_registry_digest"] or not isinstance(header, list) or not isinstance(wires, list) or len(header) != len(families) or len(wires) != len(families) or not families:
             return False

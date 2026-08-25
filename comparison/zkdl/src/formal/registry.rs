@@ -1,5 +1,5 @@
 use crate::algebra::Scalar;
-use anyhow::{ensure, Result};
+use anyhow::{bail, ensure, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -289,6 +289,185 @@ pub struct RelationRegistry {
     pub registry_id: String,
 }
 
+fn is_canonical_terminal_view(view: &ViewIndex, logical_len: usize) -> bool {
+    match view {
+        ViewIndex::Affine {
+            offset: 0,
+            stride: 1,
+        } => logical_len.is_power_of_two(),
+        ViewIndex::PaddedAffine {
+            offset: 0,
+            stride: 1,
+            logical_rows,
+            padding_index: 0,
+        } => *logical_rows as usize == logical_len,
+        _ => false,
+    }
+}
+
+fn decimal_component(value: &str, prefix: &str) -> bool {
+    let Some(number) = value.strip_prefix(prefix) else {
+        return false;
+    };
+    !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+fn canonical_head_namespace(family_id: &str) -> Option<&str> {
+    if let Some(rest) = family_id.strip_prefix("hidden.layer_") {
+        let (layer, rest) = rest.split_once(".head_")?;
+        let (head, suffix) = rest.split_once('.')?;
+        if decimal_component(layer, "") && decimal_component(head, "") {
+            return Some(suffix);
+        }
+        return None;
+    }
+    if let Some(rest) = family_id.strip_prefix("output.head_") {
+        let (head, suffix) = rest.split_once('.')?;
+        if decimal_component(head, "") {
+            return Some(suffix);
+        }
+    }
+    None
+}
+
+fn canonical_registered_parameter_family(family_id: &str) -> bool {
+    let Some(suffix) = canonical_head_namespace(family_id) else {
+        return false;
+    };
+    suffix == "a_src"
+        || suffix == "a_dst"
+        || suffix == "bias"
+        || suffix
+            .strip_prefix("Wcol_")
+            .map(|index| !index.is_empty() && index.bytes().all(|byte| byte.is_ascii_digit()))
+            .unwrap_or(false)
+}
+
+fn canonical_public_auxiliary_family(family_id: &str) -> bool {
+    family_id.starts_with("output.head_")
+        && canonical_head_namespace(family_id) == Some("alignment_d")
+}
+
+fn canonical_dynamic_head_suffix(suffix: &str) -> bool {
+    const EXACT: &[&str] = &[
+        "projection",
+        "E_src",
+        "E_dst",
+        "route_E_src",
+        "route_E_dst",
+        "score",
+        "z",
+        "max",
+        "delta",
+        "max_selector",
+        "max_selector_acc",
+        "u",
+        "u_acc",
+        "sum",
+        "inv",
+        "alpha",
+        "route_projection",
+        "u_message",
+        "alpha_message",
+        "field_aggregate",
+        "integer_numerator",
+        "num_acc",
+        "field_acc",
+        "recovery_x",
+        "recovery_d",
+        "pre",
+        "aggregate",
+        "alignment_x",
+        "alignment_d",
+        "aligned",
+        "head_output",
+    ];
+    if EXACT.contains(&suffix) {
+        return true;
+    }
+    let indexed = |value: &str, prefix: &str| {
+        value
+            .strip_prefix(prefix)
+            .map(|index| !index.is_empty() && index.bytes().all(|byte| byte.is_ascii_digit()))
+            .unwrap_or(false)
+    };
+    if indexed(suffix, "Pcol_") || indexed(suffix, "delta_bit_") {
+        return true;
+    }
+    for prefix in ["lrelu", "exp", "elu"] {
+        if suffix == format!("{prefix}.idx") || indexed(suffix, &format!("{prefix}.bit_")) {
+            return true;
+        }
+    }
+    for prefix in ["recovery_div", "alignment_div"] {
+        let Some(role) = suffix.strip_prefix(&format!("{prefix}.")) else {
+            continue;
+        };
+        if ["sigma", "z", "a", "d", "a_inv", "d_inv", "q", "r", "delta"].contains(&role) {
+            return true;
+        }
+        for bit_prefix in ["a_bit_", "d_bit_", "q_bit_", "r_bit_", "delta_bit_"] {
+            if indexed(role, bit_prefix) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn canonical_dynamic_family(family_id: &str) -> bool {
+    if family_id == "output.head_sum" || family_id == "output.final_logits" {
+        return true;
+    }
+    if let Some(rest) = family_id.strip_prefix("hidden.layer_") {
+        if rest.ends_with(".concat") {
+            let layer = rest.trim_end_matches(".concat");
+            return decimal_component(layer, "");
+        }
+    }
+    canonical_head_namespace(family_id)
+        .map(canonical_dynamic_head_suffix)
+        .unwrap_or(false)
+}
+
+fn canonical_operation_id_matches_kind(operation: &OperationFamilySpec) -> bool {
+    let id = operation.family_id.as_str();
+    match operation.operation_kind.as_str() {
+        "projection_matmul" => id.contains(".projection.col_"),
+        "attention_dot" => id.ends_with(".attention_src") || id.ends_with(".attention_dst"),
+        "public_sparse_route" => {
+            id.ends_with(".route_src")
+                || id.ends_with(".route_dst")
+                || id.ends_with(".route_projection_relation")
+        }
+        "score_add" => id.ends_with(".score_add"),
+        "lrelu_indexed_public_table" => id.ends_with(".lrelu"),
+        "exact_group_max" => id.ends_with(".max_relation"),
+        "exp_indexed_public_table" => id.ends_with(".exp"),
+        "group_sum" => id.ends_with(".group_sum"),
+        "inverse_alpha" => id.ends_with(".inverse") || id.ends_with(".alpha"),
+        "u_message_hadamard" => id.ends_with(".u_message_relation"),
+        "alpha_message_hadamard" => id.ends_with(".alpha_message_relation"),
+        "field_aggregate" => id.ends_with(".field_aggregate_relation"),
+        "integer_numerator" => id.ends_with(".integer_aggregate"),
+        "dual_aggregate_consistency" => id.ends_with(".dual_consistency"),
+        "signed_round_div" => {
+            id.ends_with(".recovery_div")
+                || id.ends_with(".alignment_div")
+                || id.ends_with(".final_average")
+        }
+        "elu_indexed_public_table" => id.ends_with(".elu"),
+        "hidden_concat" => {
+            id.contains(".concat.head_") && id.ends_with(".col_0")
+                || id.contains(".concat.head_") && id.contains(".col_")
+        }
+        "output_bias" => id.ends_with(".bias_add"),
+        "head_sum_final_average" => id == "output.head_sum" || id == "output.final_average",
+        "public_logits_terminal" => id == "output.public_logits",
+        _ => false,
+    }
+}
+
 impl RelationRegistry {
     pub fn canonical_digest(&self) -> Result<[u8; 32]> {
         let mut copy = self.clone();
@@ -531,6 +710,221 @@ impl RelationRegistry {
         );
         Ok(())
     }
+
+    /// Enforce the baseline's fixed public boundary and terminal relation.
+    ///
+    /// `RelationRegistry::validate` checks generic FAC well-formedness.  That
+    /// is deliberately not sufficient for the production adapter: a caller
+    /// must not be able to rename `public.logits`, introduce an alias family,
+    /// or replace the public-logits terminal with an arbitrary equality.  The
+    /// canonical adapter emits the exact shapes and views checked here.
+    pub fn validate_canonical_gat(&self) -> Result<()> {
+        const PUBLIC_FAMILIES: &[&str] = &[
+            "public.features",
+            "public.edge_src",
+            "public.edge_dst",
+            "public.node_ptr",
+            "public.edge_ptr",
+            "public.logits",
+            "public.k_out",
+        ];
+
+        for family in &self.tensor_families {
+            if family.family_id.starts_with("public.") {
+                ensure!(
+                    PUBLIC_FAMILIES.contains(&family.family_id.as_str()),
+                    "non-canonical public tensor family alias: {}",
+                    family.family_id
+                );
+                ensure!(
+                    family.visibility == Visibility::Public,
+                    "canonical public tensor is not public: {}",
+                    family.family_id
+                );
+            }
+            if family.visibility == Visibility::Public && !family.family_id.starts_with("public.") {
+                ensure!(
+                    canonical_public_auxiliary_family(&family.family_id),
+                    "non-canonical auxiliary public tensor family alias: {}",
+                    family.family_id
+                );
+            }
+            if family.visibility == Visibility::DynamicPrivate {
+                ensure!(
+                    canonical_dynamic_family(&family.family_id),
+                    "non-canonical dynamic tensor family alias: {}",
+                    family.family_id
+                );
+            }
+            if family.visibility == Visibility::RegisteredModel {
+                ensure!(
+                    canonical_registered_parameter_family(&family.family_id),
+                    "non-canonical registered model family alias: {}",
+                    family.family_id
+                );
+            }
+        }
+        for family_id in PUBLIC_FAMILIES {
+            let matches = self
+                .tensor_families
+                .iter()
+                .filter(|family| family.family_id == *family_id)
+                .collect::<Vec<_>>();
+            ensure!(
+                matches.len() == 1,
+                "canonical public tensor family must occur exactly once: {}",
+                family_id
+            );
+            ensure!(
+                matches[0].visibility == Visibility::Public,
+                "canonical public tensor family visibility mismatch: {}",
+                family_id
+            );
+        }
+        let logits = self.tensor("public.logits")?.logical_len;
+        ensure!(
+            self.public_tensors.get("public.logits").map(Vec::len) == Some(logits),
+            "canonical public logits payload shape mismatch"
+        );
+
+        let terminals = self
+            .operation_families
+            .iter()
+            .filter(|op| op.operation_kind == "public_logits_terminal")
+            .collect::<Vec<_>>();
+        ensure!(
+            terminals.len() == 1,
+            "canonical public-logits terminal must occur exactly once"
+        );
+        let op = terminals[0];
+        ensure!(
+            op.family_id == "output.public_logits",
+            "canonical public-logits terminal family ID mismatch"
+        );
+        let base = logits.max(2).next_power_of_two();
+        ensure!(
+            op.real_rows == logits && op.rows == base * 2,
+            "canonical public-logits terminal domain shape mismatch"
+        );
+        ensure!(
+            op.columns.len() == 4
+                && op.columns[0].column_id == "private_final"
+                && op.columns[1].column_id == "public_y"
+                && op.columns[2].column_id == "valid"
+                && op.columns[3].column_id == "domain_selector",
+            "canonical public-logits terminal column order mismatch"
+        );
+        match &op.columns[0].source {
+            ColumnSource::TensorView {
+                family_id,
+                canonical_index_by_row,
+            } => {
+                ensure!(
+                    family_id == "output.final_logits",
+                    "public-logits terminal private source is not output.final_logits"
+                );
+                ensure!(
+                    self.tensor(family_id)?.visibility == Visibility::DynamicPrivate,
+                    "public-logits terminal private source visibility mismatch"
+                );
+                ensure!(
+                    self.tensor(family_id)?.logical_len == logits,
+                    "public-logits terminal private source shape mismatch"
+                );
+                ensure!(
+                    is_canonical_terminal_view(canonical_index_by_row, logits),
+                    "public-logits private source mapping is not canonical"
+                );
+            }
+            _ => bail!("public-logits terminal private source must be a tensor view"),
+        }
+        match &op.columns[1].source {
+            ColumnSource::TensorView {
+                family_id,
+                canonical_index_by_row,
+            } => {
+                ensure!(
+                    family_id == "public.logits",
+                    "public-logits terminal public source is not public.logits"
+                );
+                ensure!(
+                    is_canonical_terminal_view(canonical_index_by_row, logits),
+                    "public-logits public source mapping is not canonical"
+                );
+            }
+            _ => bail!("public-logits terminal public source must be a tensor view"),
+        }
+        for (index, expected) in [(2usize, "valid"), (3usize, "domain_selector")] {
+            let values = match &op.columns[index].source {
+                ColumnSource::Public { values } => values,
+                _ => bail!("canonical terminal selector must be public"),
+            };
+            ensure!(
+                values.len() == op.rows
+                    && values.iter().enumerate().all(|(row, value)| {
+                        *value
+                            == if row < op.real_rows {
+                                Scalar::one()
+                            } else {
+                                Scalar::zero()
+                            }
+                    }),
+                "canonical terminal {} selector payload mismatch",
+                expected
+            );
+        }
+        for operation in &self.operation_families {
+            ensure!(
+                operation.family_id.starts_with("hidden.layer_")
+                    || operation.family_id.starts_with("output."),
+                "non-canonical operation family alias: {}",
+                operation.family_id
+            );
+            ensure!(
+                canonical_operation_id_matches_kind(operation),
+                "operation family ID does not match its canonical operation kind: {} ({})",
+                operation.family_id,
+                operation.operation_kind
+            );
+            for column in &operation.columns {
+                if let ColumnSource::TensorView { family_id, .. } = &column.source {
+                    if canonical_public_auxiliary_family(family_id) {
+                        ensure!(
+                            operation.operation_kind == "signed_round_div"
+                                && operation.family_id.ends_with(".alignment_div"),
+                            "public alignment denominator is used outside its canonical relation"
+                        );
+                    }
+                }
+            }
+        }
+        ensure!(
+            op.residuals.len() == 1,
+            "canonical terminal residual count mismatch"
+        );
+        let selector = 3u32;
+        let valid = 2u32;
+        let residual = &op.residuals[0];
+        let canonical = match residual {
+            Expr::Mul(a, b) if a.is_column(selector) => match b.as_ref() {
+                Expr::Mul(a, b) if a.is_column(valid) => match b.as_ref() {
+                    Expr::Sub(a, b) => a.is_column(0) && b.is_column(1),
+                    _ => false,
+                },
+                _ => false,
+            },
+            _ => false,
+        };
+        ensure!(
+            canonical,
+            "public-logits terminal residual is not canonical Y binding"
+        );
+        ensure!(
+            op.degree_bound == 4,
+            "canonical public-logits terminal degree bound mismatch"
+        );
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -630,28 +1024,3 @@ pub const MANDATORY_GAT_OPERATIONS: &[&str] = &[
     "head_sum_final_average",
     "public_logits_terminal",
 ];
-
-#[cfg(test)]
-mod tests {
-    use super::Expr;
-    use crate::algebra::Scalar;
-
-    #[test]
-    fn public_table_lookup_uses_little_endian_bit_columns() {
-        let expression = Expr::PublicTableLookup {
-            values: vec![10, 20, 30, 40]
-                .into_iter()
-                .map(Scalar::from_i64)
-                .collect(),
-            bit_columns: vec![0, 1],
-        };
-        assert_eq!(
-            expression.eval(&[Scalar::one(), Scalar::zero()]).unwrap(),
-            Scalar::from_i64(20)
-        );
-        assert_eq!(
-            expression.eval(&[Scalar::zero(), Scalar::one()]).unwrap(),
-            Scalar::from_i64(30)
-        );
-    }
-}

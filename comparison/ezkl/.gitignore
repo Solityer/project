@@ -79,6 +79,9 @@ artifacts/
 *.stderr.txt
 results/*
 !results/.gitkeep
-!runs/
-runs/*
-!runs/.gitkeep
+results/runs/*
+results/runs_tmp/*
+results/logs/*
+!results/runs/.gitkeep
+!results/runs_tmp/.gitkeep
+!results/logs/.gitkeep

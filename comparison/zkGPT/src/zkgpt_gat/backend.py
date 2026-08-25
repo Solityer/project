@@ -5,7 +5,7 @@ import pathlib
 import subprocess
 import tempfile
 from numbers import Integral
-from typing import Any, Dict, Iterable, List, Mapping, Sequence
+from typing import Any, Dict, List, Mapping, Sequence
 
 from .field import BN254_FR_MODULUS
 from .util import digest_json, read_json, stable_env
@@ -680,44 +680,6 @@ def validate_gpu_proof_state(
     return not errors, errors
 
 
-def gpu_proof_primitives(zk_root: pathlib.Path, values: Iterable[int], label: str) -> Dict[str, Any]:
-    """Compatibility entry point for an old flat four-limb caller.
-
-    New proof code should call :func:`gpu_proof_message_batch` with explicit
-    native messages.  This wrapper still performs real CUDA operations over
-    the supplied field words and has no CPU fallback; it exists only while a
-    caller migrates away from the old flat API.
-    """
-    original = [int(value) & _MASK64 for value in values]
-    if not original or len(original) % 4:
-        raise ValueError("legacy GPU proof words must contain complete four-limb field elements")
-    scalars = [
-        sum(original[offset + limb] << (64 * limb) for limb in range(4))
-        for offset in range(0, len(original), 4)
-    ]
-    if any(value >= BN254_FR_MODULUS for value in scalars):
-        raise ValueError("legacy GPU proof words contain a non-canonical BN254-Fr scalar")
-    count = max(2, 1 << (len(scalars) - 1).bit_length())
-    padded = scalars + [0] * (count - len(scalars))
-    challenges = [0] * _log2_power_of_two(count)
-    state = gpu_proof_message_batch(
-        zk_root,
-        [
-            {"kind": "lasso_product_tree", "values": scalars, "beta": 0},
-            {"kind": "sumcheck_mle_fold", "values": padded, "challenges": challenges},
-            {"kind": "hyrax_linear_eval_fold", "values": padded, "challenges": challenges},
-        ],
-        label,
-    )
-    # Preserve only the old caller's accounting shape; operation results above
-    # remain the authoritative GPU proof messages.
-    state["compatibility_wrapper"] = True
-    state["primitive_input_count"] = int(state["field_words_processed"]) * 4
-    state["input_digest"] = digest_json([str(value) for value in original])
-    state["input_encoding"] = "bn254_fr_transcript_words_v3_compat"
-    return state
-
-
 def run_gpu_primitives_probe(zk_root: pathlib.Path, seed_payload: Dict[str, Any]) -> Dict[str, Any]:
     digest = hashlib.sha256(
         __import__("json").dumps(seed_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
@@ -745,11 +707,3 @@ def backend_state(backend: str, zk_root: pathlib.Path, seed_payload: Dict[str, A
             raise RuntimeError("GPU backend did not execute the strict CUDA primitive batch")
         return state
     raise ValueError(f"unknown backend: {backend}")
-
-
-def _seed_words(seed_payload: Dict[str, Any]) -> list[str]:
-    import json
-
-    text = json.dumps(seed_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
-    return [digest[index : index + 16] for index in range(0, len(digest), 16)]
