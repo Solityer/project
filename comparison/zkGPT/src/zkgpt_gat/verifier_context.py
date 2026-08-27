@@ -18,7 +18,27 @@ from typing import Any, Dict, List, Mapping, Sequence, Tuple
 import numpy as np
 
 from .config import AppConfig, load_app_config
-from .constants import CIRCUIT_LAYOUT_ID, COMMITMENT_BACKEND_ID, ENCODING_ID, LASSO_CFG_ID, MATRIX_PROOF_CFG_ID, PADDING_RULE_ID, PROOF_BACKEND_ID, PROTOCOL_ID
+from .constants import (
+    CIRCUIT_LAYOUT_ID,
+    COMMITMENT_BACKEND_ID,
+    ENCODING_ID,
+    EXTERNAL_VERIFIER_CONTEXT_FIELDS,
+    EXTERNAL_PUBLIC_STATEMENT_SCHEMA,
+    EXTERNAL_VERIFIER_CONTEXT_SCHEMA,
+    FUNCTION_LOOKUP_DOMAIN_BITS,
+    LASSO_CFG_ID,
+    LOOKUP_TUPLE_ENCODING_ID,
+    MATRIX_PROOF_CFG_ID,
+    PADDING_RULE_ID,
+    PROOF_BACKEND_ID,
+    PROTOCOL_ID,
+    PUBLIC_STATEMENT_FIELDS,
+    STATIC_TABLE_VK_SCHEMA,
+    STATIC_TABLE_VK_FIELDS,
+    STATIC_TABLE_FAMILY_IDS,
+    VERIFIER_SETUP_FIELDS,
+    VERIFIER_SETUP_SCHEMA,
+)
 from .data import GraphDataset, LocalGraph, load_dataset, normalize_graph
 from .field import BN254_FR_MODULUS, next_power_of_two, to_field_int
 from .forward import _exp_map_fixed, _elu_table_value
@@ -30,11 +50,10 @@ from .rounding import (
     validate_rounding_mode,
 )
 from .bound_ledger import build_integer_bound_ledger
-from .util import digest_file, digest_json
+from .util import digest_json
 
 _FIELD_HALF = (BN254_FR_MODULUS - 1) // 2
-_HYRAX_BACKEND = "zkGPT-hyrax-mle-evaluation-commitment-v2"
-
+_HYRAX_BACKEND = COMMITMENT_BACKEND_ID
 
 class ContextError(ValueError):
     """The external statement or a trust-boundary path is invalid."""
@@ -97,6 +116,218 @@ def _array_digest(label: str, value: Any) -> str:
     else:
         h.update(memoryview(array).cast("B"))
     return h.hexdigest()
+
+
+def _structured_function_vk(table_id: str, function: str, rule: str) -> Dict[str, Any]:
+    """Rebuild the native fixed-function verification-key descriptor.
+
+    This is intentionally kept in the external-context module instead of
+    accepting a producer-supplied table digest.  The fresh verifier therefore
+    has one source of truth for the tuple encoding, evaluator identity, and
+    complete function-table domain.
+    """
+    input_scale = {"T_LReLU": 256, "T_ELU": 16, "T_exp": 256}.get(table_id)
+    if input_scale is None:
+        raise ContextError(f"unknown structured table {table_id}")
+    vk = {
+        "protocol": "structured-fixed-function-verification-key-v2",
+        "table_id": table_id,
+        "function": function,
+        "evaluation_rule": rule,
+        "domain_bits": FUNCTION_LOOKUP_DOMAIN_BITS,
+        "input_domain": {
+            "signed": True,
+            "min_inclusive": -(1 << (FUNCTION_LOOKUP_DOMAIN_BITS - 1)),
+            "max_exclusive": 1 << (FUNCTION_LOOKUP_DOMAIN_BITS - 1),
+            "fixed_scale": input_scale,
+        },
+        "field_modulus": str(BN254_FR_MODULUS),
+        "evaluator_id": {
+            "T_LReLU": "signed_fixed_point_leaky_relu_alpha_0p2_nearest_q",
+            "T_ELU": "signed_fixed_point_elu_expm1_nearest_q",
+            "T_exp": "signed_fixed_point_exp_neg_nearest_q",
+        }[table_id],
+        "selected_opening_rule": "fixed verifier-key evaluator bound to the complete native Lasso query/table commitment argument",
+    }
+    vk["vk_digest"] = digest_json({key: value for key, value in vk.items() if key != "vk_digest"})
+    return vk
+
+
+def _fixed_table_eval_q(table_id: str, x_value: int) -> int:
+    value = int(x_value)
+    if value > _FIELD_HALF:
+        value -= BN254_FR_MODULUS
+    if table_id == "T_LReLU":
+        return _fixed_lrelu(value)
+    if table_id == "T_ELU":
+        return int(_elu_table_value(value))
+    if table_id == "T_exp":
+        return int(_exp_map_fixed(value))
+    raise ContextError(f"unsupported fixed function table {table_id}")
+
+
+def _canonical_function_rows_digest(
+    table_id: str,
+    domain_min: int,
+    domain_max: int,
+    tuple_encoding: Mapping[str, Any],
+) -> str:
+    h = hashlib.sha256()
+    base = int(tuple_encoding["base"])
+    x_bound = int(tuple_encoding["x_bound"])
+    y_bound = int(tuple_encoding["y_bound"])
+    for x_value in range(int(domain_min), int(domain_max) + 1):
+        y_value = _fixed_table_eval_q(table_id, x_value)
+        packed = (x_value + x_bound) * base + (y_value + y_bound)
+        h.update(f"{x_value},{y_value},{packed}\n".encode("ascii"))
+    return h.hexdigest()
+
+
+def _field_chunk_digests(values: Sequence[int], chunk_size: int = 8192) -> List[Dict[str, Any]]:
+    chunks: List[Dict[str, Any]] = []
+    for chunk_index, begin in enumerate(range(0, len(values), chunk_size)):
+        h = hashlib.sha256()
+        chunk_values = values[begin: begin + chunk_size]
+        for value in chunk_values:
+            h.update(str(to_field_int(value)).encode("ascii"))
+            h.update(b",")
+        chunks.append({"chunk_index": chunk_index, "count": len(chunk_values), "sha256": h.hexdigest()})
+    return chunks
+
+
+def _canonical_static_table_registry(metadata: Mapping[str, Any]) -> Dict[str, Any]:
+    """Reconstruct the exact fixed-table registry from authenticated inputs."""
+    required = {
+        "quant_cfg_id", "rounding_mode", "static_table_id", "static_table_descriptor_schema",
+        "static_table_content_digest", "static_table_descriptor_digest", "encoding_id",
+        "integer_bound_ledger", "integer_bound_ledger_digest", "dim_cfg",
+    }
+    if not required <= set(metadata):
+        raise ContextError("metadata is incomplete for canonical static-table registry")
+    ledger = metadata.get("integer_bound_ledger")
+    if not isinstance(ledger, Mapping):
+        raise ContextError("integer-bound ledger is missing for canonical static-table registry")
+    if metadata.get("integer_bound_ledger_digest") != digest_json(ledger):
+        raise ContextError("integer-bound ledger digest is self-inconsistent")
+    rounding_mode = validate_rounding_mode(metadata.get("rounding_mode"))
+    range_bits = int(metadata.get("dim_cfg", {}).get("B", 0))
+    if range_bits <= 0:
+        raise ContextError("static-table range_bits is invalid")
+    common = {
+        "quant_cfg_id": metadata["quant_cfg_id"],
+        "rounding_mode": rounding_mode,
+        "quant_scale_chain": dict(ledger.get("scales", {})),
+        "static_table_id": metadata["static_table_id"],
+        "static_table_descriptor_schema": metadata["static_table_descriptor_schema"],
+        "static_table_content_digest": metadata["static_table_content_digest"],
+        "static_table_descriptor_digest": metadata["static_table_descriptor_digest"],
+        "encoding_id": metadata["encoding_id"],
+        "range_bits": range_bits,
+        "field_encoding_scale": 1,
+        "integer_bound_ledger_digest": metadata["integer_bound_ledger_digest"],
+        "certified_table_domains": ledger.get("table_domains", {}),
+    }
+    if common["encoding_id"] != ENCODING_ID:
+        raise ContextError("static-table tuple encoding identity mismatch")
+
+    def function_table(table_id: str, function: str, rule: str) -> Dict[str, Any]:
+        vk = _structured_function_vk(table_id, function, rule)
+        scales = {"T_LReLU": (256, 256), "T_ELU": (16, 16), "T_exp": (256, 16)}
+        domain_key = {"T_LReLU": "lrelu", "T_ELU": "elu", "T_exp": "exp"}[table_id]
+        domain = common["certified_table_domains"].get(domain_key)
+        if not isinstance(domain, (list, tuple)) or len(domain) != 2:
+            raise ContextError(f"missing certified domain for {table_id}")
+        certified_domain = [int(domain[0]), int(domain[1])]
+        domain_min, domain_max = certified_domain
+        if domain_max < domain_min:
+            raise ContextError(f"invalid certified domain for {table_id}")
+        endpoint_outputs = [_fixed_table_eval_q(table_id, value) for value in {domain_min, domain_max, 0} if domain_min <= value <= domain_max]
+        x_bound = max(abs(domain_min), abs(domain_max))
+        y_bound = max((abs(int(value)) for value in endpoint_outputs), default=0)
+        pack_base = 2 * y_bound + 1
+        max_packed = 2 * x_bound * pack_base + 2 * y_bound
+        if max_packed >= _FIELD_HALF:
+            raise ContextError(f"{table_id} tuple packing exceeds BN254 signed field range")
+        input_scale, output_scale = scales[table_id]
+        descriptor: Dict[str, Any] = {
+            "table_id": table_id,
+            "table_kind": "structured_fixed_function_table",
+            "function": function,
+            "evaluation_rule": rule,
+            "field_modulus": str(BN254_FR_MODULUS),
+            "input_scale": input_scale,
+            "output_scale": output_scale,
+            "domain_policy": f"signed fixed-point representatives with abs(x) < 2^{FUNCTION_LOOKUP_DOMAIN_BITS - 1}",
+            "input_domain": {
+                "signed": True,
+                "min_inclusive": -(1 << (FUNCTION_LOOKUP_DOMAIN_BITS - 1)),
+                "max_exclusive": 1 << (FUNCTION_LOOKUP_DOMAIN_BITS - 1),
+                "fixed_scale": input_scale,
+            },
+            "certified_domain": certified_domain,
+            "tuple_encoding": {
+                "encoding_id": LOOKUP_TUPLE_ENCODING_ID,
+                "x_bound": x_bound,
+                "y_bound": y_bound,
+                "base": pack_base,
+                "max_packed": max_packed,
+            },
+            "canonical_row_order": "ascending signed x; row=(x,y,Pack_f(x,y))",
+            "row_count": domain_max - domain_min + 1,
+            "integer_bound_ledger_digest": common["integer_bound_ledger_digest"],
+            "table_materialization": "preprocessed structured evaluator with fixed verification key; selected openings are verified by the fixed VK and are not accepted as query-generated table side",
+            "structured_verification_key": vk,
+            "chunks": [{"chunk_index": 0, "count": 1, "sha256": digest_json({"structured_table_vk": vk})}],
+            **common,
+        }
+        descriptor["rows_digest"] = _canonical_function_rows_digest(table_id, domain_min, domain_max, descriptor["tuple_encoding"])
+        descriptor["table_digest"] = digest_json(descriptor)
+        descriptor["table_commitment"] = digest_json({
+            "commitment_backend": "structured-fixed-function-vk-commitment-v2",
+            "table_id": table_id,
+            "structured_verification_key_digest": digest_json(vk),
+            "chunk_roots": descriptor["chunks"],
+        })
+        return descriptor
+
+    range_values = [to_field_int(value) for value in range(1 << range_bits)]
+    range_descriptor: Dict[str, Any] = {
+        "table_id": "T_range",
+        "table_kind": "materialized_fixed_range_table",
+        "function": "Range",
+        "domain_policy": f"all limbs in [0,{(1 << range_bits) - 1}]",
+        "table_materialization": "preprocessed fixed limb table",
+        "entry_count": len(range_values),
+        "chunks": _field_chunk_digests(range_values),
+        **common,
+    }
+    range_descriptor["table_digest"] = digest_json({key: value for key, value in range_descriptor.items() if key not in {"table_digest", "table_commitment"}})
+    range_descriptor["table_commitment"] = digest_json({
+        "commitment_backend": "materialized-fixed-range-table-commitment-v2",
+        "table_id": "T_range",
+        "range_bits": range_bits,
+        "entry_count": len(range_values),
+        "chunk_roots": range_descriptor["chunks"],
+    })
+    return {
+        "T_LReLU": function_table("T_LReLU", "LeakyReLU", "y=x if x>=0 else round(0.2*x)"),
+        "T_ELU": function_table("T_ELU", "ELU", "y=x if x>=0 else round(exp(x)-1)"),
+        "T_exp": function_table("T_exp", "ExpMap", "y=round(exp(-x)) for nonnegative x"),
+        "T_range": range_descriptor,
+    }
+
+
+def _authenticated_static_table_registry(metadata: Mapping[str, Any]) -> Tuple[Dict[str, Any], str]:
+    registry = metadata.get("static_table_registry")
+    if not isinstance(registry, Mapping) or set(registry) != set(STATIC_TABLE_FAMILY_IDS):
+        raise ContextError("static-table registry family set is invalid")
+    digest = digest_json(dict(registry))
+    if metadata.get("static_table_registry_digest") != digest:
+        raise ContextError("static-table registry digest is self-inconsistent")
+    canonical = _canonical_static_table_registry(metadata)
+    if dict(registry) != canonical:
+        raise ContextError("static-table registry does not match authenticated canonical descriptor")
+    return copy.deepcopy(dict(registry)), digest
 
 
 def _graph_digest(graph: LocalGraph) -> str:
@@ -890,45 +1121,21 @@ class VerifierContext:
         values.  The accepted replay path receives this object from the CLI,
         where every field below was rebuilt from files outside the artifact.
         """
-        identities = self.expected_metadata["identities"]
-        static_vk = {
-            "schema": "zkGPT-static-table-vk-v1",
-            "rounding_mode": self.expected_metadata["rounding_mode"],
-            "static_table_id": self.expected_metadata["static_table_id"],
-            "quant_cfg_id": self.expected_metadata["quant_cfg_id"],
-            "static_table_descriptor_schema": self.expected_metadata["static_table_descriptor_schema"],
-            "static_table_content_digest": self.expected_metadata["static_table_content_digest"],
-            "static_table_descriptor_digest": self.expected_metadata["static_table_descriptor_digest"],
-            "integer_bound_ledger_digest": self.expected_metadata["integer_bound_ledger_digest"],
-            "table_registry_digest": self.expected_metadata.get("static_table_registry_digest", ""),
-        }
-        static_vk["vk_digest"] = digest_json(static_vk)
-        setup = {
-            "schema": "zkGPT-gat-verifier-setup-v1",
-            "protocol_id": self.expected_metadata["protocol_id"],
-            "proof_backend_id": self.expected_metadata["proof_backend_id"],
-            "commitment_backend_id": COMMITMENT_BACKEND_ID,
-            "circuit_layout_id": self.expected_metadata["circuit_layout_id"],
-            "model_arch_id": identities["model_arch_id"],
-            "model_param_id": identities["model_param_id"],
-            "quant_cfg_id": identities["quant_cfg_id"],
-            "rounding_mode": self.expected_metadata["rounding_mode"],
-            "static_table_id": identities["static_table_id"],
-            "registry_digest": self.registry_public["registry_digest"],
-            "Layout_in_digest": self.expected_metadata["Layout_in_digest"],
-            "domain_cfg": self.expected_metadata["domain_cfg"],
-            "dim_cfg": self.expected_metadata["dim_cfg"],
-            "integer_bound_ledger_digest": self.expected_metadata["integer_bound_ledger_digest"],
-        }
-        setup["setup_digest"] = digest_json(setup)
-        return {
-            "schema": "zkGPT_external_verifier_context_v1",
-            "context_digest": self.context_digest,
+        static_vk = static_table_vk(self.expected_metadata)
+        setup = setup_context(self.expected_metadata, self.registry_public, static_vk)
+        context = {
+            "schema": EXTERNAL_VERIFIER_CONTEXT_SCHEMA,
             "public_statement": copy.deepcopy(self.public_statement),
             "model_registry": copy.deepcopy(self.registry_public),
             "static_table_vk": static_vk,
             "setup_context": setup,
         }
+        # Recompute the envelope digest from exactly the bytes supplied to
+        # the fresh verifier.  The stored dataclass value is source-derived,
+        # but the returned object must remain self-authenticating if callers
+        # serialize or copy it.
+        context["context_digest"] = digest_json(context)
+        return context
 
     def validate_metadata(self, metadata: Mapping[str, Any]) -> Dict[str, Any]:
         errors = [f"metadata.{key} does not match external context" for key, expected in self.expected_metadata.items() if key not in {"identities", "Layout_in"} and metadata.get(key) != expected]
@@ -1059,67 +1266,222 @@ def build_verifier_context(project_root: pathlib.Path, config_path: pathlib.Path
     registry_metadata = {"protocol": registry["protocol"], "registry_digest": registry["registry_digest"], "registration_binding_digest": registry["registration_binding_digest"], "public_path": public_path, "commitment_backend": registry["commitment_backend"], "public_descriptor": copy.deepcopy(registry)}
     expected = {"protocol_id": PROTOCOL_ID, "proof_backend_id": PROOF_BACKEND_ID, "commitment_backend_id": COMMITMENT_BACKEND_ID, **identities, "static_table_descriptor_schema": static_descriptor["schema"], "static_table_content_digest": static_descriptor["content_digest"], "static_table_descriptor_digest": static_descriptor["descriptor_digest"], "static_table_descriptor_path": STATIC_TABLE_DESCRIPTOR_RELATIVE_PATH, "domain_cfg": domain, "dim_cfg": dims, "encoding_id": ENCODING_ID, "padding_rule_id": PADDING_RULE_ID, "circuit_layout_id": CIRCUIT_LAYOUT_ID, "lasso_cfg_id": LASSO_CFG_ID, "matrix_proof_cfg_id": MATRIX_PROOF_CFG_ID, "dataset": config.entries.get("dataset"), "dataset_display_name": dataset.name, "task_type": graph.task_type, "report_unit": graph.report_unit, "batching_rule": graph.batching_rule, "self_loop_rule": graph.self_loop_rule, "edge_sort_rule": graph.edge_sort_rule, "chunking_rule": graph.chunking_rule, "full_dataset": graph.num_nodes == dataset.num_nodes, "X_pub_digest": _x_digest(graph, layers, classes, k_out), "public_input_layout": "X_pub=features+topology+selectors; X_pub is verifier-reconstructed and uncommitted", "public_output_policy": "Y is a public statement output claim and is not part of X_pub or any private commitment", "private_input_layout": "X_pub|W|Aux|L_qry", "segment_order": ["X_pub", "W", "Aux", "L_qry"], "privacy_extension_profile_id": "masked_full_multi_session_v1", "privacy_profile_status": "supported_multi_session_masked_full", "registered_model_commitment_scope": "canonical_integer_GAT_model_weights_with_layout_and_bound_ledger", "Layout_in_digest": layout_digest, "integer_bound_ledger": ledger, "integer_bound_ledger_digest": digest_json(ledger), "public_output_digest": y_digest, "model_registry": registry_metadata, "model_registry_digest": digest_json(registry_metadata), "identities": identities}
     expected["rounding_mode"] = rounding_mode
+    canonical_tables = _canonical_static_table_registry(expected)
+    artifact_tables = _json(
+        _owned_file(artifact / "fixed_lookup_tables.json", "authenticated static-table registry"),
+        "authenticated static-table registry",
+    )
+    if artifact_tables != canonical_tables:
+        raise ContextError("artifact static-table registry differs from authenticated canonical registry")
+    expected["static_table_registry"] = copy.deepcopy(artifact_tables)
+    expected["static_table_registry_digest"] = digest_json(artifact_tables)
     features = np.asarray([_round_feature(value) for value in np.ravel(graph.features)], dtype=np.int64).reshape(graph.features.shape)
-    public_graph = {
-        "absolute_ids": [int(value) for value in graph.absolute_ids],
-        "src": [int(value) for value in graph.src],
-        "dst": [int(value) for value in graph.dst],
-        "edge_graph": [int(value) for value in graph.edge_graph],
-        "node_ptr": graph.node_ptr.tolist(),
-        "edge_ptr": graph.edge_ptr.tolist(),
-        "self_loop_rule": graph.self_loop_rule,
-        "edge_sort_rule": graph.edge_sort_rule,
-        "batching_rule": graph.batching_rule,
+    # Use the same canonical statement constructor as the producer path.  The
+    # richer context material remains authenticated in model_registry,
+    # static_table_vk, and setup_context below; it is not duplicated in the
+    # statement wire object.
+    statement = _canonical_public_statement(
+        graph,
+        features,
+        output,
+        {
+            "protocol_id": PROTOCOL_ID,
+            "dataset": config.entries.get("dataset", dataset.name),
+            "dataset_display_name": dataset.name,
+            "rounding_mode": rounding_mode,
+            "integer_bound_ledger_digest": digest_json(ledger),
+        },
+    )
+    static_vk = static_table_vk(expected)
+    setup = setup_context(expected, registry, static_vk)
+    context_payload = {
+        "schema": EXTERNAL_VERIFIER_CONTEXT_SCHEMA,
+        "public_statement": statement,
+        "model_registry": copy.deepcopy(registry),
+        "static_table_vk": static_vk,
+        "setup_context": setup,
     }
-    statement = {"schema": "zkGPT_external_public_statement_v1", "protocol_id": PROTOCOL_ID, "config_sha256": digest_file(config_path), "model_architecture_digest": digest_json(manifest), "static_table_descriptor": {"schema": static_descriptor["schema"], "static_tables_id": static_descriptor["static_tables_id"], "quant_cfg_id": static_descriptor["quant_cfg_id"], "content_digest": static_descriptor["content_digest"], "descriptor_digest": static_descriptor["descriptor_digest"]}, "dataset": {"name": dataset.name, "N": graph.num_nodes, "E": int(graph.src.size), "C": classes, "topology_digest": _graph_digest(graph), "X_pub_digest": expected["X_pub_digest"]}, "model": {"identities": identities, "architecture": copy.deepcopy(manifest), "hidden_profile": dims["hidden_profile"], "K_out": k_out, "C": classes, "L": layers, "arrays": model_arrays}, "features": {"shape": list(features.shape), "values": [int(value) for value in features.ravel()]}, "graph": public_graph, "public_y": {"shape": list(expected_shape), "digest": y_digest, "file_sha256": digest_file(y_path), "values": [str(int(value)) for value in output.ravel()]}, "public_output": {"shape": list(expected_shape), "values": [str(int(value)) for value in output.ravel()]}, "registry": {"registry_digest": registry["registry_digest"], "binding_digest": registry["registration_binding_digest"], "file_sha256": digest_file(registry_path)}, "layout": {"schema": "zkGPT_gat_four_segment_layout_v1", "segment_order": ["X_pub", "W", "Aux", "L_qry"], "N_in": n_in, "Layout_in_digest": layout_digest, "families": [{key: item.get(key) for key in ("family", "kind", "table_id", "offset", "real_count", "padded_count", "shape")} for item in lasso]}, "domain_cfg": domain, "dim_cfg": dims, "integer_bound_ledger_digest": digest_json(ledger)}
-    statement["rounding_mode"] = rounding_mode
-    statement["integer_bound_ledger_digest"] = digest_json(ledger)
-    statement["statement_digest"] = digest_json(statement)
-    return VerifierContext(root, config_path, artifact, registry_path, y_path, config, dataset, graph, dict(manifest), registry, expected_shape, y_digest, expected, tuple(model_arrays), tuple(lasso), tuple(matrix), tuple(gkr), statement, digest_json(statement))
+    context_digest = digest_json(context_payload)
+    return VerifierContext(root, config_path, artifact, registry_path, y_path, config, dataset, graph, dict(manifest), registry, expected_shape, y_digest, expected, tuple(model_arrays), tuple(lasso), tuple(matrix), tuple(gkr), statement, context_digest)
 
 
 # Compatibility helpers retained for code that imported the earlier context
 # module.  They are deliberately not used by the external CLI path.
+def _canonical_public_statement(
+    graph: LocalGraph,
+    features: Any,
+    output: Any,
+    metadata: Mapping[str, Any],
+) -> dict[str, Any]:
+    feature_array = np.asarray(features, dtype=np.int64)
+    output_array = np.asarray(output, dtype=object)
+    statement: dict[str, Any] = {
+        "schema": EXTERNAL_PUBLIC_STATEMENT_SCHEMA,
+        "protocol_id": metadata.get("protocol_id", PROTOCOL_ID),
+        "dataset": metadata["dataset"],
+        "dataset_display_name": metadata["dataset_display_name"],
+        "task_type": graph.task_type,
+        "features": {
+            "shape": list(feature_array.shape),
+            "values": [int(value) for value in feature_array.ravel()],
+        },
+        "graph": {
+            "absolute_ids": [int(value) for value in graph.absolute_ids],
+            "src": [int(value) for value in graph.src],
+            "dst": [int(value) for value in graph.dst],
+            "node_ptr": graph.node_ptr.tolist(),
+            "edge_ptr": graph.edge_ptr.tolist(),
+            "edge_graph": [int(value) for value in graph.edge_graph],
+            "self_loop_rule": graph.self_loop_rule,
+            "edge_sort_rule": graph.edge_sort_rule,
+            "batching_rule": graph.batching_rule,
+        },
+        "public_output": {
+            "shape": list(output_array.shape),
+            "values": [str(int(value)) for value in output_array.ravel()],
+        },
+        "rounding_mode": validate_rounding_mode(metadata.get("rounding_mode")),
+        "integer_bound_ledger_digest": metadata["integer_bound_ledger_digest"],
+    }
+    if set(statement) != PUBLIC_STATEMENT_FIELDS:
+        raise ContextError("canonical public statement field set is invalid")
+    statement["statement_digest"] = digest_json(statement)
+    return statement
+
+
 def public_statement(graph: LocalGraph, trace: Any, metadata: Mapping[str, Any]) -> dict[str, Any]:
-    output = np.asarray(trace.y, dtype=object); features = np.asarray(trace.input_features, dtype=np.int64)
-    statement = {"schema": "zkGPT-gat-public-statement-v1", "dataset": metadata["dataset"], "dataset_display_name": metadata["dataset_display_name"], "task_type": graph.task_type, "features": {"shape": list(features.shape), "values": [int(v) for v in features.ravel()]}, "graph": {"absolute_ids": [int(v) for v in graph.absolute_ids], "src": [int(v) for v in graph.src], "dst": [int(v) for v in graph.dst], "node_ptr": graph.node_ptr.tolist(), "edge_ptr": graph.edge_ptr.tolist(), "edge_graph": [int(v) for v in graph.edge_graph], "self_loop_rule": graph.self_loop_rule, "edge_sort_rule": graph.edge_sort_rule, "batching_rule": graph.batching_rule}, "public_output": {"shape": list(output.shape), "values": [str(int(v)) for v in output.ravel()]}}
-    statement["rounding_mode"] = validate_rounding_mode(metadata.get("rounding_mode"))
-    statement["integer_bound_ledger_digest"] = metadata["integer_bound_ledger_digest"]
-    statement["statement_digest"] = digest_json(statement); return statement
+    return _canonical_public_statement(
+        graph,
+        np.asarray(trace.input_features, dtype=np.int64),
+        np.asarray(trace.y, dtype=object),
+        metadata,
+    )
 
 
 def static_table_vk(metadata: Mapping[str, Any]) -> dict[str, Any]:
-    vk = {"schema": "zkGPT-static-table-vk-v1", "rounding_mode": validate_rounding_mode(metadata.get("rounding_mode")), "static_table_id": metadata["static_table_id"], "quant_cfg_id": metadata["quant_cfg_id"], "static_table_descriptor_schema": metadata["static_table_descriptor_schema"], "static_table_content_digest": metadata["static_table_content_digest"], "static_table_descriptor_digest": metadata["static_table_descriptor_digest"], "integer_bound_ledger_digest": metadata["integer_bound_ledger_digest"], "tables": metadata["static_table_registry"]}; vk["vk_digest"] = digest_json(vk); return vk
+    _, table_registry_digest = _authenticated_static_table_registry(metadata)
+    vk = {
+        "schema": STATIC_TABLE_VK_SCHEMA,
+        "rounding_mode": validate_rounding_mode(metadata.get("rounding_mode")),
+        "static_table_id": metadata["static_table_id"],
+        "quant_cfg_id": metadata["quant_cfg_id"],
+        "static_table_descriptor_schema": metadata["static_table_descriptor_schema"],
+        "static_table_content_digest": metadata["static_table_content_digest"],
+        "static_table_descriptor_digest": metadata["static_table_descriptor_digest"],
+        "integer_bound_ledger_digest": metadata["integer_bound_ledger_digest"],
+        "table_registry_digest": table_registry_digest,
+    }
+    if set(vk) | {"vk_digest"} != set(STATIC_TABLE_VK_FIELDS):
+        raise ContextError("static-table VK schema contains unsupported fields")
+    vk["vk_digest"] = digest_json(vk)
+    return vk
 
 
 def setup_context(metadata: Mapping[str, Any], registry: Mapping[str, Any], table_vk: Mapping[str, Any]) -> dict[str, Any]:
-    setup = {"schema": "zkGPT-gat-verifier-setup-v1", "protocol_id": PROTOCOL_ID, "proof_backend_id": PROOF_BACKEND_ID, "commitment_backend_id": COMMITMENT_BACKEND_ID, "circuit_layout_id": CIRCUIT_LAYOUT_ID, "model_arch_id": metadata["model_arch_id"], "model_param_id": metadata["model_param_id"], "quant_cfg_id": metadata["quant_cfg_id"], "rounding_mode": validate_rounding_mode(metadata.get("rounding_mode")), "static_table_id": metadata["static_table_id"], "static_table_descriptor_schema": metadata["static_table_descriptor_schema"], "static_table_content_digest": metadata["static_table_content_digest"], "static_table_descriptor_digest": metadata["static_table_descriptor_digest"], "registry_digest": registry["registry_digest"], "static_table_vk_digest": table_vk["vk_digest"], "Layout_in": metadata["Layout_in"], "Layout_in_digest": metadata["Layout_in_digest"], "domain_cfg": metadata["domain_cfg"], "dim_cfg": metadata["dim_cfg"], "integer_bound_ledger": metadata["integer_bound_ledger"], "integer_bound_ledger_digest": metadata["integer_bound_ledger_digest"]}; setup["setup_digest"] = digest_json(setup); return setup
+    if not isinstance(registry, Mapping) or registry.get("registry_digest") != digest_json({key: value for key, value in registry.items() if key != "registry_digest"}):
+        raise ContextError("model registry digest is invalid in setup context")
+    expected_vk = static_table_vk(metadata)
+    if dict(table_vk) != expected_vk:
+        raise ContextError("setup context static-table VK is not canonical")
+    setup = {
+        "schema": VERIFIER_SETUP_SCHEMA,
+        "protocol_id": PROTOCOL_ID,
+        "proof_backend_id": PROOF_BACKEND_ID,
+        "commitment_backend_id": COMMITMENT_BACKEND_ID,
+        "circuit_layout_id": CIRCUIT_LAYOUT_ID,
+        "model_arch_id": metadata["model_arch_id"],
+        "model_param_id": metadata["model_param_id"],
+        "quant_cfg_id": metadata["quant_cfg_id"],
+        "rounding_mode": validate_rounding_mode(metadata.get("rounding_mode")),
+        "static_table_id": metadata["static_table_id"],
+        "registry_digest": registry["registry_digest"],
+        "Layout_in_digest": metadata["Layout_in_digest"],
+        "domain_cfg": metadata["domain_cfg"],
+        "dim_cfg": metadata["dim_cfg"],
+        "integer_bound_ledger_digest": metadata["integer_bound_ledger_digest"],
+    }
+    if set(setup) | {"setup_digest"} != set(VERIFIER_SETUP_FIELDS):
+        raise ContextError("verifier setup schema contains unsupported fields")
+    setup["setup_digest"] = digest_json(setup)
+    return setup
 
 
 def make_external_context(graph: LocalGraph, trace: Any, metadata: Mapping[str, Any], registry: Mapping[str, Any]) -> dict[str, Any]:
-    statement = public_statement(graph, trace, metadata); tables = static_table_vk(metadata); setup = setup_context(metadata, registry, tables); return {"public_statement": statement, "model_registry": dict(registry), "static_table_vk": tables, "setup_context": setup}
+    statement = public_statement(graph, trace, metadata)
+    tables = static_table_vk(metadata)
+    setup = setup_context(metadata, registry, tables)
+    context = {
+        "schema": EXTERNAL_VERIFIER_CONTEXT_SCHEMA,
+        "public_statement": statement,
+        "model_registry": dict(registry),
+        "static_table_vk": tables,
+        "setup_context": setup,
+    }
+    if set(context) | {"context_digest"} != set(EXTERNAL_VERIFIER_CONTEXT_FIELDS):
+        raise ContextError("external verifier context schema contains unsupported fields")
+    context["context_digest"] = digest_json(context)
+    return context
 
 
 def validate_external_context(metadata: Mapping[str, Any], context: Mapping[str, Any]) -> dict[str, bool]:
-    """Validate the source-matched context passed into the formal verifier.
+    """Validate the one canonical producer/fresh verifier context envelope.
 
-    ``metadata`` is still untrusted here.  It is used only as a consistency
-    target after the CLI has compared it field-by-field with the independently
-    rebuilt context.  This function also accepts the producer's legacy
-    trace-derived context so proof generation can self-check; the strict CLI
-    always supplies the new context shape from :meth:`proof_context`.
+    Every digest is checked before its self-authenticating field is removed.
+    The public statement is then compared as an exact canonical payload, so a
+    missing or extra field cannot be smuggled through a ``>=`` check.
     """
-    result = {"external_public_statement": False, "external_model_registry": False, "external_static_table_vk": False, "external_setup_context": False}
+    result = {
+        "external_context_envelope": False,
+        "external_public_statement": False,
+        "external_model_registry": False,
+        "external_static_table_vk": False,
+        "external_setup_context": False,
+    }
     try:
-        statement = dict(context["public_statement"])
-        statement_digest = statement.pop("statement_digest", None)
-        statement_ok = statement_digest == digest_json(statement)
+        if not isinstance(context, Mapping) or set(context) != {
+            "schema", "public_statement", "model_registry", "static_table_vk",
+            "setup_context", "context_digest",
+        }:
+            return result
+        if context.get("schema") != EXTERNAL_VERIFIER_CONTEXT_SCHEMA:
+            return result
+        envelope = dict(context)
+        context_digest = envelope.get("context_digest")
+        envelope.pop("context_digest", None)
+        if not isinstance(context_digest, str) or context_digest != digest_json(envelope):
+            return result
+        result["external_context_envelope"] = True
+
+        raw_statement = context.get("public_statement")
+        if not isinstance(raw_statement, Mapping):
+            return result
+        statement = dict(raw_statement)
+        # Validate the outer schema and digest while the digest member is
+        # still present.  Only then remove it for exact payload validation.
+        if statement.get("schema") != EXTERNAL_PUBLIC_STATEMENT_SCHEMA:
+            return result
+        statement_digest = statement.get("statement_digest")
+        if not isinstance(statement_digest, str) or statement_digest != digest_json({
+            key: value for key, value in statement.items() if key != "statement_digest"
+        }):
+            return result
+        statement.pop("statement_digest", None)
+        if set(statement) != PUBLIC_STATEMENT_FIELDS:
+            return result
         features = statement["features"]
+        if not isinstance(features, Mapping) or set(features) != {"shape", "values"}:
+            return result
         feature_shape = tuple(int(value) for value in features["shape"])
         feature_values = np.asarray(features["values"], dtype=object).reshape(feature_shape)
         if not all(int(value) == value for value in feature_values.ravel()):
             return result
-        graph_data = statement.get("graph", {})
+        graph_data = statement["graph"]
+        graph_fields = {
+            "absolute_ids", "src", "dst", "node_ptr", "edge_ptr", "edge_graph",
+            "self_loop_rule", "edge_sort_rule", "batching_rule",
+        }
+        if not isinstance(graph_data, Mapping) or set(graph_data) != graph_fields:
+            return result
         topology = {
             "absolute_ids": _array_digest("absolute_ids", np.asarray(graph_data["absolute_ids"], dtype=np.int64)),
             "src": _array_digest("src", np.asarray(graph_data["src"], dtype=np.int64)),
@@ -1128,37 +1490,114 @@ def validate_external_context(metadata: Mapping[str, Any], context: Mapping[str,
             "edge_ptr": [int(value) for value in graph_data["edge_ptr"]],
         }
         graph_count = len(topology["node_ptr"]) - 1
-        x_digest = digest_json({"features": _array_digest("X_pub.H_input", feature_values.astype(np.int64)), "topology": digest_json(topology), "selectors": {"segment_order": ["X_pub", "W", "Aux", "L_qry"], "graph_count": graph_count}})
-        public_output = statement.get("public_output", statement.get("public_y", {}))
+        x_digest = digest_json({
+            "features": _array_digest("X_pub.H_input", feature_values.astype(np.int64)),
+            "topology": digest_json(topology),
+            "selectors": {
+                "segment_order": ["X_pub", "W", "Aux", "L_qry"],
+                "graph_count": graph_count,
+            },
+        })
+        public_output = statement["public_output"]
+        if not isinstance(public_output, Mapping) or set(public_output) != {"shape", "values"}:
+            return result
         output_shape = tuple(int(value) for value in public_output["shape"])
-        output_values = np.asarray([int(value) for value in public_output["values"]], dtype=object).reshape(output_shape)
-        expected_shape = (int(metadata.get("dim_cfg", {}).get("N", -1)), int(metadata.get("dim_cfg", {}).get("C", -1)))
-        result["external_public_statement"] = bool(statement_ok and statement.get("schema") == "zkGPT_external_public_statement_v1" and statement.get("rounding_mode") == metadata.get("rounding_mode") and statement.get("integer_bound_ledger_digest") == metadata.get("integer_bound_ledger_digest") and metadata.get("X_pub_digest") == x_digest and metadata.get("public_output_digest") == _array_digest("Y", output_values) and output_shape == expected_shape)
+        output_values = np.asarray(
+            [int(value) for value in public_output["values"]], dtype=object
+        ).reshape(output_shape)
+        expected_shape = (
+            int(metadata.get("dim_cfg", {}).get("N", -1)),
+            int(metadata.get("dim_cfg", {}).get("C", -1)),
+        )
+        result["external_public_statement"] = bool(
+            statement.get("protocol_id") == metadata.get("protocol_id", PROTOCOL_ID)
+            and statement.get("dataset") == metadata.get("dataset")
+            and statement.get("dataset_display_name") == metadata.get("dataset_display_name")
+            and statement.get("task_type") == metadata.get("task_type")
+            and statement.get("rounding_mode") == metadata.get("rounding_mode")
+            and statement.get("integer_bound_ledger_digest") == metadata.get("integer_bound_ledger_digest")
+            and metadata.get("X_pub_digest") == x_digest
+            and metadata.get("public_output_digest") == _array_digest("Y", output_values)
+            and output_shape == expected_shape
+        )
 
-        registry = dict(context["model_registry"])
-        registry_digest = registry.pop("registry_digest", None)
+        registry_value = context.get("model_registry")
+        if not isinstance(registry_value, Mapping):
+            return result
+        registry = dict(registry_value)
+        registry_digest = registry.get("registry_digest")
         binding = registry.get("registration_binding", {})
-        binding_digest = registry.get("registration_binding_digest")
-        result["external_model_registry"] = bool(registry_digest == digest_json(registry) and isinstance(binding, Mapping) and binding.get("rounding_mode") == metadata.get("rounding_mode") and binding_digest == digest_json(binding) and context["model_registry"] == metadata.get("model_registry", {}).get("public_descriptor"))
+        result["external_model_registry"] = bool(
+            isinstance(registry_digest, str)
+            and registry_digest == digest_json({key: value for key, value in registry.items() if key != "registry_digest"})
+            and isinstance(binding, Mapping)
+            and binding.get("rounding_mode") == metadata.get("rounding_mode")
+            and registry.get("registration_binding_digest") == digest_json(binding)
+            and registry_value == metadata.get("model_registry", {}).get("public_descriptor")
+        )
 
-        tables = dict(context["static_table_vk"])
-        vk_digest = tables.pop("vk_digest", None)
-        table_vk_ok = vk_digest == digest_json(tables)
-        if "tables" in tables:
-            table_vk_ok = table_vk_ok and tables.get("rounding_mode") == metadata.get("rounding_mode") and tables["tables"] == metadata.get("static_table_registry") and tables.get("static_table_descriptor_schema") == metadata.get("static_table_descriptor_schema") and tables.get("static_table_content_digest") == metadata.get("static_table_content_digest") and tables.get("static_table_descriptor_digest") == metadata.get("static_table_descriptor_digest")
-        else:
-            table_vk_ok = table_vk_ok and tables.get("schema") == "zkGPT-static-table-vk-v1" and tables.get("rounding_mode") == metadata.get("rounding_mode") and tables.get("static_table_id") == metadata.get("static_table_id") and tables.get("quant_cfg_id") == metadata.get("quant_cfg_id") and tables.get("static_table_descriptor_schema") == metadata.get("static_table_descriptor_schema") and tables.get("static_table_content_digest") == metadata.get("static_table_content_digest") and tables.get("static_table_descriptor_digest") == metadata.get("static_table_descriptor_digest") and tables.get("integer_bound_ledger_digest") == metadata.get("integer_bound_ledger_digest")
-        result["external_static_table_vk"] = bool(table_vk_ok)
+        tables = context.get("static_table_vk")
+        if not isinstance(tables, Mapping):
+            return result
+        table_payload = dict(tables)
+        vk_digest = table_payload.get("vk_digest")
+        table_payload.pop("vk_digest", None)
+        expected_table_fields = {
+            "schema", "rounding_mode", "static_table_id", "quant_cfg_id",
+            "static_table_descriptor_schema", "static_table_content_digest",
+            "static_table_descriptor_digest", "integer_bound_ledger_digest",
+            "table_registry_digest",
+        }
+        result["external_static_table_vk"] = bool(
+            set(table_payload) == expected_table_fields
+            and tables.get("schema") == STATIC_TABLE_VK_SCHEMA
+            and isinstance(vk_digest, str)
+            and vk_digest == digest_json(table_payload)
+            and table_payload.get("rounding_mode") == metadata.get("rounding_mode")
+            and table_payload.get("static_table_id") == metadata.get("static_table_id")
+            and table_payload.get("quant_cfg_id") == metadata.get("quant_cfg_id")
+            and table_payload.get("static_table_descriptor_schema") == metadata.get("static_table_descriptor_schema")
+            and table_payload.get("static_table_content_digest") == metadata.get("static_table_content_digest")
+            and table_payload.get("static_table_descriptor_digest") == metadata.get("static_table_descriptor_digest")
+            and table_payload.get("integer_bound_ledger_digest") == metadata.get("integer_bound_ledger_digest")
+            and table_payload.get("table_registry_digest") == metadata.get("static_table_registry_digest")
+        )
 
-        setup = dict(context["setup_context"])
-        setup_digest = setup.pop("setup_digest", None)
-        setup_ok = setup_digest == digest_json(setup)
-        if setup.get("schema") == "zkGPT-gat-verifier-setup-v1":
-            setup_ok = setup_ok and setup.get("protocol_id") == metadata.get("protocol_id") and setup.get("proof_backend_id") == metadata.get("proof_backend_id") and setup.get("commitment_backend_id") == metadata.get("commitment_backend_id") and setup.get("circuit_layout_id") == metadata.get("circuit_layout_id") and setup.get("model_arch_id") == metadata.get("model_arch_id") and setup.get("model_param_id") == metadata.get("model_param_id") and setup.get("quant_cfg_id") == metadata.get("quant_cfg_id") and setup.get("rounding_mode") == metadata.get("rounding_mode") and setup.get("static_table_id") == metadata.get("static_table_id") and setup.get("static_table_descriptor_schema") == metadata.get("static_table_descriptor_schema") and setup.get("static_table_content_digest") == metadata.get("static_table_content_digest") and setup.get("static_table_descriptor_digest") == metadata.get("static_table_descriptor_digest") and setup.get("registry_digest") == metadata.get("model_registry", {}).get("registry_digest") and setup.get("Layout_in_digest") == metadata.get("Layout_in_digest") and setup.get("domain_cfg") == metadata.get("domain_cfg") and setup.get("dim_cfg") == metadata.get("dim_cfg") and setup.get("integer_bound_ledger_digest") == metadata.get("integer_bound_ledger_digest")
-        result["external_setup_context"] = bool(setup_ok)
+        setup = context.get("setup_context")
+        if not isinstance(setup, Mapping):
+            return result
+        setup_payload = dict(setup)
+        setup_digest = setup_payload.get("setup_digest")
+        setup_payload.pop("setup_digest", None)
+        expected_setup_fields = {
+            "schema", "protocol_id", "proof_backend_id", "commitment_backend_id",
+            "circuit_layout_id", "model_arch_id", "model_param_id", "quant_cfg_id",
+            "rounding_mode", "static_table_id", "registry_digest", "Layout_in_digest",
+            "domain_cfg", "dim_cfg", "integer_bound_ledger_digest",
+        }
+        result["external_setup_context"] = bool(
+            set(setup_payload) == expected_setup_fields
+            and setup_payload.get("schema") == VERIFIER_SETUP_SCHEMA
+            and isinstance(setup_digest, str)
+            and setup_digest == digest_json(setup_payload)
+            and setup_payload.get("protocol_id") == metadata.get("protocol_id")
+            and setup_payload.get("proof_backend_id") == metadata.get("proof_backend_id")
+            and setup_payload.get("commitment_backend_id") == metadata.get("commitment_backend_id")
+            and setup_payload.get("circuit_layout_id") == metadata.get("circuit_layout_id")
+            and setup_payload.get("model_arch_id") == metadata.get("model_arch_id")
+            and setup_payload.get("model_param_id") == metadata.get("model_param_id")
+            and setup_payload.get("quant_cfg_id") == metadata.get("quant_cfg_id")
+            and setup_payload.get("rounding_mode") == metadata.get("rounding_mode")
+            and setup_payload.get("static_table_id") == metadata.get("static_table_id")
+            and setup_payload.get("registry_digest") == metadata.get("model_registry", {}).get("registry_digest")
+            and setup_payload.get("Layout_in_digest") == metadata.get("Layout_in_digest")
+            and setup_payload.get("domain_cfg") == metadata.get("domain_cfg")
+            and setup_payload.get("dim_cfg") == metadata.get("dim_cfg")
+            and setup_payload.get("integer_bound_ledger_digest") == metadata.get("integer_bound_ledger_digest")
+        )
         return result
     except (KeyError, TypeError, ValueError, OverflowError, IndexError):
         return result
 
 
-__all__ = ["ContextError", "VerifierContext", "build_verifier_context", "load_public_y", "public_statement", "static_table_vk", "setup_context", "make_external_context", "validate_external_context"]
+__all__ = ["ContextError", "EXTERNAL_PUBLIC_STATEMENT_SCHEMA", "VerifierContext", "build_verifier_context", "load_public_y", "public_statement", "static_table_vk", "setup_context", "make_external_context", "validate_external_context"]

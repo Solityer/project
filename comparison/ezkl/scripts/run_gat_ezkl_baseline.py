@@ -30,11 +30,17 @@ RESULTS_ROOT = ROOT / "results"
 RUNS_ROOT = RESULTS_ROOT / "runs"
 RUNS_TMP_ROOT = RESULTS_ROOT / "runs_tmp"
 LOGS_ROOT = RESULTS_ROOT / "logs"
+PRIVATE_DIRECTORY_MODE = 0o700
+PRIVATE_FILE_MODE = 0o600
 
 from resource_policy import (  # noqa: E402
+    CEREMONY_DESCRIPTOR,
+    CEREMONY_SRS,
     CELL_ARTIFACTS,
     DATASET_ORDER,
+    PRIVATE_ARTIFACTS,
     atomic_write_json,
+    atomic_write_text,
     canonical_cell_dir,
     check_resource_layout,
     resolve_local,
@@ -167,10 +173,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", type=Path)
     parser.add_argument("--dataset-root", type=Path)
     parser.add_argument("--checkpoint", type=Path)
-    parser.add_argument("--srs-path", type=Path, required=True,
-                        help="trusted ceremony KZG SRS whose declared source_srs_max_k covers the circuit")
-    parser.add_argument("--ceremony-descriptor", type=Path, required=True,
-                        help="descriptor binding the ceremony id, exact SRS SHA-256 and original max_k")
+    parser.add_argument(
+        "--srs-path", type=Path, default=ROOT / CEREMONY_SRS,
+        help="baseline-local trusted ceremony SRS (resources/ceremony/source.srs)",
+    )
+    parser.add_argument(
+        "--ceremony-descriptor", type=Path, default=ROOT / CEREMONY_DESCRIPTOR,
+        help="baseline-local descriptor (resources/ceremony/ceremony.descriptor.json)",
+    )
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--max-logrows", type=int, default=FORMAL_SOURCE_SRS_MAX_K)
     parser.add_argument("--clean", action="store_true")
@@ -188,14 +198,13 @@ def _clean_canonical_cell(path: Path, parent: Path) -> None:
     path = Path(path)
     parent = Path(parent)
     try:
-        checked_path(Path("/"), parent, "canonical result parent")
-        checked = checked_path(Path("/"), path, "canonical result cell", allow_missing=True)
+        checked_parent = checked_path(ROOT, parent, "canonical result parent")
+        checked = checked_path(ROOT, path, "canonical result cell", allow_missing=True)
     except (FileNotFoundError, ValueError) as exc:
         raise RuntimeError(str(exc)) from exc
     if not checked.exists():
         return
-    parent_resolved = parent.resolve()
-    if checked == parent_resolved or parent_resolved not in checked.parents:
+    if checked == checked_parent or checked_parent not in checked.parents:
         raise RuntimeError(f"refusing to clean path outside canonical result root: {checked}")
     metadata = checked.lstat()
     if not stat.S_ISDIR(metadata.st_mode):
@@ -220,14 +229,13 @@ def _safe_remove_work_tree(path: Path, parent: Path) -> None:
     path = Path(path)
     parent = Path(parent)
     try:
-        checked_path(Path("/"), parent, "temporary work parent")
-        checked = checked_path(Path("/"), path, "temporary work tree", allow_missing=True)
+        checked_parent = checked_path(ROOT, parent, "temporary work parent")
+        checked = checked_path(ROOT, path, "temporary work tree", allow_missing=True)
     except (FileNotFoundError, ValueError) as exc:
         raise RuntimeError(str(exc)) from exc
     if not checked.exists():
         return
-    parent_resolved = parent.resolve()
-    if checked == parent_resolved or parent_resolved not in checked.parents:
+    if checked == checked_parent or checked_parent not in checked.parents:
         raise RuntimeError(f"refusing to remove temporary path outside root: {checked}")
     if not stat.S_ISDIR(checked.lstat().st_mode):
         raise RuntimeError(f"temporary work root is not a directory: {checked}")
@@ -250,12 +258,130 @@ def _safe_remove_work_tree(path: Path, parent: Path) -> None:
     remove_tree(checked)
 
 
+def _ensure_baseline_directory(path: Path, label: str) -> Path:
+    """Create one baseline-local directory after checking every component."""
+
+    try:
+        checked = checked_path(ROOT, path, label, allow_missing=True)
+    except (FileNotFoundError, ValueError) as exc:
+        raise RuntimeError(str(exc)) from exc
+    if checked.exists():
+        metadata = checked.lstat()
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+            raise RuntimeError(f"{label} is not a private directory: {checked}")
+        os.chmod(checked, PRIVATE_DIRECTORY_MODE, follow_symlinks=False)
+        return checked
+    try:
+        checked.mkdir()
+    except OSError as exc:
+        raise RuntimeError(f"cannot create {label}: {checked}: {exc}") from exc
+    os.chmod(checked, PRIVATE_DIRECTORY_MODE, follow_symlinks=False)
+    return checked
+
+
+def _create_private_stage_file(path: Path, stage_root: Path, label: str) -> Path:
+    """Create one private stage file with exclusive creation and mode 0600."""
+
+    checked_stage = checked_path(ROOT, stage_root, "private proof stage")
+    checked = checked_path(ROOT, path, label, allow_missing=True)
+    if checked_stage not in checked.parents:
+        raise RuntimeError(f"{label} escapes the per-session temporary stage: {checked}")
+    if checked.exists() or checked.is_symlink():
+        raise RuntimeError(f"{label} already exists in the private stage: {checked}")
+    try:
+        fd = os.open(checked, os.O_WRONLY | os.O_CREAT | os.O_EXCL, PRIVATE_FILE_MODE)
+    except OSError as exc:
+        raise RuntimeError(f"cannot create {label}: {checked}: {exc}") from exc
+    os.close(fd)
+    metadata = checked.lstat()
+    if (
+        stat.S_ISLNK(metadata.st_mode)
+        or not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_nlink != 1
+        or stat.S_IMODE(metadata.st_mode) != PRIVATE_FILE_MODE
+    ):
+        raise RuntimeError(f"{label} failed private-file contract: {checked}")
+    return checked
+
+
+def _harden_private_stage_file(path: Path, stage_root: Path, label: str) -> Path:
+    """Validate and force one private stage artifact to a 0600 regular file."""
+
+    checked_stage = checked_path(ROOT, stage_root, "private proof stage")
+    checked = checked_path(ROOT, path, label)
+    if checked_stage not in checked.parents:
+        raise RuntimeError(f"{label} escapes the per-session temporary stage: {checked}")
+    metadata = checked.lstat()
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        raise RuntimeError(f"{label} is not a regular non-link file: {checked}")
+    if metadata.st_nlink != 1:
+        raise RuntimeError(f"{label} is hard-linked: {checked}")
+    os.chmod(checked, PRIVATE_FILE_MODE, follow_symlinks=False)
+    metadata = checked.lstat()
+    if stat.S_IMODE(metadata.st_mode) != PRIVATE_FILE_MODE:
+        raise RuntimeError(f"{label} is not mode 0600: {checked}")
+    return checked
+
+
+def _remove_private_stage_artifacts(cell: Path, stage_root: Path) -> None:
+    """Remove private model/witness files before a public cell is committed."""
+
+    checked_stage = checked_path(ROOT, stage_root, "private proof stage")
+    checked_cell = checked_path(ROOT, cell, "private proof cell")
+    if checked_stage not in checked_cell.parents:
+        raise RuntimeError(f"private proof cell escapes its stage: {checked_cell}")
+    for name in sorted(PRIVATE_ARTIFACTS):
+        path = checked_cell / name
+        if not path.exists() and not path.is_symlink():
+            continue
+        _harden_private_stage_file(path, checked_stage, f"private artifact {name}")
+        path.unlink()
+
+
+def _redact_private_stage_paths(value: Any, paths: set[str]) -> Any:
+    """Keep private witness/model paths out of the committed run manifest."""
+
+    if isinstance(value, str):
+        redacted = value
+        for path in paths:
+            redacted = redacted.replace(path, "<private-stage-artifact>")
+        return redacted
+    if isinstance(value, list):
+        return [_redact_private_stage_paths(item, paths) for item in value]
+    if isinstance(value, dict):
+        return {
+            key: _redact_private_stage_paths(item, paths)
+            for key, item in value.items()
+        }
+    return value
+
+
+def build_independent_verify_command(
+    verifier_binary: Path,
+    *,
+    compiled: Path,
+    proof: Path,
+    statement: Path,
+    settings: Path,
+    vk: Path,
+    output: Path,
+) -> list[str]:
+    """Build the fresh CPU verifier argv without accepting private witness input."""
+
+    return [
+        str(verifier_binary), "graph-gat-verify", "--compiled-circuit", str(compiled),
+        "--proof-path", str(proof), "--public-statement", str(statement),
+        "--settings-path", str(settings), "--vk-path", str(vk), "--output",
+        str(output), "--device", "cpu",
+    ]
+
+
 def _prepare_stage(dataset: str, device: str, final_dir: Path, clean: bool) -> tuple[Path, Path]:
     """Create a private proof stage and optionally clean only this cell."""
 
-    RESULTS_ROOT.mkdir(parents=True, exist_ok=True)
-    RUNS_ROOT.mkdir(parents=True, exist_ok=True)
-    RUNS_TMP_ROOT.mkdir(parents=True, exist_ok=True)
+    _ensure_baseline_directory(RESULTS_ROOT, "formal results root")
+    _ensure_baseline_directory(RUNS_ROOT, "canonical results root")
+    _ensure_baseline_directory(RUNS_TMP_ROOT, "temporary results root")
     if final_dir.is_symlink():
         raise RuntimeError(f"canonical result cell is a symlink: {final_dir}")
     if clean:
@@ -266,12 +392,16 @@ def _prepare_stage(dataset: str, device: str, final_dir: Path, clean: bool) -> t
         )
     # Every invocation gets an isolated stage.  It is removed in main's
     # finally block, so no work directory can become part of a result cell.
-    stage = (RUNS_TMP_ROOT / f"{device}-{dataset}-{uuid.uuid4().hex}").resolve()
-    if RUNS_TMP_ROOT.resolve() not in stage.parents:
-        raise RuntimeError("temporary proof stage escaped results/runs_tmp")
-    stage.mkdir(parents=True, exist_ok=False)
+    stage = RUNS_TMP_ROOT / f"{device}-{dataset}-{uuid.uuid4().hex}"
+    try:
+        stage = checked_path(ROOT, stage, "temporary proof stage", allow_missing=True)
+        stage.mkdir(parents=False, exist_ok=False)
+        os.chmod(stage, PRIVATE_DIRECTORY_MODE, follow_symlinks=False)
+    except (FileNotFoundError, ValueError, OSError) as exc:
+        raise RuntimeError(f"cannot create private temporary proof stage: {stage}: {exc}") from exc
     cell = stage / "cell"
     cell.mkdir()
+    os.chmod(cell, PRIVATE_DIRECTORY_MODE, follow_symlinks=False)
     return stage, cell
 
 
@@ -297,27 +427,36 @@ def main() -> int:
     if args.max_logrows != FORMAL_SOURCE_SRS_MAX_K:
         raise RuntimeError("formal ezkl requires --max-logrows=28; derived settings remain below the exact source SRS")
     entry = load_datasets()[args.dataset]
-    # Formal data and checkpoint inputs are baseline-local resources.  SRS and
-    # ceremony descriptors remain explicit trusted ceremony inputs and are not
-    # silently copied into the baseline.
+    # Every project-level input, including the trusted ceremony material, is
+    # owned by this baseline.  The explicit flags are retained for discoverable
+    # CLI provenance but are accepted only when they name the canonical local
+    # resource paths.
     config = resolve(ROOT, args.config or entry["config"])
     dataset_root = resolve(ROOT, args.dataset_root or entry["dataset_root"])
     checkpoint = resolve(ROOT, args.checkpoint or entry["checkpoint"])
     try:
-        srs_input = args.srs_path.expanduser()
-        descriptor_input = args.ceremony_descriptor.expanduser()
-        if not srs_input.is_absolute():
-            srs_input = Path.cwd() / srs_input
-        if not descriptor_input.is_absolute():
-            descriptor_input = Path.cwd() / descriptor_input
-        srs_path = checked_path(Path("/"), srs_input, "trusted ceremony SRS")
-        ceremony_descriptor = checked_path(
-            Path("/"), descriptor_input, "trusted ceremony descriptor"
-        )
+        srs_path = resolve(ROOT, str(args.srs_path))
+        ceremony_descriptor = resolve(ROOT, str(args.ceremony_descriptor))
     except (FileNotFoundError, ValueError) as exc:
         raise RuntimeError(str(exc)) from exc
+    expected_srs = resolve(ROOT, CEREMONY_SRS)
+    expected_descriptor = resolve(ROOT, CEREMONY_DESCRIPTOR)
+    if srs_path != expected_srs or ceremony_descriptor != expected_descriptor:
+        raise RuntimeError(
+            "formal ezkl requires baseline-local resources/ceremony/source.srs and "
+            "resources/ceremony/ceremony.descriptor.json"
+        )
     default_run = canonical_cell_dir(ROOT, args.device, args.dataset)
-    run_dir = (args.output_dir.resolve() if args.output_dir else default_run).resolve()
+    if args.output_dir is None:
+        run_dir = default_run
+    else:
+        # Validate the caller's lexical path before any resolution.  A
+        # symlink alias to the canonical cell must not be accepted because it
+        # would make the commit/cleanup target ambiguous.
+        try:
+            run_dir = checked_path(ROOT, args.output_dir, "formal output directory", allow_missing=True)
+        except (FileNotFoundError, ValueError) as exc:
+            raise RuntimeError(str(exc)) from exc
     if run_dir != default_run:
         raise RuntimeError(
             "output directory must be exactly results/runs/<backend>/<dataset>"
@@ -330,13 +469,17 @@ def main() -> int:
     run_dir = work_dir
     final_run_dir = default_run
     committed = False
+    stage_removed = False
 
     def cleanup_stage() -> None:
-        if not committed:
-            try:
-                _safe_remove_work_tree(stage_root, RUNS_TMP_ROOT)
-            except Exception:
-                pass
+        nonlocal stage_removed
+        if committed or stage_removed:
+            return
+        try:
+            _safe_remove_work_tree(stage_root, RUNS_TMP_ROOT)
+        except Exception:
+            return
+        stage_removed = True
 
     atexit.register(cleanup_stage)
 
@@ -463,14 +606,17 @@ def main() -> int:
         str(checkpoint),
         "--security-profile",
         str(resolved_security_profile),
-        "--ezkl-root",
+        "--project-root",
         str(ROOT),
         "--output-dir",
         str(run_dir),
         "--route",
         FORMAL_ROUTE,
     ]
+    model_path = run_dir / "model_parameters.i64.txt"
+    _create_private_stage_file(model_path, stage_root, "model parameters")
     elapsed, stdout, stderr = run_stage(adapter_command, ROOT)
+    _harden_private_stage_file(model_path, stage_root, "model parameters")
     manifest["timings_ms"]["adapter"] = elapsed
     manifest["commands"].append(adapter_command)
     manifest["adapter_stdout"] = stdout[-4000:]
@@ -483,6 +629,10 @@ def main() -> int:
     manifest["ezkl_security_profile_id"] = spec_identity["security_profile_id"]
     write_json(manifest_path, manifest)
     if not args.run:
+        cleanup_stage()
+        if not stage_removed:
+            raise RuntimeError("failed to remove private temporary stage")
+        atexit.unregister(cleanup_stage)
         print(json.dumps({
             "status": "canonical_artifacts_ready_not_committed",
             "stage_removed_after_exit": True,
@@ -503,6 +653,7 @@ def main() -> int:
         "proof": run_dir / "proof.json",
         "verify": run_dir / "verify.json",
     }
+    _create_private_stage_file(paths["witness"], stage_root, "formal witness")
     commands: list[tuple[str, list[str]]] = [
         (
             "gen_settings",
@@ -549,19 +700,26 @@ def main() -> int:
         ),
         (
             "verify",
-            [
-                str(verifier_binary), "graph-gat-verify", "--compiled-circuit", str(paths["compiled"]),
-                "--proof-path", str(paths["proof"]), "--public-statement",
-                str(paths["statement"]), "--settings-path", str(paths["settings"]),
-                "--vk-path", str(paths["vk"]), "--output", str(paths["verify"]),
-                "--device", "cpu",
-            ],
+            build_independent_verify_command(
+                verifier_binary,
+                compiled=paths["compiled"],
+                proof=paths["proof"],
+                statement=paths["statement"],
+                settings=paths["settings"],
+                vk=paths["vk"],
+                output=paths["verify"],
+            ),
         ),
     ]
-    logs = (LOGS_ROOT / args.device / args.dataset / stage_root.name).resolve()
-    if LOGS_ROOT.resolve() not in logs.parents:
-        raise RuntimeError("command log directory escaped results/logs")
-    logs.mkdir(parents=True, exist_ok=True)
+    _ensure_baseline_directory(LOGS_ROOT, "formal command log root")
+    _ensure_baseline_directory(LOGS_ROOT / args.device, "formal command backend log root")
+    _ensure_baseline_directory(
+        LOGS_ROOT / args.device / args.dataset, "formal command dataset log root"
+    )
+    logs = _ensure_baseline_directory(
+        LOGS_ROOT / args.device / args.dataset / stage_root.name,
+        "formal command log directory",
+    )
     stage_outputs: dict[str, tuple[str, str]] = {}
     for stage, command in commands:
         manifest["status"] = f"running_{stage}"
@@ -577,9 +735,10 @@ def main() -> int:
         manifest["timings_ms"][stage] = elapsed
         manifest["commands"].append(command)
         stage_outputs[stage] = (stdout, stderr)
-        (logs / f"{stage}.stdout.log").write_text(stdout, encoding="utf-8")
-        (logs / f"{stage}.stderr.log").write_text(stderr, encoding="utf-8")
+        atomic_write_text(logs / f"{stage}.stdout.log", stdout)
+        atomic_write_text(logs / f"{stage}.stderr.log", stderr)
 
+    _harden_private_stage_file(paths["witness"], stage_root, "formal witness")
     verify = json.loads(paths["verify"].read_text(encoding="utf-8"))
     circuit_manifest = json.loads((run_dir / "circuit_manifest.json").read_text(encoding="utf-8"))
     expected_device_marker = (
@@ -660,6 +819,10 @@ def main() -> int:
             "verify_metadata": verify_metadata,
         }
     )
+    # Private model parameters and the full witness are consumed only by the
+    # prover.  Remove them before the public cell inventory is checked and
+    # before the cell can be atomically moved into results/runs.
+    _remove_private_stage_artifacts(run_dir, stage_root)
     # No result is committed until the native verifier has passed and the
     # staged cell has the exact production inventory.  This prevents partial
     # setup/proof output from being mistaken for a formal result.
@@ -668,6 +831,9 @@ def main() -> int:
         raise RuntimeError(
             "canonical result cell already exists; rerun with --clean to replace exactly this cell"
         )
+    manifest = _redact_private_stage_paths(
+        manifest, {str(model_path), str(paths["witness"])}
+    )
     manifest = _rewrite_stage_paths(manifest, stage_root, final_run_dir)
     manifest.pop("resolved_security_profile_stage", None)
     manifest["run_dir"] = str(final_run_dir)
@@ -675,10 +841,13 @@ def main() -> int:
     manifest["artifact_inventory"] = sorted(CELL_ARTIFACTS)
     manifest["command_logs"] = str(logs.relative_to(ROOT))
     write_json(manifest_path, manifest)
-    final_run_dir.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_baseline_directory(final_run_dir.parent, "canonical result backend directory")
     os.replace(run_dir, final_run_dir)
-    _safe_remove_work_tree(stage_root, RUNS_TMP_ROOT)
+    cleanup_stage()
+    if not stage_removed:
+        raise RuntimeError("failed to remove private temporary stage after commit")
     committed = True
+    atexit.unregister(cleanup_stage)
     result = {
         "dataset": args.dataset,
         "device": args.device,

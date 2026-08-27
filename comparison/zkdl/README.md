@@ -16,6 +16,8 @@ CUDA `nvcc`, `libcudart`, and a CUDA device supported by the local toolkit.
 python3 -m pip install -r requirements.txt
 ./scripts/build.sh --cpu
 ./scripts/build.sh --gpu
+python3 scripts/prepare_resources.py --source-root /path/to/project
+python3 scripts/setup_resources.py
 ```
 
 `--gpu` is fail-closed: the resulting prover probes a real CUDA kernel, runs a
@@ -25,13 +27,21 @@ always performed by the CPU binary and validates that telemetry.
 
 ## Formal workflow
 
-Each row performs preflight bound/table checks, creates or validates the local
-transparent Hyrax PP, runs the fixed canonical GAT adapter, compiles and checks
-the public statement, registers the model if no registration exists, proves on
-the selected device, independently verifies, cross-checks manifests, and emits
-an exact cell under `runs/<dataset>/<device>/warm/`.  The runner refuses
-external resource paths, symlinks, hard-links, stale cells, incomplete proofs,
-and extra cell artifacts.
+The only formal execution sequence is:
+
+```text
+build -> prepare_resources (import) -> setup_resources (PP + staged manifest)
+      -> register during first cell -> run_single/run_all -> collect_results
+      -> validate_final_results
+```
+
+Each row performs preflight bound/table checks, uses the authenticated
+baseline-local transparent Hyrax PP, runs the fixed canonical GAT adapter,
+compiles and checks the public statement, registers the model if no
+registration exists, proves on the selected device, independently verifies,
+cross-checks manifests, and emits an exact cell under
+`runs/<dataset>/<device>/warm/`. The runner refuses external resource paths,
+symlinks, hard-links, stale cells, incomplete proofs, and extra cell artifacts.
 
 Before a formal run, stage the five baseline-local resource bundles.  This
 explicit preparation command is the only operation that may read a source
@@ -39,7 +49,12 @@ checkout outside this directory:
 
 ```bash
 python3 scripts/prepare_resources.py --source-root /path/to/project
+python3 scripts/setup_resources.py
 ```
+
+`--source-root` is accepted only by `prepare_resources.py` and is used solely
+to copy the five resource bundles into this directory. It is never a runtime
+resource path and must not be supplied to `run_single.py`.
 
 ```bash
 python3 scripts/run_single.py --dataset cora --device cpu
@@ -50,9 +65,9 @@ python3 scripts/validate_final_results.py
 ```
 
 Run `scripts/build.sh --all` before the matrix if the CPU and GPU binaries are
-not already present.  The five-dataset matrix runner is `scripts/run_all.sh`;
+not already present. The five-dataset matrix runner is `scripts/run_all.sh`;
 collection and matrix validation are separate commands and never manufacture
-proof or verification success.  No runner writes outside this baseline.
+proof or verification success. No runner writes outside this baseline.
 Private witnesses, model opening secrets, proofs, and generated PP objects are
 ignored by Git.
 

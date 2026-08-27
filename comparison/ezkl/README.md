@@ -59,19 +59,27 @@ EZKL_BUILD_GPU=1 scripts/build.sh
 `build.sh` 只使用当前 `PATH` 中的 `cargo`/`rustc`，不读取开发机 shell 文件或主实验目录；
 当前 `rust-toolchain` 对应的 `1.93.0-nightly` compiler release line 不匹配时会在构建前
 直接失败。CPU/GPU target、build identity、adapter 和所有输出路径均位于本 baseline 目录内。
+正式 Cargo manifest 只暴露 `formal` relation binary；原 ezkl CLI/`execute` 路径及其开发机
+lookup-cache 已从正式源码中移除，formal table 每次由当前注册资源生成。
 
 CPU formal binary 为 `target/release/ezkl_formal`；CUDA formal binary 为
 `target-gpu/release/ezkl_formal`。CUDA 入口必须成功加载并选择 CUDA device，否则立即失败；
 不会回退到 CPU。CPU runner 也拒绝 GPU-enabled binary。
 
-正式资源必须由实验负责人先放入本目录的 `data/cache/` 与
-`artifacts/checkpoints/`，不能通过 runner 从主实验目录读取。资源布局只由下面的
+正式资源必须由实验负责人先放入本目录的 `data/cache/`、`artifacts/checkpoints/` 与
+`resources/ceremony/`，不能通过 runner 从主实验目录或外部项目目录读取。资源布局只由下面的
 命令检查；该命令不会打开或计算任何完整数据集：
 
 ```bash
 python3 scripts/prepare_resources.py
 python3 scripts/preflight.py --require-staged
 ```
+
+`resources/ceremony/source.srs` 和
+`resources/ceremony/ceremony.descriptor.json` 是唯一接受的正式 ceremony
+资源路径。descriptor 必须声明真实的 `source_srs_sha256`、
+`source_srs_max_k=28` 和稳定 `ceremony_id`；runner 会对 SRS bytes、descriptor
+和所有数据/checkpoint 文件名执行 baseline-local fail-closed 检查。
 
 `resources/resource_manifest.json` 固定五个正式 config、dataset/cache 和 checkpoint
 相对路径。`--check`/`--require-staged` 只检查必需文件名存在，内容、维度、checkpoint
@@ -83,27 +91,26 @@ python3 scripts/preflight.py --require-staged
 显式覆盖为 baseline 内路径。以下命令依次执行 adapter、settings、compile、setup、full witness、proof 和
 independent verify：
 
-首先由可信 ceremony 管理方提供 descriptor（`descriptor_kind=ezkl_trusted_ceremony_srs_v1`、
-`ceremony_id`、`source_srs_sha256`、真实的 `source_srs_max_k`）。runner 会在 adapter 之前
+首先由可信 ceremony 管理方把 descriptor（`descriptor_kind=ezkl_trusted_ceremony_srs_v1`、
+`ceremony_id`、`source_srs_sha256`、真实的 `source_srs_max_k`）放入
+`resources/ceremony/ceremony.descriptor.json`，并把对应 SRS 放入
+`resources/ceremony/source.srs`。runner 会在 adapter 之前
 校验 SRS bytes 并物化 resolved profile；SRS 的真实 ceremony 身份、摘要和原始 `k` 会贯穿
 setup/prove/verify，且必须覆盖编译电路的 `logrows`。
 
 ```bash
 python3 scripts/run_gat_ezkl_baseline.py \
-  --dataset cora_full --device cpu --srs-path /trusted/ceremony.srs \
-  --ceremony-descriptor /trusted/ceremony.descriptor.json --clean --run
+  --dataset cora_full --device cpu --clean --run
 
 python3 scripts/run_gat_ezkl_baseline.py \
-  --dataset cora_full --device cuda --srs-path /trusted/ceremony.srs \
-  --ceremony-descriptor /trusted/ceremony.descriptor.json --clean --run
+  --dataset cora_full --device cuda --clean --run
 ```
 
 仅生成 canonical adapter inputs（不产生 proof；stage 会在进程结束时清理，不会写入
 正式 result cell）：
 
 ```bash
-python3 scripts/run_gat_ezkl_baseline.py --dataset cora_full --device cpu \
-  --srs-path /trusted/ceremony.srs --ceremony-descriptor /trusted/ceremony.descriptor.json --clean
+python3 scripts/run_gat_ezkl_baseline.py --dataset cora_full --device cpu --clean
 ```
 
 外部输入覆盖示例：
@@ -114,16 +121,12 @@ python3 scripts/run_gat_ezkl_baseline.py \
   --config configs/cora_full.cfg \
   --dataset-root data/cache/cora \
   --checkpoint artifacts/checkpoints/cora_gat \
-  --srs-path /trusted/ceremony.srs \
-  --ceremony-descriptor /trusted/ceremony.descriptor.json \
   --clean --run
 ```
 
 ## 全量正式入口与结果
 
 ```bash
-export EZKL_SRS_PATH=/trusted/ceremony.srs
-export EZKL_CEREMONY_DESCRIPTOR=/trusted/ceremony.descriptor.json
 scripts/run_all.sh
 python3 scripts/collect_results.py
 python3 scripts/validate_final_results.py
@@ -148,8 +151,7 @@ cell 和 `results/formal_results.{json,csv}` 矩阵 summary。
 ```bash
 EZKL_DEVICES=cpu scripts/run_all.sh
 python3 scripts/run_until_complete.py --datasets cora_full pubmed_full \
-  --devices cpu --srs-path /trusted/ceremony.srs \
-  --ceremony-descriptor /trusted/ceremony.descriptor.json
+  --devices cpu
 ```
 
 当所有十个 cell 已由真实 proof 与独立 native verify 成功后，默认全矩阵入口会执行严格

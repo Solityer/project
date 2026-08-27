@@ -12,14 +12,14 @@ use crate::circuit::modules::poseidon::{PoseidonChip, PoseidonConfig};
 use crate::circuit::modules::Module;
 use crate::circuit::CheckMode;
 use crate::fieldutils::integer_rep_to_felt;
+#[cfg(all(feature = "gpu-accelerated", not(target_arch = "wasm32")))]
+use crate::gpu_telemetry;
 use crate::pfsys::{
     create_keys, create_proof_circuit, load_pk, load_vk, save_params, save_pk, save_vk,
     verify_proof_circuit, Snark,
 };
 use crate::tensor::{Tensor, ValTensor, ValType};
 use crate::EZKLError;
-#[cfg(all(feature = "gpu-accelerated", not(target_arch = "wasm32")))]
-use crate::gpu_telemetry;
 use halo2_proofs::circuit::{Layouter, SimpleFloorPlanner, Value};
 use halo2_proofs::plonk::{
     Advice, Circuit, Column, ConstraintSystem, Error, Expression, Instance, Selector, TableColumn,
@@ -35,7 +35,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::io::Cursor;
-use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
+use std::path::{Component, Path, PathBuf};
 
 const PLAN_KIND: &str = "ezkl_formal_fixed_gat_program_v1";
 const SETTINGS_KIND: &str = "ezkl_formal_fixed_gat_settings_v1";
@@ -48,6 +50,13 @@ const DEFAULT_MAX_LOGROWS: u32 = 28;
 const FORMAL_SOURCE_SRS_MAX_K: u32 = 28;
 const PROGRAM_LANES: usize = 32;
 const FORMAL_SEMANTIC_VERSION: &str = "ezkl_formal_gat_semantics_v2";
+// The model dump is a protocol object shared with the native C++ adapter.
+// Keep these strings byte-for-byte identical to formal_hash.cpp.  The order
+// digest is carried through registration and the compiled plan so H(W) is
+// only meaningful for this exact schema/traversal.
+const CANONICAL_MODEL_SCHEMA: &str = "ezkl_formal_model_parameters_v1";
+const CANONICAL_MODEL_ORDER: &str =
+    "hidden:(layer_index,local_head_index,global_head_index):seq_kernel,attn_src_kernel,attn_dst_kernel;output:(head_index):seq_kernel,attn_src_kernel,attn_dst_kernel,output_bias";
 const FORMAL_OPERATION_REGISTRY_JSON: &str =
     include_str!("../configs/formal_operation_registry.json");
 
@@ -382,6 +391,9 @@ struct FormalPlan {
     metadata_hash: String,
     shape_hash: String,
     registered_model_hash: String,
+    model_schema: String,
+    model_order: String,
+    model_order_digest: String,
     settings_id: String,
     compiled_circuit_id: String,
     security_profile_id: String,
@@ -415,6 +427,9 @@ struct FormalSettings {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct ModelRegistration {
     registration_kind: String,
+    model_schema: String,
+    model_order: String,
+    model_order_digest: String,
     model_arch_id: String,
     model_param_id: String,
     quant_cfg_id: String,
@@ -1024,17 +1039,37 @@ fn formal_operation_registry_id() -> String {
     formal_domain_hash(
         "ezkl_formal_operation_registry",
         "canonical_json",
-        FORMAL_OPERATION_REGISTRY_JSON.trim_end_matches(['\r', '\n']).as_bytes(),
+        FORMAL_OPERATION_REGISTRY_JSON
+            .trim_end_matches(['\r', '\n'])
+            .as_bytes(),
     )
 }
 
-fn encode_u64_vector(values: &[usize]) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(8 + values.len() * 8);
-    bytes.extend_from_slice(&(values.len() as u64).to_le_bytes());
+fn canonical_model_order_digest() -> String {
+    formal_domain_hash(
+        "canonical_model_order",
+        "descriptor",
+        format!("{CANONICAL_MODEL_SCHEMA}\n{CANONICAL_MODEL_ORDER}").as_bytes(),
+    )
+}
+
+fn encode_u64_vector(values: &[usize]) -> Result<Vec<u8>, EZKLError> {
+    let length = u64::try_from(values.len()).map_err(|_| "canonical vector length exceeds u64")?;
+    let capacity = values
+        .len()
+        .checked_mul(8)
+        .and_then(|size| size.checked_add(8))
+        .ok_or("canonical vector byte length overflow")?;
+    let mut bytes = Vec::with_capacity(capacity);
+    bytes.extend_from_slice(&length.to_le_bytes());
     for &value in values {
-        bytes.extend_from_slice(&(value as u64).to_le_bytes());
+        bytes.extend_from_slice(
+            &u64::try_from(value)
+                .map_err(|_| "canonical vector element exceeds u64")?
+                .to_le_bytes(),
+        );
     }
-    bytes
+    Ok(bytes)
 }
 
 fn canonical_graph_hash(
@@ -1059,15 +1094,26 @@ fn canonical_graph_hash(
         feature_dim,
         class_count,
     ] {
-        dimensions.extend_from_slice(&(value as u64).to_le_bytes());
+        dimensions.extend_from_slice(
+            &u64::try_from(value)
+                .map_err(|_| "canonical graph dimension exceeds u64")?
+                .to_le_bytes(),
+        );
     }
-    let absolute_ids = encode_u64_vector(indices);
-    let node_ptr = encode_u64_vector(node_ptr_values);
-    let edge_ptr = encode_u64_vector(edge_ptr_values);
-    let src = encode_u64_vector(src_values);
-    let dst = encode_u64_vector(dst_values);
-    let mut features = Vec::with_capacity(8 + feature_values.len() * 8);
-    features.extend_from_slice(&(feature_values.len() as u64).to_le_bytes());
+    let absolute_ids = encode_u64_vector(indices)?;
+    let node_ptr = encode_u64_vector(node_ptr_values)?;
+    let edge_ptr = encode_u64_vector(edge_ptr_values)?;
+    let src = encode_u64_vector(src_values)?;
+    let dst = encode_u64_vector(dst_values)?;
+    let feature_length =
+        u64::try_from(feature_values.len()).map_err(|_| "canonical feature length exceeds u64")?;
+    let feature_capacity = feature_values
+        .len()
+        .checked_mul(8)
+        .and_then(|size| size.checked_add(8))
+        .ok_or("canonical feature byte length overflow")?;
+    let mut features = Vec::with_capacity(feature_capacity);
+    features.extend_from_slice(&feature_length.to_le_bytes());
     for &value in feature_values {
         let value = i64::try_from(value).map_err(|_| "public feature exceeds canonical i64")?;
         features.extend_from_slice(&value.to_le_bytes());
@@ -1335,7 +1381,7 @@ fn validate_main_table_domains(
     // not a sound substitute for the model-dependent score/ExpMap bounds.
     // The compile-time ledger gate in `validate_plan` checks that every family
     // is covered by these exact rows.
-    if aux.limb_max != configured - 1
+    if aux.limb_max != configured.checked_sub(1).ok_or("range table underflow")?
         || tables.lrelu_min >= tables.lrelu_max
         || tables.elu_min >= tables.elu_max
         || tables.exp_max < 0
@@ -1344,6 +1390,37 @@ fn validate_main_table_domains(
     }
     let _ = spec;
     Ok(())
+}
+
+fn canonical_table_row_path(
+    base: &Path,
+    rows_path: &str,
+    expected_name: &str,
+) -> Result<PathBuf, EZKLError> {
+    let relative = Path::new(rows_path);
+    let mut components = relative.components();
+    let name = match (components.next(), components.next()) {
+        (Some(Component::Normal(name)), None) => name,
+        _ => return Err("canonical table rows_path must be one direct relative file".into()),
+    };
+    if name != expected_name {
+        return Err("canonical table rows_path does not match the registered file".into());
+    }
+    let base = fs::canonicalize(base)?;
+    let path = base.join(name);
+    let metadata = fs::symlink_metadata(&path)?;
+    if !metadata.file_type().is_file() {
+        return Err("canonical table rows file must be a regular file".into());
+    }
+    #[cfg(unix)]
+    if metadata.nlink() != 1 {
+        return Err("canonical table rows file must have exactly one hard link".into());
+    }
+    let canonical = fs::canonicalize(&path)?;
+    if canonical.parent() != Some(base.as_path()) || canonical.file_name() != Some(name) {
+        return Err("canonical table rows file escaped the baseline resource directory".into());
+    }
+    Ok(canonical)
 }
 
 fn load_canonical_tables(
@@ -1355,8 +1432,10 @@ fn load_canonical_tables(
     bind_aux_table_spec(aux.clone())?;
     validate_table_spec(spec)?;
     validate_aux_table_spec(aux)?;
-    let main_payload = fs::read(base.join(&spec.rows_path))?;
-    let aux_payload = fs::read(base.join(&aux.rows_path))?;
+    let main_path = canonical_table_row_path(base, &spec.rows_path, "formal_main_tables.i64.bin")?;
+    let aux_path = canonical_table_row_path(base, &aux.rows_path, "backend_aux_tables.i64.bin")?;
+    let main_payload = fs::read(main_path)?;
+    let aux_payload = fs::read(aux_path)?;
     let parse =
         |payload: &[u8], domain: &str, digest: &str| -> Result<Vec<(u64, i128, i128)>, EZKLError> {
             if payload.len() < 14
@@ -1389,11 +1468,34 @@ fn load_canonical_tables(
     let to_usize = |value: i128| {
         usize::try_from(value).map_err(|_| EZKLError::from("table row count exceeds usize"))
     };
-    expected[1] = to_usize(aux.limb_max + 1)?;
-    expected[2] = to_usize(spec.lrelu_max - spec.lrelu_min + 1)?;
-    expected[3] = to_usize(spec.elu_max - spec.elu_min + 1)?;
-    expected[4] = to_usize(spec.exp_max + 1)?;
-    expected[5] = to_usize(aux.max_relu_max - aux.max_relu_min + 1)?;
+    expected[1] = to_usize(
+        aux.limb_max
+            .checked_add(1)
+            .ok_or("limb table row count overflow")?,
+    )?;
+    expected[2] = to_usize(
+        spec.lrelu_max
+            .checked_sub(spec.lrelu_min)
+            .and_then(|value| value.checked_add(1))
+            .ok_or("LReLU table row count overflow")?,
+    )?;
+    expected[3] = to_usize(
+        spec.elu_max
+            .checked_sub(spec.elu_min)
+            .and_then(|value| value.checked_add(1))
+            .ok_or("ELU table row count overflow")?,
+    )?;
+    expected[4] = to_usize(
+        spec.exp_max
+            .checked_add(1)
+            .ok_or("ExpMap table row count overflow")?,
+    )?;
+    expected[5] = to_usize(
+        aux.max_relu_max
+            .checked_sub(aux.max_relu_min)
+            .and_then(|value| value.checked_add(1))
+            .ok_or("MaxReLU table row count overflow")?,
+    )?;
     let mut counts = [0usize; 6];
     for &(kind, x, y) in &rows {
         let index = usize::try_from(kind).map_err(|_| "invalid canonical table kind")?;
@@ -1408,20 +1510,28 @@ fn load_canonical_tables(
             5 => aux.max_relu_min,
             _ => unreachable!(),
         };
-        if x != start + counts[index] as i128 {
+        let expected_x = start
+            .checked_add(i128::try_from(counts[index]).map_err(|_| "table row index overflow")?)
+            .ok_or("canonical table row index overflow")?;
+        if x != expected_x {
             return Err("non-canonical table row order".into());
         }
-        if index == 1 && y != x
-            || index == 2 && y != deterministic_lrelu(x)
-            || index == 3 && y != deterministic_elu(x)
-            || index == 4 && y != deterministic_exp_neg(x)
-            || index == 5 && y != x.max(0)
-        {
+        let expected_y = match index {
+            1 => x,
+            2 => deterministic_lrelu(x)?,
+            3 => deterministic_elu(x)?,
+            4 => deterministic_exp_neg(x)?,
+            5 => x.max(0),
+            _ => unreachable!(),
+        };
+        if y != expected_y {
             return Err(
                 "canonical rows disagree with the frozen main-experiment table semantics".into(),
             );
         }
-        counts[index] += 1;
+        counts[index] = counts[index]
+            .checked_add(1)
+            .ok_or("canonical table row count overflow")?;
     }
     if counts != expected {
         return Err("canonical table row domain mismatch".into());
@@ -1457,6 +1567,12 @@ fn validate_registration(
     plan: &FormalPlan,
     registration: &ModelRegistration,
 ) -> Result<(), EZKLError> {
+    if registration.model_schema != CANONICAL_MODEL_SCHEMA
+        || registration.model_order != CANONICAL_MODEL_ORDER
+        || registration.model_order_digest != canonical_model_order_digest()
+    {
+        return Err("canonical model schema/order descriptor mismatch".into());
+    }
     if registration.registration_kind != "ezkl_formal_model_registration_v1"
         || registration.model_arch_id != plan.model_arch_id
         || registration.model_param_id != plan.model_param_id
@@ -1469,6 +1585,20 @@ fn validate_registration(
         || registration.model_bounds_digest != plan.ledger.model_bounds_digest
     {
         return Err("canonical model registration identity mismatch".into());
+    }
+    Ok(())
+}
+
+fn validate_model_descriptor(
+    schema: &str,
+    order: &str,
+    order_digest: &str,
+) -> Result<(), EZKLError> {
+    if schema != CANONICAL_MODEL_SCHEMA
+        || order != CANONICAL_MODEL_ORDER
+        || order_digest != canonical_model_order_digest()
+    {
+        return Err("canonical model schema/order descriptor mismatch".into());
     }
     Ok(())
 }
@@ -1496,39 +1626,61 @@ fn round_div_nearest_away(numerator: i128, denominator: i128) -> Result<i128, EZ
     let magnitude = numerator
         .checked_abs()
         .ok_or("SignedRoundDiv magnitude overflow")?;
-    let q = (magnitude.checked_mul(2).ok_or("SignedRoundDiv overflow")? + denominator)
-        / denominator
-            .checked_mul(2)
-            .ok_or("SignedRoundDiv overflow")?;
-    Ok(if negative { -q } else { q })
-}
-
-fn deterministic_lrelu(value: i128) -> i128 {
-    if value >= 0 {
-        value
+    let twice_magnitude = magnitude.checked_mul(2).ok_or("SignedRoundDiv overflow")?;
+    let rounded_numerator = twice_magnitude
+        .checked_add(denominator)
+        .ok_or("SignedRoundDiv overflow")?;
+    let rounded_denominator = denominator
+        .checked_mul(2)
+        .ok_or("SignedRoundDiv overflow")?;
+    let q = rounded_numerator / rounded_denominator;
+    if negative {
+        q.checked_neg()
+            .ok_or_else(|| "SignedRoundDiv result overflow".into())
     } else {
-        -round_div_nearest_away(-value, 5).expect("positive divisor")
+        Ok(q)
     }
 }
 
-fn round_f64_nearest_away(value: f64) -> i128 {
-    if value >= 0.0 {
-        (value + 0.5) as i128
+fn deterministic_lrelu(value: i128) -> Result<i128, EZKLError> {
+    if value >= 0 {
+        Ok(value)
     } else {
-        (value - 0.5) as i128
+        let magnitude = value.checked_neg().ok_or("LReLU input overflow")?;
+        round_div_nearest_away(magnitude, 5)?
+            .checked_neg()
+            .ok_or_else(|| "LReLU result overflow".into())
     }
 }
 
-fn deterministic_elu(value: i128) -> i128 {
+fn round_f64_nearest_away(value: f64) -> Result<i128, EZKLError> {
+    if !value.is_finite() {
+        return Err("non-finite canonical table value".into());
+    }
+    let rounded = if value >= 0.0 {
+        value.floor() + if value.fract() >= 0.5 { 1.0 } else { 0.0 }
+    } else {
+        value.ceil() - if value.fract().abs() >= 0.5 { 1.0 } else { 0.0 }
+    };
+    if !rounded.is_finite() || rounded < i128::MIN as f64 || rounded > i128::MAX as f64 {
+        return Err("canonical table value exceeds i128".into());
+    }
+    Ok(rounded as i128)
+}
+
+fn deterministic_elu(value: i128) -> Result<i128, EZKLError> {
     if value >= 0 {
-        value
+        Ok(value)
     } else {
         round_f64_nearest_away(16.0 * ((value as f64 / 16.0).exp() - 1.0))
     }
 }
 
-fn deterministic_exp_neg(value: i128) -> i128 {
-    round_f64_nearest_away(16.0 * (-(value as f64) / 256.0).exp()).max(0)
+fn deterministic_exp_neg(value: i128) -> Result<i128, EZKLError> {
+    if value < 0 {
+        return Err("ExpMap input must be nonnegative".into());
+    }
+    Ok(round_f64_nearest_away(16.0 * (-(value as f64) / 256.0).exp())?.max(0))
 }
 
 fn load_tables(
@@ -1568,19 +1720,25 @@ fn read_i64_matrix(path: &Path, rows: usize, columns: usize) -> Result<Vec<i128>
     if bytes.len() < 16 {
         return Err("canonical feature payload is truncated".into());
     }
-    let payload_rows = u64::from_le_bytes(bytes[0..8].try_into().unwrap()) as usize;
-    let payload_columns = u64::from_le_bytes(bytes[8..16].try_into().unwrap()) as usize;
+    let payload_rows = usize::try_from(u64::from_le_bytes(bytes[0..8].try_into().unwrap()))
+        .map_err(|_| "canonical feature row count exceeds usize")?;
+    let payload_columns = usize::try_from(u64::from_le_bytes(bytes[8..16].try_into().unwrap()))
+        .map_err(|_| "canonical feature column count exceeds usize")?;
     if payload_rows != rows || payload_columns != columns {
         return Err("canonical feature payload shape mismatch".into());
     }
     let count = rows.checked_mul(columns).ok_or("feature shape overflow")?;
-    if bytes.len() != 16 + count * 8 {
+    let payload_len = count
+        .checked_mul(8)
+        .and_then(|size| size.checked_add(16))
+        .ok_or("canonical feature payload length overflow")?;
+    if bytes.len() != payload_len {
         return Err("canonical feature payload length mismatch".into());
     }
-    Ok((0..count)
-        .map(|index| {
-            i64::from_le_bytes(bytes[16 + index * 8..24 + index * 8].try_into().unwrap()) as i128
-        })
+    let payload = &bytes[16..];
+    Ok(payload
+        .chunks_exact(8)
+        .map(|chunk| i64::from_le_bytes(chunk.try_into().unwrap()) as i128)
         .collect())
 }
 
@@ -1789,7 +1947,13 @@ fn range_decompose(
         Ok(reconstructed)
     };
     let reconstructed = assign_limbs(known_value)?;
-    let slack_value = known_value.map(|value| bound - value);
+    let slack_value = known_value
+        .map(|value| {
+            bound
+                .checked_sub(value)
+                .ok_or("range-decomposition slack underflow")
+        })
+        .transpose()?;
     let reconstructed_slack = assign_limbs(slack_value)?;
     drop(assign_limbs);
     let one = program.constant(1);
@@ -1874,7 +2038,11 @@ fn signed_round_div(
         .transpose()?;
     let z_value = a_value.map(|value| i128::from(value == 0));
     let q_value = match (x_value, d_value) {
-        (Some(x), Some(d)) => Some(round_div_nearest_away(x, d)?.abs()),
+        (Some(x), Some(d)) => Some(
+            round_div_nearest_away(x, d)?
+                .checked_abs()
+                .ok_or("SignedRoundDiv quotient magnitude overflow")?,
+        ),
         _ => None,
     };
     let y_value = match (x_value, d_value) {
@@ -1882,11 +2050,29 @@ fn signed_round_div(
         _ => None,
     };
     let r_value = match (a_value, d_value, q_value) {
-        (Some(a), Some(d), Some(q)) => Some(2 * a + d - 2 * d * q),
+        (Some(a), Some(d), Some(q)) => {
+            let lhs = a
+                .checked_mul(2)
+                .and_then(|value| value.checked_add(d))
+                .ok_or("SignedRoundDiv remainder numerator overflow")?;
+            let product = d
+                .checked_mul(q)
+                .and_then(|value| value.checked_mul(2))
+                .ok_or("SignedRoundDiv remainder product overflow")?;
+            Some(
+                lhs.checked_sub(product)
+                    .ok_or("SignedRoundDiv remainder overflow")?,
+            )
+        }
         _ => None,
     };
     let delta_value = match (d_value, r_value) {
-        (Some(d), Some(r)) => Some(2 * d - 1 - r),
+        (Some(d), Some(r)) => Some(
+            d.checked_mul(2)
+                .and_then(|value| value.checked_sub(1))
+                .and_then(|value| value.checked_sub(r))
+                .ok_or("SignedRoundDiv delta overflow")?,
+        ),
         _ => None,
     };
     let sigma = program.witness(sigma_value);
@@ -1941,7 +2127,11 @@ fn signed_round_div(
     range_decompose(program, q, bounds.q, limb_bits, zero)?;
     range_decompose(program, r, bounds.r, limb_bits, zero)?;
     range_decompose(program, delta, bounds.delta, limb_bits, zero)?;
-    range_decompose(program, d_minus_one, bounds.d - 1, limb_bits, zero)?;
+    let d_bound = bounds
+        .d
+        .checked_sub(1)
+        .ok_or("SignedRoundDiv denominator bound underflow")?;
+    range_decompose(program, d_minus_one, d_bound, limb_bits, zero)?;
     let d_min = program.constant(bounds.d_min);
     let neg_d_min = program.mul(d_min, minus_one, zero)?;
     let d_above_min = program.add(d, neg_d_min, one)?;
@@ -1950,13 +2140,11 @@ fn signed_round_div(
     // it constrains `d - d_min` to the non-negative interval
     // `[0, d - d_min]`, so a witness cannot replace the denominator by a
     // smaller field representative.
-    range_decompose(
-        program,
-        d_above_min,
-        bounds.d - bounds.d_min,
-        limb_bits,
-        zero,
-    )?;
+    let d_above_min_bound = bounds
+        .d
+        .checked_sub(bounds.d_min)
+        .ok_or("SignedRoundDiv denominator lower-bound underflow")?;
+    range_decompose(program, d_above_min, d_above_min_bound, limb_bits, zero)?;
     Ok(y)
 }
 
@@ -2281,7 +2469,7 @@ fn build_program(
     })?;
 
     let mut hidden_specs = plan.hidden_heads.clone();
-    hidden_specs.sort_by_key(|head| (head.layer_index, head.local_head_index));
+    hidden_specs.sort_by_key(|head| (head.layer_index, head.local_head_index, head.head_index));
     for layer in 0..plan.hidden_profile.len() {
         let profile = &plan.hidden_profile[layer];
         let input_width = plan.d_in_profile[layer];
@@ -2568,7 +2756,9 @@ fn validate_topology(plan: &FormalPlan) -> Result<(), EZKLError> {
     }
     let mut degree = vec![0usize; plan.node_count];
     for dst in &plan.dst {
-        degree[*dst] += 1;
+        degree[*dst] = degree[*dst]
+            .checked_add(1)
+            .ok_or("in-degree counter overflow")?;
     }
     if degree.iter().any(|degree| *degree == 0) {
         return Err("self-loop/in-degree invariant failed".into());
@@ -2686,6 +2876,11 @@ fn validate_plan(plan: &FormalPlan) -> Result<(), EZKLError> {
     {
         return Err("formal relation semantic/operation identity mismatch".into());
     }
+    validate_model_descriptor(
+        &plan.model_schema,
+        &plan.model_order,
+        &plan.model_order_digest,
+    )?;
     if plan.program_lanes != PROGRAM_LANES {
         return Err("compiled program lane layout does not match this binary".into());
     }
@@ -2728,7 +2923,8 @@ fn validate_plan(plan: &FormalPlan) -> Result<(), EZKLError> {
             != (1i128
                 .checked_shl(plan.quant.limb_bits)
                 .ok_or("limb table width overflow")?
-                - 1)
+                .checked_sub(1)
+                .ok_or("limb table width underflow")?)
         || [
             plan.quant.feature_scale,
             plan.quant.hidden_weight_scale,
@@ -2809,7 +3005,9 @@ fn validate_plan(plan: &FormalPlan) -> Result<(), EZKLError> {
     validate_topology(plan)?;
     let mut degree = vec![0usize; plan.node_count];
     for &dst in &plan.dst {
-        degree[dst] += 1;
+        degree[dst] = degree[dst]
+            .checked_add(1)
+            .ok_or("in-degree counter overflow")?;
     }
     if degree.into_iter().max() != Some(plan.ledger.max_in_degree) {
         return Err("integer ledger maximum degree does not match fixed topology".into());
@@ -2821,7 +3019,7 @@ fn validate_plan(plan: &FormalPlan) -> Result<(), EZKLError> {
     let mut seen = std::collections::BTreeSet::new();
     let mut scalar_hidden_h = plan.model_parameter_bounds["feature"];
     let mut hidden_specs = plan.hidden_heads.clone();
-    hidden_specs.sort_by_key(|head| (head.layer_index, head.local_head_index));
+    hidden_specs.sort_by_key(|head| (head.layer_index, head.local_head_index, head.head_index));
     for layer in 0..plan.hidden_profile.len() {
         let profile = &plan.hidden_profile[layer];
         for head in hidden_specs.iter().filter(|head| head.layer_index == layer) {
@@ -2859,10 +3057,18 @@ fn validate_plan(plan: &FormalPlan) -> Result<(), EZKLError> {
                 &label,
             )?;
             let scalar_score = bound_add(scalar_e_src, scalar_e_dst, &label)?;
-            let scalar_z = deterministic_lrelu(-scalar_score)
-                .checked_abs()
-                .ok_or("scalar LReLU bound overflow")?
-                .max(deterministic_lrelu(scalar_score).abs());
+            let scalar_z = deterministic_lrelu(
+                scalar_score
+                    .checked_neg()
+                    .ok_or("scalar LReLU score overflow")?,
+            )?
+            .checked_abs()
+            .ok_or("scalar LReLU bound overflow")?
+            .max(
+                deterministic_lrelu(scalar_score)?
+                    .checked_abs()
+                    .ok_or("scalar LReLU bound overflow")?,
+            );
             let scalar_delta = bound_mul(2, scalar_z, &label)?;
             let scalar_sum = bound_mul(plan.ledger.max_in_degree as i128, 16, &label)?;
             let scalar_projection_mul = bound_mul(scalar_hidden_h, family.w, &label)?;
@@ -2877,7 +3083,10 @@ fn validate_plan(plan: &FormalPlan) -> Result<(), EZKLError> {
                 || family.scalar_score != scalar_score
                 || family.scalar_z != scalar_z
                 || family.scalar_delta != scalar_delta
-                || plan.tables.lrelu_min > -scalar_score
+                || plan.tables.lrelu_min
+                    > scalar_score
+                        .checked_neg()
+                        .ok_or("scalar LReLU score overflow")?
                 || plan.tables.lrelu_max < scalar_score
                 || plan.tables.exp_max < scalar_delta
             {
@@ -2903,11 +3112,24 @@ fn validate_plan(plan: &FormalPlan) -> Result<(), EZKLError> {
                 || family.aggregate_mul != scalar_aggregate_mul
                 || family.aggregate_acc != scalar_aggregate
                 || family.aggregate_num != scalar_aggregate
-                || plan.tables.lrelu_min > -family.score
+                || plan.tables.lrelu_min
+                    > family
+                        .score
+                        .checked_neg()
+                        .ok_or("family LReLU score overflow")?
                 || plan.tables.lrelu_max < family.score
                 || plan.tables.exp_max < family.delta
-                || plan.aux_tables.max_relu_min > -(family.delta + 1)
-                || plan.aux_tables.max_relu_max < family.delta + 1
+                || plan.aux_tables.max_relu_min
+                    > family
+                        .delta
+                        .checked_add(1)
+                        .and_then(|value| value.checked_neg())
+                        .ok_or("family MaxReLU bound overflow")?
+                || plan.aux_tables.max_relu_max
+                    < family
+                        .delta
+                        .checked_add(1)
+                        .ok_or("family MaxReLU bound overflow")?
             {
                 return Err(format!("undersized hidden family/table certificate: {label}").into());
             }
@@ -2946,7 +3168,13 @@ fn validate_plan(plan: &FormalPlan) -> Result<(), EZKLError> {
     let output_input_dim = plan
         .hidden_profile
         .last()
-        .map(|profile| profile.head_count * profile.head_dim)
+        .map(|profile| {
+            profile
+                .head_count
+                .checked_mul(profile.head_dim)
+                .ok_or("output hidden width overflow")
+        })
+        .transpose()?
         .ok_or("missing hidden profile")?;
     let mut maximum_output_head = 0i128;
     let mut output_specs = plan.output_heads.clone();
@@ -2981,10 +3209,18 @@ fn validate_plan(plan: &FormalPlan) -> Result<(), EZKLError> {
             &label,
         )?;
         let scalar_score = bound_add(scalar_e_src, scalar_e_dst, &label)?;
-        let scalar_z = deterministic_lrelu(-scalar_score)
-            .checked_abs()
-            .ok_or("scalar LReLU bound overflow")?
-            .max(deterministic_lrelu(scalar_score).abs());
+        let scalar_z = deterministic_lrelu(
+            scalar_score
+                .checked_neg()
+                .ok_or("scalar LReLU score overflow")?,
+        )?
+        .checked_abs()
+        .ok_or("scalar LReLU bound overflow")?
+        .max(
+            deterministic_lrelu(scalar_score)?
+                .checked_abs()
+                .ok_or("scalar LReLU bound overflow")?,
+        );
         let scalar_delta = bound_mul(2, scalar_z, &label)?;
         let scalar_sum = bound_mul(plan.ledger.max_in_degree as i128, 16, &label)?;
         let scalar_projection_mul = bound_mul(scalar_hidden_h, family.w, &label)?;
@@ -2999,7 +3235,10 @@ fn validate_plan(plan: &FormalPlan) -> Result<(), EZKLError> {
             || family.scalar_score != scalar_score
             || family.scalar_z != scalar_z
             || family.scalar_delta != scalar_delta
-            || plan.tables.lrelu_min > -scalar_score
+            || plan.tables.lrelu_min
+                > scalar_score
+                    .checked_neg()
+                    .ok_or("scalar LReLU score overflow")?
             || plan.tables.lrelu_max < scalar_score
             || plan.tables.exp_max < scalar_delta
         {
@@ -3023,11 +3262,24 @@ fn validate_plan(plan: &FormalPlan) -> Result<(), EZKLError> {
             || family.aggregate_mul != scalar_aggregate_mul
             || family.aggregate_acc != scalar_aggregate
             || family.aggregate_num != scalar_aggregate
-            || plan.tables.lrelu_min > -family.score
+            || plan.tables.lrelu_min
+                > family
+                    .score
+                    .checked_neg()
+                    .ok_or("family LReLU score overflow")?
             || plan.tables.lrelu_max < family.score
             || plan.tables.exp_max < family.delta
-            || plan.aux_tables.max_relu_min > -(family.delta + 1)
-            || plan.aux_tables.max_relu_max < family.delta + 1
+            || plan.aux_tables.max_relu_min
+                > family
+                    .delta
+                    .checked_add(1)
+                    .and_then(|value| value.checked_neg())
+                    .ok_or("family MaxReLU bound overflow")?
+            || plan.aux_tables.max_relu_max
+                < family
+                    .delta
+                    .checked_add(1)
+                    .ok_or("family MaxReLU bound overflow")?
         {
             return Err(format!("undersized output family/table certificate: {label}").into());
         }
@@ -3080,8 +3332,14 @@ fn validate_plan(plan: &FormalPlan) -> Result<(), EZKLError> {
         plan.k_out as i128,
         "final_average",
     )?;
-    let required_aux_magnitude = plan.ledger.max_in_degree.saturating_sub(1) as i128;
-    if plan.aux_tables.max_relu_min > -required_aux_magnitude
+    let required_aux_magnitude = i128::try_from(plan.ledger.max_in_degree)
+        .map_err(|_| "MaxReLU degree exceeds i128")?
+        .checked_sub(1)
+        .ok_or("MaxReLU degree underflow")?;
+    if plan.aux_tables.max_relu_min
+        > required_aux_magnitude
+            .checked_neg()
+            .ok_or("MaxReLU bound overflow")?
         || plan.aux_tables.max_relu_max < required_aux_magnitude
     {
         return Err("MaxReLU auxiliary table does not cover 1-sum(y)".into());
@@ -3171,7 +3429,7 @@ fn canonical_model_values(
 ) -> Result<Vec<i128>, EZKLError> {
     let mut values = Vec::new();
     let mut hidden = spec.hidden_heads.clone();
-    hidden.sort_by_key(|head| (head.layer_index, head.local_head_index));
+    hidden.sort_by_key(|head| (head.layer_index, head.local_head_index, head.head_index));
     for head in hidden {
         for name in [
             &head.seq_kernel,
@@ -3271,44 +3529,175 @@ fn derive_registered_bounds(
     Ok(result)
 }
 
-fn estimate_logrows(spec: &GraphSpec, tables: &TableSpec, aux: &AuxTableSpec) -> u32 {
-    let n = spec.node_count as u128;
-    let e = spec.edge_count as u128;
+fn estimate_logrows(
+    spec: &GraphSpec,
+    tables: &TableSpec,
+    aux: &AuxTableSpec,
+) -> Result<u32, EZKLError> {
+    fn add(left: u128, right: u128, label: &str) -> Result<u128, EZKLError> {
+        left.checked_add(right)
+            .ok_or_else(|| format!("logrows {label} overflow").into())
+    }
+    fn mul(left: u128, right: u128, label: &str) -> Result<u128, EZKLError> {
+        left.checked_mul(right)
+            .ok_or_else(|| format!("logrows {label} overflow").into())
+    }
+    fn range(min: i128, max: i128, label: &str) -> Result<u128, EZKLError> {
+        if max < min {
+            return Err(format!("invalid {label} table range").into());
+        }
+        let width = max
+            .checked_sub(min)
+            .and_then(|value| value.checked_add(1))
+            .ok_or_else(|| format!("logrows {label} range overflow"))?;
+        u128::try_from(width).map_err(|_| format!("logrows {label} range is negative").into())
+    }
+
+    let n = u128::try_from(spec.node_count).map_err(|_| "node count exceeds u128")?;
+    let e = u128::try_from(spec.edge_count).map_err(|_| "edge count exceeds u128")?;
     let mut arithmetic = 0u128;
     for (layer, profile) in spec.hidden_profile.iter().enumerate() {
-        let input = spec.d_in_profile[layer] as u128;
-        let width = profile.head_dim as u128;
-        let heads = profile.head_count as u128;
-        arithmetic +=
-            heads * (n * width * input + n * width * 2 + e * width * 4 + e * 40 + n * width * 80);
+        let input = u128::try_from(spec.d_in_profile[layer])
+            .map_err(|_| "hidden input width exceeds u128")?;
+        let width =
+            u128::try_from(profile.head_dim).map_err(|_| "hidden head width exceeds u128")?;
+        let heads =
+            u128::try_from(profile.head_count).map_err(|_| "hidden head count exceeds u128")?;
+        let projection = mul(
+            mul(n, width, "hidden projection cells")?,
+            input,
+            "hidden projection",
+        )?;
+        let attention = mul(
+            mul(n, width, "hidden attention cells")?,
+            2,
+            "hidden attention",
+        )?;
+        let edge = mul(mul(e, width, "hidden edge cells")?, 4, "hidden edge total")?;
+        let fixed = add(
+            mul(e, 40, "hidden fixed edge")?,
+            mul(
+                mul(n, width, "hidden fixed node cells")?,
+                80,
+                "hidden fixed node total",
+            )?,
+            "hidden fixed totals",
+        )?;
+        let terms = add(
+            add(
+                add(projection, attention, "hidden attention total")?,
+                edge,
+                "hidden edge total",
+            )?,
+            fixed,
+            "hidden trace",
+        )?;
+        arithmetic = add(
+            arithmetic,
+            mul(heads, terms, "hidden heads")?,
+            "hidden arithmetic",
+        )?;
     }
-    let output_input = spec
-        .hidden_profile
-        .last()
-        .map(|profile| profile.head_count * profile.head_dim)
-        .unwrap_or(spec.feature_dim) as u128;
-    arithmetic += spec.k_out as u128
-        * (n * spec.class_count as u128 * output_input
-            + n * spec.class_count as u128 * 170
-            + e * spec.class_count as u128 * 4
-            + e * 40);
-    arithmetic += n * spec.class_count as u128 * (40 + spec.k_out as u128 * 4);
+    let output_input = if let Some(profile) = spec.hidden_profile.last() {
+        mul(
+            u128::try_from(profile.head_count).map_err(|_| "output head count exceeds u128")?,
+            u128::try_from(profile.head_dim).map_err(|_| "output head width exceeds u128")?,
+            "output input width",
+        )?
+    } else {
+        u128::try_from(spec.feature_dim).map_err(|_| "feature width exceeds u128")?
+    };
+    let classes = u128::try_from(spec.class_count).map_err(|_| "class count exceeds u128")?;
+    let outputs = add(
+        add(
+            add(
+                mul(
+                    mul(n, classes, "output projection nodes")?,
+                    output_input,
+                    "output projection",
+                )?,
+                mul(
+                    mul(n, classes, "output fixed nodes")?,
+                    170,
+                    "output fixed nodes",
+                )?,
+                "output node terms",
+            )?,
+            mul(
+                mul(e, classes, "output edge terms")?,
+                4,
+                "output edge terms",
+            )?,
+            "output edge terms",
+        )?,
+        mul(e, 40, "output fixed edges")?,
+        "output trace",
+    )?;
+    arithmetic = add(
+        arithmetic,
+        mul(
+            u128::try_from(spec.k_out).map_err(|_| "output head count exceeds u128")?,
+            outputs,
+            "output heads",
+        )?,
+        "output arithmetic",
+    )?;
+    let final_terms = add(
+        40,
+        mul(
+            u128::try_from(spec.k_out).map_err(|_| "output head count exceeds u128")?,
+            4,
+            "final head terms",
+        )?,
+        "final terms",
+    )?;
+    arithmetic = add(
+        arithmetic,
+        mul(
+            mul(n, classes, "final nodes")?,
+            final_terms,
+            "final arithmetic",
+        )?,
+        "final arithmetic",
+    )?;
     // The fixed trace machine assigns canonical variables and independent
     // constraints into PROGRAM_LANES parallel column lanes.  The factor three
     // conservatively covers canonical cells, operation rows, range auxiliaries
     // and Poseidon overhead before packing.
-    let uncompressed = arithmetic
-        .saturating_mul(3)
-        .saturating_add(n * spec.feature_dim as u128);
+    let uncompressed = add(
+        mul(arithmetic, 3, "trace factor")?,
+        mul(
+            n,
+            u128::try_from(spec.feature_dim).map_err(|_| "feature width exceeds u128")?,
+            "feature inputs",
+        )?,
+        "uncompressed trace",
+    )?;
+    let lane_rounding = u128::try_from(PROGRAM_LANES - 1).map_err(|_| "lane count exceeds u128")?;
     let variables_and_constraints =
-        uncompressed.saturating_add(PROGRAM_LANES as u128 - 1) / PROGRAM_LANES as u128;
-    let table_rows = (aux.limb_max + 1).max(0) as u128
-        + (tables.lrelu_max - tables.lrelu_min + 1).max(0) as u128
-        + (tables.elu_max - tables.elu_min + 1).max(0) as u128
-        + (tables.exp_max + 1).max(0) as u128
-        + (aux.max_relu_max - aux.max_relu_min + 1).max(0) as u128;
+        add(uncompressed, lane_rounding, "lane rounding")? / u128::try_from(PROGRAM_LANES).unwrap();
+    let table_rows = add(
+        add(
+            add(
+                add(
+                    range(0, aux.limb_max, "limb")?,
+                    range(tables.lrelu_min, tables.lrelu_max, "LReLU")?,
+                    "LReLU tables",
+                )?,
+                range(tables.elu_min, tables.elu_max, "ELU")?,
+                "ELU tables",
+            )?,
+            range(0, tables.exp_max, "ExpMap")?,
+            "ExpMap tables",
+        )?,
+        range(aux.max_relu_min, aux.max_relu_max, "MaxReLU")?,
+        "auxiliary tables",
+    )?;
     let rows = variables_and_constraints.max(table_rows).max(1024);
-    (128 - (rows - 1).leading_zeros()).max(10)
+    let exponent = 128u32
+        .checked_sub((rows - 1).leading_zeros())
+        .ok_or("logrows exponent underflow")?;
+    Ok(exponent.max(10))
 }
 
 fn plan_dir(path: &Path) -> PathBuf {
@@ -3351,7 +3740,7 @@ pub fn graph_gat_gen_settings(
     {
         return Err("graph spec does not bind the canonical quant/table/security profiles".into());
     }
-    let logrows = estimate_logrows(&spec, &tables, &aux_tables);
+    let logrows = estimate_logrows(&spec, &tables, &aux_tables)?;
     let limit = max_logrows.unwrap_or(DEFAULT_MAX_LOGROWS);
     if logrows > limit {
         return Err(format!(
@@ -3416,7 +3805,7 @@ pub fn graph_gat_compile(
     let (security_profile, security_profile_id) = load_security_profile(base)?;
     let settings: FormalSettings = read_json(&settings_path)?;
     validate_settings(&settings, &security_profile_id)?;
-    let expected_logrows = estimate_logrows(&spec, &tables, &aux_tables);
+    let expected_logrows = estimate_logrows(&spec, &tables, &aux_tables)?;
     if settings.status != "ready_for_formal_execution"
         || settings.relation != "R_GAT-ezkl"
         || settings.route_id != spec.route_id
@@ -3438,6 +3827,11 @@ pub fn graph_gat_compile(
     }
     let mut ledger: IntegerBoundLedger = read_json(&base.join("integer_bound_ledger.json"))?;
     let mut registration: ModelRegistration = read_json(&base.join("model_registration.json"))?;
+    validate_model_descriptor(
+        &registration.model_schema,
+        &registration.model_order,
+        &registration.model_order_digest,
+    )?;
     let artifacts = ArtifactPaths {
         features_i64: "node_features.i64.bin".to_owned(),
         model_i64: "model_parameters.i64.txt".to_owned(),
@@ -3623,6 +4017,9 @@ pub fn graph_gat_compile(
         metadata_hash: spec.metadata_hash,
         shape_hash: spec.shape_hash,
         registered_model_hash: model_hash_hex,
+        model_schema: CANONICAL_MODEL_SCHEMA.to_owned(),
+        model_order: CANONICAL_MODEL_ORDER.to_owned(),
+        model_order_digest: canonical_model_order_digest(),
         settings_id: settings.settings_id,
         compiled_circuit_id: String::new(),
         security_profile_id,
@@ -3723,8 +4120,7 @@ fn configure_device(device: &str) -> Result<&'static str, EZKLError> {
                 if !icicle_runtime::runtime::is_device_available(&active) {
                     return Err("CUDA backend reports the requested device unavailable".into());
                 }
-                gpu_telemetry::ensure_available()
-                    .map_err(|error| EZKLError::from(error))?;
+                gpu_telemetry::ensure_available().map_err(|error| EZKLError::from(error))?;
                 Ok("halo2_icicle_cuda_device_0")
             }
             #[cfg(not(feature = "gpu-accelerated"))]
@@ -4080,7 +4476,7 @@ pub fn graph_gat_prove(
     } else {
         None
     };
-#[cfg(not(feature = "gpu-accelerated"))]
+    #[cfg(not(feature = "gpu-accelerated"))]
     let _gpu_scope: Option<()> = None;
     let proof_result = create_proof_circuit::<
         KZGCommitmentScheme<Bn256>,

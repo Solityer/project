@@ -64,6 +64,31 @@ __int128 signed_add(__int128 left, __int128 right, const char* label) {
     return value;
 }
 
+__int128 signed_sub(__int128 left, __int128 right, const char* label) {
+    __int128 value = 0;
+    if (__builtin_sub_overflow(left, right, &value))
+        throw std::runtime_error(std::string("signed integer-bound subtract overflow: ") + label);
+    return value;
+}
+
+__int128 signed_mul(__int128 left, __int128 right, const char* label) {
+    __int128 value = 0;
+    if (__builtin_mul_overflow(left, right, &value))
+        throw std::runtime_error(std::string("signed integer-bound multiply overflow: ") + label);
+    return value;
+}
+
+__int128 signed_neg(__int128 value, const char* label) {
+    __int128 result = 0;
+    if (__builtin_sub_overflow(static_cast<__int128>(0), value, &result))
+        throw std::runtime_error(std::string("signed integer-bound negate overflow: ") + label);
+    return result;
+}
+
+__int128 signed_abs(__int128 value, const char* label) {
+    return value < 0 ? signed_neg(value, label) : value;
+}
+
 std::string decimal(__int128 value) {
     if (value < 0) throw std::runtime_error("negative bound cannot be serialized");
     if (value == 0) return "0";
@@ -161,20 +186,35 @@ Integer checked(__int128 value, const char* label) {
 }
 
 Integer round_nearest_away(double value) {
-    return checked(value >= 0 ? static_cast<__int128>(value + 0.5)
-                              : static_cast<__int128>(value - 0.5), "quantization");
+    if (!std::isfinite(value)) throw std::runtime_error("non-finite canonical quantization input");
+    const auto rounded = value >= 0.0
+        ? std::floor(static_cast<long double>(value) + 0.5L)
+        : std::ceil(static_cast<long double>(value) - 0.5L);
+    if (!std::isfinite(rounded)
+        || rounded < static_cast<long double>(std::numeric_limits<Integer>::min())
+        || rounded > static_cast<long double>(std::numeric_limits<Integer>::max())) {
+        throw std::runtime_error("canonical quantization exceeds signed i64");
+    }
+    return static_cast<Integer>(rounded);
 }
 
 Integer signed_round_div(__int128 numerator, __int128 denominator) {
     if (denominator <= 0) throw std::runtime_error("SignedRoundDiv denominator must be positive");
     const bool negative = numerator < 0;
-    const auto magnitude = negative ? -numerator : numerator;
-    const auto quotient = (2 * magnitude + denominator) / (2 * denominator);
-    return checked(negative ? -quotient : quotient, "SignedRoundDiv");
+    const auto magnitude = signed_abs(numerator, "SignedRoundDiv magnitude");
+    const auto twice_magnitude = signed_mul(magnitude, 2, "SignedRoundDiv 2a");
+    const auto rounded_numerator = signed_add(twice_magnitude, denominator, "SignedRoundDiv numerator");
+    const auto rounded_denominator = signed_mul(denominator, 2, "SignedRoundDiv denominator");
+    const auto quotient = rounded_numerator / rounded_denominator;
+    const auto signed_quotient = negative ? signed_neg(quotient, "SignedRoundDiv result") : quotient;
+    return checked(signed_quotient, "SignedRoundDiv");
 }
 
 Integer lrelu(Integer value) {
-    return value >= 0 ? value : -signed_round_div(-static_cast<__int128>(value), 5);
+    if (value >= 0) return value;
+    const auto magnitude = signed_abs(static_cast<__int128>(value), "LReLU input");
+    const auto result = signed_round_div(magnitude, 5);
+    return checked(signed_neg(static_cast<__int128>(result), "LReLU result"), "LReLU");
 }
 
 Integer exp_neg(Integer delta) {
@@ -191,7 +231,7 @@ Integer elu(Integer value) {
 
 Integer abs_max(const std::vector<Integer>& values) {
     Integer bound = 0;
-    for (const auto value : values) bound = std::max(bound, static_cast<Integer>(std::llabs(value)));
+    for (const auto value : values) bound = std::max(bound, checked(signed_abs(value, "absolute bound"), "absolute bound"));
     return bound;
 }
 
@@ -206,12 +246,23 @@ std::vector<Integer> quantized_tensor(
     const std::string& name,
     Integer scale) {
     std::vector<Integer> out;
-    for (const auto value : tensor(bundle, name).values) out.push_back(round_nearest_away(value * scale));
+    if (scale <= 0) throw std::runtime_error("canonical tensor scale must be positive");
+    for (const auto value : tensor(bundle, name).values) {
+        if (!std::isfinite(value)) throw std::runtime_error("canonical tensor value is non-finite");
+        const auto scaled = static_cast<long double>(value) * static_cast<long double>(scale);
+        if (!std::isfinite(scaled)
+            || scaled < static_cast<long double>(std::numeric_limits<Integer>::min()) - 0.5L
+            || scaled > static_cast<long double>(std::numeric_limits<Integer>::max()) + 0.5L) {
+            throw std::runtime_error("canonical tensor value exceeds signed i64 range");
+        }
+        out.push_back(round_nearest_away(static_cast<double>(scaled)));
+    }
     return out;
 }
 
 Matrix reshape(const std::vector<Integer>& values, std::size_t rows, std::size_t columns) {
-    if (values.size() != rows * columns) throw std::runtime_error("canonical tensor shape mismatch");
+    if (columns != 0 && rows > std::numeric_limits<std::size_t>::max() / columns
+        || values.size() != rows * columns) throw std::runtime_error("canonical tensor shape mismatch");
     Matrix out(rows, std::vector<Integer>(columns));
     for (std::size_t row = 0; row < rows; ++row)
         for (std::size_t column = 0; column < columns; ++column)
@@ -237,7 +288,8 @@ std::vector<Integer> matvec(const Matrix& matrix, const std::vector<Integer>& ve
         if (matrix[row].size() != vector.size()) throw std::runtime_error("canonical matvec shape mismatch");
         __int128 sum = 0;
         for (std::size_t column = 0; column < vector.size(); ++column)
-            sum += __int128{matrix[row][column]} * vector[column];
+            sum = signed_add(sum, signed_mul(__int128{matrix[row][column]}, vector[column], "attention dot product"),
+                             "attention dot accumulator");
         out[row] = checked(sum, "attention dot");
     }
     return out;
@@ -267,9 +319,11 @@ Matrix forward_head(
         __int128 accumulator = 0;
         for (std::size_t shared = 0; shared < row.size(); ++shared) {
             const auto product = __int128{row[shared]} * head.projection[shared][column];
-            certificate->projection_mul = std::max(certificate->projection_mul, product < 0 ? -product : product);
+            certificate->projection_mul = std::max(certificate->projection_mul,
+                                                    signed_abs(product, "projection product"));
             accumulator = signed_add(accumulator, product, "projection accumulator");
-            certificate->projection_acc = std::max(certificate->projection_acc, accumulator < 0 ? -accumulator : accumulator);
+            certificate->projection_acc = std::max(certificate->projection_acc,
+                                                    signed_abs(accumulator, "projection accumulator"));
         }
     }
     const auto projected = matmul(input, head.projection);
@@ -282,14 +336,18 @@ Matrix forward_head(
             const auto src_product = __int128{projected[row][column]} * head.a_src[column];
             const auto dst_product = __int128{projected[row][column]} * head.a_dst[column];
             certificate->attention_mul = std::max({certificate->attention_mul,
-                src_product < 0 ? -src_product : src_product, dst_product < 0 ? -dst_product : dst_product});
+                signed_abs(src_product, "source attention product"),
+                signed_abs(dst_product, "destination attention product")});
             src_acc = signed_add(src_acc, src_product, "source attention accumulator");
             dst_acc = signed_add(dst_acc, dst_product, "destination attention accumulator");
             certificate->attention_acc = std::max({certificate->attention_acc,
-                src_acc < 0 ? -src_acc : src_acc, dst_acc < 0 ? -dst_acc : dst_acc});
+                signed_abs(src_acc, "source attention accumulator"),
+                signed_abs(dst_acc, "destination attention accumulator")});
         }
-        certificate->e_src = std::max<__int128>(certificate->e_src, std::llabs(source_score[row]));
-        certificate->e_dst = std::max<__int128>(certificate->e_dst, std::llabs(target_score[row]));
+        certificate->e_src = std::max<__int128>(certificate->e_src,
+                                                signed_abs(source_score[row], "source attention score"));
+        certificate->e_dst = std::max<__int128>(certificate->e_dst,
+                                                signed_abs(target_score[row], "destination attention score"));
     }
     const auto node_count = input.size();
     const auto width = projected.front().size();
@@ -300,18 +358,23 @@ Matrix forward_head(
         score[edge] = checked(__int128{source_score.at(edges[edge].src)} +
             target_score.at(edges[edge].dst), "edge score");
         activated[edge] = lrelu(score[edge]);
-        certificate->score = std::max<__int128>(certificate->score, std::llabs(score[edge]));
-        certificate->z = std::max<__int128>(certificate->z, std::llabs(activated[edge]));
+        certificate->score = std::max<__int128>(certificate->score,
+                                                signed_abs(score[edge], "edge score"));
+        certificate->z = std::max<__int128>(certificate->z,
+                                            signed_abs(activated[edge], "activated edge score"));
         incoming.at(edges[edge].dst).push_back(edge);
         maximum.at(edges[edge].dst) = std::max(maximum.at(edges[edge].dst), activated[edge]);
     }
     std::vector<Integer> exponential(edges.size()), denominator(node_count, 0);
     for (std::size_t edge = 0; edge < edges.size(); ++edge) {
         const auto dst = edges[edge].dst;
-        exponential[edge] = exp_neg(maximum[dst] - activated[edge]);
-        certificate->m = std::max<__int128>(certificate->m, std::llabs(maximum[dst]));
+        const auto delta = checked(signed_sub(maximum[dst], activated[edge], "softmax delta"),
+                                   "softmax delta");
+        exponential[edge] = exp_neg(delta);
+        certificate->m = std::max<__int128>(certificate->m,
+                                            signed_abs(maximum[dst], "segment maximum"));
         certificate->delta_raw = certificate->delta = std::max<__int128>(
-            certificate->delta, maximum[dst] - activated[edge]);
+            certificate->delta, delta);
         certificate->exp = std::max<__int128>(certificate->exp, exponential[edge]);
         denominator[dst] = checked(__int128{denominator[dst]} + exponential[edge], "softmax Sum");
         certificate->sum = std::max<__int128>(certificate->sum, denominator[dst]);
@@ -320,12 +383,14 @@ Matrix forward_head(
     for (std::size_t edge = 0; edge < edges.size(); ++edge) {
         for (std::size_t column = 0; column < width; ++column) {
             const auto term = __int128{exponential[edge]} * projected[edges[edge].src][column];
-            certificate->aggregate_mul = std::max(certificate->aggregate_mul, term < 0 ? -term : term);
+            certificate->aggregate_mul = std::max(certificate->aggregate_mul,
+                                                   signed_abs(term, "aggregation product"));
             numerator[edges[edge].dst][column] = checked(
                 __int128{numerator[edges[edge].dst][column]} + term,
                 "integer aggregation numerator");
             certificate->aggregate_acc = certificate->aggregate_num = std::max<__int128>(
-                certificate->aggregate_acc, std::llabs(numerator[edges[edge].dst][column]));
+                certificate->aggregate_acc,
+                signed_abs(numerator[edges[edge].dst][column], "aggregation accumulator"));
         }
     }
     Matrix output(node_count, std::vector<Integer>(width, 0));
@@ -339,14 +404,15 @@ Matrix forward_head(
                                    __int128{256} * denominator[node]);
             output[node][column] = hidden ? elu(recovered) : recovered;
             recovery_a = std::max<__int128>(recovery_a, hidden
-                ? std::llabs(numerator[node][column])
-                : __int128{16} * std::llabs(numerator[node][column]));
-            const auto actual_d = hidden ? __int128{16} * denominator[node]
-                                         : __int128{256} * denominator[node];
+                ? signed_abs(numerator[node][column], "hidden recovery numerator")
+                : signed_mul(16, signed_abs(numerator[node][column], "output recovery numerator"),
+                             "output recovery numerator"));
+            const auto actual_d = hidden ? signed_mul(16, denominator[node], "hidden recovery denominator")
+                                         : signed_mul(256, denominator[node], "output recovery denominator");
             recovery_d_min = std::min(recovery_d_min, actual_d);
             recovery_d = std::max(recovery_d, actual_d);
             certificate->output_bound = std::max<__int128>(certificate->output_bound,
-                                                            std::llabs(output[node][column]));
+                                                            signed_abs(output[node][column], "forward output"));
         }
     }
     certificate->recovery = round_certificate(recovery_a, recovery_d_min, recovery_d);
@@ -401,9 +467,18 @@ FormalProfileIds write_formal_gat_artifacts(
 
     std::ofstream model(output_dir / "model_parameters.i64.txt", std::ios::trunc);
     if (!model) throw std::runtime_error("failed to write canonical model parameters");
+    auto hidden_specs = checkpoint.hidden_heads;
+    std::sort(hidden_specs.begin(), hidden_specs.end(), [](const auto& lhs, const auto& rhs) {
+        return std::tie(lhs.layer_index, lhs.local_head_index, lhs.global_head_index)
+            < std::tie(rhs.layer_index, rhs.local_head_index, rhs.global_head_index);
+    });
+    auto output_specs = checkpoint.output_heads;
+    std::sort(output_specs.begin(), output_specs.end(), [](const auto& lhs, const auto& rhs) {
+        return lhs.head_index < rhs.head_index;
+    });
     std::map<std::string, std::vector<Integer>> canonical;
     Integer weight_bound = 0, hidden_attention_bound = 0, output_attention_bound = 0, bias_bound = 0;
-    for (const auto& head : checkpoint.hidden_heads) {
+    for (const auto& head : hidden_specs) {
         for (const auto& name : {head.seq_kernel, head.attn_src_kernel, head.attn_dst_kernel}) {
             const auto values = quantized_tensor(checkpoint, name, 16);
             write_tensor(model, name, tensor(checkpoint, name), values);
@@ -413,7 +488,7 @@ FormalProfileIds write_formal_gat_artifacts(
         hidden_attention_bound = std::max({hidden_attention_bound,
             abs_max(canonical.at(head.attn_src_kernel)), abs_max(canonical.at(head.attn_dst_kernel))});
     }
-    for (const auto& head : checkpoint.output_heads) {
+    for (const auto& head : output_specs) {
         const auto weights = quantized_tensor(checkpoint, head.seq_kernel, 16);
         const auto a_src = quantized_tensor(checkpoint, head.attn_src_kernel, 1);
         const auto a_dst = quantized_tensor(checkpoint, head.attn_dst_kernel, 1);
@@ -435,7 +510,7 @@ FormalProfileIds write_formal_gat_artifacts(
     std::vector<FamilyCertificate> families;
     for (std::size_t layer = 0; layer < checkpoint.hidden_profile.size(); ++layer) {
         std::vector<Matrix> heads;
-        for (const auto& spec : checkpoint.hidden_heads) if (spec.layer_index == layer) {
+        for (const auto& spec : hidden_specs) if (spec.layer_index == layer) {
             FamilyCertificate family;
             family.label = "hidden.layer_" + std::to_string(layer) + ".head_" +
                            std::to_string(spec.local_head_index);
@@ -448,20 +523,27 @@ FormalProfileIds write_formal_gat_artifacts(
         layer_input = concatenate(heads);
     }
     std::vector<Matrix> output_heads;
-    for (const auto& spec : checkpoint.output_heads) {
+    for (const auto& spec : output_specs) {
         FamilyCertificate family;
         family.label = "output.head_" + std::to_string(spec.head_index);
         IntegerHead head{reshape(canonical.at(spec.seq_kernel), layer_input.front().size(), graph.class_count),
                          canonical.at(spec.attn_src_kernel), canonical.at(spec.attn_dst_kernel),
                          canonical.at(spec.output_bias)};
-        auto output = forward_head(layer_input, graph.edges, head, false, &family);
+            if (head.bias.size() != graph.class_count) {
+                throw std::runtime_error("output bias length does not match class count");
+            }
+            auto output = forward_head(layer_input, graph.edges, head, false, &family);
         family.bias = abs_max(head.bias);
         __int128 alignment_a = 0, head_bound = 0;
         for (std::size_t node = 0; node < graph.node_count; ++node)
             for (std::size_t column = 0; column < graph.class_count; ++column) {
-                alignment_a = std::max<__int128>(alignment_a, __int128{16} * std::llabs(output[node][column]));
-                output[node][column] = checked(__int128{output[node][column]} + head.bias[column], "output bias");
-                head_bound = std::max<__int128>(head_bound, std::llabs(output[node][column]));
+                alignment_a = std::max<__int128>(
+                    alignment_a, signed_mul(16, signed_abs(output[node][column], "output alignment"),
+                                            "output alignment"));
+                output[node][column] = checked(
+                    signed_add(output[node][column], head.bias.at(column), "output bias"), "output bias");
+                head_bound = std::max<__int128>(head_bound,
+                                                signed_abs(output[node][column], "output head bound"));
             }
         family.has_alignment = true;
         family.alignment = round_certificate(alignment_a, 16, 16);
@@ -472,7 +554,9 @@ FormalProfileIds write_formal_gat_artifacts(
     for (std::size_t node = 0; node < graph.node_count; ++node)
         for (std::size_t column = 0; column < graph.class_count; ++column) {
             __int128 sum = 0;
-            for (const auto& head : output_heads) sum += head[node][column];
+            for (const auto& head : output_heads) {
+                sum = signed_add(sum, head[node][column], "final output head sum");
+            }
             final_logits.push_back(signed_round_div(sum, checkpoint.K_out));
         }
 
@@ -702,6 +786,9 @@ FormalProfileIds write_formal_gat_artifacts(
            << ",\"output_attention\":" << output_attention_bound << ",\"output_bias\":" << bias_bound << "}";
     std::ostringstream registration;
     registration << "{\"registration_kind\":\"ezkl_formal_model_registration_v1\""
+                 << ",\"model_schema\":\"" << canonical_model_schema() << "\""
+                 << ",\"model_order\":\"" << canonical_model_order() << "\""
+                 << ",\"model_order_digest\":\"" << canonical_model_order_digest() << "\""
                  << ",\"model_arch_id\":\"" << json_escape(checkpoint.model_arch_id) << "\""
                  << ",\"model_param_id\":\"" << json_escape(checkpoint.model_param_id) << "\""
                  << ",\"quant_cfg_id\":\"" << quant_id << "\""

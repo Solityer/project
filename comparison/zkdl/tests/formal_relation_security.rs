@@ -4,10 +4,16 @@
 // modules private here lets the tests exercise internal validation helpers
 // without widening the production binary's witness or registry API.
 mod algebra {
-    include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/formal/algebra.rs"));
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/formal/algebra.rs"
+    ));
 }
 mod compiler {
-    include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/formal/compiler.rs"));
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/formal/compiler.rs"
+    ));
 }
 #[cfg(feature = "gpu")]
 mod gpu {
@@ -23,7 +29,10 @@ mod prover_backend {
     ));
 }
 mod registry {
-    include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/formal/registry.rs"));
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/formal/registry.rs"
+    ));
 
     mod moved_tests {
         use super::{
@@ -83,13 +92,101 @@ mod registry {
     }
 }
 mod sumcheck {
-    include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/formal/sumcheck.rs"));
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/formal/sumcheck.rs"
+    ));
+
+    #[cfg(test)]
+    mod moved_tests {
+        use super::build_columns;
+        use crate::algebra::Scalar;
+        use crate::registry::{
+            ColumnSource, Expr, OperationColumn, OperationFamilySpec, RelationRegistry,
+            TensorFamilySpec, ViewIndex, Visibility, WitnessPackage,
+        };
+        use std::collections::{BTreeMap, BTreeSet};
+
+        // The production registry has a much larger canonical plan.  This
+        // deliberately uses only the private-column loader so the test stays
+        // a unit check of the physical-padding invariant.
+        #[test]
+        fn private_physical_padding_is_zero_and_not_witness_index_zero() {
+            let registry = RelationRegistry {
+                schema: "test".into(),
+                tensor_families: vec![TensorFamilySpec {
+                    family_id: "hidden.layer_0.head_0.z".into(),
+                    logical_len: 1,
+                    padded_len: 2,
+                    logical_shape: vec![1],
+                    mle_order: vec!["row_major_lsb_first".into()],
+                    instance_order: vec!["canonical_program_order".into()],
+                    visibility: Visibility::DynamicPrivate,
+                }],
+                public_tensors: BTreeMap::new(),
+                operation_families: vec![],
+                mandatory_operation_kinds: vec![],
+                registry_id: String::new(),
+                canonical_schema: serde_json::Value::Null,
+            };
+            let witness = WitnessPackage {
+                registry_id: String::new(),
+                canonical_tensor_digest: String::new(),
+                tensors: BTreeMap::from([(
+                    "hidden.layer_0.head_0.z".into(),
+                    vec![Scalar::from_i64(37)],
+                )]),
+                witness_id: String::new(),
+            };
+            let operation = OperationFamilySpec {
+                family_id: "hidden.layer_0.head_0.test".into(),
+                operation_kind: "test".into(),
+                rows: 4,
+                real_rows: 1,
+                degree_bound: 2,
+                columns: vec![OperationColumn {
+                    column_id: "z".into(),
+                    source: ColumnSource::TensorView {
+                        family_id: "hidden.layer_0.head_0.z".into(),
+                        canonical_index_by_row: ViewIndex::PaddedAffine {
+                            offset: 0,
+                            stride: 1,
+                            logical_rows: 1,
+                            padding_index: 0,
+                        },
+                    },
+                }],
+                residuals: vec![Expr::Const(Scalar::zero())],
+                requires_line8: false,
+            };
+            let (columns, padding) = build_columns(&registry, &operation, &witness).unwrap();
+            assert_eq!(
+                columns[0],
+                vec![
+                    Scalar::from_i64(37),
+                    Scalar::zero(),
+                    Scalar::zero(),
+                    Scalar::zero(),
+                ]
+            );
+            assert_eq!(padding[0], vec![Scalar::zero(); 4]);
+            assert!(columns[0][operation.real_rows..]
+                .iter()
+                .all(|value| *value == Scalar::zero()));
+        }
+    }
 }
 mod transcript {
-    include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/formal/transcript.rs"));
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/formal/transcript.rs"
+    ));
 }
 mod protocol {
-    include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/formal/protocol.rs"));
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/formal/protocol.rs"
+    ));
 
     mod moved_tests {
         use super::*;

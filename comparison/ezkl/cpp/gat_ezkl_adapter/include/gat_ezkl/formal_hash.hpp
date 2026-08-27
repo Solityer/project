@@ -11,6 +11,13 @@
 
 namespace gat_ezkl {
 
+// The model serialization is a protocol object, not an incidental traversal
+// of manifest.json.  Keep its schema and ordering descriptor in one exported
+// place so the adapter and the Rust verifier bind the exact same object.
+const char* canonical_model_schema();
+const char* canonical_model_order();
+std::string canonical_model_order_digest();
+
 // All formal identities use SHA-256 over a domain-separated sequence of
 // length-prefixed fields.  Integer fields are fixed-width little endian.
 std::string formal_sha256_bytes(

@@ -11,9 +11,6 @@ use crate::{
 use halo2_proofs::transcript::{Blake2bRead, Blake2bWrite, Challenge255};
 use std::io::{Read, Write};
 
-#[cfg(feature = "loader_evm")]
-pub mod evm;
-
 #[cfg(feature = "loader_halo2")]
 pub mod halo2;
 

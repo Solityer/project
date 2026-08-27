@@ -15,9 +15,6 @@ use crate::{
     tensor::{Tensor, TensorType},
 };
 
-#[cfg(all(feature = "ezkl", not(target_arch = "wasm32")))]
-use crate::execute::EZKL_REPO_PATH;
-
 use crate::circuit::lookup::LookupOp;
 
 /// The range of the lookup table.
@@ -28,14 +25,11 @@ pub const RANGE_MULTIPLIER: IntegerRep = 2;
 /// The safety factor offset for the number of rows in the lookup table.
 pub const RESERVED_BLINDING_ROWS_PAD: usize = 3;
 
-#[cfg(all(feature = "ezkl", not(target_arch = "wasm32")))]
-lazy_static::lazy_static! {
-    /// an optional directory to read and write the lookup table cache
-    pub static ref LOOKUP_CACHE: String = format!("{}/cache", *EZKL_REPO_PATH);
-}
-
-/// The lookup table cache is disabled on wasm32 target.
-#[cfg(any(not(feature = "ezkl"), target_arch = "wasm32"))]
+/// The legacy filesystem lookup cache is disabled for the formal baseline.
+///
+/// Formal tables are generated from the registered relation and resources in
+/// the current run.  Keeping this constant empty also prevents the removed
+/// upstream `execute` module from reintroducing a developer-machine path.
 pub const LOOKUP_CACHE: &str = "";
 
 #[derive(Debug, Clone)]

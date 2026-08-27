@@ -7,24 +7,47 @@ use sha2::{Digest, Sha256};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CommitmentParameters {
+    /// Stable public schema for the serialized baseline-local parameter file.
+    /// This is intentionally part of the authenticated object rather than a
+    /// convention kept only in the runner.
+    pub schema: String,
+    pub setup_id: String,
+    pub security_id: String,
     pub protocol: String,
     pub generator_seed: [u8; 32],
     pub max_vector_len: usize,
     pub security_bits: u32,
+    /// The untagged digest used by the native CLI/resource manifest.
+    pub pp_id: String,
+    /// Tagged spelling of the same authenticated PP identity.
+    pub digest: String,
+    /// Kept as an internal compatibility alias for the existing proof code.
     pub parameters_id: String,
 }
+
+pub const PP_SCHEMA: &str = "zkDL_gat_pp_info_v1";
+pub const PP_SETUP_ID: &str = "zkDL-GAT-transparent-PP-v1";
+pub const PP_SECURITY_ID: &str = "zkdl_gat_bls12_381_multi_session_v2";
 
 impl CommitmentParameters {
     pub fn new(seed: [u8; 32], max_vector_len: usize) -> Result<Self> {
         ensure!(max_vector_len > 0, "PP max_vector_len must be positive");
         let mut out = Self {
+            schema: PP_SCHEMA.into(),
+            setup_id: PP_SETUP_ID.into(),
+            security_id: PP_SECURITY_ID.into(),
             protocol: "zkDL-hiding-Hyrax-IPA-BLS12-381-v1".into(),
             generator_seed: seed,
             max_vector_len,
             security_bits: 128,
+            pp_id: String::new(),
+            digest: String::new(),
             parameters_id: String::new(),
         };
-        out.parameters_id = hex::encode(out.canonical_digest());
+        let identity = hex::encode(out.canonical_digest());
+        out.pp_id = identity.clone();
+        out.parameters_id = identity.clone();
+        out.digest = format!("sha256:{identity}");
         // Eagerly validate distinct, non-identity base domains.
         out.g(0).checked()?;
         out.h(0).checked()?;
@@ -39,15 +62,25 @@ impl CommitmentParameters {
     }
     pub fn validate(&self) -> Result<()> {
         ensure!(
+            self.schema == PP_SCHEMA
+                && self.setup_id == PP_SETUP_ID
+                && self.security_id == PP_SECURITY_ID,
+            "unsupported PP schema/setup/security identity"
+        );
+        ensure!(
             self.protocol == "zkDL-hiding-Hyrax-IPA-BLS12-381-v1",
             "unsupported PP protocol"
         );
         ensure!(
-            self.security_bits == 128 && self.max_vector_len > 0,
+            self.security_bits == 128
+                && self.max_vector_len > 0
+                && self.max_vector_len.is_power_of_two(),
             "invalid PP security/size"
         );
         ensure!(
-            self.parameters_id == hex::encode(self.canonical_digest()),
+            self.parameters_id == self.pp_id
+                && self.pp_id == hex::encode(self.canonical_digest())
+                && self.digest == format!("sha256:{}", self.pp_id),
             "PP digest mismatch"
         );
         self.g(0).checked()?;
@@ -58,6 +91,12 @@ impl CommitmentParameters {
     fn canonical_digest(&self) -> [u8; 32] {
         let mut h = Sha256::new();
         h.update(b"zkDL-Hyrax-PP-v1\0");
+        h.update((self.schema.len() as u64).to_be_bytes());
+        h.update(self.schema.as_bytes());
+        h.update((self.setup_id.len() as u64).to_be_bytes());
+        h.update(self.setup_id.as_bytes());
+        h.update((self.security_id.len() as u64).to_be_bytes());
+        h.update(self.security_id.as_bytes());
         h.update(self.protocol.as_bytes());
         h.update(self.generator_seed);
         h.update((self.max_vector_len as u64).to_be_bytes());

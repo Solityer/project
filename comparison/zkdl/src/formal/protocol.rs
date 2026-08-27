@@ -1,4 +1,5 @@
 use crate::algebra::{Point, Scalar};
+use crate::compiler::SUPPORTED_ROUNDING_MODE;
 use crate::hyrax::{commit, commit_with_backend, CommitmentParameters, VectorCommitment};
 use crate::prover_backend::{GpuTelemetry, ProverBackend};
 use crate::registry::{RelationRegistry, Visibility, WitnessPackage};
@@ -10,20 +11,49 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static ATOMIC_WRITE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 pub const PROOF_FORMAT: &str = "zkDL-GAT-proof-envelope-v3";
 
+/// The native formal CLI is compiled from exactly one baseline.  Keeping the
+/// root in the binary (rather than accepting an arbitrary caller supplied
+/// root) prevents a run from silently consuming another baseline's resources
+/// or publishing artifacts outside zkDL.
+pub const BASELINE_ROOT: &str = env!("CARGO_MANIFEST_DIR");
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CliPathRoot {
+    Artifacts,
+    RunsTmp,
+}
+
+impl CliPathRoot {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Artifacts => "artifacts",
+            // The public runner's single-run output directory is `runs/`.
+            // Keep the internal variant name for source compatibility, but
+            // authenticate the actual baseline-local production root.
+            Self::RunsTmp => "runs",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PublicStatement {
     pub protocol_id: String,
+    pub adapter_schema: String,
+    pub adapter_version: u32,
+    pub protocol_sha256: String,
+    pub canonical_relation_digest: String,
     pub proof_task: String,
     pub privacy_policy: String,
     pub input_privacy: String,
     pub output_mode: String,
+    pub rounding_mode: String,
     pub dataset: String,
     pub pp_id: String,
     pub registry: RelationRegistry,
@@ -78,10 +108,22 @@ impl PublicStatement {
             "statement task mismatch"
         );
         ensure!(
+            self.adapter_schema == crate::compiler::CANONICAL_ADAPTER_SCHEMA
+                && self.adapter_version == crate::compiler::CANONICAL_ADAPTER_VERSION
+                && self.protocol_sha256 == crate::compiler::protocol_digest()
+                && self.canonical_relation_digest.starts_with("sha256:")
+                && self.canonical_relation_digest.len() == 71,
+            "statement canonical adapter identity mismatch"
+        );
+        ensure!(
             self.privacy_policy == "model_and_trace_hidden"
                 && self.input_privacy == "public_graph_public_features"
                 && self.output_mode == "public_logits",
             "statement privacy/output mismatch"
+        );
+        ensure!(
+            self.rounding_mode == SUPPORTED_ROUNDING_MODE,
+            "statement rounding mode is unsupported or was silently substituted"
         );
         ensure!(
             !self.dataset.is_empty() && !self.pp_id.is_empty(),
@@ -310,6 +352,7 @@ impl PublicStatement {
         validate_integer_bound_ledger(&self.integer_bound_ledger, &self.static_table_profile)?;
         validate_ledger_statement_binding(self)?;
         validate_public_feature_bound(self)?;
+        self.registry.validate_canonical_gat()?;
         Ok(())
     }
 }
@@ -579,6 +622,13 @@ fn validate_integer_bound_ledger(
     );
     ensure!(
         object
+            .get("rounding_mode")
+            .and_then(serde_json::Value::as_str)
+            == Some(SUPPORTED_ROUNDING_MODE),
+        "integer bound ledger rounding mode mismatch"
+    );
+    ensure!(
+        object
             .get("field_half_modulus")
             .and_then(serde_json::Value::as_str)
             == Some(FIELD_HALF_DEC),
@@ -832,6 +882,10 @@ fn validate_ledger_statement_binding(statement: &PublicStatement) -> Result<()> 
             "integer ledger authenticated identity mismatch for {key}"
         );
     }
+    ensure!(
+        ledger_string(object, "rounding_mode")? == statement.rounding_mode,
+        "integer ledger rounding mode mismatch"
+    );
     let scales = object
         .get("scales")
         .ok_or_else(|| anyhow::anyhow!("integer ledger quantization scales are missing"))?;
@@ -1465,6 +1519,15 @@ fn begin_transcript(
 ) -> Transcript {
     let mut t = Transcript::new(PROOF_FORMAT);
     t.bytes(b"statement-id", s.statement_id.as_bytes());
+    t.bytes(b"adapter-schema", s.adapter_schema.as_bytes());
+    t.u64(b"adapter-version", s.adapter_version as u64);
+    t.bytes(b"protocol-sha256", s.protocol_sha256.as_bytes());
+    t.bytes(
+        b"canonical-relation-digest",
+        s.canonical_relation_digest.as_bytes(),
+    );
+    t.label("zkDL-rounding-mode-v1");
+    t.bytes(b"rounding-mode", s.rounding_mode.as_bytes());
     t.bytes(b"model-registry-id", m.registry_object_id.as_bytes());
     t.bytes(b"proof-nonce", &nonce);
     let public_logits = s
@@ -1982,8 +2045,8 @@ pub fn verify(
 }
 
 pub fn read_bytes(path: &Path) -> Result<Vec<u8>> {
-    validate_output_path(path)?;
-    fs::read(path).with_context(|| format!("read {}", path.display()))
+    let path = validate_secure_path(path, true)?;
+    fs::read(&path).with_context(|| format!("read {}", path.display()))
 }
 
 pub fn read_bin<T: for<'a> Deserialize<'a>>(path: &Path) -> Result<T> {
@@ -1991,61 +2054,158 @@ pub fn read_bin<T: for<'a> Deserialize<'a>>(path: &Path) -> Result<T> {
     Ok(bincode::deserialize(&bytes).with_context(|| format!("parse {}", path.display()))?)
 }
 
-fn validate_output_path(path: &Path) -> Result<()> {
-    use std::path::Component;
+fn lexical_absolute(path: &Path) -> Result<PathBuf> {
+    ensure!(!path.as_os_str().is_empty(), "path must not be empty");
+    let raw = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    let mut absolute = PathBuf::new();
+    for component in raw.components() {
+        match component {
+            Component::RootDir => absolute.push(Path::new(std::path::MAIN_SEPARATOR_STR)),
+            Component::Prefix(prefix) => absolute.push(prefix.as_os_str()),
+            Component::CurDir => {}
+            Component::Normal(value) => absolute.push(value),
+            Component::ParentDir => bail!("path contains a lexical parent component"),
+        }
+    }
     ensure!(
-        path.components()
-            .all(|component| !matches!(component, Component::ParentDir)),
-        "output path escapes its caller-controlled root"
+        absolute.is_absolute(),
+        "path did not resolve to an absolute path"
     );
-    let parent = path
+    Ok(absolute)
+}
+
+fn metadata_is_single_regular_file(metadata: &fs::Metadata, label: &str) -> Result<()> {
+    ensure!(
+        !metadata.file_type().is_symlink() && metadata.is_file(),
+        "{label} must be a regular file"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        ensure!(metadata.nlink() == 1, "{label} must not be hard-linked");
+    }
+    Ok(())
+}
+
+/// Check a path without following symlinks in any existing component.  The
+/// final component may be absent only when the caller is preparing an output;
+/// all existing final components must still be regular, single-link files.
+fn validate_secure_path(path: &Path, require_final: bool) -> Result<PathBuf> {
+    let absolute = lexical_absolute(path)?;
+    let parent = absolute
         .parent()
-        .ok_or_else(|| anyhow::anyhow!("output path has no parent"))?;
-    let mut current = if parent.is_absolute() {
+        .ok_or_else(|| anyhow::anyhow!("path has no parent"))?;
+    let mut current = if absolute.has_root() {
         Path::new(std::path::MAIN_SEPARATOR_STR).to_path_buf()
     } else {
-        std::env::current_dir()?
+        PathBuf::new()
     };
     for component in parent.components() {
         match component {
-            Component::RootDir | Component::CurDir => {}
+            Component::RootDir => {}
+            Component::Prefix(prefix) => current.push(prefix.as_os_str()),
+            Component::CurDir => {}
             Component::Normal(value) => {
                 current.push(value);
                 match fs::symlink_metadata(&current) {
-                    Ok(metadata) => {
-                        ensure!(
-                            !metadata.file_type().is_symlink() && metadata.is_dir(),
-                            "output path parent is not a regular directory"
-                        );
-                    }
+                    Ok(metadata) => ensure!(
+                        !metadata.file_type().is_symlink() && metadata.is_dir(),
+                        "path parent is not a real directory: {}",
+                        current.display()
+                    ),
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                     Err(error) => return Err(error.into()),
                 }
             }
-            Component::Prefix(_) | Component::ParentDir => {
-                bail!("output path contains an unsupported component")
-            }
+            Component::ParentDir => bail!("path contains a lexical parent component"),
         }
     }
-    if let Ok(metadata) = fs::symlink_metadata(path) {
-        ensure!(
-            !metadata.file_type().is_symlink(),
-            "refusing to overwrite symlink output"
-        );
-        ensure!(
-            metadata.is_file(),
-            "refusing to overwrite non-regular output"
-        );
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
-            ensure!(
-                metadata.nlink() == 1,
-                "refusing to overwrite hard-linked output"
-            );
+    match fs::symlink_metadata(&absolute) {
+        Ok(metadata) => metadata_is_single_regular_file(&metadata, "path")?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound && !require_final => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            bail!("path does not exist: {}", absolute.display())
         }
+        Err(error) => return Err(error.into()),
     }
-    Ok(())
+    Ok(absolute)
+}
+
+fn baseline_root_path() -> Result<PathBuf> {
+    let configured = lexical_absolute(Path::new(BASELINE_ROOT))?;
+    let metadata = fs::symlink_metadata(&configured)?;
+    ensure!(
+        !metadata.file_type().is_symlink() && metadata.is_dir(),
+        "compiled baseline root is not a real directory"
+    );
+    Ok(fs::canonicalize(configured)?)
+}
+
+/// Validate the explicit native CLI project root.  It must be the exact
+/// baseline directory captured at compile time, including after symlink
+/// resolution; sibling baselines and aliases are rejected.
+pub fn validate_project_root(path: &Path) -> Result<PathBuf> {
+    let expected = baseline_root_path()?;
+    let supplied = lexical_absolute(path)?;
+    let supplied_metadata = fs::symlink_metadata(&supplied)?;
+    ensure!(
+        !supplied_metadata.file_type().is_symlink() && supplied_metadata.is_dir(),
+        "project-root must be a real directory"
+    );
+    ensure!(
+        fs::canonicalize(&supplied)? == expected,
+        "project-root must equal the compiled comparison/zkdl baseline"
+    );
+    Ok(expected)
+}
+
+/// Validate a native CLI argument against one of the baseline production roots.
+/// This is intentionally lexical: a symlink that happens to point back inside
+/// the baseline is still rejected, as are hard-linked files and special files.
+pub fn validate_cli_path(path: &Path, root: CliPathRoot, output: bool) -> Result<PathBuf> {
+    let baseline = baseline_root_path()?;
+    let absolute = lexical_absolute(path)?;
+    let relative = absolute
+        .strip_prefix(&baseline)
+        .map_err(|_| anyhow::anyhow!("CLI path escapes the zkDL baseline: {}", path.display()))?;
+    let mut components = relative.components();
+    let first = components
+        .next()
+        .and_then(|component| match component {
+            Component::Normal(value) => Some(value),
+            _ => None,
+        })
+        .ok_or_else(|| anyhow::anyhow!("CLI path must be below a canonical production root"))?;
+    ensure!(
+        first == std::ffi::OsStr::new(root.name()),
+        "CLI path must be below {}/",
+        root.name()
+    );
+    let checked = validate_secure_path(&absolute, !output)?;
+    Ok(checked)
+}
+
+/// Return a stable baseline-relative spelling for authenticated manifest
+/// fields.  Absolute paths are never serialized into formal manifests.
+pub fn relative_baseline_path(path: &Path) -> Result<String> {
+    let baseline = baseline_root_path()?;
+    let absolute = lexical_absolute(path)?;
+    let relative = absolute
+        .strip_prefix(&baseline)
+        .map_err(|_| anyhow::anyhow!("path escapes the zkDL baseline: {}", path.display()))?;
+    ensure!(
+        !relative.as_os_str().is_empty(),
+        "baseline root itself is not a file path"
+    );
+    Ok(relative.to_string_lossy().replace('\\', "/"))
+}
+
+fn validate_output_path(path: &Path) -> Result<()> {
+    validate_secure_path(path, false).map(|_| ())
 }
 
 /// Create missing output parents one component at a time, checking every

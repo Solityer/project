@@ -35,7 +35,6 @@ def main() -> int:
         "python3": shutil.which("python3") is not None,
         "numpy": False,
         "nvcc": shutil.which("nvcc") is not None,
-        "mcl_optional": (ROOT / "3rd" / "mcl" / "include" / "mcl" / "bn.hpp").is_file(),
     }
     try:
         import numpy  # noqa: F401

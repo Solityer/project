@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <fstream>
+#include <limits>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -162,6 +163,9 @@ namespace gat_ezkl
                     throw std::runtime_error("hidden_profile entries must be non-zero");
                 }
                 if (layer_index + 1 < config.hidden_profile.size() && !config.d_in_profile.empty()) {
+                    if (layer.head_count > std::numeric_limits<std::size_t>::max() / layer.head_dim) {
+                        throw std::runtime_error("hidden head width overflows size_t");
+                    }
                     const auto expected = layer.head_count * layer.head_dim;
                     if (config.d_in_profile[layer_index + 1] != expected) {
                         throw std::runtime_error("d_in_profile does not match previous hidden concat width");

@@ -77,12 +77,6 @@ pub enum EZKLError {
     Halo2Error(#[from] halo2_proofs::plonk::Error),
     #[error("[Uncategorized] {0}")]
     UncategorizedError(String),
-    #[cfg(all(
-        feature = "ezkl",
-        not(all(target_arch = "wasm32", target_os = "unknown"))
-    ))]
-    #[error("[execute] {0}")]
-    ExecutionError(#[from] execute::ExecutionError),
     #[error("[srs] {0}")]
     SrsError(#[from] pfsys::srs::SrsError),
 }
@@ -119,57 +113,24 @@ pub fn version() -> &'static str {
     }
 }
 
-/// Bindings management
-#[cfg(any(
-    all(target_arch = "wasm32", target_os = "unknown"),
-    feature = "python-bindings"
-))]
-pub mod bindings;
 /// Methods for configuring tensor operations and assigning values to them in a Halo2 circuit.
 pub mod circuit;
-/// CLI commands.
-#[cfg(all(feature = "ezkl", not(target_arch = "wasm32")))]
-pub mod commands;
-#[cfg(all(feature = "eth", not(target_arch = "wasm32")))]
-// abigen doesn't generate docs for this module
-#[allow(missing_docs)]
-/// Utility functions for contracts
-pub mod eth;
-/// Command execution
-///
-#[cfg(all(feature = "ezkl", not(target_arch = "wasm32")))]
-pub mod execute;
 /// Utilities for converting from Halo2 Field types to integers (and vice-versa).
 pub mod fieldutils;
-/// Methods for loading onnx format models and automatically laying them out in
-/// a Halo2 circuit.
-#[cfg(any(feature = "onnx", not(feature = "ezkl")))]
-pub mod graph;
-/// beautiful logging
-#[cfg(all(
-    feature = "logging",
-    not(all(target_arch = "wasm32", target_os = "unknown"))
-))]
-pub mod logger;
-#[cfg(all(
-    any(feature = "ezkl", feature = "formal"),
-    not(target_arch = "wasm32")
-))]
-pub mod native_gat;
-/// Tools for proofs and verification used by cli
-pub mod pfsys;
 #[cfg(all(
     any(feature = "ezkl", feature = "formal"),
     feature = "gpu-accelerated",
     not(target_arch = "wasm32")
 ))]
 pub(crate) mod gpu_telemetry;
-/// srs sha hashes
-#[cfg(all(
-    feature = "ezkl",
-    not(all(target_arch = "wasm32", target_os = "unknown"))
-))]
-pub mod srs_sha;
+/// Methods for loading onnx format models and automatically laying them out in
+/// a Halo2 circuit.
+#[cfg(any(feature = "onnx", not(feature = "ezkl")))]
+pub mod graph;
+#[cfg(all(any(feature = "ezkl", feature = "formal"), not(target_arch = "wasm32")))]
+pub mod native_gat;
+/// Tools for proofs and verification used by cli
+pub mod pfsys;
 /// An implementation of multi-dimensional tensors.
 pub mod tensor;
 #[cfg(all(feature = "ezkl", not(target_arch = "wasm32")))]

@@ -12,9 +12,6 @@ use std::{borrow::Cow, fmt::Debug, iter, ops::Deref};
 
 pub mod native;
 
-#[cfg(feature = "loader_evm")]
-pub mod evm;
-
 #[cfg(feature = "loader_halo2")]
 pub mod halo2;
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import pathlib
 import sys
 from typing import Any, Dict
@@ -24,6 +25,8 @@ PUBLIC_CONTEXT_FILES = ["config", "model_manifest", "trusted_registry_public", "
 from zkgpt_gat.proof import _verify_formal  # noqa: E402
 from zkgpt_gat.config import read_config  # noqa: E402
 from zkgpt_gat.gpu_execution import validate_gpu_execution_evidence  # noqa: E402
+from zkgpt_gat.formal_gate import require_formal_experiment  # noqa: E402
+from zkgpt_gat.privacy import verify_privacy_profile  # noqa: E402
 from zkgpt_gat.registry import canonical_registry_public_path  # noqa: E402
 from zkgpt_gat.resources import (  # noqa: E402
     STATIC_TABLE_DESCRIPTOR_RELATIVE_PATH,
@@ -38,7 +41,7 @@ from zkgpt_gat.result_validation import (  # noqa: E402
     validate_artifact_inventory,
     validate_canonical_cell_dir_from_path,
 )
-from zkgpt_gat.util import digest_json, write_json  # noqa: E402
+from zkgpt_gat.util import canonical_json, digest_json, write_json  # noqa: E402
 from zkgpt_gat.verifier_context import ContextError, VerifierContext, build_verifier_context  # noqa: E402
 
 
@@ -47,6 +50,29 @@ def _read(artifact_dir: pathlib.Path, name: str) -> Dict[str, Any]:
     value = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(value, dict):
         raise ValueError(f"{path} must contain an object")
+    return value
+
+
+def _read_canonical_object(artifact_dir: pathlib.Path, name: str) -> Dict[str, Any]:
+    """Read one public proof object with its canonical wire encoding intact.
+
+    Production artifacts are emitted by ``write_json``.  Requiring the same
+    sorted, UTF-8 JSON representation here makes duplicate/reordered privacy
+    envelopes observable at the independent-verifier boundary instead of
+    allowing two byte-distinct files to collapse to the same Python mapping.
+    The parsed object is still checked by the protocol-specific verifier.
+    """
+    path = required_artifact_file(artifact_dir, name)
+    raw = path.read_text(encoding="utf-8")
+    try:
+        value = json.loads(raw, parse_constant=lambda token: (_ for _ in ()).throw(ValueError(token)))
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError(f"{path} is not canonical JSON") from exc
+    if not isinstance(value, dict):
+        raise ValueError(f"{path} must contain an object")
+    expected = json.dumps(value, indent=2, sort_keys=True, ensure_ascii=True) + "\n"
+    if raw != expected:
+        raise ValueError(f"{path} is not canonically serialized")
     return value
 
 
@@ -166,7 +192,44 @@ def _canonical_public_y(project_root: pathlib.Path, config_path: pathlib.Path, p
     return expected
 
 
+def _strict_baseline_root(raw: str | pathlib.Path) -> pathlib.Path:
+    """Authenticate the one lexical baseline root accepted by this verifier.
+
+    The command-line root is a trust-boundary selector, so accepting a path
+    that merely resolves to the baseline would permit aliases such as a
+    symlink, a relative path, or a ``..`` spelling.  Normalize separators and
+    trailing components lexically, reject dot components before normalization,
+    then require both the normalized spelling and the resolved path to equal
+    the module's canonical baseline root.
+    """
+    raw_text = os.fspath(raw)
+    if not isinstance(raw_text, str):
+        raise ValueError("--project-root must be a filesystem path string")
+    supplied = pathlib.Path(raw_text)
+    if not supplied.is_absolute():
+        raise ValueError("--project-root must be absolute")
+    if any(part in {".", ".."} for part in supplied.parts):
+        raise ValueError("--project-root must not contain '.' or '..' path components")
+    lexical = pathlib.Path(os.path.abspath(os.path.normpath(raw_text)))
+    if str(lexical) != str(ROOT):
+        raise ValueError(f"--project-root must equal canonical zkGPT baseline root: {ROOT}")
+
+    current = pathlib.Path(lexical.anchor)
+    for part in lexical.parts[1:]:
+        current /= part
+        if current.is_symlink():
+            raise ValueError(f"--project-root contains a symlink component: {current}")
+    try:
+        resolved = lexical.resolve(strict=True)
+    except OSError as exc:
+        raise ValueError(f"--project-root cannot be resolved: {lexical}") from exc
+    if resolved != ROOT:
+        raise ValueError(f"--project-root resolves outside canonical baseline root: {resolved}")
+    return lexical
+
+
 def _invoke_formal_verifier(
+    *,
     metadata: Dict[str, Any],
     commitments: Dict[str, Any],
     transcript: Dict[str, Any],
@@ -175,15 +238,33 @@ def _invoke_formal_verifier(
     gkr: Dict[str, Any],
     combine: Dict[str, Any],
     openings: Dict[str, Any],
+    privacy_profile: Dict[str, Any],
     gpu_claim: Dict[str, Any] | None,
     backend: str,
     context: VerifierContext,
 ) -> Dict[str, Any]:
     """Call the strict proof verifier API with the rebuilt context."""
-    args = (metadata, commitments, transcript, lasso, matrix, gkr, combine, openings, gpu_claim, backend)
-    # This is deliberately an exact call: a verifier implementation without
-    # the external_context parameter is not an accepted formal replay path.
-    return {**_verify_formal(*args, external_context=context.proof_context()), "external_context_mode": "external_context"}
+    # Keep the call keyworded against the real proof verifier signature.  A
+    # missing serialized PrivacyProfile must never shift gpu_claim/backend
+    # into the wrong positional slots or silently weaken the relation.
+    return {
+        **_verify_formal(
+            metadata=metadata,
+            commitments=commitments,
+            transcript=transcript,
+            lasso=lasso,
+            matrix=matrix,
+            gkr=gkr,
+            combine=combine,
+            openings=openings,
+            privacy_profile=privacy_profile,
+            gpu_claim=gpu_claim,
+            backend=backend,
+            external_context=context.proof_context(),
+            public_graph=context.graph,
+        ),
+        "external_context_mode": "external_context",
+    }
 
 
 def verify_artifact_directory(artifact_dir: pathlib.Path, context: VerifierContext) -> Dict[str, Any]:
@@ -195,7 +276,8 @@ def verify_artifact_directory(artifact_dir: pathlib.Path, context: VerifierConte
     gkr = _read(artifact_dir, "gkr_proof.json")
     combine = _read(artifact_dir, "combine_proof.json")
     openings = _read(artifact_dir, "hyrax_mle_openings.json")
-    proof_payload = _read(artifact_dir, "proof_payload.json")
+    privacy_profile = _read_canonical_object(artifact_dir, "privacy_profile.json")
+    proof_payload = _read_canonical_object(artifact_dir, "proof_payload.json")
     fixed_lookup_tables = _read(artifact_dir, "fixed_lookup_tables.json")
     backend = str(metadata.get("backend", ""))
     if backend not in {"cpu", "gpu"}:
@@ -230,7 +312,66 @@ def verify_artifact_directory(artifact_dir: pathlib.Path, context: VerifierConte
             artifact_dir, metadata, transcript, proof_payload,
         )
     gpu_claim = _read(artifact_dir, "gpu_proof_hot_path.json") if backend == "gpu" else None
-    result = _invoke_formal_verifier(metadata, commitments, transcript, lasso, matrix, gkr, combine, openings, gpu_claim, backend, context)
+    privacy_errors: list[str] = []
+    payload_profile = proof_payload.get("PrivacyProfile")
+    if payload_profile != privacy_profile:
+        privacy_errors.append("privacy_profile_file_payload_mismatch")
+    if not isinstance(payload_profile, dict):
+        privacy_errors.append("privacy_profile_payload_not_object")
+    else:
+        if proof_payload.get("privacy_profile_digest") != payload_profile.get("profile_digest"):
+            privacy_errors.append("privacy_profile_payload_digest_mismatch")
+        if privacy_profile.get("profile_digest") != digest_json({key: value for key, value in privacy_profile.items() if key != "profile_digest"}):
+            privacy_errors.append("privacy_profile_file_digest_invalid")
+        if transcript.get("privacy_profile_digest") != privacy_profile.get("profile_digest"):
+            privacy_errors.append("privacy_profile_transcript_digest_mismatch")
+        if privacy_profile.get("pre_profile_transcript_digest") != transcript.get("pre_profile_transcript_digest"):
+            privacy_errors.append("privacy_profile_pre_transcript_digest_mismatch")
+        if proof_payload.get("transcript_digest") != digest_json(transcript):
+            privacy_errors.append("proof_payload_transcript_digest_mismatch")
+        commitment_items = commitments.get("items", {})
+        if not isinstance(commitment_items, dict):
+            commitment_items = {}
+        expected_com_in = [commitment_items.get(name) for name in ("com_W", "com_Aux", "com_L")]
+        if proof_payload.get("Com_in") != expected_com_in:
+            privacy_errors.append("proof_payload_commitment_order_or_binding_mismatch")
+        profile_check = verify_privacy_profile(
+            metadata,
+            commitments,
+            proof_payload,
+            pre_profile_transcript_digest=str(transcript.get("pre_profile_transcript_digest", "")),
+            components={
+                "lasso": lasso,
+                "matmul": matrix,
+                "gkr": gkr,
+                "input_combine": combine,
+                "terminal_openings": openings,
+            },
+        )
+        if profile_check.get("status") != "VERIFY_OK":
+            privacy_errors.append("privacy_profile_crypto_binding_invalid")
+    if privacy_errors:
+        result = {
+            "status": "VERIFY_FAILED",
+            "reason": "privacy profile or public proof binding rejected before formal replay",
+            "checks": {},
+            "subproof_verification": {},
+        }
+    else:
+        result = _invoke_formal_verifier(
+            metadata=metadata,
+            commitments=commitments,
+            transcript=transcript,
+            lasso=lasso,
+            matrix=matrix,
+            gkr=gkr,
+            combine=combine,
+            openings=openings,
+            privacy_profile=privacy_profile,
+            gpu_claim=gpu_claim,
+            backend=backend,
+            context=context,
+        )
     result["external_context"] = external_metadata
     result["external_public_y"] = external_payload
     result["external_families"] = external_families
@@ -241,13 +382,13 @@ def verify_artifact_directory(artifact_dir: pathlib.Path, context: VerifierConte
     checks["external_families"] = True
     checks["fixed_lookup_table_closure"] = static_table_ok
     checks["gpu_evidence_closure"] = gpu_closure_ok
-    result["checks"] = checks
-    if result.get("status") != "VERIFY_OK" or not static_table_ok or not gpu_closure_ok:
-        result["status"] = "VERIFY_FAILED"
+    checks["privacy_profile_file"] = not privacy_errors
     if static_table_errors:
         result["fixed_lookup_table_errors"] = static_table_errors
     if gpu_closure_errors:
         result["gpu_evidence_errors"] = gpu_closure_errors
+    if privacy_errors:
+        result["privacy_profile_errors"] = privacy_errors
     checks = result.get("checks", {})
     required_payload_keys = {
         "proof_type", "M_pub_digest", "Y_digest", "Com_in", "Pi_Lasso",
@@ -263,7 +404,13 @@ def verify_artifact_directory(artifact_dir: pathlib.Path, context: VerifierConte
         forbidden = {"raw_witness", "private_witness", "witness_values", "witness_arrays", "trace_arrays", "private_trace"}
         if isinstance(value, dict):
             for key, child in value.items():
-                if str(key).lower() in forbidden:
+                key_lower = str(key).lower()
+                if (
+                    key_lower in forbidden
+                    or "witness" in key_lower
+                    or "trace" in key_lower
+                    or key_lower in {"blind", "blinder", "secret"}
+                ):
                     return True
                 if _contains_raw_private(child):
                     return True
@@ -274,6 +421,10 @@ def verify_artifact_directory(artifact_dir: pathlib.Path, context: VerifierConte
 
     raw_private_payload = _contains_raw_private(proof_payload)
     proof_schema_scan = payload_keys_ok and not raw_private_payload
+    checks["proof_payload_schema"] = proof_schema_scan
+    result["checks"] = checks
+    if result.get("status") != "VERIFY_OK" or not static_table_ok or not gpu_closure_ok or privacy_errors or not proof_schema_scan:
+        result["status"] = "VERIFY_FAILED"
     verifier_input_files = {
         "metadata.json", "commitments.json", "transcript.json", "lookup_proof.json",
         "matrix_sumcheck_proof.json", "gkr_proof.json", "combine_proof.json",
@@ -348,12 +499,17 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     artifact_dir: pathlib.Path | None = None
     try:
+        # The formal capability gate is the first trust-boundary operation in
+        # every verifier process.  Reject blocked source configurations before
+        # opening a caller-selected project, config, registry, or artifact.
+        require_formal_experiment()
+        project_root = _strict_baseline_root(args.project_root)
         # Authenticate the lexical canonical artifact directory before reading
         # any proof bytes.  A final run manifest is deliberately not required:
         # this verifier writes the independent report that the runner later
         # binds into the fresh VERIFY_OK manifest.
         artifact_dir = validate_canonical_cell_dir_from_path(
-            args.project_root, args.artifact_dir,
+            project_root, args.artifact_dir,
         )
         path_backend = artifact_dir.parent.name
         path_dataset = artifact_dir.name
@@ -373,16 +529,16 @@ def main(argv: list[str] | None = None) -> int:
             )
         config_entries = read_config(args.config.expanduser().resolve())
         model_param_id = config_entries.get("model_param_id", "")
-        expected_registry = canonical_registry_public_path(args.project_root, model_param_id)
+        expected_registry = canonical_registry_public_path(project_root, model_param_id)
         supplied_registry = args.registry_public.expanduser().resolve()
         if supplied_registry != expected_registry.resolve():
             raise ValueError(
                 f"--trusted-registry-public must equal canonical config/model registry: {expected_registry}"
             )
-        public_y = _canonical_public_y(args.project_root, args.config, args.public_y)
-        context = build_verifier_context(args.project_root, args.config, args.registry_public, artifact_dir, public_y)
+        public_y = _canonical_public_y(project_root, args.config, args.public_y)
+        context = build_verifier_context(project_root, args.config, args.registry_public, artifact_dir, public_y)
         result = verify_artifact_directory(artifact_dir, context)
-    except (OSError, ValueError, KeyError, TypeError, ContextError, ResultValidationError) as exc:
+    except (OSError, ValueError, KeyError, TypeError, RuntimeError, ContextError, ResultValidationError) as exc:
         result = {"status": "VERIFY_FAILED", "reason": str(exc), "checks": {"external_context": False}}
     if artifact_dir is not None and artifact_dir.is_dir():
         output = artifact_dir / "independent_verification.json"

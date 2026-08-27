@@ -78,18 +78,19 @@ fn build_columns(
                 }
                 .ok_or_else(|| anyhow::anyhow!("missing family {family_id}"))?;
                 let mut values = Vec::with_capacity(op.rows);
-                let mut pads = vec![Scalar::zero(); op.rows];
+                // Physical MLE padding is part of the canonical relation, not
+                // prover randomness.  In particular, a PaddedAffine view may
+                // point at a convenient in-range index for its physical tail,
+                // but that index must never be read as a real witness value.
+                // Hiding is provided by the independent commitment blinder
+                // below (and by the sumcheck mask), never by changing the
+                // relation's padding values.
+                let pads = vec![Scalar::zero(); op.rows];
                 for row in 0..op.rows {
-                    if row < op.real_rows && spec.visibility == Visibility::Public {
+                    if row < op.real_rows {
                         values.push(t[canonical_index_by_row.at(row)?]);
-                    } else if row < op.real_rows {
-                        values.push(t[canonical_index_by_row.at(row)?]);
-                    } else if spec.visibility == Visibility::Public {
-                        values.push(Scalar::zero());
                     } else {
-                        let value = Scalar::random()?;
-                        values.push(value);
-                        pads[row] = value;
+                        values.push(Scalar::zero());
                     }
                 }
                 (values, pads)

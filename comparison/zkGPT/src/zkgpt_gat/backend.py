@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import pathlib
+import stat
 import subprocess
 import tempfile
 from numbers import Integral
@@ -21,6 +23,66 @@ _GPU_KERNEL = "zkgpt_native_bn254_fr_batch_v3"
 
 def gpu_proof_hot_path_binary(zk_root: pathlib.Path) -> pathlib.Path:
     return pathlib.Path(zk_root) / "build" / "zkgpt_cuda_native_prover"
+
+
+def _lexical(path: pathlib.Path) -> pathlib.Path:
+    """Normalize a path without resolving symlinks."""
+    return pathlib.Path(os.path.abspath(os.path.normpath(os.fspath(path))))
+
+
+def _check_lexical_components(path: pathlib.Path, root: pathlib.Path, *, allow_missing: bool) -> None:
+    root = _lexical(root)
+    path = _lexical(path)
+    try:
+        relative = path.relative_to(root)
+    except ValueError as exc:
+        raise RuntimeError(f"CUDA path escapes baseline root: {path}") from exc
+    current = root
+    try:
+        root_info = current.lstat()
+    except OSError as exc:
+        raise RuntimeError(f"cannot inspect CUDA baseline root: {root}") from exc
+    if stat.S_ISLNK(root_info.st_mode) or not stat.S_ISDIR(root_info.st_mode):
+        raise RuntimeError(f"CUDA baseline root must be a real directory: {root}")
+    for component in relative.parts:
+        current = current / component
+        try:
+            info = current.lstat()
+        except FileNotFoundError:
+            if allow_missing:
+                continue
+            raise RuntimeError(f"CUDA path component is missing: {current}")
+        except OSError as exc:
+            raise RuntimeError(f"cannot inspect CUDA path component: {current}") from exc
+        if stat.S_ISLNK(info.st_mode):
+            raise RuntimeError(f"CUDA path component must not be a symlink: {current}")
+        if current != path and not stat.S_ISDIR(info.st_mode):
+            raise RuntimeError(f"CUDA path component must be a directory: {current}")
+
+
+def _authenticated_cuda_binary(zk_root: pathlib.Path) -> tuple[pathlib.Path, str, str]:
+    """Authenticate the baseline-local CUDA executable before invocation."""
+    root = _lexical(zk_root)
+    binary = _lexical(gpu_proof_hot_path_binary(root))
+    _check_lexical_components(binary, root, allow_missing=False)
+    try:
+        info = binary.lstat()
+    except OSError as exc:
+        raise RuntimeError(f"cannot inspect CUDA proof primitive binary: {binary}") from exc
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+        raise RuntimeError(f"CUDA proof primitive binary must be a regular file: {binary}")
+    if info.st_nlink != 1:
+        raise RuntimeError(f"CUDA proof primitive binary must have one hardlink: {binary}")
+    if not info.st_mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH):
+        raise RuntimeError(f"CUDA proof primitive binary is not executable: {binary}")
+    try:
+        if binary.resolve(strict=True) != binary:
+            raise RuntimeError(f"CUDA proof primitive binary resolves through an alias: {binary}")
+    except OSError as exc:
+        raise RuntimeError(f"cannot resolve CUDA proof primitive binary: {binary}") from exc
+    digest = hashlib.sha256(binary.read_bytes()).hexdigest()
+    identity = digest_json({"kernel": _GPU_KERNEL, "binary_sha256": digest})
+    return binary, digest, identity
 
 
 def _as_field(value: Any, label: str) -> int:
@@ -189,12 +251,7 @@ def _run_gpu_primitives_file(
     input_path: pathlib.Path,
     label: str,
 ) -> Dict[str, Any]:
-    binary = gpu_proof_hot_path_binary(zk_root)
-    if not binary.is_file() or not binary.stat().st_mode & 0o111:
-        raise FileNotFoundError(
-            f"missing executable CUDA proof primitive backend: {binary}; "
-            "run scripts/build_cuda_backend.sh"
-        )
+    binary, binary_sha256, build_identity = _authenticated_cuda_binary(zk_root)
     out_path = input_path.with_suffix(".gpu_backend.json")
     env = stable_env()
     env.setdefault("CUDA_MODULE_LOADING", "LAZY")
@@ -239,6 +296,8 @@ def _run_gpu_primitives_file(
     # retain the raw CUDA fields for the low-level message contract as well.
     state["device_uuid"] = gpu_uuid
     state["kernel_time_ms"] = float(event_ms)
+    state["binary_sha256"] = binary_sha256
+    state["build_identity"] = build_identity
     state["cuda_stdout"] = completed.stdout.strip()
     state.setdefault("memory_copy_h2d_ms", 0.0)
     state.setdefault("memory_copy_d2h_ms", 0.0)
@@ -266,9 +325,18 @@ def gpu_proof_message_batch(
     deliberately not used as a runtime fallback here.
     """
     canonical = _canonical_operations(operations)
-    zk_root = pathlib.Path(zk_root).resolve()
+    zk_root = _lexical(pathlib.Path(zk_root))
+    if zk_root.is_symlink() or not zk_root.is_dir():
+        raise RuntimeError(f"CUDA baseline root must be a real directory: {zk_root}")
     runs_tmp = zk_root / "runs_tmp"
-    runs_tmp.mkdir(parents=True, exist_ok=True)
+    if os.path.lexists(runs_tmp):
+        _check_lexical_components(runs_tmp, zk_root, allow_missing=False)
+        info = runs_tmp.lstat()
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+            raise RuntimeError(f"runs_tmp must be a real directory: {runs_tmp}")
+    else:
+        _check_lexical_components(runs_tmp, zk_root, allow_missing=True)
+        runs_tmp.mkdir()
     with tempfile.TemporaryDirectory(prefix="zkgpt-gpu-proof-", dir=str(runs_tmp)) as tmp:
         input_path = pathlib.Path(tmp) / "proof_messages.gpuv3"
         input_path.write_text("\n".join(_wire_lines(canonical)) + "\n", encoding="utf-8")

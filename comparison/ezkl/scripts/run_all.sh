@@ -3,8 +3,6 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT}"
-: "${EZKL_SRS_PATH:?set EZKL_SRS_PATH to the trusted ceremony SRS matching formal logrows}"
-: "${EZKL_CEREMONY_DESCRIPTOR:?set EZKL_CEREMONY_DESCRIPTOR to its exact trusted descriptor}"
 
 # Formal matrix entry.  CUDA is included by default and fails closed if the
 # distinct gpu-accelerated binary or runtime device is unavailable.
@@ -59,8 +57,7 @@ fi
 for dataset in "${datasets[@]}"; do
   for device in "${devices[@]}"; do
     python3 scripts/run_gat_ezkl_baseline.py \
-      --dataset "${dataset}" --device "${device}" --srs-path "${EZKL_SRS_PATH}" \
-      --ceremony-descriptor "${EZKL_CEREMONY_DESCRIPTOR}" --clean --run
+      --dataset "${dataset}" --device "${device}" --clean --run
   done
 done
 

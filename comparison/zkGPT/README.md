@@ -46,13 +46,13 @@ reference is `recompute_gpu_proof_batch(...)`.
 
 ## Formal commands
 
-All commands below are run from this baseline root.  The complete formal
+All commands below are run from this baseline root (`comparison/zkGPT`).  The complete formal
 datasets, model checkpoints and public logits are owned and staged by the
 project owner under the paths declared in `resources/resource_manifest.json`;
 the preparation command never downloads, preprocesses, or executes them.
 
 ```bash
-cd /home/pzh/project/comparison/zkGPT
+cd comparison/zkGPT
 python3 scripts/prepare_resources.py
 # Stage the five owner-managed resource bundles under data/cache/,
 # artifacts/checkpoints/, and resources/public_y/ before continuing.
@@ -71,6 +71,7 @@ done
 python3 scripts/gat_zkgpt_experiment.py --datasets cora --backends cpu
 python3 scripts/collect_results.py
 # After the owner has run all five datasets on both backends:
+python3 scripts/collect_results.py
 python3 scripts/validate_final_results.py
 ```
 

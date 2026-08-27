@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 
 from resource_policy import (
+    CEREMONY_ROOT,
     DATASET_ORDER,
     ROOT,
     atomic_write_json,
@@ -37,6 +38,7 @@ def main() -> int:
     if unknown:
         raise SystemExit(f"unsupported dataset(s): {unknown}")
     (root / "resources").mkdir(parents=True, exist_ok=True)
+    (root / CEREMONY_ROOT).mkdir(parents=True, exist_ok=True)
     atomic_write_json(root / "resources/resource_manifest.json", manifest_payload(root))
     for dataset in selected:
         paths = dataset_paths(root, dataset)
@@ -54,4 +56,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

@@ -14,7 +14,10 @@ from resource_policy import (  # noqa: E402
     CELL_ARTIFACTS,
     DATASET_ORDER,
     canonical_cell_dir,
+    resolve_local,
+    validate_ceremony_material,
     validate_cell_inventory,
+    validate_results_tree,
 )
 from build_identity_contract import identity_digest, validate_build_identity  # noqa: E402
 from formal_source_manifest import formal_source_id  # noqa: E402
@@ -290,6 +293,12 @@ def main() -> int:
     args = parser.parse_args()
     failures: list[str] = []
     verified_count = 0
+    try:
+        ceremony = validate_ceremony_material(ROOT)
+        validate_results_tree(ROOT, require_complete=not args.allow_incomplete)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        print(str(exc))
+        return 2
     dataset_cfg = json.loads((ROOT / "configs" / "full_datasets.json").read_text(encoding="utf-8"))
     expected = {(entry["run_id"], device) for entry in dataset_cfg["datasets"] for device in ("cpu", "cuda")}
     present: set[tuple[str, str]] = set()
@@ -390,6 +399,25 @@ def main() -> int:
         registration = json.loads((run_dir / "model_registration.json").read_text(encoding="utf-8"))
         aux = json.loads((run_dir / "backend_aux_table_spec.json").read_text(encoding="utf-8"))
         main_table = json.loads((run_dir / "formal_table_spec.json").read_text(encoding="utf-8"))
+        ceremony_profile_fields = {
+            "ceremony_descriptor_kind": ceremony["descriptor_kind"],
+            "ceremony_id": ceremony["ceremony_id"],
+            "source_srs_sha256": ceremony["source_srs_sha256"],
+            "source_srs_max_k": ceremony["source_srs_max_k"],
+        }
+        if any(security.get(field) != value for field, value in ceremony_profile_fields.items()):
+            failures.append(f"{manifest_path}: security profile ceremony identity mismatch")
+        for field, expected_path in (
+            ("srs_path", ceremony["source_srs_path"]),
+            ("ceremony_descriptor", ceremony["ceremony_descriptor_path"]),
+        ):
+            raw_path = manifest.get(field)
+            try:
+                actual_path = resolve_local(ROOT, raw_path, field)
+            except (OSError, TypeError, ValueError):
+                actual_path = None
+            if actual_path is None or str(actual_path) != str(expected_path):
+                failures.append(f"{manifest_path}: {field} is not the canonical baseline-local ceremony path")
         for payload in (manifest, spec, settings, compiled, statement, verify):
             if payload.get("route_id") != FORMAL_ROUTE_ID:
                 failures.append(f"{manifest_path}: formal route identity mismatch")
@@ -471,9 +499,19 @@ def main() -> int:
                 or settings.get("logrows", 0) > FORMAL_SOURCE_SRS_MAX_K
                 or circuit.get("source_srs_k", 0) < settings.get("logrows", 0)):
             failures.append(f"{manifest_path}: source SRS k does not cover compiled logrows")
-        source_srs = Path(str(circuit.get("source_srs_path", "")))
-        if not source_srs.is_file() or circuit.get("source_srs_sha256") != "sha256:" + digest(source_srs):
+        source_srs_raw = circuit.get("source_srs_path")
+        try:
+            source_srs = resolve_local(ROOT, source_srs_raw, "circuit source SRS")
+        except (OSError, TypeError, ValueError):
+            source_srs = None
+        if (source_srs is None
+                or str(source_srs) != str(ceremony["source_srs_path"])
+                or circuit.get("source_srs_sha256") != ceremony["source_srs_sha256"]
+                or circuit.get("source_srs_sha256") != "sha256:" + digest(source_srs)):
             failures.append(f"{manifest_path}: source SRS bytes/provenance mismatch")
+        if (manifest.get("source_srs_sha256") != ceremony["source_srs_sha256"]
+                or manifest.get("source_srs_k") != FORMAL_SOURCE_SRS_MAX_K):
+            failures.append(f"{manifest_path}: run manifest source SRS identity mismatch")
         for field, path in {
             "proof_sha256": run_dir / "proof.json",
             "public_statement_sha256": run_dir / "public_statement.json",

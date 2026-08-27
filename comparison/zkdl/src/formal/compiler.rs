@@ -7,6 +7,38 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
 pub const CANONICAL_ADAPTER_SCHEMA: &str = "zkDL_gat_canonical_adapter_v2";
+pub const CANONICAL_ADAPTER_VERSION: u32 = 2;
+pub const SUPPORTED_ROUNDING_MODE: &str = "nearest_ties_away";
+pub const CANONICAL_RELATION_SCHEMA: &str = "zkDL_gat_canonical_relation_schema_v1";
+
+pub(crate) fn protocol_digest() -> String {
+    let mut h = Sha256::new();
+    h.update(include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/GAT-ZKML-zkDL.md"
+    )));
+    format!("sha256:{}", hex::encode(h.finalize()))
+}
+
+fn canonical_json_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>> {
+    // serde_json::Map uses its deterministic BTreeMap representation in this
+    // crate.  The adapter uses the same sorted-key/no-whitespace encoding.
+    Ok(serde_json::to_vec(value)?)
+}
+
+fn relation_digest(input: &RelationCompilerInput) -> Result<String> {
+    let mut value = serde_json::to_value(input)?;
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("canonical relation input is not an object"))?;
+    // The digest authenticates every other field, including source_input_id;
+    // only the digest field itself is excluded to avoid a circular hash.
+    object.remove("canonical_relation_digest");
+    let mut h = Sha256::new();
+    h.update(b"zkDL-GAT-canonical-relation-v2\0");
+    h.update(canonical_json_bytes(&value)?);
+    Ok(format!("sha256:{}", hex::encode(h.finalize())))
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -99,6 +131,11 @@ pub struct IntegerOperationFamily {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RelationCompilerInput {
     pub schema: String,
+    pub adapter_schema: String,
+    pub adapter_version: u32,
+    pub protocol_sha256: String,
+    pub rounding_mode: String,
+    pub canonical_relation_digest: String,
     pub dataset: String,
     pub pp_id: String,
     pub node_count: usize,
@@ -132,15 +169,21 @@ pub struct RelationCompilerInput {
     pub resource_manifest_id: String,
     pub config_sha256: String,
     pub source_input_id: String,
+    /// Adapter-generated, explicit canonical schema.  It is checked field by
+    /// field in Rust; a digest alone is deliberately not sufficient.
+    pub canonical_schema: serde_json::Value,
 }
 
 fn source_digest(input: &RelationCompilerInput) -> Result<String> {
-    let mut copy = input.clone();
-    copy.source_input_id.clear();
-    let bytes = serde_json::to_vec(&copy)?;
+    let mut value = serde_json::to_value(input)?;
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("canonical relation input is not an object"))?;
+    object.remove("source_input_id");
+    object.remove("canonical_relation_digest");
     let mut h = Sha256::new();
     h.update(b"zkDL-GAT-canonical-adapter-input-v2\0");
-    h.update(bytes);
+    h.update(canonical_json_bytes(&value)?);
     Ok(format!("sha256:{}", hex::encode(h.finalize())))
 }
 
@@ -150,9 +193,60 @@ pub fn compile(input: RelationCompilerInput) -> Result<(PublicStatement, Witness
         "only the baseline-local canonical GAT adapter schema is accepted"
     );
     ensure!(
+        input.adapter_schema == CANONICAL_ADAPTER_SCHEMA
+            && input.adapter_version == CANONICAL_ADAPTER_VERSION,
+        "canonical adapter schema/version authentication failed"
+    );
+    ensure!(
+        input.protocol_sha256 == protocol_digest(),
+        "canonical adapter protocol digest does not match the immutable zkDL protocol"
+    );
+    ensure!(
+        input.rounding_mode == SUPPORTED_ROUNDING_MODE,
+        "unsupported or silently substituted rounding mode"
+    );
+    ensure!(
         input.source_input_id == source_digest(&input)?,
         "canonical adapter source digest mismatch"
     );
+    ensure!(
+        input.canonical_relation_digest == relation_digest(&input)?,
+        "canonical adapter relation digest mismatch"
+    );
+    ensure!(
+        input
+            .canonical_schema
+            .get("schema")
+            .and_then(serde_json::Value::as_str)
+            == Some(CANONICAL_RELATION_SCHEMA),
+        "canonical relation schema descriptor is missing"
+    );
+    let architecture = input
+        .canonical_schema
+        .get("architecture")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| anyhow::anyhow!("canonical architecture profile is missing"))?;
+    for (key, expected) in [
+        ("model_arch_id", input.model_arch_id.as_str()),
+        ("model_param_id", input.model_param_id.as_str()),
+    ] {
+        ensure!(
+            architecture.get(key).and_then(serde_json::Value::as_str) == Some(expected),
+            "canonical architecture identity mismatch: {key}"
+        );
+    }
+    for (key, expected) in [
+        ("node_count", input.node_count),
+        ("edge_count", input.edge_count),
+        ("graph_count", input.graph_count),
+        ("feature_dim", input.feature_dim),
+        ("class_count", input.class_count),
+    ] {
+        ensure!(
+            architecture.get(key).and_then(serde_json::Value::as_u64) == Some(expected as u64),
+            "canonical architecture dimension mismatch: {key}"
+        );
+    }
     for value in [
         &input.checkpoint_manifest_id,
         &input.canonical_tensor_digest,
@@ -273,8 +367,10 @@ pub fn compile(input: RelationCompilerInput) -> Result<(PublicStatement, Witness
             .map(|x| x.to_string())
             .collect(),
         registry_id: String::new(),
+        canonical_schema: input.canonical_schema.clone(),
     }
     .seal()?;
+    registry.validate_canonical_gat()?;
     let witness = WitnessPackage {
         registry_id: registry.registry_id.clone(),
         canonical_tensor_digest: input.canonical_tensor_digest.clone(),
@@ -288,6 +384,10 @@ pub fn compile(input: RelationCompilerInput) -> Result<(PublicStatement, Witness
     );
     let statement = PublicStatement {
         protocol_id: "GAT-ZKML-zkDL".into(),
+        adapter_schema: input.adapter_schema,
+        adapter_version: input.adapter_version,
+        protocol_sha256: input.protocol_sha256,
+        canonical_relation_digest: input.canonical_relation_digest,
         proof_task: "node_classification_full_gat".into(),
         privacy_policy: "model_and_trace_hidden".into(),
         input_privacy: "public_graph_public_features".into(),
@@ -314,6 +414,7 @@ pub fn compile(input: RelationCompilerInput) -> Result<(PublicStatement, Witness
         static_tables_id: input.static_tables_id,
         static_table_rows_id: input.static_table_rows_id,
         static_table_profile: input.static_table_profile,
+        rounding_mode: input.rounding_mode,
         integer_bound_ledger_id: input.integer_bound_ledger_id,
         integer_bound_ledger: input.integer_bound_ledger,
         model_arch_id: input.model_arch_id,

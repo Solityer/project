@@ -24,6 +24,8 @@ from runner_contract import (  # noqa: E402
     ensure_contained,
     ensure_regular_file,
     load_resource_manifest,
+    load_resource_policy,
+    pp_binding_from_manifest,
 )
 import validate_final_results as final_validator  # noqa: E402
 from validate_final_results import check_cell  # noqa: E402
@@ -31,7 +33,7 @@ from validate_final_results import check_cell  # noqa: E402
 
 class RunnerContractTests(unittest.TestCase):
     def test_manifest_is_baseline_local_and_enumerates_exact_matrix(self) -> None:
-        manifest, manifest_id = load_resource_manifest(require_staged=False)
+        manifest, manifest_id = load_resource_policy()
         self.assertEqual(manifest["schema"], RESOURCE_MANIFEST_SCHEMA)
         self.assertTrue(manifest_id.startswith("sha256:"))
         self.assertEqual(set(manifest["datasets"]), set(DATASETS))
@@ -40,6 +42,24 @@ class RunnerContractTests(unittest.TestCase):
             config = config_path(dataset).read_text(encoding="utf-8")
             self.assertIn("resources/datasets/", config)
             self.assertIn("resources/models/", config)
+
+    def test_source_policy_has_no_placeholder_pp_identity(self) -> None:
+        policy, _ = load_resource_policy()
+        self.assertNotIn("pp_id", policy["pp"])
+        self.assertNotIn("sha256", policy["pp"])
+        self.assertNotIn("size_bytes", policy["pp"])
+        staged_pp = dict(policy["pp"])
+        staged_pp.update(
+            {
+                "pp_id": "0" * 64,
+                "sha256": "sha256:" + "0" * 64,
+                "size_bytes": 1,
+            }
+        )
+        staged = dict(policy)
+        staged["pp"] = staged_pp
+        with self.assertRaises(ValueError):
+            pp_binding_from_manifest(staged)
 
     def test_collector_marks_missing_fixture_without_success(self) -> None:
         with tempfile.TemporaryDirectory(dir=BASELINE / "tests") as directory:
@@ -204,7 +224,6 @@ class RunnerContractTests(unittest.TestCase):
         relation_path.write_text(json.dumps(relation, sort_keys=True), encoding="utf-8")
         preflight_path.write_text(json.dumps(preflight, sort_keys=True), encoding="utf-8")
         (artifacts / "statement.bin").write_bytes(b"statement")
-        (artifacts / "witness.private.bin").write_bytes(b"witness")
         proof_file = artifacts / "proof.bin"
         proof_file.write_bytes(b"proof")
         proof_sha = hashlib.sha256(proof_file.read_bytes()).hexdigest()
@@ -265,7 +284,6 @@ class RunnerContractTests(unittest.TestCase):
             "preflight_sha256": hashlib.sha256(preflight_path.read_bytes()).hexdigest(),
             "canonical_relation_sha256": hashlib.sha256(relation_path.read_bytes()).hexdigest(),
             "statement_sha256": hashlib.sha256((artifacts / "statement.bin").read_bytes()).hexdigest(),
-            "witness_sha256": hashlib.sha256((artifacts / "witness.private.bin").read_bytes()).hexdigest(),
             "proof_manifest_sha256": hashlib.sha256((run / "proof_manifest.json").read_bytes()).hexdigest(),
             "verifier_manifest_sha256": hashlib.sha256((run / "verifier_manifest.json").read_bytes()).hexdigest(),
         }
@@ -343,7 +361,7 @@ class RunnerContractTests(unittest.TestCase):
             errors = check_cell(run, "cora", "cpu", {}, manifest_id, current_identity=current)
             self.assertIn("cora/cpu:cpu_result_gpu_telemetry_present", errors)
             _, collector_errors = inspect_cell(run, "cora", "cpu")
-            self.assertIn("cpu_gpu_telemetry_present", collector_errors)
+            self.assertIn("cpu_result_gpu_telemetry_present", collector_errors)
 
 
 if __name__ == "__main__":

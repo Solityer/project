@@ -1,13 +1,10 @@
 """Small, self-contained BN254 G1 implementation used by the zkGPT baseline.
 
-The upstream checkout normally gets these operations from mcl.  The comparison
-runner must also be independently buildable when the optional mcl submodule is
-not populated, so the formal Python path keeps the group arithmetic here.  It
-implements the affine short-Weierstrass G1 group used by the Hyrax commitment
-layer; scalar arithmetic is performed in :data:`BN254_FR_MODULUS`.
-
-This is deliberately a correctness implementation.  The native mcl backend can
-be selected by a future deployment build without changing the wire format.
+The formal Python path keeps the group arithmetic in this baseline-local
+module, so the comparison runner has no external cryptographic source-root or
+vendor dependency.  It implements the affine short-Weierstrass G1 group used
+by the Hyrax commitment layer; scalar arithmetic is performed in
+:data:`BN254_FR_MODULUS`.
 """
 from __future__ import annotations
 

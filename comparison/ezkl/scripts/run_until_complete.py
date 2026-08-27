@@ -28,8 +28,6 @@ def main() -> int:
                                  "ppi_full_formal", "ogbn_arxiv_full"),
                         default=None,
                         help="datasets to resume; omitted means all five datasets")
-    parser.add_argument("--srs-path", type=Path, required=True)
-    parser.add_argument("--ceremony-descriptor", type=Path, required=True)
     parser.add_argument(
         "--finalize",
         action="store_true",
@@ -60,9 +58,8 @@ def main() -> int:
                 sys.executable,
                 str(ROOT / "scripts" / "run_gat_ezkl_baseline.py"),
                 "--dataset", entry["run_id"], "--device", device,
-                "--srs-path", str(args.srs_path.expanduser().absolute()), "--run",
+                "--run",
                 "--clean",
-                "--ceremony-descriptor", str(args.ceremony_descriptor.expanduser().absolute()),
             ]
             subprocess.run(command, cwd=ROOT, check=True)
 

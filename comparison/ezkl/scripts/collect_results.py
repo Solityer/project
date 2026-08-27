@@ -15,12 +15,18 @@ import json
 from pathlib import Path
 
 from resource_policy import (
+    CEREMONY_DESCRIPTOR,
+    CEREMONY_SRS,
     DATASET_ORDER,
     FORMAL_ROUTE,
     ROOT,
     atomic_write_json,
+    atomic_write_text,
     canonical_cell_dir,
+    resolve_local,
+    validate_ceremony_material,
     validate_cell_inventory,
+    validate_results_tree,
 )
 from build_identity_contract import identity_digest, validate_build_identity  # noqa: E402
 from formal_source_manifest import formal_source_id  # noqa: E402
@@ -37,7 +43,12 @@ def sha256(path: Path) -> str:
     return "sha256:" + value.hexdigest()
 
 
-def _manifest(cell: Path) -> dict[str, object]:
+def _manifest(
+    cell: Path,
+    *,
+    ceremony: dict[str, object] | None = None,
+) -> dict[str, object]:
+    ceremony = ceremony or validate_ceremony_material(ROOT)
     validate_cell_inventory(cell)
     path = cell / "run_manifest.json"
     payload = json.loads(path.read_text(encoding="utf-8"))
@@ -54,6 +65,75 @@ def _manifest(cell: Path) -> dict[str, object]:
         raise ValueError(f"prover backend identity mismatch: {path}")
     if payload.get("verifier_backend") != "cpu_independent":
         raise ValueError(f"verifier backend is not independent CPU: {path}")
+    expected_paths = {
+        "config": resolve_local(ROOT, Path("configs") / f"{payload.get('dataset', '')}.cfg", "config")
+        if payload.get("dataset") not in DATASET_ORDER
+        else resolve_local(
+            ROOT,
+            Path("configs") / {
+                "cora_full": "cora_full.cfg",
+                "citeseer_full": "citeseer_full.cfg",
+                "pubmed_full": "pubmed_full.cfg",
+                "ppi_full_formal": "ppi_full.cfg",
+                "ogbn_arxiv_full": "ogbn_arxiv_full.cfg",
+            }[str(payload["dataset"])],
+            "config",
+        ),
+        "dataset_root": resolve_local(
+            ROOT,
+            Path("data/cache") / {
+                "cora_full": "cora",
+                "citeseer_full": "citeseer",
+                "pubmed_full": "pubmed",
+                "ppi_full_formal": "ppi",
+                "ogbn_arxiv_full": "ogbn_arxiv",
+            }.get(str(payload.get("dataset")), ""),
+            "dataset_root",
+        ),
+        "checkpoint": resolve_local(
+            ROOT,
+            Path("artifacts/checkpoints") / {
+                "cora_full": "cora_gat",
+                "citeseer_full": "citeseer_gat",
+                "pubmed_full": "pubmed_gat",
+                "ppi_full_formal": "ppi_gat",
+                "ogbn_arxiv_full": "ogbn_arxiv_gat",
+            }.get(str(payload.get("dataset")), ""),
+            "checkpoint",
+        ),
+        "srs_path": resolve_local(ROOT, CEREMONY_SRS, "ceremony SRS"),
+        "ceremony_descriptor": resolve_local(
+            ROOT, CEREMONY_DESCRIPTOR, "ceremony descriptor"
+        ),
+    }
+    for field, expected_path in expected_paths.items():
+        raw = payload.get(field)
+        if not isinstance(raw, str):
+            raise ValueError(f"{field} provenance is missing: {path}")
+        try:
+            actual_path = resolve_local(ROOT, raw, field)
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"{field} provenance escapes baseline: {path}") from exc
+        if actual_path != expected_path:
+            raise ValueError(f"{field} provenance is not canonical: {path}")
+    if payload.get("source_srs_sha256") not in (None, ceremony["source_srs_sha256"]):
+        raise ValueError(f"source SRS digest is not the staged ceremony digest: {path}")
+    if payload.get("source_srs_k") not in (None, ceremony["source_srs_max_k"]):
+        raise ValueError(f"source SRS k is not the formal ceremony k=28: {path}")
+    try:
+        security = json.loads((cell / "security_profile.json").read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"cannot read cell security profile: {path}") from exc
+    if not isinstance(security, dict) or any(
+        security.get(field) != value
+        for field, value in {
+            "ceremony_descriptor_kind": ceremony["descriptor_kind"],
+            "ceremony_id": ceremony["ceremony_id"],
+            "source_srs_sha256": ceremony["source_srs_sha256"],
+            "source_srs_max_k": ceremony["source_srs_max_k"],
+        }.items()
+    ):
+        raise ValueError(f"security profile ceremony identity mismatch: {path}")
     device = payload.get("device")
     if device not in ("cpu", "cuda"):
         raise ValueError(f"manifest device is invalid: {path}")
@@ -126,6 +206,12 @@ def _collect(
     datasets: tuple[str, ...] = DATASET_ORDER,
     devices: tuple[str, ...] = ("cpu", "cuda"),
 ) -> tuple[list[dict[str, object]], list[str]]:
+    # Validate the namespace before inspecting any selected manifest.  This
+    # rejects unknown/extra result directories and unsafe entries even for a
+    # partial collection, while ``require_complete`` remains a matrix-level
+    # concern.
+    validate_results_tree(ROOT, require_complete=not allow_incomplete)
+    ceremony = validate_ceremony_material(ROOT)
     required_cells = selected_cells(datasets, devices)
     rows: list[dict[str, object]] = []
     errors: list[str] = []
@@ -133,7 +219,7 @@ def _collect(
         for dataset in DATASET_ORDER:
             cell = canonical_cell_dir(ROOT, backend, dataset)
             try:
-                payload = _manifest(cell)
+                payload = _manifest(cell, ceremony=ceremony)
                 if payload.get("dataset") != dataset or payload.get("device") != backend:
                     raise ValueError("manifest dataset/backend does not match canonical cell")
                 timings = payload.get("timings_ms", {})
@@ -172,6 +258,8 @@ def _collect(
                         "source_srs_sha256": payload.get("source_srs_sha256"),
                         "source_srs_k": payload.get("source_srs_k"),
                         "downsized_srs_k": payload.get("downsized_srs_k"),
+                        "ceremony_id": ceremony["ceremony_id"],
+                        "ceremony_descriptor_sha256": ceremony["ceremony_descriptor_sha256"],
                         "proving_srs_sha256": payload.get("proving_srs_sha256"),
                         "verification_srs_sha256": payload.get("verification_srs_sha256"),
                         "manifest": str((cell / "run_manifest.json").relative_to(ROOT)),
@@ -218,7 +306,7 @@ def main() -> int:
             datasets=datasets,
             devices=devices,
         )
-    except RuntimeError as exc:
+    except (RuntimeError, OSError, ValueError, json.JSONDecodeError) as exc:
         print(str(exc))
         return 2
     document = {
@@ -234,15 +322,23 @@ def main() -> int:
     }
     RESULTS.mkdir(parents=True, exist_ok=True)
     atomic_write_json(RESULTS / "formal_results.json", document)
-    fields = list(rows[0]) if rows else ["dataset", "backend", "status"]
+    fields: list[str] = []
+    for row in rows:
+        for key in row:
+            if key not in fields:
+                fields.append(key)
+    if not fields:
+        fields = ["dataset", "backend", "status"]
     csv_path = RESULTS / "formal_results.csv"
-    temporary = csv_path.with_name(f".{csv_path.name}.tmp")
-    with temporary.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fields, extrasaction="ignore", lineterminator="\n")
-        writer.writeheader()
-        writer.writerows(rows)
-        handle.flush()
-    temporary.replace(csv_path)
+    import io
+
+    rendered = io.StringIO(newline="")
+    writer = csv.DictWriter(
+        rendered, fieldnames=fields, extrasaction="ignore", lineterminator="\n"
+    )
+    writer.writeheader()
+    writer.writerows(rows)
+    atomic_write_text(csv_path, rendered.getvalue())
     print(json.dumps({"status": document["status"], "verified_runs": sum(row.get("verified") is True for row in rows), "errors": len(errors)}, sort_keys=True))
     return 0 if allow_partial or not errors else 2
 

@@ -5,43 +5,18 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 const FORMAL_SOURCE_ROOTS: &[&str] = &[
-    "src/circuit",
-    "src/graph",
-    "src/pfsys",
-    "src/tensor",
-    "src/bin/ezkl_formal.rs",
-    "src/native_gat.rs",
-    "src/gpu_telemetry.rs",
-    "src/gpu_telemetry.c",
+    "src",
     "cpp/gat_ezkl_adapter",
-    "configs/formal_operation_registry.json",
+    "configs",
+    "scripts",
     "Cargo.lock",
     "Cargo.toml",
     "build.rs",
-    "scripts/build.sh",
-    "scripts/run_gat_ezkl_baseline.py",
-    "scripts/collect_results.py",
-    "scripts/validate_final_results.py",
-    "scripts/formal_source_manifest.py",
-    "scripts/build_identity_contract.py",
-    "scripts/materialize_security_profile.py",
-    "scripts/resource_policy.py",
-    "scripts/write_build_identity.py",
-    "configs/security_profile.json",
-    "configs/full_datasets.json",
-    "vendor/SOURCE_LOCK.md",
-    "vendor/halo2/halo2_proofs",
-    "vendor/halo2/halo2_gadgets",
-    "vendor/halo2curves/halo2curves",
-    "vendor/snark-verifier/snark-verifier",
-    "vendor/icicle/rust/icicle-core",
-    "vendor/icicle/rust/icicle-curves/icicle-bn254",
-    "vendor/icicle/rust/icicle-runtime",
-    "vendor/icicle/icicle/include",
-    "vendor/icicle/icicle/src",
-    "vendor/icicle/icicle/backend/cpu",
-    "vendor/mopro-msm",
+    "rust-toolchain",
+    "vendor",
 ];
+
+const EXCLUDED_SOURCE_NAMES: &[&str] = &[".git", ".cargo-ok"];
 
 fn formal_source_files(root: &Path) -> Vec<PathBuf> {
     checked_directory(root, "formal baseline root");
@@ -51,7 +26,10 @@ fn formal_source_files(root: &Path) -> Vec<PathBuf> {
         let present = match fs::symlink_metadata(&path) {
             Ok(_) => true,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
-            Err(error) => panic!("cannot inspect formal source root {}: {error}", path.display()),
+            Err(error) => panic!(
+                "cannot inspect formal source root {}: {error}",
+                path.display()
+            ),
         };
         if !present {
             if *relative == "vendor/mopro-msm" {
@@ -81,7 +59,11 @@ fn formal_source_id(root: &Path) -> (String, Vec<PathBuf>) {
     let files = formal_source_files(root);
     let mut digest = Sha256::new();
     for path in &files {
-        let relative = path.strip_prefix(root).unwrap().to_string_lossy().replace('\\', "/");
+        let relative = path
+            .strip_prefix(root)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
         let bytes = fs::read(path)
             .unwrap_or_else(|_| panic!("cannot read formal source: {}", path.display()));
         digest.update((relative.len() as u64).to_le_bytes());
@@ -101,7 +83,8 @@ fn digest_files(root: &Path, files: &mut Vec<PathBuf>) -> String {
             .expect("source path must be inside the baseline")
             .to_string_lossy()
             .replace('\\', "/");
-        let bytes = fs::read(path).unwrap_or_else(|_| panic!("cannot read source: {}", path.display()));
+        let bytes =
+            fs::read(path).unwrap_or_else(|_| panic!("cannot read source: {}", path.display()));
         digest.update((relative.len() as u64).to_le_bytes());
         digest.update(relative.as_bytes());
         digest.update((bytes.len() as u64).to_le_bytes());
@@ -116,6 +99,13 @@ fn collect_files(root: &Path, current: &Path, out: &mut Vec<PathBuf>) {
     for entry in entries {
         let entry = entry.expect("cannot inspect vendor directory entry");
         let path = entry.path();
+        if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| EXCLUDED_SOURCE_NAMES.contains(&name))
+        {
+            continue;
+        }
         let metadata = checked_metadata(&path, "formal source tree entry");
         if metadata.is_dir() {
             collect_files(root, &path, out);
@@ -135,10 +125,16 @@ fn checked_metadata(path: &Path, label: &str) -> fs::Metadata {
     }
     if metadata.file_type().is_file() {
         if metadata.nlink() != 1 {
-            panic!("{label} contains a hard-linked regular file: {}", path.display());
+            panic!(
+                "{label} contains a hard-linked regular file: {}",
+                path.display()
+            );
         }
     } else if !metadata.file_type().is_dir() {
-        panic!("{label} contains a special filesystem entry: {}", path.display());
+        panic!(
+            "{label} contains a special filesystem entry: {}",
+            path.display()
+        );
     }
     metadata
 }
@@ -166,7 +162,10 @@ fn lexical_source_path(root: &Path, relative: &str) -> PathBuf {
                 checked_metadata(&current, "formal source path");
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => panic!("cannot inspect formal source path {}: {error}", current.display()),
+            Err(error) => panic!(
+                "cannot inspect formal source path {}: {error}",
+                current.display()
+            ),
         }
     }
     current
@@ -270,7 +269,8 @@ fn validate_dependency_sources(root: &Path) -> String {
 }
 
 fn main() {
-    let root = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is missing"));
+    let root =
+        PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is missing"));
     let vendor_tree_id = validate_dependency_sources(&root);
     println!("cargo::rerun-if-changed=build.rs");
     println!("cargo::rerun-if-changed=src/native_gat.rs");
@@ -280,12 +280,20 @@ fn main() {
         .join("formal_source_manifest.txt");
     let manifest = source_files
         .iter()
-        .map(|path| path.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/"))
+        .map(|path| {
+            path.strip_prefix(&root)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/")
+        })
         .collect::<Vec<_>>()
         .join("\n");
     fs::write(&manifest_path, format!("{manifest}\n"))
         .expect("cannot write formal source manifest");
-    println!("cargo::warning=ezkl formal source inventory: {} files, {source_id}", source_files.len());
+    println!(
+        "cargo::warning=ezkl formal source inventory: {} files, {source_id}",
+        source_files.len()
+    );
     for path in &source_files {
         let relative = path.strip_prefix(&root).unwrap();
         println!("cargo::rerun-if-changed={}", relative.display());
@@ -315,8 +323,14 @@ fn main() {
         println!("cargo::rustc-link-lib=dylib=cuda");
         println!("cargo::rustc-link-lib=dylib=dl");
         println!("cargo::rustc-link-lib=dylib=pthread");
-        println!("cargo::rustc-link-arg-bins=-Wl,-rpath,{}", library.display());
-        println!("cargo::rustc-link-arg-cdylib=-Wl,-rpath,{}", library.display());
+        println!(
+            "cargo::rustc-link-arg-bins=-Wl,-rpath,{}",
+            library.display()
+        );
+        println!(
+            "cargo::rustc-link-arg-cdylib=-Wl,-rpath,{}",
+            library.display()
+        );
         println!("cargo::rustc-env=EZKL_CUPTI_CONTRACT=cupti_activity_kernel_scoped_v1");
     }
 }

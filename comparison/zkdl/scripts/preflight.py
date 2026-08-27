@@ -17,6 +17,7 @@ from runner_contract import (
 
 ROOT=Path(__file__).resolve().parents[1]
 FR=0x73eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001
+SUPPORTED_ROUNDING_MODE='nearest_ties_away'
 
 def cfg(path:Path):
  out={}
@@ -120,7 +121,8 @@ def division_bounds(bx:int,bd:int,bq:int):
  br=2*ba+bd+2*bd*bq
  bdelta=2*bd-1+br
  return {'B_a':ba,'B_d':bd,'B_q':bq,'B_r':br,'B_delta':bdelta,'B_2a_plus_d':2*ba+bd,'B_2dq_plus_r':2*bd*bq+br,'B_r_plus_delta':br+bdelta}
-def static_table_profile(range_bits:int,source_id:str,lrelu_bound:int,elu_bound:int,exp_bound:int):
+def static_table_profile(range_bits:int,source_id:str,lrelu_bound:int,elu_bound:int,exp_bound:int,rounding_mode:str):
+ if rounding_mode!=SUPPORTED_ROUNDING_MODE:raise ValueError('unsupported rounding_mode')
  configured=1<<range_bits
  # range_bits is a lower bound.  The actual table domains are derived from
  # the conservative integer ledger below, so valid large instances are not
@@ -137,7 +139,7 @@ def static_table_profile(range_bits:int,source_id:str,lrelu_bound:int,elu_bound:
   h.update(kind.encode()+b'\0')
   for x in range(lo,hi+1):h.update(struct.pack('>qq',x,fn(x)))
  rows_digest='sha256:'+h.hexdigest()
- spec={'schema':'zkDL_gat_static_tables_v1','source_static_table_id':source_id,'generator_id':'main_gatzk_quantized_tables_v1','rounding_mode':'nearest_ties_away','canonical_order':'kind_then_signed_input_ascending','lrelu':{'min':lmin,'max':lmax,'input_scale':256,'output_scale':256,'rows':counts['lrelu']},'elu':{'min':-ebound,'max':ebound,'input_scale':16,'output_scale':16,'rows':counts['elu']},'exp':{'min':0,'max':exp_max,'input_scale':256,'output_scale':16,'rows':counts['exp']},'rows_digest':rows_digest}
+ spec={'schema':'zkDL_gat_static_tables_v1','source_static_table_id':source_id,'generator_id':'main_gatzk_quantized_tables_v1','rounding_mode':rounding_mode,'canonical_order':'kind_then_signed_input_ascending','lrelu':{'min':lmin,'max':lmax,'input_scale':256,'output_scale':256,'rows':counts['lrelu']},'elu':{'min':-ebound,'max':ebound,'input_scale':16,'output_scale':16,'rows':counts['elu']},'exp':{'min':0,'max':exp_max,'input_scale':256,'output_scale':16,'rows':counts['exp']},'rows_digest':rows_digest}
  canonical=json.dumps(spec,sort_keys=True,separators=(',',':')).encode();spec['static_tables_id']='sha256:'+hashlib.sha256(b'zkDL-GAT-static-table-profile-v1\0'+canonical).hexdigest()
  return spec
 def next_power_two(n:int):
@@ -187,6 +189,8 @@ def main():
  if root != BASELINE_ROOT:raise SystemExit('project-root must be comparison/zkdl; stage resources locally first')
  config_path=ensure_contained(a.config,label='formal config')
  c=cfg(config_path)
+ if c.get('rounding_mode')!=SUPPORTED_ROUNDING_MODE:raise SystemExit('unsupported rounding_mode; only nearest_ties_away is implemented')
+ if c.get('rounding_mode')!=SUPPORTED_ROUNDING_MODE:raise SystemExit('unsupported rounding_mode; only nearest_ties_away is implemented')
  resource_manifest,resource_manifest_id=load_resource_manifest(require_staged=True)
  validate_config_resources(c.get('dataset',''),c,resource_manifest)
  cache=root/c['cache'];cp=root/c['checkpoint_bundle'];manifest=json.loads((cp/'manifest.json').read_text());ts=tensors(cp/'tensors.txt')
@@ -226,7 +230,7 @@ def main():
  max_score=max((abs(int(head['B_S'])) for head in heads if 'B_S' in head),default=0)
  max_delta=max((int(head['B_delta_raw']) for head in heads if 'B_delta_raw' in head),default=0)
  max_elu=max((abs(int(head['B_q_div'])) for head in heads if head['kind']=='hidden'),default=0)
- tables=static_table_profile(int(c['range_bits']),manifest['static_table_id'],max_score,max_elu,max_delta);lmin=tables['lrelu']['min'];lmax=tables['lrelu']['max'];exp_max=tables['exp']['max'];elu_min=tables['elu']['min'];elu_max=tables['elu']['max']
+ tables=static_table_profile(int(c['range_bits']),manifest['static_table_id'],max_score,max_elu,max_delta,c['rounding_mode']);lmin=tables['lrelu']['min'];lmax=tables['lrelu']['max'];exp_max=tables['exp']['max'];elu_min=tables['elu']['min'];elu_max=tables['elu']['max']
  static_table_rows_id=static_table_rows_digest(tables)
  shape_payload={'hidden_layers':manifest['hidden_layers'],'hidden_head_specs':manifest['hidden_head_specs'],'output_head_specs':manifest['output_head_specs'],'class_count':int(manifest['C']),'feature_dim':d}
  model_shape_id='sha256:'+hashlib.sha256(json.dumps(shape_payload,sort_keys=True,separators=(',',':')).encode()).hexdigest()
@@ -239,8 +243,8 @@ def main():
  max_bound=max((int(value) for head in heads for key,value in head.items() if key.startswith('B_') and isinstance(value,(int,float))),default=0)
  if max_bound>=field_half:failures.append('conservative integer ledger exceeds signed BLS12-381 field half-modulus')
  bit_width=max(2,max_bound.bit_length()+1)
- ledger={'schema':'zkDL_gat_integer_bound_ledger_v3','dataset':c['dataset'],'node_count':n,'edge_count':e,'max_in_degree':maxdeg,'range_bits':int(c['range_bits']),'bit_width':bit_width,'table_domains':{'lrelu':[lmin,lmax],'elu':[elu_min,elu_max],'exp':[0,exp_max]},'scales':scales,'heads':heads,'field':'BLS12-381-Fr','field_half_modulus':str(field_half),'field_fit':'every declared B_a/B_q/B_r/B_delta/B_d and composite equality bound is below the signed field half-modulus; the Rust compiler rechecks each serialized witness value','failures':failures,'graph_count':len(node_ptr)-1,'feature_dim':d,'class_count':int(manifest['C']),'resource_manifest_id':resource_manifest_id,'config_sha256':config_digest(config_path),'checkpoint_manifest_id':checkpoint_manifest_id,'model_shape_id':model_shape_id,'static_tables_id':tables['static_tables_id'],'static_table_rows_id':static_table_rows_id,'model_arch_id':manifest['model_arch_id'],'model_param_id':manifest['model_param_id']}
- report_metadata={'status':'accepted' if not failures else 'rejected_integer_bound','dataset':c['dataset'],'node_count':n,'edge_count':e,'graph_count':len(node_ptr)-1,'feature_dim':d,'class_count':int(manifest['C']),'config_sha256':config_digest(config_path),'protocol_sha256':protocol_digest(),'resource_manifest_id':resource_manifest_id,'resource_inventory_digest':resource_inventory_digest(c['dataset'],resource_manifest),'graph_features_digest':'sha256:'+features_digest,'topology_digest':'sha256:'+topo_digest,'checkpoint_manifest_id':checkpoint_manifest_id,'checkpoint_manifest_sha256':sha(cp/'manifest.json'),'checkpoint_tensors_sha256':sha(cp/'tensors.txt'),'source_quant_cfg_id':manifest['quant_cfg_id'],'quant_cfg_id':'sha256:'+hashlib.sha256(json.dumps(scales,sort_keys=True,separators=(',',':')).encode()).hexdigest(),'model_shape_id':model_shape_id,'static_tables_id':tables['static_tables_id'],'static_table_rows_id':static_table_rows_id,'static_tables':tables,'model_arch_id':manifest['model_arch_id'],'model_param_id':manifest['model_param_id'],'checkpoint_binding':checkpoint_binding,'public_instance':{'node_count':n,'edge_count':e,'graph_count':len(node_ptr)-1,'feature_dim':d,'class_count':int(manifest['C']),'node_ptr':node_ptr,'edge_ptr':edge_ptr}}
+ ledger={'schema':'zkDL_gat_integer_bound_ledger_v3','dataset':c['dataset'],'rounding_mode':c['rounding_mode'],'node_count':n,'edge_count':e,'max_in_degree':maxdeg,'range_bits':int(c['range_bits']),'bit_width':bit_width,'table_domains':{'lrelu':[lmin,lmax],'elu':[elu_min,elu_max],'exp':[0,exp_max]},'scales':scales,'heads':heads,'field':'BLS12-381-Fr','field_half_modulus':str(field_half),'field_fit':'every declared B_a/B_q/B_r/B_delta/B_d and composite equality bound is below the signed field half-modulus; the Rust compiler rechecks each serialized witness value','failures':failures,'graph_count':len(node_ptr)-1,'feature_dim':d,'class_count':int(manifest['C']),'resource_manifest_id':resource_manifest_id,'config_sha256':config_digest(config_path),'checkpoint_manifest_id':checkpoint_manifest_id,'model_shape_id':model_shape_id,'static_tables_id':tables['static_tables_id'],'static_table_rows_id':static_table_rows_id,'model_arch_id':manifest['model_arch_id'],'model_param_id':manifest['model_param_id']}
+ report_metadata={'status':'accepted' if not failures else 'rejected_integer_bound','dataset':c['dataset'],'rounding_mode':c['rounding_mode'],'node_count':n,'edge_count':e,'graph_count':len(node_ptr)-1,'feature_dim':d,'class_count':int(manifest['C']),'config_sha256':config_digest(config_path),'protocol_sha256':protocol_digest(),'resource_manifest_id':resource_manifest_id,'resource_inventory_digest':resource_inventory_digest(c['dataset'],resource_manifest),'graph_features_digest':'sha256:'+features_digest,'topology_digest':'sha256:'+topo_digest,'checkpoint_manifest_id':checkpoint_manifest_id,'checkpoint_manifest_sha256':sha(cp/'manifest.json'),'checkpoint_tensors_sha256':sha(cp/'tensors.txt'),'source_quant_cfg_id':manifest['quant_cfg_id'],'quant_cfg_id':'sha256:'+hashlib.sha256(json.dumps(scales,sort_keys=True,separators=(',',':')).encode()).hexdigest(),'model_shape_id':model_shape_id,'static_tables_id':tables['static_tables_id'],'static_table_rows_id':static_table_rows_id,'static_tables':tables,'model_arch_id':manifest['model_arch_id'],'model_param_id':manifest['model_param_id'],'checkpoint_binding':checkpoint_binding,'public_instance':{'node_count':n,'edge_count':e,'graph_count':len(node_ptr)-1,'feature_dim':d,'class_count':int(manifest['C']),'node_ptr':node_ptr,'edge_ptr':edge_ptr}}
  canonical=json.dumps(ledger,sort_keys=True,separators=(',',':')).encode();ledger['integer_bound_ledger_id']='sha256:'+hashlib.sha256(canonical).hexdigest()
  report={**report_metadata,'ledger':ledger}
  atomic_write_json(out,report)

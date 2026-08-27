@@ -14,44 +14,27 @@ import stat
 from pathlib import Path
 
 
+# The formal build identity covers every production input that can affect the
+# native GAT route: the complete Rust/C++ source trees, every production
+# script/configuration, the locked dependency graph, and the authenticated
+# vendor tree.  Keeping this as coarse roots prevents a newly added source or
+# runner file from silently falling outside the identity contract.
 FORMAL_SOURCE_ROOTS = (
-    "src/circuit",
-    "src/graph",
-    "src/pfsys",
-    "src/tensor",
-    "src/bin/ezkl_formal.rs",
-    "src/native_gat.rs",
-    "src/gpu_telemetry.rs",
-    "src/gpu_telemetry.c",
+    "src",
     "cpp/gat_ezkl_adapter",
-    "configs/formal_operation_registry.json",
+    "configs",
+    "scripts",
     "Cargo.lock",
     "Cargo.toml",
     "build.rs",
-    "scripts/build.sh",
-    "scripts/run_gat_ezkl_baseline.py",
-    "scripts/collect_results.py",
-    "scripts/validate_final_results.py",
-    "scripts/formal_source_manifest.py",
-    "scripts/build_identity_contract.py",
-    "scripts/materialize_security_profile.py",
-    "scripts/resource_policy.py",
-    "scripts/write_build_identity.py",
-    "configs/security_profile.json",
-    "configs/full_datasets.json",
-    "vendor/SOURCE_LOCK.md",
-    "vendor/halo2/halo2_proofs",
-    "vendor/halo2/halo2_gadgets",
-    "vendor/halo2curves/halo2curves",
-    "vendor/snark-verifier/snark-verifier",
-    "vendor/icicle/rust/icicle-core",
-    "vendor/icicle/rust/icicle-curves/icicle-bn254",
-    "vendor/icicle/rust/icicle-runtime",
-    "vendor/icicle/icicle/include",
-    "vendor/icicle/icicle/src",
-    "vendor/icicle/icicle/backend/cpu",
-    "vendor/mopro-msm",
+    "rust-toolchain",
+    "vendor",
 )
+
+# Nested checkout metadata and cargo's local success marker are not source.
+# They are intentionally ignored both by the identity inventory and by the
+# authenticated vendor digest.
+EXCLUDED_SOURCE_NAMES = frozenset({".git", ".cargo-ok"})
 
 
 def _lexical_absolute(path: Path | str) -> Path:
@@ -171,6 +154,8 @@ def checked_tree_files(root: Path | str, tree: Path | str, label: str) -> list[P
             raise ValueError(f"cannot read {label}: {current}: {exc}") from exc
         for entry in entries:
             child = Path(entry.path)
+            if child.name in EXCLUDED_SOURCE_NAMES:
+                continue
             child_metadata = _checked_lstat(child, label)
             assert child_metadata is not None
             if stat.S_ISDIR(child_metadata.st_mode):

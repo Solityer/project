@@ -5,7 +5,7 @@
     {
       "route_id": "ezkl_gat_native_compressed_csr_attention_full",
       "backend": "cpu",
-      "binary": "target/release/ezkl",
+      "binary": "target/release/ezkl_formal",
       "device_marker": "halo2_cpu",
       "proof_system": "ezkl Halo2 BN254 KZG SHPLONK",
       "full_gat_relation": true,
@@ -15,7 +15,7 @@
     {
       "route_id": "ezkl_gat_native_compressed_csr_attention_full",
       "backend": "cuda",
-      "binary": "target-gpu/release/ezkl",
+      "binary": "target-gpu/release/ezkl_formal",
       "required_feature": "gpu-accelerated",
       "device_marker": "halo2_icicle_cuda_device_0",
       "proof_system": "ezkl Halo2 BN254 KZG SHPLONK with ICICLE prover backend",

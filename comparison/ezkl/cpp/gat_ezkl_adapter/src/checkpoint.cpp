@@ -1,9 +1,12 @@
 #include "gat_ezkl/checkpoint.hpp"
 
 #include <algorithm>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <regex>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <cmath>
@@ -105,6 +108,18 @@ namespace gat_ezkl
             return entries;
         }
 
+        std::size_t checked_shape_product(const std::vector<std::size_t>& shape,
+                                           const std::string& name) {
+            std::size_t product = 1;
+            for (const auto dimension : shape) {
+                if (dimension != 0 && product > std::numeric_limits<std::size_t>::max() / dimension) {
+                    throw std::runtime_error("checkpoint tensor shape product overflow: " + name);
+                }
+                product *= dimension;
+            }
+            return product;
+        }
+
         void load_tensor_shapes(const std::filesystem::path& path, CheckpointBundle* bundle) {
             std::ifstream input(path);
             if (!input) {
@@ -117,18 +132,29 @@ namespace gat_ezkl
                 }
                 std::string name;
                 std::size_t rank = 0;
-                input >> name >> rank;
+                if (!(input >> name >> rank) || name.empty()) {
+                    throw std::runtime_error("malformed checkpoint tensor header");
+                }
                 TensorInfo info;
                 info.shape.resize(rank);
                 for (std::size_t i = 0; i < rank; ++i) {
-                    input >> info.shape[i];
+                    if (!(input >> info.shape[i])) {
+                        throw std::runtime_error("malformed checkpoint tensor shape: " + name);
+                    }
                 }
-                input >> info.value_count;
+                const auto expected_count = checked_shape_product(info.shape, name);
+                if (!(input >> info.value_count) || info.value_count != expected_count) {
+                    throw std::runtime_error("checkpoint tensor value_count does not equal shape product: " + name);
+                }
                 info.values.resize(info.value_count);
                 for (std::size_t i = 0; i < info.value_count; ++i) {
-                    input >> info.values[i];
+                    if (!(input >> info.values[i]) || !std::isfinite(info.values[i])) {
+                        throw std::runtime_error("checkpoint tensor contains a non-finite value: " + name);
+                    }
                 }
-                bundle->tensors.emplace(name, std::move(info));
+                if (!bundle->tensors.emplace(name, std::move(info)).second) {
+                    throw std::runtime_error("duplicate checkpoint tensor name: " + name);
+                }
             }
         }
 
@@ -149,6 +175,170 @@ namespace gat_ezkl
                     throw std::runtime_error(std::string(context)
                                              + " contains a non-zero unused private bias: " + name);
                 }
+            }
+        }
+
+        void require_shape(const CheckpointBundle& bundle, const std::string& name,
+                           std::initializer_list<std::size_t> expected) {
+            const auto found = bundle.tensors.find(name);
+            if (found == bundle.tensors.end()) {
+                throw std::runtime_error("checkpoint tensor missing from tensors.txt: " + name);
+            }
+            const std::vector<std::size_t> shape(expected);
+            if (found->second.shape != shape
+                || found->second.value_count != checked_shape_product(shape, name)
+                || found->second.values.size() != found->second.value_count) {
+                throw std::runtime_error("checkpoint tensor shape mismatch: " + name);
+            }
+        }
+
+        void require_quantizable(const CheckpointBundle& bundle, const std::string& name,
+                                 double scale) {
+            if (!(scale > 0.0) || !std::isfinite(scale)) {
+                throw std::runtime_error("invalid canonical tensor quantization scale");
+            }
+            const auto found = bundle.tensors.find(name);
+            if (found == bundle.tensors.end()) {
+                throw std::runtime_error("checkpoint tensor missing from tensors.txt: " + name);
+            }
+            const long double max_scaled =
+                static_cast<long double>(std::numeric_limits<std::int64_t>::max()) - 0.5L;
+            for (const auto value : found->second.values) {
+                const auto scaled = static_cast<long double>(value) * static_cast<long double>(scale);
+                if (!std::isfinite(value) || !std::isfinite(scaled)
+                    || std::abs(scaled) > max_scaled) {
+                    throw std::runtime_error("checkpoint tensor cannot be represented by canonical signed i64: " + name);
+                }
+            }
+        }
+
+        void add_tensor_reference(std::set<std::string>* references, const std::string& name,
+                                  const char* role) {
+            if (name.empty()) {
+                throw std::runtime_error(std::string("empty checkpoint tensor reference: ") + role);
+            }
+            if (!references->insert(name).second) {
+                throw std::runtime_error("checkpoint tensor is referenced more than once: " + name);
+            }
+        }
+
+        void validate_head_registry_and_tensor_shapes(const CheckpointBundle& bundle,
+                                                      const AppConfig& config) {
+            if (bundle.hidden_profile.size() != config.hidden_profile.size()
+                || bundle.hidden_profile.empty()) {
+                throw std::runtime_error("checkpoint hidden layer registry is incomplete");
+            }
+            if (bundle.d_in_profile.size() != config.d_in_profile.size()
+                || bundle.d_in_profile != config.d_in_profile) {
+                throw std::runtime_error("checkpoint d_in_profile is missing or non-canonical");
+            }
+
+            std::size_t expected_hidden_heads = 0;
+            for (const auto& layer : config.hidden_profile) {
+                if (layer.head_count == 0 || layer.head_dim == 0
+                    || expected_hidden_heads > std::numeric_limits<std::size_t>::max() - layer.head_count) {
+                    throw std::runtime_error("checkpoint hidden head registry overflows or contains an empty layer");
+                }
+                expected_hidden_heads += layer.head_count;
+            }
+            if (bundle.hidden_heads.size() != expected_hidden_heads
+                || bundle.output_heads.size() != config.K_out) {
+                throw std::runtime_error("checkpoint head registry is incomplete or has extra heads");
+            }
+
+            std::set<std::string> references;
+            std::set<std::pair<std::size_t, std::size_t>> hidden_slots;
+            std::set<std::size_t> global_slots;
+            for (const auto& head : bundle.hidden_heads) {
+                if (head.layer_index >= config.hidden_profile.size()
+                    || head.local_head_index >= config.hidden_profile[head.layer_index].head_count
+                    || head.global_head_index >= expected_hidden_heads
+                    || !hidden_slots.emplace(head.layer_index, head.local_head_index).second
+                    || !global_slots.insert(head.global_head_index).second) {
+                    throw std::runtime_error("checkpoint hidden head indices are duplicate or out of range");
+                }
+                add_tensor_reference(&references, head.seq_kernel, "hidden.seq_kernel");
+                add_tensor_reference(&references, head.attn_src_kernel, "hidden.attn_src_kernel");
+                add_tensor_reference(&references, head.attn_dst_kernel, "hidden.attn_dst_kernel");
+                add_tensor_reference(&references, head.attn_src_bias, "hidden.attn_src_bias");
+                add_tensor_reference(&references, head.attn_dst_bias, "hidden.attn_dst_bias");
+                add_tensor_reference(&references, head.output_bias, "hidden.output_bias");
+            }
+            for (std::size_t layer = 0; layer < config.hidden_profile.size(); ++layer) {
+                for (std::size_t local = 0; local < config.hidden_profile[layer].head_count; ++local) {
+                    if (!hidden_slots.count({layer, local})) {
+                        throw std::runtime_error("checkpoint hidden head registry has a missing canonical slot");
+                    }
+                }
+            }
+            for (std::size_t global = 0; global < expected_hidden_heads; ++global) {
+                if (!global_slots.count(global)) {
+                    throw std::runtime_error("checkpoint hidden global head indices are not contiguous");
+                }
+            }
+
+            std::set<std::size_t> output_slots;
+            for (const auto& head : bundle.output_heads) {
+                if (head.head_index >= config.K_out || !output_slots.insert(head.head_index).second) {
+                    throw std::runtime_error("checkpoint output head indices are duplicate or out of range");
+                }
+                add_tensor_reference(&references, head.seq_kernel, "output.seq_kernel");
+                add_tensor_reference(&references, head.attn_src_kernel, "output.attn_src_kernel");
+                add_tensor_reference(&references, head.attn_dst_kernel, "output.attn_dst_kernel");
+                add_tensor_reference(&references, head.attn_src_bias, "output.attn_src_bias");
+                add_tensor_reference(&references, head.attn_dst_bias, "output.attn_dst_bias");
+                add_tensor_reference(&references, head.output_bias, "output.output_bias");
+            }
+            for (std::size_t index = 0; index < config.K_out; ++index) {
+                if (!output_slots.count(index)) {
+                    throw std::runtime_error("checkpoint output head indices are not contiguous");
+                }
+            }
+            if (references.size() != bundle.tensors.size()) {
+                for (const auto& [name, info] : bundle.tensors) {
+                    (void)info;
+                    if (!references.count(name)) {
+                        throw std::runtime_error("checkpoint tensors.txt contains an unknown tensor: " + name);
+                    }
+                }
+                throw std::runtime_error("checkpoint tensor registry is not exact");
+            }
+
+            for (const auto& head : bundle.hidden_heads) {
+                const auto& profile = config.hidden_profile[head.layer_index];
+                const auto input_dim = config.d_in_profile.at(head.layer_index);
+                require_shape(bundle, head.seq_kernel, {1, input_dim, profile.head_dim});
+                require_shape(bundle, head.attn_src_kernel, {1, profile.head_dim, 1});
+                require_shape(bundle, head.attn_dst_kernel, {1, profile.head_dim, 1});
+                require_shape(bundle, head.attn_src_bias, {1});
+                require_shape(bundle, head.attn_dst_bias, {1});
+                require_shape(bundle, head.output_bias, {profile.head_dim});
+                require_zero_tensor(bundle, head.attn_src_bias, "hidden head");
+                require_zero_tensor(bundle, head.attn_dst_bias, "hidden head");
+                require_zero_tensor(bundle, head.output_bias, "hidden head");
+                require_quantizable(bundle, head.seq_kernel, 16.0);
+                require_quantizable(bundle, head.attn_src_kernel, 16.0);
+                require_quantizable(bundle, head.attn_dst_kernel, 16.0);
+            }
+            std::size_t output_input_dim = 0;
+            const auto& last = config.hidden_profile.back();
+            if (last.head_count > std::numeric_limits<std::size_t>::max() / last.head_dim) {
+                throw std::runtime_error("output layer input width overflows size_t");
+            }
+            output_input_dim = last.head_count * last.head_dim;
+            for (const auto& head : bundle.output_heads) {
+                require_shape(bundle, head.seq_kernel, {1, output_input_dim, config.num_classes});
+                require_shape(bundle, head.attn_src_kernel, {1, config.num_classes, 1});
+                require_shape(bundle, head.attn_dst_kernel, {1, config.num_classes, 1});
+                require_shape(bundle, head.attn_src_bias, {1});
+                require_shape(bundle, head.attn_dst_bias, {1});
+                require_shape(bundle, head.output_bias, {config.num_classes});
+                require_zero_tensor(bundle, head.attn_src_bias, "output head");
+                require_zero_tensor(bundle, head.attn_dst_bias, "output head");
+                require_quantizable(bundle, head.seq_kernel, 16.0);
+                require_quantizable(bundle, head.attn_src_kernel, 1.0);
+                require_quantizable(bundle, head.attn_dst_kernel, 1.0);
+                require_quantizable(bundle, head.output_bias, 16.0);
             }
         }
 
@@ -240,6 +430,9 @@ namespace gat_ezkl
     // Formal runs require an explicit, exact source identity match.  The
     // collision-resistant derived quant/table profiles are emitted separately.
     void validate_checkpoint_against_config(const CheckpointBundle& bundle, AppConfig* config) {
+        if (config == nullptr) {
+            throw std::runtime_error("checkpoint validation requires a non-null config");
+        }
         if (bundle.family_schema_version.empty()) {
             throw std::runtime_error("checkpoint family_schema_version is empty");
         }
@@ -264,9 +457,7 @@ namespace gat_ezkl
                 throw std::runtime_error("checkpoint hidden_profile does not match config");
             }
         }
-        if (!bundle.d_in_profile.empty() && !config->d_in_profile.empty() && bundle.d_in_profile != config->d_in_profile) {
-            throw std::runtime_error("checkpoint d_in_profile does not match config");
-        }
+        validate_head_registry_and_tensor_shapes(bundle, *config);
         const auto require_equal = [](const std::string& configured, const std::string& actual,
                                       const char* label) {
             if (configured.empty() || actual.empty() || configured != actual) {

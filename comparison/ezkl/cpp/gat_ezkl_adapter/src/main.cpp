@@ -3,6 +3,7 @@
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -23,12 +24,24 @@ constexpr const char* kFormalRoute = "ezkl_gat_native_compressed_csr_attention_f
 
 std::map<std::string, std::string> parse_args(int argc, char** argv) {
     std::map<std::string, std::string> out;
+    static const std::set<std::string> allowed = {
+        "dataset", "config", "dataset-root", "checkpoint", "security-profile",
+        "project-root", "output-dir", "route",
+    };
     for (int i = 1; i < argc; ++i) {
         const std::string key = argv[i];
         if (key.rfind("--", 0) != 0 || i + 1 >= argc) {
             throw std::runtime_error("expected --key value arguments");
         }
-        out[key.substr(2)] = argv[++i];
+        const auto name = key.substr(2);
+        if (!allowed.count(name) || out.count(name)) {
+            throw std::runtime_error("unsupported or duplicate option: " + key);
+        }
+        const auto value = std::string(argv[++i]);
+        if (value.empty() || value.rfind("--", 0) == 0) {
+            throw std::runtime_error("missing value for --" + name);
+        }
+        out.emplace(name, value);
     }
     return out;
 }
@@ -41,15 +54,102 @@ std::string required(const std::map<std::string, std::string>& args, const std::
     return it->second;
 }
 
+std::filesystem::path absolute_lexical(const std::filesystem::path& path) {
+    const auto absolute = path.is_absolute() ? path : std::filesystem::absolute(path);
+    return absolute.lexically_normal();
+}
+
 bool path_is_within(const std::filesystem::path& child, const std::filesystem::path& parent) {
-    const auto canonical_child = std::filesystem::weakly_canonical(child);
-    const auto canonical_parent = std::filesystem::weakly_canonical(parent);
-    auto child_it = canonical_child.begin();
-    for (auto parent_it = canonical_parent.begin(); parent_it != canonical_parent.end();
-         ++parent_it, ++child_it) {
-        if (child_it == canonical_child.end() || *child_it != *parent_it) return false;
+    const auto relative = absolute_lexical(child).lexically_relative(absolute_lexical(parent));
+    if (relative.empty()) return true;
+    for (const auto& component : relative) {
+        if (component == std::filesystem::path("..")
+            || component == std::filesystem::path(".")) {
+            return false;
+        }
     }
     return true;
+}
+
+void require_regular_file(const std::filesystem::path& path, const std::string& label) {
+    std::error_code error;
+    const auto status = std::filesystem::symlink_status(path, error);
+    if (error || std::filesystem::is_symlink(status) || !std::filesystem::is_regular_file(status)) {
+        throw std::runtime_error(label + " must be a regular non-symlink file: " + path.string());
+    }
+    const auto links = std::filesystem::hard_link_count(path, error);
+    if (error || links != 1) {
+        throw std::runtime_error(label + " must have exactly one hard link: " + path.string());
+    }
+}
+
+void require_directory(const std::filesystem::path& path, const std::string& label) {
+    std::error_code error;
+    const auto status = std::filesystem::symlink_status(path, error);
+    if (error || std::filesystem::is_symlink(status) || !std::filesystem::is_directory(status)) {
+        throw std::runtime_error(label + " must be a regular non-symlink directory: " + path.string());
+    }
+}
+
+void validate_path_tree(
+    const std::filesystem::path& project_root,
+    const std::filesystem::path& path,
+    const std::string& label,
+    bool final_may_be_missing) {
+    const auto root = absolute_lexical(project_root);
+    const auto candidate = absolute_lexical(path);
+    if (!path_is_within(candidate, root) || candidate == root) {
+        throw std::runtime_error(label + " escaped the baseline project root: " + candidate.string());
+    }
+    auto current = root;
+    const auto relative = candidate.lexically_relative(root);
+    std::vector<std::filesystem::path> components;
+    for (const auto& component : relative) {
+        if (component == std::filesystem::path("..")
+            || component == std::filesystem::path(".")) {
+            throw std::runtime_error(label + " has non-canonical path components");
+        }
+        components.push_back(component);
+    }
+    for (std::size_t index = 0; index < components.size(); ++index) {
+        current /= components[index];
+        std::error_code error;
+        const auto status = std::filesystem::symlink_status(current, error);
+        if (error || (!std::filesystem::exists(status) && index + 1 != components.size())) {
+            throw std::runtime_error(label + " has an inaccessible parent component: " + current.string());
+        }
+        if (!std::filesystem::exists(status)) {
+            if (index + 1 == components.size() && final_may_be_missing) return;
+            throw std::runtime_error(label + " does not exist: " + current.string());
+        }
+        if (std::filesystem::is_symlink(status)) {
+            throw std::runtime_error(label + " contains a symlink: " + current.string());
+        }
+        if (index + 1 != components.size() && !std::filesystem::is_directory(status)) {
+            throw std::runtime_error(label + " contains a non-directory parent: " + current.string());
+        }
+    }
+}
+
+std::filesystem::path require_under(
+    const std::filesystem::path& project_root,
+    const std::filesystem::path& value,
+    const std::vector<std::filesystem::path>& allowed_roots,
+    const std::string& label,
+    bool final_may_be_missing) {
+    const auto path = absolute_lexical(value);
+    bool allowed = false;
+    for (const auto& root : allowed_roots) {
+        if (path_is_within(path, absolute_lexical(root))) {
+            allowed = true;
+            break;
+        }
+    }
+    if (!allowed) {
+        throw std::runtime_error(label + " is outside its baseline-local allowed directory: " + path.string());
+    }
+    validate_path_tree(project_root, path, label, final_may_be_missing);
+    return path;
 }
 
 std::size_t max_in_degree(const gat_ezkl::NormalizedGraph& graph) {
@@ -83,18 +183,50 @@ int main(int argc, char** argv) {
         }
         const auto args = parse_args(argc, argv);
         const auto dataset_id = required(args, "dataset");
-        const auto config_path = std::filesystem::weakly_canonical(required(args, "config"));
-        const auto dataset_root = std::filesystem::weakly_canonical(required(args, "dataset-root"));
-        const auto checkpoint_root = std::filesystem::weakly_canonical(required(args, "checkpoint"));
-        const auto ezkl_root = std::filesystem::weakly_canonical(required(args, "ezkl-root"));
-        const auto output_dir = std::filesystem::weakly_canonical(required(args, "output-dir"));
-        const auto security_profile = std::filesystem::weakly_canonical(required(args, "security-profile"));
+        const auto project_root = absolute_lexical(required(args, "project-root"));
+        require_directory(project_root, "project-root");
+        if (project_root.filename() != "ezkl") {
+            throw std::runtime_error("project-root must be the baseline-local comparison/ezkl directory");
+        }
+        const auto config_path = require_under(
+            project_root, required(args, "config"), {project_root / "configs"}, "config", false);
+        const auto dataset_root = require_under(
+            project_root, required(args, "dataset-root"), {project_root / "data" / "cache"},
+            "dataset-root", false);
+        const auto checkpoint_root = require_under(
+            project_root, required(args, "checkpoint"),
+            {project_root / "artifacts" / "checkpoints"}, "checkpoint", false);
+        const auto security_profile = require_under(
+            project_root, required(args, "security-profile"),
+            {project_root / "configs", project_root / "results" / "runs_tmp"},
+            "security-profile", false);
+        const auto output_dir = require_under(
+            project_root, required(args, "output-dir"),
+            {project_root / "results" / "runs", project_root / "results" / "runs_tmp"},
+            "output-dir", true);
         const auto route = args.count("route") ? args.at("route") : kFormalRoute;
         if (route != kFormalRoute) throw std::runtime_error("unregistered formal GAT route");
-        if (!path_is_within(output_dir, ezkl_root)) {
-            throw std::runtime_error("output-dir must be within the baseline-local ezkl root");
+        require_regular_file(config_path, "config");
+        require_directory(dataset_root, "dataset-root");
+        require_directory(checkpoint_root, "checkpoint");
+        require_regular_file(security_profile, "security-profile");
+        require_regular_file(dataset_root / "meta.cfg", "dataset meta.cfg");
+        require_regular_file(dataset_root / "edges.txt", "dataset edges.txt");
+        if (std::filesystem::exists(dataset_root / "features.txt")) {
+            require_regular_file(dataset_root / "features.txt", "dataset features.txt");
+        } else {
+            require_regular_file(dataset_root / "features.npy", "dataset features.npy");
         }
+        for (const auto& optional : {std::string("labels.txt"), std::string("node_ptr.txt")}) {
+            if (std::filesystem::exists(dataset_root / optional)) {
+                require_regular_file(dataset_root / optional, "dataset " + optional);
+            }
+        }
+        require_regular_file(checkpoint_root / "manifest.json", "checkpoint manifest.json");
+        require_regular_file(checkpoint_root / "tensors.txt", "checkpoint tensors.txt");
+        if (std::filesystem::exists(output_dir)) require_directory(output_dir, "output-dir");
         std::filesystem::create_directories(output_dir);
+        require_directory(output_dir, "output-dir");
 
         const auto official = gat_ezkl::official_dataset_spec(dataset_id);
         auto config = gat_ezkl::load_config_file(config_path);
@@ -168,6 +300,9 @@ int main(int argc, char** argv) {
                  << "  \"public_inputs\": [\"node_features.i64.bin\",\"csr_segment_layout.bin\"],\n"
                  << "  \"private_inputs\": [\"model_parameters.i64.txt\"],\n"
                  << "  \"formal_contracts\": [\"formal_quant_config.json\",\"formal_table_spec.json\",\"formal_main_tables.i64.bin\",\"backend_aux_table_spec.json\",\"backend_aux_tables.i64.bin\",\"integer_bound_ledger.json\",\"model_registration.json\",\"security_profile.json\"],\n"
+                 << "  \"model_schema\": \"" << gat_ezkl::canonical_model_schema() << "\",\n"
+                 << "  \"model_order\": \"" << gat_ezkl::json_escape(gat_ezkl::canonical_model_order()) << "\",\n"
+                 << "  \"model_order_digest\": \"" << gat_ezkl::canonical_model_order_digest() << "\",\n"
                  << "  \"static_tables_id\": \"" << profile_ids.static_tables_id << "\",\n"
                  << "  \"backend_aux_tables_id\": \"" << profile_ids.backend_aux_tables_id << "\",\n"
                  << "  \"ezkl_security_profile_id\": \"" << security_profile_id << "\",\n"

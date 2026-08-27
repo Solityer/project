@@ -1,8 +1,8 @@
 //! Minimal command-line entry point for the formal graph-attention route.
 //!
 //! This target deliberately exposes only the six native GAT operations.  The
-//! general ezkl CLI (ONNX/Python/EVM/web commands) remains a separate target
-//! and is not part of the formal build graph.
+//! historical ONNX/Python/EVM CLI is not part of this baseline or its build
+//! graph.
 
 use ezkl::native_gat::{
     graph_gat_compile, graph_gat_gen_settings, graph_gat_gen_witness, graph_gat_prove,

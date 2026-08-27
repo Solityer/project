@@ -38,7 +38,9 @@ unsafe extern "C" {
 }
 
 fn status_error(operation: &str, status: i32) -> String {
-    format!("CUPTI {operation} failed with status {status}; refusing unauthenticated CUDA execution")
+    format!(
+        "CUPTI {operation} failed with status {status}; refusing unauthenticated CUDA execution"
+    )
 }
 
 pub(crate) fn ensure_available() -> Result<(), String> {
@@ -58,8 +60,8 @@ pub(crate) struct Scope {
 impl Scope {
     pub(crate) fn begin(name: &str) -> Result<Self, String> {
         ensure_available()?;
-        let name = std::ffi::CString::new(name)
-            .map_err(|_| "CUPTI scope name contains NUL".to_owned())?;
+        let name =
+            std::ffi::CString::new(name).map_err(|_| "CUPTI scope name contains NUL".to_owned())?;
         let mut nonce = 0u64;
         #[allow(unsafe_code)]
         let status = unsafe { ezkl_gpu_scope_begin(name.as_ptr(), &mut nonce) };
@@ -80,9 +82,8 @@ impl Scope {
             return Err(status_error("scope end", status));
         }
         #[allow(unsafe_code)]
-        let bytes = unsafe {
-            std::slice::from_raw_parts(output.as_ptr().cast::<u8>(), output.len())
-        };
+        let bytes =
+            unsafe { std::slice::from_raw_parts(output.as_ptr().cast::<u8>(), output.len()) };
         let end = bytes
             .iter()
             .position(|byte| *byte == 0)
@@ -99,7 +100,9 @@ impl Scope {
             || telemetry.active_device_id != 0
             || telemetry.dropped_records != 0
         {
-            return Err("CUPTI formal scope did not provide complete non-zero kernel evidence".into());
+            return Err(
+                "CUPTI formal scope did not provide complete non-zero kernel evidence".into(),
+            );
         }
         if telemetry.kernel_names.iter().any(|kernel| {
             kernel.name.is_empty()

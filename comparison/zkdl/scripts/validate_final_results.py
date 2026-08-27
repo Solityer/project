@@ -21,19 +21,27 @@ from runner_contract import (
     BASELINE_ROOT,
     DATASETS,
     DEVICES,
+    PP_FIELDS,
     atomic_write_json,
     artifact_inventory,
+    build_manifest_path,
     config_digest,
     config_path,
     ensure_contained,
     ensure_directory,
     ensure_regular_file,
+    load_build_manifest,
     load_resource_manifest,
     parse_config,
+    pp_binding_from_manifest,
+    pp_path_from_manifest,
+    private_publication_fields,
     protocol_digest,
     read_json,
     resource_inventory_digest,
     sha256_file,
+    source_identity,
+    validate_pp_file,
     validate_config_resources,
 )
 
@@ -220,6 +228,7 @@ def current_source_identities(
     *,
     graph_count: int,
     feature_dim: int,
+    device: str | None = None,
 ) -> dict[str, Any]:
     """Read/hash current source bindings without executing data computation."""
     config_file = config_path(dataset)
@@ -240,7 +249,13 @@ def current_source_identities(
         "class_count": int(checkpoint_manifest["C"]),
         "feature_dim": feature_dim,
     }
-    return {
+    pp = pp_path_from_manifest(resource_manifest)
+    validate_pp_file(pp, resource_manifest)
+    registry = ensure_regular_file(
+        BASELINE_ROOT / "artifacts" / "model_registry" / dataset / "model_registry.bin",
+        label=f"{dataset} model registry",
+    )
+    result = {
         "config_sha256": config_digest(config_file),
         "protocol_sha256": protocol_digest(),
         "resource_manifest_id": str(resource_manifest["manifest_id"]),
@@ -253,7 +268,37 @@ def current_source_identities(
         "model_param_id": checkpoint_manifest["model_param_id"],
         "source_static_table_id": checkpoint_manifest["static_table_id"],
         "checkpoint_binding": binding,
+        "source_identity": source_identity(),
+        "registry_sha256": f"sha256:{sha256_file(registry)}",
+        "registry_size_bytes": registry.stat().st_size,
+        **pp_binding_from_manifest(resource_manifest),
     }
+    if device is not None:
+        if device not in DEVICES:
+            raise ValueError(f"invalid build device: {device}")
+        cpu_binary = ensure_regular_file(BASELINE_ROOT / "bin" / "zkdl-formal-cpu", label="CPU formal binary")
+        prover_binary = ensure_regular_file(
+            BASELINE_ROOT / "bin" / f"zkdl-formal-{device}", label=f"{device} formal binary"
+        )
+        cpu_build = load_build_manifest("cpu", cpu_binary)
+        prover_build = load_build_manifest(device, prover_binary)
+        result.update(
+            {
+                "cpu_binary_sha256": cpu_build["binary_sha256"],
+                "prover_binary_sha256": prover_build["binary_sha256"],
+                "cpu_binary_size_bytes": cpu_build["binary_size_bytes"],
+                "prover_binary_size_bytes": prover_build["binary_size_bytes"],
+                "cpu_build_identity": cpu_build["build_identity"],
+                "prover_build_identity": prover_build["build_identity"],
+                "build_identity": {
+                    "cpu": cpu_build["build_identity"],
+                    "prover": prover_build["build_identity"],
+                },
+                "cpu_build_manifest_sha256": sha256_file(build_manifest_path("cpu")),
+                "prover_build_manifest_sha256": sha256_file(build_manifest_path(device)),
+            }
+        )
+    return result
 
 
 def _check_current_bindings(
@@ -339,6 +384,9 @@ def check_cell(
             errors.append(f"{label}:{name}")
 
     require(result.get("dataset") == dataset and result.get("device") == device, "result_key")
+    for manifest_name, manifest in (("result", result), ("proof", proof), ("verifier", verifier), ("success", success)):
+        for field in private_publication_fields(manifest):
+            errors.append(f"{label}:{manifest_name}_private_field:{field}")
     require(result.get("status") == "ok", "result_status")
     require(result.get("proof_generated") is True and proof.get("proof_generated") is True, "proof_generated")
     require(result.get("verified") is True and verifier.get("verified") is True, "verified")
@@ -425,6 +473,7 @@ def check_cell(
                 resource_manifest,
                 graph_count=int(preflight["graph_count"]),
                 feature_dim=int(preflight["feature_dim"]),
+                device=device,
             )
     except (OSError, KeyError, TypeError, ValueError) as error:
         errors.append(f"{label}:current_source_identity:{error}")
@@ -435,6 +484,22 @@ def check_cell(
         _check_current_bindings(label, errors, relation, current_identity, "relation", required=False)
         _check_current_bindings(label, errors, result, current_identity, "result")
         _check_current_bindings(label, errors, success, current_identity, "success")
+        for manifest_name, manifest in (
+            ("proof", proof),
+            ("verifier", verifier),
+            ("result", result),
+            ("success", success),
+        ):
+            for key in PP_FIELDS:
+                require(manifest.get(key) == current_identity.get(key), f"{manifest_name}_{key}")
+        require(result.get("registry_sha256") == current_identity.get("registry_sha256"), "result_registry_sha256")
+        require(result.get("registry_size_bytes") == current_identity.get("registry_size_bytes"), "result_registry_size_bytes")
+        require(success.get("registry_sha256") == current_identity.get("registry_sha256"), "success_registry_sha256")
+        require(success.get("registry_size_bytes") == current_identity.get("registry_size_bytes"), "success_registry_size_bytes")
+        require(result.get("source_identity") == current_identity.get("source_identity"), "result_source_identity")
+        require(success.get("source_identity") == current_identity.get("source_identity"), "success_source_identity")
+        require(result.get("build_identity") == current_identity.get("build_identity"), "result_build_identity")
+        require(success.get("build_identity") == current_identity.get("build_identity"), "success_build_identity")
         provenance = result.get("provenance")
         success_provenance = success.get("provenance")
         require(isinstance(provenance, dict), "provenance_object")
@@ -466,7 +531,6 @@ def check_cell(
             ("preflight_sha256", run / "formal_artifacts" / "preflight.json"),
             ("canonical_relation_sha256", run / "formal_artifacts" / "canonical_relation.json"),
             ("statement_sha256", run / "formal_artifacts" / "statement.bin"),
-            ("witness_sha256", run / "formal_artifacts" / "witness.private.bin"),
             ("proof_manifest_sha256", run / "proof_manifest.json"),
             ("verifier_manifest_sha256", run / "verifier_manifest.json"),
         ):
@@ -507,6 +571,7 @@ def main() -> int:
                     resource_manifest,
                     graph_count=int(preflight["graph_count"]),
                     feature_dim=int(preflight["feature_dim"]),
+                    device=device,
                 )
             except (OSError, KeyError, TypeError, ValueError) as error:
                 identity = None

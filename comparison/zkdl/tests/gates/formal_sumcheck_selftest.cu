@@ -1,4 +1,4 @@
-#include "commitment.cuh"
+#include "support/commitment.cuh"
 
 #include <cstdint>
 #include <cstring>

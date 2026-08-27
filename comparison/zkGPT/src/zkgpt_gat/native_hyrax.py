@@ -610,9 +610,6 @@ class NativeHyrax:
         default_factory=lambda: {"msm_calls": 0}, init=False, repr=False, compare=False
     )
 
-    def require_binary(self) -> None:
-        return None
-
     @property
     def registration_msm_calls(self) -> int:
         """Number of full registration-authentication MSMs in this session."""

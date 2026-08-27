@@ -21,6 +21,15 @@ from runner_contract import (
 
 ROOT=Path(__file__).resolve().parents[1]
 FR=0x73eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001
+ADAPTER_SCHEMA='zkDL_gat_canonical_adapter_v2'
+ADAPTER_VERSION=2
+PROTOCOL_PATH=ROOT/'GAT-ZKML-zkDL.md'
+CANONICAL_RELATION_SCHEMA='zkDL_gat_canonical_relation_schema_v1'
+CANONICAL_SCHEMA_KEYS=('schema','version','architecture','tensor_family_order','tensor_families','operation_family_order','operation_families','fac_plan','terminal_plan')
+CANONICAL_ARCHITECTURE_KEYS=('model_arch_id','model_param_id','node_count','edge_count','graph_count','feature_dim','class_count','output_head_count','bit_width','lookup_bits','hidden_layers','hidden_head_specs','output_head_specs')
+
+def exact_keys(obj,expected,label):
+ if not isinstance(obj,dict) or set(obj)!=set(expected):raise ValueError(f'{label} has unknown or missing fields')
 
 def cfg(path):
  out={}
@@ -42,6 +51,14 @@ def npow(n):return max(2,1<<(max(1,n)-1).bit_length())
 def hx(v):return '0x'+(int(v)%FR).to_bytes(32,'big').hex()
 def digest(path):return hashlib.sha256(path.read_bytes()).hexdigest()
 def sha256_tagged(domain,payload):return 'sha256:'+hashlib.sha256(domain+payload).hexdigest()
+def protocol_digest():return 'sha256:'+hashlib.sha256(PROTOCOL_PATH.read_bytes()).hexdigest()
+def canonical_json(value):return json.dumps(value,sort_keys=True,separators=(',',':'),ensure_ascii=False).encode()
+def source_input_digest(obj):
+ material=dict(obj);material.pop('source_input_id',None);material.pop('canonical_relation_digest',None)
+ return sha256_tagged(b'zkDL-GAT-canonical-adapter-input-v2\0',canonical_json(material))
+def relation_digest(obj):
+ material=dict(obj);material.pop('canonical_relation_digest',None)
+ return sha256_tagged(b'zkDL-GAT-canonical-relation-v2\0',canonical_json(material))
 def static_table_rows_digest(ops):
  entries=set()
  def visit(expr):
@@ -147,18 +164,33 @@ class Builder:
  def tensor(self,name,values,shape,visibility):
   flat=np.asarray(values,dtype=object).reshape(-1).tolist()
   if not flat:raise ValueError('empty canonical tensor')
+  if name in self.tensors:raise ValueError(f'duplicate canonical tensor family: {name}')
+  if not shape or any(int(x)<=0 for x in shape) or math.prod(map(int,shape))!=len(flat):raise ValueError(f'canonical tensor shape mismatch: {name}')
   flat=[int(x) if isinstance(x,(int,np.integer)) else x for x in flat]
-  self.tensors[name]=flat;self.spec.append({'family_id':name,'logical_len':len(flat),'padded_len':npow(len(flat)),'logical_shape':list(shape),'mle_order':['row_major_lsb_first'],'instance_order':['canonical_program_order'],'visibility':visibility});return name
- def view(self,name,family,mapping):return {'column_id':name,'source':{'TensorView':{'family_id':family,'canonical_index_by_row':mapping}}}
+  if visibility not in ('Public','RegisteredModel','DynamicPrivate'):raise ValueError(f'unknown tensor visibility: {visibility}')
+  self.tensors[name]=flat;self.spec.append({'family_id':name,'logical_len':len(flat),'padded_len':npow(len(flat)),'logical_shape':[int(x) for x in shape],'mle_order':['row_major_lsb_first'],'instance_order':['canonical_program_order'],'visibility':visibility});return name
+ def view(self,name,family,mapping):
+  if family not in self.tensors:raise ValueError(f'unknown canonical tensor family: {family}')
+  return {'column_id':name,'source':{'TensorView':{'family_id':family,'canonical_index_by_row':mapping}}}
  def affine(self,name,family,offset,stride,logical,rows,pad=0):
+  if pad!=0:raise ValueError('canonical tensor padding index must be zero')
   index={'Affine':{'offset':offset,'stride':stride}} if logical==rows else {'PaddedAffine':{'offset':offset,'stride':stride,'logical_rows':logical,'padding_index':pad}}
   return self.view(name,family,index)
- def explicit(self,name,family,index,rows):return self.view(name,family,{'Explicit':[int(x) for x in index]+[0]*(rows-len(index))})
- def public(self,name,values,rows):return {'column_id':name,'source':{'Public':list(map(int,values))+[0]*(rows-len(values))}}
+ def explicit(self,name,family,index,rows):
+  if len(index)>rows:raise ValueError(f'canonical explicit view exceeds operation rows: {name}')
+  if any(int(x)<0 for x in index):raise ValueError(f'canonical explicit view has negative index: {name}')
+  return self.view(name,family,{'Explicit':[int(x) for x in index]+[0]*(rows-len(index))})
+ def public(self,name,values,rows):
+  if len(values)>rows:raise ValueError(f'canonical public column exceeds operation rows: {name}')
+  return {'column_id':name,'source':{'Public':list(map(int,values))+[0]*(rows-len(values))}}
  def op(self,kind,label,logical,columns,residuals,degree=None):
+  if logical<=0 or not columns or not residuals:raise ValueError(f'canonical operation is empty: {label}')
   base=npow(logical);rows=base*2
   normalized=[]
+  seen=set()
   for column in list(columns):
+   if column['column_id'] in seen:raise ValueError(f'duplicate operation column: {label}.{column["column_id"]}')
+   seen.add(column['column_id'])
    source=column['source']
    if 'Public' in source:
     values=list(source['Public'])+[0]*(rows-len(source['Public']))
@@ -187,6 +219,57 @@ def expr_degree(e):
  if 'Mul' in e:return sum(map(expr_degree,e['Mul']))
  if 'PublicTableLookup' in e:return len(e['PublicTableLookup']['bit_columns'])
  raise ValueError('unknown expression')
+
+def canonical_fac_plan(ops,spec):
+ visibility={x['family_id']:x['visibility'] for x in spec}
+ plans=[]
+ for op in ops:
+  groups={}
+  for index,column in enumerate(op['columns']):
+   source=column['source']
+   if 'TensorView' in source and visibility[source['TensorView']['family_id']]!='Public':
+    groups.setdefault(source['TensorView']['family_id'],[]).append((index,column))
+  claims=[]
+  for family,columns in sorted(groups.items()):
+   non_identity=False
+   family_len=next(x['logical_len'] for x in spec if x['family_id']==family)
+   for index,column in columns:
+    view=column['source']['TensorView']['canonical_index_by_row']
+    padded=view.get('PaddedAffine')
+    if not (padded and int(padded['offset'])==0 and int(padded['stride'])==1 and int(padded['logical_rows'])==op['real_rows'] and int(padded['padding_index'])==0 and family_len==op['real_rows']):
+     non_identity=True
+   claims.append({'family_id':family,'column_indices':[i for i,_ in columns],'column_ids':[c['column_id'] for _,c in columns],'view_count':len(columns),'requires_reindex':non_identity or len(columns)>1,'requires_line8':True})
+  plans.append({'operation_id':op['family_id'],'terminal_claims':claims,'terminal_target':'canonical_tensor_family'})
+ return {'schema':'zkDL_gat_fac_reindex_plan_v1','operations':plans}
+
+def validate_canonical_schema(schema,spec,ops,architecture):
+ exact_keys(schema,CANONICAL_SCHEMA_KEYS,'canonical relation schema')
+ if schema['schema']!=CANONICAL_RELATION_SCHEMA or schema['version']!=1:raise ValueError('canonical relation schema identity mismatch')
+ exact_keys(architecture,CANONICAL_ARCHITECTURE_KEYS,'canonical architecture profile')
+ if not isinstance(architecture['hidden_layers'],list) or not architecture['hidden_layers']:raise ValueError('canonical hidden layer profile is empty')
+ for index,layer in enumerate(architecture['hidden_layers']):
+  exact_keys(layer,('layer_index','input_dim','head_count','head_dim'),f'canonical hidden layer {index}')
+  if int(layer['layer_index'])!=index or int(layer['head_count'])<=0 or int(layer['head_dim'])<=0:raise ValueError('canonical hidden layer order/dimensions are invalid')
+ hidden_count=sum(int(layer['head_count']) for layer in architecture['hidden_layers'])
+ if not isinstance(architecture['hidden_head_specs'],list) or len(architecture['hidden_head_specs'])!=hidden_count:raise ValueError('canonical hidden head specification count mismatch')
+ hidden_keys=('layer_index','local_head_index','global_head_index','seq_kernel','attn_dst_kernel','attn_dst_bias','attn_src_kernel','attn_src_bias','output_bias')
+ cursor=0
+ for layer in architecture['hidden_layers']:
+  for local in range(int(layer['head_count'])):
+   head=architecture['hidden_head_specs'][cursor];exact_keys(head,hidden_keys,f'canonical hidden head {cursor}')
+   if int(head['layer_index'])!=int(layer['layer_index']) or int(head['local_head_index'])!=local or int(head['global_head_index'])!=cursor:raise ValueError('canonical hidden head order/index mapping is invalid')
+   if any(not isinstance(head[key],str) or not head[key] for key in hidden_keys[3:]):raise ValueError('canonical hidden head tensor binding is malformed')
+   cursor+=1
+ if not isinstance(architecture['output_head_specs'],list) or len(architecture['output_head_specs'])!=int(architecture['output_head_count']) or not architecture['output_head_specs']:raise ValueError('canonical output head specification count mismatch')
+ output_keys=('head_index','seq_kernel','attn_dst_kernel','attn_dst_bias','attn_src_kernel','attn_src_bias','output_bias')
+ for index,head in enumerate(architecture['output_head_specs']):
+  exact_keys(head,output_keys,f'canonical output head {index}')
+  if int(head['head_index'])!=index or any(not isinstance(head[key],str) or not head[key] for key in output_keys[1:]):raise ValueError('canonical output head order/binding is malformed')
+ if schema['tensor_family_order']!=[x['family_id'] for x in spec] or schema['tensor_families']!=spec:raise ValueError('canonical tensor descriptor is not isomorphic to adapter output')
+ if schema['operation_family_order']!=[x['family_id'] for x in ops] or schema['operation_families']!=ops:raise ValueError('canonical operation descriptor is not isomorphic to adapter output')
+ if schema['fac_plan']!=canonical_fac_plan(ops,spec):raise ValueError('canonical FAC descriptor mismatch')
+ exact_keys(schema['terminal_plan'],('public_logits_operation','public_logits_family','target'),'canonical terminal plan')
+ if schema['terminal_plan']!={'public_logits_operation':'output.public_logits','public_logits_family':'public.logits','target':'verifier_local_public_y'}:raise ValueError('canonical terminal descriptor mismatch')
 
 def field_inverse(x):
  if x%FR==0:raise ValueError('zero field inverse')
@@ -292,11 +375,15 @@ def build_head(b,prefix,H,Hname,W,asrc,adst,src,dst,start,end,hidden,bias,tables
 
 def main():
  ap=argparse.ArgumentParser();ap.add_argument('--config',type=Path,required=True);ap.add_argument('--project-root',type=Path,required=True);ap.add_argument('--preflight',type=Path,required=True);ap.add_argument('--pp-id',required=True);ap.add_argument('--output',type=Path,required=True);a=ap.parse_args()
- config_path=ensure_contained(a.config,label='formal config');c=cfg(config_path);root=ensure_contained(a.project_root,label='project-root');
+ config_path=ensure_contained(a.config,label='formal config');
+ if config_path.relative_to(ROOT).parts[:1] != ('configs',):raise SystemExit('formal config must be baseline-local configs/<dataset>.cfg')
+ c=cfg(config_path);root=ensure_contained(a.project_root,label='project-root');
  if root != BASELINE_ROOT:raise SystemExit('project-root must be comparison/zkdl; stage resources locally first')
  resource_manifest,resource_manifest_id=load_resource_manifest(require_staged=True)
  validate_config_resources(c.get('dataset',''),c,resource_manifest)
- preflight_path=ensure_contained(a.preflight,label='preflight report');report=json.loads(preflight_path.read_text());
+ preflight_path=ensure_contained(a.preflight,label='preflight report');
+ if preflight_path.relative_to(ROOT).parts[:1] != ('runs',):raise SystemExit('preflight must be written below baseline runs/')
+ report=json.loads(preflight_path.read_text());
  if report['status']!='accepted':raise SystemExit('canonical adapter refuses a preflight-rejected formal instance')
  if report.get('resource_manifest_id') != resource_manifest_id:raise ValueError('preflight/resource manifest mismatch')
  cache=root/c['cache'];cp=root/c['checkpoint_bundle'];manifest=json.loads((cp/'manifest.json').read_text());raw=load_tensors(cp/'tensors.txt');n=int((cache/'meta.cfg').read_text().split('num_nodes = ')[1].splitlines()[0]);d=int((cache/'meta.cfg').read_text().split('num_features = ')[1].splitlines()[0]);H,feature_path=load_features(cache,n,d,int(c['feature_scale']));src,dst,start,end,node_ptr,edge_ptr=load_edges(cache,n);tables=report['static_tables'];width=max(2,int(report['ledger'].get('bit_width',int(c['range_bits'])+16)));b=Builder();Hname=b.tensor('public.features',H,H.shape,'Public');b.tensor('public.edge_src',src,src.shape,'Public');b.tensor('public.edge_dst',dst,dst.shape,'Public');b.tensor('public.node_ptr',node_ptr,node_ptr.shape,'Public');b.tensor('public.edge_ptr',edge_ptr,edge_ptr.shape,'Public')
@@ -332,6 +419,12 @@ def main():
  if report.get('static_table_rows_id') != static_rows_id:raise ValueError('canonical/preflight static table row digest mismatch')
  for key in ('graph_count','feature_dim','class_count','resource_manifest_id','config_sha256','checkpoint_manifest_id','model_shape_id','static_tables_id','static_table_rows_id','model_arch_id','model_param_id'):
   if report['ledger'].get(key) != report[key]:raise ValueError('preflight ledger metadata mismatch: '+key)
- obj={'schema':'zkDL_gat_canonical_adapter_v2','dataset':c['dataset'],'pp_id':a.pp_id,'node_count':n,'edge_count':len(src),'graph_count':len(node_ptr)-1,'feature_dim':d,'class_count':int(manifest['C']),'public_features':[int(x) for x in H.reshape(-1)],'node_ptr':[int(x) for x in node_ptr],'edge_ptr':[int(x) for x in edge_ptr],'src':[int(x) for x in src],'dst':[int(x) for x in dst],'graph_features_digest':report['graph_features_digest'],'topology_digest':report['topology_digest'],'checkpoint_manifest_id':checkpoint_manifest_id,'canonical_tensor_digest':tensor_digest,'model_shape_id':model_shape_id,'commitment_set_id':commitment_set_id,'quant_cfg_id':report['quant_cfg_id'],'static_tables_id':report['static_tables_id'],'static_table_rows_id':static_rows_id,'static_table_profile':tables,'integer_bound_ledger_id':report['ledger']['integer_bound_ledger_id'],'integer_bound_ledger':report['ledger'],'model_arch_id':manifest['model_arch_id'],'model_param_id':manifest['model_param_id'],'public_logits':[int(x) for x in final.reshape(-1)],'tensor_families':b.spec,'operation_families':b.ops,'tensors':dict(sorted(b.tensors.items())),'resource_manifest_id':resource_manifest_id,'config_sha256':config_id,'source_input_id':''}
- canonical=json.dumps(obj,separators=(',',':'),ensure_ascii=False).encode();obj['source_input_id']='sha256:'+hashlib.sha256(b'zkDL-GAT-canonical-adapter-input-v2\0'+canonical).hexdigest();output=ensure_contained(a.output,label='canonical relation output');atomic_write_bytes(output,(json.dumps(obj,separators=(',',':'))+'\n').encode(),mode=0o600);print('CANONICAL_ADAPTER_OK',obj['source_input_id'],'max_tensor_len',max(x['logical_len'] for x in b.spec))
+ lookup_bits={name:max(1,npow(int(tables[name]['rows'])).bit_length()-1) for name in ('lrelu','elu','exp')}
+ architecture={'model_arch_id':manifest['model_arch_id'],'model_param_id':manifest['model_param_id'],'node_count':n,'edge_count':len(src),'graph_count':len(node_ptr)-1,'feature_dim':d,'class_count':int(manifest['C']),'output_head_count':len(manifest['output_head_specs']),'bit_width':width,'lookup_bits':lookup_bits,'hidden_layers':manifest['hidden_layers'],'hidden_head_specs':manifest['hidden_head_specs'],'output_head_specs':manifest['output_head_specs']}
+ canonical_schema={'schema':CANONICAL_RELATION_SCHEMA,'version':1,'architecture':architecture,'tensor_family_order':[x['family_id'] for x in b.spec],'tensor_families':b.spec,'operation_family_order':[x['family_id'] for x in b.ops],'operation_families':b.ops,'fac_plan':canonical_fac_plan(b.ops,b.spec),'terminal_plan':{'public_logits_operation':'output.public_logits','public_logits_family':'public.logits','target':'verifier_local_public_y'}}
+ validate_canonical_schema(canonical_schema,b.spec,b.ops,architecture)
+ obj={'schema':ADAPTER_SCHEMA,'adapter_schema':ADAPTER_SCHEMA,'adapter_version':ADAPTER_VERSION,'protocol_sha256':protocol_digest(),'rounding_mode':c['rounding_mode'],'canonical_relation_digest':'','canonical_schema':canonical_schema,'dataset':c['dataset'],'pp_id':a.pp_id,'node_count':n,'edge_count':len(src),'graph_count':len(node_ptr)-1,'feature_dim':d,'class_count':int(manifest['C']),'public_features':[int(x) for x in H.reshape(-1)],'node_ptr':[int(x) for x in node_ptr],'edge_ptr':[int(x) for x in edge_ptr],'src':[int(x) for x in src],'dst':[int(x) for x in dst],'graph_features_digest':report['graph_features_digest'],'topology_digest':report['topology_digest'],'checkpoint_manifest_id':checkpoint_manifest_id,'canonical_tensor_digest':tensor_digest,'model_shape_id':model_shape_id,'commitment_set_id':commitment_set_id,'quant_cfg_id':report['quant_cfg_id'],'static_tables_id':report['static_tables_id'],'static_table_rows_id':static_rows_id,'static_table_profile':tables,'integer_bound_ledger_id':report['ledger']['integer_bound_ledger_id'],'integer_bound_ledger':report['ledger'],'model_arch_id':manifest['model_arch_id'],'model_param_id':manifest['model_param_id'],'public_logits':[int(x) for x in final.reshape(-1)],'tensor_families':b.spec,'operation_families':b.ops,'tensors':dict(sorted(b.tensors.items())),'resource_manifest_id':resource_manifest_id,'config_sha256':config_id,'source_input_id':''}
+ obj['source_input_id']=source_input_digest(obj);obj['canonical_relation_digest']=relation_digest(obj);output=ensure_contained(a.output,label='canonical relation output');
+ if output.relative_to(ROOT).parts[:1] != ('runs',):raise SystemExit('canonical relation output must be written below baseline runs/')
+ atomic_write_bytes(output,(json.dumps(obj,separators=(',',':'),ensure_ascii=False)+'\n').encode(),mode=0o600);print('CANONICAL_ADAPTER_OK',obj['source_input_id'],'max_tensor_len',max(x['logical_len'] for x in b.spec))
 if __name__=='__main__':main()

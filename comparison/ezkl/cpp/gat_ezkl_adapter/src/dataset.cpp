@@ -1,14 +1,18 @@
 #include "gat_ezkl/dataset.hpp"
 
 #include <algorithm>
+#include <cctype>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <numeric>
 #include <sstream>
 #include <stdexcept>
+#include <set>
+#include <tuple>
 #include <unordered_map>
-#include <unordered_set>
 
 namespace gat_ezkl 
 {
@@ -110,6 +114,9 @@ namespace gat_ezkl
             }
             std::size_t count = 1;
             for (const auto dim : out.shape) {
+                if (dim != 0 && count > std::numeric_limits<std::size_t>::max() / dim) {
+                    throw std::runtime_error("npy shape product overflow: " + path.string());
+                }
                 count *= dim;
             }
             out.values.resize(count, 0.0);
@@ -122,6 +129,10 @@ namespace gat_ezkl
                     out.values[i] = static_cast<double>(tmp[i]);
                 }
             }
+            if (!input || std::any_of(out.values.begin(), out.values.end(),
+                                     [](double value) { return !std::isfinite(value); })) {
+                throw std::runtime_error("npy payload is truncated or non-finite: " + path.string());
+            }
             return out;
         }
 
@@ -130,13 +141,22 @@ namespace gat_ezkl
             for (auto& row : values) {
                 double sum = 0.0;
                 for (const auto value : row) {
+                    if (!std::isfinite(value)) {
+                        throw std::runtime_error("dataset feature contains a non-finite value");
+                    }
                     sum += value;
+                }
+                if (!std::isfinite(sum)) {
+                    throw std::runtime_error("dataset feature row sum is non-finite");
                 }
                 if (sum == 0.0) {
                     continue;
                 }
                 for (auto& value : row) {
                     value /= sum;
+                    if (!std::isfinite(value)) {
+                        throw std::runtime_error("dataset row normalization produced a non-finite value");
+                    }
                 }
             }
             return values;
@@ -162,9 +182,12 @@ namespace gat_ezkl
                 std::string line;
                 std::getline(input, line);
                 for (std::size_t row = 0; row < rows; ++row) {
-                    std::getline(input, line);
+                    if (!std::getline(input, line)) {
+                        throw std::runtime_error("features.txt has fewer rows than declared");
+                    }
                     std::istringstream iss(line);
                     std::string entry;
+                    std::set<std::size_t> seen_columns;
                     while (iss >> entry) {
                         const auto colon = entry.find(':');
                         if (colon == std::string::npos) {
@@ -174,7 +197,15 @@ namespace gat_ezkl
                         if (col >= cols) {
                             throw std::runtime_error("feature column out of range");
                         }
-                        raw[row][col] = std::stod(entry.substr(colon + 1));
+                        if (!seen_columns.insert(col).second) {
+                            throw std::runtime_error("duplicate sparse feature column");
+                        }
+                        std::size_t consumed = 0;
+                        const auto parsed = std::stod(entry.substr(colon + 1), &consumed);
+                        if (consumed != entry.size() - colon - 1 || !std::isfinite(parsed)) {
+                            throw std::runtime_error("non-finite or malformed sparse feature value");
+                        }
+                        raw[row][col] = parsed;
                     }
                 }
                 return raw;
@@ -204,6 +235,9 @@ namespace gat_ezkl
             while (input >> label) {
                 labels.push_back(label);
             }
+            if (!input.eof()) {
+                throw std::runtime_error("malformed labels.txt");
+            }
             if (labels.size() != rows) {
                 throw std::runtime_error("label count mismatch");
             }
@@ -217,17 +251,18 @@ namespace gat_ezkl
                 throw std::runtime_error("failed to open vector file: " + path.string());
             }
             std::vector<std::size_t> out;
-            std::size_t value = 0;
-            while (input >> value) {
-                out.push_back(value);
+            std::string token;
+            while (input >> token) {
+                std::size_t consumed = 0;
+                const auto value = std::stoull(token, &consumed);
+                if (consumed != token.size()
+                    || value > std::numeric_limits<std::size_t>::max()) {
+                    throw std::runtime_error("malformed size vector entry: " + path.string());
+                }
+                out.push_back(static_cast<std::size_t>(value));
             }
+            if (!input.eof()) throw std::runtime_error("malformed size vector: " + path.string());
             return out;
-        }
-
-        std::uint64_t edge_key(std::size_t src, std::size_t dst, std::size_t graph_id) {
-            return (static_cast<std::uint64_t>(graph_id) << 48U)
-                ^ (static_cast<std::uint64_t>(src) << 24U)
-                ^ static_cast<std::uint64_t>(dst);
         }
 
     } // namespace
@@ -244,7 +279,8 @@ namespace gat_ezkl
         dataset.num_nodes = static_cast<std::size_t>(std::stoull(meta.at("num_nodes")));
         dataset.num_features = static_cast<std::size_t>(std::stoull(meta.at("num_features")));
         dataset.num_classes = static_cast<std::size_t>(std::stoull(meta.at("num_classes")));
-        if (meta.count("graph_count")) {
+        const bool has_declared_graph_count = meta.count("graph_count") != 0;
+        if (has_declared_graph_count) {
             dataset.graph_count = static_cast<std::size_t>(std::stoull(meta.at("graph_count")));
         }
         if (meta.count("task_type")) {
@@ -264,7 +300,23 @@ namespace gat_ezkl
         if (dataset.node_ptr.size() < 2 || dataset.node_ptr.front() != 0 || dataset.node_ptr.back() != dataset.num_nodes) {
             throw std::runtime_error("invalid node_ptr for dataset cache");
         }
+        const auto declared_graph_count = dataset.graph_count;
+        if (dataset.node_ptr.size() < 2 || dataset.node_ptr.front() != 0
+            || dataset.node_ptr.back() != dataset.num_nodes
+            || std::any_of(dataset.node_ptr.begin(), dataset.node_ptr.end() - 1,
+                           [&](std::size_t value) { return value >= dataset.num_nodes && value != 0; })
+            || std::any_of(dataset.node_ptr.begin(), dataset.node_ptr.end() - 1,
+                           [](std::size_t value) { return value == std::numeric_limits<std::size_t>::max(); })) {
+            throw std::runtime_error("invalid node_ptr for dataset cache");
+        }
+        if (std::adjacent_find(dataset.node_ptr.begin(), dataset.node_ptr.end(),
+                               std::greater_equal<std::size_t>()) != dataset.node_ptr.end()) {
+            throw std::runtime_error("node_ptr must be strictly increasing");
+        }
         dataset.graph_count = dataset.node_ptr.size() - 1;
+        if (has_declared_graph_count && declared_graph_count != dataset.graph_count) {
+            throw std::runtime_error("meta graph_count disagrees with node_ptr");
+        }
 
         std::ifstream edge_input(cache_root / "edges.txt");
         if (!edge_input) {
@@ -273,15 +325,23 @@ namespace gat_ezkl
         std::string line;
         std::size_t stable_index = 0;
         while (std::getline(edge_input, line)) {
+            line = trim(line);
             if (line.empty()) {
                 continue;
             }
             std::istringstream iss(line);
             std::vector<std::size_t> parts;
-            std::size_t value = 0;
-            while (iss >> value) {
-                parts.push_back(value);
+            std::string token;
+            while (iss >> token) {
+                std::size_t consumed = 0;
+                const auto parsed = std::stoull(token, &consumed);
+                if (consumed != token.size()
+                    || parsed > std::numeric_limits<std::size_t>::max()) {
+                    throw std::runtime_error("malformed edge line in edges.txt");
+                }
+                parts.push_back(static_cast<std::size_t>(parsed));
             }
+            if (!iss.eof()) throw std::runtime_error("malformed edge line in edges.txt");
             Edge edge;
             edge.stable_index = stable_index++;
             if (parts.size() == 2) {
@@ -295,8 +355,18 @@ namespace gat_ezkl
             } else {
                 throw std::runtime_error("malformed edge line in edges.txt");
             }
-            if (edge.graph_id >= dataset.graph_count) {
+            if (dataset.graph_count > 1 && parts.size() != 3) {
+                throw std::runtime_error("multi-graph edges must carry an explicit graph_id");
+            }
+            if (edge.graph_id >= dataset.graph_count || edge.src >= dataset.num_nodes
+                || edge.dst >= dataset.num_nodes) {
                 throw std::runtime_error("edge graph_id out of range");
+            }
+            if (edge.src < dataset.node_ptr[edge.graph_id]
+                || edge.src >= dataset.node_ptr[edge.graph_id + 1]
+                || edge.dst < dataset.node_ptr[edge.graph_id]
+                || edge.dst >= dataset.node_ptr[edge.graph_id + 1]) {
+                throw std::runtime_error("edge endpoint crosses graph block");
             }
             dataset.edges.push_back(edge);
         }
@@ -313,6 +383,27 @@ namespace gat_ezkl
         if (dataset.num_nodes == 0) {
             throw std::runtime_error("cannot normalize empty dataset");
         }
+        if (dataset.graph_count == 0 || dataset.node_ptr.size() != dataset.graph_count + 1
+            || dataset.node_ptr.front() != 0 || dataset.node_ptr.back() != dataset.num_nodes
+            || std::adjacent_find(dataset.node_ptr.begin(), dataset.node_ptr.end(),
+                                  std::greater_equal<std::size_t>()) != dataset.node_ptr.end()) {
+            throw std::runtime_error("dataset node_ptr is not a strict canonical partition");
+        }
+        if (dataset.features_fp.size() != dataset.num_nodes
+            || dataset.labels.size() != dataset.num_nodes) {
+            throw std::runtime_error("dataset feature/label rows do not match num_nodes");
+        }
+        for (const auto& row : dataset.features_fp) {
+            if (row.size() != dataset.num_features
+                || std::any_of(row.begin(), row.end(), [](double value) { return !std::isfinite(value); })) {
+                throw std::runtime_error("dataset feature shape or finiteness mismatch");
+            }
+        }
+        for (const auto label : dataset.labels) {
+            if (label < 0 || static_cast<std::size_t>(label) >= dataset.num_classes) {
+                throw std::runtime_error("dataset label is outside the configured class range");
+            }
+        }
         if (config.batching_rule == "multi_graph_batch") {
             if (config.batch_graphs != dataset.graph_count) {
                 throw std::runtime_error("PPI/full multi-graph batch must not silently clip batch_graphs");
@@ -322,7 +413,19 @@ namespace gat_ezkl
         }
 
         std::vector<std::vector<Edge>> edges_by_graph(dataset.graph_count);
+        std::set<std::tuple<std::size_t, std::size_t, std::size_t>> input_edges;
         for (const auto& edge : dataset.edges) {
+            if (edge.graph_id >= dataset.graph_count || edge.src >= dataset.num_nodes
+                || edge.dst >= dataset.num_nodes
+                || edge.src < dataset.node_ptr[edge.graph_id]
+                || edge.src >= dataset.node_ptr[edge.graph_id + 1]
+                || edge.dst < dataset.node_ptr[edge.graph_id]
+                || edge.dst >= dataset.node_ptr[edge.graph_id + 1]) {
+                throw std::runtime_error("dataset edge is out of range or crosses graph block");
+            }
+            if (!input_edges.emplace(edge.graph_id, edge.src, edge.dst).second) {
+                throw std::runtime_error("dataset contains a duplicate directed edge");
+            }
             edges_by_graph.at(edge.graph_id).push_back(edge);
         }
 
@@ -351,21 +454,22 @@ namespace gat_ezkl
             local.node_ptr.push_back(local.absolute_ids.size());
 
             std::vector<Edge> graph_edges;
-            std::unordered_set<std::uint64_t> seen;
+            std::set<std::pair<std::size_t, std::size_t>> seen;
             std::size_t stable_index = 0;
             auto append_edge = [&](std::size_t src_global, std::size_t dst_global) {
-                const auto src_local = global_to_local.at(src_global);
-                const auto dst_local = global_to_local.at(dst_global);
-                const auto key = edge_key(src_local, dst_local, graph_id);
-                if (config.deduplicate_edges && !seen.insert(key).second) {
-                    return;
+                const auto src_it = global_to_local.find(src_global);
+                const auto dst_it = global_to_local.find(dst_global);
+                if (src_it == global_to_local.end() || dst_it == global_to_local.end()) {
+                    throw std::runtime_error("edge endpoint is not in its declared graph");
+                }
+                const auto src_local = src_it->second;
+                const auto dst_local = dst_it->second;
+                if (!seen.emplace(src_local, dst_local).second) {
+                    throw std::runtime_error("normalized graph contains a duplicate directed edge");
                 }
                 graph_edges.push_back(Edge{src_local, dst_local, graph_id, stable_index++});
             };
             for (const auto& edge : edges_by_graph.at(graph_id)) {
-                if (!global_to_local.count(edge.src) || !global_to_local.count(edge.dst)) {
-                    continue;
-                }
                 append_edge(edge.src, edge.dst);
                 if (config.symmetrize_edges && edge.src != edge.dst) {
                     append_edge(edge.dst, edge.src);
@@ -380,6 +484,7 @@ namespace gat_ezkl
             std::stable_sort(graph_edges.begin(), graph_edges.end(), [](const Edge& lhs, const Edge& rhs) {
                 if (lhs.graph_id != rhs.graph_id) return lhs.graph_id < rhs.graph_id;
                 if (lhs.dst != rhs.dst) return lhs.dst < rhs.dst;
+                if (lhs.src != rhs.src) return lhs.src < rhs.src;
                 return lhs.stable_index < rhs.stable_index;
             });
             local.edge_ptr.push_back(local.edge_ptr.back() + graph_edges.size());

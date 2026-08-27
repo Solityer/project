@@ -1,4 +1,4 @@
-#include "formal_relations.cuh"
+#include "support/formal_relations.cuh"
 
 #include <cstdint>
 #include <iostream>

@@ -1,7 +1,7 @@
 # zkGPT formal experiment commands
 
 This baseline implements the native four-segment `X_pub|W|Aux|L_qry` path.
-Run the commands from `/home/pzh/project/comparison/zkGPT`.  Resource
+Run the commands from the baseline root `comparison/zkGPT`.  Resource
 preparation creates only baseline-local directories and the canonical
 registration manifest.  The project owner must stage each complete dataset,
 checkpoint bundle and public-Y file under the declared baseline-local paths;
@@ -9,7 +9,7 @@ no command below imports resources from the main experiment or another
 baseline.
 
 ```bash
-cd /home/pzh/project/comparison/zkGPT
+cd comparison/zkGPT
 python3 scripts/prepare_resources.py
 # Owner stages data/cache/{cora,citeseer,pubmed,ppi,ogbn_arxiv}/,
 # artifacts/checkpoints/*_gat/, and resources/public_y/*.json.
@@ -44,8 +44,8 @@ python3 scripts/gat_zkgpt_experiment.py --datasets cora --backends gpu
 
 The runner accepts `--results-dir` only when it names this baseline's exact
 `results/` root.  Each cell is written to the canonical
-`results/runs/<backend>/<dataset>/` directory; sibling aliases and the old
-`results/<backend>/` layout are rejected.
+`results/runs/<backend>/<dataset>/` directory; sibling aliases and the
+non-canonical `results/<backend>/` layout are rejected.
 
 The GPU command requires a CUDA device and the built
 `build/zkgpt_cuda_native_prover`; no CPU substitution is performed.

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import pathlib
+import json
+import inspect
 import subprocess
 import sys
 import tempfile
@@ -112,6 +114,35 @@ def _ledger(graph: LocalGraph) -> dict[str, object]:
 
 
 class ExternalVerifierContextTests(unittest.TestCase):
+    def test_formal_verifier_requires_keyword_bound_statement(self) -> None:
+        import zkgpt_gat.proof as proof
+
+        parameters = inspect.signature(proof._verify_formal).parameters.values()
+        self.assertTrue(all(item.kind is inspect.Parameter.KEYWORD_ONLY for item in parameters))
+
+    def test_verify_cli_rejects_noncanonical_privacy_wire_order(self) -> None:
+        import importlib.util
+
+        script = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "verify_proof.py"
+        spec = importlib.util.spec_from_file_location("zkgpt_verify_canonical_wire", script)
+        self.assertIsNotNone(spec)
+        module = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory(prefix="zkgpt-privacy-wire-") as name:
+            artifact = pathlib.Path(name)
+            (artifact / "privacy_profile.json").write_text('{"b": 2, "a": 1}\n', encoding="utf-8")
+            with self.assertRaises(ValueError):
+                module._read_canonical_object(artifact, "privacy_profile.json")
+            (artifact / "privacy_profile.json").write_text(
+                json.dumps({"b": 2, "a": 1}, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                module._read_canonical_object(artifact, "privacy_profile.json"),
+                {"a": 1, "b": 2},
+            )
+
     def test_manifest_projection_discards_tensor_and_producer_fields(self) -> None:
         raw = {
             "model_arch_id": "architecture-v1",
@@ -210,6 +241,53 @@ class ExternalVerifierContextTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0)
         for flag in ("--project-root", "--config", "--trusted-registry-public", "--artifact-dir", "--public-y"):
             self.assertIn(flag, completed.stdout)
+
+    def test_verify_cli_requires_strict_canonical_baseline_root(self) -> None:
+        import importlib.util
+
+        script = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "verify_proof.py"
+        spec = importlib.util.spec_from_file_location("zkgpt_verify_strict_root", script)
+        self.assertIsNotNone(spec)
+        module = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(module)
+        root = pathlib.Path(module.ROOT)
+        self.assertEqual(module._strict_baseline_root(str(root)), root)
+        with self.assertRaises(ValueError):
+            module._strict_baseline_root(str(root / ".." / root.name))
+        with self.assertRaises(ValueError):
+            module._strict_baseline_root(str(root.parent))
+        with self.assertRaises(ValueError):
+            module._strict_baseline_root("comparison/zkGPT")
+        with tempfile.TemporaryDirectory(prefix="zkgpt-root-alias-") as name:
+            alias = pathlib.Path(name) / "baseline-link"
+            alias.symlink_to(root, target_is_directory=True)
+            with self.assertRaises(ValueError):
+                module._strict_baseline_root(str(alias))
+
+    def test_verify_cli_runs_formal_gate_before_artifact_path(self) -> None:
+        import importlib.util
+
+        script = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "verify_proof.py"
+        spec = importlib.util.spec_from_file_location("zkgpt_verify_gate_order", script)
+        self.assertIsNotNone(spec)
+        module = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(module)
+        root = pathlib.Path(module.ROOT)
+        with mock.patch.object(module, "require_formal_experiment", side_effect=RuntimeError("blocked")), mock.patch.object(
+            module,
+            "validate_canonical_cell_dir_from_path",
+            side_effect=AssertionError("artifact path was inspected before formal gate"),
+        ):
+            code = module.main([
+                "--project-root", str(root),
+                "--config", str(root / "missing.cfg"),
+                "--trusted-registry-public", str(root / "missing-registry.json"),
+                "--artifact-dir", str(root / "results" / "runs" / "cpu" / "cora"),
+                "--public-y", str(root / "missing-y.json"),
+            ])
+        self.assertEqual(code, 1)
 
     def test_verify_report_public_context_whitelist_excludes_private_values(self) -> None:
         import importlib.util

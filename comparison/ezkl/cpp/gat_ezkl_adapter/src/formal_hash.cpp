@@ -95,6 +95,20 @@ std::string hex_digest(const std::array<std::uint8_t,32>& digest) {
 
 }  // namespace
 
+const char* canonical_model_schema() {
+    return "ezkl_formal_model_parameters_v1";
+}
+
+const char* canonical_model_order() {
+    return "hidden:(layer_index,local_head_index,global_head_index):seq_kernel,attn_src_kernel,attn_dst_kernel;output:(head_index):seq_kernel,attn_src_kernel,attn_dst_kernel,output_bias";
+}
+
+std::string canonical_model_order_digest() {
+    return formal_sha256_text(
+        "canonical_model_order", "descriptor",
+        std::string(canonical_model_schema()) + "\n" + canonical_model_order());
+}
+
 std::string formal_sha256_bytes(
     const std::string& domain,
     const std::vector<std::pair<std::string, std::vector<std::uint8_t>>>& fields) {

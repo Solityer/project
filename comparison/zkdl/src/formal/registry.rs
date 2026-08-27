@@ -4,6 +4,11 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
+const CANONICAL_RELATION_SCHEMA: &str = "zkDL_gat_canonical_relation_schema_v1";
+const CANONICAL_RELATION_SCHEMA_VERSION: u64 = 1;
+const CANONICAL_TENSOR_MLE_ORDER: &str = "row_major_lsb_first";
+const CANONICAL_TENSOR_INSTANCE_ORDER: &str = "canonical_program_order";
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Visibility {
     Public,
@@ -287,6 +292,12 @@ pub struct RelationRegistry {
     pub operation_families: Vec<OperationFamilySpec>,
     pub mandatory_operation_kinds: Vec<String>,
     pub registry_id: String,
+    /// The adapter's explicit canonical schema descriptor.  Validation below
+    /// compares it against the deserialized relation object field-by-field;
+    /// callers cannot make an arbitrary operation list acceptable merely by
+    /// supplying a matching digest.
+    #[serde(default)]
+    pub canonical_schema: serde_json::Value,
 }
 
 fn is_canonical_terminal_view(view: &ViewIndex, logical_len: usize) -> bool {
@@ -466,6 +477,1047 @@ fn canonical_operation_id_matches_kind(operation: &OperationFamilySpec) -> bool 
         "public_logits_terminal" => id == "output.public_logits",
         _ => false,
     }
+}
+
+#[derive(Clone, Debug)]
+struct ExpectedTensorFamily {
+    family_id: String,
+    logical_len: usize,
+    logical_shape: Vec<usize>,
+    visibility: Visibility,
+}
+
+#[derive(Clone, Debug)]
+struct CanonicalLayerProfile {
+    layer_index: usize,
+    input_dim: usize,
+    head_count: usize,
+    head_dim: usize,
+}
+
+#[derive(Clone, Debug)]
+struct CanonicalArchitectureProfile {
+    node_count: usize,
+    edge_count: usize,
+    graph_count: usize,
+    feature_dim: usize,
+    class_count: usize,
+    output_head_count: usize,
+    bit_width: usize,
+    lookup_bits: BTreeMap<String, usize>,
+    hidden_layers: Vec<CanonicalLayerProfile>,
+}
+
+fn ensure_exact_object_keys<'a>(
+    value: &'a serde_json::Value,
+    expected: &[&str],
+    label: &str,
+) -> Result<&'a serde_json::Map<String, serde_json::Value>> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("{label} must be an object"))?;
+    let actual = object.keys().map(String::as_str).collect::<BTreeSet<_>>();
+    let expected = expected.iter().copied().collect::<BTreeSet<_>>();
+    ensure!(actual == expected, "{label} has unknown or missing fields");
+    Ok(object)
+}
+
+fn canonical_required_string(
+    object: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    label: &str,
+) -> Result<String> {
+    let value = object
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("{label}.{key} must be a string"))?;
+    ensure!(!value.is_empty(), "{label}.{key} must not be empty");
+    Ok(value.to_string())
+}
+
+fn canonical_required_usize(
+    object: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    label: &str,
+) -> Result<usize> {
+    let value = object
+        .get(key)
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| anyhow::anyhow!("{label}.{key} must be a non-negative integer"))?;
+    usize::try_from(value).map_err(|_| anyhow::anyhow!("{label}.{key} overflows usize"))
+}
+
+fn canonical_architecture_profile(
+    schema: &serde_json::Value,
+    n: usize,
+    e: usize,
+    g: usize,
+    d: usize,
+    c: usize,
+) -> Result<CanonicalArchitectureProfile> {
+    let schema_object = ensure_exact_object_keys(
+        schema,
+        &[
+            "architecture",
+            "fac_plan",
+            "operation_families",
+            "operation_family_order",
+            "schema",
+            "terminal_plan",
+            "tensor_families",
+            "tensor_family_order",
+            "version",
+        ],
+        "canonical relation schema",
+    )?;
+    ensure!(
+        schema_object
+            .get("schema")
+            .and_then(serde_json::Value::as_str)
+            == Some(CANONICAL_RELATION_SCHEMA),
+        "canonical relation schema descriptor mismatch"
+    );
+    ensure!(
+        schema_object
+            .get("version")
+            .and_then(serde_json::Value::as_u64)
+            == Some(CANONICAL_RELATION_SCHEMA_VERSION),
+        "canonical relation schema descriptor version mismatch"
+    );
+    let architecture = schema_object
+        .get("architecture")
+        .ok_or_else(|| anyhow::anyhow!("canonical architecture profile is missing"))?;
+    let architecture = ensure_exact_object_keys(
+        architecture,
+        &[
+            "bit_width",
+            "class_count",
+            "edge_count",
+            "feature_dim",
+            "graph_count",
+            "hidden_head_specs",
+            "hidden_layers",
+            "lookup_bits",
+            "model_arch_id",
+            "model_param_id",
+            "node_count",
+            "output_head_count",
+            "output_head_specs",
+        ],
+        "canonical architecture profile",
+    )?;
+    canonical_required_string(architecture, "model_arch_id", "architecture")?;
+    canonical_required_string(architecture, "model_param_id", "architecture")?;
+    let profile = CanonicalArchitectureProfile {
+        node_count: canonical_required_usize(architecture, "node_count", "architecture")?,
+        edge_count: canonical_required_usize(architecture, "edge_count", "architecture")?,
+        graph_count: canonical_required_usize(architecture, "graph_count", "architecture")?,
+        feature_dim: canonical_required_usize(architecture, "feature_dim", "architecture")?,
+        class_count: canonical_required_usize(architecture, "class_count", "architecture")?,
+        output_head_count: canonical_required_usize(
+            architecture,
+            "output_head_count",
+            "architecture",
+        )?,
+        bit_width: canonical_required_usize(architecture, "bit_width", "architecture")?,
+        lookup_bits: {
+            let value = architecture
+                .get("lookup_bits")
+                .ok_or_else(|| anyhow::anyhow!("architecture.lookup_bits is missing"))?;
+            let object = ensure_exact_object_keys(
+                value,
+                &["elu", "exp", "lrelu"],
+                "architecture.lookup_bits",
+            )?;
+            let mut result = BTreeMap::new();
+            for key in ["lrelu", "exp", "elu"] {
+                let bits = canonical_required_usize(object, key, "architecture.lookup_bits")?;
+                ensure!(
+                    (1..32).contains(&bits),
+                    "architecture lookup-bit width is invalid"
+                );
+                result.insert(key.to_string(), bits);
+            }
+            result
+        },
+        hidden_layers: Vec::new(),
+    };
+    ensure!(
+        profile.node_count == n
+            && profile.edge_count == e
+            && profile.graph_count == g
+            && profile.feature_dim == d
+            && profile.class_count == c,
+        "canonical architecture dimensions do not match public tensor shapes"
+    );
+    ensure!(
+        profile.output_head_count > 0,
+        "canonical architecture has no output heads"
+    );
+    ensure!(
+        (2..254).contains(&profile.bit_width),
+        "canonical integer bit width is invalid"
+    );
+
+    let layers = architecture
+        .get("hidden_layers")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| anyhow::anyhow!("architecture.hidden_layers must be an array"))?;
+    ensure!(
+        !layers.is_empty(),
+        "canonical architecture has no hidden layers"
+    );
+    let mut previous_dim = d;
+    let mut parsed_layers = Vec::with_capacity(layers.len());
+    for (position, value) in layers.iter().enumerate() {
+        let object = ensure_exact_object_keys(
+            value,
+            &["head_count", "head_dim", "input_dim", "layer_index"],
+            &format!("architecture.hidden_layers[{position}"),
+        )?;
+        let layer_index = canonical_required_usize(object, "layer_index", "hidden layer")?;
+        let input_dim = canonical_required_usize(object, "input_dim", "hidden layer")?;
+        let head_count = canonical_required_usize(object, "head_count", "hidden layer")?;
+        let head_dim = canonical_required_usize(object, "head_dim", "hidden layer")?;
+        ensure!(
+            layer_index == position && input_dim == previous_dim && head_count > 0 && head_dim > 0,
+            "canonical hidden layer index/dimension mapping is invalid"
+        );
+        previous_dim = head_count
+            .checked_mul(head_dim)
+            .ok_or_else(|| anyhow::anyhow!("canonical hidden layer width overflows usize"))?;
+        parsed_layers.push(CanonicalLayerProfile {
+            layer_index,
+            input_dim,
+            head_count,
+            head_dim,
+        });
+    }
+
+    let hidden_specs = architecture
+        .get("hidden_head_specs")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| anyhow::anyhow!("architecture.hidden_head_specs must be an array"))?;
+    let expected_hidden_count: usize = parsed_layers.iter().map(|layer| layer.head_count).sum();
+    ensure!(
+        hidden_specs.len() == expected_hidden_count,
+        "canonical hidden head specification count mismatch"
+    );
+    let mut cursor = 0usize;
+    for layer in &parsed_layers {
+        for local_head_index in 0..layer.head_count {
+            let value = hidden_specs
+                .get(cursor)
+                .ok_or_else(|| anyhow::anyhow!("canonical hidden head specification is missing"))?;
+            let object = ensure_exact_object_keys(
+                value,
+                &[
+                    "attn_dst_bias",
+                    "attn_dst_kernel",
+                    "attn_src_bias",
+                    "attn_src_kernel",
+                    "global_head_index",
+                    "layer_index",
+                    "local_head_index",
+                    "output_bias",
+                    "seq_kernel",
+                ],
+                &format!("architecture.hidden_head_specs[{cursor}]"),
+            )?;
+            ensure!(
+                canonical_required_usize(object, "layer_index", "hidden head")?
+                    == layer.layer_index
+                    && canonical_required_usize(object, "local_head_index", "hidden head")?
+                        == local_head_index
+                    && canonical_required_usize(object, "global_head_index", "hidden head")?
+                        == cursor,
+                "canonical hidden head order/index mapping is invalid"
+            );
+            for key in [
+                "seq_kernel",
+                "attn_dst_kernel",
+                "attn_dst_bias",
+                "attn_src_kernel",
+                "attn_src_bias",
+                "output_bias",
+            ] {
+                canonical_required_string(object, key, "hidden head")?;
+            }
+            cursor += 1;
+        }
+    }
+    let output_specs = architecture
+        .get("output_head_specs")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| anyhow::anyhow!("architecture.output_head_specs must be an array"))?;
+    ensure!(
+        output_specs.len() == profile.output_head_count,
+        "canonical output head specification count mismatch"
+    );
+    for (head_index, value) in output_specs.iter().enumerate() {
+        let object = ensure_exact_object_keys(
+            value,
+            &[
+                "attn_dst_bias",
+                "attn_dst_kernel",
+                "attn_src_bias",
+                "attn_src_kernel",
+                "head_index",
+                "output_bias",
+                "seq_kernel",
+            ],
+            &format!("architecture.output_head_specs[{head_index}]"),
+        )?;
+        ensure!(
+            canonical_required_usize(object, "head_index", "output head")? == head_index,
+            "canonical output head order/index mapping is invalid"
+        );
+        for key in [
+            "seq_kernel",
+            "attn_dst_kernel",
+            "attn_dst_bias",
+            "attn_src_kernel",
+            "attn_src_bias",
+            "output_bias",
+        ] {
+            canonical_required_string(object, key, "output head")?;
+        }
+    }
+
+    Ok(CanonicalArchitectureProfile {
+        hidden_layers: parsed_layers,
+        ..profile
+    })
+}
+
+fn expected_tensor(
+    out: &mut Vec<ExpectedTensorFamily>,
+    family_id: impl Into<String>,
+    logical_len: usize,
+    logical_shape: Vec<usize>,
+    visibility: Visibility,
+) {
+    out.push(ExpectedTensorFamily {
+        family_id: family_id.into(),
+        logical_len,
+        logical_shape,
+        visibility,
+    });
+}
+
+fn append_division_aux_layout(
+    out: &mut Vec<ExpectedTensorFamily>,
+    prefix: &str,
+    label: &str,
+    logical_len: usize,
+    bit_width: usize,
+) {
+    for suffix in ["sigma", "z", "a", "d", "a_inv", "d_inv", "q", "r", "delta"] {
+        expected_tensor(
+            out,
+            format!("{prefix}.{label}.{suffix}"),
+            logical_len,
+            vec![logical_len],
+            Visibility::DynamicPrivate,
+        );
+    }
+    for suffix in ["a", "d", "q", "r", "delta"] {
+        for bit in 0..bit_width {
+            expected_tensor(
+                out,
+                format!("{prefix}.{label}.{suffix}_bit_{bit}"),
+                logical_len,
+                vec![logical_len],
+                Visibility::DynamicPrivate,
+            );
+        }
+    }
+}
+
+fn append_head_tensor_layout(
+    out: &mut Vec<ExpectedTensorFamily>,
+    prefix: &str,
+    n: usize,
+    e: usize,
+    input_dim: usize,
+    output_dim: usize,
+    bit_width: usize,
+    lookup_bits: (usize, usize, usize),
+    hidden: bool,
+) {
+    let nd = n * output_dim;
+    expected_tensor(
+        out,
+        format!("{prefix}.projection"),
+        n * output_dim,
+        vec![n, output_dim],
+        Visibility::DynamicPrivate,
+    );
+    for col in 0..output_dim {
+        expected_tensor(
+            out,
+            format!("{prefix}.Wcol_{col}"),
+            input_dim,
+            vec![input_dim],
+            Visibility::RegisteredModel,
+        );
+        expected_tensor(
+            out,
+            format!("{prefix}.Pcol_{col}"),
+            n,
+            vec![n],
+            Visibility::DynamicPrivate,
+        );
+    }
+    for (suffix, len, shape) in [
+        ("E_src", n, vec![n]),
+        ("E_dst", n, vec![n]),
+        ("a_src", output_dim, vec![output_dim]),
+        ("a_dst", output_dim, vec![output_dim]),
+        ("route_E_src", e, vec![e]),
+        ("route_E_dst", e, vec![e]),
+        ("score", e, vec![e]),
+        ("z", e, vec![e]),
+    ] {
+        expected_tensor(
+            out,
+            format!("{prefix}.{suffix}"),
+            len,
+            shape,
+            Visibility::DynamicPrivate,
+        );
+    }
+    for (name, bits) in [("lrelu", lookup_bits.0)] {
+        expected_tensor(
+            out,
+            format!("{prefix}.{name}.idx"),
+            e,
+            vec![e],
+            Visibility::DynamicPrivate,
+        );
+        for bit in 0..bits {
+            expected_tensor(
+                out,
+                format!("{prefix}.{name}.bit_{bit}"),
+                e,
+                vec![e],
+                Visibility::DynamicPrivate,
+            );
+        }
+    }
+    for (suffix, len, shape) in [
+        ("max", n, vec![n]),
+        ("delta", e, vec![e]),
+        ("max_selector", e, vec![e]),
+        ("max_selector_acc", e, vec![e]),
+    ] {
+        expected_tensor(
+            out,
+            format!("{prefix}.{suffix}"),
+            len,
+            shape,
+            Visibility::DynamicPrivate,
+        );
+    }
+    for bit in 0..bit_width {
+        expected_tensor(
+            out,
+            format!("{prefix}.delta_bit_{bit}"),
+            e,
+            vec![e],
+            Visibility::DynamicPrivate,
+        );
+    }
+    for (suffix, len, shape) in [("u", e, vec![e])] {
+        expected_tensor(
+            out,
+            format!("{prefix}.{suffix}"),
+            len,
+            shape,
+            Visibility::DynamicPrivate,
+        );
+    }
+    for (name, bits) in [("exp", lookup_bits.1)] {
+        expected_tensor(
+            out,
+            format!("{prefix}.{name}.idx"),
+            e,
+            vec![e],
+            Visibility::DynamicPrivate,
+        );
+        for bit in 0..bits {
+            expected_tensor(
+                out,
+                format!("{prefix}.{name}.bit_{bit}"),
+                e,
+                vec![e],
+                Visibility::DynamicPrivate,
+            );
+        }
+    }
+    for (suffix, len, shape) in [
+        ("u_acc", e, vec![e]),
+        ("sum", n, vec![n]),
+        ("inv", n, vec![n]),
+        ("alpha", e, vec![e]),
+        ("route_projection", e * output_dim, vec![e, output_dim]),
+        ("u_message", e * output_dim, vec![e, output_dim]),
+        ("alpha_message", e * output_dim, vec![e, output_dim]),
+        ("field_aggregate", n * output_dim, vec![n, output_dim]),
+        ("integer_numerator", n * output_dim, vec![n, output_dim]),
+        ("num_acc", e * output_dim, vec![e, output_dim]),
+        ("field_acc", e * output_dim, vec![e, output_dim]),
+        ("recovery_x", n * output_dim, vec![n * output_dim]),
+        ("recovery_d", n * output_dim, vec![n * output_dim]),
+        ("pre", n * output_dim, vec![n, output_dim]),
+    ] {
+        expected_tensor(
+            out,
+            format!("{prefix}.{suffix}"),
+            len,
+            shape,
+            Visibility::DynamicPrivate,
+        );
+    }
+    append_division_aux_layout(out, prefix, "recovery_div", nd, bit_width);
+    if hidden {
+        for (name, bits) in [("elu", lookup_bits.2)] {
+            expected_tensor(
+                out,
+                format!("{prefix}.{name}.idx"),
+                nd,
+                vec![nd],
+                Visibility::DynamicPrivate,
+            );
+            for bit in 0..bits {
+                expected_tensor(
+                    out,
+                    format!("{prefix}.{name}.bit_{bit}"),
+                    nd,
+                    vec![nd],
+                    Visibility::DynamicPrivate,
+                );
+            }
+        }
+        expected_tensor(
+            out,
+            format!("{prefix}.aggregate"),
+            nd,
+            vec![n, output_dim],
+            Visibility::DynamicPrivate,
+        );
+    } else {
+        expected_tensor(
+            out,
+            format!("{prefix}.alignment_x"),
+            nd,
+            vec![nd],
+            Visibility::DynamicPrivate,
+        );
+        expected_tensor(
+            out,
+            format!("{prefix}.alignment_d"),
+            nd,
+            vec![nd],
+            Visibility::Public,
+        );
+        expected_tensor(
+            out,
+            format!("{prefix}.aligned"),
+            nd,
+            vec![n, output_dim],
+            Visibility::DynamicPrivate,
+        );
+        append_division_aux_layout(out, prefix, "alignment_div", nd, bit_width);
+        expected_tensor(
+            out,
+            format!("{prefix}.bias"),
+            output_dim,
+            vec![output_dim],
+            Visibility::RegisteredModel,
+        );
+        expected_tensor(
+            out,
+            format!("{prefix}.head_output"),
+            nd,
+            vec![n, output_dim],
+            Visibility::DynamicPrivate,
+        );
+    }
+}
+
+fn canonical_expected_tensor_layout(
+    registry: &RelationRegistry,
+    schema: &serde_json::Value,
+) -> Result<Vec<ExpectedTensorFamily>> {
+    let features = registry.tensor("public.features")?;
+    let edge_src = registry.tensor("public.edge_src")?;
+    let node_ptr = registry.tensor("public.node_ptr")?;
+    let logits = registry.tensor("public.logits")?;
+    let n = features.logical_shape.first().copied().unwrap_or(0);
+    let d = features.logical_shape.get(1).copied().unwrap_or(0);
+    let e = edge_src.logical_len;
+    let g = node_ptr.logical_len.checked_sub(1).unwrap_or(0);
+    let c = logits.logical_shape.get(1).copied().unwrap_or(0);
+    ensure!(
+        n > 0 && d > 0 && e > 0 && g > 0 && c > 0,
+        "canonical public shape profile is incomplete"
+    );
+    ensure!(
+        features.logical_len == n * d,
+        "canonical feature shape is inconsistent"
+    );
+    let profile = canonical_architecture_profile(schema, n, e, g, d, c)?;
+    let bit_width = profile.bit_width;
+    let lookup_bits = (
+        *profile
+            .lookup_bits
+            .get("lrelu")
+            .ok_or_else(|| anyhow::anyhow!("canonical lrelu lookup width is missing"))?,
+        *profile
+            .lookup_bits
+            .get("exp")
+            .ok_or_else(|| anyhow::anyhow!("canonical exp lookup width is missing"))?,
+        *profile
+            .lookup_bits
+            .get("elu")
+            .ok_or_else(|| anyhow::anyhow!("canonical elu lookup width is missing"))?,
+    );
+
+    let mut expected = Vec::new();
+    expected_tensor(
+        &mut expected,
+        "public.features",
+        n * d,
+        vec![n, d],
+        Visibility::Public,
+    );
+    expected_tensor(
+        &mut expected,
+        "public.edge_src",
+        e,
+        vec![e],
+        Visibility::Public,
+    );
+    expected_tensor(
+        &mut expected,
+        "public.edge_dst",
+        e,
+        vec![e],
+        Visibility::Public,
+    );
+    expected_tensor(
+        &mut expected,
+        "public.node_ptr",
+        g + 1,
+        vec![g + 1],
+        Visibility::Public,
+    );
+    expected_tensor(
+        &mut expected,
+        "public.edge_ptr",
+        g + 1,
+        vec![g + 1],
+        Visibility::Public,
+    );
+    let mut previous_dim = d;
+    for layer in &profile.hidden_layers {
+        ensure!(
+            layer.input_dim == previous_dim,
+            "hidden layer input dimension does not match previous concat"
+        );
+        for head in 0..layer.head_count {
+            append_head_tensor_layout(
+                &mut expected,
+                &format!("hidden.layer_{}.head_{head}", layer.layer_index),
+                n,
+                e,
+                layer.input_dim,
+                layer.head_dim,
+                bit_width,
+                lookup_bits,
+                true,
+            );
+        }
+        previous_dim = layer
+            .head_count
+            .checked_mul(layer.head_dim)
+            .ok_or_else(|| anyhow::anyhow!("hidden concat width overflows usize"))?;
+        expected_tensor(
+            &mut expected,
+            format!("hidden.layer_{}.concat", layer.layer_index),
+            n * previous_dim,
+            vec![n, previous_dim],
+            Visibility::DynamicPrivate,
+        );
+    }
+    for head in 0..profile.output_head_count {
+        append_head_tensor_layout(
+            &mut expected,
+            &format!("output.head_{head}"),
+            n,
+            e,
+            previous_dim,
+            c,
+            bit_width,
+            lookup_bits,
+            false,
+        );
+    }
+    let nd = n * c;
+    expected_tensor(
+        &mut expected,
+        "output.head_sum",
+        nd,
+        vec![n, c],
+        Visibility::DynamicPrivate,
+    );
+    expected_tensor(
+        &mut expected,
+        "output.final_logits",
+        nd,
+        vec![n, c],
+        Visibility::DynamicPrivate,
+    );
+    expected_tensor(
+        &mut expected,
+        "public.logits",
+        nd,
+        vec![n, c],
+        Visibility::Public,
+    );
+    expected_tensor(
+        &mut expected,
+        "public.k_out",
+        nd,
+        vec![nd],
+        Visibility::Public,
+    );
+    Ok(expected)
+}
+
+fn canonical_expected_operation_ids(
+    registry: &RelationRegistry,
+    schema: &serde_json::Value,
+) -> Result<Vec<(String, String, usize, usize)>> {
+    let n = registry.tensor("public.features")?.logical_shape[0];
+    let e = registry.tensor("public.edge_src")?.logical_len;
+    let c = registry.tensor("public.logits")?.logical_shape[1];
+    let profile = canonical_architecture_profile(
+        schema,
+        n,
+        e,
+        registry.tensor("public.node_ptr")?.logical_len - 1,
+        registry.tensor("public.features")?.logical_shape[1],
+        c,
+    )?;
+    let mut out = Vec::new();
+    let mut add = |id: String, kind: &str, logical: usize| {
+        let base = logical.max(2).next_power_of_two();
+        out.push((id, kind.to_string(), logical, base * 2));
+    };
+    for layer in &profile.hidden_layers {
+        for head in 0..layer.head_count {
+            let prefix = format!("hidden.layer_{}.head_{head}", layer.layer_index);
+            for col in 0..layer.head_dim {
+                add(
+                    format!("{prefix}.projection.col_{col}"),
+                    "projection_matmul",
+                    n,
+                );
+            }
+            add(format!("{prefix}.attention_src"), "attention_dot", n);
+            add(format!("{prefix}.attention_dst"), "attention_dot", n);
+            add(format!("{prefix}.route_src"), "public_sparse_route", e);
+            add(format!("{prefix}.route_dst"), "public_sparse_route", e);
+            add(format!("{prefix}.score_add"), "score_add", e);
+            add(format!("{prefix}.lrelu"), "lrelu_indexed_public_table", e);
+            add(format!("{prefix}.max_relation"), "exact_group_max", e);
+            add(format!("{prefix}.exp"), "exp_indexed_public_table", e);
+            add(format!("{prefix}.group_sum"), "group_sum", e);
+            add(format!("{prefix}.inverse"), "inverse_alpha", n);
+            add(format!("{prefix}.alpha"), "inverse_alpha", e);
+            add(
+                format!("{prefix}.route_projection_relation"),
+                "public_sparse_route",
+                e * layer.head_dim,
+            );
+            add(
+                format!("{prefix}.u_message_relation"),
+                "u_message_hadamard",
+                e * layer.head_dim,
+            );
+            add(
+                format!("{prefix}.alpha_message_relation"),
+                "alpha_message_hadamard",
+                e * layer.head_dim,
+            );
+            add(
+                format!("{prefix}.integer_aggregate"),
+                "integer_numerator",
+                e * layer.head_dim,
+            );
+            add(
+                format!("{prefix}.field_aggregate_relation"),
+                "field_aggregate",
+                e * layer.head_dim,
+            );
+            add(
+                format!("{prefix}.dual_consistency"),
+                "dual_aggregate_consistency",
+                n * layer.head_dim,
+            );
+            add(
+                format!("{prefix}.recovery_div"),
+                "signed_round_div",
+                n * layer.head_dim,
+            );
+            add(
+                format!("{prefix}.elu"),
+                "elu_indexed_public_table",
+                n * layer.head_dim,
+            );
+        }
+        for head_index in 0..layer.head_count {
+            for col in 0..layer.head_dim {
+                add(
+                    format!(
+                        "hidden.layer_{}.concat.head_{head_index}.col_{col}",
+                        layer.layer_index
+                    ),
+                    "hidden_concat",
+                    n,
+                );
+            }
+        }
+    }
+    for head in 0..profile.output_head_count {
+        let prefix = format!("output.head_{head}");
+        for col in 0..c {
+            add(
+                format!("{prefix}.projection.col_{col}"),
+                "projection_matmul",
+                n,
+            );
+        }
+        add(format!("{prefix}.attention_src"), "attention_dot", n);
+        add(format!("{prefix}.attention_dst"), "attention_dot", n);
+        add(format!("{prefix}.route_src"), "public_sparse_route", e);
+        add(format!("{prefix}.route_dst"), "public_sparse_route", e);
+        add(format!("{prefix}.score_add"), "score_add", e);
+        add(format!("{prefix}.lrelu"), "lrelu_indexed_public_table", e);
+        add(format!("{prefix}.max_relation"), "exact_group_max", e);
+        add(format!("{prefix}.exp"), "exp_indexed_public_table", e);
+        add(format!("{prefix}.group_sum"), "group_sum", e);
+        add(format!("{prefix}.inverse"), "inverse_alpha", n);
+        add(format!("{prefix}.alpha"), "inverse_alpha", e);
+        add(
+            format!("{prefix}.route_projection_relation"),
+            "public_sparse_route",
+            e * c,
+        );
+        add(
+            format!("{prefix}.u_message_relation"),
+            "u_message_hadamard",
+            e * c,
+        );
+        add(
+            format!("{prefix}.alpha_message_relation"),
+            "alpha_message_hadamard",
+            e * c,
+        );
+        add(
+            format!("{prefix}.integer_aggregate"),
+            "integer_numerator",
+            e * c,
+        );
+        add(
+            format!("{prefix}.field_aggregate_relation"),
+            "field_aggregate",
+            e * c,
+        );
+        add(
+            format!("{prefix}.dual_consistency"),
+            "dual_aggregate_consistency",
+            n * c,
+        );
+        add(format!("{prefix}.recovery_div"), "signed_round_div", n * c);
+        add(format!("{prefix}.alignment_div"), "signed_round_div", n * c);
+        add(format!("{prefix}.bias_add"), "output_bias", n * c);
+    }
+    let nd = n * c;
+    add("output.head_sum".into(), "head_sum_final_average", nd);
+    add("output.final_average".into(), "head_sum_final_average", nd);
+    add("output.public_logits".into(), "public_logits_terminal", nd);
+    ensure!(
+        profile.output_head_count > 0,
+        "canonical output head count is zero"
+    );
+    Ok(out)
+}
+
+fn canonical_fac_plan(registry: &RelationRegistry) -> Result<serde_json::Value> {
+    let mut operations = Vec::with_capacity(registry.operation_families.len());
+    for op in &registry.operation_families {
+        let mut groups: BTreeMap<String, Vec<(usize, &ViewIndex)>> = BTreeMap::new();
+        for (column_index, column) in op.columns.iter().enumerate() {
+            if let ColumnSource::TensorView {
+                family_id,
+                canonical_index_by_row,
+            } = &column.source
+            {
+                if registry.tensor(family_id)?.visibility != Visibility::Public {
+                    groups
+                        .entry(family_id.clone())
+                        .or_default()
+                        .push((column_index, canonical_index_by_row));
+                }
+            }
+        }
+        let mut claims = Vec::with_capacity(groups.len());
+        for (family_id, columns) in groups {
+            let spec = registry.tensor(&family_id)?;
+            let non_identity = columns.iter().any(|(_, view)| {
+                !matches!(view, ViewIndex::PaddedAffine { offset: 0, stride: 1, logical_rows, padding_index: 0 } if *logical_rows as usize == op.real_rows && spec.logical_len == op.real_rows)
+            });
+            claims.push(serde_json::json!({
+                "family_id": family_id,
+                "column_indices": columns.iter().map(|(index, _)| *index).collect::<Vec<_>>(),
+                "column_ids": columns.iter().map(|(index, _)| op.columns[*index].column_id.clone()).collect::<Vec<_>>(),
+                "view_count": columns.len(),
+                "requires_reindex": non_identity || columns.len() > 1,
+                "requires_line8": true,
+            }));
+        }
+        operations.push(serde_json::json!({
+            "operation_id": op.family_id,
+            "terminal_claims": claims,
+            "terminal_target": "canonical_tensor_family",
+        }));
+    }
+    Ok(serde_json::json!({
+        "schema": "zkDL_gat_fac_reindex_plan_v1",
+        "operations": operations,
+    }))
+}
+
+fn validate_canonical_schema_descriptor(registry: &RelationRegistry) -> Result<()> {
+    let schema = &registry.canonical_schema;
+    let _ = canonical_architecture_profile(
+        schema,
+        registry.tensor("public.features")?.logical_shape[0],
+        registry.tensor("public.edge_src")?.logical_len,
+        registry
+            .tensor("public.node_ptr")?
+            .logical_len
+            .checked_sub(1)
+            .ok_or_else(|| anyhow::anyhow!("canonical public node pointer family is empty"))?,
+        registry.tensor("public.features")?.logical_shape[1],
+        registry.tensor("public.logits")?.logical_shape[1],
+    )?;
+    ensure!(
+        schema.get("schema").and_then(serde_json::Value::as_str)
+            == Some("zkDL_gat_canonical_relation_schema_v1"),
+        "canonical relation schema descriptor mismatch"
+    );
+    ensure!(
+        schema.get("version").and_then(serde_json::Value::as_u64) == Some(1),
+        "canonical relation schema descriptor version mismatch"
+    );
+    let expected_tensors = canonical_expected_tensor_layout(registry, schema)?;
+    let expected_tensor_ids = expected_tensors
+        .iter()
+        .map(|tensor| tensor.family_id.clone())
+        .collect::<Vec<_>>();
+    let actual_tensor_ids = registry
+        .tensor_families
+        .iter()
+        .map(|tensor| tensor.family_id.clone())
+        .collect::<Vec<_>>();
+    ensure!(
+        actual_tensor_ids == expected_tensor_ids,
+        "canonical tensor family IDs/order/unknown entries mismatch"
+    );
+    ensure!(
+        schema.get("tensor_family_order") == Some(&serde_json::json!(expected_tensor_ids)),
+        "canonical tensor family order descriptor mismatch"
+    );
+    for (actual, expected) in registry.tensor_families.iter().zip(expected_tensors) {
+        ensure!(
+            actual.logical_len == expected.logical_len
+                && actual.logical_shape == expected.logical_shape
+                && actual.visibility == expected.visibility
+                && actual.padded_len == expected.logical_len.max(2).next_power_of_two()
+                && actual.mle_order.len() == 1
+                && actual.mle_order[0] == CANONICAL_TENSOR_MLE_ORDER
+                && actual.instance_order.len() == 1
+                && actual.instance_order[0] == CANONICAL_TENSOR_INSTANCE_ORDER,
+            "canonical tensor family shape/visibility/padding/MLE order mismatch: {}",
+            actual.family_id
+        );
+    }
+    ensure!(
+        schema.get("tensor_families") == Some(&serde_json::to_value(&registry.tensor_families)?),
+        "canonical tensor family descriptor does not match the registry"
+    );
+
+    let expected_operations = canonical_expected_operation_ids(registry, schema)?;
+    ensure!(
+        registry.operation_families.len() == expected_operations.len(),
+        "canonical operation family count mismatch"
+    );
+    for (operation, (id, kind, real_rows, rows)) in
+        registry.operation_families.iter().zip(expected_operations)
+    {
+        ensure!(
+            operation.family_id == id
+                && operation.operation_kind == kind
+                && operation.real_rows == real_rows
+                && operation.rows == rows,
+            "canonical operation ID/order/kind/domain mismatch: {}",
+            operation.family_id
+        );
+    }
+    ensure!(
+        schema.get("operation_family_order")
+            == Some(&serde_json::json!(registry
+                .operation_families
+                .iter()
+                .map(|op| op.family_id.clone())
+                .collect::<Vec<_>>())),
+        "canonical operation family order descriptor mismatch"
+    );
+    ensure!(
+        schema.get("operation_families")
+            == Some(&serde_json::to_value(&registry.operation_families)?),
+        "canonical operation columns/residuals/view descriptor does not match the registry"
+    );
+    ensure!(
+        schema.get("fac_plan") == Some(&canonical_fac_plan(registry)?),
+        "canonical FAC re-index/compression plan mismatch"
+    );
+    let terminal_value = schema
+        .get("terminal_plan")
+        .ok_or_else(|| anyhow::anyhow!("canonical terminal plan is missing"))?;
+    let terminal = ensure_exact_object_keys(
+        terminal_value,
+        &["public_logits_family", "public_logits_operation", "target"],
+        "canonical terminal plan",
+    )?;
+    ensure!(
+        terminal
+            .get("public_logits_operation")
+            .and_then(serde_json::Value::as_str)
+            == Some("output.public_logits")
+            && terminal
+                .get("public_logits_family")
+                .and_then(serde_json::Value::as_str)
+                == Some("public.logits")
+            && terminal.get("target").and_then(serde_json::Value::as_str)
+                == Some("verifier_local_public_y"),
+        "canonical terminal binding plan mismatch"
+    );
+    Ok(())
 }
 
 impl RelationRegistry {
@@ -719,6 +1771,7 @@ impl RelationRegistry {
     /// or replace the public-logits terminal with an arbitrary equality.  The
     /// canonical adapter emits the exact shapes and views checked here.
     pub fn validate_canonical_gat(&self) -> Result<()> {
+        validate_canonical_schema_descriptor(self)?;
         const PUBLIC_FAMILIES: &[&str] = &[
             "public.features",
             "public.edge_src",

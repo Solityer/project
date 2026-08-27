@@ -92,7 +92,6 @@
       "graph_hash.txt",
       "integer_bound_ledger.json",
       "metadata.json",
-      "model_parameters.i64.txt",
       "model_registration.json",
       "network.compiled",
       "node_features.i64.bin",
@@ -106,8 +105,7 @@
       "shape_hash.txt",
       "verify.json",
       "vk.key",
-      "vk.srs",
-      "witness.json"
+      "vk.srs"
     ],
     "logs_root": "results/logs",
     "temporary_root": "results/runs_tmp"
@@ -115,6 +113,16 @@
   "root_policy": "dataset_and_checkpoint_resources_must_be_staged_below_baseline",
   "route_id": "ezkl_gat_native_compressed_csr_attention_full",
   "schema": "ezkl_formal_resource_manifest_v1",
+  "setup_resources": {
+    "ceremony_descriptor": "resources/ceremony/ceremony.descriptor.json",
+    "ceremony_srs": "resources/ceremony/source.srs",
+    "required_files": [
+      "resources/ceremony/ceremony.descriptor.json",
+      "resources/ceremony/source.srs"
+    ],
+    "source_srs_max_k": 28,
+    "status": "awaiting_user_staged_resources"
+  },
   "static_contract": {
     "operation_registry": "configs/formal_operation_registry.json",
     "required_configs": [

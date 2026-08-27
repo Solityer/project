@@ -27,8 +27,8 @@ log = { version = "0.4.17", default-features = false }
 thiserror = { version = "1.0.38", default-features = false }
 hex = { version = "0.4.3", default-features = false }
 halo2_wrong_ecc = { path = "vendor/halo2wrong/ecc", package = "ecc" }
-snark-verifier = { path = "vendor/snark-verifier/snark-verifier", features = [
-    "derive_serde", "mv-lookup"
+snark-verifier = { path = "vendor/snark-verifier/snark-verifier", default-features = false, features = [
+    "derive_serde", "mv-lookup", "loader_halo2", "system_halo2"
 ] }
 icicle-runtime = { path = "vendor/icicle/rust/icicle-runtime", package = "icicle-runtime", optional = true }
 maybe-rayon = { version = "0.1.1", default-features = false }
@@ -72,4 +72,3 @@ rustflags = ["-C", "relocation-model=pic"]
 lto = "fat"
 codegen-units = 1
 # panic = "abort"
-

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import csv
 import hashlib
+import io
 import json
 import os
 import pathlib
@@ -31,7 +32,7 @@ from zkgpt_gat.result_validation import (  # noqa: E402
     validate_artifact,
     validate_matrix_rows,
 )
-from zkgpt_gat.util import digest_json, write_json  # noqa: E402
+from zkgpt_gat.util import digest_json, write_json, write_text_atomic  # noqa: E402
 
 
 def _sha256_bytes(value: bytes) -> str:
@@ -230,10 +231,15 @@ def _write_outputs(results_dir: pathlib.Path, rows: list[dict[str, Any]], errors
     }
     write_json(results_dir / "final_zkgpt_results.json", payload)
     fields = ["dataset", "backend", "status", "proof_generated", "verified", "formal_experiment_eligible", "artifact_path", "run_digest", "proof_digest", "proof_size_bytes", "gpu_contract_errors", "privacy_session_status", "privacy_profile_schema", "privacy_profile_id", "privacy_profile_digest", "privacy_profile_status", "privacy_session_nonce", "privacy_com_W_fingerprint"]
-    with (results_dir / "final_zkgpt_results.csv").open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fields, lineterminator="\n")
-        writer.writeheader()
-        writer.writerows({field: row.get(field, "") for field in fields} for row in rows)
+    csv_buffer = io.StringIO(newline="")
+    writer = csv.DictWriter(csv_buffer, fieldnames=fields, lineterminator="\n")
+    writer.writeheader()
+    writer.writerows({field: row.get(field, "") for field in fields} for row in rows)
+    write_text_atomic(
+        results_dir / "final_zkgpt_results.csv",
+        csv_buffer.getvalue(),
+        label="final result CSV",
+    )
     lines = [
         "# zkGPT formal result matrix",
         "",
@@ -246,7 +252,11 @@ def _write_outputs(results_dir: pathlib.Path, rows: list[dict[str, Any]], errors
         f"| {row['backend']} | {row['dataset']} | {row['status']} | {str(row.get('proof_generated', False)).lower()} | {str(row.get('verified', False)).lower()} |"
         for row in rows
     )
-    (results_dir / "final_zkgpt_report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    write_text_atomic(
+        results_dir / "final_zkgpt_report.md",
+        "\n".join(lines) + "\n",
+        label="final result Markdown",
+    )
     return eligible
 
 

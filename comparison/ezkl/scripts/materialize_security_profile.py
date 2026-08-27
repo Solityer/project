@@ -8,19 +8,17 @@ import hashlib
 import json
 from pathlib import Path
 
-from formal_source_manifest import formal_source_id
+from formal_source_manifest import checked_path, formal_source_id, lexical_baseline_root
+from resource_policy import (  # noqa: E402
+    CEREMONY_DESCRIPTOR,
+    CEREMONY_SRS,
+    ROOT,
+    atomic_write_json,
+    validate_ceremony_material,
+)
 
-FORMAL_SOURCE_SRS_MAX_K = 28
 FORMAL_SEMANTIC_VERSION = "ezkl_formal_gat_semantics_v2"
-FORMAL_OPERATION_REGISTRY = Path(__file__).resolve().parents[1] / "configs" / "formal_operation_registry.json"
-
-
-def sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1 << 20), b""):
-            digest.update(chunk)
-    return "sha256:" + digest.hexdigest()
+FORMAL_OPERATION_REGISTRY = ROOT / "configs" / "formal_operation_registry.json"
 
 
 def formal_digest(domain: str, role: str, payload: bytes) -> str:
@@ -40,19 +38,34 @@ def main() -> int:
     parser.add_argument("--srs-path", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    template = json.loads(args.template.read_text(encoding="utf-8"))
-    descriptor = json.loads(args.ceremony_descriptor.read_text(encoding="utf-8"))
-    if descriptor.get("descriptor_kind") != "ezkl_trusted_ceremony_srs_v1":
-        raise SystemExit("unregistered trusted ceremony descriptor")
-    if not isinstance(descriptor.get("ceremony_id"), str) or not descriptor["ceremony_id"]:
-        raise SystemExit("ceremony descriptor lacks a stable ceremony_id")
-    source_srs_max_k = descriptor.get("source_srs_max_k")
-    if source_srs_max_k != FORMAL_SOURCE_SRS_MAX_K:
-        raise SystemExit("formal ezkl requires ceremony source_srs_max_k exactly 28")
-    expected = descriptor.get("source_srs_sha256")
-    actual = sha256(args.srs_path)
-    if expected != actual:
-        raise SystemExit(f"trusted ceremony SRS digest mismatch: expected {expected}, got {actual}")
+    root = lexical_baseline_root(ROOT)
+    try:
+        template_path = checked_path(root, args.template, "security profile template")
+        descriptor_path = checked_path(root, args.ceremony_descriptor, "ceremony descriptor")
+        srs_path = checked_path(root, args.srs_path, "ceremony SRS")
+        output_path = checked_path(root, args.output, "resolved security profile", allow_missing=True)
+        canonical_template = checked_path(root, root / "configs" / "security_profile.json", "security profile template")
+        canonical_descriptor = checked_path(root, root / CEREMONY_DESCRIPTOR, "ceremony descriptor")
+        canonical_srs = checked_path(root, root / CEREMONY_SRS, "ceremony SRS")
+    except (FileNotFoundError, ValueError) as exc:
+        raise SystemExit(str(exc)) from exc
+    if template_path != canonical_template:
+        raise SystemExit("formal ezkl requires the baseline-local security profile template")
+    if descriptor_path != canonical_descriptor or srs_path != canonical_srs:
+        raise SystemExit(
+            "formal ezkl requires baseline-local resources/ceremony/ceremony.descriptor.json "
+            "and resources/ceremony/source.srs"
+        )
+    try:
+        ceremony = validate_ceremony_material(root)
+    except (FileNotFoundError, OSError, ValueError) as exc:
+        raise SystemExit(str(exc)) from exc
+    try:
+        template = json.loads(template_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"cannot read baseline-local ceremony/profile resource: {exc}") from exc
+    source_srs_max_k = ceremony["source_srs_max_k"]
+    expected = ceremony["source_srs_sha256"]
     profile = {
         "profile_kind": template["profile_kind"],
         "ezkl_version": template["ezkl_version"],
@@ -65,10 +78,12 @@ def main() -> int:
         "challenge": template["challenge"],
         "setup": template["setup"],
         "native_security_level_claim": template["native_security_level_claim"],
-        "ceremony_descriptor_kind": descriptor["descriptor_kind"],
-        "ceremony_id": descriptor["ceremony_id"],
+        "ceremony_descriptor_kind": ceremony["descriptor_kind"],
+        "ceremony_id": ceremony["ceremony_id"],
         "source_srs_sha256": expected,
         "source_srs_max_k": source_srs_max_k,
+        "ceremony_descriptor_path": str(CEREMONY_DESCRIPTOR),
+        "source_srs_path": str(CEREMONY_SRS),
         "semantic_version": FORMAL_SEMANTIC_VERSION,
         "operation_registry_id": formal_digest(
             "ezkl_formal_operation_registry",
@@ -77,10 +92,7 @@ def main() -> int:
         ),
         "semantic_source_id": formal_source_id(Path(__file__).resolve().parents[1]),
     }
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(
-        json.dumps(profile, separators=(",", ":"), ensure_ascii=False) + "\n", encoding="utf-8"
-    )
+    atomic_write_json(output_path, profile)
     return 0
 
 

@@ -138,6 +138,8 @@ def _public_invocation(state: Mapping[str, Any], label: str, component: str, sha
         "wire_version": state.get("wire_version"),
         "cuda_kernel": state.get("cuda_kernel"),
         "cuda_kernel_version": state.get("cuda_kernel_version"),
+        "binary_sha256": state.get("binary_sha256"),
+        "build_identity": state.get("build_identity"),
         "cuda_event_timing": state.get("cuda_event_timing"),
         "cuda_event_elapsed_ms": float(state.get("cuda_event_elapsed_ms", -1.0)),
         "kernel_time_ms": float(state.get("kernel_time_ms", 0.0)),
@@ -365,6 +367,13 @@ def validate_gpu_execution_evidence(
         for name in ("device_name", "gpu_uuid", "device_uuid", "cuda_kernel", "cuda_kernel_version"):
             if not isinstance(invocation.get(name), str) or not invocation[name]:
                 errors.append(f"{prefix}_{name}_invalid")
+        binary_sha256 = invocation.get("binary_sha256")
+        if not isinstance(binary_sha256, str) or len(binary_sha256) != 64 or binary_sha256.lower() != binary_sha256:
+            errors.append(f"{prefix}_binary_sha256_invalid")
+        elif any(char not in "0123456789abcdef" for char in binary_sha256):
+            errors.append(f"{prefix}_binary_sha256_invalid")
+        if invocation.get("build_identity") != digest_json({"kernel": _GPU_KERNEL, "binary_sha256": binary_sha256}):
+            errors.append(f"{prefix}_build_identity_invalid")
         if not isinstance(invocation.get("gpu_uuid"), str) or not _UUID_RE.fullmatch(str(invocation.get("gpu_uuid", ""))):
             errors.append(f"{prefix}_gpu_uuid_format_invalid")
         if invocation.get("device_uuid") != invocation.get("gpu_uuid"):

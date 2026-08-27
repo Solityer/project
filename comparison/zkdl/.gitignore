@@ -2,6 +2,7 @@
 /target/
 /bin/
 /artifacts/
+/resources/staged_resource_manifest.json
 /results/*
 !/results/.gitkeep
 !/runs/

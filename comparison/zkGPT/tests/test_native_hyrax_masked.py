@@ -13,8 +13,65 @@ from zkgpt_gat.native_hyrax import (
     verify_linear_payload,
     verify_open_payload,
 )
-from zkgpt_gat.proof import _ephemeral_hyrax_opening, _verify_ephemeral_hyrax_opening
+from zkgpt_gat.field import log2_power_of_two, next_power_of_two, to_field_int
 from zkgpt_gat.transcript import Transcript
+
+
+def _ephemeral_hyrax_opening(label: str, values: list[int], context: dict[str, object]) -> dict[str, object]:
+    """Test-only adapter for the legacy-shaped ephemeral fixture envelope."""
+    vector = [to_field_int(value) for value in values] or [0]
+    padded_length = next_power_of_two(len(vector))
+    vector.extend([0] * (padded_length - len(vector)))
+    with tempfile.TemporaryDirectory(prefix="zkgpt-hyrax-test-") as tmp:
+        root = pathlib.Path(tmp)
+        hyrax = NativeHyrax(root)
+        registration = hyrax.commit_vector(label, vector, root)
+        public_registration = {key: value for key, value in registration.items() if key != "blind"}
+        transcript = Transcript("zkGPT/GAT/ephemeral-Hyrax/v2")
+        transcript.absorb("subprotocol-context-and-commitment", {"label": label, "context": context, "registration": public_registration})
+        point = [transcript.challenge_scalar(f"{label}/point/{index}") for index in range(log2_power_of_two(padded_length))]
+        state = hyrax.open_registered(label, vector, point, registration, root, transcript=transcript, public_context=context)
+    return {
+        "protocol": "zkGPT-ephemeral-Hyrax-opening-v3-masked",
+        "label": label,
+        "logical_length": len(values),
+        "vector_length": padded_length,
+        "registration": public_registration,
+        "context": context,
+        "point": [str(value) for value in point],
+        "opening": state.proof,
+        "mask_protocol_id": state.proof["mask_protocol_id"],
+        "mask_domain": state.proof["mask_domain"],
+        "mask_version": state.proof["mask_version"],
+        "mask_commitment": state.proof["mask_commitment"],
+        "mask_challenge": state.proof["mask_challenge"],
+        "transcript_digest": transcript.digest.hex(),
+    }
+
+
+def _verify_ephemeral_hyrax_opening(label: str, payload: dict[str, object], context: dict[str, object]) -> bool:
+    try:
+        if payload.get("protocol") != "zkGPT-ephemeral-Hyrax-opening-v3-masked" or payload.get("label") != label or payload.get("context") != context:
+            return False
+        vector_length = int(payload["vector_length"])
+        registration = payload["registration"]
+        if not isinstance(registration, dict) or int(registration.get("vector_length", -1)) != vector_length:
+            return False
+        transcript = Transcript("zkGPT/GAT/ephemeral-Hyrax/v2")
+        transcript.absorb("subprotocol-context-and-commitment", {"label": label, "context": context, "registration": registration})
+        point = [transcript.challenge_scalar(f"{label}/point/{index}") for index in range(log2_power_of_two(vector_length))]
+        if payload.get("point") != [str(value) for value in point]:
+            return False
+        opening = payload["opening"]
+        if not isinstance(opening, dict):
+            return False
+        for field in ("mask_protocol_id", "mask_domain", "mask_version", "mask_commitment", "mask_challenge"):
+            if payload.get(field) != opening.get(field):
+                return False
+        result = verify_open_payload(label, opening, point, registration, vector_length, transcript=transcript, public_context=context)
+        return result.get("status") == "VERIFY_OK" and payload.get("transcript_digest") == transcript.digest.hex()
+    except (KeyError, TypeError, ValueError):
+        return False
 
 
 def _public_registration(registration: dict[str, object]) -> dict[str, object]:

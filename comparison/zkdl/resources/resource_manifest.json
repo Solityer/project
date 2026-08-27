@@ -22,14 +22,17 @@
       "checkpoint_bundle": "resources/models/pubmed_gat"
     }
   },
-  "manifest_id": "sha256:9ff58b2dcc7bb2b58a9b1767d3c83853d0be10fe15d2d48afd074600600c9c0d",
   "pp": {
     "path": "artifacts/setup/pp.bin",
-    "generation": "zkdl-formal setup --max-vector-len <power-of-two>"
+    "schema": "zkDL_gat_pp_info_v1",
+    "max_vector_len": 268435456,
+    "setup_id": "zkDL-GAT-transparent-PP-v1",
+    "security_id": "zkdl_gat_bls12_381_multi_session_v2",
+    "protocol": "zkDL-hiding-Hyrax-IPA-BLS12-381-v1",
+    "security_bits": 128
   },
-  "schema": "zkDL_gat_resource_manifest_v1",
+  "schema": "zkDL_gat_resource_policy_v1",
   "static_tables": {
-    "generation": "preflight derives and authenticates domains from the integer-bound ledger",
     "scope": "baseline-local formal relation"
   }
 }

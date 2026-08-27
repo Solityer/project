@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import io
 import os
 import pathlib
 import stat
@@ -36,7 +37,7 @@ from .result_validation import (
     validate_artifact_inventory,
     validate_canonical_cell_dir_from_path,
 )
-from .util import digest_file, digest_json, ensure_dir, read_json, write_json
+from .util import digest_file, digest_json, ensure_dir, read_json, write_json, write_text_atomic
 
 
 def selected_datasets(value: str) -> List[str]:
@@ -417,7 +418,6 @@ def run_one(
         "model_params": verified_fields.get("model_params", ""),
         "model_registry_digest": verified_fields.get("model_registry_digest", ""),
         "same_checkpoint": verified_fields.get("same_checkpoint", ""),
-        "same_quantization": verified_fields.get("same_quantization", ""),
         "same_graph_preprocessing": verified_fields.get("same_graph_preprocessing", ""),
         "same_self_loop_rule": verified_fields.get("same_self_loop_rule", ""),
         "same_edge_sort_rule": verified_fields.get("same_edge_sort_rule", ""),
@@ -497,17 +497,23 @@ def write_summary(
     rows = sorted(rows, key=lambda row: (0 if row["backend"] == "cpu" else 1, DATASET_ORDER.index(row["dataset"])))
     ensure_dir(results_dir)
     for backend in ["cpu", "gpu"]:
-        with (results_dir / f"{backend}_results.csv").open("w", encoding="utf-8", newline="") as handle:
-            writer = csv.DictWriter(handle, fieldnames=columns, lineterminator="\n")
-            writer.writeheader()
-            for row in rows:
-                if row["backend"] == backend:
-                    writer.writerow({name: row.get(name, "") for name in columns})
-    with (results_dir / "summary.csv").open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=columns, lineterminator="\n")
+        csv_buffer = io.StringIO(newline="")
+        writer = csv.DictWriter(csv_buffer, fieldnames=columns, lineterminator="\n")
         writer.writeheader()
         for row in rows:
-            writer.writerow({name: row.get(name, "") for name in columns})
+            if row["backend"] == backend:
+                writer.writerow({name: row.get(name, "") for name in columns})
+        write_text_atomic(
+            results_dir / f"{backend}_results.csv",
+            csv_buffer.getvalue(),
+            label=f"{backend} result CSV",
+        )
+    csv_buffer = io.StringIO(newline="")
+    writer = csv.DictWriter(csv_buffer, fieldnames=columns, lineterminator="\n")
+    writer.writeheader()
+    for row in rows:
+        writer.writerow({name: row.get(name, "") for name in columns})
+    write_text_atomic(results_dir / "summary.csv", csv_buffer.getvalue(), label="summary CSV")
     write_json(
         results_dir / "summary.json",
         {
@@ -530,12 +536,16 @@ def write_summary(
         "- `cpu_results.csv`",
         "- `gpu_results.csv`",
         "",
-        "Each dataset/backend directory includes metadata, full segment commitments, transcript, lookup proof, matrix sumcheck proof, GKR proof, complete masked Hyrax openings, canonical PrivacyProfile, final proof payload, verifier output, witness manifest, benchmark summary, and run manifest.",
+        "Each dataset/backend directory includes metadata, full segment commitments, transcript, lookup proof, matrix sumcheck proof, GKR proof, complete masked Hyrax openings, canonical privacy profile, final proof payload, independent verification report, witness manifest, benchmark summary, and run manifest.",
         "",
         "`proof_size_bytes` is the canonical serialized `proof_payload.json` payload size, including verifier-facing proof messages. Witness manifests, raw witness materialization, datasets, checkpoints, logs, and audit metadata are not counted.",
         "",
     ]
-    (results_dir / "README_REPRODUCIBILITY.md").write_text("\n".join(readme), encoding="utf-8")
+    write_text_atomic(
+        results_dir / "README_REPRODUCIBILITY.md",
+        "\n".join(readme),
+        label="result reproducibility Markdown",
+    )
 
 
 def run_many(

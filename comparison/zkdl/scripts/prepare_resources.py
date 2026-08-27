@@ -11,16 +11,18 @@ import argparse
 import os
 import shutil
 import stat
+import tempfile
 from pathlib import Path
 
 from runner_contract import (
     BASELINE_ROOT,
     DATASETS,
+    STAGED_RESOURCE_MANIFEST_PATH,
+    atomic_write_json,
     ensure_contained,
     ensure_directory,
     ensure_regular_file,
-    load_resource_manifest,
-    resource_inventory_digest,
+    load_resource_policy,
 )
 
 
@@ -55,9 +57,28 @@ def copy_tree(source: Path, target: Path, *, replace: bool) -> None:
             raise ValueError(f"staged target is not a real directory: {target}")
         if not replace:
             raise FileExistsError(f"staged target already exists; pass --replace: {target}")
-        shutil.rmtree(target)
     target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(source, target, symlinks=False, copy_function=shutil.copy2)
+    ensure_directory(target.parent, label="staged resource parent")
+    temporary = Path(tempfile.mkdtemp(prefix=f".{target.name}.", dir=target.parent))
+    try:
+        payload = temporary / "payload"
+        shutil.copytree(source, payload, symlinks=False, copy_function=shutil.copy2)
+        # Validate the complete copied tree before replacing a prior bundle.
+        source_directory(payload, "copied staged resource")
+        if target.exists():
+            shutil.rmtree(target)
+        os.replace(payload, target)
+    finally:
+        shutil.rmtree(temporary, ignore_errors=True)
+
+
+def invalidate_staged_manifest() -> None:
+    path = ensure_contained(STAGED_RESOURCE_MANIFEST_PATH, label="staged resource manifest")
+    if path.is_symlink():
+        raise ValueError("staged resource manifest may not be a symlink")
+    if path.exists():
+        ensure_regular_file(path, label="staged resource manifest")
+        path.unlink()
 
 
 def main() -> int:
@@ -70,17 +91,30 @@ def main() -> int:
     source_root = source_directory(args.source_root, "source root")
     if not source_root.is_dir() or source_root.is_symlink():
         raise SystemExit(f"invalid source root: {source_root}")
-    manifest, manifest_id = load_resource_manifest(require_staged=False)
+    policy, policy_id = load_resource_policy()
     selected = DATASETS if args.dataset == "all" else (args.dataset,)
+    targets = []
     for dataset in selected:
-        entry = manifest["datasets"][dataset]
+        entry = policy["datasets"][dataset]
         source_cache = source_root / "data" / "cache" / dataset
         source_model_name = entry["checkpoint_bundle"].rsplit("/", 1)[-1]
         source_model = source_root / "artifacts" / "checkpoints" / source_model_name
-        copy_tree(source_cache, BASELINE_ROOT / entry["cache"], replace=args.replace)
-        copy_tree(source_model, BASELINE_ROOT / entry["checkpoint_bundle"], replace=args.replace)
+        cache_target = BASELINE_ROOT / entry["cache"]
+        checkpoint_target = BASELINE_ROOT / entry["checkpoint_bundle"]
+        if not args.replace and (cache_target.exists() or checkpoint_target.exists()):
+            raise FileExistsError(
+                f"staged target already exists for {dataset}; pass --replace explicitly"
+            )
+        targets.append((dataset, source_cache, source_model, cache_target, checkpoint_target))
+    # Any successful import invalidates the previous authentication.  Perform
+    # this only after all no-replace conflicts have been checked.
+    invalidate_staged_manifest()
+    for dataset, source_cache, source_model, cache_target, checkpoint_target in targets:
+        copy_tree(source_cache, cache_target, replace=args.replace)
+        copy_tree(source_model, checkpoint_target, replace=args.replace)
         # Ensure the minimum files required by preflight are present before
         # reporting staging success.  No proof or verifier is run here.
+        entry = policy["datasets"][dataset]
         cache = ensure_directory(BASELINE_ROOT / entry["cache"], label=f"{dataset} cache")
         checkpoint = ensure_directory(
             BASELINE_ROOT / entry["checkpoint_bundle"], label=f"{dataset} checkpoint"
@@ -91,7 +125,8 @@ def main() -> int:
             raise FileNotFoundError(f"{dataset} cache has no feature resource")
         ensure_regular_file(checkpoint / "manifest.json", label=f"{dataset} model manifest")
         ensure_regular_file(checkpoint / "tensors.txt", label=f"{dataset} model tensors")
-        print(f"STAGED dataset={dataset} manifest={manifest_id} inventory={resource_inventory_digest(dataset, manifest)}")
+        print(f"STAGED dataset={dataset} policy_id={policy_id}")
+    print("Resources imported. Run scripts/setup_resources.py before any formal cell.")
     return 0
 
 

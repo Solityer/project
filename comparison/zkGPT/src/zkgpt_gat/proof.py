@@ -356,100 +356,6 @@ def _padded_segment_chunks(label: str, values: Sequence[int]) -> Iterable[Tuple[
     yield label, [to_field_int(value) for value in values]
 
 
-def _ephemeral_hyrax_opening(label: str, values: Sequence[int], context: Dict[str, Any]) -> Dict[str, Any]:
-    """Commit before challenges and open a complete canonical subprotocol MLE."""
-    vector = [to_field_int(value) for value in values] or [0]
-    padded_length = next_power_of_two(len(vector))
-    vector.extend([0] * (padded_length - len(vector)))
-    with tempfile.TemporaryDirectory(prefix="zkgpt-hyrax-") as tmp:
-        root = pathlib.Path(tmp)
-        hyrax = NativeHyrax(root)
-        registration = hyrax.commit_vector(label, vector, root)
-        public_registration = {key: value for key, value in registration.items() if key != "blind"}
-        transcript = Transcript("zkGPT/GAT/ephemeral-Hyrax/v2")
-        transcript.absorb(
-            "subprotocol-context-and-commitment",
-            {"label": label, "context": context, "registration": public_registration},
-        )
-        point = [
-            transcript.challenge_scalar(f"{label}/point/{index}")
-            for index in range(log2_power_of_two(padded_length))
-        ]
-        state = hyrax.open_registered(
-            label,
-            vector,
-            point,
-            registration,
-            root,
-            transcript=transcript,
-            public_context=context,
-        )
-    return {
-        "protocol": "zkGPT-ephemeral-Hyrax-opening-v3-masked",
-        "label": label,
-        "logical_length": len(values),
-        "vector_length": padded_length,
-        "registration": public_registration,
-        "context": context,
-        "point": [str(value) for value in point],
-        "opening": state.proof,
-        # Duplicate only public mask schema fields at the active ephemeral
-        # envelope boundary.  The nested native Hyrax proof remains the
-        # authoritative IPA statement; no mask scalar or private vector is
-        # serialized here.
-        "mask_protocol_id": state.proof["mask_protocol_id"],
-        "mask_domain": state.proof["mask_domain"],
-        "mask_version": state.proof["mask_version"],
-        "mask_commitment": state.proof["mask_commitment"],
-        "mask_challenge": state.proof["mask_challenge"],
-        "transcript_digest": transcript.digest.hex(),
-    }
-
-
-def _verify_ephemeral_hyrax_opening(label: str, payload: Dict[str, Any], context: Dict[str, Any]) -> bool:
-    try:
-        if payload.get("protocol") != "zkGPT-ephemeral-Hyrax-opening-v3-masked" or payload.get("label") != label:
-            return False
-        if payload.get("context") != context:
-            return False
-        vector_length = int(payload["vector_length"])
-        registration = payload["registration"]
-        if int(registration.get("vector_length", -1)) != vector_length:
-            return False
-        transcript = Transcript("zkGPT/GAT/ephemeral-Hyrax/v2")
-        transcript.absorb(
-            "subprotocol-context-and-commitment",
-            {"label": label, "context": context, "registration": registration},
-        )
-        point = [
-            transcript.challenge_scalar(f"{label}/point/{index}")
-            for index in range(log2_power_of_two(vector_length))
-        ]
-        if payload.get("point") != [str(value) for value in point]:
-            return False
-        opening = payload["opening"]
-        if not isinstance(opening, dict):
-            return False
-        for field in (
-            "mask_protocol_id", "mask_domain", "mask_version",
-            "mask_commitment", "mask_challenge",
-        ):
-            if payload.get(field) != opening.get(field):
-                return False
-        result = verify_open_payload(
-            label,
-            opening,
-            point,
-            registration,
-            vector_length,
-            transcript=transcript,
-            public_context=context,
-        )
-        return result.get("status") == "VERIFY_OK" and payload.get("transcript_digest") == transcript.digest.hex()
-    except (KeyError, TypeError, ValueError):
-        return False
-
-
 def _segment_arrays(dataset: GraphDataset, graph: LocalGraph, model: Model, trace: ForwardTrace, transcript: Dict[str, Any] | None = None) -> Dict[str, List[Tuple[str, np.ndarray]]]:
     arrays: Dict[str, List[Tuple[str, np.ndarray]]] = {
         "com_W": _model_arrays(model),
@@ -2738,6 +2644,7 @@ def _verify_gpu_execution_evidence(
 
 
 def _verify_formal(
+    *,
     metadata: Dict[str, Any],
     commitments: Dict[str, Any],
     transcript: Dict[str, Any],
@@ -2987,8 +2894,19 @@ def build_proof(
         metadata["model_registry"]["public_descriptor"],
     )
     verification = _verify_formal(
-        metadata, commitments, transcript, lasso, matrix, gkr, combine,
-        openings, privacy_profile, gpu_claim, backend, external_context, graph,
+        metadata=metadata,
+        commitments=commitments,
+        transcript=transcript,
+        lasso=lasso,
+        matrix=matrix,
+        gkr=gkr,
+        combine=combine,
+        openings=openings,
+        privacy_profile=privacy_profile,
+        gpu_claim=gpu_claim,
+        backend=backend,
+        external_context=external_context,
+        public_graph=graph,
     )
     verify_elapsed_ms = (time.perf_counter() - verify_started) * 1000.0
     component_refs = {

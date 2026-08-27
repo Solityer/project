@@ -54,35 +54,60 @@ def write_json(path: pathlib.Path, data: Any) -> None:
     itself rather than following it; refusing pre-existing symlinks, hardlinks,
     FIFOs, and other special files keeps the write path fail-closed.
     """
-    path = pathlib.Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        parent_info = path.parent.lstat()
-    except OSError as exc:
-        raise OSError(f"cannot inspect JSON output directory: {path.parent}") from exc
-    if stat.S_ISLNK(parent_info.st_mode) or not stat.S_ISDIR(parent_info.st_mode):
-        raise OSError(f"JSON output parent must be a real directory: {path.parent}")
+    payload = (json.dumps(data, indent=2, sort_keys=True, ensure_ascii=True) + "\n").encode("utf-8")
+    write_bytes_atomic(path, payload, label="JSON output")
 
+
+def _check_atomic_parent(path: pathlib.Path, label: str) -> pathlib.Path:
+    """Authenticate every lexical parent before publishing a result file."""
+    path = pathlib.Path(path).expanduser()
+    parent = path.parent
+    # ``mkdir -p`` and ordinary ``open`` follow a symlink in any ancestor.
+    # Walk every existing component with lstat so result publication cannot be
+    # redirected outside the baseline by a pre-existing alias.
+    current = pathlib.Path(parent.anchor) if parent.is_absolute() else pathlib.Path.cwd()
+    parts = parent.parts[1:] if parent.is_absolute() else parent.parts
+    for component in parts:
+        current = current / component
+        try:
+            info = current.lstat()
+        except FileNotFoundError:
+            current.mkdir()
+            info = current.lstat()
+        except OSError as exc:
+            raise OSError(f"cannot inspect {label} parent: {current}") from exc
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+            raise OSError(f"{label} parent must be a real directory: {current}")
+    return path
+
+
+def write_bytes_atomic(path: pathlib.Path, payload: bytes, *, label: str = "output") -> None:
+    """Atomically publish one baseline-local owned regular file.
+
+    Existing destinations are replaceable only when they are one-link regular
+    files.  Symlinks, hardlinks, FIFOs and other special files fail closed;
+    the temporary file is created in the authenticated destination directory.
+    """
+    path = _check_atomic_parent(path, label)
     try:
         existing = path.lstat()
     except FileNotFoundError:
         existing = None
     except OSError as exc:
-        raise OSError(f"cannot inspect JSON output: {path}") from exc
+        raise OSError(f"cannot inspect {label}: {path}") from exc
     if existing is not None:
         if stat.S_ISLNK(existing.st_mode):
-            raise OSError(f"JSON output must not be a symlink: {path}")
+            raise OSError(f"{label} must not be a symlink: {path}")
         if not stat.S_ISREG(existing.st_mode):
-            raise OSError(f"JSON output must be a regular file: {path}")
+            raise OSError(f"{label} must be a regular file: {path}")
         if existing.st_nlink != 1:
-            raise OSError(f"JSON output hardlink count must be one: {path}")
+            raise OSError(f"{label} hardlink count must be one: {path}")
 
-    payload = (json.dumps(data, indent=2, sort_keys=True, ensure_ascii=True) + "\n").encode("utf-8")
     temporary: str | None = None
     try:
         fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
         with os.fdopen(fd, "wb") as handle:
-            handle.write(payload)
+            handle.write(bytes(payload))
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, path)
@@ -93,6 +118,11 @@ def write_json(path: pathlib.Path, data: Any) -> None:
                 os.unlink(temporary)
             except FileNotFoundError:
                 pass
+
+
+def write_text_atomic(path: pathlib.Path, text: str, *, label: str = "text output") -> None:
+    """Atomically publish UTF-8 text through the same fail-closed path."""
+    write_bytes_atomic(path, str(text).encode("utf-8"), label=label)
 
 
 def read_json(path: pathlib.Path) -> Dict[str, Any]:
