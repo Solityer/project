@@ -20,11 +20,7 @@ unsafe impl<const NUM_LIMBS: usize, F: FieldConfig> Sync for Field<NUM_LIMBS, F>
 impl<const NUM_LIMBS: usize, F: FieldConfig> Display for Field<NUM_LIMBS, F> {
     fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
         write!(f, "0x")?;
-        for &b in self
-            .limbs
-            .iter()
-            .rev()
-        {
+        for &b in self.limbs.iter().rev() {
             write!(f, "{:08x}", b)?;
         }
         Ok(())
@@ -45,7 +41,10 @@ impl<const NUM_LIMBS: usize, F: FieldConfig> Into<[u32; NUM_LIMBS]> for Field<NU
 
 impl<const NUM_LIMBS: usize, F: FieldConfig> From<[u32; NUM_LIMBS]> for Field<NUM_LIMBS, F> {
     fn from(limbs: [u32; NUM_LIMBS]) -> Self {
-        Self { limbs, p: PhantomData }
+        Self {
+            limbs,
+            p: PhantomData,
+        }
     }
 }
 
@@ -56,10 +55,7 @@ impl<const NUM_LIMBS: usize, F: FieldConfig> FieldImpl for Field<NUM_LIMBS, F> {
     fn to_bytes_le(&self) -> Vec<u8> {
         self.limbs
             .iter()
-            .map(|limb| {
-                limb.to_le_bytes()
-                    .to_vec()
-            })
+            .map(|limb| limb.to_le_bytes().to_vec())
             .flatten()
             .collect::<Vec<_>>()
     }
@@ -68,11 +64,7 @@ impl<const NUM_LIMBS: usize, F: FieldConfig> FieldImpl for Field<NUM_LIMBS, F> {
     // and only takes the first bytes in there are too many of them
     fn from_bytes_le(bytes: &[u8]) -> Self {
         let mut limbs: [u32; NUM_LIMBS] = [0; NUM_LIMBS];
-        for (i, chunk) in bytes
-            .chunks(4)
-            .take(NUM_LIMBS)
-            .enumerate()
-        {
+        for (i, chunk) in bytes.chunks(4).take(NUM_LIMBS).enumerate() {
             let mut chunk_array: [u8; 4] = [0; 4];
             chunk_array[..chunk.len()].clone_from_slice(chunk);
             limbs[i] = u32::from_le_bytes(chunk_array);
@@ -81,7 +73,8 @@ impl<const NUM_LIMBS: usize, F: FieldConfig> FieldImpl for Field<NUM_LIMBS, F> {
     }
 
     fn from_hex(s: &str) -> Self {
-        let mut bytes = Vec::from_hex(if s.starts_with("0x") { &s[2..] } else { s }).expect("Invalid hex string");
+        let mut bytes = Vec::from_hex(if s.starts_with("0x") { &s[2..] } else { s })
+            .expect("Invalid hex string");
         bytes.reverse();
         Self::from_bytes_le(&bytes)
     }
@@ -103,8 +96,14 @@ impl<const NUM_LIMBS: usize, F: FieldConfig> FieldImpl for Field<NUM_LIMBS, F> {
 
 #[doc(hidden)]
 pub trait MontgomeryConvertibleField<F: FieldImpl> {
-    fn to_mont(values: &mut (impl HostOrDeviceSlice<F> + ?Sized), stream: &IcicleStream) -> eIcicleError;
-    fn from_mont(values: &mut (impl HostOrDeviceSlice<F> + ?Sized), stream: &IcicleStream) -> eIcicleError;
+    fn to_mont(
+        values: &mut (impl HostOrDeviceSlice<F> + ?Sized),
+        stream: &IcicleStream,
+    ) -> eIcicleError;
+    fn from_mont(
+        values: &mut (impl HostOrDeviceSlice<F> + ?Sized),
+        stream: &IcicleStream,
+    ) -> eIcicleError;
 }
 
 #[doc(hidden)]
@@ -171,11 +170,17 @@ impl<const NUM_LIMBS: usize, F: FieldConfig> MontgomeryConvertible for Field<NUM
 where
     F: MontgomeryConvertibleField<Self>,
 {
-    fn to_mont(values: &mut (impl HostOrDeviceSlice<Self> + ?Sized), stream: &IcicleStream) -> eIcicleError {
+    fn to_mont(
+        values: &mut (impl HostOrDeviceSlice<Self> + ?Sized),
+        stream: &IcicleStream,
+    ) -> eIcicleError {
         F::to_mont(values, stream)
     }
 
-    fn from_mont(values: &mut (impl HostOrDeviceSlice<Self> + ?Sized), stream: &IcicleStream) -> eIcicleError {
+    fn from_mont(
+        values: &mut (impl HostOrDeviceSlice<Self> + ?Sized),
+        stream: &IcicleStream,
+    ) -> eIcicleError {
         F::from_mont(values, stream)
     }
 }
@@ -246,13 +251,25 @@ macro_rules! impl_scalar_field {
                 ) -> eIcicleError;
 
                 #[link_name = concat!($field_prefix, "_add")]
-                pub(crate) fn add(a: *const $field_name, b: *const $field_name, result: *mut $field_name);
+                pub(crate) fn add(
+                    a: *const $field_name,
+                    b: *const $field_name,
+                    result: *mut $field_name,
+                );
 
                 #[link_name = concat!($field_prefix, "_sub")]
-                pub(crate) fn sub(a: *const $field_name, b: *const $field_name, result: *mut $field_name);
+                pub(crate) fn sub(
+                    a: *const $field_name,
+                    b: *const $field_name,
+                    result: *mut $field_name,
+                );
 
                 #[link_name = concat!($field_prefix, "_mul")]
-                pub(crate) fn mul(a: *const $field_name, b: *const $field_name, result: *mut $field_name);
+                pub(crate) fn mul(
+                    a: *const $field_name,
+                    b: *const $field_name,
+                    result: *mut $field_name,
+                );
 
                 #[link_name = concat!($field_prefix, "_inv")]
                 pub(crate) fn inv(a: *const $field_name, result: *mut $field_name);
@@ -267,7 +284,9 @@ macro_rules! impl_scalar_field {
                 is_into: bool,
                 config: &VecOpsConfig,
             ) -> eIcicleError {
-                unsafe { _convert_scalars_montgomery(scalars, len as u64, is_into, &config, scalars) }
+                unsafe {
+                    _convert_scalars_montgomery(scalars, len as u64, is_into, &config, scalars)
+                }
             }
         }
 
@@ -327,7 +346,10 @@ macro_rules! impl_scalar_field {
             fn inv(first: $field_name) -> $field_name {
                 let mut result = $field_name::zero();
                 unsafe {
-                    $field_prefix_ident::inv(&first as *const $field_name, &mut result as *mut $field_name);
+                    $field_prefix_ident::inv(
+                        &first as *const $field_name,
+                        &mut result as *mut $field_name,
+                    );
                 }
 
                 result
@@ -349,7 +371,12 @@ macro_rules! impl_scalar_field {
         impl GenerateRandom<$field_name> for $field_cfg {
             fn generate_random(size: usize) -> Vec<$field_name> {
                 let mut res = vec![$field_name::zero(); size];
-                unsafe { $field_prefix_ident::generate_scalars(&mut res[..] as *mut _ as *mut $field_name, size) };
+                unsafe {
+                    $field_prefix_ident::generate_scalars(
+                        &mut res[..] as *mut _ as *mut $field_name,
+                        size,
+                    )
+                };
                 res
             }
         }
@@ -395,34 +422,6 @@ macro_rules! impl_scalar_field {
                     false,
                     &config,
                 )
-            }
-        }
-    };
-}
-
-#[macro_export]
-macro_rules! impl_field_tests {
-    (
-        $field_name:ident
-    ) => {
-        pub mod test_field {
-            use super::*;
-            use icicle_runtime::test_utilities;
-
-            fn initialize() {
-                test_utilities::test_load_and_init_devices();
-                test_utilities::test_set_main_device();
-            }
-
-            #[test]
-            fn test_field_convert_montgomery() {
-                initialize();
-                check_field_convert_montgomery::<$field_name>()
-            }
-
-            #[test]
-            fn test_field_arithmetic() {
-                check_field_arithmetic::<$field_name>()
             }
         }
     };

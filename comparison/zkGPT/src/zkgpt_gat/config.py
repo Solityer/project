@@ -14,6 +14,7 @@ from .resources import (
     required_resource_paths,
     validate_static_table_descriptor,
 )
+from .util import assert_contained_path, require_dir, write_text_atomic
 
 
 @dataclass(frozen=True)
@@ -122,7 +123,12 @@ def read_config(path: pathlib.Path) -> Dict[str, str]:
     return out
 
 
-def write_config(path: pathlib.Path, entries: Dict[str, str]) -> None:
+def write_config(
+    path: pathlib.Path,
+    entries: Dict[str, str],
+    *,
+    root: pathlib.Path | None = None,
+) -> None:
     order = [
         "dataset",
         "resource_root",
@@ -171,8 +177,14 @@ def write_config(path: pathlib.Path, entries: Dict[str, str]) -> None:
     for key in sorted(entries):
         if key not in order:
             lines.append(f"{key} = {entries[key]}")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    # Generated configs are production inputs to both the prover and the
+    # independent verifier.  Publish them through the same authenticated,
+    # atomic writer as proof/result artifacts.  ``root`` is supplied by the
+    # formal generator so a malicious path cannot redirect config creation
+    # outside the baseline.
+    if root is not None:
+        path = assert_contained_path(root, path, "generated config", allow_missing=True)
+    write_text_atomic(path, "\n".join(lines) + "\n", label="generated config", root=root)
 
 
 def parse_hidden_profile(value: str) -> List[HiddenShape]:
@@ -193,16 +205,25 @@ def parse_int_list(value: str) -> List[int]:
 def generated_config(dataset: str, backend: str, project_root: pathlib.Path, zk_root: pathlib.Path) -> pathlib.Path:
     # Formal comparison configurations are immutable baseline-local templates.
     # Runtime must not import the main experiment's configuration files.
-    project_root = pathlib.Path(project_root).expanduser().resolve()
-    zk_root = pathlib.Path(zk_root).expanduser().resolve()
+    project_root = require_dir(project_root, label="formal project root")
+    zk_root = require_dir(zk_root, label="formal zkGPT root")
     if project_root != zk_root:
         raise ValueError(
             "formal zkGPT execution is baseline-local; project_root must equal comparison/zkGPT"
         )
     if backend not in {"cpu", "gpu"}:
         raise ValueError(f"unsupported backend: {backend}")
-    source = zk_root / "configs" / "formal" / CONFIG_BY_DATASET[dataset]
-    if not source.is_file():
+    source = assert_contained_path(
+        zk_root,
+        zk_root / "configs" / "formal" / CONFIG_BY_DATASET[dataset],
+        "formal config template",
+        allow_missing=False,
+    )
+    try:
+        source_info = source.lstat()
+    except OSError as exc:
+        raise FileNotFoundError(f"cannot inspect baseline-local formal config: {source}") from exc
+    if not source_info or not source.is_file() or source_info.st_nlink != 1:
         raise FileNotFoundError(f"missing baseline-local formal config: {source}")
     entries = read_config(source)
     entries["dataset"] = CONFIG_DATASET_VALUE[dataset]
@@ -226,16 +247,25 @@ def generated_config(dataset: str, backend: str, project_root: pathlib.Path, zk_
     entries["rounding_mode"] = configured_rounding_mode(entries)
     entries["edge_rule_id"] = entries.get("edge_rule_id", "per_node_self_loop+edge_gid_then_dst_stable")
     entries["auto_prepare_dataset"] = "false"
-    out = zk_root / "configs" / "generated" / backend / CONFIG_BY_DATASET[dataset]
-    write_config(out, entries)
+    out = assert_contained_path(
+        zk_root,
+        zk_root / "configs" / "generated" / backend / CONFIG_BY_DATASET[dataset],
+        "generated config",
+        allow_missing=True,
+    )
+    write_config(out, entries, root=zk_root)
     return out
 
 
 def load_app_config(path: pathlib.Path, project_root: pathlib.Path) -> AppConfig:
-    root = pathlib.Path(project_root).expanduser().resolve()
-    config_path = pathlib.Path(path).expanduser().resolve()
-    if config_path != root and root not in config_path.parents:
-        raise ValueError(f"config must stay inside baseline root {root}: {config_path}")
+    root = require_dir(project_root, label="config baseline root")
+    config_path = assert_contained_path(root, path, "config", allow_missing=False)
+    try:
+        info = config_path.lstat()
+    except OSError as exc:
+        raise ValueError(f"cannot inspect config: {config_path}") from exc
+    if not config_path.is_file() or info.st_nlink != 1:
+        raise ValueError(f"config must be an owned regular file: {config_path}")
     entries = read_config(config_path)
     dataset = entries.get("dataset", "")
     if dataset not in CONFIG_DATASET_VALUE.values():

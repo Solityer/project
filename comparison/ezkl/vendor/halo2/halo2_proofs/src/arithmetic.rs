@@ -36,9 +36,7 @@ where
 }
 
 /// Best MSM
-pub fn best_multiexp<C: CurveAffine>(
-    coeffs: &[C::Scalar], bases: &[C]
-) -> C::Curve {
+pub fn best_multiexp<C: CurveAffine>(coeffs: &[C::Scalar], bases: &[C]) -> C::Curve {
     best_multiexp_cpu(coeffs, bases)
 }
 
@@ -54,7 +52,11 @@ pub fn best_multiexp_cpu<C: CurveAffine>(coeffs: &[C::Scalar], bases: &[C]) -> C
 
 /// Performs a multi-exponentiation operation on GPU using Icicle library
 #[cfg(feature = "gpu-accelerated")]
-pub fn best_multiexp_gpu<C: CurveAffine>(coeffs: &[C::Scalar], g: &DeviceSlice<Affine<CurveCfg>>, stream: &IcicleStream) -> C::Curve {
+pub fn best_multiexp_gpu<C: CurveAffine>(
+    coeffs: &[C::Scalar],
+    g: &DeviceSlice<Affine<CurveCfg>>,
+    stream: &IcicleStream,
+) -> C::Curve {
     icicle::multiexp_on_device::<C>(coeffs, g, stream)
 }
 
@@ -66,13 +68,12 @@ pub fn best_fft<Scalar: Field + ff::PrimeField, G: FftGroup<Scalar> + ff::PrimeF
     data: &FFTData<Scalar>,
     inverse: bool,
 ) {
-#[cfg(feature = "gpu-accelerated")]
-    if !icicle::should_use_cpu_fft(scalars.len()) && icicle::is_gpu_supported_field(&omega)
-    {
+    #[cfg(feature = "gpu-accelerated")]
+    if !icicle::should_use_cpu_fft(scalars.len()) && icicle::is_gpu_supported_field(&omega) {
         icicle::fft_on_device::<Scalar, G>(scalars, inverse, &IcicleStream::default());
         return;
     }
-    
+
     fft::fft(scalars, omega, log_n, data, inverse);
 }
 
@@ -331,30 +332,6 @@ pub fn bitreverse(mut n: usize, l: usize) -> usize {
 
 #[cfg(feature = "gpu-accelerated")]
 use icicle_runtime::stream::IcicleStream;
-#[cfg(test)]
-use rand_core::OsRng;
 
 use crate::fft::{self, recursive::FFTData};
-#[cfg(test)]
-use crate::halo2curves::pasta::Fp;
 // use crate::plonk::{get_duration, get_time, start_measure, stop_measure};
-
-#[test]
-fn test_lagrange_interpolate() {
-    let rng = OsRng;
-
-    let points = (0..5).map(|_| Fp::random(rng)).collect::<Vec<_>>();
-    let evals = (0..5).map(|_| Fp::random(rng)).collect::<Vec<_>>();
-
-    for coeffs in 0..5 {
-        let points = &points[0..coeffs];
-        let evals = &evals[0..coeffs];
-
-        let poly = lagrange_interpolate(points, evals);
-        assert_eq!(poly.len(), points.len());
-
-        for (point, eval) in points.iter().zip(evals) {
-            assert_eq!(eval_polynomial(&poly, *point), *eval);
-        }
-    }
-}

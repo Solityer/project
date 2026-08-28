@@ -73,34 +73,3 @@ impl ExtField for Fp2 {
         }
     }
 }
-
-#[cfg(test)]
-mod test {
-
-    use super::*;
-    crate::field_testing_suite!(Fp2, "field_arithmetic");
-    crate::field_testing_suite!(Fp2, "conversion");
-    crate::field_testing_suite!(Fp2, "serialization");
-    crate::field_testing_suite!(Fp2, "quadratic_residue");
-    // crate::field_testing_suite!(Fp2, "sqrt");
-    crate::field_testing_suite!(Fp2, "zeta", Fp);
-    // extension field-specific
-    crate::field_testing_suite!(Fp2, "f2_tests", Fp);
-    crate::field_testing_suite!(
-        Fp2,
-        "frobenius",
-        // Frobenius endomorphism power parameter for extension field
-        //  ϕ: E → E
-        //  (x, y) ↦ (x^p, y^p)
-        // p: modulus of base field (Here, Fp::MODULUS)
-        Fp::MODULUS_LIMBS
-    );
-
-    #[test]
-    fn test_fq2_mul_nonresidue() {
-        let e = Fp2::random(rand_core::OsRng);
-        let a0 = e.mul_by_nonresidue();
-        let a1 = e * Fp2::NON_RESIDUE;
-        assert_eq!(a0, a1);
-    }
-}

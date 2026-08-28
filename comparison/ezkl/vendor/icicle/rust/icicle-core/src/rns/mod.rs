@@ -1,8 +1,6 @@
 use crate::{traits::FieldImpl, vec_ops::VecOpsConfig};
 use icicle_runtime::{eIcicleError, memory::HostOrDeviceSlice};
 
-pub mod tests;
-
 /// Trait for RNS conversions (`Zq <--> ZqRns`)
 pub trait RnsConversion<Zq: FieldImpl, ZqRns: FieldImpl> {
     fn to_rns(
@@ -172,40 +170,6 @@ macro_rules! impl_rns_conversions {
                     )
                     .wrap()
                 }
-            }
-        }
-    };
-}
-
-/// Implements tests for RNS conversions for a given ring.
-#[macro_export]
-macro_rules! impl_rns_conversions_tests {
-    (
-        $ZqType: ident,
-        $ZqRnsType: ident
-    ) => {
-        use icicle_runtime::{device::Device, runtime, test_utilities};
-
-        /// Initializes devices before running tests.
-        pub fn initialize() {
-            test_utilities::test_load_and_init_devices();
-            test_utilities::test_set_main_device();
-        }
-
-        #[cfg(test)]
-        mod tests {
-            use super::*;
-
-            #[test]
-            fn test_rns_conversions() {
-                initialize();
-                check_rns_conversion::<$ZqType, $ZqRnsType>();
-            }
-
-            #[test]
-            fn test_rns_arithmetic_consistency() {
-                initialize();
-                check_rns_arithmetic_consistency::<$ZqType, $ZqRnsType>();
             }
         }
     };

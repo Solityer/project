@@ -228,10 +228,6 @@ class Transcript:
             raise EncodingError("raw transcript message must be bytes")
         return self.absorb(label, message)
 
-    # Explicit protocol-oriented aliases make call sites read naturally while
-    # retaining one implementation of the ordering rule.
-    append_message = absorb
-
     def challenge_scalar(self, label: str, *, nonzero: bool = True) -> int:
         """Derive and absorb the next domain-separated Fr challenge.
 

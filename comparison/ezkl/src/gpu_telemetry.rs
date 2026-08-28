@@ -75,15 +75,19 @@ impl Scope {
     }
 
     pub(crate) fn finish(self) -> Result<GpuTelemetry, String> {
-        let mut output = vec![0i8; OUTPUT_BYTES];
+        let mut output = vec![0u8; OUTPUT_BYTES];
         #[allow(unsafe_code)]
-        let status = unsafe { ezkl_gpu_scope_end(self.nonce, output.as_mut_ptr(), output.len()) };
+        let status = unsafe {
+            ezkl_gpu_scope_end(
+                self.nonce,
+                output.as_mut_ptr().cast::<std::ffi::c_char>(),
+                output.len(),
+            )
+        };
         if status != 0 {
             return Err(status_error("scope end", status));
         }
-        #[allow(unsafe_code)]
-        let bytes =
-            unsafe { std::slice::from_raw_parts(output.as_ptr().cast::<u8>(), output.len()) };
+        let bytes = output.as_slice();
         let end = bytes
             .iter()
             .position(|byte| *byte == 0)

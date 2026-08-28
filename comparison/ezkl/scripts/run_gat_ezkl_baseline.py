@@ -8,6 +8,10 @@ source.  CPU and CUDA use separately built binaries and no fallback exists.
 
 from __future__ import annotations
 
+import sys
+
+sys.dont_write_bytecode = True
+
 import argparse
 import atexit
 import hashlib
@@ -15,7 +19,6 @@ import json
 import os
 import stat
 import subprocess
-import sys
 import time
 import uuid
 from pathlib import Path
@@ -44,6 +47,8 @@ from resource_policy import (  # noqa: E402
     canonical_cell_dir,
     check_resource_layout,
     resolve_local,
+    safe_mkdir,
+    validate_cuda_backend_material,
     validate_cell_inventory,
 )
 from build_identity_contract import (  # noqa: E402
@@ -200,7 +205,7 @@ def _clean_canonical_cell(path: Path, parent: Path) -> None:
     try:
         checked_parent = checked_path(ROOT, parent, "canonical result parent")
         checked = checked_path(ROOT, path, "canonical result cell", allow_missing=True)
-    except (FileNotFoundError, ValueError) as exc:
+    except (FileNotFoundError, OSError, ValueError) as exc:
         raise RuntimeError(str(exc)) from exc
     if not checked.exists():
         return
@@ -262,19 +267,9 @@ def _ensure_baseline_directory(path: Path, label: str) -> Path:
     """Create one baseline-local directory after checking every component."""
 
     try:
-        checked = checked_path(ROOT, path, label, allow_missing=True)
-    except (FileNotFoundError, ValueError) as exc:
+        checked = safe_mkdir(ROOT, path, label, mode=PRIVATE_DIRECTORY_MODE)
+    except (FileNotFoundError, OSError, ValueError) as exc:
         raise RuntimeError(str(exc)) from exc
-    if checked.exists():
-        metadata = checked.lstat()
-        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
-            raise RuntimeError(f"{label} is not a private directory: {checked}")
-        os.chmod(checked, PRIVATE_DIRECTORY_MODE, follow_symlinks=False)
-        return checked
-    try:
-        checked.mkdir()
-    except OSError as exc:
-        raise RuntimeError(f"cannot create {label}: {checked}: {exc}") from exc
     os.chmod(checked, PRIVATE_DIRECTORY_MODE, follow_symlinks=False)
     return checked
 
@@ -464,7 +459,12 @@ def main() -> int:
     # This is a path-only preflight.  It checks names and presence but never
     # opens full dataset/checkpoint contents; the native adapter performs the
     # authoritative authenticated loading later.
-    check_resource_layout(ROOT, [args.dataset], require_staged=True)
+    check_resource_layout(
+        ROOT, [args.dataset], require_staged=True, backend=args.device
+    )
+    cuda_backend_material = (
+        validate_cuda_backend_material(ROOT) if args.device == "cuda" else None
+    )
     stage_root, work_dir = _prepare_stage(args.dataset, args.device, run_dir, args.clean)
     run_dir = work_dir
     final_run_dir = default_run
@@ -571,6 +571,7 @@ def main() -> int:
         "security_profile_materialization_stderr": materialize_stderr[-4000:],
         "formal_semantic_source_id": current_source_id,
         "resolved_security_profile_semantic_source_id": resolved_profile_payload.get("semantic_source_id"),
+        "cuda_backend_provenance": cuda_backend_material or {"status": "not_applicable"},
     }
     if prover_identity is not None and verifier_identity is not None:
         manifest.update({
@@ -815,6 +816,7 @@ def main() -> int:
                 if args.device == "cuda" else "not_applicable"
             ),
             "gpu_prove_telemetry": prove_output.get("gpu_prove_telemetry", "not_applicable"),
+            "cuda_backend_provenance": cuda_backend_material or {"status": "not_applicable"},
             "prove_metadata": prove_metadata,
             "verify_metadata": verify_metadata,
         }

@@ -10,58 +10,53 @@ fn main() {
     let main_dir = env::current_dir().expect("Failed to get current directory");
     let icicle_src_dir = PathBuf::from(format!("{}/../../../icicle/icicle", main_dir.display()));
 
+    // Keep the arbitrary-path loader out of the public ICICLE device DSO.
+    // This bridge is linked into the authenticated Rust executable and its
+    // hidden symbol is callable only by the Rust wrapper in this crate.
+    cc::Build::new()
+        .cpp(true)
+        .file(icicle_src_dir.join("src/runtime_internal_loader.cpp"))
+        .include(icicle_src_dir.join("include"))
+        .include(icicle_src_dir.join("src"))
+        .flag_if_supported("-fvisibility=hidden")
+        .compile("icicle_authenticated_loader");
+    println!("cargo:rustc-link-lib=dylib=dl");
+    println!(
+        "cargo:rerun-if-changed={}",
+        icicle_src_dir
+            .join("src/runtime_internal_loader.cpp")
+            .display()
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
+        icicle_src_dir.join("src/runtime_internal.h").display()
+    );
+
     println!("cargo:rerun-if-env-changed=CXXFLAGS");
     println!("cargo:rerun-if-changed={}", icicle_src_dir.display());
 
     // Base config
     let mut config = Config::new(format!("{}", icicle_src_dir.display()));
-    // Check if ICICLE_INSTALL_DIR is defined
-    let icicle_install_dir = if let Ok(dir) = env::var("ICICLE_INSTALL_DIR") {
-        PathBuf::from(dir)
-    } else {
-        // Define the default install directory to be under the build directory
-        PathBuf::from(format!("{}/icicle/", deps_dir.display()))
-    };
+    // Keep generated libraries in Cargo's baseline-local target directory.
+    let icicle_install_dir = deps_dir.join("icicle");
     config
         .define("HASH", "OFF")
         .define("CMAKE_INSTALL_PREFIX", &icicle_install_dir);
 
-    // build (or pull and build) cuda backend if feature enabled.
-    // Note: this requires access to the repo
-    if cfg!(feature = "cuda_backend") {
-        config.define("CUDA_BACKEND", "local");
-    } else if cfg!(feature = "pull_cuda_backend") {
-        config.define("CUDA_BACKEND", "main");
-    }
-    if cfg!(feature = "metal_backend") {
-        config.define("METAL_BACKEND", "local");
-    } else if cfg!(feature = "pull_metal_backend") {
-        config.define("METAL_BACKEND", "main");
-    }
-    if cfg!(feature = "vulkan_backend") {
-        config.define("VULKAN_BACKEND", "local");
-    } else if cfg!(feature = "pull_vulkan_backend") {
-        config.define("VULKAN_BACKEND", "main");
-    }
+    // The public ICICLE commit intentionally contains only the CPU frontend.
+    // CUDA is a separately staged, authenticated baseline-local runtime
+    // resource, so this build never attempts to compile or fetch a backend.
 
     // Build
-    let _ = config
-        .build_target("install")
-        .build();
+    config.build_target("install").build();
 
-    println!("cargo:rustc-link-search={}/lib", icicle_install_dir.display());
+    println!(
+        "cargo:rustc-link-search={}/lib",
+        icicle_install_dir.display()
+    );
     println!("cargo:rustc-link-lib=icicle_device");
-    println!("cargo:rustc-link-arg=-Wl,-rpath,{}/lib", icicle_install_dir.display()); // Add RPATH linker arguments
-
-    // default backends dir
-    if cfg!(feature = "cuda_backend")
-        || cfg!(feature = "pull_cuda_backend")
-        || cfg!(feature = "metal_backend")
-        || cfg!(feature = "pull_metal_backend")
-    {
-        println!(
-            "cargo:rustc-env=ICICLE_BACKEND_INSTALL_DIR={}/lib/backend",
-            icicle_install_dir.display()
-        );
-    }
+    println!(
+        "cargo:rustc-link-arg=-Wl,-rpath,{}/lib",
+        icicle_install_dir.display()
+    ); // Add RPATH linker arguments
 }

@@ -32,7 +32,7 @@ from zkgpt_gat.result_validation import (  # noqa: E402
     validate_artifact,
     validate_matrix_rows,
 )
-from zkgpt_gat.util import digest_json, write_json, write_text_atomic  # noqa: E402
+from zkgpt_gat.util import digest_json, ensure_dir, write_json, write_text_atomic  # noqa: E402
 
 
 def _sha256_bytes(value: bytes) -> str:
@@ -268,7 +268,7 @@ def main() -> int:
         results_dir = resolve_results_dir(ROOT, args.results_dir)
     except ResultValidationError as exc:
         raise SystemExit(str(exc)) from exc
-    results_dir.mkdir(parents=True, exist_ok=True)
+    ensure_dir(results_dir, root=ROOT, label="results root")
     rows, errors = _collect(results_dir)
     return 0 if _write_outputs(results_dir, rows, errors) else 1
 

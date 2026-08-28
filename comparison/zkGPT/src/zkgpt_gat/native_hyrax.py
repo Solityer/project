@@ -27,7 +27,7 @@ from .bn254 import BN254_FQ_MODULUS, G1Point, generator_vector, hash_point, mult
 from .field import BN254_FR_MODULUS, f_inv, log2_power_of_two, to_field_int
 from .gpu_execution import active_mle_fold
 from .transcript import Transcript
-from .util import read_json, write_json
+from .util import ensure_dir, read_json, write_json
 from .value_commitment import PedersenParams, ValueCommitment
 
 
@@ -821,7 +821,7 @@ class NativeHyrax:
         transcript: Transcript,
         public_context: Mapping[str, Any] | None = None,
     ) -> HyraxOpeningState:
-        work_dir.mkdir(parents=True, exist_ok=True)
+        ensure_dir(work_dir, label="Hyrax opening work directory")
         vector = [to_field_int(value) for value in values]
         n = _require_power_of_two(len(vector), "committed vector length")
         point_values = [to_field_int(value) for value in point]
@@ -900,7 +900,7 @@ class NativeHyrax:
         by the proof.  This is the primitive used to bind MatMul/GKR/Lasso
         terminal claims directly to the unique registered W/Aux/L vectors.
         """
-        work_dir.mkdir(parents=True, exist_ok=True)
+        ensure_dir(work_dir, label="Hyrax linear opening work directory")
         vector = [to_field_int(value) for value in values]
         linear_weights = [to_field_int(value) for value in weights]
         n = _require_power_of_two(len(vector), "committed vector length")
@@ -978,7 +978,7 @@ class NativeHyrax:
         claim in the final committed Sumcheck and canonical W/Aux/L openings;
         a verifier treats this payload as pending until that batch succeeds.
         """
-        work_dir.mkdir(parents=True, exist_ok=True)
+        ensure_dir(work_dir, label="Hyrax batched opening work directory")
         vector = [to_field_int(value) for value in values]
         n = _require_power_of_two(len(vector), "committed vector length")
         if isinstance(weights, Mapping):
@@ -1060,7 +1060,7 @@ class NativeHyrax:
         transcript: Transcript,
         public_context: Mapping[str, Any] | None = None,
     ) -> Dict[str, Any]:
-        work_dir.mkdir(parents=True, exist_ok=True)
+        ensure_dir(work_dir, label="Hyrax verification work directory")
         result = verify_open_payload(
             label,
             read_json(proof_path),
@@ -1261,18 +1261,6 @@ def verify_batched_linear_claim_payload(
         }
     except (KeyError, TypeError, ValueError, ZeroDivisionError):
         return _failed(label, "malformed_hyrax_batched_linear_claim")
-
-
-def mle_point_from_u64(challenge: int, variable_count: int) -> List[int]:
-    """Compatibility helper; formal code must source challenge from Fiat-Shamir."""
-    state = int(challenge) & ((1 << 64) - 1)
-    out: List[int] = []
-    for _ in range(variable_count):
-        state ^= state << 13 & ((1 << 64) - 1)
-        state ^= state >> 7
-        state ^= state << 17 & ((1 << 64) - 1)
-        out.append(state % BN254_FR_MODULUS)
-    return out
 
 
 def _failed(label: str, reason: str) -> Dict[str, Any]:

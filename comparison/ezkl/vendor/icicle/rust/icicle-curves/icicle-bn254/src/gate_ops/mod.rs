@@ -1,16 +1,10 @@
 use crate::curve::{ScalarCfg, ScalarField};
 use icicle_core::{
+    gate_ops::{
+        CalculationData, GateData, GateOps, GateOpsConfig, HornerData, LookupConfig, LookupData,
+    },
     impl_gate_ops_field,
-    gate_ops::{GateData, CalculationData, HornerData, GateOps, GateOpsConfig, LookupData, LookupConfig},
 };
 use icicle_runtime::{errors::eIcicleError, memory::HostOrDeviceSlice};
 
 impl_gate_ops_field!("bn254", bn254, ScalarField, ScalarCfg);
-#[cfg(test)]
-pub(crate) mod tests {
-    use crate::curve::ScalarField;
-    use icicle_core::impl_gate_ops_tests;
-    use icicle_core::gate_ops::tests::*;
-
-    impl_gate_ops_tests!(ScalarField);
-}

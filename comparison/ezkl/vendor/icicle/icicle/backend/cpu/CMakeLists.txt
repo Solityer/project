@@ -1,33 +1,15 @@
 cmake_minimum_required(VERSION 3.18)
 
-message(STATUS "Fetching Taskflow v3.8.0 (CPU backend)")
-
-
-include(FetchContent)
-# Temporarily redefine set message log level to WARNING for fetched content
-set(ORIG_CMAKE_MESSAGE_LOG_LEVEL "${CMAKE_MESSAGE_LOG_LEVEL}")
-set(CMAKE_MESSAGE_LOG_LEVEL "WARNING")
-
-FetchContent_Declare(
-  Taskflow
- GIT_REPOSITORY https://github.com/taskflow/taskflow.git
- GIT_TAG v3.8.0
- GIT_SHALLOW TRUE
-)
-# Disable unnecessary components
-set(TF_BUILD_BENCHMARKS OFF CACHE BOOL "Disable Taskflow benchmarks" FORCE)
-set(TF_BUILD_PROFILER OFF CACHE BOOL "Disable Taskflow profiler" FORCE)
-set(TF_BUILD_CUDA OFF CACHE BOOL "Disable Taskflow CUDA support" FORCE)
-set(TF_BUILD_SYCL OFF CACHE BOOL "Disable Taskflow SYCL support" FORCE)
-set(TF_BUILD_TESTS OFF CACHE BOOL "Disable Taskflow tests" FORCE)
-set(TF_BUILD_EXAMPLES OFF CACHE BOOL "Disable Taskflow examples" FORCE)
-
-FetchContent_MakeAvailable(Taskflow)
-# Use icicle_device as interface for TaskFlow headers
-target_include_directories(icicle_device INTERFACE ${Taskflow_SOURCE_DIR})
-
-# Restore the original message log level
-set(CMAKE_MESSAGE_LOG_LEVEL "${ORIG_CMAKE_MESSAGE_LOG_LEVEL}")
+# The formal baseline vendors the exact Taskflow headers used by the ICICLE
+# CPU primitives use only the baseline-local Taskflow headers.  Network
+# dependency acquisition is forbidden in a formal offline build.
+set(TASKFLOW_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../../")
+if(NOT EXISTS "${TASKFLOW_INCLUDE_DIR}/taskflow/taskflow.hpp")
+  message(FATAL_ERROR
+    "baseline-local Taskflow v3.8.0 headers are missing: ${TASKFLOW_INCLUDE_DIR}/taskflow/taskflow.hpp")
+endif()
+message(STATUS "Using baseline-local Taskflow v3.8.0 headers")
+target_include_directories(icicle_device INTERFACE "${TASKFLOW_INCLUDE_DIR}")
 
 # CPU backend is built directly into icicle library
 

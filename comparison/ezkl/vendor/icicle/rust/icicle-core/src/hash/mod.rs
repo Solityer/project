@@ -1,5 +1,6 @@
 use icicle_runtime::{
-    config::ConfigExtension, errors::eIcicleError, memory::HostOrDeviceSlice, stream::IcicleStreamHandle,
+    config::ConfigExtension, errors::eIcicleError, memory::HostOrDeviceSlice,
+    stream::IcicleStreamHandle,
 };
 use std::ffi::c_void;
 

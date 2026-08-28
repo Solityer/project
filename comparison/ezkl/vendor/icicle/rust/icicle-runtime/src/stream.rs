@@ -28,15 +28,11 @@ impl IcicleStream {
     }
 
     pub fn is_null(&self) -> bool {
-        self.handle
-            .is_null()
+        self.handle.is_null()
     }
 
     pub fn destroy(&mut self) -> Result<(), eIcicleError> {
-        if !self
-            .handle
-            .is_null()
-        {
+        if !self.handle.is_null() {
             let err = unsafe { runtime::icicle_destroy_stream(self.handle) };
             self.handle = std::ptr::null_mut();
             return err.wrap();
@@ -55,10 +51,7 @@ impl Default for IcicleStream {
 
 impl Drop for IcicleStream {
     fn drop(&mut self) {
-        if !self
-            .handle
-            .is_null()
-        {
+        if !self.handle.is_null() {
             eprintln!("Warning: IcicleStream was not explicitly destroyed. Make sure to call stream.destroy() to release the stream resource.");
             // let _ = unsafe { runtime::icicle_destroy_stream(self.handle) };
         }

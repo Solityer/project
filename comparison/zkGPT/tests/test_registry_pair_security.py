@@ -102,6 +102,45 @@ class RegistryPairSecurityTests(unittest.TestCase):
             with self.assertRaises((RuntimeError, ValueError)):
                 validate_registry_pair(root, "../escape")
 
+    def test_in_baseline_registry_aliases_fail_closed_before_publish(self) -> None:
+        """Canonicalization must not turn an in-root alias into a write target."""
+        for alias_kind in ("results", "model_registry", "identity", "private_setup"):
+            with self.subTest(alias_kind=alias_kind), tempfile.TemporaryDirectory(
+                prefix="zkgpt-registry-pair-in-root-alias-"
+            ) as name:
+                root = pathlib.Path(name)
+                metadata = self._metadata()
+                identity = str(metadata["model_param_id"])
+                target = root / f"target-{alias_kind}"
+                target.mkdir()
+                sentinel = target / "sentinel"
+                sentinel.write_text("keep\n", encoding="utf-8")
+                public_parent = root / "results"
+                private_parent = root / "artifacts" / "private_setup"
+                public_parent.mkdir(parents=True)
+                private_parent.mkdir(parents=True)
+                if alias_kind == "results":
+                    (root / "results").rmdir()
+                    (root / "results").symlink_to(target, target_is_directory=True)
+                elif alias_kind == "model_registry":
+                    (root / "results" / "model_registry").symlink_to(
+                        target, target_is_directory=True
+                    )
+                elif alias_kind == "identity":
+                    (root / "results" / "model_registry").mkdir()
+                    (root / "results" / "model_registry" / identity).symlink_to(
+                        target, target_is_directory=True
+                    )
+                else:
+                    (root / "artifacts" / "private_setup" / "model_registry").symlink_to(
+                        target, target_is_directory=True
+                    )
+                with self.assertRaisesRegex(RuntimeError, "symlink"):
+                    ensure_model_registry(root, metadata, [("com_W", [1, 2])])
+                self.assertEqual(sentinel.read_text(encoding="utf-8"), "keep\n")
+                self.assertFalse((target / "registry.json").exists())
+                self.assertFalse((target / "registry.secret.json").exists())
+
     def test_transaction_id_mismatch_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory(prefix="zkgpt-registry-pair-tx-") as name:
             root = pathlib.Path(name)

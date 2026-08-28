@@ -5,24 +5,8 @@ authors = ["Privacy Scaling Explorations team"]
 license = "MIT/Apache-2.0"
 edition = "2021"
 repository = "https://github.com/privacy-scaling-explorations/halo2curves"
-readme = "README.md"
 description = "Elliptic curve implementations and wrappers for halo2 library"
 rust-version = "1.63.0"
-
-[dev-dependencies]
-criterion = { version = "0.3", features = ["html_reports"] }
-rand_xorshift = "0.3"
-ark-std = { version = "0.3" }
-bincode = "1.3.3"
-serde_json = "1.0.105"
-hex = "0.4"
-rand_chacha = "0.3.1"
-impls = "1"
-
-# Added to make sure we are able to build the lib in the CI.
-# Notice this will never be loaded for someone using this lib as dep.
-[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dev-dependencies]
-getrandom = { version = "0.2", features = ["js"] }
 
 [dependencies]
 halo2derive = {path = "derive", version="0.1.0"}
@@ -52,39 +36,4 @@ digest = "0.10.7"
 default = ["bits"]
 asm = ["halo2derive/asm"]
 bits = ["ff/bits"]
-bn256-table = []
 derive_serde = ["serde/derive", "serde_arrays", "hex", "pasta_curves/serde"]
-print-trace = ["ark-std/print-trace"]
-
-[profile.bench]
-opt-level = 3
-debug = false
-debug-assertions = false
-overflow-checks = false
-lto = true
-incremental = false
-codegen-units = 1
-
-[[bench]]
-name = "field_arith"
-harness = false
-
-[[bench]]
-name = "curve"
-harness = false
-
-[[bench]]
-name = "hash_to_curve"
-harness = false
-
-[[bench]]
-name = "fft"
-harness = false
-
-[[bench]]
-name = "msm"
-harness = false
-
-[[bench]]
-name = "pairing"
-harness = false

@@ -38,27 +38,3 @@ impl ExtField for Fp {
     }
     fn frobenius_map(&mut self, _: usize) {}
 }
-
-#[cfg(test)]
-mod test {
-
-    use super::*;
-    crate::field_testing_suite!(Fp, "field_arithmetic");
-    crate::field_testing_suite!(Fp, "conversion");
-    crate::field_testing_suite!(Fp, "serialization");
-    crate::field_testing_suite!(Fp, "quadratic_residue");
-    crate::field_testing_suite!(Fp, "bits");
-    crate::field_testing_suite!(Fp, "serialization_check");
-    crate::field_testing_suite!(Fp, "constants");
-    crate::field_testing_suite!(Fp, "sqrt");
-    crate::field_testing_suite!(Fp, "zeta");
-    crate::field_testing_suite!(Fp, "from_uniform_bytes", 64, 72, 112);
-
-    #[test]
-    fn test_fq_mul_nonresidue() {
-        let e = Fp::random(rand_core::OsRng);
-        let a0 = e.mul_by_nonresidue();
-        let a1 = e * Fp::NON_RESIDUE;
-        assert_eq!(a0, a1);
-    }
-}

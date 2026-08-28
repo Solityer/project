@@ -130,8 +130,10 @@ mod evm {
     impl<M, MOS> AccumulationDecider<M::G1Affine, Rc<EvmLoader>> for KzgAs<M, MOS>
     where
         M: MultiMillerLoop,
-        M::G1Affine: CurveAffine<Repr = halo2_proofs::halo2curves::serde::Repr<32>, ScalarExt = M::Fr>,
-        <M::G1Affine as CurveAffine>::ScalarExt: PrimeField<Repr = halo2_proofs::halo2curves::serde::Repr<32>>,
+        M::G1Affine:
+            CurveAffine<Repr = halo2_proofs::halo2curves::serde::Repr<32>, ScalarExt = M::Fr>,
+        <M::G1Affine as CurveAffine>::ScalarExt:
+            PrimeField<Repr = halo2_proofs::halo2curves::serde::Repr<32>>,
         M::G2Affine: CurveAffine,
         M::Fr: PrimeField<Repr = halo2_proofs::halo2curves::serde::Repr<32>>,
         MOS: Clone + Debug,

@@ -33,6 +33,7 @@ mod evaluation;
 mod keygen;
 #[cfg(not(feature = "mv-lookup"))]
 mod lookup;
+pub mod metadata;
 #[cfg(feature = "mv-lookup")]
 mod mv_lookup;
 pub mod permutation;
@@ -49,11 +50,11 @@ pub use keygen::*;
 pub use prover::*;
 pub use verifier::*;
 
-pub use evaluation::{CalculationInfo, ValueSource, Calculation};
 use evaluation::Evaluator;
-use std::{fmt, io};
+pub use evaluation::{Calculation, CalculationInfo, ValueSource};
 #[cfg(feature = "gpu-accelerated")]
 use std::sync::Arc;
+use std::{fmt, io};
 
 /// This is a verifying key which allows for the verification of proofs for a
 /// particular circuit.
@@ -464,13 +465,17 @@ where
         let fixed_cosets = read_polynomial_vec(reader, format)?;
 
         #[cfg(feature = "gpu-accelerated")]
-        let icicle_fixed = device_vec_from_poly_vec::<C, ExtendedLagrangeCoeff>(&fixed_cosets, &IcicleStream::default());
+        let icicle_fixed = device_vec_from_poly_vec::<C, ExtendedLagrangeCoeff>(
+            &fixed_cosets,
+            &IcicleStream::default(),
+        );
         #[cfg(feature = "gpu-accelerated")]
         let icicle_l0 = device_vec_from_c_scalars(&l0.as_ref(), &IcicleStream::default());
         #[cfg(feature = "gpu-accelerated")]
         let icicle_l_last = device_vec_from_c_scalars(&l_last.as_ref(), &IcicleStream::default());
         #[cfg(feature = "gpu-accelerated")]
-        let icicle_l_active_row = device_vec_from_c_scalars(&l_active_row.as_ref(), &IcicleStream::default());
+        let icicle_l_active_row =
+            device_vec_from_c_scalars(&l_active_row.as_ref(), &IcicleStream::default());
 
         let permutation = permutation::ProvingKey::read(reader, format)?;
         let ev = Evaluator::new(vk.cs());

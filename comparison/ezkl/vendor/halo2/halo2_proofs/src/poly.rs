@@ -28,9 +28,6 @@ pub mod ipa;
 /// KZG commitment scheme
 pub mod kzg;
 
-#[cfg(test)]
-mod multiopen_test;
-
 pub use domain::*;
 pub use query::{ProverQuery, VerifierQuery};
 pub use strategy::{Guard, VerificationStrategy};

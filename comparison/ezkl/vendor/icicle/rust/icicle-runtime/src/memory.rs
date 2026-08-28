@@ -3,7 +3,8 @@ use crate::runtime;
 use crate::stream::IcicleStream;
 use std::mem::{size_of, ManuallyDrop};
 use std::ops::{
-    Deref, DerefMut, Index, IndexMut, Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive,
+    Deref, DerefMut, Index, IndexMut, Range, RangeFrom, RangeFull, RangeInclusive, RangeTo,
+    RangeToInclusive,
 };
 use std::os::raw::c_void;
 use std::slice::{from_raw_parts_mut, SliceIndex};
@@ -28,7 +29,14 @@ pub trait HostOrDeviceSlice<T> {
         );
 
         let size = size_of::<T>() * src.len();
-        unsafe { runtime::icicle_copy(self.as_mut_ptr() as *mut c_void, src.as_ptr() as *const c_void, size).wrap() }
+        unsafe {
+            runtime::icicle_copy(
+                self.as_mut_ptr() as *mut c_void,
+                src.as_ptr() as *const c_void,
+                size,
+            )
+            .wrap()
+        }
     }
 
     fn copy_async(
@@ -54,7 +62,12 @@ pub trait HostOrDeviceSlice<T> {
     }
 
     fn memset(&mut self, value: u8, size: usize) -> Result<(), eIcicleError>;
-    fn memset_async(&mut self, value: u8, size: usize, stream: &IcicleStream) -> Result<(), eIcicleError>;
+    fn memset_async(
+        &mut self,
+        value: u8,
+        size: usize,
+        stream: &IcicleStream,
+    ) -> Result<(), eIcicleError>;
 }
 
 impl<T> HostOrDeviceSlice<T> for HostSlice<T> {
@@ -67,18 +80,15 @@ impl<T> HostOrDeviceSlice<T> for HostSlice<T> {
     }
 
     unsafe fn as_ptr(&self) -> *const T {
-        self.0
-            .as_ptr()
+        self.0.as_ptr()
     }
 
     unsafe fn as_mut_ptr(&mut self) -> *mut T {
-        self.0
-            .as_mut_ptr()
+        self.0.as_mut_ptr()
     }
 
     fn len(&self) -> usize {
-        self.0
-            .len()
+        self.0.len()
     }
 
     fn is_empty(&self) -> bool {
@@ -98,7 +108,12 @@ impl<T> HostOrDeviceSlice<T> for HostSlice<T> {
         Ok(())
     }
 
-    fn memset_async(&mut self, value: u8, size: usize, stream: &IcicleStream) -> Result<(), eIcicleError> {
+    fn memset_async(
+        &mut self,
+        value: u8,
+        size: usize,
+        stream: &IcicleStream,
+    ) -> Result<(), eIcicleError> {
         if size == 0 || self.is_empty() {
             return Ok(());
         }
@@ -106,7 +121,13 @@ impl<T> HostOrDeviceSlice<T> for HostSlice<T> {
             panic!("size exceeds slice length");
         }
         unsafe {
-            runtime::memset_async(self.as_mut_ptr() as *mut c_void, value as i32, size, stream.handle).wrap()?;
+            runtime::memset_async(
+                self.as_mut_ptr() as *mut c_void,
+                value as i32,
+                size,
+                stream.handle,
+            )
+            .wrap()?;
         }
         Ok(())
     }
@@ -118,25 +139,19 @@ impl<T> HostOrDeviceSlice<T> for DeviceSlice<T> {
     }
 
     fn is_on_active_device(&self) -> bool {
-        runtime::is_active_device_memory(
-            self.0
-                .as_ptr() as *const c_void,
-        )
+        runtime::is_active_device_memory(self.0.as_ptr() as *const c_void)
     }
 
     unsafe fn as_ptr(&self) -> *const T {
-        self.0
-            .as_ptr()
+        self.0.as_ptr()
     }
 
     unsafe fn as_mut_ptr(&mut self) -> *mut T {
-        self.0
-            .as_mut_ptr()
+        self.0.as_mut_ptr()
     }
 
     fn len(&self) -> usize {
-        self.0
-            .len()
+        self.0.len()
     }
 
     fn is_empty(&self) -> bool {
@@ -158,7 +173,12 @@ impl<T> HostOrDeviceSlice<T> for DeviceSlice<T> {
         unsafe { runtime::memset(self.as_mut_ptr() as *mut c_void, value as i32, byte_size).wrap() }
     }
 
-    fn memset_async(&mut self, value: u8, size: usize, stream: &IcicleStream) -> Result<(), eIcicleError> {
+    fn memset_async(
+        &mut self,
+        value: u8,
+        size: usize,
+        stream: &IcicleStream,
+    ) -> Result<(), eIcicleError> {
         if size == 0 || self.is_empty() {
             return Ok(());
         }
@@ -171,7 +191,13 @@ impl<T> HostOrDeviceSlice<T> for DeviceSlice<T> {
 
         let byte_size = size_of::<T>() * size;
         unsafe {
-            runtime::memset_async(self.as_mut_ptr() as *mut c_void, value as i32, byte_size, stream.handle).wrap()
+            runtime::memset_async(
+                self.as_mut_ptr() as *mut c_void,
+                value as i32,
+                byte_size,
+                stream.handle,
+            )
+            .wrap()
         }
     }
 }
@@ -210,13 +236,16 @@ impl<T> HostOrDeviceSlice<T> for DeviceVec<T> {
     }
 
     fn memset(&mut self, value: u8, size: usize) -> Result<(), eIcicleError> {
-        self.as_mut_slice()
-            .memset(value, size)
+        self.as_mut_slice().memset(value, size)
     }
 
-    fn memset_async(&mut self, value: u8, size: usize, stream: &IcicleStream) -> Result<(), eIcicleError> {
-        self.as_mut_slice()
-            .memset_async(value, size, stream)
+    fn memset_async(
+        &mut self,
+        value: u8,
+        size: usize,
+        stream: &IcicleStream,
+    ) -> Result<(), eIcicleError> {
+        self.as_mut_slice().memset_async(value, size, stream)
     }
 }
 
@@ -242,13 +271,11 @@ impl<T> HostSlice<T> {
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &T> {
-        self.0
-            .iter()
+        self.0.iter()
     }
 
     pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut T> {
-        self.0
-            .iter_mut()
+        self.0.iter_mut()
     }
 }
 
@@ -276,7 +303,12 @@ impl<T> DeviceSlice<T> {
 
         let size = size_of::<T>() * self.len();
         unsafe {
-            runtime::icicle_copy_to_device(self.as_mut_ptr() as *mut c_void, val.as_ptr() as *const c_void, size).wrap()
+            runtime::icicle_copy_to_device(
+                self.as_mut_ptr() as *mut c_void,
+                val.as_ptr() as *const c_void,
+                size,
+            )
+            .wrap()
         }
     }
 
@@ -295,11 +327,20 @@ impl<T> DeviceSlice<T> {
 
         let size = size_of::<T>() * self.len();
         unsafe {
-            runtime::icicle_copy_to_host(val.as_mut_ptr() as *mut c_void, self.as_ptr() as *const c_void, size).wrap()
+            runtime::icicle_copy_to_host(
+                val.as_mut_ptr() as *mut c_void,
+                self.as_ptr() as *const c_void,
+                size,
+            )
+            .wrap()
         }
     }
 
-    pub fn copy_from_host_async(&mut self, val: &HostSlice<T>, stream: &IcicleStream) -> Result<(), eIcicleError> {
+    pub fn copy_from_host_async(
+        &mut self,
+        val: &HostSlice<T>,
+        stream: &IcicleStream,
+    ) -> Result<(), eIcicleError> {
         assert!(
             self.len() == val.len(),
             "In copy from host, destination and source slices have different lengths"
@@ -323,7 +364,11 @@ impl<T> DeviceSlice<T> {
         }
     }
 
-    pub fn copy_to_host_async(&self, val: &mut HostSlice<T>, stream: &IcicleStream) -> Result<(), eIcicleError> {
+    pub fn copy_to_host_async(
+        &self,
+        val: &mut HostSlice<T>,
+        stream: &IcicleStream,
+    ) -> Result<(), eIcicleError> {
         assert!(
             self.len() == val.len(),
             "In copy to host, destination and source slices have different lengths"
@@ -350,9 +395,7 @@ impl<T> DeviceSlice<T> {
 
 impl<T> DeviceVec<T> {
     pub fn device_malloc(count: usize) -> Result<Self, eIcicleError> {
-        let size = count
-            .checked_mul(size_of::<T>())
-            .unwrap_or(0);
+        let size = count.checked_mul(size_of::<T>()).unwrap_or(0);
 
         let mut device_ptr: *mut c_void = std::ptr::null_mut();
         let error = unsafe { runtime::icicle_malloc(&mut device_ptr, size) };
@@ -369,9 +412,7 @@ impl<T> DeviceVec<T> {
     }
 
     pub fn device_malloc_async(count: usize, stream: &IcicleStream) -> Result<Self, eIcicleError> {
-        let size = count
-            .checked_mul(size_of::<T>())
-            .unwrap_or(0);
+        let size = count.checked_mul(size_of::<T>()).unwrap_or(0);
 
         let mut device_ptr: *mut c_void = std::ptr::null_mut();
         unsafe { runtime::icicle_malloc_async(&mut device_ptr, size, stream.handle).wrap()? };
@@ -391,17 +432,12 @@ impl<T> DeviceVec<T> {
 
 impl<T> Drop for DeviceVec<T> {
     fn drop(&mut self) {
-        if self
-            .0
-            .is_empty()
-        {
+        if self.0.is_empty() {
             return;
         }
 
         unsafe {
-            let ptr = self
-                .0
-                .as_mut_ptr() as *mut c_void;
+            let ptr = self.0.as_mut_ptr() as *mut c_void;
             let err = runtime::icicle_free(ptr);
             if err != eIcicleError::Success {
                 panic!("releasing memory failed due to invalid active device");
@@ -451,15 +487,13 @@ impl<T> Index<usize> for HostSlice<T> {
     type Output = T;
 
     fn index(&self, index: usize) -> &Self::Output {
-        self.0
-            .index(index)
+        self.0.index(index)
     }
 }
 
 impl<T> IndexMut<usize> for HostSlice<T> {
     fn index_mut(&mut self, index: usize) -> &mut Self::Output {
-        self.0
-            .index_mut(index)
+        self.0.index_mut(index)
     }
 }
 
@@ -470,12 +504,7 @@ where
     type Output = DeviceSlice<T>;
 
     fn index(&self, index: Idx) -> &Self::Output {
-        unsafe {
-            Self::Output::from_slice(
-                self.0
-                    .index(index),
-            )
-        }
+        unsafe { Self::Output::from_slice(self.0.index(index)) }
     }
 }
 
@@ -484,12 +513,7 @@ where
     Idx: SliceIndex<[T], Output = [T]>,
 {
     fn index_mut(&mut self, index: Idx) -> &mut Self::Output {
-        unsafe {
-            Self::Output::from_mut_slice(
-                self.0
-                    .index_mut(index),
-            )
-        }
+        unsafe { Self::Output::from_mut_slice(self.0.index_mut(index)) }
     }
 }
 
@@ -500,12 +524,7 @@ where
     type Output = Self;
 
     fn index(&self, index: Idx) -> &Self::Output {
-        unsafe {
-            Self::from_slice(
-                self.0
-                    .index(index),
-            )
-        }
+        unsafe { Self::from_slice(self.0.index(index)) }
     }
 }
 
@@ -514,12 +533,7 @@ where
     Idx: SliceIndex<[T], Output = [T]>,
 {
     fn index_mut(&mut self, index: Idx) -> &mut Self::Output {
-        unsafe {
-            Self::from_mut_slice(
-                self.0
-                    .index_mut(index),
-            )
-        }
+        unsafe { Self::from_mut_slice(self.0.index_mut(index)) }
     }
 }
 

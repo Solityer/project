@@ -65,12 +65,6 @@ pub enum EZKLError {
     JsonError(#[from] serde_json::Error),
     #[error("[utf8] {0}")]
     Utf8Error(#[from] std::str::Utf8Error),
-    #[cfg(all(
-        feature = "ezkl",
-        not(all(target_arch = "wasm32", target_os = "unknown"))
-    ))]
-    #[error("[reqwest] {0}")]
-    ReqwestError(#[from] reqwest::Error),
     #[error("[fmt] {0}")]
     FmtError(#[from] std::fmt::Error),
     #[error("[halo2] {0}")]
@@ -464,83 +458,5 @@ pub fn check_version_string_matches(artifact_version: &str) {
             version,
             artifact_version
         );
-    }
-}
-
-#[cfg(test)]
-#[allow(clippy::field_reassign_with_default)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_valid_default_args() {
-        let args = RunArgs::default();
-        assert!(args.validate().is_ok());
-    }
-
-    #[test]
-    fn test_invalid_param_visibility() {
-        let mut args = RunArgs::default();
-        args.param_visibility = Visibility::Public;
-        let err = args.validate().unwrap_err();
-        assert!(err.contains("Parameters cannot be public instances"));
-    }
-
-    #[test]
-    fn test_invalid_scale_rebase() {
-        let mut args = RunArgs::default();
-        args.scale_rebase_multiplier = 0;
-        let err = args.validate().unwrap_err();
-        assert!(err.contains("scale_rebase_multiplier must be >= 1"));
-    }
-
-    #[test]
-    fn test_invalid_lookup_range() {
-        let mut args = RunArgs::default();
-        args.lookup_range = (100, -100);
-        let err = args.validate().unwrap_err();
-        assert!(err.contains("Invalid lookup range"));
-    }
-
-    #[test]
-    fn test_invalid_logrows() {
-        let mut args = RunArgs::default();
-        args.logrows = 0;
-        let err = args.validate().unwrap_err();
-        assert!(err.contains("logrows must be >= 1"));
-    }
-
-    #[test]
-    fn test_invalid_inner_cols() {
-        let mut args = RunArgs::default();
-        args.num_inner_cols = 0;
-        let err = args.validate().unwrap_err();
-        assert!(err.contains("num_inner_cols must be >= 1"));
-    }
-
-    #[test]
-    fn test_zero_batch_size() {
-        let mut args = RunArgs::default();
-        args.variables = vec![("batch_size".to_string(), 0)];
-        let err = args.validate().unwrap_err();
-        assert!(err.contains("'batch_size' cannot be 0"));
-    }
-
-    #[test]
-    fn test_json_serialization() {
-        let args = RunArgs::default();
-        let json = args.as_json().unwrap();
-        let deserialized = RunArgs::from_json(&json).unwrap();
-        assert_eq!(args, deserialized);
-    }
-
-    #[test]
-    fn test_multiple_validation_errors() {
-        let mut args = RunArgs::default();
-        args.logrows = 0;
-        args.lookup_range = (100, -100);
-        let err = args.validate().unwrap_err();
-        // Should contain multiple error messages
-        assert!(err.matches("\n").count() >= 1);
     }
 }

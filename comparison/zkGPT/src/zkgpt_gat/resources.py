@@ -13,6 +13,8 @@ import json
 import pathlib
 from typing import Any, Dict, Iterable
 
+from .util import assert_contained_path, lexical_path, require_dir
+
 
 RESOURCE_MANIFEST_SCHEMA = "zkGPT_baseline_resource_manifest_v1"
 MODEL_REGISTRY_ROOT_RELATIVE_PATH = "results/model_registry"
@@ -80,15 +82,13 @@ STATIC_TABLE_CONTENT: Dict[str, Any] = {
 
 
 def baseline_root(path: pathlib.Path) -> pathlib.Path:
-    return pathlib.Path(path).expanduser().resolve()
+    return require_dir(path, label="baseline root")
 
 
 def inside(root: pathlib.Path, path: pathlib.Path) -> bool:
-    root = baseline_root(root)
-    candidate = pathlib.Path(path).expanduser().resolve()
     try:
-        candidate.relative_to(root)
-    except ValueError:
+        assert_contained_path(root, path, "resource path", allow_missing=True)
+    except (OSError, ValueError):
         return False
     return True
 
@@ -111,10 +111,27 @@ def resolve_local(root: pathlib.Path, raw: str | pathlib.Path, label: str) -> pa
     """
     root = baseline_root(root)
     value = pathlib.Path(raw).expanduser()
-    candidate = value.resolve() if value.is_absolute() else (root / value).resolve()
-    if not inside(root, candidate):
-        raise ValueError(f"{label} must stay inside baseline root {root}: {candidate}")
-    return candidate
+    candidate = value if value.is_absolute() else root / value
+    return assert_contained_path(root, candidate, label, allow_missing=True)
+
+
+def _owned_regular(path: pathlib.Path, label: str) -> pathlib.Path:
+    """Authenticate one baseline-local resource file before opening it."""
+    try:
+        info = path.lstat()
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(f"{label} is missing: {path}") from exc
+    except OSError as exc:
+        raise OSError(f"cannot inspect {label}: {path}") from exc
+    import stat
+
+    if stat.S_ISLNK(info.st_mode):
+        raise ValueError(f"{label} must not be a symlink: {path}")
+    if not stat.S_ISREG(info.st_mode):
+        raise ValueError(f"{label} must be a regular file: {path}")
+    if info.st_nlink != 1:
+        raise ValueError(f"{label} hardlink count must be one: {path}")
+    return path
 
 
 def required_resource_paths(root: pathlib.Path, dataset: str) -> Dict[str, pathlib.Path]:
@@ -179,7 +196,10 @@ def resource_manifest_payload(root: pathlib.Path) -> Dict[str, Any]:
 
 def read_resource_manifest(root: pathlib.Path) -> Dict[str, Any]:
     root = baseline_root(root)
-    path = resolve_local(root, "resources/resource_manifest.json", "resource manifest")
+    path = _owned_regular(
+        resolve_local(root, "resources/resource_manifest.json", "resource manifest"),
+        "resource manifest",
+    )
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -235,7 +255,10 @@ def read_resource_manifest(root: pathlib.Path) -> Dict[str, Any]:
 
 def validate_static_table_descriptor(root: pathlib.Path) -> Dict[str, Any]:
     root = baseline_root(root)
-    path = resolve_local(root, STATIC_TABLE_DESCRIPTOR_RELATIVE_PATH, "static table")
+    path = _owned_regular(
+        resolve_local(root, STATIC_TABLE_DESCRIPTOR_RELATIVE_PATH, "static table"),
+        "static table descriptor",
+    )
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -287,17 +310,37 @@ def check_resource_layout(root: pathlib.Path, datasets: Iterable[str], *, requir
         if require_staged:
             missing = []
             cache = paths["cache_dir"]
+            if not cache.is_dir() or cache.is_symlink():
+                raise ValueError(f"dataset cache must be a real directory: {cache}")
             for name in ("meta.cfg", "edges.txt"):
-                if not (cache / name).is_file():
+                try:
+                    _owned_regular(cache / name, f"dataset {dataset} {name}")
+                except (FileNotFoundError, OSError, ValueError):
                     missing.append(str(cache / name))
-            if not ((cache / "features.txt").is_file() or (cache / "features.npy").is_file()):
+            feature_paths = [cache / "features.txt", cache / "features.npy"]
+            feature_present = False
+            for feature_path in feature_paths:
+                try:
+                    _owned_regular(feature_path, f"dataset {dataset} features")
+                except (FileNotFoundError, OSError, ValueError):
+                    continue
+                feature_present = True
+                break
+            if not feature_present:
                 missing.append(f"{cache}/features.txt or features.npy")
-            if dataset == "ppi" and not (cache / "node_ptr.txt").is_file():
-                missing.append(str(cache / "node_ptr.txt"))
+            if dataset == "ppi":
+                try:
+                    _owned_regular(cache / "node_ptr.txt", f"dataset {dataset} node_ptr.txt")
+                except (FileNotFoundError, OSError, ValueError):
+                    missing.append(str(cache / "node_ptr.txt"))
             for name in ("manifest.json", "tensors.txt"):
-                if not (paths["checkpoint_bundle"] / name).is_file():
+                try:
+                    _owned_regular(paths["checkpoint_bundle"] / name, f"checkpoint {name}")
+                except (FileNotFoundError, OSError, ValueError):
                     missing.append(str(paths["checkpoint_bundle"] / name))
-            if not paths["public_y_path"].is_file():
+            try:
+                _owned_regular(paths["public_y_path"], f"dataset {dataset} public_y")
+            except (FileNotFoundError, OSError, ValueError):
                 missing.append(str(paths["public_y_path"]))
             if missing:
                 raise FileNotFoundError("baseline-local resources are not staged: " + ", ".join(missing))

@@ -15,9 +15,6 @@ pub use integer;
 pub use integer::halo2;
 pub use integer::maingate;
 
-#[cfg(test)]
-use halo2::halo2curves as curves;
-
 use crate::halo2::arithmetic::CurveAffine;
 use crate::integer::chip::IntegerConfig;
 use crate::integer::rns::{Integer, Rns};

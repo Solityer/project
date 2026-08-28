@@ -14,12 +14,14 @@ from typing import Any
 
 from formal_source_manifest import (
     checked_path,
-    checked_tree_files,
     formal_source_files,
+    formal_vendor_files,
     formal_source_id,
     lexical_baseline_root,
+    SOURCE_FILTER_CONTRACT,
     tree_digest,
 )
+from resource_policy import validate_cuda_backend_material
 
 
 class BuildIdentityError(ValueError):
@@ -36,12 +38,18 @@ def sha256(path: Path) -> str:
 
 def _vendor_tree_digest(root: Path) -> str:
     try:
-        files = checked_tree_files(root, "vendor", "authenticated vendor tree")
+        files = formal_vendor_files(root)
     except (FileNotFoundError, ValueError) as exc:
         raise BuildIdentityError(str(exc)) from exc
     if not files:
         raise BuildIdentityError("authenticated vendor tree is empty")
     return tree_digest(root, sorted(files, key=lambda item: item.relative_to(root).as_posix()))
+
+
+def _cuda_backend_provenance(root: Path, backend: str) -> dict[str, Any]:
+    if backend == "cuda":
+        return validate_cuda_backend_material(root)
+    return {"status": "not_applicable"}
 
 
 def validate_build_identity(
@@ -84,6 +92,7 @@ def validate_build_identity(
         "features",
         "source_tree_digest",
         "formal_semantic_source_id",
+        "source_filter_contract",
         "formal_source_manifest",
         "vendor_tree_digest",
         "dependency_source_policy",
@@ -94,6 +103,7 @@ def validate_build_identity(
         "binary_path",
         "adapter_path",
         "gpu_telemetry_contract",
+        "cuda_backend_provenance",
     )
     missing = [key for key in required if key not in payload]
     if missing:
@@ -104,6 +114,7 @@ def validate_build_identity(
         "features": "formal,gpu-accelerated" if backend == "cuda" else "formal",
         "source_tree_digest": expected_source_id,
         "formal_semantic_source_id": expected_source_id,
+        "source_filter_contract": SOURCE_FILTER_CONTRACT,
         "formal_source_manifest": expected_manifest,
         "vendor_tree_digest": _vendor_tree_digest(root),
         "dependency_source_policy": "exact-revision-or-authenticated-vendor-path-v1",
@@ -116,6 +127,7 @@ def validate_build_identity(
         "gpu_telemetry_contract": (
             "cupti_activity_kernel_scoped_v1" if backend == "cuda" else "not_applicable"
         ),
+        "cuda_backend_provenance": _cuda_backend_provenance(root, backend),
     }
     for key, value in expected.items():
         if payload.get(key) != value:

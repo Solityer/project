@@ -12,10 +12,6 @@ num-traits = "0.2"
 rand = "0.8"
 subtle = { version = "2.3", default-features = false }
 
-[dev-dependencies]
-rand_core = { version = "0.6", default-features = false }
-paste = "1.0.7"
-
 [features]
 default = []
 circuit-params = ["integer/circuit-params"]

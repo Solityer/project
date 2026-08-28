@@ -13,10 +13,10 @@ use crate::{
     },
     transcript::{EncodedChallenge, TranscriptWrite},
 };
-#[cfg(feature = "gpu-accelerated")]
-use icicle_runtime::stream::IcicleStream;
 use ff::WithSmallOrderMulGroup;
 use group::Curve;
+#[cfg(feature = "gpu-accelerated")]
+use icicle_runtime::stream::IcicleStream;
 use rand_core::RngCore;
 use std::{
     iter,
@@ -204,7 +204,9 @@ impl<F: WithSmallOrderMulGroup<3>> Argument<F> {
         let product_commitment = {
             #[cfg(feature = "gpu-accelerated")]
             {
-                params.commit_lagrange_with_stream(&z, product_blind, &stream).to_affine()
+                params
+                    .commit_lagrange_with_stream(&z, product_blind, &stream)
+                    .to_affine()
             }
             #[cfg(not(feature = "gpu-accelerated"))]
             {
@@ -221,7 +223,7 @@ impl<F: WithSmallOrderMulGroup<3>> Argument<F> {
                 pk.vk.domain.lagrange_to_coeff(z)
             }
         };
-        
+
         #[cfg(feature = "gpu-accelerated")]
         {
             stream.synchronize().unwrap();

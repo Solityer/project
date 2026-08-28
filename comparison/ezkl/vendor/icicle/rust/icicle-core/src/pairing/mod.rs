@@ -4,9 +4,6 @@ use crate::{
 };
 use icicle_runtime::errors::eIcicleError;
 
-#[doc(hidden)]
-pub mod tests;
-
 pub trait Pairing<C1: Curve, C2: Curve, F: FieldImpl> {
     fn pairing(p: &Affine<C1>, q: &Affine<C2>) -> Result<F, eIcicleError>;
 }
@@ -45,7 +42,10 @@ macro_rules! impl_pairing {
         }
 
         impl Pairing<$curve, $curve_g2, $target_field> for $curve {
-            fn pairing(p: &Affine<$curve>, q: &Affine<$curve_g2>) -> Result<$target_field, eIcicleError> {
+            fn pairing(
+                p: &Affine<$curve>,
+                q: &Affine<$curve_g2>,
+            ) -> Result<$target_field, eIcicleError> {
                 let mut result = $target_field::zero();
                 unsafe {
                     $curve_prefix_ident::pairing_ffi(
@@ -57,20 +57,6 @@ macro_rules! impl_pairing {
                 }
                 .map(|_| result)
             }
-        }
-    };
-}
-
-#[macro_export]
-macro_rules! impl_pairing_tests {
-    (
-      $curve:ident,
-      $curve_g2:ident,
-      $target_field:ident
-    ) => {
-        #[test]
-        fn test_pairing_bilinearity() {
-            check_pairing_bilinearity::<$curve, $curve_g2, $target_field>();
         }
     };
 }

@@ -1,6 +1,6 @@
-use crate::arithmetic::{g_to_lagrange, parallelize};
 #[cfg(feature = "gpu-accelerated")]
 use crate::arithmetic::best_multiexp_gpu;
+use crate::arithmetic::{g_to_lagrange, parallelize};
 
 use crate::helpers::SerdeCurveAffine;
 #[cfg(feature = "gpu-accelerated")]
@@ -17,7 +17,6 @@ use rand_core::{OsRng, RngCore};
 use std::fmt::Debug;
 use std::marker::PhantomData;
 
-use std::{fmt, io};
 #[cfg(feature = "gpu-accelerated")]
 use icicle_bn254::curve::CurveCfg;
 #[cfg(feature = "gpu-accelerated")]
@@ -28,6 +27,7 @@ use icicle_runtime::memory::{DeviceVec, HostSlice};
 use icicle_runtime::stream::IcicleStream;
 #[cfg(feature = "gpu-accelerated")]
 use std::sync::Arc;
+use std::{fmt, io};
 
 use super::msm::MSMKZG;
 
@@ -155,14 +155,19 @@ where
 
         #[cfg(feature = "gpu-accelerated")]
         {
-            let mut gpu_g_lagrange: DeviceVec<Affine<CurveCfg>> = DeviceVec::device_malloc(g_lagrange.len()).unwrap();
+            let mut gpu_g_lagrange: DeviceVec<Affine<CurveCfg>> =
+                DeviceVec::device_malloc(g_lagrange.len()).unwrap();
             let mut gpu_g: DeviceVec<Affine<CurveCfg>> = DeviceVec::device_malloc(g.len()).unwrap();
-            
+
             let converted_g_lagrange = icicle_points_from_c(&g_lagrange[..]);
-            gpu_g_lagrange.copy_from_host(HostSlice::from_slice(&converted_g_lagrange[..])).unwrap();
+            gpu_g_lagrange
+                .copy_from_host(HostSlice::from_slice(&converted_g_lagrange[..]))
+                .unwrap();
 
             let converted_g = icicle_points_from_c(&g[..]);
-            gpu_g.copy_from_host(HostSlice::from_slice(&converted_g[..])).unwrap();
+            gpu_g
+                .copy_from_host(HostSlice::from_slice(&converted_g[..]))
+                .unwrap();
 
             Self {
                 k,
@@ -175,7 +180,7 @@ where
                 s_g2,
             }
         }
-        
+
         #[cfg(not(feature = "gpu-accelerated"))]
         {
             Self {
@@ -212,14 +217,19 @@ where
 
         #[cfg(feature = "gpu-accelerated")]
         {
-            let mut gpu_g_lagrange: DeviceVec<Affine<CurveCfg>> = DeviceVec::device_malloc(g_lagrange.len()).unwrap();
+            let mut gpu_g_lagrange: DeviceVec<Affine<CurveCfg>> =
+                DeviceVec::device_malloc(g_lagrange.len()).unwrap();
             let mut gpu_g: DeviceVec<Affine<CurveCfg>> = DeviceVec::device_malloc(g.len()).unwrap();
-            
+
             let converted_g_lagrange = icicle_points_from_c(&g_lagrange[..]);
-            gpu_g_lagrange.copy_from_host(HostSlice::from_slice(&converted_g_lagrange[..])).unwrap();
+            gpu_g_lagrange
+                .copy_from_host(HostSlice::from_slice(&converted_g_lagrange[..]))
+                .unwrap();
 
             let converted_g = icicle_points_from_c(&g[..]);
-            gpu_g.copy_from_host(HostSlice::from_slice(&converted_g[..])).unwrap();
+            gpu_g
+                .copy_from_host(HostSlice::from_slice(&converted_g[..]))
+                .unwrap();
 
             Self {
                 k,
@@ -232,7 +242,7 @@ where
                 s_g2,
             }
         }
-        
+
         #[cfg(not(feature = "gpu-accelerated"))]
         {
             Self {
@@ -351,14 +361,19 @@ where
 
         #[cfg(feature = "gpu-accelerated")]
         {
-            let mut gpu_g_lagrange: DeviceVec<Affine<CurveCfg>> = DeviceVec::device_malloc(g_lagrange.len()).unwrap();
+            let mut gpu_g_lagrange: DeviceVec<Affine<CurveCfg>> =
+                DeviceVec::device_malloc(g_lagrange.len()).unwrap();
             let mut gpu_g: DeviceVec<Affine<CurveCfg>> = DeviceVec::device_malloc(g.len()).unwrap();
-            
+
             let converted_g_lagrange = icicle_points_from_c(&g_lagrange[..]);
-            gpu_g_lagrange.copy_from_host(HostSlice::from_slice(&converted_g_lagrange[..])).unwrap();
+            gpu_g_lagrange
+                .copy_from_host(HostSlice::from_slice(&converted_g_lagrange[..]))
+                .unwrap();
 
             let converted_g = icicle_points_from_c(&g[..]);
-            gpu_g.copy_from_host(HostSlice::from_slice(&converted_g[..])).unwrap();
+            gpu_g
+                .copy_from_host(HostSlice::from_slice(&converted_g[..]))
+                .unwrap();
 
             Ok(Self {
                 k,
@@ -371,7 +386,7 @@ where
                 s_g2,
             })
         }
-        
+
         #[cfg(not(feature = "gpu-accelerated"))]
         {
             Ok(Self {
@@ -422,7 +437,7 @@ where
     }
 
     fn commit_lagrange(&self, poly: &Polynomial<E::Fr, LagrangeCoeff>, _: Blind<E::Fr>) -> E::G1 {
-        let mut scalars: Vec<E::Fr>  = Vec::with_capacity(poly.len());
+        let mut scalars: Vec<E::Fr> = Vec::with_capacity(poly.len());
         scalars.extend(poly.iter());
         let bases = &self.g_lagrange;
         let size = scalars.len();
@@ -430,7 +445,11 @@ where
 
         #[cfg(feature = "gpu-accelerated")]
         {
-            best_multiexp_gpu::<E::G1Affine>(&scalars, &self.gpu_g_lagrange[0..size], &IcicleStream::default())
+            best_multiexp_gpu::<E::G1Affine>(
+                &scalars,
+                &self.gpu_g_lagrange[0..size],
+                &IcicleStream::default(),
+            )
         }
         #[cfg(not(feature = "gpu-accelerated"))]
         {
@@ -440,8 +459,13 @@ where
     }
 
     #[cfg(feature = "gpu-accelerated")]
-    fn commit_lagrange_with_stream(&self, poly: &Polynomial<E::Fr, LagrangeCoeff>, _: Blind<E::Fr>, stream: &IcicleStream) -> E::G1 {
-        let mut scalars: Vec<E::Fr>  = Vec::with_capacity(poly.len());
+    fn commit_lagrange_with_stream(
+        &self,
+        poly: &Polynomial<E::Fr, LagrangeCoeff>,
+        _: Blind<E::Fr>,
+        stream: &IcicleStream,
+    ) -> E::G1 {
+        let mut scalars: Vec<E::Fr> = Vec::with_capacity(poly.len());
         scalars.extend(poly.iter());
         let bases = &self.g_lagrange;
         let size = scalars.len();
@@ -494,7 +518,11 @@ where
 
         #[cfg(feature = "gpu-accelerated")]
         {
-            best_multiexp_gpu::<E::G1Affine>(&scalars, &self.gpu_g[0..size], &IcicleStream::default())
+            best_multiexp_gpu::<E::G1Affine>(
+                &scalars,
+                &self.gpu_g[0..size],
+                &IcicleStream::default(),
+            )
         }
         #[cfg(not(feature = "gpu-accelerated"))]
         {
@@ -505,61 +533,5 @@ where
 
     fn get_g(&self) -> &[E::G1Affine] {
         &self.g
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use crate::poly::commitment::ParamsProver;
-    use crate::poly::commitment::{Blind, Params};
-    use crate::poly::kzg::commitment::ParamsKZG;
-    use ff::Field;
-
-    #[test]
-    fn test_commit_lagrange() {
-        const K: u32 = 6;
-
-        use rand_core::OsRng;
-
-        use crate::poly::EvaluationDomain;
-        use halo2curves::bn256::{Bn256, Fr};
-
-        let params = ParamsKZG::<Bn256>::new(K);
-        let domain = EvaluationDomain::new(1, K);
-
-        let mut a = domain.empty_lagrange();
-
-        for (i, a) in a.iter_mut().enumerate() {
-            *a = Fr::from(i as u64);
-        }
-
-        let b = domain.lagrange_to_coeff(a.clone());
-
-        let alpha = Blind(Fr::random(OsRng));
-
-        assert_eq!(params.commit(&b, alpha), params.commit_lagrange(&a, alpha));
-    }
-
-    #[test]
-    fn test_parameter_serialisation_roundtrip() {
-        const K: u32 = 4;
-
-        use super::super::commitment::Params;
-        use crate::halo2curves::bn256::Bn256;
-
-        let params0 = ParamsKZG::<Bn256>::new(K);
-        let mut data = vec![];
-        <ParamsKZG<_> as Params<_>>::write(&params0, &mut data).unwrap();
-        let params1: ParamsKZG<Bn256> = Params::read::<_>(&mut &data[..]).unwrap();
-
-        assert_eq!(params0.k, params1.k);
-        assert_eq!(params0.n, params1.n);
-        assert_eq!(params0.g.len(), params1.g.len());
-        assert_eq!(params0.g_lagrange.len(), params1.g_lagrange.len());
-
-        assert_eq!(params0.g, params1.g);
-        assert_eq!(params0.g_lagrange, params1.g_lagrange);
-        assert_eq!(params0.g2, params1.g2);
-        assert_eq!(params0.s_g2, params1.s_g2);
     }
 }

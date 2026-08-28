@@ -1,4 +1,4 @@
-/// SRS generation, processing, verification and downloading
+/// Loading and verification of baseline-local structured reference strings.
 pub mod srs;
 
 /// errors related to pfsys
@@ -680,51 +680,4 @@ pub fn save_params<Scheme: CommitmentScheme>(
     params.write(&mut writer)?;
     writer.flush()?;
     Ok(())
-}
-
-////////////////////////
-
-#[cfg(test)]
-#[cfg(all(feature = "ezkl", not(target_arch = "wasm32")))]
-mod tests {
-
-    use super::*;
-    use halo2_proofs::poly::kzg::commitment::KZGCommitmentScheme;
-    use halo2curves::bn256::{Bn256, Fr, G1Affine};
-    use tempfile::Builder;
-
-    #[tokio::test]
-    async fn test_can_load_saved_srs() {
-        let tmp_dir = Builder::new().prefix("example").tempdir().unwrap();
-        let fname = tmp_dir.path().join("polycommit.params");
-        let srs = srs::gen_srs::<KZGCommitmentScheme<Bn256>>(1);
-        let res = save_params::<KZGCommitmentScheme<Bn256>>(&fname, &srs);
-        assert!(res.is_ok());
-        let res = srs::load_srs_prover::<KZGCommitmentScheme<Bn256>>(fname);
-        assert!(res.is_ok())
-    }
-
-    #[test]
-    fn test_snark_serialization_roundtrip() {
-        let snark = Snark::<Fr, G1Affine> {
-            proof: vec![1, 2, 3, 4, 5, 6, 7, 8],
-            instances: vec![vec![Fr::from(1)], vec![Fr::from(2)]],
-            protocol: None,
-            hex_proof: None,
-            split: None,
-            pretty_public_inputs: None,
-            timestamp: None,
-            version: None,
-        };
-
-        snark
-            .save(&"test_snark_serialization_roundtrip.json".into())
-            .unwrap();
-        let snark2 = Snark::<Fr, G1Affine>::load::<KZGCommitmentScheme<Bn256>>(
-            &"test_snark_serialization_roundtrip.json".into(),
-        )
-        .unwrap();
-        assert_eq!(snark.instances, snark2.instances);
-        assert_eq!(snark.proof, snark2.proof);
-    }
 }

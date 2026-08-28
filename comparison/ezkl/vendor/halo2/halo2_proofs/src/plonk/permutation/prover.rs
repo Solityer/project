@@ -1,8 +1,5 @@
 use ff::PrimeField;
-use group::{
-    ff::Field,
-    Curve,
-};
+use group::{ff::Field, Curve};
 #[cfg(feature = "gpu-accelerated")]
 use icicle_runtime::stream::IcicleStream;
 use rand_core::RngCore;
@@ -10,14 +7,17 @@ use std::iter::{self, ExactSizeIterator};
 
 use super::super::{circuit::Any, ChallengeBeta, ChallengeGamma, ChallengeX};
 use super::{Argument, ProvingKey};
-use crate::{
-    arithmetic::{eval_polynomial, parallelize, CurveAffine}, plonk::{self, Error}, poly::{
-        commitment::{Blind, Params},
-        Coeff, ExtendedLagrangeCoeff, LagrangeCoeff, Polynomial, ProverQuery, Rotation,
-    }, transcript::{EncodedChallenge, TranscriptWrite}
-};
 #[cfg(feature = "gpu-accelerated")]
 use crate::icicle::icicle_invert;
+use crate::{
+    arithmetic::{eval_polynomial, parallelize, CurveAffine},
+    plonk::{self, Error},
+    poly::{
+        commitment::{Blind, Params},
+        Coeff, ExtendedLagrangeCoeff, LagrangeCoeff, Polynomial, ProverQuery, Rotation,
+    },
+    transcript::{EncodedChallenge, TranscriptWrite},
+};
 
 pub(crate) struct CommittedSet<C: CurveAffine> {
     pub(crate) permutation_product_poly: Polynomial<C::Scalar, Coeff>,
@@ -209,7 +209,7 @@ impl Argument {
                     domain.coeff_to_extended(&z)
                 }
             };
-            
+
             #[cfg(feature = "gpu-accelerated")]
             {
                 stream.synchronize().unwrap();
@@ -218,7 +218,6 @@ impl Argument {
 
             let permutation_product_commitment =
                 permutation_product_commitment_projective.to_affine();
-
 
             // Hash the permutation product commitment
             transcript.write_point(permutation_product_commitment)?;

@@ -3,6 +3,11 @@ use super::super::{
 };
 use super::Argument;
 use crate::helpers::SerdeCurveAffine;
+#[cfg(feature = "gpu-accelerated")]
+use crate::icicle::{
+    c_scalars_from_device_vec, device_vec_from_c_scalars, icicle_scalars_from_c_scalars,
+    inplace_add, inplace_invert, inplace_mul, inplace_scalar_add, inplace_sub,
+};
 use crate::plonk::evaluation::evaluate;
 use crate::SerdeFormat;
 use crate::{
@@ -12,10 +17,7 @@ use crate::{
         Coeff, EvaluationDomain, LagrangeCoeff, Polynomial, ProverQuery, Rotation,
     },
     transcript::{EncodedChallenge, TranscriptWrite},
-    
 };
-#[cfg(feature = "gpu-accelerated")]
-use crate::icicle::{c_scalars_from_device_vec, device_vec_from_c_scalars, icicle_scalars_from_c_scalars, inplace_add, inplace_invert, inplace_mul, inplace_scalar_add, inplace_sub};
 use ff::WithSmallOrderMulGroup;
 use group::{
     ff::{BatchInvert, Field},
@@ -33,7 +35,6 @@ use std::{
     iter,
     ops::{Mul, MulAssign},
 };
-
 
 #[derive(Debug)]
 pub(in crate::plonk) struct Prepared<C: CurveAffine> {
@@ -227,7 +228,9 @@ impl<F: WithSmallOrderMulGroup<3>> Argument<F> {
 
         // commit to m(X)
         let start = instant::Instant::now();
-        let m_commitment = params.commit_lagrange(&m_values, Blind::default()).to_affine();
+        let m_commitment = params
+            .commit_lagrange(&m_values, Blind::default())
+            .to_affine();
         log::trace!("m_commitment {:?}", start.elapsed());
 
         // write commitment of m(X) to transcript
@@ -261,7 +264,7 @@ impl<C: CurveAffine> Prepared<C> {
         let mut stream = IcicleStream::create().unwrap();
 
         let start = instant::Instant::now();
-        
+
         let log_derivatives_diff: Vec<C::Scalar> = {
             #[cfg(feature = "gpu-accelerated")]
             {
@@ -269,24 +272,30 @@ impl<C: CurveAffine> Prepared<C> {
 
                 // ∑ 1/(φ_i(X))
                 let inputs_log_derivatives = vec![C::Scalar::ZERO; params.n() as usize];
-                let mut d_inputs_log_derivatives = device_vec_from_c_scalars(&inputs_log_derivatives, &stream);
+                let mut d_inputs_log_derivatives =
+                    device_vec_from_c_scalars(&inputs_log_derivatives, &stream);
                 let mut d_temp = DeviceVec::device_malloc(params.n() as usize).unwrap();
                 let mut d_m_values = device_vec_from_c_scalars(&self.m_values, &stream);
-                let mut d_compressed_table_expression = device_vec_from_c_scalars(&self.compressed_table_expression, &stream);
-                
+                let mut d_compressed_table_expression =
+                    device_vec_from_c_scalars(&self.compressed_table_expression, &stream);
+
                 for compressed_input_expression in self.compressed_inputs_expressions.iter() {
-                    let icicle_compressed_input_expression = icicle_scalars_from_c_scalars(compressed_input_expression);
-                    let h_icicle_compressed_input_expression = HostSlice::from_slice(&icicle_compressed_input_expression);
-                    d_temp.copy_from_host_async(h_icicle_compressed_input_expression, &stream).unwrap();
+                    let icicle_compressed_input_expression =
+                        icicle_scalars_from_c_scalars(compressed_input_expression);
+                    let h_icicle_compressed_input_expression =
+                        HostSlice::from_slice(&icicle_compressed_input_expression);
+                    d_temp
+                        .copy_from_host_async(h_icicle_compressed_input_expression, &stream)
+                        .unwrap();
 
                     inplace_scalar_add(&mut d_temp, &icicle_beta, &stream);
                     inplace_invert(&mut d_temp, &stream);
                     inplace_add(&mut d_inputs_log_derivatives, &d_temp, &stream);
                 }
-                
+
                 inplace_scalar_add(&mut d_compressed_table_expression, &icicle_beta, &stream);
                 inplace_invert(&mut d_compressed_table_expression, &stream);
-                        
+
                 inplace_mul(&mut d_m_values, &d_compressed_table_expression, &stream);
                 inplace_sub(&mut d_inputs_log_derivatives, &d_m_values, &stream);
 
@@ -294,7 +303,7 @@ impl<C: CurveAffine> Prepared<C> {
 
                 stream.synchronize().unwrap();
                 stream.destroy().unwrap();
-                
+
                 result
             }
             #[cfg(not(feature = "gpu-accelerated"))]
@@ -353,7 +362,7 @@ impl<C: CurveAffine> Prepared<C> {
                         *log_derivative_diff = *fi - *mi * *ti;
                     }
                 });
-                
+
                 log_derivatives_diff
             }
         };
@@ -451,7 +460,9 @@ impl<C: CurveAffine> Prepared<C> {
         let phi_commitment = {
             #[cfg(feature = "gpu-accelerated")]
             {
-                let commitment = params.commit_lagrange_with_stream(&phi, grand_sum_blind, &stream).to_affine();
+                let commitment = params
+                    .commit_lagrange_with_stream(&phi, grand_sum_blind, &stream)
+                    .to_affine();
                 stream.synchronize().unwrap();
                 stream.destroy().unwrap();
                 commitment

@@ -1,6 +1,3 @@
-#[doc(hidden)]
-pub mod tests;
-
 use crate::{hash::Hasher, traits::FieldImpl};
 use icicle_runtime::errors::eIcicleError;
 
@@ -60,7 +57,10 @@ macro_rules! impl_poseidon {
             impl PoseidonHasher<$field> for $field_cfg {
                 fn new(t: u32, domain_tag: Option<&$field>) -> Result<Hasher, eIcicleError> {
                     let handle: HasherHandle = unsafe {
-                        create_poseidon_hasher(t, domain_tag.map_or(std::ptr::null(), |tag| tag as *const $field))
+                        create_poseidon_hasher(
+                            t,
+                            domain_tag.map_or(std::ptr::null(), |tag| tag as *const $field),
+                        )
                     }; // Calls the external FFI function to create the hasher.
                     if handle.is_null() {
                         return Err(eIcicleError::UnknownError); // Checks if the handle is null and returns an error if so.
@@ -68,59 +68,6 @@ macro_rules! impl_poseidon {
                     Ok(Hasher::from_handle(handle)) // Wraps the handle in a `Hasher` object and returns it.
                 }
             }
-        }
-    };
-}
-
-#[macro_export]
-macro_rules! impl_poseidon_tests {
-    (
-      $field:ident
-    ) => {
-        use super::*;
-
-        use icicle_runtime::test_utilities;
-        use std::sync::Once;
-
-        static INIT: Once = Once::new();
-
-        pub fn initialize() {
-            INIT.call_once(move || {
-                test_utilities::test_load_and_init_devices();
-            });
-        }
-
-        #[test]
-        fn test_poseidon_hash() {
-            initialize();
-            check_poseidon_hash::<$field>();
-        }
-
-        #[test]
-        fn test_poseidon_hash_sponge() {
-            initialize();
-            check_poseidon_hash_sponge::<$field>();
-        }
-
-        #[test]
-        fn test_poseidon_hash_multi_device() {
-            initialize();
-            test_utilities::test_set_main_device();
-            let nof_devices = icicle_runtime::get_device_count().unwrap();
-            if nof_devices > 1 {
-                check_poseidon_hash_multi_device::<$field>();
-            } else {
-                println!("Skipping test_poseidon_hash_multi_device due to single device in the machine");
-            }
-        }
-
-        #[test]
-        fn test_poseidon_tree() {
-            initialize();
-            test_utilities::test_set_main_device();
-            check_poseidon_tree::<$field>();
-            test_utilities::test_set_ref_device();
-            check_poseidon_tree::<$field>();
         }
     };
 }

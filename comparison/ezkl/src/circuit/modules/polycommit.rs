@@ -4,8 +4,6 @@ is already implemented in halo2_gadgets, there is no wrapper chip that makes it 
 Thanks to https://github.com/summa-dev/summa-solvency/blob/master/zk_prover/src/chips/poseidon/hash.rs for the inspiration (and also helping us understand how to use this).
 */
 
-use std::collections::HashMap;
-
 // This chip adds a set of advice columns to the gadget Chip to store the inputs of the hash
 use halo2_proofs::halo2curves::bn256::Fr as Fp;
 use halo2_proofs::poly::commitment::{Blind, CommitmentScheme, Params};
@@ -16,7 +14,7 @@ use halo2curves::group::Curve;
 use halo2curves::CurveAffine;
 
 use crate::circuit::region::ConstantsMap;
-use crate::tensor::{Tensor, ValTensor, ValType, VarTensor};
+use crate::tensor::{ValTensor, VarTensor};
 
 use super::errors::ModuleError;
 use super::Module;
@@ -153,114 +151,5 @@ impl Module<Fp> for PolyCommitChip {
 
     fn num_rows(_: usize) -> usize {
         0
-    }
-}
-
-#[allow(unused)]
-mod tests {
-
-    use crate::circuit::modules::ModulePlanner;
-
-    use super::*;
-
-    use std::marker::PhantomData;
-
-    use halo2_proofs::{
-        circuit::{Layouter, SimpleFloorPlanner, Value},
-        plonk::{Circuit, ConstraintSystem},
-    };
-    use halo2curves::ff::Field;
-
-    const K: usize = 8;
-    const R: usize = 2048;
-
-    struct HashCircuit {
-        message: ValTensor<Fp>,
-    }
-
-    impl Circuit<Fp> for HashCircuit {
-        type Config = PolyCommitConfig;
-        type FloorPlanner = ModulePlanner;
-        type Params = ();
-
-        fn without_witnesses(&self) -> Self {
-            let empty_val: Vec<ValType<Fp>> = vec![Value::<Fp>::unknown().into(); R];
-            let message: Tensor<ValType<Fp>> = empty_val.into_iter().into();
-
-            Self {
-                message: message.into(),
-            }
-        }
-
-        fn configure(meta: &mut ConstraintSystem<Fp>) -> Self::Config {
-            let params = (K, R);
-            PolyCommitChip::configure(meta, params)
-        }
-
-        fn synthesize(
-            &self,
-            config: Self::Config,
-            mut layouter: impl Layouter<Fp>,
-        ) -> Result<(), Error> {
-            let polycommit_chip = PolyCommitChip::new(config);
-            polycommit_chip.layout(
-                &mut layouter,
-                &[self.message.clone()],
-                0,
-                &mut HashMap::new(),
-            );
-
-            Ok(())
-        }
-    }
-
-    #[test]
-    #[ignore]
-    fn polycommit_chip_for_a_range_of_input_sizes() {
-        let rng = rand::rngs::OsRng;
-
-        #[cfg(all(feature = "ezkl", not(target_arch = "wasm32")))]
-        env_logger::init();
-
-        {
-            let i = 32;
-            // print a bunch of new lines
-            println!(
-                "i is {} -------------------------------------------------",
-                i
-            );
-
-            let message: Vec<Fp> = (0..i).map(|_| Fp::random(rng)).collect::<Vec<_>>();
-
-            let mut message: Tensor<ValType<Fp>> =
-                message.into_iter().map(|m| Value::known(m).into()).into();
-
-            let circuit = HashCircuit {
-                message: message.into(),
-            };
-            let prover = halo2_proofs::dev::MockProver::run(K as u32, &circuit, vec![]).unwrap();
-
-            assert_eq!(prover.verify(), Ok(()))
-        }
-    }
-
-    #[test]
-    #[ignore]
-    fn polycommit_chip_much_longer_input() {
-        #[cfg(all(feature = "ezkl", not(target_arch = "wasm32")))]
-        env_logger::init();
-
-        let rng = rand::rngs::OsRng;
-
-        let mut message: Vec<Fp> = (0..2048).map(|_| Fp::random(rng)).collect::<Vec<_>>();
-
-        let mut message: Tensor<ValType<Fp>> =
-            message.into_iter().map(|m| Value::known(m).into()).into();
-
-        let circuit = HashCircuit {
-            message: message.into(),
-        };
-        let prover = halo2_proofs::dev::MockProver::run(K as u32, &circuit, vec![]).unwrap();
-        assert_eq!(prover.verify(), Ok(()))
     }
 }

@@ -25,8 +25,6 @@ pub struct Halo2Loader<'a, C: CurveAffine, EccChip: EccInstructions<'a, C>> {
     num_scalar: RefCell<usize>,
     num_ec_point: RefCell<usize>,
     _marker: PhantomData<C>,
-    #[cfg(test)]
-    row_meterings: RefCell<Vec<(String, usize)>>,
 }
 
 impl<'a, C: CurveAffine, EccChip: EccInstructions<'a, C>> Halo2Loader<'a, C, EccChip> {
@@ -38,8 +36,6 @@ impl<'a, C: CurveAffine, EccChip: EccInstructions<'a, C>> Halo2Loader<'a, C, Ecc
             ctx: RefCell::new(ctx),
             num_scalar: RefCell::default(),
             num_ec_point: RefCell::default(),
-            #[cfg(test)]
-            row_meterings: RefCell::default(),
             _marker: PhantomData,
         })
     }
@@ -266,31 +262,6 @@ impl<'a, C: CurveAffine, EccChip: EccInstructions<'a, C>> Halo2Loader<'a, C, Ecc
             ),
         };
         self.scalar(output)
-    }
-}
-
-#[cfg(test)]
-impl<'a, C: CurveAffine, EccChip: EccInstructions<'a, C>> Halo2Loader<'a, C, EccChip> {
-    fn start_row_metering(self: &Rc<Self>, identifier: &str) {
-        use crate::loader::halo2::shim::Context;
-
-        self.row_meterings
-            .borrow_mut()
-            .push((identifier.to_string(), self.ctx().offset()))
-    }
-
-    fn end_row_metering(self: &Rc<Self>) {
-        use crate::loader::halo2::shim::Context;
-
-        let mut row_meterings = self.row_meterings.borrow_mut();
-        let (_, row) = row_meterings.last_mut().unwrap();
-        *row = self.ctx().offset() - *row;
-    }
-
-    pub fn print_row_metering(self: &Rc<Self>) {
-        for (identifier, cost) in self.row_meterings.borrow().iter() {
-            println!("{}: {}", identifier, cost);
-        }
     }
 }
 
@@ -722,13 +693,4 @@ impl<'a, C: CurveAffine, EccChip: EccInstructions<'a, C>> EcPointLoader<C>
 impl<'a, C: CurveAffine, EccChip: EccInstructions<'a, C>> Loader<C>
     for Rc<Halo2Loader<'a, C, EccChip>>
 {
-    #[cfg(test)]
-    fn start_cost_metering(&self, identifier: &str) {
-        self.start_row_metering(identifier)
-    }
-
-    #[cfg(test)]
-    fn end_cost_metering(&self) {
-        self.end_row_metering()
-    }
 }

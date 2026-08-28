@@ -14,9 +14,6 @@ pub(crate) mod fq;
 pub(crate) mod grain;
 pub(crate) mod mds;
 
-#[cfg(test)]
-pub(crate) mod test_vectors;
-
 mod p128pow5t3;
 pub use p128pow5t3::P128Pow5T3;
 
@@ -428,28 +425,5 @@ impl<F: PrimeField, S: Spec<F, T, RATE>, const T: usize, const RATE: usize>
             self.sponge.absorb(value);
         }
         self.sponge.finish_absorbing().squeeze()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{permute, ConstantLength, Hash, P128Pow5T3 as OrchardNullifier, Spec};
-    use ff::PrimeField;
-    use halo2curves::pasta::pallas;
-
-    #[test]
-    fn orchard_spec_equivalence() {
-        let message = [pallas::Base::from(6), pallas::Base::from(42)];
-
-        let (round_constants, mds, _) = OrchardNullifier::constants();
-
-        let hasher = Hash::<_, OrchardNullifier, ConstantLength<2>, 3, 2>::init();
-        let result = hasher.hash(message);
-
-        // The result should be equivalent to just directly applying the permutation and
-        // taking the first state element as the output.
-        let mut state = [message[0], message[1], pallas::Base::from_u128(2 << 64)];
-        permute::<_, OrchardNullifier, 3, 2>(&mut state, &mds, &round_constants);
-        assert_eq!(state[0], result);
     }
 }

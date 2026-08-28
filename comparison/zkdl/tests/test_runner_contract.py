@@ -8,6 +8,8 @@ import unittest
 import os
 import hashlib
 import json
+import ast
+import subprocess
 from pathlib import Path
 
 BASELINE = Path(__file__).resolve().parents[1]
@@ -32,6 +34,65 @@ from validate_final_results import check_cell  # noqa: E402
 
 
 class RunnerContractTests(unittest.TestCase):
+    def test_resource_preparation_is_baseline_local_only(self) -> None:
+        script = BASELINE / "scripts" / "prepare_resources.py"
+        source = script.read_text(encoding="utf-8")
+        tree = ast.parse(source, filename=str(script))
+        self.assertNotIn("source-root", source)
+        self.assertNotIn("source_root", source)
+        self.assertNotIn("copytree", source)
+        self.assertNotIn("shutil", source)
+        options = {
+            argument.value
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "add_argument"
+            for argument in node.args[:1]
+            if isinstance(argument, ast.Constant) and isinstance(argument.value, str)
+        }
+        self.assertNotIn("--source-root", options)
+        help_result = subprocess.run(
+            [sys.executable, str(script), "--help"],
+            cwd=BASELINE,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotIn("source-root", help_result.stdout)
+        self.assertIn("--init", help_result.stdout)
+        self.assertIn("--check", help_result.stdout)
+
+    def test_removed_external_source_option_fails_without_writes(self) -> None:
+        script = BASELINE / "scripts" / "prepare_resources.py"
+        resource_root = BASELINE / "resources"
+        sentinels = (
+            resource_root,
+            resource_root / "resource_manifest.json",
+            resource_root / "staged_resource_manifest.json",
+            resource_root / "datasets",
+            resource_root / "models",
+        )
+
+        def signature(path: Path) -> tuple[bool, bool, int | None, int | None]:
+            if not path.exists() and not path.is_symlink():
+                return False, False, None, None
+            stat_result = path.lstat()
+            return True, path.is_symlink(), stat_result.st_mtime_ns, stat_result.st_size
+
+        before = {path: signature(path) for path in sentinels}
+        with tempfile.TemporaryDirectory() as external_path:
+            result = subprocess.run(
+                [sys.executable, str(script), "--source-root", external_path],
+                cwd=BASELINE,
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("unrecognized arguments", result.stderr)
+            self.assertEqual(list(Path(external_path).iterdir()), [])
+        self.assertEqual(before, {path: signature(path) for path in sentinels})
+
     def test_manifest_is_baseline_local_and_enumerates_exact_matrix(self) -> None:
         manifest, manifest_id = load_resource_policy()
         self.assertEqual(manifest["schema"], RESOURCE_MANIFEST_SCHEMA)

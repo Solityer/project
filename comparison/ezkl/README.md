@@ -66,6 +66,45 @@ CPU formal binary 为 `target/release/ezkl_formal`；CUDA formal binary 为
 `target-gpu/release/ezkl_formal`。CUDA 入口必须成功加载并选择 CUDA device，否则立即失败；
 不会回退到 CPU。CPU runner 也拒绝 GPU-enabled binary。
 
+GPU 构建使用 baseline-local ICICLE CPU/frontend 代码；锁定的公开 ICICLE revision 不包含
+CUDA backend source，因此 CUDA native backend 不是由 CMake 联网下载或从 `/opt`、
+`LD_LIBRARY_PATH`、`ICICLE_BACKEND_INSTALL_DIR` 等环境路径加载。实验负责人必须先把与锁定
+ICICLE commit 和 ABI 匹配的四个共享库放入本目录的
+`resources/icicle_cuda_backend/lib/backend/`：
+`libicicle_backend_cuda_device.so`、`libicicle_backend_cuda_curve_bn254.so`、
+`libicicle_backend_cuda_field_bn254.so`、`libicicle_backend_cuda_hash.so`。
+同目录的 `backend.manifest.json` 必须严格包含 `schema`、`backend`、`icicle_commit`、
+`abi`、`library_inventory` 五个字段；inventory 按上述顺序记录每个库的 baseline-relative
+`path`、正数 `size` 和 `sha256:<64 lowercase hex>`。`prepare_resources.py --backend cuda`
+只创建目录和模板，不下载、复制或计算 native library；负责人填入真实 size/digest 后，
+以下检查才会通过：
+
+```bash
+python3 scripts/prepare_resources.py --backend cuda
+# 将四个 ABI-matched DSO 和真实 manifest 放入 resources/icicle_cuda_backend/
+python3 scripts/preflight.py --backend cuda --require-staged
+EZKL_BUILD_GPU=1 scripts/build.sh
+```
+
+GPU build identity、每个 CUDA cell、collector 和 final validator 都会重新校验并绑定这四个
+库的 commit、ABI、相对路径、大小和摘要；缺库、额外文件、symlink、hardlink、路径逃逸或
+digest 变化均 fail closed。Rust native loader 在每个 DSO 的直接 `dlopen` 前后都会重新
+检查 manifest、每个已认证 DSO 的 SHA256/metadata 以及从 baseline 根到文件的全部父路径组件；
+底层单文件 FFI 只在 ICICLE 私有 source header 中声明并仅由该认证 wrapper 调用，公共 runtime
+header 和 Rust API 均不提供任意路径或递归加载入口。它只接受单个 regular DSO，绝不扫描或递归加载
+目录。CPU 构建不需要这些 DSO，也不会尝试加载它们。vendor 目录则由
+`configs/formal_vendor_files.txt` 的显式排序清单覆盖，新增或删除任意 vendor 文件会使
+source identity 失效。该清单只保留正式 CPU/GPU/proof 路径需要的生产文件；上游
+benchmarks、examples、tests、proptest-regressions 以及 halo2curves 的纯 inline
+`#[cfg(test)]` 模块均不属于正式依赖闭包，测试 fixture 只位于 `tests/`。
+
+非 vendor production source 也遵守 `ezkl_formal_production_source_filter_v1`：Rust/C/C++/
+header、配置和正式 Python/shell 入口使用显式允许的后缀/文件名；任何未知 source 文件
+都会使 build identity fail closed。`__pycache__`、`.pytest_cache`、`.mypy_cache`、
+`.ruff_cache`、`target`、`build`、`build_gat_adapter`、`tmp`、`logs`、`runs_tmp` 以及
+`.pyc`、`.pyo`、`.log`、`.tmp` 是唯一明确排除的生成物，不进入 Python 或 Rust source
+manifest；正式 Python 入口同时禁用 bytecode 写入，避免正常 workflow 自己污染 identity。
+
 正式资源必须由实验负责人先放入本目录的 `data/cache/`、`artifacts/checkpoints/` 与
 `resources/ceremony/`，不能通过 runner 从主实验目录或外部项目目录读取。资源布局只由下面的
 命令检查；该命令不会打开或计算任何完整数据集：
@@ -75,11 +114,22 @@ python3 scripts/prepare_resources.py
 python3 scripts/preflight.py --require-staged
 ```
 
+CUDA 资源检查必须显式选择 CUDA backend（`--backend cuda --require-staged`）；不提供该
+选项时只检查通用资源布局，不会把缺失 CUDA native bundle 误报为可运行。任何 dataset、
+checkpoint、ceremony 或 native backend 都必须由负责人直接放入 `comparison/ezkl/`，本目录
+脚本没有 `--source-root` 或其他外部 project staging 入口。
+
 `resources/ceremony/source.srs` 和
 `resources/ceremony/ceremony.descriptor.json` 是唯一接受的正式 ceremony
 资源路径。descriptor 必须声明真实的 `source_srs_sha256`、
 `source_srs_max_k=28` 和稳定 `ceremony_id`；runner 会对 SRS bytes、descriptor
 和所有数据/checkpoint 文件名执行 baseline-local fail-closed 检查。
+
+`prepare_resources.py` 和 `preflight.py` 会在任何写入前逐组件 `lstat` baseline-local
+路径；parent、destination、`resources` 或 `resources/ceremony` 的 symlink、hardlink、
+special entry 或路径别名都会直接失败，且不会触碰 alias 指向的外部 sentinel。缺失目录
+只会在完整 lexical containment 检查之后逐组件安全创建，结果文件使用 exclusive temporary
+file + atomic replace。
 
 `resources/resource_manifest.json` 固定五个正式 config、dataset/cache 和 checkpoint
 相对路径。`--check`/`--require-staged` 只检查必需文件名存在，内容、维度、checkpoint
@@ -174,6 +224,9 @@ prove/verify 会各自从 profile 固定的 source SRS 重新执行 deterministi
 
 本轮没有执行正式 setup/proof/verify 或全数据集实验；资源需求、CUDA runtime 与正式
 计时仍需在上述正式命令中验证。
+
+Halo2 的 ICICLE 小型 FFT CPU 边界固定为源码常量 `ICICLE_SMALL_K_FFT = 2`；它不读取
+环境变量，避免通过运行时覆盖改变正式 CPU/GPU 路由。
 
 ## 运行边界
 

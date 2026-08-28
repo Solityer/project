@@ -12,5 +12,8 @@ fn main() {
     let deps_dir = build_dir.join("deps");
 
     // Add RPATH linker arguments
-    println!("cargo:rustc-link-arg=-Wl,-rpath,{}/icicle/lib", deps_dir.display());
+    println!(
+        "cargo:rustc-link-arg=-Wl,-rpath,{}/icicle/lib",
+        deps_dir.display()
+    );
 }

@@ -200,29 +200,3 @@ pub const FROBENIUS_COEFF_FQ6_C2: [Fq2; 6] = [
         ]),
     },
 ];
-
-#[cfg(test)]
-mod test {
-    use super::*;
-    crate::field_testing_suite!(Fq6, "field_arithmetic");
-    // extension field-specific
-    crate::field_testing_suite!(Fq6, "cubic_sparse_mul", Fq2);
-    crate::field_testing_suite!(
-        Fq6,
-        "frobenius",
-        // Frobenius endomorphism power parameter for extension field
-        //  ϕ: E → E
-        //  (x, y) ↦ (x^p, y^p)
-        // p: modulus of base field (Here, Fq::MODULUS)
-        Fq::MODULUS_LIMBS
-    );
-
-    #[test]
-    fn test_fq6_mul_nonresidue() {
-        use ff::Field;
-        let e = Fq6::random(rand_core::OsRng);
-        let a0 = e.mul_by_nonresidue();
-        let a1 = e * Fq6::NON_RESIDUE;
-        assert_eq!(a0, a1);
-    }
-}

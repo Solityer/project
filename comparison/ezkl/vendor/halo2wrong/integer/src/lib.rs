@@ -16,9 +16,6 @@ pub use instructions::{IntegerInstructions, Range};
 pub use maingate;
 pub use maingate::halo2;
 
-#[cfg(test)]
-use halo2::halo2curves as curves;
-
 /// Chip for integer constaints
 pub mod chip;
 /// Commoon instructions for integer operations and assignments

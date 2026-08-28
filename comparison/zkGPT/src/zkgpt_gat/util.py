@@ -36,6 +36,105 @@ def digest_file(path: pathlib.Path) -> str:
     return h.hexdigest()
 
 
+def lexical_path(path: pathlib.Path | str) -> pathlib.Path:
+    """Return an absolute lexical path without following aliases.
+
+    Production writers use this helper before any call to ``resolve``.  A
+    resolved path loses the evidence that a caller supplied a symlink alias,
+    which is precisely the state that must fail closed for baseline-owned
+    artifacts.
+    """
+    value = pathlib.Path(path).expanduser()
+    if not value.is_absolute():
+        value = pathlib.Path.cwd() / value
+    return pathlib.Path(os.path.abspath(os.path.normpath(os.fspath(value))))
+
+
+def _lstat_directory_chain(
+    path: pathlib.Path | str,
+    *,
+    label: str,
+    create: bool,
+) -> pathlib.Path:
+    """Authenticate/create a directory chain without following aliases.
+
+    ``Path.mkdir(..., parents=True, exist_ok=True)`` follows a pre-existing
+    symlink in an ancestor.  Walking each lexical component with ``lstat``
+    makes pre-seeded symlink, FIFO, socket, and regular-file components fail
+    closed.  Directory hardlinks cannot be created by an unprivileged caller;
+    directory components are therefore authenticated by inode type while
+    regular output files are checked separately for one-link ownership.
+    """
+    target = lexical_path(path)
+    current = pathlib.Path(target.anchor)
+    components = target.parts[1:] if target.is_absolute() else target.parts
+    for component in components:
+        current /= component
+        try:
+            info = current.lstat()
+        except FileNotFoundError:
+            if not create:
+                raise FileNotFoundError(f"{label} directory is missing: {current}")
+            try:
+                current.mkdir()
+            except FileExistsError:
+                # A concurrent/pre-seeded entry appeared between the check
+                # and mkdir.  Inspect it below rather than following it.
+                pass
+            info = current.lstat()
+        except OSError as exc:
+            raise OSError(f"cannot inspect {label} directory: {current}") from exc
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+            raise OSError(f"{label} path component must be a real directory: {current}")
+    return target
+
+
+def assert_contained_path(
+    root: pathlib.Path | str,
+    path: pathlib.Path | str,
+    label: str,
+    *,
+    allow_missing: bool = True,
+) -> pathlib.Path:
+    """Return a lexical path under ``root`` after authenticating components.
+
+    Existing aliases and special parent components are rejected even when the
+    alias resolves back inside the baseline.  Missing components are allowed
+    for callers that will create them through :func:`ensure_dir` or an
+    atomic writer.
+    """
+    baseline = lexical_path(root)
+    candidate_raw = pathlib.Path(path).expanduser()
+    candidate = lexical_path(candidate_raw if candidate_raw.is_absolute() else baseline / candidate_raw)
+    try:
+        relative = candidate.relative_to(baseline)
+    except ValueError as exc:
+        raise ValueError(f"{label} escapes baseline root: {candidate}") from exc
+    try:
+        root_info = baseline.lstat()
+    except OSError as exc:
+        raise OSError(f"cannot inspect baseline root for {label}: {baseline}") from exc
+    if stat.S_ISLNK(root_info.st_mode) or not stat.S_ISDIR(root_info.st_mode):
+        raise OSError(f"baseline root for {label} must be a real directory: {baseline}")
+    current = baseline
+    for index, component in enumerate(relative.parts):
+        current /= component
+        is_leaf = index == len(relative.parts) - 1
+        try:
+            info = current.lstat()
+        except FileNotFoundError:
+            if not allow_missing:
+                raise FileNotFoundError(f"{label} path is missing: {current}")
+            continue
+        except OSError as exc:
+            raise OSError(f"cannot inspect {label} path: {current}") from exc
+        if stat.S_ISLNK(info.st_mode):
+            raise OSError(f"{label} path component must not be a symlink: {current}")
+        if not is_leaf and not stat.S_ISDIR(info.st_mode):
+            raise OSError(f"{label} parent component must be a real directory: {current}")
+    return candidate
+
+
 def file_id(path: pathlib.Path) -> Dict[str, Any]:
     return {
         "path": str(path),
@@ -44,7 +143,13 @@ def file_id(path: pathlib.Path) -> Dict[str, Any]:
     }
 
 
-def write_json(path: pathlib.Path, data: Any) -> None:
+def write_json(
+    path: pathlib.Path,
+    data: Any,
+    *,
+    root: pathlib.Path | None = None,
+    label: str = "JSON output",
+) -> None:
     """Write JSON without following a hostile artifact-file alias.
 
     Production proof files are rewritten during a rerun, so ``O_EXCL`` alone
@@ -55,40 +160,40 @@ def write_json(path: pathlib.Path, data: Any) -> None:
     FIFOs, and other special files keeps the write path fail-closed.
     """
     payload = (json.dumps(data, indent=2, sort_keys=True, ensure_ascii=True) + "\n").encode("utf-8")
-    write_bytes_atomic(path, payload, label="JSON output")
+    write_bytes_atomic(path, payload, label=label, root=root)
 
 
-def _check_atomic_parent(path: pathlib.Path, label: str) -> pathlib.Path:
+def _check_atomic_parent(
+    path: pathlib.Path,
+    label: str,
+    root: pathlib.Path | None = None,
+) -> pathlib.Path:
     """Authenticate every lexical parent before publishing a result file."""
-    path = pathlib.Path(path).expanduser()
+    path = lexical_path(path)
+    if root is not None:
+        path = assert_contained_path(root, path, label, allow_missing=True)
     parent = path.parent
     # ``mkdir -p`` and ordinary ``open`` follow a symlink in any ancestor.
-    # Walk every existing component with lstat so result publication cannot be
+    # Walk every component with lstat so result publication cannot be
     # redirected outside the baseline by a pre-existing alias.
-    current = pathlib.Path(parent.anchor) if parent.is_absolute() else pathlib.Path.cwd()
-    parts = parent.parts[1:] if parent.is_absolute() else parent.parts
-    for component in parts:
-        current = current / component
-        try:
-            info = current.lstat()
-        except FileNotFoundError:
-            current.mkdir()
-            info = current.lstat()
-        except OSError as exc:
-            raise OSError(f"cannot inspect {label} parent: {current}") from exc
-        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
-            raise OSError(f"{label} parent must be a real directory: {current}")
+    _lstat_directory_chain(parent, label=f"{label} parent", create=True)
     return path
 
 
-def write_bytes_atomic(path: pathlib.Path, payload: bytes, *, label: str = "output") -> None:
+def write_bytes_atomic(
+    path: pathlib.Path,
+    payload: bytes,
+    *,
+    label: str = "output",
+    root: pathlib.Path | None = None,
+) -> None:
     """Atomically publish one baseline-local owned regular file.
 
     Existing destinations are replaceable only when they are one-link regular
     files.  Symlinks, hardlinks, FIFOs and other special files fail closed;
     the temporary file is created in the authenticated destination directory.
     """
-    path = _check_atomic_parent(path, label)
+    path = _check_atomic_parent(path, label, root)
     try:
         existing = path.lstat()
     except FileNotFoundError:
@@ -120,9 +225,15 @@ def write_bytes_atomic(path: pathlib.Path, payload: bytes, *, label: str = "outp
                 pass
 
 
-def write_text_atomic(path: pathlib.Path, text: str, *, label: str = "text output") -> None:
+def write_text_atomic(
+    path: pathlib.Path,
+    text: str,
+    *,
+    label: str = "text output",
+    root: pathlib.Path | None = None,
+) -> None:
     """Atomically publish UTF-8 text through the same fail-closed path."""
-    write_bytes_atomic(path, str(text).encode("utf-8"), label=label)
+    write_bytes_atomic(path, str(text).encode("utf-8"), label=label, root=root)
 
 
 def read_json(path: pathlib.Path) -> Dict[str, Any]:
@@ -132,8 +243,23 @@ def read_json(path: pathlib.Path) -> Dict[str, Any]:
     return data
 
 
-def ensure_dir(path: pathlib.Path) -> None:
-    path.mkdir(parents=True, exist_ok=True)
+def ensure_dir(
+    path: pathlib.Path,
+    *,
+    root: pathlib.Path | None = None,
+    label: str = "directory",
+) -> pathlib.Path:
+    """Create/authenticate a directory without following pre-existing aliases."""
+    if root is not None:
+        target = assert_contained_path(root, path, label, allow_missing=True)
+    else:
+        target = lexical_path(path)
+    return _lstat_directory_chain(target, label=label, create=True)
+
+
+def require_dir(path: pathlib.Path | str, *, label: str = "directory") -> pathlib.Path:
+    """Authenticate an existing directory chain without creating anything."""
+    return _lstat_directory_chain(path, label=label, create=False)
 
 
 def np_digest(array: Any, h: hashlib._Hash | None = None, label: str = "") -> str:

@@ -18,7 +18,10 @@ where
 {
     type ProgSymbol: Symbol<F>;
 
-    fn new(program_func: impl FnOnce(&mut Vec<Self::ProgSymbol>), nof_parameters: u32) -> Result<Self, eIcicleError>;
+    fn new(
+        program_func: impl FnOnce(&mut Vec<Self::ProgSymbol>),
+        nof_parameters: u32,
+    ) -> Result<Self, eIcicleError>;
 
     fn new_predefined(pre_def: PreDefinedProgram) -> Result<Self, eIcicleError>;
 }
@@ -46,7 +49,9 @@ macro_rules! impl_program_field {
         pub mod $field_prefix_ident {
             use crate::program::$field;
             use crate::symbol::$field_prefix_ident::FieldSymbol;
-            use icicle_core::program::{Instruction, PreDefinedProgram, Program, ProgramHandle, ReturningValueProgram};
+            use icicle_core::program::{
+                Instruction, PreDefinedProgram, Program, ProgramHandle, ReturningValueProgram,
+            };
             use icicle_core::symbol::{Symbol, SymbolHandle};
             use icicle_core::traits::{FieldImpl, Handle};
             use icicle_runtime::errors::eIcicleError;
@@ -67,7 +72,9 @@ macro_rules! impl_program_field {
             // Program Operations
             extern "C" {
                 #[link_name = concat!($field_prefix, "_create_predefined_program")]
-                pub(crate) fn ffi_create_predefined_program(pre_def: PreDefinedProgram) -> ProgramHandle;
+                pub(crate) fn ffi_create_predefined_program(
+                    pre_def: PreDefinedProgram,
+                ) -> ProgramHandle;
 
                 #[link_name = concat!($field_prefix, "_create_predefined_returning_value_program")]
                 pub(crate) fn ffi_create_predefined_returning_value_program(
@@ -105,10 +112,8 @@ macro_rules! impl_program_field {
                         .map(|(i, _)| FieldSymbol::new_input(i as u32).unwrap())
                         .collect();
                     program_func(&mut program_parameters);
-                    let handles: Vec<*const c_void> = program_parameters
-                        .iter()
-                        .map(|s| s.handle())
-                        .collect();
+                    let handles: Vec<*const c_void> =
+                        program_parameters.iter().map(|s| s.handle()).collect();
 
                     let mut prog_handle = std::ptr::null();
                     let ffi_status;
@@ -153,10 +158,7 @@ macro_rules! impl_program_field {
             impl Drop for FieldProgram {
                 fn drop(&mut self) {
                     unsafe {
-                        if !self
-                            .m_handle
-                            .is_null()
-                        {
+                        if !self.m_handle.is_null() {
                             unsafe {
                                 ffi_delete_program(self.m_handle);
                             }
@@ -180,10 +182,8 @@ macro_rules! impl_program_field {
                         .collect();
                     let res_symbol = program_func(&mut program_parameters);
                     program_parameters.push(res_symbol);
-                    let handles: Vec<*const c_void> = program_parameters
-                        .iter()
-                        .map(|s| s.handle())
-                        .collect();
+                    let handles: Vec<*const c_void> =
+                        program_parameters.iter().map(|s| s.handle()).collect();
 
                     let mut prog_handle = std::ptr::null();
                     let ffi_status;
@@ -227,10 +227,7 @@ macro_rules! impl_program_field {
 
             impl Drop for FieldReturningValueProgram {
                 fn drop(&mut self) {
-                    if !self
-                        .m_handle
-                        .is_null()
-                    {
+                    if !self.m_handle.is_null() {
                         unsafe {
                             ffi_delete_program(self.m_handle);
                         }

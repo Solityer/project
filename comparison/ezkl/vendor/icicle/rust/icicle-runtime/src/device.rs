@@ -26,10 +26,7 @@ impl Device {
         let c_string = CString::new(type_).expect("CString::new failed");
         let bytes = c_string.as_bytes_with_nul();
 
-        for (i, &byte) in bytes
-            .iter()
-            .enumerate()
-        {
+        for (i, &byte) in bytes.iter().enumerate() {
             if i < MAX_TYPE_SIZE {
                 device_type[i] = byte as c_char;
             } else {
@@ -48,27 +45,17 @@ impl Device {
     /// Returns the device_type as a Rust String.
     pub fn get_device_type(&self) -> String {
         // Find the first null byte in the array to handle C strings
-        let c_str = unsafe {
-            CStr::from_ptr(
-                self.device_type
-                    .as_ptr(),
-            )
-        };
-        c_str
-            .to_string_lossy()
-            .into_owned()
+        let c_str = unsafe { CStr::from_ptr(self.device_type.as_ptr()) };
+        c_str.to_string_lossy().into_owned()
     }
 }
 
 impl fmt::Debug for Device {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let device_type_str = unsafe {
-            CStr::from_ptr(
-                self.device_type
-                    .as_ptr(),
-            )
-            .to_str()
-            .unwrap_or("Invalid UTF-8")
+            CStr::from_ptr(self.device_type.as_ptr())
+                .to_str()
+                .unwrap_or("Invalid UTF-8")
         };
         f.debug_struct("Device")
             .field("device_type", &device_type_str)

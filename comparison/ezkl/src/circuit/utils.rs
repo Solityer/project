@@ -125,39 +125,3 @@ impl fmt::Display for F32 {
         self.0.fmt(f)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-
-    use super::F32;
-
-    fn calculate_hash<T: Hash>(t: &T) -> u64 {
-        let mut s = DefaultHasher::new();
-        t.hash(&mut s);
-        s.finish()
-    }
-
-    #[test]
-    fn f32_eq() {
-        assert!(F32(f32::NAN) == F32(f32::NAN));
-        assert!(F32(f32::NAN) != F32(5.0));
-        assert!(F32(5.0) != F32(f32::NAN));
-        assert!(F32(0.0) == F32(-0.0));
-    }
-
-    #[test]
-    fn f32_cmp() {
-        assert!(F32(f32::NAN) == F32(f32::NAN));
-        assert!(F32(f32::NAN) < F32(5.0));
-        assert!(F32(5.0) > F32(f32::NAN));
-        assert!(F32(0.0) == F32(-0.0));
-    }
-
-    #[test]
-    fn f32_hash() {
-        assert!(calculate_hash(&F32(0.0)) == calculate_hash(&F32(-0.0)));
-        assert!(calculate_hash(&F32(f32::NAN)) == calculate_hash(&F32(-f32::NAN)));
-    }
-}

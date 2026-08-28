@@ -42,7 +42,6 @@ pub mod plonk;
 pub mod poly;
 pub mod transcript;
 
-pub mod dev;
 mod helpers;
 pub use helpers::SerdeFormat;
 pub use helpers::SerdePrimeField;

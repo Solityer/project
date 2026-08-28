@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT}"
+export PYTHONDONTWRITEBYTECODE=1
 
 # The baseline is self-contained at the path/configuration level.  Toolchain
 # discovery is intentionally delegated to PATH; do not source a developer

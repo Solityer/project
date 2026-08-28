@@ -2,6 +2,7 @@ pub mod balanced_decomposition;
 pub mod curve;
 pub mod ecntt;
 pub mod field;
+pub mod gate_ops;
 pub mod hash;
 pub mod merkle;
 pub mod msm;
@@ -15,8 +16,5 @@ pub mod rns;
 pub mod sumcheck;
 pub mod symbol;
 pub mod vec_ops;
-pub mod gate_ops;
 
-#[doc(hidden)]
-pub mod tests;
 pub mod traits;

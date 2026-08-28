@@ -1,6 +1,7 @@
 use crate::hash::{Hasher, HasherHandle};
 use icicle_runtime::{
-    config::ConfigExtension, errors::eIcicleError, memory::HostOrDeviceSlice, stream::IcicleStreamHandle,
+    config::ConfigExtension, errors::eIcicleError, memory::HostOrDeviceSlice,
+    stream::IcicleStreamHandle,
 };
 use std::{ffi::c_void, mem, ptr, slice};
 
@@ -24,11 +25,11 @@ pub enum PaddingPolicy {
 #[derive(Clone)]
 pub struct MerkleTreeConfig {
     pub stream_handle: IcicleStreamHandle, // Stream for asynchronous execution. Default is null for synchronous execution.
-    is_leaves_on_device: bool,             // True if leaves are on the device (GPU), false if on the host (CPU).
+    is_leaves_on_device: bool, // True if leaves are on the device (GPU), false if on the host (CPU).
     is_tree_on_device: bool, // True if the tree results are allocated on the device (GPU), false if on the host (CPU).
     pub is_async: bool,      // True for asynchronous execution, false for synchronous.
     pub padding_policy: PaddingPolicy, // Policy for handling cases where the input is smaller than expected.
-    pub ext: ConfigExtension, // Backend-specific extensions for advanced configurations.
+    pub ext: ConfigExtension,          // Backend-specific extensions for advanced configurations.
 }
 
 impl MerkleTreeConfig {
@@ -38,12 +39,12 @@ impl MerkleTreeConfig {
     /// and all data (leaves, tree results, and paths) residing on the host (CPU).
     pub fn default() -> Self {
         Self {
-            stream_handle: ptr::null_mut(),      // Default stream handle (synchronous).
-            is_leaves_on_device: false,          // Default: leaves on host (CPU).
-            is_tree_on_device: false,            // Default: tree results on host (CPU).
-            is_async: false,                     // Default: synchronous execution.
+            stream_handle: ptr::null_mut(), // Default stream handle (synchronous).
+            is_leaves_on_device: false,     // Default: leaves on host (CPU).
+            is_tree_on_device: false,       // Default: tree results on host (CPU).
+            is_async: false,                // Default: synchronous execution.
             padding_policy: PaddingPolicy::None, // Default: no padding.
-            ext: ConfigExtension::new(),         // Default: no backend-specific extensions.
+            ext: ConfigExtension::new(),    // Default: no backend-specific extensions.
         }
     }
 }
@@ -112,7 +113,10 @@ impl MerkleProof {
             } else {
                 // Calculate how many `T` elements fit into the byte buffer
                 let element_count = size / mem::size_of::<T>();
-                (slice::from_raw_parts(ptr as *const T, element_count), leaf_idx)
+                (
+                    slice::from_raw_parts(ptr as *const T, element_count),
+                    leaf_idx,
+                )
             }
         }
     }
@@ -136,10 +140,7 @@ impl MerkleProof {
 impl Drop for MerkleProof {
     fn drop(&mut self) {
         unsafe {
-            if !self
-                .handle
-                .is_null()
-            {
+            if !self.handle.is_null() {
                 let _ = icicle_merkle_proof_delete(self.handle);
             }
         }
@@ -198,10 +199,7 @@ impl MerkleTree {
     ) -> Result<Self, eIcicleError> {
         unsafe {
             // Collect the Hasher handles from the Hasher structs
-            let hash_handles: Vec<HasherHandle> = layer_hashes
-                .iter()
-                .map(|h| h.handle)
-                .collect();
+            let hash_handles: Vec<HasherHandle> = layer_hashes.iter().map(|h| h.handle).collect();
 
             let handle = icicle_merkle_tree_create(
                 hash_handles.as_ptr(),
@@ -234,7 +232,15 @@ impl MerkleTree {
         local_cfg.is_leaves_on_device = leaves.is_on_device();
 
         let byte_size = (leaves.len() * std::mem::size_of::<T>()) as u64;
-        unsafe { icicle_merkle_tree_build(self.handle, leaves.as_ptr() as *const u8, byte_size, &local_cfg).wrap() }
+        unsafe {
+            icicle_merkle_tree_build(
+                self.handle,
+                leaves.as_ptr() as *const u8,
+                byte_size,
+                &local_cfg,
+            )
+            .wrap()
+        }
     }
 
     // Templated function to get the Merkle root as a slice of type T
@@ -288,7 +294,9 @@ impl MerkleTree {
 
     pub fn verify(&self, proof: &MerkleProof) -> Result<bool, eIcicleError> {
         let mut verification_valid: bool = false;
-        let result = unsafe { icicle_merkle_tree_verify(self.handle, proof.handle, &mut verification_valid) };
+        let result = unsafe {
+            icicle_merkle_tree_verify(self.handle, proof.handle, &mut verification_valid)
+        };
         if result == eIcicleError::Success {
             Ok(verification_valid)
         } else {
@@ -300,10 +308,7 @@ impl MerkleTree {
 impl Drop for MerkleTree {
     fn drop(&mut self) {
         unsafe {
-            if !self
-                .handle
-                .is_null()
-            {
+            if !self.handle.is_null() {
                 let _ = icicle_merkle_tree_delete(self.handle);
             }
         }

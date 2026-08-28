@@ -16,7 +16,11 @@ from zkgpt_gat.formal_gate import require_formal_experiment  # noqa: E402
 from zkgpt_gat.forward import forward_full  # noqa: E402
 from zkgpt_gat.model import load_model  # noqa: E402
 from zkgpt_gat.proof import _padded_segment_chunks, make_metadata, prepare_input_segments_and_layout  # noqa: E402
-from zkgpt_gat.registry import ensure_model_registry  # noqa: E402
+from zkgpt_gat.registry import (  # noqa: E402
+    canonical_registry_public_path,
+    canonical_registry_secret_path,
+    ensure_model_registry,
+)
 from zkgpt_gat.resources import (  # noqa: E402
     DATASET_NAMES,
     check_resource_layout,
@@ -25,6 +29,7 @@ from zkgpt_gat.resources import (  # noqa: E402
     resolve_local,
     validate_static_table_descriptor,
 )
+from zkgpt_gat.util import require_dir  # noqa: E402
 
 
 def _read_checkpoint_manifest(config) -> dict:
@@ -82,7 +87,7 @@ def _validate_registration_identity(config, checkpoint_manifest: dict, static_de
 
 def _validate_registration_paths(config_path: pathlib.Path, config) -> None:
     """Ensure every setup input/output path remains baseline-local."""
-    root = ROOT.resolve()
+    root = require_dir(ROOT, label="registration baseline root")
     paths = {
         "config": config_path,
         "resource_manifest": resolve_local(root, config.entries.get("resource_manifest", ""), "resource_manifest"),
@@ -101,6 +106,13 @@ def _validate_registration_paths(config_path: pathlib.Path, config) -> None:
             candidate.relative_to(root)
         except ValueError as exc:
             raise ValueError(f"{label} escapes baseline root: {candidate}") from exc
+    model_param_id = str(config.entries.get("model_param_id", ""))
+    # Explicitly authenticate both canonical registry trees before any model
+    # tensor loading or registration work.  The registry helpers inspect the
+    # lexical components first, so an in-baseline alias cannot be hidden by
+    # path resolution.
+    canonical_registry_public_path(root, model_param_id)
+    canonical_registry_secret_path(root, model_param_id)
 
 
 def registration_preflight(dataset: str):
@@ -131,9 +143,10 @@ def main() -> int:
     parser.add_argument("--project-root", type=pathlib.Path, default=ROOT)
     parser.add_argument("--zk-root", type=pathlib.Path, default=ROOT)
     args = parser.parse_args()
-    project_root = args.project_root.expanduser().resolve()
-    zk_root = args.zk_root.expanduser().resolve()
-    if project_root != ROOT.resolve() or zk_root != ROOT.resolve():
+    project_root = require_dir(args.project_root, label="registration project root")
+    zk_root = require_dir(args.zk_root, label="registration zkGPT root")
+    expected_root = require_dir(ROOT, label="registration baseline root")
+    if project_root != expected_root or zk_root != expected_root:
         raise SystemExit("model registration is baseline-local; project/zk roots must equal comparison/zkGPT")
     config, _checkpoint_manifest, _resource_manifest = registration_preflight(args.dataset)
     dataset = load_dataset(config)

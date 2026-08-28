@@ -10,7 +10,7 @@ from numbers import Integral
 from typing import Any, Dict, List, Mapping, Sequence
 
 from .field import BN254_FR_MODULUS
-from .util import digest_json, read_json, stable_env
+from .util import digest_json, ensure_dir, read_json, stable_env, write_text_atomic
 
 
 _MASK64 = (1 << 64) - 1
@@ -336,10 +336,15 @@ def gpu_proof_message_batch(
             raise RuntimeError(f"runs_tmp must be a real directory: {runs_tmp}")
     else:
         _check_lexical_components(runs_tmp, zk_root, allow_missing=True)
-        runs_tmp.mkdir()
+        ensure_dir(runs_tmp, root=zk_root, label="CUDA runs_tmp")
     with tempfile.TemporaryDirectory(prefix="zkgpt-gpu-proof-", dir=str(runs_tmp)) as tmp:
         input_path = pathlib.Path(tmp) / "proof_messages.gpuv3"
-        input_path.write_text("\n".join(_wire_lines(canonical)) + "\n", encoding="utf-8")
+        write_text_atomic(
+            input_path,
+            "\n".join(_wire_lines(canonical)) + "\n",
+            label="CUDA proof input",
+            root=zk_root,
+        )
         state = _run_gpu_primitives_file(zk_root, input_path, label)
     state["proof_hot_path"] = True
     state["hot_path_semantics"] = _HOT_PATH_SEMANTICS

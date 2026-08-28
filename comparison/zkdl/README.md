@@ -16,7 +16,9 @@ CUDA `nvcc`, `libcudart`, and a CUDA device supported by the local toolkit.
 python3 -m pip install -r requirements.txt
 ./scripts/build.sh --cpu
 ./scripts/build.sh --gpu
-python3 scripts/prepare_resources.py --source-root /path/to/project
+python3 scripts/prepare_resources.py --init
+# Place the five dataset caches and checkpoint bundles under resources/.
+python3 scripts/prepare_resources.py --check
 python3 scripts/setup_resources.py
 ```
 
@@ -30,7 +32,7 @@ always performed by the CPU binary and validates that telemetry.
 The only formal execution sequence is:
 
 ```text
-build -> prepare_resources (import) -> setup_resources (PP + staged manifest)
+build -> prepare_resources (local layout/check) -> setup_resources (PP + authenticated manifest)
       -> register during first cell -> run_single/run_all -> collect_results
       -> validate_final_results
 ```
@@ -43,18 +45,25 @@ cross-checks manifests, and emits an exact cell under
 `runs/<dataset>/<device>/warm/`. The runner refuses external resource paths,
 symlinks, hard-links, stale cells, incomplete proofs, and extra cell artifacts.
 
-Before a formal run, stage the five baseline-local resource bundles.  This
-explicit preparation command is the only operation that may read a source
-checkout outside this directory:
+Before a formal run, place all five resource bundles in the canonical
+baseline-local directories.  The preparation command creates those directories
+and checks their required files; it never reads any path outside this
+directory:
 
 ```bash
-python3 scripts/prepare_resources.py --source-root /path/to/project
+python3 scripts/prepare_resources.py --init
+# Copy/provide resources directly under resources/datasets/ and resources/models/.
+python3 scripts/prepare_resources.py --check
 python3 scripts/setup_resources.py
 ```
 
-`--source-root` is accepted only by `prepare_resources.py` and is used solely
-to copy the five resource bundles into this directory. It is never a runtime
-resource path and must not be supplied to `run_single.py`.
+The five caches belong under `resources/datasets/<dataset>/` (using
+`resources/datasets/ogbn_arxiv/` for `ogbn-arxiv`) and the checkpoint bundles
+belong under `resources/models/<dataset>_gat/`.  `prepare_resources.py` has no
+external path option.  It must be run successfully after the local
+resources are present; `setup_resources.py` then authenticates the complete
+local inventory and generates the PP-bound manifest.  No resource path may
+escape this baseline or be supplied to `run_single.py`.
 
 ```bash
 python3 scripts/run_single.py --dataset cora --device cpu

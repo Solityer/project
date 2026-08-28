@@ -389,34 +389,3 @@ impl<F: FromUniformBytes<64>, const T: usize, const RATE: usize> Spec<F, T, RATE
         (sparse_matrices, acc.transpose())
     }
 }
-
-#[cfg(test)]
-pub(super) mod tests {
-    use halo2curves::group::ff::{FromUniformBytes, PrimeField};
-    use halo2curves::serde::SerdeObject;
-
-    use super::MDSMatrix;
-    use crate::grain::Grain;
-
-    /// We want to keep non-optimized parameters to cross test with optimized
-    /// one
-    pub(crate) struct SpecRef<F: PrimeField, const T: usize, const RATE: usize> {
-        pub(crate) r_f: usize,
-        pub(crate) r_p: usize,
-        pub(crate) mds: MDSMatrix<F, T, RATE>,
-        pub(crate) constants: Vec<[F; T]>,
-    }
-
-    impl<F: SerdeObject + FromUniformBytes<64>, const T: usize, const RATE: usize> SpecRef<F, T, RATE> {
-        pub(crate) fn new(r_f: usize, r_p: usize) -> Self {
-            let (constants, mds) = Grain::generate(r_f, r_p);
-
-            SpecRef {
-                r_f,
-                r_p,
-                mds,
-                constants,
-            }
-        }
-    }
-}

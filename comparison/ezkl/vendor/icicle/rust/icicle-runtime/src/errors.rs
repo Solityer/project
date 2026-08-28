@@ -13,6 +13,8 @@ pub enum eIcicleError {
     StreamDestructionFailed, // Stream destruction failed
     ApiNotImplemented,       // The API is not implemented for a device
     InvalidArgument,         // Invalid argument passed
+    BackendLoadFailed,       // The required backend could not be loaded
+    LicenseCheckError,       // The backend license check failed
     UnknownError,            // An unknown error occurred
 }
 

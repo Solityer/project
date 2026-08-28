@@ -64,7 +64,10 @@ impl<C: Curve> Affine<C> {
         }
     }
 
-    pub fn from_limbs(x: <C::BaseField as FieldImpl>::Repr, y: <C::BaseField as FieldImpl>::Repr) -> Self {
+    pub fn from_limbs(
+        x: <C::BaseField as FieldImpl>::Repr,
+        y: <C::BaseField as FieldImpl>::Repr,
+    ) -> Self {
         Affine {
             x: C::BaseField::from(x),
             y: C::BaseField::from(y),
@@ -134,14 +137,20 @@ impl<C: Curve> From<Projective<C>> for Affine<C> {
 }
 
 impl<C: Curve> MontgomeryConvertible for Affine<C> {
-    fn to_mont(values: &mut (impl HostOrDeviceSlice<Self> + ?Sized), stream: &IcicleStream) -> eIcicleError {
+    fn to_mont(
+        values: &mut (impl HostOrDeviceSlice<Self> + ?Sized),
+        stream: &IcicleStream,
+    ) -> eIcicleError {
         if !values.is_on_active_device() {
             panic!("values not allocated on an inactive device");
         }
         C::convert_affine_montgomery(unsafe { values.as_mut_ptr() }, values.len(), true, stream)
     }
 
-    fn from_mont(values: &mut (impl HostOrDeviceSlice<Self> + ?Sized), stream: &IcicleStream) -> eIcicleError {
+    fn from_mont(
+        values: &mut (impl HostOrDeviceSlice<Self> + ?Sized),
+        stream: &IcicleStream,
+    ) -> eIcicleError {
         if !values.is_on_active_device() {
             panic!("values not allocated on an inactive device");
         }
@@ -150,18 +159,29 @@ impl<C: Curve> MontgomeryConvertible for Affine<C> {
 }
 
 impl<C: Curve> MontgomeryConvertible for Projective<C> {
-    fn to_mont(values: &mut (impl HostOrDeviceSlice<Self> + ?Sized), stream: &IcicleStream) -> eIcicleError {
+    fn to_mont(
+        values: &mut (impl HostOrDeviceSlice<Self> + ?Sized),
+        stream: &IcicleStream,
+    ) -> eIcicleError {
         if !values.is_on_active_device() {
             panic!("values not allocated on an inactive device");
         }
         C::convert_projective_montgomery(unsafe { values.as_mut_ptr() }, values.len(), true, stream)
     }
 
-    fn from_mont(values: &mut (impl HostOrDeviceSlice<Self> + ?Sized), stream: &IcicleStream) -> eIcicleError {
+    fn from_mont(
+        values: &mut (impl HostOrDeviceSlice<Self> + ?Sized),
+        stream: &IcicleStream,
+    ) -> eIcicleError {
         if !values.is_on_active_device() {
             panic!("values not allocated on an inactive device");
         }
-        C::convert_projective_montgomery(unsafe { values.as_mut_ptr() }, values.len(), false, stream)
+        C::convert_projective_montgomery(
+            unsafe { values.as_mut_ptr() },
+            values.len(),
+            false,
+            stream,
+        )
     }
 }
 
@@ -207,15 +227,27 @@ macro_rules! impl_curve {
         pub type $projective_type = Projective<$curve>;
 
         mod $curve_prefix_ident {
-            use super::{eIcicleError, $affine_type, $projective_type, $scalar_field, IcicleStream, VecOpsConfig};
+            use super::{
+                eIcicleError, $affine_type, $projective_type, $scalar_field, IcicleStream,
+                VecOpsConfig,
+            };
 
             extern "C" {
                 #[link_name = concat!($curve_prefix, "_eq")]
-                pub(crate) fn eq(point1: *const $projective_type, point2: *const $projective_type) -> bool;
+                pub(crate) fn eq(
+                    point1: *const $projective_type,
+                    point2: *const $projective_type,
+                ) -> bool;
                 #[link_name = concat!($curve_prefix, "_to_affine")]
-                pub(crate) fn proj_to_affine(point: *const $projective_type, point_out: *mut $affine_type);
+                pub(crate) fn proj_to_affine(
+                    point: *const $projective_type,
+                    point_out: *mut $affine_type,
+                );
                 #[link_name = concat!($curve_prefix, "_generate_projective_points")]
-                pub(crate) fn generate_projective_points(points: *mut $projective_type, size: usize);
+                pub(crate) fn generate_projective_points(
+                    points: *mut $projective_type,
+                    size: usize,
+                );
                 #[link_name = concat!($curve_prefix, "_generate_affine_points")]
                 pub(crate) fn generate_affine_points(points: *mut $affine_type, size: usize);
                 #[link_name = concat!($curve_prefix, "_ecadd")]
@@ -323,7 +355,10 @@ macro_rules! impl_curve {
             fn generate_random_affine_points(size: usize) -> Vec<$affine_type> {
                 let mut res = vec![$affine_type::zero(); size];
                 unsafe {
-                    $curve_prefix_ident::generate_affine_points(&mut res[..] as *mut _ as *mut $affine_type, size)
+                    $curve_prefix_ident::generate_affine_points(
+                        &mut res[..] as *mut _ as *mut $affine_type,
+                        size,
+                    )
                 };
                 res
             }
@@ -339,7 +374,11 @@ macro_rules! impl_curve {
                 config.is_result_on_device = true;
                 config.is_async = false;
                 config.stream_handle = (&*stream).into();
-                unsafe { $curve_prefix_ident::_convert_affine_montgomery(points, len, is_into, &config, points) }
+                unsafe {
+                    $curve_prefix_ident::_convert_affine_montgomery(
+                        points, len, is_into, &config, points,
+                    )
+                }
             }
 
             fn convert_projective_montgomery(
@@ -353,46 +392,11 @@ macro_rules! impl_curve {
                 config.is_result_on_device = true;
                 config.is_async = false;
                 config.stream_handle = (&*stream).into();
-                unsafe { $curve_prefix_ident::_convert_projective_montgomery(points, len, is_into, &config, points) }
-            }
-        }
-    };
-}
-
-#[macro_export]
-macro_rules! impl_curve_tests {
-    (
-        $base_limbs:ident,
-        $curve:ident
-    ) => {
-        pub mod test_curve {
-            use super::*;
-            fn initialize() {
-                test_utilities::test_load_and_init_devices();
-                test_utilities::test_set_main_device();
-            }
-
-            #[test]
-            fn test_affine_projective_convert() {
-                initialize();
-                check_affine_projective_convert::<$curve>()
-            }
-
-            #[test]
-            fn test_point_equality() {
-                initialize();
-                check_point_equality::<$base_limbs, <<$curve as Curve>::BaseField as FieldImpl>::Config, $curve>()
-            }
-
-            #[test]
-            fn test_points_convert_montgomery() {
-                initialize();
-                check_points_convert_montgomery::<$curve>()
-            }
-
-            #[test]
-            fn test_point_arithmetic() {
-                check_point_arithmetic::<$curve>();
+                unsafe {
+                    $curve_prefix_ident::_convert_projective_montgomery(
+                        points, len, is_into, &config, points,
+                    )
+                }
             }
         }
     };

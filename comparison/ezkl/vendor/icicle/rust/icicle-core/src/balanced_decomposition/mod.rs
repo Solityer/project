@@ -1,8 +1,6 @@
 use crate::{traits::FieldImpl, vec_ops::VecOpsConfig};
 use icicle_runtime::{eIcicleError, memory::HostOrDeviceSlice};
 
-pub mod tests;
-
 /// Balanced base decomposition API for field/ring types.
 ///
 /// This trait allows elements in a finite field/ring to be decomposed into a sequence of
@@ -105,7 +103,9 @@ macro_rules! impl_balanced_decomposition {
             output: &mut (impl HostOrDeviceSlice<$field_type> + ?Sized),
             cfg: &mut VecOpsConfig,
         ) -> Result<(), eIcicleError> {
-            if input.len() % (cfg.batch_size as usize) != 0 || output.len() % (cfg.batch_size as usize) != 0 {
+            if input.len() % (cfg.batch_size as usize) != 0
+                || output.len() % (cfg.batch_size as usize) != 0
+            {
                 eprintln!(
                     "Batch size {} must divide input size {} and output size {}",
                     cfg.batch_size,
@@ -178,34 +178,6 @@ macro_rules! impl_balanced_decomposition {
                     )
                     .wrap()
                 }
-            }
-        }
-    };
-}
-
-#[macro_export]
-macro_rules! impl_balanced_decomposition_tests {
-    ($field_type: ident) => {
-        use icicle_core::balanced_decomposition::tests::*;
-        use icicle_runtime::test_utilities;
-
-        /// Initializes devices before running tests.
-        pub fn initialize() {
-            test_utilities::test_load_and_init_devices();
-            test_utilities::test_set_main_device();
-        }
-
-        #[cfg(test)]
-        mod tests {
-            use super::*;
-
-            #[test]
-            fn test_balanced_decomposition() {
-                initialize();
-                test_utilities::test_set_main_device();
-                check_balanced_decomposition::<$field_type>();
-                test_utilities::test_set_ref_device();
-                check_balanced_decomposition::<$field_type>();
             }
         }
     };

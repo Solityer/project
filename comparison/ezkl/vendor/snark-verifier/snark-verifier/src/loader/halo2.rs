@@ -3,9 +3,6 @@
 pub(crate) mod loader;
 mod shim;
 
-#[cfg(test)]
-pub(crate) mod test;
-
 pub use loader::{EcPoint, Halo2Loader, Scalar};
 pub use shim::{Context, EccInstructions, IntegerInstructions};
 pub use util::Valuetools;

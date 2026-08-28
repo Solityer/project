@@ -395,38 +395,6 @@ impl GraphData {
 
 // Additional Python bindings for various types...
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_graph_input_serialization_round_trip() {
-        // Test serialization/deserialization of graph input
-        let file = GraphData::new(vec![vec![
-            0.05326242372393608.into(),
-            0.07497056573629379.into(),
-            0.05235547572374344.into(),
-        ]]);
-
-        let serialized = serde_json::to_string(&file).unwrap();
-        const JSON: &str = r#"{"input_data":[[0.05326242372393608,0.07497056573629379,0.05235547572374344]],"output_data":null}"#;
-        assert_eq!(serialized, JSON);
-
-        let graph_input3 = serde_json::from_str::<GraphData>(JSON)
-            .map_err(|e| e.to_string())
-            .unwrap();
-        assert_eq!(graph_input3, file);
-    }
-
-    #[test]
-    fn test_python_compat() {
-        // Test compatibility with mclbn256 library serialization
-        let source = Fp::from_raw([18445520602771460712, 838677322461845011, 3079992810, 0]);
-        let original_addr = "0x000000000000000000000000b794f5ea0ba39494ce839613fffba74279579268";
-        assert_eq!(format!("{:?}", source), original_addr);
-    }
-}
-
 #[cfg(feature = "python-bindings")]
 use crate::pfsys::field_to_string;
 

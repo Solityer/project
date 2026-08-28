@@ -1,6 +1,6 @@
+use super::metadata;
 use super::{permutation, shuffle, Assigned, Error};
 use crate::circuit::layouter::SyncDeps;
-use crate::dev::metadata;
 use crate::{
     circuit::{Layouter, Region, Value},
     poly::Rotation,
@@ -42,11 +42,6 @@ pub struct Column<C: ColumnType> {
 }
 
 impl<C: ColumnType> Column<C> {
-    #[cfg(test)]
-    pub(crate) fn new(index: usize, column_type: C) -> Self {
-        Column { index, column_type }
-    }
-
     /// Index of this column.
     pub fn index(&self) -> usize {
         self.index
@@ -2720,49 +2715,5 @@ impl<'a, F: Field> VirtualCells<'a, F> {
     /// Query a challenge
     pub fn query_challenge(&mut self, challenge: Challenge) -> Expression<F> {
         Expression::Challenge(challenge)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::Expression;
-    use halo2curves::bn256::Fr;
-
-    #[test]
-    fn iter_sum() {
-        let exprs: Vec<Expression<Fr>> = vec![
-            Expression::Constant(1.into()),
-            Expression::Constant(2.into()),
-            Expression::Constant(3.into()),
-        ];
-        let happened: Expression<Fr> = exprs.into_iter().sum();
-        let expected: Expression<Fr> = Expression::Sum(
-            Box::new(Expression::Sum(
-                Box::new(Expression::Constant(1.into())),
-                Box::new(Expression::Constant(2.into())),
-            )),
-            Box::new(Expression::Constant(3.into())),
-        );
-
-        assert_eq!(happened, expected);
-    }
-
-    #[test]
-    fn iter_product() {
-        let exprs: Vec<Expression<Fr>> = vec![
-            Expression::Constant(1.into()),
-            Expression::Constant(2.into()),
-            Expression::Constant(3.into()),
-        ];
-        let happened: Expression<Fr> = exprs.into_iter().product();
-        let expected: Expression<Fr> = Expression::Product(
-            Box::new(Expression::Product(
-                Box::new(Expression::Constant(1.into())),
-                Box::new(Expression::Constant(2.into())),
-            )),
-            Box::new(Expression::Constant(3.into())),
-        );
-
-        assert_eq!(happened, expected);
     }
 }

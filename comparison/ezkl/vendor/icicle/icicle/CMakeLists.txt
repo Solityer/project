@@ -20,13 +20,13 @@ if(SANITIZE AND CUDA_BACKEND)
 endif()
 
 # Build options
-option(BUILD_TESTS "Build unit test2s. Default=OFF" OFF)
 # Backends: typically CPU is built into the frontend, the rest are DSOs loaded at runtime from installation
 option(CPU_BACKEND "Build CPU backend. Default=ON" ON)
-# To enable building backends, use the following options: (note they are in private repos)
-option(CUDA_BACKEND "Branch/commit to pull for CUDA backend or `local` if under icicle/backend/cuda. Default=OFF" OFF)
-option(METAL_BACKEND "Branch/commit to pull for METAL backend or `local` if under icicle/backend/metal. Default=OFF" OFF)
-option(VULKAN_BACKEND "Branch/commit to pull for VULKAN backend or `local` if under icicle/backend/vulkan. Default=OFF" OFF)
+# Formal builds accept only baseline-local backend sources.  There is no
+# network dependency-acquisition path in this checkout.
+option(CUDA_BACKEND "Use baseline-local CUDA backend under icicle/backend/cuda" OFF)
+option(METAL_BACKEND "Unsupported formal backend" OFF)
+option(VULKAN_BACKEND "Unsupported formal backend" OFF)
 
 # features that some fields/curves have and some don't.
 option(NTT "Build NTT" ON)
@@ -107,8 +107,3 @@ endif()
 
 # Include and configure (for build) backends based on the backend options
 include(cmake/backend_include.cmake)
-
-if (BUILD_TESTS)
-  add_subdirectory(tests)
-endif()
-

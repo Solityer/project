@@ -121,13 +121,13 @@ def _proof_work_dir(zk_root: pathlib.Path) -> pathlib.Path:
         if runs_tmp.is_symlink() or not runs_tmp.is_dir():
             raise ValueError(f"runs_tmp must be a real directory: {runs_tmp}")
     else:
-        runs_tmp.mkdir()
+        ensure_dir(runs_tmp, root=root, label="proof runs_tmp")
     work_parent = runs_tmp / "proof-work"
     if work_parent.exists() or os.path.lexists(work_parent):
         if work_parent.is_symlink() or not work_parent.is_dir():
             raise ValueError(f"proof-work root must be a real directory: {work_parent}")
     else:
-        work_parent.mkdir()
+        ensure_dir(work_parent, root=root, label="proof-work root")
     if work_parent.resolve(strict=True) != work_parent:
         raise ValueError(f"proof-work root resolves through an alias: {work_parent}")
     session = pathlib.Path(tempfile.mkdtemp(prefix="session-", dir=str(work_parent)))
@@ -2798,14 +2798,14 @@ def build_proof(
     require_formal_experiment()
     started = time.perf_counter()
     artifact_dir = paths["artifact_dir"]
-    ensure_dir(artifact_dir)
+    zk_root = paths.get("zk_root", artifact_dir.parents[1])
+    ensure_dir(artifact_dir, root=zk_root, label="proof artifact directory")
     segments, input_layout, padded_segments = prepare_input_segments_and_layout(
         config, dataset, graph, model, trace
     )
     metadata = make_metadata(config, dataset, graph, model, backend, gpu_state, input_layout)
     metadata["public_output_digest"] = _array_digest("Y", trace.y)
 
-    zk_root = paths.get("zk_root", artifact_dir.parents[1])
     model_registry = ensure_model_registry(
         zk_root,
         metadata,
@@ -2876,15 +2876,15 @@ def build_proof(
     finally:
         _cleanup_proof_work_dir(proof_work_dir, zk_root)
 
-    write_json(artifact_dir / "lookup_proof.json", lasso)
-    write_json(artifact_dir / "fixed_lookup_tables.json", metadata["static_table_registry"])
-    write_json(artifact_dir / "matrix_sumcheck_proof.json", matrix)
-    write_json(artifact_dir / "gkr_proof.json", gkr)
-    write_json(artifact_dir / "combine_proof.json", combine)
-    write_json(artifact_dir / "hyrax_mle_openings.json", openings)
-    write_json(artifact_dir / "privacy_profile.json", privacy_profile)
+    write_json(artifact_dir / "lookup_proof.json", lasso, root=zk_root)
+    write_json(artifact_dir / "fixed_lookup_tables.json", metadata["static_table_registry"], root=zk_root)
+    write_json(artifact_dir / "matrix_sumcheck_proof.json", matrix, root=zk_root)
+    write_json(artifact_dir / "gkr_proof.json", gkr, root=zk_root)
+    write_json(artifact_dir / "combine_proof.json", combine, root=zk_root)
+    write_json(artifact_dir / "hyrax_mle_openings.json", openings, root=zk_root)
+    write_json(artifact_dir / "privacy_profile.json", privacy_profile, root=zk_root)
     if gpu_claim is not None:
-        write_json(artifact_dir / "gpu_proof_hot_path.json", gpu_claim)
+        write_json(artifact_dir / "gpu_proof_hot_path.json", gpu_claim, root=zk_root)
 
     verify_started = time.perf_counter()
     external_context = make_external_context(

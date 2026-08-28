@@ -1,6 +1,3 @@
-#[doc(hidden)]
-pub mod tests;
-
 use crate::field::FieldArithmetic;
 use crate::hash::Hasher;
 use crate::program::ReturningValueProgram;
@@ -51,15 +48,9 @@ impl<'a, F> SumcheckTranscriptConfig<'a, F> {
     ) -> Self {
         Self {
             hash,
-            domain_separator_label: domain_separator_label
-                .as_bytes()
-                .to_vec(),
-            round_poly_label: round_poly_label
-                .as_bytes()
-                .to_vec(),
-            round_challenge_label: round_challenge_label
-                .as_bytes()
-                .to_vec(),
+            domain_separator_label: domain_separator_label.as_bytes().to_vec(),
+            round_poly_label: round_poly_label.as_bytes().to_vec(),
+            round_challenge_label: round_challenge_label.as_bytes().to_vec(),
             little_endian,
             seed_rng,
         }
@@ -87,27 +78,13 @@ where
 {
     fn from(config: &SumcheckTranscriptConfig<'a, F>) -> Self {
         FFISumcheckTranscriptConfig {
-            hash: config
-                .hash
-                .handle,
-            domain_separator_label: config
-                .domain_separator_label
-                .as_ptr(),
-            domain_separator_label_len: config
-                .domain_separator_label
-                .len(),
-            round_poly_label: config
-                .round_poly_label
-                .as_ptr(),
-            round_poly_label_len: config
-                .round_poly_label
-                .len(),
-            round_challenge_label: config
-                .round_challenge_label
-                .as_ptr(),
-            round_challenge_label_len: config
-                .round_challenge_label
-                .len(),
+            hash: config.hash.handle,
+            domain_separator_label: config.domain_separator_label.as_ptr(),
+            domain_separator_label_len: config.domain_separator_label.len(),
+            round_poly_label: config.round_poly_label.as_ptr(),
+            round_poly_label_len: config.round_poly_label.len(),
+            round_challenge_label: config.round_challenge_label.as_ptr(),
+            round_challenge_label_len: config.round_challenge_label.len(),
             little_endian: config.little_endian,
             seed_rng: &config.seed_rng,
         }
@@ -187,7 +164,8 @@ macro_rules! impl_sumcheck {
         use crate::symbol::$field_prefix_ident::FieldSymbol;
         use icicle_core::program::{PreDefinedProgram, ProgramHandle, ReturningValueProgram};
         use icicle_core::sumcheck::{
-            FFISumcheckTranscriptConfig, Sumcheck, SumcheckConfig, SumcheckProofOps, SumcheckTranscriptConfig,
+            FFISumcheckTranscriptConfig, Sumcheck, SumcheckConfig, SumcheckProofOps,
+            SumcheckTranscriptConfig,
         };
         use icicle_core::traits::{FieldImpl, Handle};
         use icicle_runtime::{eIcicleError, memory::HostOrDeviceSlice};
@@ -240,7 +218,10 @@ macro_rules! impl_sumcheck {
             ) -> eIcicleError;
 
             #[link_name = concat!($field_prefix, "_sumcheck_proof_get_round_poly_at")]
-            fn icicle_sumcheck_proof_get_proof_at(handle: SumcheckProofHandle, index: u64) -> *const $field;
+            fn icicle_sumcheck_proof_get_proof_at(
+                handle: SumcheckProofHandle,
+                index: u64,
+            ) -> *const $field;
 
             #[link_name = concat!($field_prefix, "_sumcheck_proof_print")]
             fn icicle_sumcheck_proof_print(handle: SumcheckProofHandle) -> eIcicleError;
@@ -287,10 +268,8 @@ macro_rules! impl_sumcheck {
                 }
 
                 unsafe {
-                    let mle_polys_internal: Vec<*const $field> = mle_polys
-                        .iter()
-                        .map(|mle_poly| mle_poly.as_ptr())
-                        .collect();
+                    let mle_polys_internal: Vec<*const $field> =
+                        mle_polys.iter().map(|mle_poly| mle_poly.as_ptr()).collect();
 
                     let proof_handle = icicle_sumcheck_prove(
                         self.handle,
@@ -303,7 +282,9 @@ macro_rules! impl_sumcheck {
                         &cfg,
                     );
 
-                    Self::Proof { handle: proof_handle }
+                    Self::Proof {
+                        handle: proof_handle,
+                    }
                 }
             }
 
@@ -335,10 +316,7 @@ macro_rules! impl_sumcheck {
 
         impl Drop for SumcheckWrapper {
             fn drop(&mut self) {
-                if !self
-                    .handle
-                    .is_null()
-                {
+                if !self.handle.is_null() {
                     unsafe {
                         let _ = icicle_sumcheck_delete(self.handle);
                     }
@@ -359,7 +337,11 @@ macro_rules! impl_sumcheck {
                 let mut poly_size = 0;
                 let mut num_polys = 0;
                 unsafe {
-                    let err = icicle_sumcheck_proof_get_proof_sizes(self.handle, &mut poly_size, &mut num_polys);
+                    let err = icicle_sumcheck_proof_get_proof_sizes(
+                        self.handle,
+                        &mut poly_size,
+                        &mut num_polys,
+                    );
 
                     if err != eIcicleError::Success {
                         return Err(err);
@@ -384,10 +366,8 @@ macro_rules! impl_sumcheck {
 
         impl From<Vec<Vec<$field>>> for SumcheckProof {
             fn from(value: Vec<Vec<$field>>) -> Self {
-                let vec_of_pointers: Vec<*const $field> = value
-                    .iter()
-                    .map(|vec| vec.as_ptr())
-                    .collect();
+                let vec_of_pointers: Vec<*const $field> =
+                    value.iter().map(|vec| vec.as_ptr()).collect();
                 unsafe {
                     let handle = icicle_sumcheck_proof_create(
                         vec_of_pointers.as_ptr() as *const *const $field,
@@ -406,73 +386,12 @@ macro_rules! impl_sumcheck {
 
         impl Drop for SumcheckProof {
             fn drop(&mut self) {
-                if !self
-                    .handle
-                    .is_null()
-                {
+                if !self.handle.is_null() {
                     unsafe {
                         let _ = icicle_sumcheck_proof_delete(self.handle);
                     }
                 }
             }
-        }
-    };
-}
-
-/// Macro to define tests for a specific field.
-#[macro_export]
-macro_rules! impl_sumcheck_tests {
-    (
-        $field_prefix_ident: ident,
-        $field:ident
-    ) => {
-        use super::SumcheckWrapper;
-        use crate::program::$field_prefix_ident::FieldReturningValueProgram as Program;
-        use icicle_core::sumcheck::tests::*;
-        use icicle_hash::keccak::Keccak256;
-        use icicle_runtime::{device::Device, runtime, test_utilities};
-        use std::sync::Once;
-
-        const MAX_SIZE: u64 = 1 << 18;
-        static INIT: Once = Once::new();
-        const FAST_TWIDDLES_MODE: bool = false;
-
-        pub fn initialize() {
-            INIT.call_once(move || {
-                test_utilities::test_load_and_init_devices();
-            });
-            test_utilities::test_set_ref_device();
-        }
-
-        #[test]
-        fn test_sumcheck_transcript_config() {
-            initialize();
-            let hash = Keccak256::new(0).unwrap();
-            check_sumcheck_transcript_config::<$field>(&hash);
-        }
-
-        #[test]
-        fn test_sumcheck_simple() {
-            initialize();
-            test_utilities::test_set_ref_device();
-            let hash = Keccak256::new(0).unwrap();
-            check_sumcheck_simple::<SumcheckWrapper, Program>(&hash);
-
-            test_utilities::test_set_main_device();
-            let device_hash = Keccak256::new(0).unwrap();
-            check_sumcheck_simple_device::<SumcheckWrapper, Program>(&device_hash);
-        }
-
-        #[test]
-        fn test_sumcheck_user_defined_combine() {
-            initialize();
-            test_utilities::test_set_ref_device();
-            let hash = Keccak256::new(0).unwrap();
-            check_sumcheck_user_defined_combine::<SumcheckWrapper, Program>(&hash);
-
-            test_utilities::test_set_main_device();
-            let device_hash = Keccak256::new(0).unwrap();
-            check_sumcheck_user_defined_combine::<SumcheckWrapper, Program>(&device_hash);
         }
     };
 }

@@ -162,11 +162,6 @@ def _safe_int_matmul(left: np.ndarray, right: np.ndarray) -> np.ndarray:
     return result
 
 
-def _round_div_away(numerator: int, denominator: int) -> int:
-    """Compatibility helper for callers that explicitly need nearest mode."""
-    return signed_round_div(numerator, denominator, ROUNDING_MODE_NEAREST)
-
-
 def _signed_round_div_trace(
     numerator: np.ndarray,
     denominator: np.ndarray,

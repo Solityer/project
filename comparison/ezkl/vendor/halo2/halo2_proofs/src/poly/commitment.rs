@@ -3,12 +3,12 @@ use super::{
     strategy::Guard,
     Coeff, LagrangeCoeff, Polynomial,
 };
-#[cfg(feature = "gpu-accelerated")]
-use icicle_runtime::stream::IcicleStream;
 use crate::transcript::{EncodedChallenge, TranscriptRead, TranscriptWrite};
 use crate::{helpers::SerdePrimeField, poly::Error};
 use ff::Field;
 use halo2curves::CurveAffine;
+#[cfg(feature = "gpu-accelerated")]
+use icicle_runtime::stream::IcicleStream;
 use rand_core::RngCore;
 
 use std::{

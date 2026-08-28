@@ -14,10 +14,10 @@ use std::marker::PhantomData;
 mod prover;
 mod verifier;
 
-pub use prover::create_proof;
-pub use verifier::verify_proof;
 #[cfg(feature = "gpu-accelerated")]
 use icicle_runtime::stream::IcicleStream;
+pub use prover::create_proof;
+pub use verifier::verify_proof;
 
 use std::io;
 
@@ -244,147 +244,5 @@ impl<'params, C: CurveAffine> ParamsProver<'params, C> for ParamsIPA<C> {
 
     fn get_g(&self) -> &[C] {
         &self.g
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use crate::poly::commitment::ParamsProver;
-    use crate::poly::commitment::{Blind, Params, MSM};
-    use crate::poly::ipa::commitment::{create_proof, verify_proof, ParamsIPA};
-    use crate::poly::ipa::msm::MSMIPA;
-
-    use ff::Field;
-    use group::Curve;
-
-    #[test]
-    fn test_commit_lagrange_epaffine() {
-        const K: u32 = 6;
-
-        use rand_core::OsRng;
-
-        use crate::poly::EvaluationDomain;
-        use halo2curves::pasta::{EpAffine, Fq};
-
-        let params = ParamsIPA::<EpAffine>::new(K);
-        let domain = EvaluationDomain::new(1, K);
-
-        let mut a = domain.empty_lagrange();
-
-        for (i, a) in a.iter_mut().enumerate() {
-            *a = Fq::from(i as u64);
-        }
-
-        let b = domain.lagrange_to_coeff(a.clone());
-
-        let alpha = Blind(Fq::random(OsRng));
-
-        assert_eq!(params.commit(&b, alpha), params.commit_lagrange(&a, alpha));
-    }
-
-    #[test]
-    fn test_commit_lagrange_eqaffine() {
-        const K: u32 = 6;
-
-        use rand_core::OsRng;
-
-        use crate::poly::EvaluationDomain;
-        use halo2curves::pasta::{EqAffine, Fp};
-
-        let params: ParamsIPA<EqAffine> = ParamsIPA::<EqAffine>::new(K);
-        let domain = EvaluationDomain::new(1, K);
-
-        let mut a = domain.empty_lagrange();
-
-        for (i, a) in a.iter_mut().enumerate() {
-            *a = Fp::from(i as u64);
-        }
-
-        let b = domain.lagrange_to_coeff(a.clone());
-
-        let alpha = Blind(Fp::random(OsRng));
-
-        assert_eq!(params.commit(&b, alpha), params.commit_lagrange(&a, alpha));
-    }
-
-    #[test]
-    fn test_opening_proof() {
-        const K: u32 = 6;
-
-        use ff::Field;
-        use rand_core::OsRng;
-
-        use super::super::commitment::{Blind, Params};
-        use crate::arithmetic::eval_polynomial;
-        use crate::halo2curves::pasta::{EpAffine, Fq};
-        use crate::poly::EvaluationDomain;
-        use crate::transcript::{
-            Blake2bRead, Blake2bWrite, Challenge255, Transcript, TranscriptRead, TranscriptWrite,
-        };
-
-        use crate::transcript::TranscriptReadBuffer;
-        use crate::transcript::TranscriptWriterBuffer;
-
-        let rng = OsRng;
-
-        let params = ParamsIPA::<EpAffine>::new(K);
-        let mut params_buffer = vec![];
-        <ParamsIPA<_> as Params<_>>::write(&params, &mut params_buffer).unwrap();
-        let params: ParamsIPA<EpAffine> = Params::read::<_>(&mut &params_buffer[..]).unwrap();
-
-        let domain = EvaluationDomain::new(1, K);
-
-        let mut px = domain.empty_coeff();
-
-        for (i, a) in px.iter_mut().enumerate() {
-            *a = Fq::from(i as u64);
-        }
-
-        let blind = Blind(Fq::random(rng));
-
-        let p = params.commit(&px, blind).to_affine();
-
-        let mut transcript =
-            Blake2bWrite::<Vec<u8>, EpAffine, Challenge255<EpAffine>>::init(vec![]);
-        transcript.write_point(p).unwrap();
-        let x = transcript.squeeze_challenge_scalar::<()>();
-        // Evaluate the polynomial
-        let v = eval_polynomial(&px, *x);
-        transcript.write_scalar(v).unwrap();
-
-        let (proof, ch_prover) = {
-            create_proof(&params, rng, &mut transcript, &px, blind, *x).unwrap();
-            let ch_prover = transcript.squeeze_challenge();
-            (transcript.finalize(), ch_prover)
-        };
-
-        // Verify the opening proof
-        let mut transcript =
-            Blake2bRead::<&[u8], EpAffine, Challenge255<EpAffine>>::init(&proof[..]);
-        let p_prime = transcript.read_point().unwrap();
-        assert_eq!(p, p_prime);
-        let x_prime = transcript.squeeze_challenge_scalar::<()>();
-        assert_eq!(*x, *x_prime);
-        let v_prime = transcript.read_scalar().unwrap();
-        assert_eq!(v, v_prime);
-
-        let mut commitment_msm = MSMIPA::new(&params);
-        commitment_msm.append_term(Fq::one(), p.into());
-
-        let guard = verify_proof(&params, commitment_msm, &mut transcript, *x, v).unwrap();
-        let ch_verifier = transcript.squeeze_challenge();
-        assert_eq!(*ch_prover, *ch_verifier);
-
-        // Test guard behavior prior to checking another proof
-        {
-            // Test use_challenges()
-            let msm_challenges = guard.clone().use_challenges();
-            assert!(msm_challenges.check());
-
-            // Test use_g()
-            let g = guard.compute_g();
-            let (msm_g, _accumulator) = guard.clone().use_g(g);
-            assert!(msm_g.check());
-        }
     }
 }

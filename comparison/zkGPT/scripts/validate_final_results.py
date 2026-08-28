@@ -27,7 +27,7 @@ from zkgpt_gat.result_validation import (  # noqa: E402
     validate_artifact,
     validate_matrix_rows,
 )
-from zkgpt_gat.util import write_json  # noqa: E402
+from zkgpt_gat.util import ensure_dir, write_json  # noqa: E402
 
 
 def _config_value(path: pathlib.Path, key: str, default: str) -> str:
@@ -199,7 +199,7 @@ def main() -> int:
         "replay_required": True,
         "privacy_groups": privacy_group_audit,
     }
-    results_dir.mkdir(parents=True, exist_ok=True)
+    ensure_dir(results_dir, root=ROOT, label="results root")
     write_json(results_dir / "local_validation.json", audit)
     print(f"zkgpt_formal_validation={audit['status']} errors={len(errors)}")
     return 0 if not errors else 1

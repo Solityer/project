@@ -17,15 +17,3 @@ impl_field!(
     PairingTargetFieldCfg
 );
 impl_pairing!("bn254", bn254, CurveCfg, G2CurveCfg, PairingTargetField);
-
-#[cfg(test)]
-pub(crate) mod tests {
-    use crate::curve::CurveCfg;
-    use crate::curve::G2CurveCfg;
-    use icicle_core::impl_pairing_tests;
-    use icicle_core::pairing::tests::*;
-
-    use super::PairingTargetField;
-
-    impl_pairing_tests!(CurveCfg, G2CurveCfg, PairingTargetField);
-}

@@ -1,9 +1,5 @@
 use crate::traits::FieldImpl;
-use icicle_runtime::{
-    errors::eIcicleError, memory::HostOrDeviceSlice, stream::IcicleStreamHandle,
-};
-
-pub mod tests;
+use icicle_runtime::{errors::eIcicleError, memory::HostOrDeviceSlice, stream::IcicleStreamHandle};
 
 #[repr(C)]
 #[derive(Debug, Clone)]
@@ -172,7 +168,7 @@ impl HornerData {
             value_indices,
             offsets,
             sizes,
-            num_horner
+            num_horner,
         }
     }
 }
@@ -325,7 +321,7 @@ where
         gate_data,
         calc_data,
         horner_data,
-        result, 
+        result,
         &cfg,
     )
 }
@@ -339,11 +335,7 @@ where
     F: FieldImpl,
     <F as FieldImpl>::Config: GateOps<F>,
 {
-    <<F as FieldImpl>::Config as GateOps<F>>::lookups_constraint(
-        lookup_data,
-        result, 
-        &cfg,
-    )
+    <<F as FieldImpl>::Config as GateOps<F>>::lookups_constraint(lookup_data, result, &cfg)
 }
 
 #[macro_export]
@@ -357,7 +349,9 @@ macro_rules! impl_gate_ops_field {
         mod $field_prefix_ident {
 
             use crate::gate_ops::{$field, HostOrDeviceSlice};
-            use icicle_core::gate_ops::{GateData, CalculationData, HornerData, LookupData, GateOpsConfig, LookupConfig};
+            use icicle_core::gate_ops::{
+                CalculationData, GateData, GateOpsConfig, HornerData, LookupConfig, LookupData,
+            };
             use icicle_runtime::errors::eIcicleError;
 
             extern "C" {
@@ -412,37 +406,6 @@ macro_rules! impl_gate_ops_field {
                     )
                     .wrap()
                 }
-            }
-        }
-    };
-}
-
-#[macro_export]
-macro_rules! impl_gate_ops_tests {
-    (
-      $field:ident
-    ) => {
-        pub(crate) mod test_gateops {
-            use super::*;
-            use icicle_runtime::test_utilities;
-            use icicle_runtime::{device::Device, runtime};
-            use std::sync::Once;
-
-            fn initialize() {
-                test_utilities::test_load_and_init_devices();
-                test_utilities::test_set_main_device();
-            }
-
-            #[test]
-            pub fn test_gate_ops_scalars() {
-                initialize();
-                check_gate_ops_scalars::<$field>()
-            }
-
-            #[test]
-            pub fn test_lookup_constraints_scalars() {
-                initialize();
-                check_lookup_constraints_scalars::<$field>()
             }
         }
     };

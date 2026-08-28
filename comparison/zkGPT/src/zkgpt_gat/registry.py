@@ -18,7 +18,7 @@ from typing import Any, Dict, Sequence, Tuple
 from .native_hyrax import NativeHyrax
 from .field import log2_power_of_two
 from .transcript import Transcript
-from .util import digest_json, read_json, write_json
+from .util import digest_json, ensure_dir, lexical_path, read_json, require_dir, write_json
 
 
 MODEL_REGISTRY_ROOT = pathlib.Path("results") / "model_registry"
@@ -59,17 +59,24 @@ def canonical_registry_dir(zk_root: pathlib.Path, model_param_id: str) -> pathli
     identity = str(model_param_id)
     if not identity or identity in {".", ".."} or pathlib.PurePath(identity).name != identity:
         raise ValueError("model_param_id must be a single canonical path component")
-    root = pathlib.Path(zk_root).expanduser().resolve()
-    directory = (root / MODEL_REGISTRY_ROOT / identity).resolve()
-    try:
-        directory.relative_to(root)
-    except ValueError as exc:
-        raise ValueError("canonical model registry escapes baseline root") from exc
-    return directory
+    root = require_dir(zk_root, label="model registry baseline root")
+    return _strict_registry_path(
+        root / MODEL_REGISTRY_ROOT / identity,
+        root,
+        "canonical public model registry",
+        kind="dir",
+    )
 
 
 def canonical_registry_public_path(zk_root: pathlib.Path, model_param_id: str) -> pathlib.Path:
-    return canonical_registry_dir(zk_root, model_param_id) / "registry.json"
+    directory = canonical_registry_dir(zk_root, model_param_id)
+    root = require_dir(zk_root, label="model registry baseline root")
+    return _strict_registry_path(
+        directory / "registry.json",
+        root,
+        "canonical public model registry file",
+        kind="file",
+    )
 
 
 def canonical_registry_secret_dir(zk_root: pathlib.Path, model_param_id: str) -> pathlib.Path:
@@ -83,37 +90,32 @@ def canonical_registry_secret_dir(zk_root: pathlib.Path, model_param_id: str) ->
     identity = str(model_param_id)
     if not identity or identity in {".", ".."} or pathlib.PurePath(identity).name != identity:
         raise ValueError("model_param_id must be a single canonical path component")
-    root = pathlib.Path(zk_root).expanduser().resolve()
-    directory = (root / PRIVATE_MODEL_SETUP_ROOT / identity).resolve()
-    try:
-        directory.relative_to(root)
-    except ValueError as exc:
-        raise ValueError("private model setup escapes baseline root") from exc
-    return directory
+    root = require_dir(zk_root, label="private model setup baseline root")
+    return _strict_registry_path(
+        root / PRIVATE_MODEL_SETUP_ROOT / identity,
+        root,
+        "canonical private model setup",
+        kind="dir",
+    )
 
 
 def canonical_registry_secret_path(zk_root: pathlib.Path, model_param_id: str) -> pathlib.Path:
-    return canonical_registry_secret_dir(zk_root, model_param_id) / "registry.secret.json"
+    directory = canonical_registry_secret_dir(zk_root, model_param_id)
+    root = require_dir(zk_root, label="private model setup baseline root")
+    return _strict_registry_path(
+        directory / "registry.secret.json",
+        root,
+        "canonical private model setup file",
+        kind="file",
+    )
 
 
 def _mkdir_chain(path: pathlib.Path, root: pathlib.Path) -> None:
     """Create a contained directory chain while rejecting aliases/special files."""
-    path = pathlib.Path(path).resolve()
-    root = pathlib.Path(root).resolve()
     try:
-        relative = path.relative_to(root)
-    except ValueError as exc:
-        raise ValueError(f"registry path escapes baseline root: {path}") from exc
-    current = root
-    for part in relative.parts:
-        current /= part
-        try:
-            info = current.lstat()
-        except FileNotFoundError:
-            current.mkdir()
-            continue
-        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
-            raise RuntimeError(f"registry directory must be a real directory: {current}")
+        ensure_dir(path, root=root, label="registry directory")
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"registry directory must be a real baseline-local directory: {path}") from exc
 
 
 def _check_directory_state(path: pathlib.Path, *, allow_missing: bool) -> bool:
@@ -250,18 +252,31 @@ def _publish_registry_pair(
         shutil.rmtree(secret_stage, ignore_errors=True)
 
 
-def _strict_registry_path(path: pathlib.Path, root: pathlib.Path, label: str) -> pathlib.Path:
-    """Resolve a canonical registry path without following component aliases."""
-    root = pathlib.Path(root).expanduser().resolve()
-    raw = pathlib.Path(path).expanduser()
-    if not raw.is_absolute():
-        raw = root / raw
+def _strict_registry_path(
+    path: pathlib.Path,
+    root: pathlib.Path,
+    label: str,
+    *,
+    kind: str = "path",
+) -> pathlib.Path:
+    """Resolve a registry path after authenticating every component.
+
+    ``Path.resolve`` must never be the first operation here: it would turn an
+    in-baseline alias into its target and allow registration to publish into a
+    directory selected by a pre-seeded symlink.  Directory and file callers
+    additionally authenticate the final inode type and one-link ownership.
+    """
+    if kind not in {"path", "dir", "file"}:
+        raise ValueError(f"unsupported registry path kind: {kind}")
+    root = require_dir(root, label=f"{label} baseline root")
+    raw_value = pathlib.Path(path).expanduser()
+    raw = lexical_path(raw_value if raw_value.is_absolute() else root / raw_value)
     try:
         relative = raw.relative_to(root)
     except ValueError as exc:
         raise RuntimeError(f"{label} escapes baseline root: {raw}") from exc
     current = root
-    for component in relative.parts:
+    for index, component in enumerate(relative.parts):
         current /= component
         try:
             info = current.lstat()
@@ -271,6 +286,14 @@ def _strict_registry_path(path: pathlib.Path, root: pathlib.Path, label: str) ->
             continue
         if stat.S_ISLNK(info.st_mode):
             raise RuntimeError(f"{label} contains a symlink component: {current}")
+        is_leaf = index == len(relative.parts) - 1
+        if not is_leaf and not stat.S_ISDIR(info.st_mode):
+            raise RuntimeError(f"{label} parent must be a real directory: {current}")
+        if is_leaf and kind == "dir" and not stat.S_ISDIR(info.st_mode):
+            raise RuntimeError(f"{label} must be a real directory: {current}")
+        if is_leaf and kind == "file":
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise RuntimeError(f"{label} must be an owned regular file: {current}")
     resolved = raw.resolve()
     try:
         resolved.relative_to(root)
@@ -293,7 +316,7 @@ def validate_registry_pair(
     blind.  The runner can nevertheless reject missing, aliased, hard-linked,
     legacy, or transaction-mismatched setup files before loading a dataset.
     """
-    root = pathlib.Path(zk_root).expanduser().resolve()
+    root = require_dir(zk_root, label="model registry baseline root")
     # Reuse the same single-component identity gate as registration and the
     # independent verifier; do not allow ``..`` or slash-bearing selectors.
     identity = str(model_param_id)
@@ -303,28 +326,28 @@ def validate_registry_pair(
     # keeping runner, registration, and verifier on one schema/path API.
     public_dir_raw = root / MODEL_REGISTRY_ROOT / identity
     secret_dir_raw = root / PRIVATE_MODEL_SETUP_ROOT / identity
-    _strict_registry_path(public_dir_raw, root, "public model registry")
-    _strict_registry_path(secret_dir_raw, root, "private model setup")
+    _strict_registry_path(public_dir_raw, root, "public model registry", kind="dir")
+    _strict_registry_path(secret_dir_raw, root, "private model setup", kind="dir")
     _strict_registry_path(
-        public_dir_raw / "registry.json", root, "public model registry file alias"
+        public_dir_raw / "registry.json", root, "public model registry file alias", kind="file"
     )
     _strict_registry_path(
-        secret_dir_raw / "registry.secret.json", root, "private model registry file alias"
+        secret_dir_raw / "registry.secret.json", root, "private model registry file alias", kind="file"
     )
     public_dir = _strict_registry_path(
-        canonical_registry_dir(root, identity), root, "canonical public model registry"
+        canonical_registry_dir(root, identity), root, "canonical public model registry", kind="dir"
     )
     secret_dir = _strict_registry_path(
-        canonical_registry_secret_dir(root, identity), root, "canonical private model setup"
+        canonical_registry_secret_dir(root, identity), root, "canonical private model setup", kind="dir"
     )
     public_path = _strict_registry_path(
-        canonical_registry_public_path(root, identity), root, "public model registry file"
+        canonical_registry_public_path(root, identity), root, "public model registry file", kind="file"
     )
     secret_path = _strict_registry_path(
-        canonical_registry_secret_path(root, identity), root, "private model registry file"
+        canonical_registry_secret_path(root, identity), root, "private model registry file", kind="file"
     )
     legacy_path = _strict_registry_path(
-        public_dir_raw / "registry.secret.json", root, "legacy model registry secret"
+        public_dir_raw / "registry.secret.json", root, "legacy model registry secret", kind="file"
     )
 
     if os.path.lexists(public_dir_raw):
@@ -405,12 +428,32 @@ def ensure_model_registry(
     layout_digest = str(metadata.get("Layout_in_digest", ""))
     if len(layout_digest) != 64:
         raise ValueError("model registration requires a canonical Layout_in digest")
-    root = pathlib.Path(zk_root).expanduser().resolve()
+    root = require_dir(zk_root, label="model registry baseline root")
+    identity = str(metadata.get("model_param_id", ""))
+    # Authenticate the caller-selected lexical roots before any canonical
+    # helper resolves them.  This rejects both escaping aliases and aliases
+    # that resolve back inside the baseline, including deep model-registry
+    # components pre-seeded by an attacker.
+    public_dir_raw = root / MODEL_REGISTRY_ROOT / identity
+    secret_dir_raw = root / PRIVATE_MODEL_SETUP_ROOT / identity
+    _strict_registry_path(public_dir_raw, root, "public model registry", kind="dir")
+    _strict_registry_path(secret_dir_raw, root, "private model setup", kind="dir")
     directory = _registry_dir(root, str(metadata["model_param_id"]), layout_digest)
-    public_path = directory / "registry.json"
-    secret_dir = canonical_registry_secret_dir(root, str(metadata["model_param_id"]))
-    secret_path = secret_dir / "registry.secret.json"
-    legacy_secret_path = directory / "registry.secret.json"
+    public_path = _strict_registry_path(
+        directory / "registry.json", root, "public model registry file", kind="file"
+    )
+    secret_dir = _strict_registry_path(
+        canonical_registry_secret_dir(root, str(metadata["model_param_id"])),
+        root,
+        "private model setup",
+        kind="dir",
+    )
+    secret_path = _strict_registry_path(
+        secret_dir / "registry.secret.json", root, "private model registry file", kind="file"
+    )
+    legacy_secret_path = _strict_registry_path(
+        directory / "registry.secret.json", root, "legacy model registry secret", kind="file"
+    )
     public_present = _check_file_state(public_path)
     secret_present = _check_file_state(secret_path)
     public_dir_present = _check_directory_state(directory, allow_missing=True)
@@ -493,7 +536,7 @@ def ensure_model_registry(
     if os.path.lexists(work_dir):
         raise RuntimeError("private model setup work directory already exists")
     _mkdir_chain(work_dir.parent, root)
-    work_dir.mkdir()
+    ensure_dir(work_dir, root=root, label="private model setup work directory")
     hyrax = NativeHyrax(root)
     public_entries: Dict[str, Any] = {}
     secret_entries: Dict[str, Any] = {}

@@ -30,8 +30,14 @@ pub trait FieldImpl:
 }
 
 pub trait MontgomeryConvertible: Sized {
-    fn to_mont(values: &mut (impl HostOrDeviceSlice<Self> + ?Sized), stream: &IcicleStream) -> eIcicleError;
-    fn from_mont(values: &mut (impl HostOrDeviceSlice<Self> + ?Sized), stream: &IcicleStream) -> eIcicleError;
+    fn to_mont(
+        values: &mut (impl HostOrDeviceSlice<Self> + ?Sized),
+        stream: &IcicleStream,
+    ) -> eIcicleError;
+    fn from_mont(
+        values: &mut (impl HostOrDeviceSlice<Self> + ?Sized),
+        stream: &IcicleStream,
+    ) -> eIcicleError;
 }
 
 pub trait Arithmetic: Sized + Add<Output = Self> + Sub<Output = Self> + Mul<Output = Self> {

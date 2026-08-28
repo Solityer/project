@@ -3,6 +3,10 @@
 
 from __future__ import annotations
 
+import sys
+
+sys.dont_write_bytecode = True
+
 import hashlib
 import json
 import argparse
@@ -16,6 +20,7 @@ from resource_policy import (  # noqa: E402
     canonical_cell_dir,
     resolve_local,
     validate_ceremony_material,
+    validate_cuda_backend_material,
     validate_cell_inventory,
     validate_results_tree,
 )
@@ -108,11 +113,15 @@ def validate_matrix_records(
                 if not isinstance(attestation.get("proof_sha256"), str) or not attestation["proof_sha256"].startswith("sha256:"):
                     failures.append(f"fixture proof digest is invalid: {dataset}/{device}")
             if device == "cpu":
+                if record.get("cuda_backend_provenance") != {"status": "fixture_not_production"}:
+                    failures.append(f"CPU fixture CUDA provenance is not test-only: {dataset}")
                 if record.get("gpu_prove_telemetry") != "not_applicable":
                     failures.append(f"CPU fixture carries GPU telemetry: {dataset}")
                 if record.get("verifier_backend") != "cpu_independent":
                     failures.append(f"CPU fixture verifier is not independent: {dataset}")
             elif (
+                record.get("cuda_backend_provenance") != {"status": "fixture_not_production"}
+                or
                 record.get("gpu_backend_execution") != "cuda_icicle_prove_only"
                 or not _valid_cuda_prove_telemetry(record.get("gpu_prove_telemetry"))
                 or record.get("verifier_backend") != "cpu_independent"
@@ -124,8 +133,23 @@ def validate_matrix_records(
             failures.append(f"required matrix cell is not verified: {dataset}/{device}")
         if not fixture and device == "cpu" and record.get("gpu_prove_telemetry") != "not_applicable":
             failures.append(f"CPU result carries GPU prove telemetry: {dataset}")
+        if not fixture and device == "cpu" and record.get("cuda_backend_provenance") != {"status": "not_applicable"}:
+            failures.append(f"CPU result carries CUDA backend provenance: {dataset}")
         if not fixture and device == "cuda" and not _valid_cuda_prove_telemetry(record.get("gpu_prove_telemetry")):
             failures.append(f"CUDA result lacks valid prove telemetry: {dataset}")
+        if not fixture and device == "cuda":
+            provenance = record.get("cuda_backend_provenance")
+            if (
+                not isinstance(provenance, dict)
+                or provenance.get("schema") != "ezkl_formal_icicle_cuda_backend_v1"
+                or provenance.get("backend") != "cuda"
+                or not isinstance(provenance.get("manifest_path"), str)
+                or not isinstance(provenance.get("manifest_sha256"), str)
+                or not isinstance(provenance.get("backend_digest"), str)
+                or not isinstance(provenance.get("library_inventory"), list)
+                or len(provenance["library_inventory"]) != 4
+            ):
+                failures.append(f"CUDA result lacks staged backend provenance: {dataset}")
     if not allow_incomplete:
         for dataset, device in sorted(expected - seen):
             failures.append(f"missing required matrix cell: {dataset}/{device}")
@@ -335,6 +359,17 @@ def main() -> int:
         if device not in ("cpu", "cuda"):
             failures.append(f"{manifest_path}: invalid formal backend")
             continue
+        try:
+            expected_cuda_backend = (
+                validate_cuda_backend_material(ROOT)
+                if device == "cuda"
+                else {"status": "not_applicable"}
+            )
+        except (OSError, ValueError) as exc:
+            failures.append(f"{manifest_path}: CUDA backend resource validation failed: {exc}")
+            continue
+        if manifest.get("cuda_backend_provenance") != expected_cuda_backend:
+            failures.append(f"{manifest_path}: CUDA backend provenance mismatch")
         expected_source_id = formal_source_id(ROOT)
         expected_prover_binary = ROOT / (
             "target-gpu/release/ezkl_formal" if device == "cuda" else "target/release/ezkl_formal"

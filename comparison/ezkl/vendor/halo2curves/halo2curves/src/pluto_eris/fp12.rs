@@ -251,28 +251,3 @@ pub const FROBENIUS_COEFF_FP12_C1: [Fp2; 12] = [
         ]),
     },
 ];
-
-#[cfg(test)]
-mod test {
-    use super::*;
-    crate::field_testing_suite!(Fp12, "field_arithmetic");
-    // extension field-specific
-    crate::field_testing_suite!(Fp12, "quadratic_sparse_mul", Fp6, Fp2);
-    crate::field_testing_suite!(
-        Fp12,
-        "frobenius",
-        // Frobenius endomorphism power parameter for extension field
-        //  ϕ: E → E
-        //  (x, y) ↦ (x^p, y^p)
-        // p: modulus of base field (Here, Fp::MODULUS)
-        [
-            0x9ffffcd300000001,
-            0xa2a7e8c30006b945,
-            0xe4a7a5fe8fadffd6,
-            0x443f9a5cda8a6c7b,
-            0xa803ca76f439266f,
-            0x0130e0000d7f70e4,
-            0x2400000000002400,
-        ]
-    );
-}

@@ -3,13 +3,13 @@
 use std::ops::Range;
 use std::sync::Arc;
 
+#[cfg(feature = "gpu-accelerated")]
+use crate::icicle::{device_vec_from_c_scalars, device_vec_from_poly_vec};
+use crate::poly::ExtendedLagrangeCoeff;
 use ff::{Field, FromUniformBytes};
 use group::Curve;
 #[cfg(feature = "gpu-accelerated")]
 use icicle_runtime::stream::IcicleStream;
-#[cfg(feature = "gpu-accelerated")]
-use crate::icicle::{device_vec_from_c_scalars, device_vec_from_poly_vec};
-use crate::poly::ExtendedLagrangeCoeff;
 
 use super::{
     circuit::{
@@ -20,11 +20,13 @@ use super::{
     permutation, Assigned, Challenge, Error, LagrangeCoeff, Polynomial, ProvingKey, VerifyingKey,
 };
 use crate::{
-    arithmetic::{parallelize, CurveAffine}, circuit::Value, poly::{
+    arithmetic::{parallelize, CurveAffine},
+    circuit::Value,
+    poly::{
         batch_invert_assigned,
         commitment::{Blind, Params},
         EvaluationDomain,
-    }
+    },
 };
 
 pub(crate) fn create_domain<C, ConcreteCircuit>(
@@ -401,7 +403,8 @@ where
     let l_blind = {
         #[cfg(feature = "gpu-accelerated")]
         {
-            vk.domain.coeff_to_extended(&l_blind, &IcicleStream::default())
+            vk.domain
+                .coeff_to_extended(&l_blind, &IcicleStream::default())
         }
         #[cfg(not(feature = "gpu-accelerated"))]
         {
@@ -417,7 +420,8 @@ where
     let l_last = {
         #[cfg(feature = "gpu-accelerated")]
         {
-            vk.domain.coeff_to_extended(&l_last, &IcicleStream::default())
+            vk.domain
+                .coeff_to_extended(&l_last, &IcicleStream::default())
         }
         #[cfg(not(feature = "gpu-accelerated"))]
         {
@@ -439,13 +443,17 @@ where
     let ev = Evaluator::new(&vk.cs);
 
     #[cfg(feature = "gpu-accelerated")]
-    let icicle_fixed = device_vec_from_poly_vec::<C, ExtendedLagrangeCoeff>(&fixed_cosets, &IcicleStream::default());
+    let icicle_fixed = device_vec_from_poly_vec::<C, ExtendedLagrangeCoeff>(
+        &fixed_cosets,
+        &IcicleStream::default(),
+    );
     #[cfg(feature = "gpu-accelerated")]
     let icicle_l0 = device_vec_from_c_scalars(&l0.as_ref(), &IcicleStream::default());
     #[cfg(feature = "gpu-accelerated")]
     let icicle_l_last = device_vec_from_c_scalars(&l_last.as_ref(), &IcicleStream::default());
     #[cfg(feature = "gpu-accelerated")]
-    let icicle_l_active_row = device_vec_from_c_scalars(&l_active_row.as_ref(), &IcicleStream::default());
+    let icicle_l_active_row =
+        device_vec_from_c_scalars(&l_active_row.as_ref(), &IcicleStream::default());
 
     Ok({
         #[cfg(feature = "gpu-accelerated")]

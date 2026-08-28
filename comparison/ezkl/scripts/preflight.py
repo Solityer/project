@@ -3,6 +3,10 @@
 
 from __future__ import annotations
 
+import sys
+
+sys.dont_write_bytecode = True
+
 import argparse
 import json
 import shutil
@@ -14,8 +18,10 @@ from resource_policy import (
     ROOT,
     atomic_write_json,
     check_resource_layout,
+    safe_mkdir,
     read_resource_manifest,
 )
+from formal_source_manifest import checked_path, lexical_baseline_root, lexical_checked_path
 
 
 def main() -> int:
@@ -25,10 +31,23 @@ def main() -> int:
     parser.add_argument("--require-staged", action="store_true")
     parser.add_argument("--backend", choices=("cpu", "cuda"))
     args = parser.parse_args()
-    root = ROOT.resolve()
-    output = args.output.expanduser().resolve()
-    if not (output == root or root in output.parents):
-        raise SystemExit("--output must stay inside comparison/ezkl")
+    try:
+        # Keep the caller's path lexical until every component has been
+        # inspected.  Resolving --output first would turn a symlink alias into
+        # the external target and could redirect the report write.
+        root = lexical_baseline_root(ROOT)
+        output_lexical = lexical_checked_path(
+            root,
+            args.output,
+            "preflight output",
+            allow_missing_tail=True,
+        )
+        # Safely create a missing output parent after the complete lexical
+        # path has been checked, then re-check the destination itself.
+        safe_mkdir(root, output_lexical.parent, "preflight output parent")
+        output = checked_path(root, output_lexical, "preflight output", allow_missing=True)
+    except (FileNotFoundError, OSError, ValueError) as exc:
+        raise SystemExit(str(exc)) from exc
     selected = DATASET_ORDER if args.datasets == "all" else tuple(
         item.strip() for item in args.datasets.split(",") if item.strip()
     )
@@ -48,7 +67,7 @@ def main() -> int:
         manifest = read_resource_manifest(root)
         report["resource_manifest_schema"] = manifest["schema"]
         report["resource_check"] = check_resource_layout(
-            root, selected, require_staged=args.require_staged
+            root, selected, require_staged=args.require_staged, backend=args.backend
         )
         for dataset in selected:
             config = root / "configs" / {

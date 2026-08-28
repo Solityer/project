@@ -357,7 +357,9 @@ impl<C: CurveAffine> Permuted<C> {
         let product_commitment = {
             #[cfg(feature = "gpu-accelerated")]
             {
-                params.commit_lagrange_with_stream(&z, product_blind, &stream).to_affine()
+                params
+                    .commit_lagrange_with_stream(&z, product_blind, &stream)
+                    .to_affine()
             }
             #[cfg(not(feature = "gpu-accelerated"))]
             {
@@ -380,10 +382,9 @@ impl<C: CurveAffine> Permuted<C> {
             stream.synchronize().unwrap();
             stream.destroy().unwrap();
         }
-        
+
         // Hash product commitment
         transcript.write_point(product_commitment)?;
-
 
         Ok(Committed::<C> {
             permuted_input_poly: self.permuted_input_poly,

@@ -661,7 +661,11 @@ def validate_staged_dataset_resources(dataset: str, manifest: dict[str, Any]) ->
     )
     ensure_regular_file(cache / "meta.cfg", label=f"{dataset} cache metadata")
     ensure_regular_file(cache / "edges.txt", label=f"{dataset} edges")
-    if not (cache / "features.txt").is_file() and not (cache / "features.npy").is_file():
+    feature_files = [cache / "features.txt", cache / "features.npy"]
+    for feature_file in feature_files:
+        if feature_file.exists() or feature_file.is_symlink():
+            ensure_regular_file(feature_file, label=f"{dataset} features")
+    if not any(feature_file.is_file() for feature_file in feature_files):
         raise FileNotFoundError(f"{dataset} cache has no feature resource")
     ensure_regular_file(checkpoint / "manifest.json", label=f"{dataset} model manifest")
     ensure_regular_file(checkpoint / "tensors.txt", label=f"{dataset} model tensors")

@@ -3,6 +3,10 @@
 
 from __future__ import annotations
 
+import sys
+
+sys.dont_write_bytecode = True
+
 import argparse
 import hashlib
 import json
@@ -13,12 +17,14 @@ from pathlib import Path
 
 from formal_source_manifest import (
     checked_path,
-    checked_tree_files,
     formal_source_files,
+    formal_vendor_files,
     formal_source_id,
+    SOURCE_FILTER_CONTRACT,
     lexical_baseline_root,
     tree_digest as manifest_tree_digest,
 )
+from resource_policy import safe_mkdir, validate_cuda_backend_material
 
 
 ROOT = lexical_baseline_root(Path(__file__).absolute().parent.parent)
@@ -42,7 +48,7 @@ def tree_digest(paths: list[Path]) -> str:
 
 def vendor_tree_digest() -> str:
     try:
-        files = checked_tree_files(ROOT, "vendor", "authenticated vendor tree")
+        files = formal_vendor_files(ROOT)
     except (FileNotFoundError, ValueError) as exc:
         raise SystemExit(str(exc)) from exc
     if not files:
@@ -53,7 +59,7 @@ def vendor_tree_digest() -> str:
 def validate_dependency_sources() -> None:
     try:
         vendor_root = checked_path(ROOT, "vendor", "authenticated vendor tree")
-        vendor_files = checked_tree_files(ROOT, "vendor", "authenticated vendor tree")
+        vendor_files = formal_vendor_files(ROOT)
         manifests = [checked_path(ROOT, "Cargo.toml", "root Cargo manifest")]
         manifests.extend(path for path in vendor_files if path.name == "Cargo.toml")
     except (FileNotFoundError, ValueError) as exc:
@@ -136,6 +142,7 @@ def main() -> int:
         "features": args.features,
         "source_tree_digest": tree_digest(formal_files),
         "formal_semantic_source_id": formal_source_id(ROOT),
+        "source_filter_contract": SOURCE_FILTER_CONTRACT,
         "formal_source_manifest": [path.relative_to(ROOT).as_posix() for path in formal_files],
         "vendor_tree_digest": vendor_tree_digest(),
         "dependency_source_policy": "exact-revision-or-authenticated-vendor-path-v1",
@@ -149,8 +156,13 @@ def main() -> int:
         "gpu_telemetry_contract": (
             "cupti_activity_kernel_scoped_v1" if args.backend == "cuda" else "not_applicable"
         ),
+        "cuda_backend_provenance": (
+            validate_cuda_backend_material(ROOT)
+            if args.backend == "cuda"
+            else {"status": "not_applicable"}
+        ),
     }
-    output.parent.mkdir(parents=True, exist_ok=True)
+    safe_mkdir(ROOT, output.parent, "build identity output parent")
     temporary = output.with_suffix(output.suffix + ".tmp")
     try:
         checked_path(ROOT, temporary, "build identity temporary output", allow_missing=True)

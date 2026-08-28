@@ -8,6 +8,10 @@ formal-experiment eligible.
 
 from __future__ import annotations
 
+import sys
+
+sys.dont_write_bytecode = True
+
 import argparse
 import csv
 import hashlib
@@ -24,7 +28,9 @@ from resource_policy import (
     atomic_write_text,
     canonical_cell_dir,
     resolve_local,
+    safe_mkdir,
     validate_ceremony_material,
+    validate_cuda_backend_material,
     validate_cell_inventory,
     validate_results_tree,
 )
@@ -137,6 +143,13 @@ def _manifest(
     device = payload.get("device")
     if device not in ("cpu", "cuda"):
         raise ValueError(f"manifest device is invalid: {path}")
+    expected_cuda_backend = (
+        validate_cuda_backend_material(ROOT)
+        if device == "cuda"
+        else {"status": "not_applicable"}
+    )
+    if payload.get("cuda_backend_provenance") != expected_cuda_backend:
+        raise ValueError(f"CUDA backend provenance is stale or missing: {path}")
     expected_source_id = formal_source_id(ROOT)
     if payload.get("formal_semantic_source_id") != expected_source_id:
         raise ValueError(f"formal source identity is stale: {path}")
@@ -255,6 +268,7 @@ def _collect(
                         "verification_runtime_marker": payload.get("verification_runtime_marker"),
                         "gpu_backend_execution": payload.get("gpu_backend_execution"),
                         "gpu_prove_telemetry": payload.get("gpu_prove_telemetry"),
+                        "cuda_backend_provenance": payload.get("cuda_backend_provenance"),
                         "source_srs_sha256": payload.get("source_srs_sha256"),
                         "source_srs_k": payload.get("source_srs_k"),
                         "downsized_srs_k": payload.get("downsized_srs_k"),
@@ -320,7 +334,7 @@ def main() -> int:
         "requested_matrix": {"datasets": list(datasets), "backends": list(devices)},
         "verified_runs": rows,
     }
-    RESULTS.mkdir(parents=True, exist_ok=True)
+    safe_mkdir(ROOT, RESULTS, "formal results root")
     atomic_write_json(RESULTS / "formal_results.json", document)
     fields: list[str] = []
     for row in rows:

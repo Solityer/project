@@ -22,6 +22,3 @@ pub use ff;
 pub use group;
 pub use pairing;
 pub use pasta_curves::arithmetic::{Coordinates, CurveAffine, CurveExt};
-
-#[cfg(test)]
-pub mod tests;

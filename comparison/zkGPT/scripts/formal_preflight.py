@@ -15,6 +15,7 @@ from zkgpt_gat.constants import DATASET_ORDER  # noqa: E402
 from zkgpt_gat.formal_gate import formal_gate_status  # noqa: E402
 from zkgpt_gat.resources import check_resource_layout, read_resource_manifest, validate_static_table_descriptor  # noqa: E402
 from zkgpt_gat.config import read_config  # noqa: E402
+from zkgpt_gat.util import assert_contained_path, lexical_path, require_dir, write_json  # noqa: E402
 
 
 def main() -> int:
@@ -22,10 +23,12 @@ def main() -> int:
     parser.add_argument("--output", type=pathlib.Path, default=ROOT / "results" / "formal_preflight.json")
     parser.add_argument("--source-only", action="store_true")
     args = parser.parse_args()
-    output = args.output.resolve()
-    base = ROOT.resolve()
-    if output != base and base not in output.parents:
-        raise SystemExit("output must stay inside comparison/zkGPT")
+    base = require_dir(ROOT, label="zkGPT baseline root")
+    output = lexical_path(args.output)
+    try:
+        output = assert_contained_path(base, output, "preflight output", allow_missing=True)
+    except (OSError, ValueError) as exc:
+        raise SystemExit(str(exc)) from exc
     # The capability manifest is a source/configuration input.  Its formal
     # blocker is intentionally reported, but source-only mode must not turn it
     # into a source failure or inspect any staged dataset/model resource.
@@ -121,8 +124,7 @@ def main() -> int:
         "blockers": blockers,
         "mode": "source_only" if args.source_only else "formal",
     }
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    write_json(output, report, root=base, label="formal preflight report")
     print(f"zkGPT_formal_preflight={report['status']} cpu={report['cpu_formal_path']} gpu={report['gpu_formal_path']}")
     return 0 if (report["source_ready"] if args.source_only else report["formal_experiment_eligible"]) else 1
 

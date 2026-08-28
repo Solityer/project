@@ -21,9 +21,6 @@ use std::{io, iter, mem::size_of};
 pub mod strategy;
 pub mod transcript;
 
-#[cfg(test)]
-pub(crate) mod test;
-
 #[cfg(feature = "mv-lookup")]
 use itertools::izip;
 

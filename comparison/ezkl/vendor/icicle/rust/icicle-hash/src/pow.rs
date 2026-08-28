@@ -1,5 +1,7 @@
 use icicle_core::hash::{Hasher, HasherHandle};
-use icicle_runtime::{config::ConfigExtension, errors::eIcicleError, memory::HostOrDeviceSlice, IcicleStreamHandle};
+use icicle_runtime::{
+    config::ConfigExtension, errors::eIcicleError, memory::HostOrDeviceSlice, IcicleStreamHandle,
+};
 
 #[repr(C)]
 #[derive(Debug, Clone)]

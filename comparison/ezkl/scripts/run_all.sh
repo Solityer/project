@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT}"
+export PYTHONDONTWRITEBYTECODE=1
 
 # Formal matrix entry.  CUDA is included by default and fails closed if the
 # distinct gpu-accelerated binary or runtime device is unavailable.

@@ -710,13 +710,3 @@ def verify_multiplication(
         return bool(repr_a and repr_b and cross and product)
     except (CommitmentError, EncodingError, KeyError, TypeError, ValueError):
         return False
-
-
-# Protocol-facing aliases used by adapters that call these relations "PoK".
-pedersen_commit = commit_value
-prove_representation_pok = prove_representation
-verify_representation_pok = verify_representation
-prove_same_value_pok = prove_same_value
-verify_same_value_pok = verify_same_value
-prove_multiplication_sigma = prove_multiplication
-verify_multiplication_sigma = verify_multiplication

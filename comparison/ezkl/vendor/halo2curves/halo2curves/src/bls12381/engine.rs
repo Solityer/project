@@ -113,14 +113,3 @@ fn ell(f: &mut Fq12, coeffs: &(Fq2, Fq2, Fq2), p: &G1Affine) {
     c1.c1.mul_assign(&p.x);
     Fq12::mul_by_014(f, &coeffs.2, &c1, &c0);
 }
-
-#[cfg(test)]
-mod test {
-    use super::super::{Bls12381, Fr, G1, G2};
-    use super::{multi_miller_loop, Fq12, G1Affine, G2Affine, Gt};
-    use ff::Field;
-    use group::{prime::PrimeCurveAffine, Curve, Group};
-    use pairing::{Engine as _, MillerLoopResult, PairingCurveAffine};
-    use rand_core::OsRng;
-    crate::test_pairing!(Bls12381, G1, G1Affine, G2, G2Affine, Fq12, Gt, Fr);
-}

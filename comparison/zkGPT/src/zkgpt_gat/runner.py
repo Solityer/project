@@ -37,7 +37,7 @@ from .result_validation import (
     validate_artifact_inventory,
     validate_canonical_cell_dir_from_path,
 )
-from .util import digest_file, digest_json, ensure_dir, read_json, write_json, write_text_atomic
+from .util import digest_file, digest_json, ensure_dir, read_json, require_dir, write_json, write_text_atomic
 
 
 def selected_datasets(value: str) -> List[str]:
@@ -63,14 +63,9 @@ def selected_backends(value: str) -> List[str]:
 def _ensure_real_directory(path: pathlib.Path) -> None:
     """Create one already-contained directory and authenticate its inode."""
     try:
-        info = path.lstat()
-    except FileNotFoundError:
-        path.mkdir()
-        info = path.lstat()
+        ensure_dir(path, label="result directory")
     except OSError as exc:
         raise RuntimeError(f"cannot inspect result directory: {path}") from exc
-    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
-        raise RuntimeError(f"result directory must be a real directory: {path}")
 
 
 def _prepare_artifact_directory(
@@ -129,21 +124,16 @@ def _prepare_artifact_directory(
     return artifact_dir
 
 
-def _resolve_public_y(config: Any, project_root: pathlib.Path, public_y_root: pathlib.Path | None, dataset: str, backend: str) -> pathlib.Path:
+def _resolve_public_y(config: Any, baseline_root: pathlib.Path, dataset: str) -> pathlib.Path:
     """Resolve the single canonical baseline-local public-Y source.
 
-    ``public_y_root`` is retained as a compatibility CLI argument, but it is
-    only accepted when it names this baseline's canonical
-    ``resources/public_y`` directory.  The proof artifact and reference/run
-    directories are never searched.
+    The generated config is the sole source of the filename.  Only the
+    baseline's canonical ``resources/public_y`` directory is accepted; the
+    proof artifact and reference/run directories are never searched.
     """
-    baseline_root = pathlib.Path(project_root).expanduser().resolve()
+    baseline_root = pathlib.Path(baseline_root).expanduser().resolve()
     configured = resolve_local(baseline_root, config.entries.get("public_y_path", ""), "public_y_path")
-    canonical_root = resolve_local(baseline_root, "resources/public_y", "canonical public_y_root")
-    if public_y_root is not None:
-        root = resolve_local(baseline_root, public_y_root, "public_y_root")
-        if root != canonical_root:
-            raise ValueError(f"public_y_root must equal baseline canonical directory: {canonical_root}")
+    canonical_root = resolve_local(baseline_root, "resources/public_y", "canonical public-Y directory")
     if configured.parent != canonical_root:
         raise ValueError(f"config public_y_path must be under canonical directory: {canonical_root}")
     if configured.name != f"{dataset.replace('-', '_')}.json":
@@ -154,8 +144,8 @@ def _resolve_public_y(config: Any, project_root: pathlib.Path, public_y_root: pa
 
 
 def _baseline_root(project_root: pathlib.Path, zk_root: pathlib.Path) -> pathlib.Path:
-    project = pathlib.Path(project_root).expanduser().resolve()
-    baseline = pathlib.Path(zk_root).expanduser().resolve()
+    project = require_dir(project_root, label="formal project root")
+    baseline = require_dir(zk_root, label="formal zkGPT root")
     if project != baseline:
         raise ValueError("zkGPT formal execution cannot use an external project root")
     return baseline
@@ -168,7 +158,6 @@ def run_one(
     zk_root: pathlib.Path,
     results_dir: pathlib.Path,
     force: bool,
-    public_y_root: pathlib.Path | None = None,
 ) -> Dict[str, Any]:
     require_formal_experiment()
     baseline = _baseline_root(project_root, zk_root)
@@ -248,20 +237,20 @@ def run_one(
         )
         if not gpu_valid:
             raise RuntimeError("GPU proof evidence failed before runner persistence: " + ";".join(gpu_errors))
-    write_json(artifact_dir / "metadata.json", proof.metadata)
-    write_json(artifact_dir / "commitments.json", proof.commitments)
-    write_json(artifact_dir / "transcript.json", proof.transcript)
-    write_json(artifact_dir / "proof_payload.json", proof.proof_payload)
-    write_json(artifact_dir / "verification.json", proof.verification)
-    write_json(artifact_dir / "witness_manifest.json", proof.witness_manifest)
-    write_json(artifact_dir / "gpu_backend.json", gpu_info)
-    write_json(artifact_dir / "data_id.json", ids["data_id"])
-    write_json(artifact_dir / "model_id.json", ids["model_id"])
-    write_json(artifact_dir / "config_id.json", ids["config_id"])
+    write_json(artifact_dir / "metadata.json", proof.metadata, root=baseline)
+    write_json(artifact_dir / "commitments.json", proof.commitments, root=baseline)
+    write_json(artifact_dir / "transcript.json", proof.transcript, root=baseline)
+    write_json(artifact_dir / "proof_payload.json", proof.proof_payload, root=baseline)
+    write_json(artifact_dir / "verification.json", proof.verification, root=baseline)
+    write_json(artifact_dir / "witness_manifest.json", proof.witness_manifest, root=baseline)
+    write_json(artifact_dir / "gpu_backend.json", gpu_info, root=baseline)
+    write_json(artifact_dir / "data_id.json", ids["data_id"], root=baseline)
+    write_json(artifact_dir / "model_id.json", ids["model_id"], root=baseline)
+    write_json(artifact_dir / "config_id.json", ids["config_id"], root=baseline)
     benchmark = dict(proof.benchmark)
     benchmark["forward_time_ms"] = forward_ms
     benchmark["wall_time_ms"] = (time.perf_counter() - started) * 1000.0
-    write_json(artifact_dir / "benchmark_summary.json", benchmark)
+    write_json(artifact_dir / "benchmark_summary.json", benchmark, root=baseline)
     validate_artifact_inventory(
         artifact_dir, backend, require_independent=False, require_manifest=False
     )
@@ -277,7 +266,7 @@ def run_one(
     if final_registry_pair["transaction_id"] != registry_transaction_id:
         raise RuntimeError("model registry transaction changed during formal run")
     registry_path = final_registry_pair["public_path"]
-    public_y_path = _resolve_public_y(config, baseline, public_y_root, dataset_name, backend)
+    public_y_path = _resolve_public_y(config, baseline, dataset_name)
     replay = subprocess.run(
         [
             sys.executable,
@@ -379,7 +368,7 @@ def run_one(
         "artifact_digests": artifact_digest_map(artifact_dir, backend),
     }
     manifest["run_digest"] = manifest_run_digest(manifest)
-    write_json(artifact_dir / "run_manifest.json", manifest)
+    write_json(artifact_dir / "run_manifest.json", manifest, root=baseline)
     validate_artifact_inventory(
         artifact_dir, backend, require_independent=True, require_manifest=True
     )
@@ -495,7 +484,7 @@ def write_summary(
         "failure_reason_if_not_comparable",
     ]
     rows = sorted(rows, key=lambda row: (0 if row["backend"] == "cpu" else 1, DATASET_ORDER.index(row["dataset"])))
-    ensure_dir(results_dir)
+    ensure_dir(results_dir, root=baseline, label="results root")
     for backend in ["cpu", "gpu"]:
         csv_buffer = io.StringIO(newline="")
         writer = csv.DictWriter(csv_buffer, fieldnames=columns, lineterminator="\n")
@@ -507,13 +496,19 @@ def write_summary(
             results_dir / f"{backend}_results.csv",
             csv_buffer.getvalue(),
             label=f"{backend} result CSV",
+            root=baseline,
         )
     csv_buffer = io.StringIO(newline="")
     writer = csv.DictWriter(csv_buffer, fieldnames=columns, lineterminator="\n")
     writer.writeheader()
     for row in rows:
         writer.writerow({name: row.get(name, "") for name in columns})
-    write_text_atomic(results_dir / "summary.csv", csv_buffer.getvalue(), label="summary CSV")
+    write_text_atomic(
+        results_dir / "summary.csv",
+        csv_buffer.getvalue(),
+        label="summary CSV",
+        root=baseline,
+    )
     write_json(
         results_dir / "summary.json",
         {
@@ -523,6 +518,7 @@ def write_summary(
             "rows": rows,
             "model_registration": "com_W is registered once per model/layout reuse key; Aux and L_qry are fresh per inference",
         },
+        root=baseline,
     )
     readme = [
         "# GAT-ZKML-zkGPT Results",
@@ -545,6 +541,7 @@ def write_summary(
         results_dir / "README_REPRODUCIBILITY.md",
         "\n".join(readme),
         label="result reproducibility Markdown",
+        root=baseline,
     )
 
 
@@ -555,17 +552,20 @@ def run_many(
     zk_root: pathlib.Path,
     results_dir: pathlib.Path,
     force: bool,
-    public_y_root: pathlib.Path | None = None,
 ) -> List[Dict[str, Any]]:
     require_formal_experiment()
     baseline = _baseline_root(project_root, zk_root)
     results_dir = resolve_results_dir(baseline, results_dir)
-    ensure_dir(resolve_local(baseline, "runs_tmp", "runs_tmp"))
+    ensure_dir(
+        resolve_local(baseline, "runs_tmp", "runs_tmp"),
+        root=baseline,
+        label="runs_tmp",
+    )
     rows: List[Dict[str, Any]] = []
     for backend in backends:
         for dataset in datasets:
             print(f"[zkGPT] running {dataset}/{backend}", flush=True)
-            row = run_one(dataset, backend, baseline, baseline, results_dir, force, public_y_root)
+            row = run_one(dataset, backend, baseline, baseline, results_dir, force)
             rows.append(row)
             print(
                 f"[zkGPT] {dataset}/{backend} VERIFY_OK "

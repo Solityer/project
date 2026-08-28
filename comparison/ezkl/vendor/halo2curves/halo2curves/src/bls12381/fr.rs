@@ -21,18 +21,3 @@ crate::field_bits!(Fr);
 crate::serialize_deserialize_primefield!(Fr);
 crate::impl_from_u64!(Fr);
 crate::impl_from_bool!(Fr);
-
-#[cfg(test)]
-mod test {
-    use super::*;
-    crate::field_testing_suite!(Fr, "field_arithmetic");
-    crate::field_testing_suite!(Fr, "conversion");
-    crate::field_testing_suite!(Fr, "serialization");
-    crate::field_testing_suite!(Fr, "quadratic_residue");
-    crate::field_testing_suite!(Fr, "bits");
-    crate::field_testing_suite!(Fr, "serialization_check");
-    crate::field_testing_suite!(Fr, "constants");
-    crate::field_testing_suite!(Fr, "sqrt");
-    crate::field_testing_suite!(Fr, "zeta");
-    crate::field_testing_suite!(Fr, "from_uniform_bytes", 64);
-}

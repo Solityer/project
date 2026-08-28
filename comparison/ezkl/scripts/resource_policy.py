@@ -15,7 +15,11 @@ import hashlib
 from pathlib import Path
 from typing import Any, Iterable
 
-from formal_source_manifest import checked_path, lexical_baseline_root
+from formal_source_manifest import (
+    checked_path,
+    lexical_baseline_root,
+    lexical_checked_path,
+)
 
 
 ROOT = lexical_baseline_root(Path(__file__).absolute().parent.parent)
@@ -26,6 +30,21 @@ FORMAL_SOURCE_SRS_MAX_K = 28
 CEREMONY_ROOT = Path("resources") / "ceremony"
 CEREMONY_SRS = CEREMONY_ROOT / "source.srs"
 CEREMONY_DESCRIPTOR = CEREMONY_ROOT / "ceremony.descriptor.json"
+ICICLE_SOURCE_COMMIT = "012e00694f4cf399fe7a42d9cfbfa6cd7a60f876"
+ICICLE_CUDA_ABI = "icicle_cuda_bn254_3.7.0_abi_v1"
+CUDA_BACKEND_ROOT = Path("resources") / "icicle_cuda_backend"
+CUDA_BACKEND_MANIFEST = CUDA_BACKEND_ROOT / "backend.manifest.json"
+CUDA_BACKEND_LIBRARY_NAMES = (
+    "libicicle_backend_cuda_device.so",
+    "libicicle_backend_cuda_curve_bn254.so",
+    "libicicle_backend_cuda_field_bn254.so",
+    "libicicle_backend_cuda_hash.so",
+)
+CUDA_BACKEND_LIBRARY_PATHS = tuple(
+    str(CUDA_BACKEND_ROOT / "lib" / "backend" / name)
+    for name in CUDA_BACKEND_LIBRARY_NAMES
+)
+CUDA_BACKEND_SCHEMA = "ezkl_formal_icicle_cuda_backend_v1"
 DATASET_ORDER = (
     "cora_full",
     "citeseer_full",
@@ -91,6 +110,20 @@ PROOF_ARTIFACTS = frozenset(
 )
 CELL_ARTIFACTS = ADAPTER_ARTIFACTS | PROOF_ARTIFACTS | frozenset({"run_manifest.json"})
 RESULT_BACKENDS = ("cpu", "cuda")
+
+
+def cuda_backend_contract(root: Path | str = ROOT) -> dict[str, Any]:
+    """Return the immutable contract for the separately staged CUDA runtime."""
+
+    baseline_root(root)
+    return {
+        "schema": CUDA_BACKEND_SCHEMA,
+        "backend": "cuda",
+        "icicle_commit": ICICLE_SOURCE_COMMIT,
+        "abi": ICICLE_CUDA_ABI,
+        "manifest_path": str(CUDA_BACKEND_MANIFEST),
+        "library_paths": list(CUDA_BACKEND_LIBRARY_PATHS),
+    }
 
 
 def baseline_root(root: Path | str = ROOT) -> Path:
@@ -170,6 +203,10 @@ def manifest_payload(root: Path | str = ROOT) -> dict[str, Any]:
             "required_files": [str(CEREMONY_DESCRIPTOR), str(CEREMONY_SRS)],
             "status": "awaiting_user_staged_resources",
         },
+        "cuda_backend": {
+            **cuda_backend_contract(root_path),
+            "status": "awaiting_user_staged_resource",
+        },
         "output_policy": {
             "cell_root": "results/runs/<backend>/<dataset>",
             "temporary_root": "results/runs_tmp",
@@ -198,6 +235,8 @@ def _read_manifest(root: Path) -> dict[str, Any]:
         raise ValueError("resource manifest static contract mismatch")
     if payload.get("output_policy") != expected["output_policy"]:
         raise ValueError("resource manifest output policy mismatch")
+    if payload.get("cuda_backend") != expected["cuda_backend"]:
+        raise ValueError("resource manifest CUDA backend contract mismatch")
     for dataset in DATASET_ORDER:
         if payload["datasets"].get(dataset) != expected["datasets"][dataset]:
             raise ValueError(f"resource manifest path/requirements mismatch: {dataset}")
@@ -213,10 +252,13 @@ def check_resource_layout(
     datasets: Iterable[str] = DATASET_ORDER,
     *,
     require_staged: bool = False,
+    backend: str | None = None,
 ) -> dict[str, Any]:
     """Check resource names and presence without reading resource contents."""
 
     root_path = baseline_root(root)
+    if backend not in (None, "cpu", "cuda"):
+        raise ValueError(f"unsupported formal backend: {backend}")
     manifest = _read_manifest(root_path)
     selected = tuple(dict.fromkeys(str(item) for item in datasets))
     unknown = sorted(set(selected) - set(DATASET_ORDER))
@@ -251,6 +293,9 @@ def check_resource_layout(
         for path in (ceremony_srs, ceremony_descriptor):
             if not _is_private_regular_file(path):
                 missing.append(str(path))
+    cuda_material: dict[str, Any] | None = None
+    if require_staged and backend == "cuda":
+        cuda_material = validate_cuda_backend_material(root_path)
     if missing:
         raise FileNotFoundError("missing baseline-local staged resources:\n" + "\n".join(missing))
     return {
@@ -264,6 +309,8 @@ def check_resource_layout(
         "manifest": str((root_path / "resources/resource_manifest.json").relative_to(root_path)),
         "contents_read": False,
         "resource_manifest_digest": _sha256(root_path / "resources/resource_manifest.json"),
+        "backend": backend or "both",
+        "cuda_backend": cuda_material or "not_applicable",
     }
 
 
@@ -283,6 +330,115 @@ def _is_private_regular_file(path: Path) -> bool:
     if metadata.st_nlink != 1:
         raise ValueError(f"staged resource is hard-linked: {path}")
     return True
+
+
+def _validate_sha256(value: object, label: str) -> str:
+    if (
+        not isinstance(value, str)
+        or len(value) != len("sha256:") + 64
+        or not value.startswith("sha256:")
+        or any(character not in "0123456789abcdef" for character in value[7:])
+    ):
+        raise ValueError(f"{label} must be a lowercase sha256: digest")
+    return value
+
+
+def _cuda_backend_digest(root: Path, inventory: list[dict[str, object]]) -> str:
+    """Hash the staged native libraries with their canonical relative paths."""
+
+    digest = hashlib.sha256()
+    for entry in inventory:
+        relative = str(entry["path"]).encode("utf-8")
+        path = root / str(entry["path"])
+        payload = path.read_bytes()
+        digest.update(len(relative).to_bytes(8, "little"))
+        digest.update(relative)
+        digest.update(len(payload).to_bytes(8, "little"))
+        digest.update(payload)
+    return "sha256:" + digest.hexdigest()
+
+
+def validate_cuda_backend_material(root: Path | str = ROOT) -> dict[str, Any]:
+    """Validate the exact baseline-local ICICLE CUDA shared-library bundle.
+
+    The backend is intentionally staged separately from the public ICICLE
+    frontend source.  This check authenticates the owner-provided files before
+    a GPU process is started and rejects links, extra libraries, path escapes,
+    ABI/commit mismatches, and digest/size drift.
+    """
+
+    root_path = baseline_root(root)
+    backend_root = resolve_local(root_path, CUDA_BACKEND_ROOT, "CUDA backend root")
+    library_root = resolve_local(
+        root_path, CUDA_BACKEND_ROOT / "lib" / "backend", "CUDA backend library root"
+    )
+    manifest_path = resolve_local(root_path, CUDA_BACKEND_MANIFEST, "CUDA backend manifest")
+    if not backend_root.is_dir() or not library_root.is_dir():
+        raise FileNotFoundError(
+            f"missing baseline-local ICICLE CUDA backend directory: {library_root}"
+        )
+    if not _is_private_regular_file(manifest_path):
+        raise FileNotFoundError(f"missing baseline-local ICICLE CUDA backend manifest: {manifest_path}")
+    root_entries = {entry.name for entry in backend_root.iterdir()}
+    if root_entries != {"backend.manifest.json", "lib"}:
+        raise ValueError(f"CUDA backend root has unexpected entries: {sorted(root_entries)}")
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"cannot read CUDA backend manifest: {manifest_path}: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("CUDA backend manifest must be a JSON object")
+    required_keys = {"schema", "backend", "icicle_commit", "abi", "library_inventory"}
+    if set(payload) != required_keys:
+        raise ValueError("CUDA backend manifest has unexpected or missing fields")
+    if payload.get("schema") != CUDA_BACKEND_SCHEMA or payload.get("backend") != "cuda":
+        raise ValueError("CUDA backend manifest schema/backend mismatch")
+    if payload.get("icicle_commit") != ICICLE_SOURCE_COMMIT:
+        raise ValueError("CUDA backend is not built for the locked ICICLE commit")
+    if payload.get("abi") != ICICLE_CUDA_ABI:
+        raise ValueError("CUDA backend ABI does not match the formal ICICLE ABI")
+    declared = payload.get("library_inventory")
+    if not isinstance(declared, list) or len(declared) != len(CUDA_BACKEND_LIBRARY_PATHS):
+        raise ValueError("CUDA backend library inventory must contain exactly four libraries")
+    inventory: list[dict[str, object]] = []
+    expected_paths = list(CUDA_BACKEND_LIBRARY_PATHS)
+    for index, item in enumerate(declared):
+        if not isinstance(item, dict) or set(item) != {"path", "size", "sha256"}:
+            raise ValueError("CUDA backend library entry schema mismatch")
+        if item.get("path") != expected_paths[index]:
+            raise ValueError("CUDA backend library inventory order/path mismatch")
+        path_value = item["path"]
+        path = resolve_local(root_path, path_value, "CUDA backend library")
+        if path != root_path / expected_paths[index]:
+            raise ValueError("CUDA backend library path is not canonical baseline-local")
+        size = item.get("size")
+        if isinstance(size, bool) or not isinstance(size, int) or size <= 0:
+            raise ValueError("CUDA backend library size is invalid")
+        declared_digest = _validate_sha256(item.get("sha256"), "CUDA backend library digest")
+        if not _is_private_regular_file(path):
+            raise FileNotFoundError(f"missing CUDA backend library: {path}")
+        actual_size = path.stat().st_size
+        actual_digest = _sha256(path)
+        if actual_size != size or actual_digest != declared_digest:
+            raise ValueError(f"CUDA backend library digest/size mismatch: {path}")
+        inventory.append({"path": path_value, "size": actual_size, "sha256": actual_digest})
+    actual_entries = list(library_root.iterdir())
+    actual_names = sorted(entry.name for entry in actual_entries)
+    expected_names = sorted(CUDA_BACKEND_LIBRARY_NAMES)
+    if actual_names != expected_names:
+        raise ValueError(
+            f"CUDA backend library directory inventory mismatch: expected {expected_names}, got {actual_names}"
+        )
+    return {
+        "schema": CUDA_BACKEND_SCHEMA,
+        "backend": "cuda",
+        "icicle_commit": ICICLE_SOURCE_COMMIT,
+        "abi": ICICLE_CUDA_ABI,
+        "manifest_path": str(manifest_path.relative_to(root_path)),
+        "manifest_sha256": _sha256(manifest_path),
+        "library_inventory": inventory,
+        "backend_digest": _cuda_backend_digest(root_path, inventory),
+    }
 
 
 def validate_ceremony_material(root: Path | str = ROOT) -> dict[str, Any]:
@@ -443,24 +599,82 @@ def atomic_write_json(path: Path, payload: Any) -> None:
     atomic_write_bytes(Path(path), encoded)
 
 
+def safe_mkdir(root: Path | str, path: Path | str, label: str, *, mode: int = 0o755) -> Path:
+    """Create a baseline-local directory one lexical component at a time.
+
+    The full lexical path is checked before the first ``mkdir``.  Existing
+    components must already be real directories; links, devices and other
+    special entries are rejected without following them.  Missing components
+    are then created and checked again before the directory is returned.
+    """
+
+    root_path = lexical_baseline_root(root)
+    lexical_root = Path(os.path.abspath(Path(root).expanduser()))
+    lexical = lexical_checked_path(
+        root,
+        path,
+        label,
+        allow_missing_tail=True,
+    )
+    try:
+        relative = lexical.relative_to(lexical_root)
+    except ValueError as exc:
+        raise ValueError(f"{label} escapes baseline root: {lexical}") from exc
+
+    current = lexical_root
+    for component in relative.parts:
+        if component in ("", ".", ".."):
+            raise ValueError(f"{label} contains an unsafe lexical component: {component!r}")
+        current = current / component
+        try:
+            metadata = current.lstat()
+        except FileNotFoundError:
+            try:
+                os.mkdir(current, mode)
+            except FileExistsError:
+                # A concurrent creator is acceptable only after it passes the
+                # same no-link/no-special validation below.
+                metadata = current.lstat()
+            except OSError as exc:
+                raise ValueError(f"cannot create {label}: {current}: {exc}") from exc
+            else:
+                metadata = current.lstat()
+        except OSError as exc:
+            raise ValueError(f"cannot inspect {label}: {current}: {exc}") from exc
+        if stat.S_ISLNK(metadata.st_mode):
+            raise ValueError(f"{label} contains a symlink component: {current}")
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise ValueError(f"{label} contains a non-directory component: {current}")
+
+    checked = checked_path(root_path, lexical, label)
+    if not checked.is_dir():
+        raise ValueError(f"{label} is not a directory: {checked}")
+    return checked
+
+
 def atomic_write_bytes(path: Path, payload: bytes) -> None:
     """Atomically write bytes to a checked baseline-local destination."""
 
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
     anchor = Path(path.anchor or "/")
-    checked_path(anchor, path.parent, "result parent")
-    checked_path(anchor, path, "result destination", allow_missing=True)
-    temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    # Validate all existing lexical components before creating anything.  In
+    # particular, a symlinked parent must not be traversed by mkdir -p.
+    lexical_checked_path(anchor, path, "result destination", allow_missing_tail=True)
+    parent = path.parent
+    safe_mkdir(anchor, parent, "result parent")
+    checked = checked_path(anchor, path, "result destination", allow_missing=True)
+    temporary = checked.with_name(f".{checked.name}.tmp-{os.getpid()}")
     checked_path(anchor, temporary, "result temporary destination", allow_missing=True)
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
     fd = os.open(temporary, flags, 0o600)
     try:
         with os.fdopen(fd, "wb") as handle:
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
-        temporary.replace(path)
+        # ``replace`` replaces a destination link itself rather than opening
+        # its target; the destination was also lstat-checked above.
+        temporary.replace(checked)
     finally:
         if temporary.exists() or temporary.is_symlink():
             temporary.unlink()
