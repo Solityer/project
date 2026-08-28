@@ -685,58 +685,61 @@ namespace gatzk::protocol
             .real_lengths = {context.local.num_nodes * context.local.num_features},
             .quotient_relations = {"t_FH:feature_lookup"},
         });
-        std::size_t global_head = 0;
         for (std::size_t layer = 0; layer < context.model.hidden_layers.size(); ++layer)
         {
             for (std::size_t head = 0;
                  head < context.model.hidden_layers[layer].heads.size();
-                 ++head, ++global_head)
+                 ++head)
             {
                 BindingRelationMeta meta{
                     .relation_id = "bind:hidden:" + std::to_string(layer + 1) + ":" + std::to_string(head),
                     .object_kind = "hidden",
                     .layer_id = layer + 1,
                     .head_id = head,
-                    .source_objects = {hidden_head_prefix(global_head)},
-                    .target_objects = {hidden_head_prefix(global_head) + "_H_agg"},
+                    .source_objects = {hidden_head_prefix(layer, head)},
+                    .target_objects = {hidden_head_prefix(layer, head) + "_H_agg"},
                     .work_domains = {
                         context.domains.in->name, context.domains.d->name,
                         context.domains.edge->name, context.domains.n->name},
                     .real_lengths = {context.model.d_in_profile.at(layer), context.model.hidden_layers[layer].shape.head_dim, context.local.edges.size(), context.local.num_nodes},
                     .quotient_relations = {"t_in:hidden_binding", "t_d_h:hidden_binding", "t_edge:hidden_binding", "t_N:hidden_binding"},
                 };
-                const auto prefix = hidden_head_prefix(global_head);
+                const auto prefix = hidden_head_prefix(layer, head);
                 const auto width =
                     context.model.hidden_layers[layer].shape.head_dim;
                 meta.canonical_matrices.push_back(canonical_matrix(
-                    "canonical:hidden:H_prime:" + std::to_string(global_head),
+                    "canonical:hidden:H_prime:l" + std::to_string(layer)
+                        + ":h" + std::to_string(head),
                     prefix + "_H_prime", context.local.num_nodes, width));
                 meta.canonical_matrices.push_back(canonical_matrix(
-                    "canonical:hidden:H_agg_pre:" + std::to_string(global_head),
+                    "canonical:hidden:H_agg_pre:l" + std::to_string(layer)
+                        + ":h" + std::to_string(head),
                     prefix + "_H_agg_pre", context.local.num_nodes, width));
                 meta.canonical_matrices.push_back(canonical_matrix(
-                    "canonical:hidden:H_agg:" + std::to_string(global_head),
+                    "canonical:hidden:H_agg:l" + std::to_string(layer)
+                        + ":h" + std::to_string(head),
                     prefix + "_H_agg", context.local.num_nodes, width));
                 meta.aggregation_relations.push_back(aggregation_relation(
-                    "aggregation:hidden:" + std::to_string(global_head),
-                    hidden_aggregation_binding_label(global_head, ""),
+                    "aggregation:hidden:l" + std::to_string(layer)
+                        + ":h" + std::to_string(head),
+                    hidden_aggregation_binding_label(layer, head, ""),
                     prefix + "_H_prime", prefix + "_H_agg_pre",
                     prefix + "_alpha", width));
                 for (const auto *role : {"src", "dst", "t"})
                     meta.route_terminal_relations.push_back(
                         route_terminal_relation(
-                            "route-terminal:hidden:" + std::to_string(global_head) + ":" + role,
+                            "route-terminal:hidden:l" + std::to_string(layer)
+                                + ":h" + std::to_string(head) + ":" + role,
                             prefix + "_R_" + role + "_node",
                             prefix + "_R_" + role));
                 out.push_back(std::move(meta));
             }
-            const bool is_final = layer + 1 == context.model.hidden_layers.size();
             BindingRelationMeta concat_meta{
                 .relation_id = "bind:concat:" + std::to_string(layer + 1),
                 .object_kind = "concat",
                 .layer_id = layer + 1,
-                .source_objects = {hidden_layer_concat_label(layer, is_final)},
-                .target_objects = {hidden_layer_concat_star_label(layer, is_final)},
+                .source_objects = {hidden_layer_concat_label(layer)},
+                .target_objects = {hidden_layer_concat_star_label(layer)},
                 .work_domains = {context.domains.cat->name, context.domains.n->name},
                 .real_lengths = {
                     context.model.hidden_layers[layer].shape.head_count * context.model.hidden_layers[layer].shape.head_dim,
@@ -747,7 +750,7 @@ namespace gatzk::protocol
                 context.model.hidden_layers[layer].shape.head_count * context.model.hidden_layers[layer].shape.head_dim;
             concat_meta.canonical_matrices.push_back(canonical_matrix(
                 "canonical:concat:" + std::to_string(layer + 1),
-                hidden_layer_concat_label(layer, is_final),
+                hidden_layer_concat_label(layer),
                 context.local.num_nodes, concat_width));
             out.push_back(std::move(concat_meta));
         }
@@ -763,7 +766,7 @@ namespace gatzk::protocol
                 .work_domains = {
                     context.domains.cat->name, context.domains.c->name,
                     context.domains.edge->name, context.domains.n->name},
-                .real_lengths = {model::max_hidden_concat_width(context.model), context.local.num_classes, context.local.edges.size(), context.local.num_nodes},
+                .real_lengths = {context.model.output_layer.input_dim, context.local.num_classes, context.local.edges.size(), context.local.num_nodes},
                 .quotient_relations = {"t_cat:output_binding", "t_C:output_binding", "t_edge:output_binding", "t_N:output_binding"},
             };
             const auto matrix_prefix = output_head_prefix(head);
@@ -1150,17 +1153,26 @@ namespace gatzk::protocol
                 "Commitment", "NotApplicable", PolynomialVisibility::PrivateWitness,
                 true, false, false);
         };
-        for (std::size_t head = 0; head < context.model.hidden_heads.size(); ++head)
+        for (std::size_t layer = 0;
+             layer < context.model.hidden_layers.size();
+             ++layer)
         {
-            for (std::size_t column = 0;; ++column)
+            const auto &hidden_layer = context.model.hidden_layers[layer];
+            for (std::size_t head = 0;
+                 head < hidden_layer.heads.size();
+                 ++head)
             {
-                const auto anchor = hidden_weight_column_label(head, column);
-                if (!context.static_commitments.contains(anchor))
-                    break;
-                add_model(anchor, context.domains.in->name);
+                for (std::size_t column = 0;; ++column)
+                {
+                    const auto anchor = hidden_weight_column_label(
+                        layer, head, column);
+                    if (!context.static_commitments.contains(anchor))
+                        break;
+                    add_model(anchor, context.domains.in->name);
+                }
+                add_model(hidden_src_label(layer, head), context.domains.d->name);
+                add_model(hidden_dst_label(layer, head), context.domains.d->name);
             }
-            add_model(hidden_src_label(head), context.domains.d->name);
-            add_model(hidden_dst_label(head), context.domains.d->name);
         }
         for (std::size_t head = 0; head < context.model.output_layer.heads.size(); ++head)
         {
@@ -1238,7 +1250,6 @@ namespace gatzk::protocol
                 PolynomialVisibility::PrivateWitness,
                 true, true, true);
         };
-        std::size_t canonical_hidden_head = 0;
         for (std::size_t layer = 0;
              layer < context.model.hidden_layers.size(); ++layer)
         {
@@ -1246,17 +1257,15 @@ namespace gatzk::protocol
                 context.model.hidden_layers[layer].shape.head_dim;
             for (std::size_t head = 0;
                  head < context.model.hidden_layers[layer].heads.size();
-                 ++head, ++canonical_hidden_head)
+                 ++head)
             {
-                const auto prefix = hidden_head_prefix(canonical_hidden_head);
+                const auto prefix = hidden_head_prefix(layer, head);
                 add_canonical_columns(prefix + "_H_prime", width);
                 add_canonical_columns(prefix + "_H_agg_pre", width);
                 add_canonical_columns(prefix + "_H_agg", width);
             }
-            const bool is_final =
-                layer + 1 == context.model.hidden_layers.size();
             add_canonical_columns(
-                hidden_layer_concat_label(layer, is_final),
+                hidden_layer_concat_label(layer),
                 context.model.hidden_layers[layer].shape.head_count * width);
         }
         for (std::size_t head = 0;
@@ -1305,10 +1314,14 @@ namespace gatzk::protocol
                     false);
             }
         };
-        for (std::size_t head = 0;
-             head < context.model.hidden_heads.size(); ++head)
-            add_aggregation_binding(
-                hidden_aggregation_binding_label(head, ""));
+        for (std::size_t layer = 0;
+             layer < context.model.hidden_layers.size();
+             ++layer)
+            for (std::size_t head = 0;
+                 head < context.model.hidden_layers[layer].heads.size();
+                 ++head)
+                add_aggregation_binding(
+                    hidden_aggregation_binding_label(layer, head, ""));
         for (std::size_t head = 0;
              head < context.model.output_layer.heads.size(); ++head)
             add_aggregation_binding(
@@ -1323,9 +1336,13 @@ namespace gatzk::protocol
                     PolynomialVisibility::PrivateWitness,
                     true, true, false);
         };
-        for (std::size_t head = 0;
-             head < context.model.hidden_heads.size(); ++head)
-            add_route_terminal_shift(hidden_head_prefix(head));
+        for (std::size_t layer = 0;
+             layer < context.model.hidden_layers.size();
+             ++layer)
+            for (std::size_t head = 0;
+                 head < context.model.hidden_layers[layer].heads.size();
+                 ++head)
+                add_route_terminal_shift(hidden_head_prefix(layer, head));
         for (std::size_t head = 0;
              head < context.model.output_layer.heads.size(); ++head)
             add_route_terminal_shift(output_head_prefix(head));
@@ -1804,42 +1821,55 @@ namespace gatzk::protocol
             derived_model_binding_dependencies;
         std::vector<std::pair<std::string, std::vector<std::string>>>
             derived_score_mask_dependencies;
-        for (std::size_t head = 0; head < context.model.hidden_heads.size(); ++head)
+        for (std::size_t layer = 0;
+             layer < context.model.hidden_layers.size();
+             ++layer)
         {
-            std::vector<std::string> projection_dependencies = {
-                hidden_head_prefix(head) + "_b_proj"};
-            for (std::size_t column = 0;; ++column)
+            const auto &hidden_layer = context.model.hidden_layers[layer];
+            for (std::size_t head = 0;
+                 head < hidden_layer.heads.size();
+                 ++head)
             {
-                const auto anchor = hidden_weight_column_label(head, column);
-                if (!context.static_commitments.contains(anchor))
-                    break;
-                projection_dependencies.push_back(model_proof_local_label(anchor));
-            }
-            derived_model_binding_dependencies.push_back({hidden_model_binding_blinder_label(head, "proj"),
-                                                          std::move(projection_dependencies)});
-            derived_model_binding_dependencies.push_back({hidden_model_binding_blinder_label(head, "src"),
-                                                          {hidden_head_prefix(head) + "_b_src",
-                                                           model_proof_local_label(hidden_src_label(head))}});
-            derived_model_binding_dependencies.push_back({hidden_model_binding_blinder_label(head, "dst"),
-                                                          {hidden_head_prefix(head) + "_b_dst",
-                                                           model_proof_local_label(hidden_dst_label(head))}});
-            derived_score_mask_dependencies.push_back({hidden_score_mask_label(head, "src"),
-                                                       {hidden_head_prefix(head) + "_E_src"}});
-            derived_score_mask_dependencies.push_back({hidden_score_mask_label(head, "dst"),
-                                                       {hidden_head_prefix(head) + "_E_dst"}});
-            for (const auto *suffix : {
-                     "_H_star", "_H_agg_pre_star", "_H_agg_star"})
-            {
-                const auto source = hidden_head_prefix(head) + suffix;
-                derived_score_mask_dependencies.push_back({external_mask_label(source), {source}});
+                const auto prefix = hidden_head_prefix(layer, head);
+                std::vector<std::string> projection_dependencies = {
+                    prefix + "_b_proj"};
+                for (std::size_t column = 0;; ++column)
+                {
+                    const auto anchor = hidden_weight_column_label(
+                        layer, head, column);
+                    if (!context.static_commitments.contains(anchor))
+                        break;
+                    projection_dependencies.push_back(model_proof_local_label(anchor));
+                }
+                derived_model_binding_dependencies.push_back({
+                    hidden_model_binding_blinder_label(layer, head, "proj"),
+                    std::move(projection_dependencies)});
+                derived_model_binding_dependencies.push_back({
+                    hidden_model_binding_blinder_label(layer, head, "src"),
+                    {prefix + "_b_src",
+                     model_proof_local_label(hidden_src_label(layer, head))}});
+                derived_model_binding_dependencies.push_back({
+                    hidden_model_binding_blinder_label(layer, head, "dst"),
+                    {prefix + "_b_dst",
+                     model_proof_local_label(hidden_dst_label(layer, head))}});
+                derived_score_mask_dependencies.push_back({
+                    hidden_score_mask_label(layer, head, "src"),
+                    {prefix + "_E_src"}});
+                derived_score_mask_dependencies.push_back({
+                    hidden_score_mask_label(layer, head, "dst"),
+                    {prefix + "_E_dst"}});
+                for (const auto *suffix : {
+                         "_H_star", "_H_agg_pre_star", "_H_agg_star"})
+                {
+                    const auto source = prefix + suffix;
+                    derived_score_mask_dependencies.push_back({external_mask_label(source), {source}});
+                }
             }
         }
         for (std::size_t layer = 0;
              layer < context.model.hidden_layers.size(); ++layer)
         {
-            const bool is_final =
-                layer + 1 == context.model.hidden_layers.size();
-            const auto source = hidden_layer_concat_star_label(layer, is_final);
+            const auto source = hidden_layer_concat_star_label(layer);
             derived_score_mask_dependencies.push_back({external_mask_label(source), {source}});
         }
         for (std::size_t head = 0;
@@ -2209,14 +2239,17 @@ namespace gatzk::protocol
                 });
             }
         }
-        for (std::size_t head = 0; head < context.model.hidden_heads.size(); ++head)
-        {
-            for (const auto *role : {"proj", "src", "dst"})
-            {
-                artifact.constraint_registry.push_back(
-                    "shifted-divisibility:hidden:" + std::to_string(head) + ":" + role);
-            }
-        }
+        for (std::size_t layer = 0;
+             layer < context.model.hidden_layers.size(); ++layer)
+            for (std::size_t head = 0;
+                 head < context.model.hidden_layers[layer].heads.size(); ++head)
+                for (const auto *role : {"proj", "src", "dst"})
+                {
+                    artifact.constraint_registry.push_back(
+                        "shifted-divisibility:hidden:l"
+                        + std::to_string(layer) + ":h"
+                        + std::to_string(head) + ":" + role);
+                }
         for (std::size_t head = 0; head < context.model.output_layer.heads.size(); ++head)
         {
             for (const auto *role : {"proj", "src", "dst"})
@@ -2470,34 +2503,38 @@ namespace gatzk::protocol
             }
         };
 
-        std::size_t global_hidden_head = 0;
         for (const auto &layer : context.model.hidden_layers)
         {
             for (std::size_t local_head = 0;
                  local_head < layer.shape.head_count; ++local_head)
             {
-                const auto head = global_hidden_head++;
-                const auto suffix = std::to_string(head);
-                const auto prefix = hidden_head_prefix(head);
+                const auto layer_index = layer.layer_index;
+                const auto suffix = "l" + std::to_string(layer_index)
+                    + ":h" + std::to_string(local_head);
+                const auto prefix = hidden_head_prefix(layer_index, local_head);
                 const auto stage = "hidden-head:" + suffix;
                 const auto head_dim = layer.shape.head_dim;
                 const auto point_multiplicity = std::max<std::size_t>(1, head_dim);
                 add_random_point_identity(
-                    "hidden:" + suffix + ":projection", "y_proj_h" + suffix,
+                    "hidden:" + suffix + ":projection",
+                    hidden_challenge_name("y_proj_h", layer_index, local_head),
                     stage,
                     "row-major-projection-fold(Y)-committed-H_prime(Y)");
                 add_tuple_compression(
-                    "hidden:" + suffix + ":column-fold", "xi_h" + suffix,
+                    "hidden:" + suffix + ":column-fold",
+                    hidden_challenge_name("xi_h", layer_index, local_head),
                     stage, std::max<std::size_t>(2, head_dim),
                     checked_mul(std::size_t{3}, context.local.num_nodes,
                                 "hidden-column-fold-comparisons"));
                 for (const auto *role : {"src", "dst", "star", "agg_pre", "agg"})
                 {
-                    const auto challenge = std::string(role) == "agg_pre"
-                                               ? "y_agg_pre_h" + suffix
-                                           : std::string(role) == "agg"
-                                               ? "y_agg_h" + suffix
-                                               : "y_" + std::string(role) + "_h" + suffix;
+                    const auto challenge = hidden_challenge_name(
+                        std::string(role) == "agg_pre"
+                            ? "y_agg_pre_h"
+                            : std::string(role) == "agg"
+                                  ? "y_agg_h"
+                                  : "y_" + std::string(role) + "_h",
+                        layer_index, local_head);
                     add_random_point_identity(
                         "hidden:" + suffix + ":" + role,
                         challenge, stage,
@@ -2505,53 +2542,65 @@ namespace gatzk::protocol
                         point_multiplicity);
                 }
                 add_route(
-                    "hidden:" + suffix + ":src-route", "eta_src_h" + suffix,
-                    "beta_src_h" + suffix, 3, stage);
+                    "hidden:" + suffix + ":src-route",
+                    hidden_challenge_name("eta_src_h", layer_index, local_head),
+                    hidden_challenge_name("beta_src_h", layer_index, local_head),
+                    3, stage);
                 add_pair_lookup(
-                    "hidden:" + suffix + ":lrelu", "eta_L_h" + suffix,
-                    "beta_L_h" + suffix, context.tables.lrelu.size(),
+                    "hidden:" + suffix + ":lrelu",
+                    hidden_challenge_name("eta_L_h", layer_index, local_head),
+                    hidden_challenge_name("beta_L_h", layer_index, local_head),
+                    context.tables.lrelu.size(),
                     context.local.edges.size(), stage);
                 add_logup_endpoint(
-                    "hidden:" + suffix + ":range", "beta_R_h" + suffix,
+                    "hidden:" + suffix + ":range",
+                    hidden_challenge_name("beta_R_h", layer_index, local_head),
                     stage, checked_add(context.tables.range.size(), context.local.edges.size(), "hidden-range-denominators"));
                 add_pair_lookup(
-                    "hidden:" + suffix + ":exp", "eta_exp_h" + suffix,
-                    "beta_exp_h" + suffix, context.tables.exp.size(),
+                    "hidden:" + suffix + ":exp",
+                    hidden_challenge_name("eta_exp_h", layer_index, local_head),
+                    hidden_challenge_name("beta_exp_h", layer_index, local_head),
+                    context.tables.exp.size(),
                     context.local.edges.size(), stage);
                 add_tuple_compression(
-                    "hidden:" + suffix + ":psq-fold", "lambda_psq_h" + suffix,
+                    "hidden:" + suffix + ":psq-fold",
+                    hidden_challenge_name("lambda_psq_h", layer_index, local_head),
                     stage, 2, std::max<std::size_t>(1, route_denominators));
                 add_route(
-                    "hidden:" + suffix + ":target-route", "eta_t_h" + suffix,
-                    "beta_t_h" + suffix, 2, stage);
+                    "hidden:" + suffix + ":target-route",
+                    hidden_challenge_name("eta_t_h", layer_index, local_head),
+                    hidden_challenge_name("beta_t_h", layer_index, local_head),
+                    2, stage);
                 const auto hidden_value_rows = checked_mul(
                     context.local.num_nodes, head_dim,
                     "hidden-value-rows");
                 add_pair_lookup(
-                    "hidden:" + suffix + ":elu", "eta_ELU_h" + suffix,
-                    "beta_ELU_h" + suffix, context.tables.elu.size(),
+                    "hidden:" + suffix + ":elu",
+                    hidden_challenge_name("eta_ELU_h", layer_index, local_head),
+                    hidden_challenge_name("beta_ELU_h", layer_index, local_head),
+                    context.tables.elu.size(),
                     hidden_value_rows, stage);
                 add_route(
-                    "hidden:" + suffix + ":dst-route", "eta_dst_h" + suffix,
-                    "beta_dst_h" + suffix, 6, stage);
+                    "hidden:" + suffix + ":dst-route",
+                    hidden_challenge_name("eta_dst_h", layer_index, local_head),
+                    hidden_challenge_name("beta_dst_h", layer_index, local_head),
+                    6, stage);
                 add_signed_division_ranges(
                     prefix + "_Div_", hidden_value_rows, stage);
             }
             const auto layer_suffix = std::to_string(layer.layer_index);
-            const bool is_final_layer =
-                layer.layer_index + 1 == context.model.hidden_layers.size();
             const auto concat_width = checked_mul(
                 layer.shape.head_count, layer.shape.head_dim,
                 "hidden-concat-width");
             add_tuple_compression(
                 "hidden-concat:" + layer_suffix,
-                hidden_concat_xi_name(layer.layer_index, is_final_layer),
+                hidden_concat_xi_name(layer.layer_index),
                 "hidden-concat:" + layer_suffix,
                 std::max<std::size_t>(2, concat_width),
                 std::max<std::size_t>(1, context.local.num_nodes));
             add_random_point_identity(
                 "hidden-concat:" + layer_suffix + ":binding",
-                hidden_concat_y_name(layer.layer_index, is_final_layer),
+                hidden_concat_y_name(layer.layer_index),
                 "hidden-concat:" + layer_suffix,
                 "concatenated-head-layout-polynomial-identity(Y)");
         }
@@ -2719,10 +2768,15 @@ namespace gatzk::protocol
         // The compiler registers a conservative instance-bound envelope for
         // external/route/binding claims.  Runtime grouping can only merge or
         // deduplicate this set, never exceed it.
+        // The formal envelope is counted from the nested layer/head registry;
+        // the checkpoint/parity flattening view is not part of the schema.
+        std::size_t formal_hidden_head_count = 0;
+        for (const auto &layer : context.model.hidden_layers)
+            formal_hidden_head_count += layer.heads.size();
         const auto relation_family_envelope = checked_add(
             artifact.proof_schema.entries.size(),
             checked_add(
-                context.model.hidden_heads.size(),
+                formal_hidden_head_count,
                 checked_add(
                     context.model.hidden_layers.size(),
                     context.model.output_layer.heads.size(),

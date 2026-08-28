@@ -9,6 +9,7 @@
 #include <optional>
 #include <limits>
 #include <stdexcept>
+#include <string_view>
 #include <thread>
 #include <tuple>
 #include <unordered_map>
@@ -918,7 +919,6 @@ namespace gatzk::protocol
             if (proof.pi_bind.subproofs.size() != expected_meta.size())
                 return false;
 
-            std::size_t global_hidden_head = 0;
             std::unordered_set<std::string> model_object_ids;
             for (std::size_t subproof_index = 0;
                  subproof_index < expected_meta.size(); ++subproof_index)
@@ -931,13 +931,13 @@ namespace gatzk::protocol
                 if (subproof.relation_meta.object_kind == "hidden")
                 {
                     const auto layer = subproof.relation_meta.layer_id.value() - 1;
+                    const auto head = subproof.relation_meta.head_id.value();
                     const auto width = context.config.hidden_profile.at(layer).head_dim;
                     for (std::size_t column = 0; column < width; ++column)
-                        expected_models.push_back({hidden_weight_column_label(global_hidden_head, column),
+                        expected_models.push_back({hidden_weight_column_label(layer, head, column),
                                                    context.domains.in->name});
-                    expected_models.push_back({hidden_src_label(global_hidden_head), context.domains.d->name});
-                    expected_models.push_back({hidden_dst_label(global_hidden_head), context.domains.d->name});
-                    ++global_hidden_head;
+                    expected_models.push_back({hidden_src_label(layer, head), context.domains.d->name});
+                    expected_models.push_back({hidden_dst_label(layer, head), context.domains.d->name});
                 }
                 else if (subproof.relation_meta.object_kind == "output")
                 {
@@ -1449,29 +1449,33 @@ namespace gatzk::protocol
                 return out;
             };
 
+            for (std::size_t layer = 0;
+                 layer < context.model.hidden_layers.size(); ++layer)
             for (std::size_t head = 0;
-                 head < formal_hidden_head_count(context); ++head)
+                 head < context.model.hidden_layers[layer].heads.size(); ++head)
             {
                 std::vector<std::string> weight_columns;
                 for (std::size_t column = 0;; ++column)
                 {
-                    const auto label = hidden_weight_column_label(head, column);
+                    const auto label = hidden_weight_column_label(layer, head, column);
                     if (!context.static_commitments.contains(label))
                         break;
                     weight_columns.push_back(label);
                 }
-                const auto challenge_it = challenges.find("y_proj_h" + std::to_string(head));
+                const auto challenge_it = challenges.find(
+                    hidden_challenge_name("y_proj_h", layer, head));
                 if (weight_columns.empty() || challenge_it == challenges.end())
                     return false;
                 const auto anchor = folded_anchor(
-                    "folded_hidden_weight_proof_" + std::to_string(head),
+                    "folded_hidden_weight_proof_l" + std::to_string(layer)
+                        + "_h" + std::to_string(head),
                     weight_columns, challenge_it->second);
                 const auto src_anchor = required_dynamic(
-                    model_proof_local_label(hidden_src_label(head)));
+                    model_proof_local_label(hidden_src_label(layer, head)));
                 const auto dst_anchor = required_dynamic(
-                    model_proof_local_label(hidden_dst_label(head)));
-                const auto prefix = hidden_head_prefix(head) + "_";
-                if (!anchor.has_value() || src_anchor == nullptr || dst_anchor == nullptr || !append_relation(prefix + "b_proj", *anchor, hidden_model_binding_blinder_label(head, "proj"), context.domains.in->name) || !append_relation(prefix + "b_src", *src_anchor, hidden_model_binding_blinder_label(head, "src"), context.domains.d->name) || !append_relation(prefix + "b_dst", *dst_anchor, hidden_model_binding_blinder_label(head, "dst"), context.domains.d->name))
+                    model_proof_local_label(hidden_dst_label(layer, head)));
+                const auto prefix = hidden_head_prefix(layer, head) + "_";
+                if (!anchor.has_value() || src_anchor == nullptr || dst_anchor == nullptr || !append_relation(prefix + "b_proj", *anchor, hidden_model_binding_blinder_label(layer, head, "proj"), context.domains.in->name) || !append_relation(prefix + "b_src", *src_anchor, hidden_model_binding_blinder_label(layer, head, "src"), context.domains.d->name) || !append_relation(prefix + "b_dst", *dst_anchor, hidden_model_binding_blinder_label(layer, head, "dst"), context.domains.d->name))
                     return false;
             }
             for (std::size_t head = 0; head < context.config.K_out; ++head)
@@ -1572,51 +1576,56 @@ namespace gatzk::protocol
         std::vector<ExternalEvalSpec> multihead_external_specs(const ProtocolContext &context)
         {
             std::vector<ExternalEvalSpec> specs;
+            for (std::size_t layer_index = 0;
+                 layer_index < context.model.hidden_layers.size();
+                 ++layer_index)
             for (std::size_t head_index = 0;
-                 head_index < formal_hidden_head_count(context); ++head_index)
+                 head_index < context.model.hidden_layers[layer_index].heads.size();
+                 ++head_index)
             {
-                const auto suffix = "h" + std::to_string(head_index);
-                const auto prefix = "P_h" + std::to_string(head_index) + "_";
-                specs.push_back({"mu_" + suffix + "_proj", prefix + "H_prime", "y_proj_h" + std::to_string(head_index)});
-                specs.push_back({"mu_" + suffix + "_src", prefix + "E_src", "y_src_h" + std::to_string(head_index)});
-                specs.push_back({hidden_score_mask_eval_name(head_index, "src"),
-                                 hidden_score_mask_label(head_index, "src"),
-                                 "y_src_h" + std::to_string(head_index)});
-                specs.push_back({"mu_" + suffix + "_dst", prefix + "E_dst", "y_dst_h" + std::to_string(head_index)});
-                specs.push_back({hidden_score_mask_eval_name(head_index, "dst"),
-                                 hidden_score_mask_label(head_index, "dst"),
-                                 "y_dst_h" + std::to_string(head_index)});
-                specs.push_back({"mu_" + suffix + "_star", prefix + "H_star", "y_star_h" + std::to_string(head_index)});
+                const auto suffix = "l" + std::to_string(layer_index)
+                    + "_h" + std::to_string(head_index);
+                const auto prefix = hidden_head_prefix(layer_index, head_index) + "_";
+                const auto challenge = [&](std::string_view base)
+                {
+                    return hidden_challenge_name(base, layer_index, head_index);
+                };
+                specs.push_back({"mu_" + suffix + "_proj", prefix + "H_prime", challenge("y_proj_h")});
+                specs.push_back({"mu_" + suffix + "_src", prefix + "E_src", challenge("y_src_h")});
+                specs.push_back({hidden_score_mask_eval_name(layer_index, head_index, "src"),
+                                 hidden_score_mask_label(layer_index, head_index, "src"),
+                                 challenge("y_src_h")});
+                specs.push_back({"mu_" + suffix + "_dst", prefix + "E_dst", challenge("y_dst_h")});
+                specs.push_back({hidden_score_mask_eval_name(layer_index, head_index, "dst"),
+                                 hidden_score_mask_label(layer_index, head_index, "dst"),
+                                 challenge("y_dst_h")});
+                specs.push_back({"mu_" + suffix + "_star", prefix + "H_star", challenge("y_star_h")});
                 specs.push_back({external_mask_eval_name("mu_" + suffix + "_star"),
                                  external_mask_label(prefix + "H_star"),
-                                 "y_star_h" + std::to_string(head_index)});
-                specs.push_back({"mu_" + suffix + "_agg_pre", prefix + "H_agg_pre_star", "y_agg_pre_h" + std::to_string(head_index)});
+                                 challenge("y_star_h")});
+                specs.push_back({"mu_" + suffix + "_agg_pre", prefix + "H_agg_pre_star", challenge("y_agg_pre_h")});
                 specs.push_back({external_mask_eval_name("mu_" + suffix + "_agg_pre"),
                                  external_mask_label(prefix + "H_agg_pre_star"),
-                                 "y_agg_pre_h" + std::to_string(head_index)});
-                specs.push_back({"mu_" + suffix + "_agg", prefix + "H_agg_star", "y_agg_h" + std::to_string(head_index)});
+                                 challenge("y_agg_pre_h")});
+                specs.push_back({"mu_" + suffix + "_agg", prefix + "H_agg_star", challenge("y_agg_h")});
                 specs.push_back({external_mask_eval_name("mu_" + suffix + "_agg"),
                                  external_mask_label(prefix + "H_agg_star"),
-                                 "y_agg_h" + std::to_string(head_index)});
+                                 challenge("y_agg_h")});
             }
             for (std::size_t layer_index = 0;
                  layer_index < context.config.hidden_profile.size(); ++layer_index)
             {
-                const bool is_final_layer =
-                    layer_index + 1 == context.config.hidden_profile.size();
                 specs.push_back({
-                    is_final_layer ? "mu_cat" : "mu_cat_l" + std::to_string(layer_index),
-                    hidden_layer_concat_star_label(layer_index, is_final_layer),
-                    hidden_concat_y_name(layer_index, is_final_layer),
+                    "mu_cat_l" + std::to_string(layer_index),
+                    hidden_layer_concat_star_label(layer_index),
+                    hidden_concat_y_name(layer_index),
                 });
                 const auto concat_eval_name =
-                    is_final_layer ? std::string("mu_cat")
-                                   : "mu_cat_l" + std::to_string(layer_index);
+                    "mu_cat_l" + std::to_string(layer_index);
                 specs.push_back({
                     external_mask_eval_name(concat_eval_name),
-                    external_mask_label(hidden_layer_concat_star_label(
-                        layer_index, is_final_layer)),
-                    hidden_concat_y_name(layer_index, is_final_layer),
+                    external_mask_label(hidden_layer_concat_star_label(layer_index)),
+                    hidden_concat_y_name(layer_index),
                 });
             }
             for (std::size_t head_index = 0;

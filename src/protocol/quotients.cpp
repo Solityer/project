@@ -24,6 +24,8 @@ namespace gatzk::protocol
 
     struct HiddenHeadEvaluationConstants
     {
+        std::size_t layer_index = 0;
+        std::size_t local_head_index = 0;
         std::string prefix;
         std::string division_prefix;
         std::string division_selector;
@@ -98,7 +100,10 @@ namespace gatzk::protocol
         SignedDivisionEvaluationConstants average_division;
 
         std::vector<BindingRelationMeta> binding_metadata;
-        std::vector<HiddenHeadEvaluationConstants> hidden_heads;
+        // Formal quotient constants are keyed by (layer, local head).  Keep
+        // the same nested identity as the trace and binding registries; a
+        // flattened planned index is not a formal object identity.
+        std::vector<std::vector<HiddenHeadEvaluationConstants>> hidden_heads;
         std::vector<OutputHeadEvaluationConstants> output_heads;
     };
 
@@ -177,16 +182,29 @@ namespace gatzk::protocol
 
         std::optional<std::string> hidden_head_suffix(const std::string &label)
         {
-            if (!starts_with(label, "P_h"))
+            // Formal hidden labels carry both coordinates.  Do not accept
+            // the legacy flat P_h<index> form on the proof path.
+            if (!starts_with(label, "P_h_l"))
             {
                 return std::nullopt;
             }
-            std::size_t pos = 3;
+            std::size_t pos = 5;
+            const auto layer_begin = pos;
             while (pos < label.size() && std::isdigit(static_cast<unsigned char>(label[pos])))
             {
                 ++pos;
             }
-            if (pos >= label.size() || label[pos] != '_')
+            if (pos == layer_begin || label.compare(pos, 2, "_h") != 0)
+            {
+                return std::nullopt;
+            }
+            pos += 2;
+            const auto head_begin = pos;
+            while (pos < label.size() && std::isdigit(static_cast<unsigned char>(label[pos])))
+            {
+                ++pos;
+            }
+            if (pos == head_begin || pos >= label.size() || label[pos] != '_')
             {
                 return std::nullopt;
             }
@@ -215,8 +233,7 @@ namespace gatzk::protocol
         {
             for (std::size_t layer_index = 0; layer_index < context.model.hidden_layers.size(); ++layer_index)
             {
-                const bool is_final_layer = layer_index + 1 == context.model.hidden_layers.size();
-                if (label == hidden_layer_cat_prefix(layer_index, is_final_layer) + std::string(suffix))
+                if (label == hidden_layer_cat_prefix(layer_index) + std::string(suffix))
                 {
                     return true;
                 }
@@ -226,6 +243,9 @@ namespace gatzk::protocol
 
         std::optional<std::string> dynamic_label_domain_name(const ProtocolContext &context, const std::string &label)
         {
+            // The null result is only for the removed legacy single-head
+            // compatibility representation; formal context construction is
+            // fail-closed before dynamic domain lookup.
             if (!context.model.has_real_multihead)
             {
                 return std::nullopt;
@@ -253,10 +273,9 @@ namespace gatzk::protocol
             }
             for (std::size_t layer_index = 0; layer_index < context.model.hidden_layers.size(); ++layer_index)
             {
-                const bool is_final_layer = layer_index + 1 == context.model.hidden_layers.size();
-                if (label == hidden_layer_concat_label(layer_index, is_final_layer))
+                if (label == hidden_layer_concat_label(layer_index))
                     return std::string("coef");
-                if (label == hidden_layer_concat_star_label(layer_index, is_final_layer))
+                if (label == hidden_layer_concat_star_label(layer_index))
                 {
                     return std::string("N");
                 }
@@ -296,14 +315,6 @@ namespace gatzk::protocol
                 {
                     return std::string("edge");
                 }
-            }
-            if (label == "P_H_cat_star")
-            {
-                return std::string("N");
-            }
-            if (label == "P_cat_a" || label == "P_cat_b" || label == "P_cat_Acc")
-            {
-                return std::string("cat");
             }
             if (const auto suffix = hidden_head_suffix(label); suffix.has_value())
             {
@@ -1314,15 +1325,28 @@ namespace gatzk::protocol
 
         plan->binding_metadata =
             build_binding_relation_metadata(context);
-        plan->hidden_heads.reserve(context.model.hidden_heads.size());
-        for (std::size_t head_index = 0;
-             head_index < context.model.hidden_heads.size(); ++head_index)
+        plan->hidden_heads.resize(context.model.hidden_layers.size());
+        for (std::size_t layer_index = 0;
+             layer_index < context.model.hidden_layers.size();
+             ++layer_index)
         {
-            const auto index = std::to_string(head_index);
+            const auto &layer = context.model.hidden_layers[layer_index];
+            auto &layer_constants = plan->hidden_heads.at(layer_index);
+            layer_constants.reserve(layer.heads.size());
+            for (std::size_t local_head_index = 0;
+                 local_head_index < layer.heads.size();
+                 ++local_head_index)
+            {
             HiddenHeadEvaluationConstants constants;
-            constants.prefix = "P_h" + index + "_";
+            constants.layer_index = layer_index;
+            constants.local_head_index = local_head_index;
+            const auto challenge = [&](std::string_view base)
+            {
+                return hidden_challenge_name(base, layer_index, local_head_index);
+            };
+            constants.prefix = hidden_head_prefix(layer_index, local_head_index) + "_";
             constants.division_prefix = constants.prefix + "Div_";
-            constants.division_selector = "P_Q_div_h" + index;
+            constants.division_selector = hidden_q_nd_h_selector_label(layer_index);
 
             constants.division =
                 bind_signed_division_challenges(
@@ -1330,34 +1354,30 @@ namespace gatzk::protocol
                     context.config.range_bits,
                     challenges);
 
-            constants.elu_query_selector =
-                context.model.hidden_heads[head_index]
-                            .seq_kernel_fp.empty() ||
-                        context.model.hidden_heads[head_index]
-                                .seq_kernel_fp.front()
-                                .size() ==
-                            model::max_hidden_head_dim(context.model)
-                    ? "P_Q_qry_ELU"
-                    : constants.division_selector;
-            constants.beta_src = challenges.at("beta_src_h" + index);
-            constants.beta_dst = challenges.at("beta_dst_h" + index);
-            constants.eta_src = challenges.at("eta_src_h" + index);
+            // Q_Nd_h is the sole layer-scoped edge selector for hidden
+            // aggregation/ELU queries, including layers whose width happens
+            // to equal the historical maximum.
+            constants.elu_query_selector = constants.division_selector;
+            constants.beta_src = challenges.at(challenge("beta_src_h"));
+            constants.beta_dst = challenges.at(challenge("beta_dst_h"));
+            constants.eta_src = challenges.at(challenge("eta_src_h"));
             constants.eta_src_sq = constants.eta_src * constants.eta_src;
-            constants.eta_dst = challenges.at("eta_dst_h" + index);
+            constants.eta_dst = challenges.at(challenge("eta_dst_h"));
             constants.eta_dst_sq = constants.eta_dst * constants.eta_dst;
             constants.eta_dst_cu = constants.eta_dst_sq * constants.eta_dst;
             constants.eta_dst_4 = constants.eta_dst_cu * constants.eta_dst;
             constants.eta_dst_5 = constants.eta_dst_4 * constants.eta_dst;
-            constants.beta_l = challenges.at("beta_L_h" + index);
-            constants.eta_l = challenges.at("eta_L_h" + index);
-            constants.beta_r = challenges.at("beta_R_h" + index);
-            constants.beta_exp = challenges.at("beta_exp_h" + index);
-            constants.eta_exp = challenges.at("eta_exp_h" + index);
-            constants.beta_elu = challenges.at("beta_ELU_h" + index);
-            constants.eta_elu = challenges.at("eta_ELU_h" + index);
-            constants.beta_t = challenges.at("beta_t_h" + index);
-            constants.eta_t = challenges.at("eta_t_h" + index);
-            plan->hidden_heads.push_back(std::move(constants));
+            constants.beta_l = challenges.at(challenge("beta_L_h"));
+            constants.eta_l = challenges.at(challenge("eta_L_h"));
+            constants.beta_r = challenges.at(challenge("beta_R_h"));
+            constants.beta_exp = challenges.at(challenge("beta_exp_h"));
+            constants.eta_exp = challenges.at(challenge("eta_exp_h"));
+            constants.beta_elu = challenges.at(challenge("beta_ELU_h"));
+            constants.eta_elu = challenges.at(challenge("eta_ELU_h"));
+            constants.beta_t = challenges.at(challenge("beta_t_h"));
+            constants.eta_t = challenges.at(challenge("eta_t_h"));
+            layer_constants.push_back(std::move(constants));
+            }
         }
         plan->output_heads.reserve(context.model.output_layer.heads.size());
         for (std::size_t head_index = 0;
@@ -1978,35 +1998,42 @@ namespace gatzk::protocol
                 acc.add(last * (current - target));
             };
 
-            for (std::size_t head_index = 0; head_index < context.model.hidden_heads.size(); ++head_index)
+            for (std::size_t layer_index = 0;
+                 layer_index < context.model.hidden_layers.size();
+                 ++layer_index)
             {
+                for (std::size_t local_head_index = 0;
+                     local_head_index < context.model.hidden_layers[layer_index].heads.size();
+                     ++local_head_index)
+                {
                 const auto *planned = evaluation_plan != nullptr
-                                          ? &evaluation_plan->hidden_heads.at(head_index)
+                                          ? &evaluation_plan->hidden_heads
+                                                 .at(layer_index)
+                                                 .at(local_head_index)
                                           : nullptr;
-                const auto index = planned == nullptr
-                                       ? std::to_string(head_index)
-                                       : std::string{};
-                const auto fallback_prefix = planned == nullptr
-                                                 ? "P_h" + index + "_"
-                                                 : std::string{};
+                const auto challenge = [&](std::string_view base)
+                {
+                    return hidden_challenge_name(base, layer_index, local_head_index);
+                };
+                const auto fallback_prefix = hidden_head_prefix(layer_index, local_head_index) + "_";
                 const std::string &prefix = planned != nullptr
                                                 ? planned->prefix
                                                 : fallback_prefix;
                 const auto beta_src = planned != nullptr
                                           ? planned->beta_src
-                                          : challenges.at("beta_src_h" + index);
+                                          : challenges.at(challenge("beta_src_h"));
                 const auto beta_dst = planned != nullptr
                                           ? planned->beta_dst
-                                          : challenges.at("beta_dst_h" + index);
+                                          : challenges.at(challenge("beta_dst_h"));
                 const auto eta_src = planned != nullptr
                                          ? planned->eta_src
-                                         : challenges.at("eta_src_h" + index);
+                                         : challenges.at(challenge("eta_src_h"));
                 const auto eta_src_sq = planned != nullptr
                                             ? planned->eta_src_sq
                                             : eta_src * eta_src;
                 const auto eta_dst = planned != nullptr
                                          ? planned->eta_dst
-                                         : challenges.at("eta_dst_h" + index);
+                                         : challenges.at(challenge("eta_dst_h"));
                 const auto eta_dst_sq = planned != nullptr
                                             ? planned->eta_dst_sq
                                             : eta_dst * eta_dst;
@@ -2021,42 +2048,35 @@ namespace gatzk::protocol
                                            : eta_dst_4 * eta_dst;
                 const auto beta_l = planned != nullptr
                                         ? planned->beta_l
-                                        : challenges.at("beta_L_h" + index);
+                                        : challenges.at(challenge("beta_L_h"));
                 const auto eta_l = planned != nullptr
                                        ? planned->eta_l
-                                       : challenges.at("eta_L_h" + index);
+                                       : challenges.at(challenge("eta_L_h"));
                 const auto beta_r = planned != nullptr
                                         ? planned->beta_r
-                                        : challenges.at("beta_R_h" + index);
+                                        : challenges.at(challenge("beta_R_h"));
                 const auto beta_exp = planned != nullptr
                                           ? planned->beta_exp
-                                          : challenges.at("beta_exp_h" + index);
+                                          : challenges.at(challenge("beta_exp_h"));
                 const auto eta_exp = planned != nullptr
                                          ? planned->eta_exp
-                                         : challenges.at("eta_exp_h" + index);
+                                         : challenges.at(challenge("eta_exp_h"));
                 const auto beta_elu = planned != nullptr
                                           ? planned->beta_elu
-                                          : challenges.at("beta_ELU_h" + index);
+                                          : challenges.at(challenge("beta_ELU_h"));
                 const auto eta_elu = planned != nullptr
                                          ? planned->eta_elu
-                                         : challenges.at("eta_ELU_h" + index);
+                                         : challenges.at(challenge("eta_ELU_h"));
                 const auto q_qry_elu_z = eval_z(
                     planned != nullptr
                         ? planned->elu_query_selector
-                        : (context.model.hidden_heads[head_index]
-                                       .seq_kernel_fp.empty() ||
-                                   context.model.hidden_heads[head_index]
-                                           .seq_kernel_fp.front()
-                                           .size() == model::max_hidden_head_dim(
-                                                          context.model)
-                               ? "P_Q_qry_ELU"
-                               : "P_Q_div_h" + index));
+                        : hidden_q_nd_h_selector_label(layer_index));
                 const auto beta_t = planned != nullptr
                                         ? planned->beta_t
-                                        : challenges.at("beta_t_h" + index);
+                                        : challenges.at(challenge("beta_t_h"));
                 const auto eta_t = planned != nullptr
                                        ? planned->eta_t
-                                       : challenges.at("eta_t_h" + index);
+                                       : challenges.at(challenge("eta_t_h"));
 
                 auto z_head = [&](std::string_view suffix)
                 {
@@ -2180,14 +2200,14 @@ namespace gatzk::protocol
                         : prefix + "Div_",
                     planned != nullptr
                         ? planned->division_selector
-                        : "P_Q_div_h" + std::to_string(head_index),
+                        : hidden_q_nd_h_selector_label(layer_index),
                     planned != nullptr
                         ? &planned->division
                         : nullptr);
                 const auto q_div = eval_z(
                     planned != nullptr
                         ? planned->division_selector
-                        : "P_Q_div_h" + index);
+                        : hidden_q_nd_h_selector_label(layer_index));
                 acc.add(q_div * (h_agg_num_flat_z - sum_flat_z * h_agg_pre_flat_z));
                 acc.add(q_div * (z_head("Div_X") - h_agg_num_flat_z));
                 acc.add(q_div * (z_head("Div_D") - FieldElement(16) * sum_flat_z));
@@ -2197,6 +2217,7 @@ namespace gatzk::protocol
                          h_elu_in_flat_z, h_agg_flat_z})
                 {
                     acc.add((one - q_div) * padding_value);
+                }
                 }
             }
 
@@ -2807,16 +2828,26 @@ namespace gatzk::protocol
             const auto q_n = eval("P_Q_N", z);
             QuotientAccumulator acc(challenges.at("alpha_quot"));
 
-            for (std::size_t head_index = 0; head_index < context.model.hidden_heads.size(); ++head_index)
+            for (std::size_t layer_index = 0;
+                 layer_index < context.model.hidden_layers.size();
+                 ++layer_index)
             {
-                const auto prefix = "P_h" + std::to_string(head_index) + "_";
-                const auto beta_src = challenges.at("beta_src_h" + std::to_string(head_index));
-                const auto beta_dst = challenges.at("beta_dst_h" + std::to_string(head_index));
-                const auto eta_src = challenges.at("eta_src_h" + std::to_string(head_index));
-                const auto eta_dst = challenges.at("eta_dst_h" + std::to_string(head_index));
-                const auto beta_t = challenges.at("beta_t_h" + std::to_string(head_index));
-                const auto eta_t = challenges.at("eta_t_h" + std::to_string(head_index));
-                const auto lambda_psq = challenges.at("lambda_psq_h" + std::to_string(head_index));
+                for (std::size_t local_head_index = 0;
+                     local_head_index < context.model.hidden_layers[layer_index].heads.size();
+                     ++local_head_index)
+                {
+                const auto prefix = hidden_head_prefix(layer_index, local_head_index) + "_";
+                const auto challenge = [&](std::string_view base)
+                {
+                    return hidden_challenge_name(base, layer_index, local_head_index);
+                };
+                const auto beta_src = challenges.at(challenge("beta_src_h"));
+                const auto beta_dst = challenges.at(challenge("beta_dst_h"));
+                const auto eta_src = challenges.at(challenge("eta_src_h"));
+                const auto eta_dst = challenges.at(challenge("eta_dst_h"));
+                const auto beta_t = challenges.at(challenge("beta_t_h"));
+                const auto eta_t = challenges.at(challenge("eta_t_h"));
+                const auto lambda_psq = challenges.at(challenge("lambda_psq_h"));
 
                 acc.add(first * eval(prefix + "R_src_node", z));
                 acc.add(q_n * ((eval(prefix + "Table_src", z) + beta_src) * eval(prefix + "J_src_node", z) - FieldElement::one()));
@@ -2847,6 +2878,7 @@ namespace gatzk::protocol
                 acc.add(zero_on_unselected(q_n, eval(prefix + "T_psq", z)));
                 acc.add(zero_on_unselected(q_n, eval(prefix + "Table_t", z)));
                 acc.add(zero_on_unselected(q_n, eval(prefix + "m_t", z)));
+                }
             }
 
             for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
@@ -3002,19 +3034,30 @@ namespace gatzk::protocol
             const auto last = boundary.last;
             const auto not_last = FieldElement::one() - last;
             const auto zero_eval = boundary.zero;
-            const auto q_valid = eval("P_Q_proj_valid", z);
-            const auto q_invalid = FieldElement::one() - q_valid;
             QuotientAccumulator acc(
                 challenges.at("alpha_quot"), return_numerator);
-            for (std::size_t head_index = 0; head_index < context.model.hidden_heads.size(); ++head_index)
+            for (std::size_t layer_index = 0;
+                 layer_index < context.model.hidden_layers.size();
+                 ++layer_index)
             {
-                const auto prefix = "P_h" + std::to_string(head_index) + "_";
+                const auto q_valid = eval(
+                    hidden_q_in_selector_label(layer_index), z);
+                const auto q_invalid = FieldElement::one() - q_valid;
+                for (std::size_t local_head_index = 0;
+                     local_head_index < context.model.hidden_layers[layer_index].heads.size();
+                     ++local_head_index)
+                {
+                const auto prefix = hidden_head_prefix(layer_index, local_head_index) + "_";
+                const auto mu_name =
+                    "mu_l" + std::to_string(layer_index) + "_h"
+                    + std::to_string(local_head_index) + "_proj";
                 acc.add(first * eval(prefix + "Acc_proj", z));
                 acc.add(q_valid * acc_step(eval(prefix + "Acc_proj", omega_z), eval(prefix + "Acc_proj", z), eval(prefix + "a_proj", z), eval(prefix + "b_proj", z)));
                 acc.add(not_last * q_invalid * (eval(prefix + "Acc_proj", omega_z) - eval(prefix + "Acc_proj", z)));
                 acc.add(zero_on_unselected(q_valid, eval(prefix + "a_proj", z)));
                 acc.add(zero_on_unselected(q_valid, eval(prefix + "b_proj", z)));
-                acc.add(last * (eval(prefix + "Acc_proj", z) - external_evaluations.at("mu_h" + std::to_string(head_index) + "_proj")));
+                acc.add(last * (eval(prefix + "Acc_proj", z) - external_evaluations.at(mu_name)));
+                }
             }
             if (return_numerator && acc.first_nonzero_term().has_value())
             {
@@ -3026,6 +3069,9 @@ namespace gatzk::protocol
             return return_numerator ? acc.value() : acc.value() / zero_eval;
         }
 
+        // Non-formal legacy single-head compatibility branch.  The formal
+        // context builder rejects has_real_multihead == false before any
+        // quotient is evaluated, so these aliases cannot enter the schema.
         const auto omega_z = z * context.domains.in->omega;
         const auto l0 = lagrange_first(*context.domains.in, z);
         const auto not_last = FieldElement::one() - lagrange_last(*context.domains.in, z);
@@ -3060,8 +3106,6 @@ namespace gatzk::protocol
             const auto last = boundary.last;
             const auto not_last = FieldElement::one() - last;
             const auto zero_eval = boundary.zero;
-            const auto q_valid = eval("P_Q_d_valid", z);
-            const auto q_invalid = FieldElement::one() - q_valid;
             QuotientAccumulator acc(
                 challenges.at("alpha_quot"), return_numerator);
             const auto semantic_external =
@@ -3074,23 +3118,39 @@ namespace gatzk::protocol
                                                                     external_mask_eval_name(eval_name));
             };
 
-            for (std::size_t head_index = 0; head_index < context.model.hidden_heads.size(); ++head_index)
+            for (std::size_t layer_index = 0;
+                 layer_index < context.model.hidden_layers.size();
+                 ++layer_index)
             {
-                const auto prefix = "P_h" + std::to_string(head_index) + "_";
+                const auto q_valid = eval(
+                    hidden_q_d_h_selector_label(layer_index), z);
+                const auto q_invalid = FieldElement::one() - q_valid;
+                for (std::size_t local_head_index = 0;
+                     local_head_index < context.model.hidden_layers[layer_index].heads.size();
+                     ++local_head_index)
+                {
+                const auto prefix = hidden_head_prefix(layer_index, local_head_index) + "_";
+                const auto challenge = [&](std::string_view base)
+                {
+                    return hidden_challenge_name(base, layer_index, local_head_index);
+                };
+                const auto suffix =
+                    "l" + std::to_string(layer_index) + "_h"
+                    + std::to_string(local_head_index);
                 const auto src_semantic_eval =
                     external_evaluations.at(
-                        "mu_h" + std::to_string(head_index) + "_src") -
+                        "mu_" + suffix + "_src") -
                     context.domains.n->zero_polynomial_eval(
-                        challenges.at("y_src_h" + std::to_string(head_index))) *
+                        challenges.at(challenge("y_src_h"))) *
                         external_evaluations.at(
-                            hidden_score_mask_eval_name(head_index, "src"));
+                            hidden_score_mask_eval_name(layer_index, local_head_index, "src"));
                 const auto dst_semantic_eval =
                     external_evaluations.at(
-                        "mu_h" + std::to_string(head_index) + "_dst") -
+                        "mu_" + suffix + "_dst") -
                     context.domains.n->zero_polynomial_eval(
-                        challenges.at("y_dst_h" + std::to_string(head_index))) *
+                        challenges.at(challenge("y_dst_h"))) *
                         external_evaluations.at(
-                            hidden_score_mask_eval_name(head_index, "dst"));
+                            hidden_score_mask_eval_name(layer_index, local_head_index, "dst"));
                 acc.add(first * eval(prefix + "Acc_src", z));
                 acc.add(q_valid * acc_step(eval(prefix + "Acc_src", omega_z), eval(prefix + "Acc_src", z), eval(prefix + "a_src", z), eval(prefix + "b_src", z)));
                 acc.add(not_last * q_invalid * (eval(prefix + "Acc_src", omega_z) - eval(prefix + "Acc_src", z)));
@@ -3111,8 +3171,8 @@ namespace gatzk::protocol
                 acc.add(zero_on_unselected(q_valid, eval(prefix + "a_star", z)));
                 acc.add(zero_on_unselected(q_valid, eval(prefix + "b_star", z)));
                 acc.add(last * (eval(prefix + "Acc_star", z) - semantic_external(
-                                                                   "mu_h" + std::to_string(head_index) + "_star",
-                                                                   "y_star_h" + std::to_string(head_index))));
+                                                                   "mu_" + suffix + "_star",
+                                                                   challenge("y_star_h"))));
 
                 acc.add(first * eval(prefix + "Acc_agg_pre", z));
                 acc.add(q_valid * acc_step(eval(prefix + "Acc_agg_pre", omega_z), eval(prefix + "Acc_agg_pre", z), eval(prefix + "a_agg_pre", z), eval(prefix + "b_agg_pre", z)));
@@ -3120,8 +3180,8 @@ namespace gatzk::protocol
                 acc.add(zero_on_unselected(q_valid, eval(prefix + "a_agg_pre", z)));
                 acc.add(zero_on_unselected(q_valid, eval(prefix + "b_agg_pre", z)));
                 acc.add(last * (eval(prefix + "Acc_agg_pre", z) - semantic_external(
-                                                                      "mu_h" + std::to_string(head_index) + "_agg_pre",
-                                                                      "y_agg_pre_h" + std::to_string(head_index))));
+                                                                      "mu_" + suffix + "_agg_pre",
+                                                                      challenge("y_agg_pre_h"))));
 
                 acc.add(first * eval(prefix + "Acc_agg", z));
                 acc.add(q_valid * acc_step(eval(prefix + "Acc_agg", omega_z), eval(prefix + "Acc_agg", z), eval(prefix + "a_agg", z), eval(prefix + "b_agg", z)));
@@ -3129,8 +3189,9 @@ namespace gatzk::protocol
                 acc.add(zero_on_unselected(q_valid, eval(prefix + "a_agg", z)));
                 acc.add(zero_on_unselected(q_valid, eval(prefix + "b_agg", z)));
                 acc.add(last * (eval(prefix + "Acc_agg", z) - semantic_external(
-                                                                  "mu_h" + std::to_string(head_index) + "_agg",
-                                                                  "y_agg_h" + std::to_string(head_index))));
+                                                                  "mu_" + suffix + "_agg",
+                                                                  challenge("y_agg_h"))));
+                }
             }
 
             if (return_numerator && acc.first_nonzero_term().has_value())
@@ -3143,6 +3204,8 @@ namespace gatzk::protocol
             return return_numerator ? acc.value() : acc.value() / zero_eval;
         }
 
+        // Non-formal legacy single-head compatibility branch; unreachable from
+        // the fail-closed formal proof context above.
         const auto omega_z = z * context.domains.d->omega;
         const auto q_valid = eval("P_Q_d_valid", z);
         const auto q_invalid = FieldElement::one() - q_valid;
@@ -3203,19 +3266,19 @@ namespace gatzk::protocol
         const auto last = boundary.last;
         const auto not_last = FieldElement::one() - last;
         const auto zero_eval = boundary.zero;
-        const auto q_valid = eval("P_Q_cat_valid", z);
-        const auto q_invalid = FieldElement::one() - q_valid;
         // cat 域只约束多头拼接与输出投影输入，不重复承担 edge 域上的 softmax/lookup 主链。
         QuotientAccumulator acc(challenges.at("alpha_quot"));
 
         for (std::size_t layer_index = 0; layer_index < context.model.hidden_layers.size(); ++layer_index)
         {
-            const bool is_final_layer = layer_index + 1 == context.model.hidden_layers.size();
-            const auto prefix = hidden_layer_cat_prefix(layer_index, is_final_layer);
-            const auto mu_name = is_final_layer ? std::string("mu_cat") : "mu_cat_l" + std::to_string(layer_index);
+            const auto q_valid = eval(
+                hidden_q_cat_selector_label(layer_index), z);
+            const auto q_invalid = FieldElement::one() - q_valid;
+            const auto prefix = hidden_layer_cat_prefix(layer_index);
+            const auto mu_name = "mu_cat_l" + std::to_string(layer_index);
             const auto semantic_mu =
                 external_evaluations.at(mu_name) - context.domains.n->zero_polynomial_eval(challenges.at(
-                                                       hidden_concat_y_name(layer_index, is_final_layer))) *
+                                                       hidden_concat_y_name(layer_index))) *
                                                        external_evaluations.at(
                                                            external_mask_eval_name(mu_name));
             acc.add(first * eval(prefix + "_Acc", z));
@@ -3228,6 +3291,8 @@ namespace gatzk::protocol
 
         for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
         {
+            const auto q_valid = eval(output_q_cat_selector_label(), z);
+            const auto q_invalid = FieldElement::one() - q_valid;
             const auto prefix = output_head_prefix(head_index) + "_";
             const auto mu_name = output_external_eval_name("proj", head_index);
             acc.add(first * eval(prefix + "Acc_proj", z));

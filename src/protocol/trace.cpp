@@ -2038,12 +2038,18 @@ namespace gatzk::protocol
             {
                 return "output";
             }
-            if (label.rfind("P_h", 0) == 0)
+            if (label.rfind("P_h_l", 0) == 0)
             {
-                const auto marker = label.find('_');
-                if (marker != std::string::npos)
+                const auto head_marker = label.find("_h", 5);
+                const auto object_marker = head_marker == std::string::npos
+                                               ? std::string::npos
+                                               : label.find('_', head_marker + 2);
+                if (head_marker != std::string::npos
+                    && object_marker != std::string::npos)
                 {
-                    return "hidden_head/" + label.substr(1, marker - 1);
+                    return "hidden_head/l" + label.substr(5, head_marker - 5)
+                        + "/h" + label.substr(head_marker + 2,
+                                               object_marker - head_marker - 2);
                 }
             }
             if (label.find("_cat") != std::string::npos || label.find("H_cat") != std::string::npos)
@@ -3815,7 +3821,8 @@ namespace gatzk::protocol
 
         const HiddenHeadStaticQuantizedParameters &cached_quantized_hidden_head_parameters(
             const ProtocolContext &context,
-            std::size_t head_index)
+            std::size_t layer_index,
+            std::size_t local_head_index)
         {
             static std::mutex cache_mutex;
             static std::unordered_map<
@@ -3823,9 +3830,9 @@ namespace gatzk::protocol
                 std::shared_ptr<HiddenHeadStaticQuantizedParameters>>
                 cache;
 
-            const auto &head = context.model.hidden_heads.at(head_index);
+            const auto &head = context.model.hidden_layers.at(layer_index).heads.at(local_head_index);
             const auto cache_key =
-                context.config.checkpoint_bundle + ":" + context.config.dataset + ":" + std::to_string(context.config.seed) + ":hidden:" + std::to_string(head_index) + ":" + std::to_string(head.seq_kernel_fp.size()) + ":" + std::to_string(head.seq_kernel_fp.empty() ? 0 : head.seq_kernel_fp.front().size());
+                context.config.checkpoint_bundle + ":" + context.config.dataset + ":" + std::to_string(context.config.seed) + ":hidden:l" + std::to_string(layer_index) + ":h" + std::to_string(local_head_index) + ":" + std::to_string(head.seq_kernel_fp.size()) + ":" + std::to_string(head.seq_kernel_fp.empty() ? 0 : head.seq_kernel_fp.front().size());
             {
                 std::lock_guard<std::mutex> lock(cache_mutex);
                 if (const auto it = cache.find(cache_key); it != cache.end())
@@ -3935,7 +3942,11 @@ namespace gatzk::protocol
             model::ForwardProfile profile;
             std::vector<Matrix> hidden_layer_inputs_quantized;
             std::vector<Matrix> hidden_layer_concat_quantized;
-            std::vector<HiddenQuantizedWitness> hidden_head_quantized;
+            // Formal witness storage is keyed by (layer, local head).  The
+            // checkpoint/model compatibility view may be flat, but the proof
+            // path must never recover identity from a global head position.
+            std::vector<std::vector<HiddenQuantizedWitness>>
+                hidden_head_quantized;
             std::vector<OutputQuantizedWitness> output_head_quantized;
             model::FloatMatrix reference_logits_fp32;
             Matrix output_y_lin_average;
@@ -4386,12 +4397,8 @@ namespace gatzk::protocol
             artifacts->reference_logits_fp32 = forward.Y;
             artifacts->hidden_layer_inputs_quantized.reserve(forward.hidden_layer_traces.size());
             artifacts->hidden_layer_concat_quantized.reserve(forward.hidden_layer_traces.size());
-            std::size_t hidden_head_count = 0;
-            for (const auto &layer_trace : forward.hidden_layer_traces)
-            {
-                hidden_head_count += layer_trace.head_traces.size();
-            }
-            artifacts->hidden_head_quantized.reserve(hidden_head_count);
+            artifacts->hidden_head_quantized.resize(
+                forward.hidden_layer_traces.size());
             std::unordered_map<std::string, FieldElement> elu_output_by_input;
             elu_output_by_input.reserve(context.tables.elu.size());
             for (const auto &[input, output] : context.tables.elu)
@@ -4404,7 +4411,6 @@ namespace gatzk::protocol
             }
             std::vector<RawMatrix> hidden_layer_concat_raw;
             hidden_layer_concat_raw.reserve(forward.hidden_layer_traces.size());
-            std::size_t global_hidden_head_index = 0;
             for (std::size_t layer_index = 0; layer_index < forward.hidden_layer_traces.size(); ++layer_index)
             {
                 const auto &layer_trace = forward.hidden_layer_traces[layer_index];
@@ -4414,24 +4420,33 @@ namespace gatzk::protocol
 
                 std::vector<RawMatrix> layer_head_outputs_raw;
                 layer_head_outputs_raw.reserve(layer_trace.head_traces.size());
-                for (const auto &head_trace : layer_trace.head_traces)
+                auto &layer_quantized_heads =
+                    artifacts->hidden_head_quantized.at(layer_index);
+                layer_quantized_heads.reserve(layer_trace.head_traces.size());
+                for (std::size_t local_head_index = 0;
+                     local_head_index < layer_trace.head_traces.size();
+                     ++local_head_index)
                 {
-                    const auto &head = context.model.hidden_heads.at(global_hidden_head_index);
+                    const auto &head_trace = layer_trace.head_traces[local_head_index];
+                    const auto &head = context.model.hidden_layers.at(layer_index).heads.at(local_head_index);
                     const auto seq_kernel_raw = quantize_matrix_raw(head.seq_kernel_fp);
                     const auto attn_src_raw = quantize_vector_raw(head.attn_src_kernel_fp);
                     const auto attn_dst_raw = quantize_vector_raw(head.attn_dst_kernel_fp);
                     auto h_prime_raw = project_raw_matrix(
                         input_raw,
                         seq_kernel_raw,
-                        "hidden head projection " + std::to_string(global_hidden_head_index));
+                        "hidden head projection l" + std::to_string(layer_index)
+                            + "_h" + std::to_string(local_head_index));
                     auto e_src_raw = raw_matvec_no_bias(
                         h_prime_raw,
                         attn_src_raw,
-                        "hidden source attention " + std::to_string(global_hidden_head_index));
+                        "hidden source attention l" + std::to_string(layer_index)
+                            + "_h" + std::to_string(local_head_index));
                     auto e_dst_raw = raw_matvec_no_bias(
                         h_prime_raw,
                         attn_dst_raw,
-                        "hidden destination attention " + std::to_string(global_hidden_head_index));
+                        "hidden destination attention l" + std::to_string(layer_index)
+                            + "_h" + std::to_string(local_head_index));
                     auto quantized_head = quantize_hidden_witness_cpu(
                         head_trace,
                         edge_src_indices,
@@ -4444,8 +4459,7 @@ namespace gatzk::protocol
                         &e_src_raw,
                         &e_dst_raw);
                     layer_head_outputs_raw.push_back(quantized_head.h_agg_raw);
-                    artifacts->hidden_head_quantized.push_back(std::move(quantized_head));
-                    ++global_hidden_head_index;
+                    layer_quantized_heads.push_back(std::move(quantized_head));
                 }
                 hidden_layer_concat_raw.push_back(concat_raw_columns(
                     layer_head_outputs_raw,
@@ -5784,9 +5798,24 @@ namespace gatzk::protocol
             absorb_public_metadata(transcript, trace.public_metadata);
             transcript.absorb_scalar("N", FieldElement(n_nodes));
             transcript.absorb_scalar("E", FieldElement(n_edges));
-            transcript.absorb_scalar("d_in", FieldElement(d_in));
-            transcript.absorb_scalar("d_h", FieldElement(d_h));
-            transcript.absorb_scalar("d_cat", FieldElement(d_cat));
+            for (std::size_t layer_index = 0;
+                 layer_index < context.model.hidden_layers.size();
+                 ++layer_index)
+            {
+                const auto &layer = context.model.hidden_layers[layer_index];
+                transcript.absorb_scalar(
+                    "d_in_l" + std::to_string(layer_index),
+                    FieldElement(layer.input_dim));
+                transcript.absorb_scalar(
+                    "d_h_l" + std::to_string(layer_index),
+                    FieldElement(layer.shape.head_dim));
+                transcript.absorb_scalar(
+                    "d_cat_l" + std::to_string(layer_index),
+                    FieldElement(layer.shape.head_count * layer.shape.head_dim));
+            }
+            transcript.absorb_scalar(
+                "d_in_out", FieldElement(context.model.output_layer.input_dim));
+            transcript.absorb_scalar("d_out", FieldElement(n_classes));
             transcript.absorb_scalar("C", FieldElement(n_classes));
             transcript.absorb_scalar("B", FieldElement(context.config.range_bits));
             transcript.absorb_commitment("P_I", context.public_commitments.at("P_I").point);
@@ -5809,9 +5838,26 @@ namespace gatzk::protocol
             transcript.absorb_commitment(
                 "P_AggBind_index_N",
                 context.public_commitments.at("P_AggBind_index_N").point);
-            transcript.absorb_commitment("P_Q_proj_valid", context.public_commitments.at("P_Q_proj_valid").point);
-            transcript.absorb_commitment("P_Q_d_valid", context.public_commitments.at("P_Q_d_valid").point);
-            transcript.absorb_commitment("P_Q_cat_valid", context.public_commitments.at("P_Q_cat_valid").point);
+            for (std::size_t layer_index = 0;
+                 layer_index < context.model.hidden_layers.size();
+                 ++layer_index)
+            {
+                const auto q_in = hidden_q_in_selector_label(layer_index);
+                const auto q_d = hidden_q_d_h_selector_label(layer_index);
+                const auto q_cat = hidden_q_cat_selector_label(layer_index);
+                const auto q_nd_h = hidden_q_nd_h_selector_label(layer_index);
+                transcript.absorb_commitment(
+                    q_in, context.public_commitments.at(q_in).point);
+                transcript.absorb_commitment(
+                    q_d, context.public_commitments.at(q_d).point);
+                transcript.absorb_commitment(
+                    q_cat, context.public_commitments.at(q_cat).point);
+                transcript.absorb_commitment(
+                    q_nd_h, context.public_commitments.at(q_nd_h).point);
+            }
+            transcript.absorb_commitment(
+                output_q_cat_selector_label(),
+                context.public_commitments.at(output_q_cat_selector_label()).point);
             transcript.absorb_commitment("P_Q_C_valid", context.public_commitments.at("P_Q_C_valid").point);
             transcript.absorb_commitment("P_BiasIndex_C", context.public_commitments.at("P_BiasIndex_C").point);
             transcript.absorb_commitment("P_BiasMultiplicity_C", context.public_commitments.at("P_BiasMultiplicity_C").point);
@@ -5832,11 +5878,6 @@ namespace gatzk::protocol
                         transcript.absorb_commitment(
                             label, context.public_commitments.at(label).point);
                     }
-            for (std::size_t head_index = 0; head_index < context.model.hidden_heads.size(); ++head_index)
-            {
-                const auto label = "P_Q_div_h" + std::to_string(head_index);
-                transcript.absorb_commitment(label, context.public_commitments.at(label).point);
-            }
             for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
             {
                 const auto label = "P_Q_div_out" + std::to_string(head_index);
@@ -6786,37 +6827,41 @@ namespace gatzk::protocol
 
             // 每个隐藏头都独立展开一套 route / lookup / PSQ / binding 约束，
             // 但最终仍共享同一 transcript 顺序与 proof block 契约。
-            auto commit_hidden_head = [&](std::size_t head_index)
+            auto commit_hidden_head = [&](std::size_t layer_index, std::size_t local_head_index)
             {
-                std::size_t layer_index = 0;
-                std::size_t local_head_index = head_index;
-                while (layer_index < context.model.hidden_layers.size() && local_head_index >= context.model.hidden_layers[layer_index].heads.size())
-                {
-                    local_head_index -= context.model.hidden_layers[layer_index].heads.size();
-                    ++layer_index;
-                }
                 if (layer_index >= context.model.hidden_layers.size())
                 {
                     throw std::runtime_error("hidden head index escaped hidden layer family");
+                }
+                if (local_head_index >= context.model.hidden_layers[layer_index].heads.size())
+                {
+                    throw std::runtime_error("hidden local head index escaped hidden layer");
                 }
                 const auto &layer = context.model.hidden_layers[layer_index];
                 const auto &input_matrix = hidden_layer_inputs_quantized.at(layer_index);
                 const auto input_dim = layer.input_dim;
                 const auto head_dim = layer.shape.head_dim;
                 const auto q_qry_elu = eval_data(
-                    context,
-                    head_dim == d_h
-                        ? "P_Q_qry_ELU"
-                        : "P_Q_div_h" + std::to_string(head_index));
+                    context, hidden_q_nd_h_selector_label(layer_index));
                 const auto input_commitment_label =
                     layer_index == 0
                         ? std::string("P_H")
-                        : hidden_layer_concat_label(layer_index - 1, false);
-                const auto prefix = hidden_head_prefix(head_index) + "_";
+                        : hidden_layer_concat_label(layer_index - 1);
+                const auto prefix = hidden_head_prefix(layer_index, local_head_index) + "_";
+                const auto challenge = [&](std::string_view base)
+                {
+                    return hidden_challenge_name(base, layer_index, local_head_index);
+                };
+                const auto external_suffix =
+                    "l" + std::to_string(layer_index) + "_h"
+                    + std::to_string(local_head_index);
                 auto stage_start = Clock::now();
                 // 这一组量已经对应笔记里的单头前向主线：特征投影、源点打分、目标点打分、
                 // 稳定化最大值、分母和、分母倒数、注意力权重，以及按边聚合后的隐藏表示。
-                const auto &quantized = forward_artifacts->hidden_head_quantized.at(head_index);
+                const auto &quantized = forward_artifacts
+                                             ->hidden_head_quantized
+                                             .at(layer_index)
+                                             .at(local_head_index);
                 const auto &h_prime = quantized.h_prime;
                 const auto &e_src = quantized.e_src;
                 const auto &e_dst = quantized.e_dst;
@@ -6846,15 +6891,15 @@ namespace gatzk::protocol
                 for (std::size_t column = 0; column < head_dim; ++column)
                 {
                     model_reblind_labels.push_back(
-                        hidden_weight_column_label(head_index, column));
+                        hidden_weight_column_label(layer_index, local_head_index, column));
                 }
                 append_model_reblinds(
                     binding_subproof, model_reblind_labels, domains.in);
                 append_model_reblinds(
                     binding_subproof,
                     {
-                        hidden_src_label(head_index),
-                        hidden_dst_label(head_index),
+                        hidden_src_label(layer_index, local_head_index),
+                        hidden_dst_label(layer_index, local_head_index),
                     },
                     domains.d);
 
@@ -6901,49 +6946,49 @@ namespace gatzk::protocol
                     metrics);
 
                 append_external_mask(
-                    prefix + "E_src", hidden_score_mask_label(head_index, "src"));
+                    prefix + "E_src", hidden_score_mask_label(layer_index, local_head_index, "src"));
                 append_external_mask(
-                    prefix + "E_dst", hidden_score_mask_label(head_index, "dst"));
+                    prefix + "E_dst", hidden_score_mask_label(layer_index, local_head_index, "dst"));
 
                 transcript.absorb_commitment(input_commitment_label, trace.commitments.at(input_commitment_label).point);
                 transcript.absorb_commitment(prefix + "H_prime", trace.commitments.at(prefix + "H_prime").point);
                 for (std::size_t column = 0; column < head_dim; ++column)
                 {
-                    const auto label = hidden_weight_column_label(head_index, column);
+                    const auto label = hidden_weight_column_label(layer_index, local_head_index, column);
                     const auto proof_label = model_proof_local_label(label);
                     const auto witness_label = model_reblind_witness_label(label);
                     transcript.absorb_commitment(proof_label, trace.commitments.at(proof_label).point);
                     transcript.absorb_commitment(witness_label, trace.commitments.at(witness_label).point);
                 }
-                trace.challenges["y_proj_h" + std::to_string(head_index)] = transcript.challenge("y_proj_h" + std::to_string(head_index));
-                trace.challenges["xi_h" + std::to_string(head_index)] = transcript.challenge("xi_h" + std::to_string(head_index));
+                trace.challenges[challenge("y_proj_h")] = transcript.challenge(challenge("y_proj_h"));
+                trace.challenges[challenge("xi_h")] = transcript.challenge(challenge("xi_h"));
                 transcript.absorb_commitment(prefix + "H_prime", trace.commitments.at(prefix + "H_prime").point);
                 transcript.absorb_commitment(prefix + "E_src", trace.commitments.at(prefix + "E_src").point);
                 transcript.absorb_commitment(
-                    hidden_score_mask_label(head_index, "src"),
-                    trace.commitments.at(hidden_score_mask_label(head_index, "src")).point);
+                    hidden_score_mask_label(layer_index, local_head_index, "src"),
+                    trace.commitments.at(hidden_score_mask_label(layer_index, local_head_index, "src")).point);
                 transcript.absorb_commitment(
-                    model_proof_local_label(hidden_src_label(head_index)),
-                    trace.commitments.at(model_proof_local_label(hidden_src_label(head_index))).point);
+                    model_proof_local_label(hidden_src_label(layer_index, local_head_index)),
+                    trace.commitments.at(model_proof_local_label(hidden_src_label(layer_index, local_head_index))).point);
                 transcript.absorb_commitment(
-                    model_reblind_witness_label(hidden_src_label(head_index)),
-                    trace.commitments.at(model_reblind_witness_label(hidden_src_label(head_index))).point);
-                trace.challenges["y_src_h" + std::to_string(head_index)] = transcript.challenge("y_src_h" + std::to_string(head_index));
+                    model_reblind_witness_label(hidden_src_label(layer_index, local_head_index)),
+                    trace.commitments.at(model_reblind_witness_label(hidden_src_label(layer_index, local_head_index))).point);
+                trace.challenges[challenge("y_src_h")] = transcript.challenge(challenge("y_src_h"));
                 transcript.absorb_commitment(prefix + "H_prime", trace.commitments.at(prefix + "H_prime").point);
                 transcript.absorb_commitment(prefix + "E_dst", trace.commitments.at(prefix + "E_dst").point);
                 transcript.absorb_commitment(
-                    hidden_score_mask_label(head_index, "dst"),
-                    trace.commitments.at(hidden_score_mask_label(head_index, "dst")).point);
+                    hidden_score_mask_label(layer_index, local_head_index, "dst"),
+                    trace.commitments.at(hidden_score_mask_label(layer_index, local_head_index, "dst")).point);
                 transcript.absorb_commitment(
-                    model_proof_local_label(hidden_dst_label(head_index)),
-                    trace.commitments.at(model_proof_local_label(hidden_dst_label(head_index))).point);
+                    model_proof_local_label(hidden_dst_label(layer_index, local_head_index)),
+                    trace.commitments.at(model_proof_local_label(hidden_dst_label(layer_index, local_head_index))).point);
                 transcript.absorb_commitment(
-                    model_reblind_witness_label(hidden_dst_label(head_index)),
-                    trace.commitments.at(model_reblind_witness_label(hidden_dst_label(head_index))).point);
-                trace.challenges["y_dst_h" + std::to_string(head_index)] = transcript.challenge("y_dst_h" + std::to_string(head_index));
+                    model_reblind_witness_label(hidden_dst_label(layer_index, local_head_index)),
+                    trace.commitments.at(model_reblind_witness_label(hidden_dst_label(layer_index, local_head_index))).point);
+                trace.challenges[challenge("y_dst_h")] = transcript.challenge(challenge("y_dst_h"));
 
                 stage_start = Clock::now();
-                const auto xi = trace.challenges.at("xi_h" + std::to_string(head_index));
+                const auto xi = trace.challenges.at(challenge("xi_h"));
                 const auto compressed = cached_hidden_compressed_trace(
                     h_prime,
                     h_agg_pre,
@@ -6979,9 +7024,10 @@ namespace gatzk::protocol
                     external_mask_label(prefix + "H_star"));
 
                 stage_start = Clock::now();
-                const auto &hidden_parameters = cached_quantized_hidden_head_parameters(context, head_index);
+                const auto &hidden_parameters = cached_quantized_hidden_head_parameters(
+                    context, layer_index, local_head_index);
                 const auto &head_w = hidden_parameters.seq_kernel;
-                const auto y_proj_h = trace.challenges.at("y_proj_h" + std::to_string(head_index));
+                const auto y_proj_h = trace.challenges.at(challenge("y_proj_h"));
                 const auto y_proj_powers = powers(y_proj_h, head_dim);
                 const auto proj_b = linear_form_by_powers(head_w, y_proj_powers);
                 const auto proj_binding =
@@ -7002,7 +7048,7 @@ namespace gatzk::protocol
                 add_metric(metrics != nullptr ? &metrics->hidden_projection_trace_ms : nullptr, stage_start);
 
                 stage_start = Clock::now();
-                const auto y_src_h = trace.challenges.at("y_src_h" + std::to_string(head_index));
+                const auto y_src_h = trace.challenges.at(challenge("y_src_h"));
                 const auto src_binding = cached_binding_trace(
                     [&]()
                     {
@@ -7018,7 +7064,7 @@ namespace gatzk::protocol
                 add_metric(metrics != nullptr ? &metrics->hidden_src_attention_trace_ms : nullptr, stage_start);
 
                 stage_start = Clock::now();
-                const auto y_dst_h = trace.challenges.at("y_dst_h" + std::to_string(head_index));
+                const auto y_dst_h = trace.challenges.at(challenge("y_dst_h"));
                 const auto dst_binding = cached_binding_trace(
                     [&]()
                     {
@@ -7035,12 +7081,12 @@ namespace gatzk::protocol
                 transcript.absorb_commitment(
                     external_mask_label(prefix + "H_star"),
                     trace.commitments.at(external_mask_label(prefix + "H_star")).point);
-                trace.challenges["y_star_h" + std::to_string(head_index)] = transcript.challenge("y_star_h" + std::to_string(head_index));
+                trace.challenges[challenge("y_star_h")] = transcript.challenge(challenge("y_star_h"));
                 add_metric(metrics != nullptr ? &metrics->hidden_dst_attention_trace_ms : nullptr, stage_start);
 
                 stage_start = Clock::now();
                 const auto xi_powers = powers(xi, head_dim);
-                const auto y_star_h = trace.challenges.at("y_star_h" + std::to_string(head_index));
+                const auto y_star_h = trace.challenges.at(challenge("y_star_h"));
                 const auto star_binding = cached_binding_trace(
                     [&]()
                     {
@@ -7058,8 +7104,8 @@ namespace gatzk::protocol
                 transcript.absorb_commitment(prefix + "E_src", trace.commitments.at(prefix + "E_src").point);
                 transcript.absorb_commitment(prefix + "H_star", trace.commitments.at(prefix + "H_star").point);
                 transcript.absorb_commitment(prefix + "H_src_star_edge", trace.commitments.at(prefix + "H_src_star_edge").point);
-                const auto eta_src = transcript.challenge("eta_src_h" + std::to_string(head_index));
-                trace.challenges["eta_src_h" + std::to_string(head_index)] = eta_src;
+                const auto eta_src = transcript.challenge(challenge("eta_src_h"));
+                trace.challenges[challenge("eta_src_h")] = eta_src;
                 const auto eta_src_powers = powers(eta_src, 3);
 
                 std::vector<FieldElement> src_table(n_nodes, FieldElement::zero());
@@ -7137,8 +7183,8 @@ namespace gatzk::protocol
                     const auto label = prefix + suffix;
                     transcript.absorb_commitment(label, trace.commitments.at(label).point);
                 }
-                const auto beta_src = transcript.challenge("beta_src_h" + std::to_string(head_index));
-                trace.challenges["beta_src_h" + std::to_string(head_index)] = beta_src;
+                const auto beta_src = transcript.challenge(challenge("beta_src_h"));
+                trace.challenges[challenge("beta_src_h")] = beta_src;
                 const auto src_route = cached_route_trace(
                     [&]()
                     {
@@ -7173,8 +7219,8 @@ namespace gatzk::protocol
                 transcript.absorb_commitment(prefix + "Z", trace.commitments.at(prefix + "Z").point);
                 transcript.absorb_commitment("V_T_L_x", context.static_commitments.at("V_T_L_x").point);
                 transcript.absorb_commitment("V_T_L_y", context.static_commitments.at("V_T_L_y").point);
-                const auto eta_l = transcript.challenge("eta_L_h" + std::to_string(head_index));
-                trace.challenges["eta_L_h" + std::to_string(head_index)] = eta_l;
+                const auto eta_l = transcript.challenge(challenge("eta_L_h"));
+                trace.challenges[challenge("eta_L_h")] = eta_l;
                 std::vector<FieldElement> table_l =
                     cached_pair_lookup_table(prefix + "L", context.tables.lrelu, eta_l, domains.edge->size);
                 const auto lrelu_artifacts = cached_pair_lookup_artifacts(
@@ -7231,8 +7277,8 @@ namespace gatzk::protocol
                     const auto label = prefix + suffix;
                     transcript.absorb_commitment(label, trace.commitments.at(label).point);
                 }
-                const auto beta_l = transcript.challenge("beta_L_h" + std::to_string(head_index));
-                trace.challenges["beta_L_h" + std::to_string(head_index)] = beta_l;
+                const auto beta_l = transcript.challenge(challenge("beta_L_h"));
+                trace.challenges[challenge("beta_L_h")] = beta_l;
                 auto j_l = profiled_logup_inverse(table_l, query_l, q_tbl_l, q_qry_l, beta_l);
                 auto r_l =
                     profiled_logup_accumulator(
@@ -7292,8 +7338,8 @@ namespace gatzk::protocol
                     const auto label = prefix + suffix;
                     transcript.absorb_commitment(label, trace.commitments.at(label).point);
                 }
-                const auto beta_r = transcript.challenge("beta_R_h" + std::to_string(head_index));
-                trace.challenges["beta_R_h" + std::to_string(head_index)] = beta_r;
+                const auto beta_r = transcript.challenge(challenge("beta_R_h"));
+                trace.challenges[challenge("beta_R_h")] = beta_r;
                 auto j_r = profiled_logup_inverse(table_r, query_r, q_tbl_r, q_qry_r, beta_r);
                 auto r_r =
                     profiled_logup_accumulator(
@@ -7323,8 +7369,8 @@ namespace gatzk::protocol
                 transcript.absorb_commitment(prefix + "U", trace.commitments.at(prefix + "U").point);
                 transcript.absorb_commitment("V_T_exp_x", context.static_commitments.at("V_T_exp_x").point);
                 transcript.absorb_commitment("V_T_exp_y", context.static_commitments.at("V_T_exp_y").point);
-                const auto eta_exp = transcript.challenge("eta_exp_h" + std::to_string(head_index));
-                trace.challenges["eta_exp_h" + std::to_string(head_index)] = eta_exp;
+                const auto eta_exp = transcript.challenge(challenge("eta_exp_h"));
+                trace.challenges[challenge("eta_exp_h")] = eta_exp;
                 std::vector<FieldElement> table_exp =
                     cached_pair_lookup_table(prefix + "exp", context.tables.exp, eta_exp, domains.edge->size);
                 const auto exp_artifacts = cached_pair_lookup_artifacts(
@@ -7374,8 +7420,8 @@ namespace gatzk::protocol
                     const auto label = prefix + suffix;
                     transcript.absorb_commitment(label, trace.commitments.at(label).point);
                 }
-                const auto beta_exp = transcript.challenge("beta_exp_h" + std::to_string(head_index));
-                trace.challenges["beta_exp_h" + std::to_string(head_index)] = beta_exp;
+                const auto beta_exp = transcript.challenge(challenge("beta_exp_h"));
+                trace.challenges[challenge("beta_exp_h")] = beta_exp;
                 auto j_exp = profiled_logup_inverse(table_exp, query_exp, q_tbl_exp, q_qry_exp, beta_exp);
                 auto r_exp =
                     profiled_logup_accumulator(
@@ -7415,8 +7461,8 @@ namespace gatzk::protocol
                     });
                 add_metric(metrics != nullptr ? &metrics->state_machine_trace_ms : nullptr, stage_start);
                 // 从这里开始不再只是普通前向，而是在把 softmax 聚合链改写成 PSQ / state-machine 轨迹。
-                const auto lambda_psq = transcript.challenge("lambda_psq_h" + std::to_string(head_index));
-                trace.challenges["lambda_psq_h" + std::to_string(head_index)] = lambda_psq;
+                const auto lambda_psq = transcript.challenge(challenge("lambda_psq_h"));
+                trace.challenges[challenge("lambda_psq_h")] = lambda_psq;
                 stage_start = Clock::now();
                 std::vector<FieldElement> widehat_v_pre_star(domains.edge->size, FieldElement::zero());
                 for (std::size_t k = 0; k < n_edges; ++k)
@@ -7501,8 +7547,8 @@ namespace gatzk::protocol
 
                 transcript.absorb_commitment(prefix + "T_psq", trace.commitments.at(prefix + "T_psq").point);
                 transcript.absorb_commitment(prefix + "T_psq_edge", trace.commitments.at(prefix + "T_psq_edge").point);
-                const auto eta_t = transcript.challenge("eta_t_h" + std::to_string(head_index));
-                trace.challenges["eta_t_h" + std::to_string(head_index)] = eta_t;
+                const auto eta_t = transcript.challenge(challenge("eta_t_h"));
+                trace.challenges[challenge("eta_t_h")] = eta_t;
                 const auto eta_t_powers = powers(eta_t, 2);
                 std::vector<FieldElement> t_table(n_nodes, FieldElement::zero());
                 std::vector<FieldElement> t_query(n_edges, FieldElement::zero());
@@ -7561,8 +7607,8 @@ namespace gatzk::protocol
                     const auto label = prefix + suffix;
                     transcript.absorb_commitment(label, trace.commitments.at(label).point);
                 }
-                const auto beta_t = transcript.challenge("beta_t_h" + std::to_string(head_index));
-                trace.challenges["beta_t_h" + std::to_string(head_index)] = beta_t;
+                const auto beta_t = transcript.challenge(challenge("beta_t_h"));
+                trace.challenges[challenge("beta_t_h")] = beta_t;
                 const auto t_route = cached_route_trace(
                     [&]()
                     {
@@ -7628,15 +7674,15 @@ namespace gatzk::protocol
                 transcript.absorb_commitment(
                     external_mask_label(prefix + "H_agg_pre_star"),
                     trace.commitments.at(external_mask_label(prefix + "H_agg_pre_star")).point);
-                trace.challenges["y_agg_pre_h" + std::to_string(head_index)] = transcript.challenge("y_agg_pre_h" + std::to_string(head_index));
+                trace.challenges[challenge("y_agg_pre_h")] = transcript.challenge(challenge("y_agg_pre_h"));
                 transcript.absorb_commitment(prefix + "H_agg_pre", trace.commitments.at(prefix + "H_agg_pre").point);
                 transcript.absorb_commitment(prefix + "H_agg", trace.commitments.at(prefix + "H_agg").point);
                 transcript.absorb_commitment("V_T_ELU_x", context.static_commitments.at("V_T_ELU_x").point);
                 transcript.absorb_commitment("V_T_ELU_y", context.static_commitments.at("V_T_ELU_y").point);
                 transcript.absorb_commitment(prefix + "H_ELU_in_flat", trace.commitments.at(prefix + "H_ELU_in_flat").point);
                 transcript.absorb_commitment(prefix + "H_agg_flat", trace.commitments.at(prefix + "H_agg_flat").point);
-                const auto eta_elu = transcript.challenge("eta_ELU_h" + std::to_string(head_index));
-                trace.challenges["eta_ELU_h" + std::to_string(head_index)] = eta_elu;
+                const auto eta_elu = transcript.challenge(challenge("eta_ELU_h"));
+                trace.challenges[challenge("eta_ELU_h")] = eta_elu;
                 std::vector<FieldElement> table_elu =
                     cached_pair_lookup_table(prefix + "ELU", context.tables.elu, eta_elu, domains.edge->size);
                 const auto elu_artifacts = cached_pair_lookup_artifacts(
@@ -7693,8 +7739,8 @@ namespace gatzk::protocol
                     const auto label = prefix + suffix;
                     transcript.absorb_commitment(label, trace.commitments.at(label).point);
                 }
-                const auto beta_elu = transcript.challenge("beta_ELU_h" + std::to_string(head_index));
-                trace.challenges["beta_ELU_h" + std::to_string(head_index)] = beta_elu;
+                const auto beta_elu = transcript.challenge(challenge("beta_ELU_h"));
+                trace.challenges[challenge("beta_ELU_h")] = beta_elu;
                 auto j_elu = profiled_logup_inverse(table_elu, query_elu, q_tbl_elu, q_qry_elu, beta_elu);
                 auto r_elu =
                     profiled_logup_accumulator(
@@ -7724,14 +7770,14 @@ namespace gatzk::protocol
                 transcript.absorb_commitment(
                     external_mask_label(prefix + "H_agg_star"),
                     trace.commitments.at(external_mask_label(prefix + "H_agg_star")).point);
-                trace.challenges["y_agg_h" + std::to_string(head_index)] = transcript.challenge("y_agg_h" + std::to_string(head_index));
+                trace.challenges[challenge("y_agg_h")] = transcript.challenge(challenge("y_agg_h"));
                 for (const auto *suffix : {"E_dst", "M", "Sum", "inv", "H_agg_star", "E_dst_edge", "M_edge", "Sum_edge", "inv_edge", "H_agg_star_edge"})
                 {
                     const auto label = prefix + suffix;
                     transcript.absorb_commitment(label, trace.commitments.at(label).point);
                 }
-                const auto eta_dst = transcript.challenge("eta_dst_h" + std::to_string(head_index));
-                trace.challenges["eta_dst_h" + std::to_string(head_index)] = eta_dst;
+                const auto eta_dst = transcript.challenge(challenge("eta_dst_h"));
+                trace.challenges[challenge("eta_dst_h")] = eta_dst;
                 const auto eta_dst_powers = powers(eta_dst, 6);
                 std::vector<FieldElement> dst_table(n_nodes, FieldElement::zero());
                 std::vector<FieldElement> dst_query(n_edges, FieldElement::zero());
@@ -7796,8 +7842,8 @@ namespace gatzk::protocol
                     const auto label = prefix + suffix;
                     transcript.absorb_commitment(label, trace.commitments.at(label).point);
                 }
-                const auto beta_dst = transcript.challenge("beta_dst_h" + std::to_string(head_index));
-                trace.challenges["beta_dst_h" + std::to_string(head_index)] = beta_dst;
+                const auto beta_dst = transcript.challenge(challenge("beta_dst_h"));
+                trace.challenges[challenge("beta_dst_h")] = beta_dst;
                 const auto dst_route = cached_route_trace(
                     [&]()
                     {
@@ -7829,7 +7875,7 @@ namespace gatzk::protocol
                 }
 
                 stage_start = Clock::now();
-                const auto y_agg_pre_h = trace.challenges.at("y_agg_pre_h" + std::to_string(head_index));
+                const auto y_agg_pre_h = trace.challenges.at(challenge("y_agg_pre_h"));
                 const auto agg_pre_binding = cached_binding_trace(
                     [&]()
                     {
@@ -7845,7 +7891,7 @@ namespace gatzk::protocol
                 add_metric(metrics != nullptr ? &metrics->hidden_h_agg_pre_star_trace_ms : nullptr, stage_start);
 
                 stage_start = Clock::now();
-                const auto y_agg_h = trace.challenges.at("y_agg_h" + std::to_string(head_index));
+                const auto y_agg_h = trace.challenges.at(challenge("y_agg_h"));
                 const auto agg_binding = cached_binding_trace(
                     [&]()
                     {
@@ -7877,97 +7923,97 @@ namespace gatzk::protocol
                 commit_signed_division(
                     prefix + "Div_",
                     div,
-                    "P_Q_div_h" + std::to_string(head_index));
+                    hidden_q_nd_h_selector_label(layer_index));
                 std::vector<std::pair<std::string, FieldElement>> hidden_weight_terms;
                 hidden_weight_terms.reserve(head_dim);
                 auto hidden_weight_power = FieldElement::one();
                 for (std::size_t column = 0; column < head_dim; ++column)
                 {
-                    hidden_weight_terms.push_back({hidden_weight_column_label(head_index, column),
+                    hidden_weight_terms.push_back({hidden_weight_column_label(layer_index, local_head_index, column),
                                                    hidden_weight_power});
                     hidden_weight_power *= trace.challenges.at(
-                        "y_proj_h" + std::to_string(head_index));
+                        challenge("y_proj_h"));
                 }
                 append_model_binding_blinder(
                     prefix + "b_proj",
-                    hidden_model_binding_blinder_label(head_index, "proj"),
+                    hidden_model_binding_blinder_label(layer_index, local_head_index, "proj"),
                     domains.in,
                     hidden_weight_terms);
                 append_model_binding_blinder(
                     prefix + "b_src",
-                    hidden_model_binding_blinder_label(head_index, "src"),
+                    hidden_model_binding_blinder_label(layer_index, local_head_index, "src"),
                     domains.d,
-                    {{hidden_src_label(head_index), FieldElement::one()}});
+                    {{hidden_src_label(layer_index, local_head_index), FieldElement::one()}});
                 append_model_binding_blinder(
                     prefix + "b_dst",
-                    hidden_model_binding_blinder_label(head_index, "dst"),
+                    hidden_model_binding_blinder_label(layer_index, local_head_index, "dst"),
                     domains.d,
-                    {{hidden_dst_label(head_index), FieldElement::one()}});
-                trace.external_evaluations["mu_h" + std::to_string(head_index) + "_proj"] =
-                    matrix_row_major_evaluation(h_prime, trace.challenges.at("y_proj_h" + std::to_string(head_index)));
-                trace.external_evaluations["mu_h" + std::to_string(head_index) + "_src"] =
+                    {{hidden_dst_label(layer_index, local_head_index), FieldElement::one()}});
+                const auto mu_prefix = "mu_" + external_suffix;
+                trace.external_evaluations[mu_prefix + "_proj"] =
+                    matrix_row_major_evaluation(h_prime, trace.challenges.at(challenge("y_proj_h")));
+                trace.external_evaluations[mu_prefix + "_src"] =
                     evaluate_trace_polynomial(
                         trace, prefix + "E_src",
-                        trace.challenges.at("y_src_h" + std::to_string(head_index)),
+                        trace.challenges.at(challenge("y_src_h")),
                         domains.edge);
-                trace.external_evaluations[hidden_score_mask_eval_name(head_index, "src")] =
+                trace.external_evaluations[hidden_score_mask_eval_name(layer_index, local_head_index, "src")] =
                     evaluate_trace_polynomial(
-                        trace, hidden_score_mask_label(head_index, "src"),
-                        trace.challenges.at("y_src_h" + std::to_string(head_index)),
+                        trace, hidden_score_mask_label(layer_index, local_head_index, "src"),
+                        trace.challenges.at(challenge("y_src_h")),
                         domains.edge);
-                trace.external_evaluations["mu_h" + std::to_string(head_index) + "_dst"] =
+                trace.external_evaluations[mu_prefix + "_dst"] =
                     evaluate_trace_polynomial(
                         trace, prefix + "E_dst",
-                        trace.challenges.at("y_dst_h" + std::to_string(head_index)),
+                        trace.challenges.at(challenge("y_dst_h")),
                         domains.edge);
-                trace.external_evaluations[hidden_score_mask_eval_name(head_index, "dst")] =
+                trace.external_evaluations[hidden_score_mask_eval_name(layer_index, local_head_index, "dst")] =
                     evaluate_trace_polynomial(
-                        trace, hidden_score_mask_label(head_index, "dst"),
-                        trace.challenges.at("y_dst_h" + std::to_string(head_index)),
+                        trace, hidden_score_mask_label(layer_index, local_head_index, "dst"),
+                        trace.challenges.at(challenge("y_dst_h")),
                         domains.edge);
-                trace.external_evaluations["mu_h" + std::to_string(head_index) + "_star"] =
+                trace.external_evaluations[mu_prefix + "_star"] =
                     evaluate_trace_polynomial(
                         trace, prefix + "H_star",
-                        trace.challenges.at("y_star_h" + std::to_string(head_index)),
+                        trace.challenges.at(challenge("y_star_h")),
                         domains.n);
                 trace.external_evaluations[external_mask_eval_name(
-                    "mu_h" + std::to_string(head_index) + "_star")] =
+                    mu_prefix + "_star")] =
                     evaluate_trace_polynomial(
                         trace, external_mask_label(prefix + "H_star"),
-                        trace.challenges.at("y_star_h" + std::to_string(head_index)),
+                        trace.challenges.at(challenge("y_star_h")),
                         domains.n);
-                trace.external_evaluations["mu_h" + std::to_string(head_index) + "_agg_pre"] =
+                trace.external_evaluations[mu_prefix + "_agg_pre"] =
                     evaluate_trace_polynomial(
                         trace, prefix + "H_agg_pre_star",
-                        trace.challenges.at("y_agg_pre_h" + std::to_string(head_index)),
+                        trace.challenges.at(challenge("y_agg_pre_h")),
                         domains.n);
                 trace.external_evaluations[external_mask_eval_name(
-                    "mu_h" + std::to_string(head_index) + "_agg_pre")] =
+                    mu_prefix + "_agg_pre")] =
                     evaluate_trace_polynomial(
                         trace, external_mask_label(prefix + "H_agg_pre_star"),
-                        trace.challenges.at("y_agg_pre_h" + std::to_string(head_index)),
+                        trace.challenges.at(challenge("y_agg_pre_h")),
                         domains.n);
-                trace.external_evaluations["mu_h" + std::to_string(head_index) + "_agg"] =
+                trace.external_evaluations[mu_prefix + "_agg"] =
                     evaluate_trace_polynomial(
                         trace, prefix + "H_agg_star",
-                        trace.challenges.at("y_agg_h" + std::to_string(head_index)),
+                        trace.challenges.at(challenge("y_agg_h")),
                         domains.n);
                 trace.external_evaluations[external_mask_eval_name(
-                    "mu_h" + std::to_string(head_index) + "_agg")] =
+                    mu_prefix + "_agg")] =
                     evaluate_trace_polynomial(
                         trace, external_mask_label(prefix + "H_agg_star"),
-                        trace.challenges.at("y_agg_h" + std::to_string(head_index)),
+                        trace.challenges.at(challenge("y_agg_h")),
                         domains.n);
             };
 
             auto commit_hidden_layer_concat = [&](std::size_t layer_index)
             {
-                const bool is_final_layer = layer_index + 1 == context.model.hidden_layers.size();
-                const auto concat_label = hidden_layer_concat_label(layer_index, is_final_layer);
-                const auto concat_star_label = hidden_layer_concat_star_label(layer_index, is_final_layer);
-                const auto cat_prefix = hidden_layer_cat_prefix(layer_index, is_final_layer);
-                const auto xi_name = hidden_concat_xi_name(layer_index, is_final_layer);
-                const auto y_name = hidden_concat_y_name(layer_index, is_final_layer);
+                const auto concat_label = hidden_layer_concat_label(layer_index);
+                const auto concat_star_label = hidden_layer_concat_star_label(layer_index);
+                const auto cat_prefix = hidden_layer_cat_prefix(layer_index);
+                const auto xi_name = hidden_concat_xi_name(layer_index);
+                const auto y_name = hidden_concat_y_name(layer_index);
                 const auto concat_width =
                     context.model.hidden_layers[layer_index].shape.head_count * context.model.hidden_layers[layer_index].shape.head_dim;
                 const auto &h_cat_layer = hidden_layer_concat_quantized.at(layer_index);
@@ -8021,8 +8067,7 @@ namespace gatzk::protocol
                     keep_trace_payloads,
                     metrics);
                 const auto concat_eval_name =
-                    is_final_layer ? std::string("mu_cat")
-                                   : "mu_cat_l" + std::to_string(layer_index);
+                    "mu_cat_l" + std::to_string(layer_index);
                 trace.external_evaluations[concat_eval_name] =
                     evaluate_trace_polynomial(
                         trace, concat_star_label,
@@ -8037,14 +8082,13 @@ namespace gatzk::protocol
             const auto hidden_stack_start = stage_start;
             const auto hidden_stack_initial_commit_dynamic_ms =
                 metrics != nullptr ? metrics->commit_dynamic_ms : 0.0;
-            std::size_t global_hidden_head_index = 0;
             for (std::size_t layer_index = 0; layer_index < context.model.hidden_layers.size(); ++layer_index)
             {
                 for (std::size_t local_head_index = 0;
                      local_head_index < context.model.hidden_layers[layer_index].heads.size();
-                     ++local_head_index, ++global_hidden_head_index)
+                     ++local_head_index)
                 {
-                    commit_hidden_head(global_hidden_head_index);
+                    commit_hidden_head(layer_index, local_head_index);
                 }
                 commit_hidden_layer_concat(layer_index);
             }
@@ -8218,7 +8262,11 @@ namespace gatzk::protocol
                 append_external_mask(
                     prefix + "E_dst", output_score_mask_label(head_index, "dst"));
 
-                transcript.absorb_commitment("P_H_cat", trace.commitments.at("P_H_cat").point);
+                const auto output_input_label = hidden_layer_concat_label(
+                    context.model.hidden_layers.size() - 1);
+                transcript.absorb_commitment(
+                    output_input_label,
+                    trace.commitments.at(output_input_label).point);
                 transcript.absorb_commitment(prefix + "Y_prime", trace.commitments.at(prefix + "Y_prime").point);
                 for (std::size_t column = 0; column < n_classes; ++column)
                 {
@@ -9304,13 +9352,12 @@ namespace gatzk::protocol
                         "duplicate canonical matrix source: " + meta.matrix_object);
             };
 
-            std::size_t canonical_hidden_head = 0;
             for (std::size_t layer = 0;
                  layer < context.model.hidden_layers.size(); ++layer)
             {
                 for (std::size_t local_head = 0;
                      local_head < context.model.hidden_layers[layer].heads.size();
-                     ++local_head, ++canonical_hidden_head)
+                     ++local_head)
                 {
                     auto &subproof = require_binding_subproof(
                         "bind:hidden:" + std::to_string(layer + 1) + ":" + std::to_string(local_head));
@@ -9320,7 +9367,9 @@ namespace gatzk::protocol
                         throw std::runtime_error(
                             "hidden canonical matrix registry mismatch");
                     const auto &quantized = forward_artifacts
-                                                ->hidden_head_quantized.at(canonical_hidden_head);
+                                                ->hidden_head_quantized
+                                                .at(layer)
+                                                .at(local_head);
                     commit_canonical_matrix(
                         matrices[0], quantized.h_prime);
                     commit_canonical_matrix(

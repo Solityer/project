@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 3.16)
 
 project(gatzkml LANGUAGES CXX)
 
+enable_testing()
+
 if(POLICY CMP0104)
     cmake_policy(SET CMP0104 NEW)
 endif()
@@ -199,3 +201,9 @@ add_executable(gatzk_srs_setup tools/srs/generate_srs.cpp)
 target_include_directories(gatzk_srs_setup PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(gatzk_srs_setup PRIVATE gatzkml)
 
+# Test-only runtime regression for the layered formal schema.  It exercises
+# the production label, selector, and checkpoint-shape APIs without touching
+# canonical checkpoints, SRS files, or proof runs.
+add_executable(gatzk_layered_schema_test tests/layered_schema_runtime.cpp)
+target_link_libraries(gatzk_layered_schema_test PRIVATE gatzkml)
+add_test(NAME layered_schema_runtime COMMAND gatzk_layered_schema_test)

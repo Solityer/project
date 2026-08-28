@@ -178,7 +178,9 @@ namespace gatzk::model
             CheckpointHeadSpec out;
             out.layer_index = parse_required_size_t(entry, "layer_index");
             out.local_head_index = parse_required_size_t(entry, "local_head_index");
-            out.global_head_index = parse_required_size_t(entry, "global_head_index");
+            // A flattened global index is optional legacy metadata.  Do not
+            // parse it as a required field and never use it for formal lookup;
+            // the layer/local pair above is the sole checkpoint identity.
             out.seq_kernel = parse_required_string(entry, "seq_kernel");
             out.attn_dst_kernel = parse_required_string(entry, "attn_dst_kernel");
             out.attn_dst_bias = parse_required_string(entry, "attn_dst_bias");
@@ -1436,8 +1438,11 @@ namespace gatzk::model
         {
             failures.push_back("checkpoint manifest must expose non-empty quant_cfg_id");
         }
+        // The manifest's global_head_index is a legacy serialization aid only.
+        // Formal identity is always the pair (layer_index, local_head_index).
+        // Validate that every layer/local pair occurs exactly once; never infer
+        // a formal head from the flattened/global position.
         std::size_t flattened_hidden_heads = 0;
-        std::size_t expected_global_head_index = 0;
         for (std::size_t layer_index = 0; layer_index < info.hidden_layers.size(); ++layer_index)
         {
             const auto &layer = info.hidden_layers[layer_index];
@@ -1474,23 +1479,28 @@ namespace gatzk::model
             }
             flattened_hidden_heads += layer.shape.head_count;
 
-            std::size_t local_head_index = 0;
+            std::vector<bool> seen_local_heads(layer.shape.head_count, false);
+            std::size_t local_head_count = 0;
             for (const auto &head : info.hidden_head_specs)
             {
                 if (head.layer_index != layer_index)
                 {
                     continue;
                 }
-                if (head.local_head_index != local_head_index || head.global_head_index != expected_global_head_index)
+                if (head.local_head_index >= layer.shape.head_count
+                    || seen_local_heads[head.local_head_index])
                 {
                     failures.push_back(
-                        "hidden_head_specs must use contiguous layer-local and global indices");
+                        "hidden_head_specs must use unique layer-local head indices");
                     break;
                 }
-                ++local_head_index;
-                ++expected_global_head_index;
+                seen_local_heads[head.local_head_index] = true;
+                ++local_head_count;
             }
-            if (local_head_index != layer.shape.head_count)
+            if (local_head_count != layer.shape.head_count
+                || std::any_of(
+                    seen_local_heads.begin(), seen_local_heads.end(),
+                    [](bool seen) { return !seen; }))
             {
                 failures.push_back(
                     "hidden_head_specs layer-local count conflicts with hidden_layers[" + std::to_string(layer_index) + "].head_count");
@@ -1558,11 +1568,14 @@ namespace gatzk::model
         out.d_in_profile = manifest_info.d_in_profile;
         out.hidden_profile = manifest_info.hidden_profile;
         out.K_out = manifest_info.output_head_count;
+        // Keep this flat vector solely for checkpoint/parity compatibility.
+        // The formal model is built in hidden_layers and indexed by the
+        // (layer, local_head) pair below.
         out.hidden_heads.reserve(manifest_info.hidden_head_specs.size());
         out.hidden_layers.reserve(manifest_info.hidden_layers.size());
-        std::size_t expected_global_head_index = 0;
 
-        // 按清单里写好的顺序，把隐藏层各个头封装进来
+        // Reconstruct each layer in canonical layer -> local-head order.  The
+        // legacy global index is intentionally not consulted for identity.
         for (const auto &layer_info : manifest_info.hidden_layers)
         {
             HiddenLayerParameters layer;
@@ -1570,17 +1583,24 @@ namespace gatzk::model
             layer.input_dim = layer_info.input_dim;
             layer.shape = layer_info.shape;
             layer.heads.reserve(layer.shape.head_count);
-            for (const auto &head_spec : manifest_info.hidden_head_specs)
+            for (std::size_t local_head_index = 0;
+                 local_head_index < layer.shape.head_count;
+                 ++local_head_index)
             {
-                if (head_spec.layer_index != layer.layer_index)
-                {
-                    continue;
-                }
-                if (head_spec.global_head_index != expected_global_head_index)
+                const auto head_spec_it = std::find_if(
+                    manifest_info.hidden_head_specs.begin(),
+                    manifest_info.hidden_head_specs.end(),
+                    [&](const CheckpointHeadSpec &candidate)
+                    {
+                        return candidate.layer_index == layer.layer_index
+                            && candidate.local_head_index == local_head_index;
+                    });
+                if (head_spec_it == manifest_info.hidden_head_specs.end())
                 {
                     throw std::runtime_error(
-                        "checkpoint manifest hidden_head_specs must use contiguous global_head_index values");
+                        "checkpoint manifest is missing a layer/local hidden head pair");
                 }
+                const auto &head_spec = *head_spec_it;
                 layer.heads.push_back(load_head_parameters(
                     tensors,
                     head_spec.seq_kernel,
@@ -1590,7 +1610,6 @@ namespace gatzk::model
                     head_spec.attn_src_bias,
                     head_spec.output_bias));
                 out.hidden_heads.push_back(layer.heads.back());
-                ++expected_global_head_index;
             }
             if (layer.heads.size() != layer.shape.head_count)
             {
@@ -1683,9 +1702,12 @@ namespace gatzk::model
         trace.hidden_layer_traces.reserve(
             parameters.hidden_layers.size());
 
-        trace.hidden_head_traces.reserve(
-            flattened_hidden_head_count(
-                parameters));
+        std::size_t formal_hidden_head_count = 0;
+        for (const auto &layer : parameters.hidden_layers)
+            formal_hidden_head_count += layer.heads.size();
+        // Reserve the compatibility view from the nested family.  The view is
+        // not consumed by formal trace, quotient, prover, verifier, or codec.
+        trace.hidden_head_traces.reserve(formal_hidden_head_count);
 
         const FloatMatrix *layer_input =
             &trace.H;
@@ -2056,6 +2078,8 @@ namespace gatzk::model
         {
             failures.push_back("L conflicts with hidden layer family size");
         }
+        // This check covers only the retained checkpoint/parity flattening;
+        // formal trace/proof code never indexes hidden_heads by this count.
         if (flattened_hidden_head_count(parameters) != parameters.hidden_heads.size())
         {
             failures.push_back("hidden_heads compatibility view must flatten all hidden layers");
@@ -2076,7 +2100,8 @@ namespace gatzk::model
         return failures.empty();
     }
 
-    // 把所有层的隐藏头数量加起来
+    // Count the compatibility view; this is never used to identify a formal
+    // hidden head, whose identity is always (layer, local_head).
     std::size_t flattened_hidden_head_count(const ModelParameters &parameters)
     {
         std::size_t count = 0;

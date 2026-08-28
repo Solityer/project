@@ -50,7 +50,9 @@ namespace gatzk::protocol
         std::shared_ptr<algebra::RootOfUnityDomain> cat;
         std::shared_ptr<algebra::RootOfUnityDomain> c;
         std::shared_ptr<algebra::RootOfUnityDomain> n;
-        std::vector<AttentionHeadDomains> hidden_heads;
+        // Formal domains retain the layer/head coordinates.  The checkpoint
+        // compatibility view is kept on ModelParameters, not here.
+        std::vector<std::vector<AttentionHeadDomains>> hidden_layers;
         std::optional<AttentionHeadDomains> output_head;
     };
 

@@ -209,14 +209,28 @@ namespace gatzk::protocol
     bool schema_accepts_evaluation(PolynomialVisibility visibility, EvaluationKind kind);
     // 下面这些函数负责生成隐藏层和输出层使用的正式标签。
     // 它们共同决定 dynamic commitments、opening bundle 与 external evaluation 的命名真源。
-    std::string hidden_head_prefix(std::size_t global_head_index);
-    std::string hidden_layer_concat_label(std::size_t layer_index, bool is_final_layer);
-    std::string hidden_layer_concat_star_label(std::size_t layer_index, bool is_final_layer);
-    std::string hidden_layer_cat_prefix(std::size_t layer_index, bool is_final_layer);
-    std::string hidden_weight_label(std::size_t global_head_index);
-    std::string hidden_weight_column_label(std::size_t global_head_index, std::size_t column_index);
-    std::string hidden_src_label(std::size_t global_head_index);
-    std::string hidden_dst_label(std::size_t global_head_index);
+    // Formal hidden objects are identified by the pair (layer, local head).
+    // A flattened head index is intentionally not part of the proof schema.
+    std::string hidden_head_prefix(std::size_t layer_index, std::size_t local_head_index);
+    std::string hidden_layer_concat_label(std::size_t layer_index);
+    std::string hidden_layer_concat_star_label(std::size_t layer_index);
+    std::string hidden_layer_cat_prefix(std::size_t layer_index);
+    std::string hidden_weight_label(std::size_t layer_index, std::size_t local_head_index);
+    std::string hidden_weight_column_label(
+        std::size_t layer_index,
+        std::size_t local_head_index,
+        std::size_t column_index);
+    std::string hidden_src_label(std::size_t layer_index, std::size_t local_head_index);
+    std::string hidden_dst_label(std::size_t layer_index, std::size_t local_head_index);
+    std::string hidden_challenge_name(
+        std::string_view base,
+        std::size_t layer_index,
+        std::size_t local_head_index);
+    std::string hidden_q_in_selector_label(std::size_t layer_index);
+    std::string hidden_q_d_h_selector_label(std::size_t layer_index);
+    std::string hidden_q_cat_selector_label(std::size_t layer_index);
+    std::string hidden_q_nd_h_selector_label(std::size_t layer_index);
+    std::string output_q_cat_selector_label();
     std::string output_head_prefix(std::size_t head_index);
     std::string output_y_lin_label(std::size_t head_index);
     std::string output_y_label(std::size_t head_index);
@@ -224,7 +238,8 @@ namespace gatzk::protocol
         const std::string &matrix_object,
         std::size_t column_index);
     std::string hidden_aggregation_binding_label(
-        std::size_t global_head_index,
+        std::size_t layer_index,
+        std::size_t local_head_index,
         std::string_view suffix);
     std::string output_aggregation_binding_label(
         std::size_t head_index,
@@ -235,11 +250,20 @@ namespace gatzk::protocol
     std::string output_dst_label(std::size_t head_index);
     std::string output_bias_label(std::size_t head_index);
     std::string output_challenge_name(std::string_view base, std::size_t head_index);
-    std::string hidden_model_binding_blinder_label(std::size_t head_index, std::string_view role);
+    std::string hidden_model_binding_blinder_label(
+        std::size_t layer_index,
+        std::size_t local_head_index,
+        std::string_view role);
     std::string output_model_binding_blinder_label(std::size_t head_index, std::string_view role);
-    std::string hidden_score_mask_label(std::size_t head_index, std::string_view role);
+    std::string hidden_score_mask_label(
+        std::size_t layer_index,
+        std::size_t local_head_index,
+        std::string_view role);
     std::string output_score_mask_label(std::size_t head_index, std::string_view role);
-    std::string hidden_score_mask_eval_name(std::size_t head_index, std::string_view role);
+    std::string hidden_score_mask_eval_name(
+        std::size_t layer_index,
+        std::size_t local_head_index,
+        std::string_view role);
     std::string output_score_mask_eval_name(std::size_t head_index, std::string_view role);
     // A private evaluation-form object is committed as P_sem + Z_D R.  Whenever
     // an off-domain opening is used as a semantic accumulator target, R is exposed
@@ -284,7 +308,7 @@ namespace gatzk::protocol
         std::string_view value_name,
         std::size_t limb_index);
     std::string output_external_eval_name(std::string_view base, std::size_t head_index);
-    std::string hidden_concat_xi_name(std::size_t layer_index, bool is_final_layer);
-    std::string hidden_concat_y_name(std::size_t layer_index, bool is_final_layer);
+    std::string hidden_concat_xi_name(std::size_t layer_index);
+    std::string hidden_concat_y_name(std::size_t layer_index);
 
 } // namespace gatzk::protocol

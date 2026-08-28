@@ -164,6 +164,15 @@ def check_bundle(bundle_dir: pathlib.Path, dataset: str, checkpoint: pathlib.Pat
     require(all(isinstance(layer, dict) for layer in hidden_layers), "hidden layer entries must be objects")
     require(all(isinstance(spec, dict) for spec in hidden_specs), "hidden head entries must be objects")
     require(all(isinstance(spec, dict) for spec in output_specs), "output head entries must be objects")
+    # Formal checkpoint identity is the explicit (layer_index, local_head_index)
+    # pair.  A legacy global_head_index, when present in an old parity bundle,
+    # is ignored; a global-only entry must fail closed here.
+    expected_pairs = [(layer_index, head_index) for layer_index in range(2) for head_index in range(8)]
+    actual_pairs = []
+    for spec in hidden_specs:
+        require("layer_index" in spec and "local_head_index" in spec, "hidden head spec must expose layer_index and local_head_index")
+        actual_pairs.append((int(spec["layer_index"]), int(spec["local_head_index"])))
+    require(actual_pairs == expected_pairs, "hidden head specs must use canonical layer/local pair order")
     require(
         [
             (int(layer["input_dim"]), int(layer["head_count"]), int(layer["head_dim"]))
@@ -173,7 +182,7 @@ def check_bundle(bundle_dir: pathlib.Path, dataset: str, checkpoint: pathlib.Pat
         "bundle hidden layer shape mismatch",
     )
     for layer_index, input_dim in enumerate(d_in_profile):
-        layer_heads = [spec for spec in hidden_specs if int(spec.get("layer_index", -1)) == layer_index]
+        layer_heads = [spec for spec in hidden_specs if int(spec["layer_index"]) == layer_index]
         require(len(layer_heads) == 8, f"bundle hidden layer {layer_index} head count mismatch")
         for spec in layer_heads:
             check_head(spec, tensor_index, input_dim, 8)

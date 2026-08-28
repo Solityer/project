@@ -15,6 +15,24 @@ commitment、prove、verify 与结果导出。协议约束以只读文件
 | PPI | `[50,64]` | 3 | `[8x8,8x8]` | 2 | 121 | 14 |
 | OGBN-Arxiv | `[128,64]` | 3 | `[8x8,8x8]` | 2 | 40 | 21 |
 
+正式 proof schema 已按层实例化。隐藏头的唯一正式身份是
+`(layer, local_head)`，标签形如 `P_h_l<layer>_h<head>`；每个隐藏层分别拥有
+`Q_in`、`Q_d_h`、`Q_cat`、`Q_Nd_h`，并且最后隐藏层的 `Q_cat` 与输出层的
+`Q_cat` 是两个独立对象。trace、quotient、prover、verifier 和 codec 都按
+`[layer][local_head]` 访问这些对象，隐藏层 concat 也始终保留显式层号。
+checkpoint/parity 中保留的扁平兼容视图不参与正式 proof 身份或 transcript。
+
+本轮 layered schema 修复不改变模型权重和上述训练架构，因此不需要仅因该修复重训
+当前 checkpoint；但它改变了 instance canonical/proof schema 及正式对象顺序。
+`populate_protocol_template` 本轮未变，因此不能据此声称 `protocol_schema_id` 必然变化。
+当前临时 compile 预检记录的 `protocol_schema_id` 为
+`8550a6bcb85e4adacbaeffc0e2841413b3fd122da9d990e4932ffdf0509eac9`；这不是 SRS 已生成的
+证明。degree bound 与工作域大小的计算公式也未变，仍须以当前 compile 产物和 SRS
+manifest 的 `degree_bound`、domain catalogue hash 做完整绑定校验，不能只凭 ID 复用旧 SRS。
+当前 canonical SRS 目录为空，尚未执行 ceremony；后续必须按下方完整命令重新 compile、
+ceremony 和 validate，并直接覆盖同名 canonical 路径。若发现已有旧 SRS，也必须先通过
+compiler artifact、envelope、domain 与 degree binding 的完整校验。
+
 正式 checkpoint、SRS、完整 proof/verify 和 CPU/GPU 十组正式运行需要在本轮之后执行；
 本轮没有把旧工件改名、复制或伪装成新架构结果。训练不启用 strict deterministic
 algorithms，固定 `seed=11`。同一数据集的 CPU 与 CUDA 运行必须使用同一个新 checkpoint、
@@ -47,6 +65,20 @@ CUDA Release：
 ```bash
 cmake -S . -B build_cuda -DCMAKE_BUILD_TYPE=Release -DGATZK_ENABLE_CUDA_BACKEND=ON -DCMAKE_CUDA_ARCHITECTURES=native
 cmake --build build_cuda -j10
+```
+
+短时 schema/static 检查（不加载正式数据、不生成 checkpoint/SRS/run）：
+
+```bash
+cmake --build build -j10
+cmake --build build_cuda -j10
+build/gatzk_layered_schema_test
+build_cuda/gatzk_layered_schema_test
+ctest --test-dir build --output-on-failure
+ctest --test-dir build_cuda --output-on-failure
+python3 tests/test_layered_schema.py
+python3 tools/security/static_scan_no_tau.py
+git diff --check -- README.md include src tests
 ```
 
 `--compute-backend cuda_hotspots` 需要 CUDA-enabled binary、可用 CUDA runtime 和至少
@@ -138,8 +170,13 @@ unlink "$parity_pubmed"
 ## SRS 检查与必要重建
 
 当前 canonical secure config 的 SRS envelope 已按 `L=3`、16 个 hidden heads、两个输出
-heads、concat width 64 和各数据集真实容量更新。旧 SRS 不能因 nominal degree 足够就复用：
-envelope hash 或 domain catalog 不匹配时必须重建。下列命令使用现有
+heads、concat width 64 和各数据集真实容量更新；本轮还改变了 instance canonical/proof
+schema 及对象顺序。`populate_protocol_template` 未变，不能预先断言
+`protocol_schema_id` 会变化；当前临时 compile 预检记录的 ID 是
+`8550a6bcb85e4adacbaeffc0e2841413b3fd122da9d990e4932ffdf0509eac9`。degree bound 与 domain
+公式不变。当前 canonical SRS 目录为空，尚未 ceremony，后续仍必须执行下面完整流程。
+若存在旧 SRS，不能只按 nominal degree 或 protocol ID 复用，必须完整校验 compiler artifact、
+envelope、domain 与 degree binding；任一不匹配都必须重建。下列命令使用现有
 `build/gatzk_srs_setup`、当前 degree bound、domain catalog 和 canonical `srs_id`；ceremony
 会采样真实 setup，不能在本轮短验证中执行。
 

@@ -151,7 +151,6 @@ def build_tensors_and_manifest_spec(
     output_head_specs: List[Dict[str, object]] = []
 
     if any(key.startswith("hidden_layers.") for key in state):
-        global_head_index = 0
         for layer_index, layer in enumerate(hidden_profile):
             hidden_layers.append(
                 {
@@ -168,11 +167,9 @@ def build_tensors_and_manifest_spec(
                     {
                         "layer_index": layer_index,
                         "local_head_index": local_head_index,
-                        "global_head_index": global_head_index,
                         **export_head_tensors(tensors, state, state_prefix, tensor_prefix),
                     }
                 )
-                global_head_index += 1
         for head_index in range(k_out):
             state_prefix = f"output_heads.{head_index}"
             tensor_prefix = structured_output_prefix(head_index)

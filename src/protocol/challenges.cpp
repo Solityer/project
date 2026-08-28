@@ -432,20 +432,28 @@ namespace gatzk::protocol
                        << (!context.config.model_param_id.empty()
                                ? context.config.model_param_id
                                : ("checkpoint_bundle:" + context.config.checkpoint_bundle));
-        for (std::size_t head = 0; head < context.model.hidden_heads.size(); ++head)
-        {
-            for (std::size_t column = 0;; ++column)
+        for (std::size_t layer = 0;
+             layer < context.model.hidden_layers.size();
+             ++layer)
+            for (std::size_t head = 0;
+                 head < context.model.hidden_layers[layer].heads.size();
+                 ++head)
             {
-                const auto label = hidden_weight_column_label(head, column);
-                const auto it = context.static_commitments.find(label);
-                if (it == context.static_commitments.end()) break;
-                model_registry << '|' << label << '=' << it->second.point.to_string();
+                for (std::size_t column = 0;; ++column)
+                {
+                    const auto label = hidden_weight_column_label(
+                        layer, head, column);
+                    const auto it = context.static_commitments.find(label);
+                    if (it == context.static_commitments.end()) break;
+                    model_registry << '|' << label << '=' << it->second.point.to_string();
+                }
+                for (const auto &label : {
+                         hidden_src_label(layer, head),
+                         hidden_dst_label(layer, head)})
+                {
+                    model_registry << '|' << label << '=' << context.static_commitments.at(label).point.to_string();
+                }
             }
-            for (const auto &label : {hidden_src_label(head), hidden_dst_label(head)})
-            {
-                model_registry << '|' << label << '=' << context.static_commitments.at(label).point.to_string();
-            }
-        }
         for (std::size_t head = 0; head < context.model.output_layer.heads.size(); ++head)
         {
             for (std::size_t column = 0; column < context.local.num_classes; ++column)
@@ -982,6 +990,9 @@ namespace gatzk::protocol
     {
         // 这里返回的是 proof 中动态承诺的正式顺序。
         // family 形状越宽，标签数量越多，最终 proof_size_bytes 也会随之增加。
+        // Non-formal legacy single-head compatibility labels.  The formal
+        // context builder rejects that representation before this registry is
+        // used for artifact or transcript construction.
         if (!context.model.has_real_multihead)
         {
             return {
@@ -1071,25 +1082,33 @@ namespace gatzk::protocol
             "P_J_qry_feat",
             "P_R_feat",
         };
-        for (std::size_t head_index = 0; head_index < context.model.hidden_heads.size(); ++head_index)
+        for (std::size_t layer_index = 0;
+             layer_index < context.model.hidden_layers.size();
+             ++layer_index)
         {
-            append_attention_head_dynamic_labels(labels, hidden_head_prefix(head_index));
-            append_signed_division_labels(
-                labels,
-                hidden_head_prefix(head_index) + "_Div_",
-                context.config.range_bits);
-            labels.push_back(hidden_model_binding_blinder_label(head_index, "proj"));
-            labels.push_back(hidden_model_binding_blinder_label(head_index, "src"));
-            labels.push_back(hidden_model_binding_blinder_label(head_index, "dst"));
-        }
-        for (std::size_t layer_index = 0; layer_index < context.model.hidden_layers.size(); ++layer_index)
-        {
-            const bool is_final_layer = layer_index + 1 == context.model.hidden_layers.size();
+            const auto &layer = context.model.hidden_layers[layer_index];
+            for (std::size_t head_index = 0;
+                 head_index < layer.heads.size();
+                 ++head_index)
+            {
+                const auto prefix = hidden_head_prefix(layer_index, head_index);
+                append_attention_head_dynamic_labels(labels, prefix);
+                append_signed_division_labels(
+                    labels, prefix + "_Div_", context.config.range_bits);
+                labels.push_back(hidden_model_binding_blinder_label(
+                    layer_index, head_index, "proj"));
+                labels.push_back(hidden_model_binding_blinder_label(
+                    layer_index, head_index, "src"));
+                labels.push_back(hidden_model_binding_blinder_label(
+                    layer_index, head_index, "dst"));
+            }
+            // The concat block is serialized immediately after all heads of
+            // its layer and before the next layer's hidden-head family.
             append_concat_labels(
                 labels,
-                hidden_layer_concat_label(layer_index, is_final_layer),
-                hidden_layer_concat_star_label(layer_index, is_final_layer),
-                hidden_layer_cat_prefix(layer_index, is_final_layer));
+                hidden_layer_concat_label(layer_index),
+                hidden_layer_concat_star_label(layer_index),
+                hidden_layer_cat_prefix(layer_index));
         }
         for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
         {
@@ -1131,6 +1150,8 @@ namespace gatzk::protocol
         }
         else
         {
+            // Non-formal legacy quotient names; the formal context builder
+            // rejects this single-head representation before registration.
             quotient_labels = {"t_FH", "t_edge", "t_in", "t_d", "t_N"};
         }
         std::vector<std::string> labels;
@@ -1281,9 +1302,6 @@ namespace gatzk::protocol
                 }
             };
 
-            const std::size_t d_h = model::max_hidden_head_dim(context.model);
-            const std::size_t d_cat = model::max_hidden_concat_width(context.model);
-
             if (proof_metadata != nullptr)
             {
                 absorb_public_metadata(transcript, *proof_metadata);
@@ -1294,9 +1312,28 @@ namespace gatzk::protocol
             }
             transcript.absorb_scalar("N", algebra::FieldElement(context.local.num_nodes));
             transcript.absorb_scalar("E", algebra::FieldElement(context.local.edges.size()));
-            transcript.absorb_scalar("d_in", algebra::FieldElement(context.local.num_features));
-            transcript.absorb_scalar("d_h", algebra::FieldElement(d_h));
-            transcript.absorb_scalar("d_cat", algebra::FieldElement(d_cat));
+            for (std::size_t layer_index = 0;
+                 layer_index < context.model.hidden_layers.size();
+                 ++layer_index)
+            {
+                const auto &layer = context.model.hidden_layers[layer_index];
+                transcript.absorb_scalar(
+                    "d_in_l" + std::to_string(layer_index),
+                    algebra::FieldElement(layer.input_dim));
+                transcript.absorb_scalar(
+                    "d_h_l" + std::to_string(layer_index),
+                    algebra::FieldElement(layer.shape.head_dim));
+                transcript.absorb_scalar(
+                    "d_cat_l" + std::to_string(layer_index),
+                    algebra::FieldElement(
+                        layer.shape.head_count * layer.shape.head_dim));
+            }
+            transcript.absorb_scalar(
+                "d_in_out",
+                algebra::FieldElement(context.model.output_layer.input_dim));
+            transcript.absorb_scalar(
+                "d_out",
+                algebra::FieldElement(context.local.num_classes));
             transcript.absorb_scalar("C", algebra::FieldElement(context.local.num_classes));
             transcript.absorb_scalar("B", algebra::FieldElement(context.config.range_bits));
             absorb_public(transcript, context, "P_I");
@@ -1313,9 +1350,25 @@ namespace gatzk::protocol
             absorb_public(transcript, context, "P_AggBind_m_src");
             absorb_public(transcript, context, "P_AggBind_m_dst");
             absorb_public(transcript, context, "P_AggBind_index_N");
-            absorb_public(transcript, context, "P_Q_proj_valid");
-            absorb_public(transcript, context, "P_Q_d_valid");
-            absorb_public(transcript, context, "P_Q_cat_valid");
+            for (std::size_t layer_index = 0;
+                 layer_index < context.model.hidden_layers.size();
+                 ++layer_index)
+            {
+                absorb_public(
+                    transcript, context,
+                    hidden_q_in_selector_label(layer_index));
+                absorb_public(
+                    transcript, context,
+                    hidden_q_d_h_selector_label(layer_index));
+                absorb_public(
+                    transcript, context,
+                    hidden_q_cat_selector_label(layer_index));
+                absorb_public(
+                    transcript, context,
+                    hidden_q_nd_h_selector_label(layer_index));
+            }
+            absorb_public(
+                transcript, context, output_q_cat_selector_label());
             absorb_public(transcript, context, "P_Q_C_valid");
             absorb_public(transcript, context, "P_BiasIndex_C");
             absorb_public(transcript, context, "P_BiasMultiplicity_C");
@@ -1334,10 +1387,6 @@ namespace gatzk::protocol
                             transcript, context,
                             output_bias_basis_region_selector_label(
                                 head_index, chunk.chunk_index, region));
-            for (std::size_t head_index = 0; head_index < context.model.hidden_heads.size(); ++head_index)
-            {
-                absorb_public(transcript, context, "P_Q_div_h" + std::to_string(head_index));
-            }
             for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
             {
                 absorb_public(transcript, context, "P_Q_div_out" + std::to_string(head_index));
@@ -1354,17 +1403,22 @@ namespace gatzk::protocol
             absorb(transcript, "P_J_qry_feat", dynamic_commitments);
             absorb(transcript, "P_R_feat", dynamic_commitments);
 
-            std::size_t global_head_index = 0;
             for (std::size_t layer_index = 0; layer_index < context.model.hidden_layers.size(); ++layer_index)
             {
                 const bool is_first_layer = layer_index == 0;
                 const auto input_label =
                     is_first_layer
                         ? std::string("P_H")
-                        : hidden_layer_concat_label(layer_index - 1, false);
-                for (std::size_t head_index = 0; head_index < context.model.hidden_layers[layer_index].heads.size(); ++head_index, ++global_head_index)
+                        : hidden_layer_concat_label(layer_index - 1);
+                for (std::size_t head_index = 0;
+                     head_index < context.model.hidden_layers[layer_index].heads.size();
+                     ++head_index)
                 {
-                    const auto prefix = hidden_head_prefix(global_head_index);
+                    const auto prefix = hidden_head_prefix(layer_index, head_index);
+                    const auto challenge = [&](std::string_view base)
+                    {
+                        return hidden_challenge_name(base, layer_index, head_index);
+                    };
                     absorb(transcript, input_label, dynamic_commitments);
                     absorb(transcript, prefix + "_H_prime", dynamic_commitments);
                     for (std::size_t column = 0;
@@ -1373,47 +1427,47 @@ namespace gatzk::protocol
                     {
                         absorb_model_reblind(
                             transcript,
-                            hidden_weight_column_label(global_head_index, column),
+                            hidden_weight_column_label(layer_index, head_index, column),
                             dynamic_commitments);
                     }
-                    out["y_proj_h" + std::to_string(global_head_index)] = transcript.challenge("y_proj_h" + std::to_string(global_head_index));
-                    out["xi_h" + std::to_string(global_head_index)] = transcript.challenge("xi_h" + std::to_string(global_head_index));
+                    out[challenge("y_proj_h")] = transcript.challenge(challenge("y_proj_h"));
+                    out[challenge("xi_h")] = transcript.challenge(challenge("xi_h"));
 
                     absorb(transcript, prefix + "_H_prime", dynamic_commitments);
                     absorb(transcript, prefix + "_E_src", dynamic_commitments);
                     absorb(
                         transcript,
-                        hidden_score_mask_label(global_head_index, "src"),
+                        hidden_score_mask_label(layer_index, head_index, "src"),
                         dynamic_commitments);
                     absorb_model_reblind(
-                        transcript, hidden_src_label(global_head_index), dynamic_commitments);
-                    out["y_src_h" + std::to_string(global_head_index)] = transcript.challenge("y_src_h" + std::to_string(global_head_index));
+                        transcript, hidden_src_label(layer_index, head_index), dynamic_commitments);
+                    out[challenge("y_src_h")] = transcript.challenge(challenge("y_src_h"));
 
                     absorb(transcript, prefix + "_H_prime", dynamic_commitments);
                     absorb(transcript, prefix + "_E_dst", dynamic_commitments);
                     absorb(
                         transcript,
-                        hidden_score_mask_label(global_head_index, "dst"),
+                        hidden_score_mask_label(layer_index, head_index, "dst"),
                         dynamic_commitments);
                     absorb_model_reblind(
-                        transcript, hidden_dst_label(global_head_index), dynamic_commitments);
-                    out["y_dst_h" + std::to_string(global_head_index)] = transcript.challenge("y_dst_h" + std::to_string(global_head_index));
+                        transcript, hidden_dst_label(layer_index, head_index), dynamic_commitments);
+                    out[challenge("y_dst_h")] = transcript.challenge(challenge("y_dst_h"));
 
                     absorb(transcript, prefix + "_H_star", dynamic_commitments);
                     absorb(
                         transcript,
                         external_mask_label(prefix + "_H_star"),
                         dynamic_commitments);
-                    out["y_star_h" + std::to_string(global_head_index)] = transcript.challenge("y_star_h" + std::to_string(global_head_index));
+                    out[challenge("y_star_h")] = transcript.challenge(challenge("y_star_h"));
 
                     absorb(transcript, prefix + "_E_src", dynamic_commitments);
                     absorb(transcript, prefix + "_H_star", dynamic_commitments);
                     absorb(transcript, prefix + "_H_src_star_edge", dynamic_commitments);
-                    out["eta_src_h" + std::to_string(global_head_index)] = transcript.challenge("eta_src_h" + std::to_string(global_head_index));
+                    out[challenge("eta_src_h")] = transcript.challenge(challenge("eta_src_h"));
                     absorb(transcript, prefix + "_Table_src", dynamic_commitments);
                     absorb(transcript, prefix + "_Query_src", dynamic_commitments);
                     absorb(transcript, prefix + "_m_src", dynamic_commitments);
-                    out["beta_src_h" + std::to_string(global_head_index)] = transcript.challenge("beta_src_h" + std::to_string(global_head_index));
+                    out[challenge("beta_src_h")] = transcript.challenge(challenge("beta_src_h"));
                     absorb(transcript, prefix + "_J_src_node", dynamic_commitments);
                     absorb(transcript, prefix + "_J_src_edge", dynamic_commitments);
                     absorb(transcript, prefix + "_R_src_node", dynamic_commitments);
@@ -1423,11 +1477,11 @@ namespace gatzk::protocol
                     absorb(transcript, prefix + "_Z", dynamic_commitments);
                     absorb_static(transcript, context, "V_T_L_x");
                     absorb_static(transcript, context, "V_T_L_y");
-                    out["eta_L_h" + std::to_string(global_head_index)] = transcript.challenge("eta_L_h" + std::to_string(global_head_index));
+                    out[challenge("eta_L_h")] = transcript.challenge(challenge("eta_L_h"));
                     absorb(transcript, prefix + "_Table_L", dynamic_commitments);
                     absorb(transcript, prefix + "_Query_L", dynamic_commitments);
                     absorb(transcript, prefix + "_m_L", dynamic_commitments);
-                    out["beta_L_h" + std::to_string(global_head_index)] = transcript.challenge("beta_L_h" + std::to_string(global_head_index));
+                    out[challenge("beta_L_h")] = transcript.challenge(challenge("beta_L_h"));
                     absorb(transcript, prefix + "_J_tbl_L", dynamic_commitments);
                     absorb(transcript, prefix + "_J_qry_L", dynamic_commitments);
                     absorb(transcript, prefix + "_R_L", dynamic_commitments);
@@ -1439,7 +1493,7 @@ namespace gatzk::protocol
                     absorb(transcript, prefix + "_Table_R", dynamic_commitments);
                     absorb(transcript, prefix + "_Query_R", dynamic_commitments);
                     absorb(transcript, prefix + "_m_R", dynamic_commitments);
-                    out["beta_R_h" + std::to_string(global_head_index)] = transcript.challenge("beta_R_h" + std::to_string(global_head_index));
+                    out[challenge("beta_R_h")] = transcript.challenge(challenge("beta_R_h"));
                     absorb(transcript, prefix + "_J_tbl_R", dynamic_commitments);
                     absorb(transcript, prefix + "_J_qry_R", dynamic_commitments);
                     absorb(transcript, prefix + "_R_R", dynamic_commitments);
@@ -1448,23 +1502,23 @@ namespace gatzk::protocol
                     absorb(transcript, prefix + "_U", dynamic_commitments);
                     absorb_static(transcript, context, "V_T_exp_x");
                     absorb_static(transcript, context, "V_T_exp_y");
-                    out["eta_exp_h" + std::to_string(global_head_index)] = transcript.challenge("eta_exp_h" + std::to_string(global_head_index));
+                    out[challenge("eta_exp_h")] = transcript.challenge(challenge("eta_exp_h"));
                     absorb(transcript, prefix + "_Table_exp", dynamic_commitments);
                     absorb(transcript, prefix + "_Query_exp", dynamic_commitments);
                     absorb(transcript, prefix + "_m_exp", dynamic_commitments);
-                    out["beta_exp_h" + std::to_string(global_head_index)] = transcript.challenge("beta_exp_h" + std::to_string(global_head_index));
+                    out[challenge("beta_exp_h")] = transcript.challenge(challenge("beta_exp_h"));
                     absorb(transcript, prefix + "_J_tbl_exp", dynamic_commitments);
                     absorb(transcript, prefix + "_J_qry_exp", dynamic_commitments);
                     absorb(transcript, prefix + "_R_exp", dynamic_commitments);
 
-                    out["lambda_psq_h" + std::to_string(global_head_index)] = transcript.challenge("lambda_psq_h" + std::to_string(global_head_index));
+                    out[challenge("lambda_psq_h")] = transcript.challenge(challenge("lambda_psq_h"));
                     absorb(transcript, prefix + "_T_psq", dynamic_commitments);
                     absorb(transcript, prefix + "_T_psq_edge", dynamic_commitments);
-                    out["eta_t_h" + std::to_string(global_head_index)] = transcript.challenge("eta_t_h" + std::to_string(global_head_index));
+                    out[challenge("eta_t_h")] = transcript.challenge(challenge("eta_t_h"));
                     absorb(transcript, prefix + "_Table_t", dynamic_commitments);
                     absorb(transcript, prefix + "_Query_t", dynamic_commitments);
                     absorb(transcript, prefix + "_m_t", dynamic_commitments);
-                    out["beta_t_h" + std::to_string(global_head_index)] = transcript.challenge("beta_t_h" + std::to_string(global_head_index));
+                    out[challenge("beta_t_h")] = transcript.challenge(challenge("beta_t_h"));
                     absorb(transcript, prefix + "_J_t_node", dynamic_commitments);
                     absorb(transcript, prefix + "_J_t_edge", dynamic_commitments);
                     absorb(transcript, prefix + "_R_t_node", dynamic_commitments);
@@ -1476,18 +1530,18 @@ namespace gatzk::protocol
                         transcript,
                         external_mask_label(prefix + "_H_agg_pre_star"),
                         dynamic_commitments);
-                    out["y_agg_pre_h" + std::to_string(global_head_index)] = transcript.challenge("y_agg_pre_h" + std::to_string(global_head_index));
+                    out[challenge("y_agg_pre_h")] = transcript.challenge(challenge("y_agg_pre_h"));
                     absorb(transcript, prefix + "_H_agg_pre", dynamic_commitments);
                     absorb(transcript, prefix + "_H_agg", dynamic_commitments);
                     absorb_static(transcript, context, "V_T_ELU_x");
                     absorb_static(transcript, context, "V_T_ELU_y");
                     absorb(transcript, prefix + "_H_ELU_in_flat", dynamic_commitments);
                     absorb(transcript, prefix + "_H_agg_flat", dynamic_commitments);
-                    out["eta_ELU_h" + std::to_string(global_head_index)] = transcript.challenge("eta_ELU_h" + std::to_string(global_head_index));
+                    out[challenge("eta_ELU_h")] = transcript.challenge(challenge("eta_ELU_h"));
                     absorb(transcript, prefix + "_Table_ELU", dynamic_commitments);
                     absorb(transcript, prefix + "_Query_ELU", dynamic_commitments);
                     absorb(transcript, prefix + "_m_ELU", dynamic_commitments);
-                    out["beta_ELU_h" + std::to_string(global_head_index)] = transcript.challenge("beta_ELU_h" + std::to_string(global_head_index));
+                    out[challenge("beta_ELU_h")] = transcript.challenge(challenge("beta_ELU_h"));
                     absorb(transcript, prefix + "_J_tbl_ELU", dynamic_commitments);
                     absorb(transcript, prefix + "_J_qry_ELU", dynamic_commitments);
                     absorb(transcript, prefix + "_R_ELU", dynamic_commitments);
@@ -1498,7 +1552,7 @@ namespace gatzk::protocol
                         transcript,
                         external_mask_label(prefix + "_H_agg_star"),
                         dynamic_commitments);
-                    out["y_agg_h" + std::to_string(global_head_index)] = transcript.challenge("y_agg_h" + std::to_string(global_head_index));
+                    out[challenge("y_agg_h")] = transcript.challenge(challenge("y_agg_h"));
 
                     for (const auto *suffix : {
                              "_E_dst", "_M", "_Sum", "_inv", "_H_agg_star",
@@ -1506,11 +1560,11 @@ namespace gatzk::protocol
                     {
                         absorb(transcript, prefix + suffix, dynamic_commitments);
                     }
-                    out["eta_dst_h" + std::to_string(global_head_index)] = transcript.challenge("eta_dst_h" + std::to_string(global_head_index));
+                    out[challenge("eta_dst_h")] = transcript.challenge(challenge("eta_dst_h"));
                     absorb(transcript, prefix + "_Table_dst", dynamic_commitments);
                     absorb(transcript, prefix + "_Query_dst", dynamic_commitments);
                     absorb(transcript, prefix + "_m_dst", dynamic_commitments);
-                    out["beta_dst_h" + std::to_string(global_head_index)] = transcript.challenge("beta_dst_h" + std::to_string(global_head_index));
+                    out[challenge("beta_dst_h")] = transcript.challenge(challenge("beta_dst_h"));
                     absorb(transcript, prefix + "_J_dst_node", dynamic_commitments);
                     absorb(transcript, prefix + "_J_dst_edge", dynamic_commitments);
                     absorb(transcript, prefix + "_R_dst_node", dynamic_commitments);
@@ -1518,22 +1572,20 @@ namespace gatzk::protocol
                     replay_signed_division(prefix + "_Div_");
                 }
 
-                const bool is_final_layer = layer_index + 1 == context.model.hidden_layers.size();
-                absorb(transcript, hidden_layer_concat_label(layer_index, is_final_layer), dynamic_commitments);
-                out[hidden_concat_xi_name(layer_index, is_final_layer)] =
-                    transcript.challenge(hidden_concat_xi_name(layer_index, is_final_layer));
-                absorb(transcript, hidden_layer_concat_star_label(layer_index, is_final_layer), dynamic_commitments);
+                absorb(transcript, hidden_layer_concat_label(layer_index), dynamic_commitments);
+                out[hidden_concat_xi_name(layer_index)] =
+                    transcript.challenge(hidden_concat_xi_name(layer_index));
+                absorb(transcript, hidden_layer_concat_star_label(layer_index), dynamic_commitments);
                 absorb(
                     transcript,
-                    external_mask_label(hidden_layer_concat_star_label(
-                        layer_index, is_final_layer)),
+                    external_mask_label(hidden_layer_concat_star_label(layer_index)),
                     dynamic_commitments);
-                out[hidden_concat_y_name(layer_index, is_final_layer)] =
-                    transcript.challenge(hidden_concat_y_name(layer_index, is_final_layer));
+                out[hidden_concat_y_name(layer_index)] =
+                    transcript.challenge(hidden_concat_y_name(layer_index));
             }
 
             const auto final_hidden_label =
-                hidden_layer_concat_label(context.model.hidden_layers.size() - 1, true);
+                hidden_layer_concat_label(context.model.hidden_layers.size() - 1);
             for (std::size_t head_index = 0;
                  head_index < context.model.output_layer.heads.size();
                  ++head_index)
@@ -1998,6 +2050,9 @@ namespace gatzk::protocol
         absorb_public(transcript, context, "P_Q_grp_end_edge");
         absorb_public(transcript, context, "P_Q_edge_valid");
         absorb_public(transcript, context, "P_Q_N");
+        // Non-formal legacy single-head transcript only.  build_context rejects
+        // this model shape before proof work, so these historical labels never
+        // enter the formal schema/artifact/transcript.
         absorb_public(transcript, context, "P_Q_proj_valid");
         absorb_public(transcript, context, "P_Q_d_valid");
         absorb(transcript, "P_H", dynamic_commitments);

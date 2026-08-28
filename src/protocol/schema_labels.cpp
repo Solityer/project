@@ -20,57 +20,91 @@
 
 namespace gatzk::protocol
 {
-    std::string hidden_head_prefix(std::size_t global_head_index)
+    std::string hidden_head_prefix(
+        std::size_t layer_index,
+        std::size_t local_head_index)
     {
-        return "P_h" + std::to_string(global_head_index);
+        return "P_h_l" + std::to_string(layer_index)
+            + "_h" + std::to_string(local_head_index);
     }
 
-    // 隐藏层的 concat 标签按层区分，方便把多层主线和笔记里的“多头拼接”步骤一一对应。
-    std::string hidden_layer_concat_label(std::size_t layer_index, bool is_final_layer)
+    // Every hidden concat keeps its layer identity, including the last hidden
+    // layer.  The output layer uses that last concat as input but owns a
+    // separate output Q_cat selector.
+    std::string hidden_layer_concat_label(std::size_t layer_index)
     {
-        if (is_final_layer)
-        {
-            return "P_H_cat";
-        }
         return "P_H_cat_l" + std::to_string(layer_index);
     }
 
-    std::string hidden_layer_concat_star_label(std::size_t layer_index, bool is_final_layer)
+    std::string hidden_layer_concat_star_label(std::size_t layer_index)
     {
-        if (is_final_layer)
-        {
-            return "P_H_cat_star";
-        }
         return "P_H_cat_star_l" + std::to_string(layer_index);
     }
 
-    std::string hidden_layer_cat_prefix(std::size_t layer_index, bool is_final_layer)
+    std::string hidden_layer_cat_prefix(std::size_t layer_index)
     {
-        if (is_final_layer)
-        {
-            return "P_cat";
-        }
         return "P_cat_l" + std::to_string(layer_index);
     }
 
-    std::string hidden_weight_label(std::size_t global_head_index)
+    std::string hidden_weight_label(std::size_t layer_index, std::size_t local_head_index)
     {
-        return "V_h" + std::to_string(global_head_index) + "_W";
+        return "V_h_l" + std::to_string(layer_index) + "_h"
+            + std::to_string(local_head_index) + "_W";
     }
 
-    std::string hidden_weight_column_label(std::size_t global_head_index, std::size_t column_index)
+    std::string hidden_weight_column_label(
+        std::size_t layer_index,
+        std::size_t local_head_index,
+        std::size_t column_index)
     {
-        return hidden_weight_label(global_head_index) + "_col" + std::to_string(column_index);
+        return hidden_weight_label(layer_index, local_head_index) + "_col"
+            + std::to_string(column_index);
     }
 
-    std::string hidden_src_label(std::size_t global_head_index)
+    std::string hidden_src_label(std::size_t layer_index, std::size_t local_head_index)
     {
-        return "V_h" + std::to_string(global_head_index) + "_a_src";
+        return "V_h_l" + std::to_string(layer_index) + "_h"
+            + std::to_string(local_head_index) + "_a_src";
     }
 
-    std::string hidden_dst_label(std::size_t global_head_index)
+    std::string hidden_dst_label(std::size_t layer_index, std::size_t local_head_index)
     {
-        return "V_h" + std::to_string(global_head_index) + "_a_dst";
+        return "V_h_l" + std::to_string(layer_index) + "_h"
+            + std::to_string(local_head_index) + "_a_dst";
+    }
+
+    std::string hidden_challenge_name(
+        std::string_view base,
+        std::size_t layer_index,
+        std::size_t local_head_index)
+    {
+        return std::string(base) + "_l" + std::to_string(layer_index)
+            + "_h" + std::to_string(local_head_index);
+    }
+
+    std::string hidden_q_in_selector_label(std::size_t layer_index)
+    {
+        return "P_Q_in_valid_l" + std::to_string(layer_index);
+    }
+
+    std::string hidden_q_d_h_selector_label(std::size_t layer_index)
+    {
+        return "P_Q_d_h_valid_l" + std::to_string(layer_index);
+    }
+
+    std::string hidden_q_cat_selector_label(std::size_t layer_index)
+    {
+        return "P_Q_cat_valid_l" + std::to_string(layer_index);
+    }
+
+    std::string hidden_q_nd_h_selector_label(std::size_t layer_index)
+    {
+        return "P_Q_Nd_h_valid_l" + std::to_string(layer_index);
+    }
+
+    std::string output_q_cat_selector_label()
+    {
+        return "P_Q_cat_valid_out";
     }
 
     std::string output_head_prefix(std::size_t head_index)
@@ -96,10 +130,11 @@ namespace gatzk::protocol
     }
 
     std::string hidden_aggregation_binding_label(
-        std::size_t global_head_index,
+        std::size_t layer_index,
+        std::size_t local_head_index,
         std::string_view suffix)
     {
-        return hidden_head_prefix(global_head_index) + "_AggBind_"
+        return hidden_head_prefix(layer_index, local_head_index) + "_AggBind_"
             + std::string(suffix);
     }
 
@@ -141,9 +176,13 @@ namespace gatzk::protocol
         return std::string(base) + "_o" + std::to_string(head_index);
     }
 
-    std::string hidden_model_binding_blinder_label(std::size_t head_index, std::string_view role)
+    std::string hidden_model_binding_blinder_label(
+        std::size_t layer_index,
+        std::size_t local_head_index,
+        std::string_view role)
     {
-        return hidden_head_prefix(head_index) + "_ModelBind_" + std::string(role) + "_R";
+        return hidden_head_prefix(layer_index, local_head_index)
+            + "_ModelBind_" + std::string(role) + "_R";
     }
 
     std::string output_model_binding_blinder_label(std::size_t head_index, std::string_view role)
@@ -152,9 +191,12 @@ namespace gatzk::protocol
     }
 
     std::string hidden_score_mask_label(
-        std::size_t head_index, std::string_view role)
+        std::size_t layer_index,
+        std::size_t local_head_index,
+        std::string_view role)
     {
-        return hidden_head_prefix(head_index) + "_ScoreMask_" + std::string(role);
+        return hidden_head_prefix(layer_index, local_head_index)
+            + "_ScoreMask_" + std::string(role);
     }
 
     std::string output_score_mask_label(
@@ -165,9 +207,12 @@ namespace gatzk::protocol
     }
 
     std::string hidden_score_mask_eval_name(
-        std::size_t head_index, std::string_view role)
+        std::size_t layer_index,
+        std::size_t local_head_index,
+        std::string_view role)
     {
-        return "rho_h" + std::to_string(head_index) + "_" + std::string(role);
+        return "rho_h_l" + std::to_string(layer_index) + "_h"
+            + std::to_string(local_head_index) + "_" + std::string(role);
     }
 
     std::string output_score_mask_eval_name(
@@ -317,21 +362,13 @@ namespace gatzk::protocol
     }
 
     // 拼接层的挑战名单独保留层号，保证跨层复用时不会和别的头混淆。
-    std::string hidden_concat_xi_name(std::size_t layer_index, bool is_final_layer)
+    std::string hidden_concat_xi_name(std::size_t layer_index)
     {
-        if (is_final_layer)
-        {
-            return "xi_cat";
-        }
         return "xi_cat_l" + std::to_string(layer_index);
     }
 
-    std::string hidden_concat_y_name(std::size_t layer_index, bool is_final_layer)
+    std::string hidden_concat_y_name(std::size_t layer_index)
     {
-        if (is_final_layer)
-        {
-            return "y_cat";
-        }
         return "y_cat_l" + std::to_string(layer_index);
     }
 

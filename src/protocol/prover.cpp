@@ -1193,48 +1193,55 @@ namespace gatzk::protocol
         std::vector<ExternalEvalSpec> multihead_external_specs(const ProtocolContext &context)
         {
             std::vector<ExternalEvalSpec> specs;
-            for (std::size_t head_index = 0; head_index < context.model.hidden_heads.size(); ++head_index)
-            {
-                const auto suffix = "h" + std::to_string(head_index);
-                const auto prefix = "P_h" + std::to_string(head_index) + "_";
-                specs.push_back({"mu_" + suffix + "_proj", prefix + "H_prime", "y_proj_h" + std::to_string(head_index)});
-                specs.push_back({"mu_" + suffix + "_src", prefix + "E_src", "y_src_h" + std::to_string(head_index)});
-                specs.push_back({hidden_score_mask_eval_name(head_index, "src"),
-                                 hidden_score_mask_label(head_index, "src"),
-                                 "y_src_h" + std::to_string(head_index)});
-                specs.push_back({"mu_" + suffix + "_dst", prefix + "E_dst", "y_dst_h" + std::to_string(head_index)});
-                specs.push_back({hidden_score_mask_eval_name(head_index, "dst"),
-                                 hidden_score_mask_label(head_index, "dst"),
-                                 "y_dst_h" + std::to_string(head_index)});
-                specs.push_back({"mu_" + suffix + "_star", prefix + "H_star", "y_star_h" + std::to_string(head_index)});
-                specs.push_back({external_mask_eval_name("mu_" + suffix + "_star"),
-                                 external_mask_label(prefix + "H_star"),
-                                 "y_star_h" + std::to_string(head_index)});
-                specs.push_back({"mu_" + suffix + "_agg_pre", prefix + "H_agg_pre_star", "y_agg_pre_h" + std::to_string(head_index)});
-                specs.push_back({external_mask_eval_name("mu_" + suffix + "_agg_pre"),
-                                 external_mask_label(prefix + "H_agg_pre_star"),
-                                 "y_agg_pre_h" + std::to_string(head_index)});
-                specs.push_back({"mu_" + suffix + "_agg", prefix + "H_agg_star", "y_agg_h" + std::to_string(head_index)});
-                specs.push_back({external_mask_eval_name("mu_" + suffix + "_agg"),
-                                 external_mask_label(prefix + "H_agg_star"),
-                                 "y_agg_h" + std::to_string(head_index)});
-            }
+            for (std::size_t layer_index = 0;
+                 layer_index < context.model.hidden_layers.size();
+                 ++layer_index)
+                for (std::size_t head_index = 0;
+                     head_index < context.model.hidden_layers[layer_index].heads.size();
+                     ++head_index)
+                {
+                    const auto suffix = "l" + std::to_string(layer_index)
+                        + "_h" + std::to_string(head_index);
+                    const auto prefix = hidden_head_prefix(layer_index, head_index) + "_";
+                    const auto challenge = [&](std::string_view base)
+                    {
+                        return hidden_challenge_name(base, layer_index, head_index);
+                    };
+                    specs.push_back({"mu_" + suffix + "_proj", prefix + "H_prime", challenge("y_proj_h")});
+                    specs.push_back({"mu_" + suffix + "_src", prefix + "E_src", challenge("y_src_h")});
+                    specs.push_back({hidden_score_mask_eval_name(layer_index, head_index, "src"),
+                                     hidden_score_mask_label(layer_index, head_index, "src"),
+                                     challenge("y_src_h")});
+                    specs.push_back({"mu_" + suffix + "_dst", prefix + "E_dst", challenge("y_dst_h")});
+                    specs.push_back({hidden_score_mask_eval_name(layer_index, head_index, "dst"),
+                                     hidden_score_mask_label(layer_index, head_index, "dst"),
+                                     challenge("y_dst_h")});
+                    specs.push_back({"mu_" + suffix + "_star", prefix + "H_star", challenge("y_star_h")});
+                    specs.push_back({external_mask_eval_name("mu_" + suffix + "_star"),
+                                     external_mask_label(prefix + "H_star"),
+                                     challenge("y_star_h")});
+                    specs.push_back({"mu_" + suffix + "_agg_pre", prefix + "H_agg_pre_star", challenge("y_agg_pre_h")});
+                    specs.push_back({external_mask_eval_name("mu_" + suffix + "_agg_pre"),
+                                     external_mask_label(prefix + "H_agg_pre_star"),
+                                     challenge("y_agg_pre_h")});
+                    specs.push_back({"mu_" + suffix + "_agg", prefix + "H_agg_star", challenge("y_agg_h")});
+                    specs.push_back({external_mask_eval_name("mu_" + suffix + "_agg"),
+                                     external_mask_label(prefix + "H_agg_star"),
+                                     challenge("y_agg_h")});
+                }
             for (std::size_t layer_index = 0; layer_index < context.model.hidden_layers.size(); ++layer_index)
             {
-                const bool is_final_layer = layer_index + 1 == context.model.hidden_layers.size();
                 specs.push_back({
-                    is_final_layer ? "mu_cat" : "mu_cat_l" + std::to_string(layer_index),
-                    hidden_layer_concat_star_label(layer_index, is_final_layer),
-                    hidden_concat_y_name(layer_index, is_final_layer),
+                    "mu_cat_l" + std::to_string(layer_index),
+                    hidden_layer_concat_star_label(layer_index),
+                    hidden_concat_y_name(layer_index),
                 });
                 const auto concat_eval_name =
-                    is_final_layer ? std::string("mu_cat")
-                                   : "mu_cat_l" + std::to_string(layer_index);
+                    "mu_cat_l" + std::to_string(layer_index);
                 specs.push_back({
                     external_mask_eval_name(concat_eval_name),
-                    external_mask_label(hidden_layer_concat_star_label(
-                        layer_index, is_final_layer)),
-                    hidden_concat_y_name(layer_index, is_final_layer),
+                    external_mask_label(hidden_layer_concat_star_label(layer_index)),
+                    hidden_concat_y_name(layer_index),
                 });
             }
             for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
@@ -5305,7 +5312,13 @@ namespace gatzk::protocol
                     throw std::runtime_error(
                         "quotient coset is too small for derived degree bound: " + label_ + " degree_bound=" + std::to_string(*degree_bound) + " target_size=" + std::to_string(target_size_));
                 }
-                const auto edge_head_count = context_.model.hidden_heads.size() + context_.model.output_layer.heads.size();
+                // This is only a sizing bound for the edge alpha-power cache;
+                // derive it from the formal nested family, never from the
+                // checkpoint/parity flattening compatibility view.
+                std::size_t edge_head_count =
+                    context_.model.output_layer.heads.size();
+                for (const auto &layer : context_.model.hidden_layers)
+                    edge_head_count += layer.heads.size();
                 if (label_ == "t_edge" && edge_head_count >= 2)
                 {
                     const auto power_count = std::size_t{2048} + std::size_t{1024} * edge_head_count;
@@ -7638,9 +7651,14 @@ namespace gatzk::protocol
                 {
                     return false;
                 }
-                for (std::size_t head_index = 0; head_index < context_.model.hidden_heads.size(); ++head_index)
+                for (std::size_t layer_index = 0;
+                     layer_index < context_.model.hidden_layers.size();
+                     ++layer_index)
+                for (std::size_t local_head_index = 0;
+                     local_head_index < context_.model.hidden_layers[layer_index].heads.size();
+                     ++local_head_index)
                 {
-                    const auto prefix = "P_h" + std::to_string(head_index) + "_";
+                    const auto prefix = hidden_head_prefix(layer_index, local_head_index) + "_";
                     if (name.rfind(prefix, 0) == 0)
                     {
                         const auto suffix = std::string_view(name).substr(prefix.size());
@@ -7674,9 +7692,14 @@ namespace gatzk::protocol
                 {
                     return false;
                 }
-                for (std::size_t head_index = 0; head_index < context_.model.hidden_heads.size(); ++head_index)
+                for (std::size_t layer_index = 0;
+                     layer_index < context_.model.hidden_layers.size();
+                     ++layer_index)
+                for (std::size_t local_head_index = 0;
+                     local_head_index < context_.model.hidden_layers[layer_index].heads.size();
+                     ++local_head_index)
                 {
-                    const auto prefix = "P_h" + std::to_string(head_index) + "_";
+                    const auto prefix = hidden_head_prefix(layer_index, local_head_index) + "_";
                     if (name.rfind(prefix, 0) != 0)
                     {
                         continue;
@@ -7759,9 +7782,14 @@ namespace gatzk::protocol
                 {
                     return std::nullopt;
                 }
-                for (std::size_t head_index = 0; head_index < context_.model.hidden_heads.size(); ++head_index)
+                for (std::size_t layer_index = 0;
+                     layer_index < context_.model.hidden_layers.size();
+                     ++layer_index)
+                for (std::size_t local_head_index = 0;
+                     local_head_index < context_.model.hidden_layers[layer_index].heads.size();
+                     ++local_head_index)
                 {
-                    const auto prefix = "P_h" + std::to_string(head_index) + "_";
+                    const auto prefix = hidden_head_prefix(layer_index, local_head_index) + "_";
                     if (name.rfind(prefix, 0) != 0)
                     {
                         continue;
@@ -7783,7 +7811,8 @@ namespace gatzk::protocol
                     {
                         return head_value("M_edge") - head_value("Z");
                     }
-                    const auto eta_l = challenges_.at("eta_L_h" + std::to_string(head_index));
+                    const auto eta_l = challenges_.at(
+                        hidden_challenge_name("eta_L_h", layer_index, local_head_index));
                     if (suffix == "Table_L")
                     {
                         return value("P_T_L_x") + eta_l * value("P_T_L_y");
@@ -7800,7 +7829,8 @@ namespace gatzk::protocol
                     {
                         return head_value("Delta");
                     }
-                    const auto eta_exp = challenges_.at("eta_exp_h" + std::to_string(head_index));
+                    const auto eta_exp = challenges_.at(
+                        hidden_challenge_name("eta_exp_h", layer_index, local_head_index));
                     if (suffix == "Table_exp")
                     {
                         return value("P_T_exp_x") + eta_exp * value("P_T_exp_y");
@@ -7809,7 +7839,8 @@ namespace gatzk::protocol
                     {
                         return head_value("Delta") + eta_exp * head_value("U");
                     }
-                    const auto eta_elu = challenges_.at("eta_ELU_h" + std::to_string(head_index));
+                    const auto eta_elu = challenges_.at(
+                        hidden_challenge_name("eta_ELU_h", layer_index, local_head_index));
                     if (suffix == "Table_ELU")
                     {
                         return value("P_T_ELU_x") + eta_elu * value("P_T_ELU_y");
@@ -7818,7 +7849,8 @@ namespace gatzk::protocol
                     {
                         return head_value("H_ELU_in_flat") + eta_elu * head_value("H_agg_flat");
                     }
-                    const auto eta_src = challenges_.at("eta_src_h" + std::to_string(head_index));
+                    const auto eta_src = challenges_.at(
+                        hidden_challenge_name("eta_src_h", layer_index, local_head_index));
                     if (suffix == "Query_src")
                     {
                         const auto eta_src_sq = eta_src * eta_src;
@@ -7830,7 +7862,8 @@ namespace gatzk::protocol
                         {
                             return std::nullopt;
                         }
-                        const auto lambda_psq = challenges_.at("lambda_psq_h" + std::to_string(head_index));
+                        const auto lambda_psq = challenges_.at(
+                            hidden_challenge_name("lambda_psq_h", layer_index, local_head_index));
                         return head_value("U") + lambda_psq * head_value("widehat_v_pre_star");
                     }
                     if (suffix == "T_psq_edge")
@@ -7839,15 +7872,18 @@ namespace gatzk::protocol
                         {
                             return std::nullopt;
                         }
-                        const auto lambda_psq = challenges_.at("lambda_psq_h" + std::to_string(head_index));
+                        const auto lambda_psq = challenges_.at(
+                            hidden_challenge_name("lambda_psq_h", layer_index, local_head_index));
                         return head_value("Sum_edge") + lambda_psq * head_value("H_agg_pre_star_edge");
                     }
-                    const auto eta_t = challenges_.at("eta_t_h" + std::to_string(head_index));
+                    const auto eta_t = challenges_.at(
+                        hidden_challenge_name("eta_t_h", layer_index, local_head_index));
                     if (suffix == "Query_t")
                     {
                         return value("P_dst") + eta_t * head_value("T_psq_edge");
                     }
-                    const auto eta_dst = challenges_.at("eta_dst_h" + std::to_string(head_index));
+                    const auto eta_dst = challenges_.at(
+                        hidden_challenge_name("eta_dst_h", layer_index, local_head_index));
                     if (suffix == "Query_dst")
                     {
                         const auto eta_dst_sq = eta_dst * eta_dst;
@@ -8524,9 +8560,14 @@ namespace gatzk::protocol
                 {
                     return suffix == "S" || suffix == "Delta" || suffix == "Table_L" || suffix == "Query_L" || suffix == "Table_R" || suffix == "Query_R" || suffix == "Table_exp" || suffix == "Query_exp" || suffix == "Table_ELU" || suffix == "Query_ELU" || suffix == "Query_src" || suffix == "Query_t" || suffix == "Query_dst" || suffix == "w_psq" || suffix == "T_psq_edge";
                 };
-                for (std::size_t head_index = 0; head_index < context_.model.hidden_heads.size(); ++head_index)
+                for (std::size_t layer_index = 0;
+                     layer_index < context_.model.hidden_layers.size();
+                     ++layer_index)
+                for (std::size_t local_head_index = 0;
+                     local_head_index < context_.model.hidden_layers[layer_index].heads.size();
+                     ++local_head_index)
                 {
-                    const auto prefix = "P_h" + std::to_string(head_index) + "_";
+                    const auto prefix = hidden_head_prefix(layer_index, local_head_index) + "_";
                     if (name.rfind(prefix, 0) == 0)
                     {
                         return is_hidden_derived_suffix(name.substr(prefix.size()));
@@ -8647,20 +8688,31 @@ namespace gatzk::protocol
                 {
                     return nullptr;
                 }
-                for (std::size_t head_index = 0; head_index < context_.model.hidden_heads.size(); ++head_index)
+                for (std::size_t layer_index = 0;
+                     layer_index < context_.model.hidden_layers.size();
+                     ++layer_index)
+                for (std::size_t local_head_index = 0;
+                     local_head_index < context_.model.hidden_layers[layer_index].heads.size();
+                     ++local_head_index)
                 {
-                    const auto prefix = "P_h" + std::to_string(head_index) + "_";
+                    const auto prefix = hidden_head_prefix(layer_index, local_head_index) + "_";
                     if (name.rfind(prefix, 0) != 0)
                     {
                         continue;
                     }
                     const auto suffix = name.substr(prefix.size());
-                    const auto eta_l = challenges_.at("eta_L_h" + std::to_string(head_index));
-                    const auto eta_exp = challenges_.at("eta_exp_h" + std::to_string(head_index));
-                    const auto eta_elu = challenges_.at("eta_ELU_h" + std::to_string(head_index));
-                    const auto eta_src = challenges_.at("eta_src_h" + std::to_string(head_index));
-                    const auto eta_dst = challenges_.at("eta_dst_h" + std::to_string(head_index));
-                    const auto eta_t = challenges_.at("eta_t_h" + std::to_string(head_index));
+                    const auto eta_l = challenges_.at(
+                        hidden_challenge_name("eta_L_h", layer_index, local_head_index));
+                    const auto eta_exp = challenges_.at(
+                        hidden_challenge_name("eta_exp_h", layer_index, local_head_index));
+                    const auto eta_elu = challenges_.at(
+                        hidden_challenge_name("eta_ELU_h", layer_index, local_head_index));
+                    const auto eta_src = challenges_.at(
+                        hidden_challenge_name("eta_src_h", layer_index, local_head_index));
+                    const auto eta_dst = challenges_.at(
+                        hidden_challenge_name("eta_dst_h", layer_index, local_head_index));
+                    const auto eta_t = challenges_.at(
+                        hidden_challenge_name("eta_t_h", layer_index, local_head_index));
                     if (suffix == "Table_L")
                     {
                         return scaled_coset_sum(name, {{"P_T_L_x", FieldElement::one()}, {"P_T_L_y", eta_l}});
@@ -8699,12 +8751,14 @@ namespace gatzk::protocol
                     }
                     if (suffix == "w_psq")
                     {
-                        const auto lambda_psq = challenges_.at("lambda_psq_h" + std::to_string(head_index));
+                        const auto lambda_psq = challenges_.at(
+                            hidden_challenge_name("lambda_psq_h", layer_index, local_head_index));
                         return scaled_coset_sum(name, {{prefix + "U", FieldElement::one()}, {prefix + "widehat_v_pre_star", lambda_psq}});
                     }
                     if (suffix == "T_psq_edge")
                     {
-                        const auto lambda_psq = challenges_.at("lambda_psq_h" + std::to_string(head_index));
+                        const auto lambda_psq = challenges_.at(
+                            hidden_challenge_name("lambda_psq_h", layer_index, local_head_index));
                         return scaled_coset_sum(name, {{prefix + "Sum_edge", FieldElement::one()}, {prefix + "H_agg_pre_star_edge", lambda_psq}});
                     }
                     if (suffix == "Table_ELU")
@@ -10284,7 +10338,6 @@ namespace gatzk::protocol
                 "P_Q_tbl_exp",
                 "P_Q_qry_exp",
                 "P_Q_tbl_ELU",
-                "P_Q_qry_ELU",
                 "P_T_L_x",
                 "P_T_L_y",
                 "P_T_range",
@@ -10385,14 +10438,19 @@ namespace gatzk::protocol
                     }
                 }
             };
-            for (std::size_t head_index = 0; head_index < context.model.hidden_heads.size(); ++head_index)
-            {
-                append_prefixed("P_h" + std::to_string(head_index) + "_", hidden_suffixes);
-                append_prefixed("P_h" + std::to_string(head_index) + "_", division_suffixes);
-                append_division_range_dependencies(
-                    hidden_head_prefix(head_index) + "_Div_");
-                append_label("P_Q_div_h" + std::to_string(head_index));
-            }
+            for (std::size_t layer_index = 0;
+                 layer_index < context.model.hidden_layers.size();
+                 ++layer_index)
+                for (std::size_t head_index = 0;
+                     head_index < context.model.hidden_layers[layer_index].heads.size();
+                     ++head_index)
+                {
+                    const auto prefix = hidden_head_prefix(layer_index, head_index) + "_";
+                    append_prefixed(prefix, hidden_suffixes);
+                    append_prefixed(prefix, division_suffixes);
+                    append_division_range_dependencies(prefix + "Div_");
+                    append_label(hidden_q_nd_h_selector_label(layer_index));
+                }
 
             const std::vector<std::string> output_suffixes = {
                 "R_src",
@@ -10485,21 +10543,34 @@ namespace gatzk::protocol
         std::vector<std::string> multihead_in_dependencies(const ProtocolContext &context)
         {
             std::vector<std::string> labels = domain_opening_labels(context, "in");
-            append_unique_labels(&labels, {"P_Q_proj_valid"});
+            for (std::size_t layer_index = 0;
+                 layer_index < context.model.hidden_layers.size();
+                 ++layer_index)
+                append_unique_labels(
+                    &labels, {hidden_q_in_selector_label(layer_index)});
             return labels;
         }
 
         std::vector<std::string> multihead_d_dependencies(const ProtocolContext &context)
         {
             std::vector<std::string> labels = domain_opening_labels(context, "d");
-            append_unique_labels(&labels, {"P_Q_d_valid"});
+            for (std::size_t layer_index = 0;
+                 layer_index < context.model.hidden_layers.size();
+                 ++layer_index)
+                append_unique_labels(
+                    &labels, {hidden_q_d_h_selector_label(layer_index)});
             return labels;
         }
 
         std::vector<std::string> multihead_cat_dependencies(const ProtocolContext &context)
         {
             std::vector<std::string> labels = domain_opening_labels(context, "cat");
-            append_unique_labels(&labels, {"P_Q_cat_valid"});
+            for (std::size_t layer_index = 0;
+                 layer_index < context.model.hidden_layers.size();
+                 ++layer_index)
+                append_unique_labels(
+                    &labels, {hidden_q_cat_selector_label(layer_index)});
+            append_unique_labels(&labels, {output_q_cat_selector_label()});
             return labels;
         }
 
@@ -10522,6 +10593,9 @@ namespace gatzk::protocol
             return labels;
         }
 
+        // Non-formal legacy single-head dependency registry.  Formal context
+        // construction fails closed when has_real_multihead is false, and the
+        // indexed registries above are the only formal route.
         const std::vector<std::string> &quotient_dependencies_in()
         {
             static const std::vector<std::string> labels = {
@@ -10582,6 +10656,8 @@ namespace gatzk::protocol
             const ProtocolContext &context,
             const std::string &quotient_name)
         {
+            // Non-formal compatibility dispatch only.  build_context rejects
+            // the legacy model before any formal dependency registry is used.
             if (!context.model.has_real_multihead)
             {
                 if (quotient_name == "t_FH")
@@ -10974,12 +11050,13 @@ namespace gatzk::protocol
             metrics,
             "model_source=checkpoint_bundle");
 
+        std::size_t formal_hidden_head_count = 0;
+        for (const auto &layer : context.model.hidden_layers)
+            formal_hidden_head_count += layer.heads.size();
         append_note(
             metrics,
             "hidden_head_count=" +
-                std::to_string(
-                    model::flattened_hidden_head_count(
-                        context.model)));
+                std::to_string(formal_hidden_head_count));
 
         if (!context.model.has_real_multihead)
         {
@@ -11063,9 +11140,12 @@ namespace gatzk::protocol
         const std::size_t configured_range_size = (1ULL << config.range_bits);
         const std::size_t d_h = hidden_head_width(context.model, config);
         const std::size_t d_cat = concat_width(context.model, config);
-        const std::size_t max_in = context.model.has_real_multihead
-                                       ? std::max<std::size_t>(context.local.num_features, model::max_hidden_input_dim(context.model))
-                                       : context.local.num_features;
+        // The in-domain is a shared power-of-two capacity.  It must not be
+        // confused with any formal selector: each Q_in below uses its own
+        // layer.input_dim support.
+        const std::size_t in_domain_capacity = context.model.has_real_multihead
+                                                    ? std::max<std::size_t>(context.local.num_features, model::max_hidden_input_dim(context.model))
+                                                    : context.local.num_features;
         const auto minimum_edge_rows = minimum_edge_trace_length(
             context.local.num_nodes,
             context.local.edges.size(),
@@ -11108,7 +11188,7 @@ namespace gatzk::protocol
                 range_size,
             }) +
             2);
-        const std::size_t in_size = algebra::next_power_of_two(max_in + 2);
+        const std::size_t in_size = algebra::next_power_of_two(in_domain_capacity + 2);
         const std::size_t d_size = algebra::next_power_of_two(d_h + 2);
         const std::size_t cat_size = algebra::next_power_of_two(d_cat + 2);
         const std::size_t c_size = algebra::next_power_of_two(context.local.num_classes + 2);
@@ -11122,17 +11202,25 @@ namespace gatzk::protocol
             .cat = algebra::RootOfUnityDomain::create("cat", cat_size),
             .c = algebra::RootOfUnityDomain::create("C", c_size),
             .n = algebra::RootOfUnityDomain::create("N", n_size),
-            .hidden_heads = {},
+            .hidden_layers = {},
             .output_head = std::nullopt,
         };
         if (context.model.has_real_multihead)
         {
-            context.domains.hidden_heads.assign(
-                context.model.hidden_heads.size(),
-                AttentionHeadDomains{
-                    .in = context.domains.in,
-                    .d = context.domains.d,
-                });
+            context.domains.hidden_layers.resize(
+                context.model.hidden_layers.size());
+            for (std::size_t layer_index = 0;
+                 layer_index < context.model.hidden_layers.size();
+                 ++layer_index)
+            {
+                auto &layer_domains = context.domains.hidden_layers[layer_index];
+                layer_domains.resize(
+                    context.model.hidden_layers[layer_index].heads.size(),
+                    AttentionHeadDomains{
+                        .in = context.domains.in,
+                        .d = context.domains.d,
+                    });
+            }
             context.domains.output_head = AttentionHeadDomains{.in = context.domains.cat, .d = context.domains.c};
         }
         end = Clock::now();
@@ -11254,18 +11342,45 @@ namespace gatzk::protocol
             make_shared_eval_poly("P_Q_edge_valid", edge_valid, context.domains.edge));
         if (context.model.has_real_multihead)
         {
-            for (std::size_t head_index = 0; head_index < context.model.hidden_heads.size(); ++head_index)
+            // Each hidden layer owns its own valid selectors.  The selector
+            // support is the layer's real shape; the surrounding work domain
+            // may still be a shared power-of-two capacity.
+            for (std::size_t layer_index = 0;
+                 layer_index < context.model.hidden_layers.size();
+                 ++layer_index)
             {
-                const auto width = context.model.hidden_heads[head_index].seq_kernel_fp.empty()
-                                       ? 0
-                                       : context.model.hidden_heads[head_index].seq_kernel_fp.front().size();
-                const auto label = "P_Q_div_h" + std::to_string(head_index);
+                const auto &layer = context.model.hidden_layers[layer_index];
+                const auto q_in_label = hidden_q_in_selector_label(layer_index);
+                const auto q_d_label = hidden_q_d_h_selector_label(layer_index);
+                const auto q_cat_label = hidden_q_cat_selector_label(layer_index);
+                const auto q_nd_h_label = hidden_q_nd_h_selector_label(layer_index);
                 add_public_poly(
                     context,
-                    label,
+                    q_in_label,
                     make_shared_eval_poly(
-                        label,
-                        build_selector(context.local.num_nodes * width, edge_size),
+                        q_in_label,
+                        build_selector(layer.input_dim, in_size),
+                        context.domains.in));
+                add_public_poly(
+                    context,
+                    q_d_label,
+                    make_shared_eval_poly(
+                        q_d_label,
+                        build_selector(layer.shape.head_dim, d_size),
+                        context.domains.d));
+                add_public_poly(
+                    context,
+                    q_cat_label,
+                    make_shared_eval_poly(
+                        q_cat_label,
+                        build_selector(layer.shape.head_count * layer.shape.head_dim, cat_size),
+                        context.domains.cat));
+                add_public_poly(
+                    context,
+                    q_nd_h_label,
+                    make_shared_eval_poly(
+                        q_nd_h_label,
+                        build_selector(context.local.num_nodes * layer.shape.head_dim, edge_size),
                         context.domains.edge));
             }
             for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
@@ -11327,16 +11442,11 @@ namespace gatzk::protocol
                 context.domains.n));
         add_public_poly(
             context,
-            "P_Q_proj_valid",
-            make_shared_eval_poly("P_Q_proj_valid", build_selector(max_in, in_size), context.domains.in));
-        add_public_poly(
-            context,
-            "P_Q_d_valid",
-            make_shared_eval_poly("P_Q_d_valid", build_selector(d_h, d_size), context.domains.d));
-        add_public_poly(
-            context,
-            "P_Q_cat_valid",
-            make_shared_eval_poly("P_Q_cat_valid", build_selector(d_cat, cat_size), context.domains.cat));
+            output_q_cat_selector_label(),
+            make_shared_eval_poly(
+                output_q_cat_selector_label(),
+                build_selector(context.model.output_layer.input_dim, cat_size),
+                context.domains.cat));
         add_public_poly(
             context,
             "P_Q_C_valid",
@@ -11560,11 +11670,6 @@ namespace gatzk::protocol
             context,
             "P_Q_tbl_ELU",
             make_shared_eval_poly("P_Q_tbl_ELU", build_selector(context.tables.elu.size(), edge_size), context.domains.edge));
-        add_public_poly(
-            context,
-            "P_Q_qry_ELU",
-            make_shared_eval_poly("P_Q_qry_ELU", build_selector(context.local.num_nodes * d_h, edge_size), context.domains.edge));
-
         const auto &feature_matrix_for_h =
             !context.dataset.features.empty() ? context.dataset.features : context.local.features;
         if (lazy_large_fh_public_enabled(context))
@@ -11659,33 +11764,47 @@ namespace gatzk::protocol
         if (context.model.has_real_multihead)
         {
             // 模型参数在 context 阶段就固定成静态承诺，后面的 trace 只引用标签，不再重复构造权重对象。
-            for (std::size_t head_index = 0; head_index < context.model.hidden_heads.size(); ++head_index)
+            for (std::size_t layer_index = 0;
+                 layer_index < context.model.hidden_layers.size();
+                 ++layer_index)
             {
-                const auto weight = quantize_model_matrix(
-                    context.model.hidden_heads[head_index].seq_kernel_fp);
-                const auto column_count = weight.empty() ? 0 : weight.front().size();
-                for (std::size_t column = 0; column < column_count; ++column)
+                const auto &layer = context.model.hidden_layers[layer_index];
+                for (std::size_t head_index = 0;
+                     head_index < layer.heads.size();
+                     ++head_index)
                 {
-                    std::vector<FieldElement> values(context.domains.in->size, FieldElement::zero());
-                    for (std::size_t row = 0; row < weight.size(); ++row)
-                        values[row] = weight[row][column];
-                    const auto label = hidden_weight_column_label(head_index, column);
-                    add_static_commitment(context, label, make_eval_poly(label, values, context.domains.in));
+                    const auto &head = layer.heads[head_index];
+                    const auto weight = quantize_model_matrix(head.seq_kernel_fp);
+                    const auto column_count = weight.empty() ? 0 : weight.front().size();
+                    for (std::size_t column = 0; column < column_count; ++column)
+                    {
+                        std::vector<FieldElement> values(
+                            context.domains.in->size, FieldElement::zero());
+                        for (std::size_t row = 0; row < weight.size(); ++row)
+                            values[row] = weight[row][column];
+                        const auto label = hidden_weight_column_label(
+                            layer_index, head_index, column);
+                        add_static_commitment(
+                            context, label,
+                            make_eval_poly(label, values, context.domains.in));
+                    }
+                    const auto src_label = hidden_src_label(layer_index, head_index);
+                    add_static_commitment(
+                        context, src_label,
+                        make_eval_poly(
+                            src_label,
+                            padded(quantize_model_vector(head.attn_src_kernel_fp),
+                                   context.domains.d->size),
+                            context.domains.d));
+                    const auto dst_label = hidden_dst_label(layer_index, head_index);
+                    add_static_commitment(
+                        context, dst_label,
+                        make_eval_poly(
+                            dst_label,
+                            padded(quantize_model_vector(head.attn_dst_kernel_fp),
+                                   context.domains.d->size),
+                            context.domains.d));
                 }
-                add_static_commitment(
-                    context,
-                    hidden_src_label(head_index),
-                    make_eval_poly(
-                        hidden_src_label(head_index),
-                        padded(quantize_model_vector(context.model.hidden_heads[head_index].attn_src_kernel_fp), context.domains.d->size),
-                        context.domains.d));
-                add_static_commitment(
-                    context,
-                    hidden_dst_label(head_index),
-                    make_eval_poly(
-                        hidden_dst_label(head_index),
-                        padded(quantize_model_vector(context.model.hidden_heads[head_index].attn_dst_kernel_fp), context.domains.d->size),
-                        context.domains.d));
             }
             for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
             {

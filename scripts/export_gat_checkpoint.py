@@ -171,7 +171,6 @@ def build_manifest(tensors: Dict[str, np.ndarray], checkpoint_prefix: str) -> Di
         {
             "layer_index": 0,
             "local_head_index": head_index,
-            "global_head_index": head_index,
             **hidden_head_manifest(head_index),
         }
         for head_index in range(hidden_head_count)

@@ -114,6 +114,14 @@ def validate_ppi_bundle(manifest: Dict[str, object], bundle_dir: pathlib.Path) -
     require(isinstance(output_specs, list) and len(output_specs) == 2, "PPI bundle 必须包含 2 个 output head")
     require(all(isinstance(spec, dict) for spec in hidden_specs), "PPI hidden_head_specs 每项必须是对象")
     require(all(isinstance(spec, dict) for spec in output_specs), "PPI output_head_specs 每项必须是对象")
+    # Formal identity is the explicit pair; an optional legacy global index is
+    # never consulted, and a global-only manifest is rejected fail-closed.
+    expected_pairs = [(layer_index, head_index) for layer_index in range(2) for head_index in range(8)]
+    actual_pairs = []
+    for spec in hidden_specs:
+        require("layer_index" in spec and "local_head_index" in spec, "PPI hidden head spec 必须包含 layer_index/local_head_index")
+        actual_pairs.append((int(spec["layer_index"]), int(spec["local_head_index"])))
+    require(actual_pairs == expected_pairs, "PPI hidden head specs 必须按 layer/local pair canonical 顺序排列")
 
     tensor_index = manifest["tensor_index"]
     require(isinstance(tensor_index, dict), "PPI bundle tensor_index 必须是对象")

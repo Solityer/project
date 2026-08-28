@@ -518,7 +518,6 @@ namespace gatzk::protocol
                 throw std::runtime_error(
                     "proof parser Pi_bind instance subproof count mismatch");
 
-            std::size_t global_hidden_head = 0;
             for (std::size_t index = 0; index < expected_meta.size(); ++index)
             {
                 const auto& subproof = proof.pi_bind.subproofs[index];
@@ -531,19 +530,19 @@ namespace gatzk::protocol
                 if (meta.object_kind == "hidden")
                 {
                     const auto layer = meta.layer_id.value() - 1;
+                    const auto head = meta.head_id.value();
                     const auto width =
                         context.config.hidden_profile.at(layer).head_dim;
                     for (std::size_t column = 0; column < width; ++column)
                         expected_models.push_back({
-                            hidden_weight_column_label(global_hidden_head, column),
+                            hidden_weight_column_label(layer, head, column),
                             context.domains.in->name});
                     expected_models.push_back({
-                        hidden_src_label(global_hidden_head),
+                        hidden_src_label(layer, head),
                         context.domains.d->name});
                     expected_models.push_back({
-                        hidden_dst_label(global_hidden_head),
+                        hidden_dst_label(layer, head),
                         context.domains.d->name});
-                    ++global_hidden_head;
                 }
                 else if (meta.object_kind == "output")
                 {
