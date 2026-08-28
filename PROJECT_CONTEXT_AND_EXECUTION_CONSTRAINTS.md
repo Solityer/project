@@ -1,591 +1,447 @@
-# zkGAT 项目背景与当前执行约束
 
-> 适用范围：`/home/pzh/project` 中除 `comparison/` 外的主实验工作区。 
-> 最高技术规范：`GAT-ZKML-多层多头.md`。 
-> 本文件定位：只描述当前项目长期有效的背景、技术边界、性能目标、实验权限和工作区治理要求。  
-> 本文件不记录某一轮优化的具体热点、异常数值、日志位置、临时待办、测试命令、失败尝试或执行流水；这些内容应由当轮任务说明和当前实验材料承载。 
-> 本文件仅在项目负责人明确要求时修改。
+# zkGAT 项目背景与执行约束
 
-## 1. 项目定位与当前阶段
-
-zkGAT 主实验围绕 `GAT-ZKML-多层多头.md` 定义的多层多头 GAT 推理、证明与验证展开，目标是在保持正式协议和安全性的前提下实现可验证、可复现且高性能的完整 zkGAT 系统。
-
-主实验范围不扩展到：
-
-- GAT 训练流程；
-- 与技术规范无关的其他模型任务；
-- 与当前证明、验证和正式性能无关的附加功能；
-- `comparison/` 中的对比实验实现。
-
-当前阶段为：
-
-> **System-wide / Global Performance Optimization**
-
-当前阶段默认以下内容已经确定并作为冻结边界：
-
-- 正式推理语义；
-- 证明关系；
-- 安全边界；
-- Prover / Verifier 职责；
-- ProofSchema、transcript 和验证关系；
-- 正式计时口径。
-
-性能优化只能改变协议等价的计算方法和工程实现，不重新设计被证明的内容。
+> 适用范围：`/home/pzh/project` 中除 `comparison/` 外的主实验。  
+> 最高技术规范：`GAT-ZKML-多层多头.md`。  
+> 本文件用于明确当前主实验的最终目标、开发边界、执行权限、测试要求和工作区治理规则。后续 Codex 任务应先完整阅读本文件和最高技术规范，再直接基于主实验真实代码执行，不需要在每次 Prompt 中重复本文件内容。
 
 ---
 
-## 2. 技术规范与不可突破的协议、安全边界
+## 1. 项目背景与判断原则
 
-`GAT-ZKML-多层多头.md` 是主实验最高技术规范，默认只读。实现与技术规范发生冲突时，应修正实现，不得为了迁就代码、降低开发难度或获得更好的性能数字而修改技术规范。
+zkGAT 主实验研究 GAT 推理的零知识证明与验证。
 
-任何优化都不得改变或削弱技术规范定义的：
+当前工作的目标不是重新设计 zkGAT 协议，也不是重新做一套实验系统，而是在现有已经实现的主实验代码和正式证明流程基础上，把论文最终使用的 GAT 模型实例正式调整为真正的多层多头 GAT，并保证现有训练、模型加载、前向计算、trace、prove、verify、CPU/GPU 和结果导出流程能够正确处理新的模型结构。
 
-- 多层多头 GAT 推理语义；
-- 图结构、多图边界和跨图隔离；
-- 公开输入、私有模型及私有中间状态边界；
-- `trusted_srs` 与正式 KZG 语义；
-- commitment、quotient、opening 和 verification 关系；
-- transcript、Fiat–Shamir challenge、ProofSchema 和 proof block；
-- `SignedRoundDiv`、负指数 `ExpMap`、范围、符号、余数、tie、重缩放和无模回绕语义；
-- proof-local 模型再盲化、coefficient-tail blinding、CRPC 和张量绑定；
-- 完整公开 logits、`output_digest` 以及 Verifier 必须执行的检查。
+### 1.1 只处理主实验
 
-严格禁止：
+当前工作区：/home/pzh/project
 
-- 直接使用、泄露或依赖已知 `tau` 参与在线证明；
-- 利用 trapdoor 绕过正式 KZG commitment 或 opening；
-- 删除证明关系、验证检查或降低安全强度；
-- 使用不安全、非正式或协议不等价的更快路径替代正式实现；
-- replay proof；
-- 跨 fresh proof 复用 proof-specific 动态结果；
-- 将 Prover 应承担的工作转移给 Verifier 以制造 Prover 加速；
-- 修改正式 timer 边界；
-- 将原本属于正式 timer 的工作迁移到 startup、warmup、timer 外预处理或其他不计时阶段。
+`comparison/` 为完全独立的对比实验目录，本轮强制忽略。
 
-历史、非正式或不安全实现得到的更快性能数字只能作为计算潜力参考，不得作为恢复相应实现、削弱协议或改变安全边界的依据。
+不得：分析 `comparison/` 的内部实现；修改、删除、运行或清理 `comparison/`；使用 `comparison/` 的代码、协议组件、配置、结果或命名推断主实验应如何实现；把 `comparison/` 的任何机制写入主实验约束；让主实验依赖 `comparison/`。
 
-如果性能优化过程中发现真实的正确性或安全缺陷，应优先修复并完成必要回归；此类修复属于正确性维护，不作为性能成果，也不应借此扩展为与当前阶段无关的协议改写或一般性功能重构。
+主实验当前实际上实现了什么，只能根据主实验真实源码、真实调用链和实际数据流判断。`GAT-ZKML-多层多头.md` 用于约束正式模型语义、正式方法和当前实现必须满足的技术边界，但不得用文档描述代替对当前代码实现状态的检查，也不得因为文档中出现某个概念就推断主实验代码已经实现对应机制。
 
----
+### 1.2 判断真实实现必须以代码执行链为准
 
-## 3. 正式性能目标与评价口径
+README、源码注释、旧说明文档和历史描述不得作为判断当前主实验实际实现状态的事实依据；它们只能用于辅助定位文件或理解背景，不能用于证明某项能力已经实现。判断主实验是否真正支持当前模型结构时，必须沿真实代码调用和数据流分析，而不能只看 README、注释、文件名、配置 parser、结构体字段、历史描述或 `comparison/`。至少应沿实际主实验链路检查：
 
-### 3.1 唯一正式性能指标
+```text
+配置读取
+-> 模型结构建立
+-> checkpoint / manifest 加载
+-> GAT 前向
+-> quantized / registered forward
+-> trace 构造
+-> prove
+-> proof serialize / deserialize
+-> verify
+-> CPU backend
+-> GPU backend
+-> 结果导出
+```
 
-当前性能阶段只关注三个正式指标：
+训练相关链路应实际检查：
 
-- `commitment_time_ms`
-- `prove_time_ms`
-- `verify_time_ms`
+```text
+训练入口
+-> 模型构造
+-> 真实训练
+-> checkpoint export
+-> manifest
+-> C++ loader
+-> 正式前向与证明流程
+```
 
-定义：
+只有真实代码路径能够完整消费新模型结构，才算真正支持多层多头。
 
-`formal_total_time_ms = commitment_time_ms + prove_time_ms + verify_time_ms`
+## 2. 当前正式实验目标
 
-后文所称 `formal_total_time` 均指上述三项正式时间之和，不代表新的独立计时区间。
+这次不是增加一个额外的 architecture scaling 实验，而是把论文最终五个主实验本身统一改为真正的多层多头 GAT。
 
-正式生产性能入口统一为：
+### 2.1 最终统一模型结构
 
-`gatzk_run`
+五个正式数据集统一采用：L = 3；hidden_profile = [8x8,8x8]；K_out = 2
 
-最终性能结论必须落到正式生产路径的三个指标及其总和，而不是其他辅助时间。
+含义：两个隐藏 GAT 层；每个隐藏层 8 个 attention heads；每个 hidden head 维度为 8；每个隐藏层 multi-head concat 后宽度为 64；一个输出 GAT 层；输出层 2 个 attention heads。
 
-### 3.2 只优化正式 timer 内的真实工作
+`L = 3` 表示：2 hidden GAT layers + 1 output GAT layer
 
-只有真实计入 `commitment`、`prove` 或 `verify` 的计算才属于当前性能优化范围，例如：
+当前正式 GAT 前向语义保持现有主实验已经实现并采用的正式语义，不得为了这次模型扩展主动改变隐藏层 concat、激活、attention、aggregation、输出层 bias、输出 heads 聚合等已有计算规则。
 
-- MSM；
-- commitment 构造；
-- quotient 构造与 commitment；
-- opening 与 opening witness；
-- polynomial evaluation；
-- NTT / INTT；
-- lookup；
-- 正式 timer 内的 CUDA kernel；
-- 正式 timer 内的数据转换、同步、内存操作和 host-device transfer。
+### 2.2 五个正式数据集
 
-如果以下内容位于三个正式 timer 之外，则不得作为当前性能优化方向：
+| Dataset | `d_in_profile` | `num_classes` |
+|---|---:|---:|
+| Cora | `[1433,64]` | 7 |
+| Citeseer | `[3703,64]` | 6 |
+| Pubmed | `[500,64]` | 3 |
+| PPI | `[50,64]` | 121 |
+| OGBN-Arxiv | `[128,64]` | 40 |
 
-- SRS 加载和解析；
-- startup；
-- GLV 启动加载；
-- 数据集加载；
-- 配置解析；
-- timer 外 context 初始化或预计算；
-- timer 外日志、导出、序列化；
-- 编译和构建；
-- 其他只降低 end-to-end wall time、但不降低三个正式指标的路径。
+第二隐藏层输入必须真实接收第一隐藏层 `8 heads x 8 dims = 64` 的 concat 输出，不能只在配置层写成 64，而真实 forward、checkpoint 或 proof 路径仍按旧结构运行。本轮只调整正式模型架构。五个数据集当前已经正确实现的数据加载、图结构、节点/边语义、预处理及数据集特有边界处理均保持现状；不得为了适配多层多头主动修改正式数据语义。
 
-proof size、GPU utilization、peak RSS、显存、线程数等可以作为正确性、资源和性能诊断依据，但不是独立性能目标。
+### 2.3 最终实验矩阵
 
-### 3.3 大幅优化必须相对于正式总时间成立
+最终论文正式主实验：5 datasets x 2 backends = 10 formal runs
 
-当前阶段要求的是对完整正式运行有实质影响的性能提升，而不是局部函数或 benchmark 自身的高百分比提升。
+backend：
 
-重大性能优化必须结合以下因素判断：
+- CPU；
+- GPU：沿用当前主实验已经实现的正式 CUDA backend / hotspot 路径，具体 backend 名称、CUDA 覆盖范围和 CPU fallback 以当前真实代码为准。
 
-- 对 `formal_total_time` 能减少多少绝对时间；
-- 相对于优化前正式总时间下降多少；
-- 是否真正作用于当前主要瓶颈；
-- 是否能在一个或多个真实数据集规模下产生稳定收益。
+对于同一数据集，CPU/GPU 必须使用同一个正式 checkpoint、同一个正式 config、同一个该数据集对应的 canonical SRS 和相同公开输入，只允许当前正式 backend 所必需的执行设备和执行参数不同。本轮多层多头改造不要求把当前仍在 CPU 执行的协议阶段迁移到 GPU，也不得为了所谓“完整 GPU”重新设计、扩大或替换现有 backend。不同数据集使用各自独立的 checkpoint、config 和 dataset-specific SRS。
 
-不得仅因为某个 microbenchmark、stage benchmark 或 CUDA kernel 提升 50%、80% 或数倍，就将其描述为重大优化。
+### 2.4 不做 architecture scaling
 
-在仍存在几十秒、几百秒或上千秒正式热点时，不应把主要优化精力长期投入到只影响亚秒、毫秒或极小正式占比的路径。
-
-小幅但真实、正确、安全、稳定且不增加明显复杂度的正式收益可以保留，但不能据此认为系统级性能目标已经完成，也不能围绕同一小路径长期进行低收益微调。
-
-### 3.4 正式指标之间允许有限权衡
-
-不要求 `commitment`、`prove`、`verify` 三项机械地同时下降。
-
-当 `commitment` 或 `prove` 获得大幅下降时，可以接受 `verify` 小幅、可解释、受控且不会形成新热点的上升，但必须满足：
-
-- `formal_total_time` 获得实质性的绝对和相对下降；
-- `commitment` 与 `prove` 之间不得互相以实质性退化换取收益；
-- 不得通过转移工作量人为降低 Prover 指标；
-- `verify` 不得出现数倍、数量级或形成新主要热点的回归。
+本轮不新增不同 `L`、不同 hidden heads、不同 `K_out` 或 depth/heads/K_out/combined 的正式 scaling curve。之前未正式执行、未正式采用且已经不再服务于当前主实验的 architecture-scaling 草案，在确认没有当前正式依赖后可以清理。这里禁止的是模型 architecture scaling，不等于删除现有 CPU/GPU 工程优化或论文原本需要的工程性能能力。
 
 ---
 
-## 4. 性能优化原则
+## 3. 本轮 Codex 需要实际完成的工作
 
-### 4.1 绝对正式耗时优先
+Codex 的任务不是重新设计方案，而是全面检查当前主实验真实代码，并把与当前正式多层多头模型相关的工程问题一次性处理到位。
 
-性能优化优先级以完整正式运行中的绝对耗时贡献为核心，而不是局部代码复杂度、局部占比或 benchmark 百分比。
+### 3.1 先判断现有实现到底哪里需要改
 
-优先处理：
+必须沿真实代码路径确认：
 
-1. 对 `formal_total_time` 绝对时间贡献最大的结构性问题；
-2. 在绝对耗时显著的前提下，占某个正式指标较大比例的路径；
-3. 能同时减少多个主要正式热点的系统级重构；
-4. 具有显著绝对时间影响的 CPU/GPU 性能差距或异常；
-5. 最后才考虑小规模、低绝对贡献的局部路径。
+- 当前模型结构是否真正支持两个隐藏层；
+- 第二隐藏层是否真实消费第一层 multi-head concat 输出；
+- 每个隐藏层是否真正按实际 head 数完整执行；
+- 输出层是否真正支持 `K_out = 2`；
+- checkpoint shape 和参数组织是否真实支持当前结构；
+- manifest 是否能完整描述并检查当前结构；
+- C++ loader 是否能正确加载；
+- C++ FP32 forward 是否正确；
+- quantized / registered forward 是否正确；
+- trace 是否按实际 layer/head 组织；
+- prove / verify 是否已经能够直接处理当前结构；
+- CPU/GPU 是否都支持相同正式模型结构；
+- SRS 是否与新的实际 proof shape 完整兼容，以及当前正式 envelope、capacity 和真实 binding 条件是否需要相应调整；
+- 正式结果导出是否仍然正确。
 
-一个路径即使占某个很小正式指标的很高比例，也不能仅凭“占比高”获得高优化优先级。
+如果现有某一部分本来已经通用且正确，保持现状，不为了产生修改量而重构。本轮保持当前主实验“一次完整 GAT 推理对应一次完整正式 prove/verify”的组织方式。不得为了适配多层或多头，主动把一个完整正式推理拆分为按 layer、按 head 或其他方式组织的多个彼此独立的正式 proof。
 
-### 4.2 系统级重构优先于连续微调
+### 3.2 现有协议默认保持不变
 
-当前阶段允许并鼓励协议等价的较大范围工程重构，包括但不限于：
+当前已经实现并能够正确工作的主实验正式证明流程，是本轮工作的基线。
 
-- large / batch MSM 的组织；
-- 同 SRS、同域对象的批处理；
-- 消除语义重复的 commitment；
-- 在数学关系允许时线性导出 commitment；
-- opening claim 聚合和 witness 构造重组；
-- quotient 构造与 materialization；
-- polynomial 生命周期和有效长度感知；
-- 稀疏、常量、selector 等对象的专用执行路径；
-- NTT / INTT 组织；
-- chunk、streaming 和 buffer reuse；
-- CPU worker、任务调度和 NUMA；
-- GPU kernel 划分、数据驻留、传输与同步；
-- size / shape-aware CPU/GPU routing；
-- 对正式计时语义本来就允许跨运行复用的 proof-independent 静态内容进行合法复用，但其目的必须是减少三个正式 timer 内的真实重复工作；静态内容在 timer 外的生成、加载或预处理本身不得作为当前性能优化成果。
+本轮目标是：让新的多层多头模型正确进入现有正式 zkGAT 流程，而不是借多层多头改造重新设计 zkGAT 协议。
 
-任何具体模块都不是永久固定的优化目标。某个方向只有在当前有效证据表明它仍对正式时间有显著贡献时才值得继续深入。
+因此：
 
-### 4.3 测试、benchmark 与 profiling 只服务于决策
+- 已经正确工作的 trace / prove / verify 等正式协议代码默认不改；
+- 已经正确工作的公开/私有语义默认不改；
+- 已经正确工作的 proof 组织、serialization 和验证逻辑默认不改；
+- 已经正确工作的 CPU/GPU 正式优化路径默认保留；
+- 不得因为代码美观、重构、所谓通用化、方便扩展、方便训练、方便 SRS 或性能优化而主动改写协议核心；
+- 不得根据本文件、历史记录或 `comparison/` 凭空新增主实验原本不存在的 protocol relation、subprotocol 或安全机制。
 
-测试、benchmark 和 profiling 是正确性验证与性能决策工具，不是独立工作目标。
+只有真实主实验代码或测试证明当前正式多层多头实例存在明确问题，并且不能通过配置、checkpoint、训练、维度、SRS 适配或执行入口等非协议层解决时，才允许做最小必要协议修改。协议相关修改必须保持 `GAT-ZKML-多层多头.md` 已确定的方法和安全目标，并完成与修改直接对应的 correctness / regression 验证。当前主实验已有正式安全参数和安全强度保持不变，包括当前 120-bit security target。不得为了降低多层多头实验成本主动降低安全参数、跳过正式验证或启用非正式快速路径。
 
-长期执行原则为：
+### 3.3 五个正式配置直接改成最终状态
 
-- 优先复用仍能代表当前实现的有效证据，不为了“刷新数据”重复采集同类结果；
-- 局部修改只进行与风险相匹配的必要检查；
-- 一个结构性优化尚未形成时，不应反复运行完整回归、长 benchmark 或大规模 profiling；
-- 较重的测试或 profiling 只有在其结果会直接影响“继续、保留、回滚或重新选择方案”时才有必要；
-- 已有证据足以回答问题时，不继续增加同类测试；
-- 临时 benchmark、profiler 或测试工具只在现有工具无法回答关键问题时创建。
+继续使用：
 
-因此，性能开发应以**完整结构问题和完整优化候选**为基本单位，而不是以“修改一个函数就进行一轮完整测试和 profiling”为基本单位。
+```text
+configs/cora_secure.cfg
+configs/citeseer_secure.cfg
+configs/pubmed_secure.cfg
+configs/ppi_secure.cfg
+configs/ogbn_arxiv_secure.cfg
+```
 
-micro / stage / kernel benchmark 只能证明局部路径的性质；它们不能替代正式生产路径的整体性能证据。
+不得另建 `*_multilayer.cfg`、`*_new.cfg`、`*_v2.cfg`、`*_final.cfg` 等第二套正式配置。
 
-测试、benchmark、profiler 和 test helper 本身不是新的开发目标。除非其正确性直接决定关键性能结论且现有方法无法确认，否则不得为了验证这些辅助工具再额外创建测试、benchmark、profiler 或独立验证流程。不得形成“修改生产函数 → 新增 benchmark/test → 再为 benchmark/test 增加测试”的递归验证链。多个相关性能修改应按完整优化候选集中完成最低必要验证，并在候选形成后统一执行与风险相匹配的回归。
+修改正式架构时，当前真实代码中所有由模型结构派生、用于结构识别或用于 artifact/config 一致性绑定的 metadata / ID 也必须同步到新的正式架构。不得保留仍表示旧 `L=2`、旧 hidden profile、旧 `K_out=1` 或其他旧模型 shape 的结构派生值。具体字段和值必须依据现有生成、加载和校验逻辑确定，本文件不重新定义第二套命名规则。
+
+### 3.4 训练和 checkpoint
+
+五个数据集都必须具有能够真实训练当前最终架构的正式训练路径。Codex 负责把训练入口、模型构造、参数传递、checkpoint/export/manifest 链准备并验证到可正式执行状态；五个数据集的正式长时间训练由项目负责人按照 §4.3 执行，最终正式 checkpoint 必须来自本轮真实训练。
+
+checkpoint/bundle import、旧 checkpoint 转换、tensor reshape、bundle export 或其他 artifact 转换流程都不等同于训练。Codex 必须逐数据集检查真实训练入口；如果某个数据集当前只有导入/转换路径，或者训练路径仍对旧架构存在硬编码，必须把这一问题作为当前多层多头适配的一部分处理。
+
+正式训练继续使用：seed = 11固定 seed 只用于 checkpoint 生成过程可复现，不新增多 seed accuracy 实验。
+
+正式训练不得静默采用 smoke/minimal 默认参数。若某个 trainer 的默认 `epochs`、`patience` 或其他训练参数明显只服务于短时验证，不得直接把这些默认值作为论文正式 checkpoint 的训练设置。若当前项目没有已经确定的正式训练 schedule，Codex 必须明确报告项目负责人确认，不得自行把测试默认值升级为正式实验参数。
+
+training-only 参数不得为了方便直接塞入当前 C++ 正式 config parser 不接受的 canonical `*_secure.cfg`。训练参数应通过当前真实 trainer 已支持的 CLI 或项目当前已有的合法训练入口传递；只有主实验真实正式配置链本身要求某字段时才进入 canonical secure config。
+
+禁止复制旧 head、复制旧隐藏层、reshape 旧 checkpoint、拼接旧权重、随机补层、synthetic weights 或其他没有经过真实训练的方式生成正式模型。
+
+训练只用于生成正式 proof 实验需要的 checkpoint。本项目不新增 Accuracy、F1、AUC、多 seed 模型效果、训练收敛曲线或训练性能研究。
+
+checkpoint / manifest / loader 必须与正式 config 的完整模型 shape 严格一致。结构不一致应拒绝，不得通过放松检查兼容错误 artifact。
+
+canonical checkpoint 路径：
+
+```text
+artifacts/checkpoints/cora_gat/
+artifacts/checkpoints/citeseer_gat/
+artifacts/checkpoints/pubmed_gat/
+artifacts/checkpoints/ppi_gat/
+artifacts/checkpoints/ogbn_arxiv_gat/
+```
+
+### 3.5 `range_bits`
+
+先保持当前已有正式值：
+
+| Dataset | `range_bits` |
+|---|---:|
+| Cora | 12 |
+| Citeseer | 12 |
+| Pubmed | 12 |
+| PPI | 14 |
+| OGBN-Arxiv | 21 |
+
+新 checkpoint 产生后执行真实整数范围审计。如果不足，不得自动修改；必须报告 dataset、layer/head、对应中间关系或中间量、实际最大范围、当前允许范围和最低需要 bits，由项目负责人决定是否调整。已知 range audit 未通过时，不得把该数据集后续完整运行结果当作正式论文结果。
+
+### 3.6 SRS
+
+SRS 必须根据当前主实验真实的 SRS 生成、加载、manifest/binding 和实际 proof shape 判断是否与新的正式多层多头实例完整兼容，而不能只看某一个表面容量字段。不得因为改成多层多头而重新设计一套 SRS 协议。
+
+需要做的是：
+
+- 按当前主实验真实代码检查现有 dataset-specific canonical SRS 是否与新的正式 proof shape 完整兼容；
+- 检查当前代码实际要求的 capacity 以及其他真实存在的绑定条件；
+- 如果当前正式实现判定旧 SRS 不兼容，就按照现有正式 SRS 工具和规则准备重新生成；
+- 不得仅因为 nominal capacity 看起来足够就直接认定旧 SRS 一定可以继续使用；
+- 保持当前正式 SRS 生成、manifest、PK/VK 和 loader 语义；
+- 不引入新的非正式 SRS 路径；
+- 不使用已知 trapdoor 绕过正式 setup。
+
+canonical SRS 路径：
+
+```text
+artifacts/srs/cora_formal_srs/
+artifacts/srs/citeseer_formal_srs/
+artifacts/srs/pubmed_formal_srs/
+artifacts/srs/ppi_formal_srs/
+artifacts/srs/ogbn_arxiv_formal_srs/
+```
+
+正式大型 SRS 由项目负责人执行。
+
+### 3.7 correctness / parity
+
+论文不研究模型 accuracy，但必须确认新的多层多头模型真的被当前主实验正确计算和证明。
+
+根据当前真实代码验证：
+
+```text
+trained model
+-> exported checkpoint
+-> C++ forward
+-> quantized / registered forward
+-> secure trace / proof path
+-> public output
+-> verify
+```
+
+具体测试内容由当前主实验真实实现决定，不得从 `comparison/` 或历史说明增加主实验不存在的协议测试项。最终完整正式运行必须 `VERIFY_OK`。
+
+## 4. 测试和执行权限
+
+### 4.1 `tests/` 是唯一 test-only 工作区
+
+所有 test-only 的 unit/regression/correctness/parity/security/negative test、helper、fixture、mock、测试配置、测试脚本、测试输入、测试日志、测试 proof、测试 cache、测试中间 artifact，以及仅用于开发验证的 benchmark/profiling 代码，都只能位于 `tests/`。
+
+是否属于 test-only 内容，必须根据真实职责和调用关系判断，而不能根据文件名中是否含有 `test`、`check`、`validate`、`parity` 等字样机械判断。
+
+如果某个 checker / validator 是正式 checkpoint、artifact、SRS 或正式执行 Gate 的生产工具，应保持其真实正式职责和合理目录，不得仅为了目录形式统一强行迁入 `tests/`；如果其真实职责仅为开发测试，则必须收敛到 `tests/`。
+
+test-only 内容不得散落到 `src/`、`include/`、`tools/`、`scripts/`、`configs/`、`artifacts/`、`runs/`、`results/` 等正式目录。
+
+正式运行本身需要的性能统计、backend 开关和正式工程优化能力不属于 test-only 代码，不应被迁移到 `tests/`。
+
+### 4.2 Codex 必须自己完成短时验证
+
+Codex 不能只修改代码然后把所有验证交给项目负责人。
+
+能够在合理时间内完成的必要验证，由 Codex 自己执行，包括 CMake configure、CPU build、GPU build、必要 unit test、targeted regression、correctness/parity、与本轮实际修改直接相关的既有 security/negative regression，以及必要短时局部集成验证。只有新架构真实暴露新的 correctness/security defect 时，才针对该真实问题补最小必要测试，不得为了本轮多层多头适配扩展新的协议测试体系。
+
+### 4.3 长时间任务由项目负责人执行
+
+由项目负责人执行：
+
+- 十分钟级及以上或明显高资源的测试；
+- 接近完整数据集规模的验证；
+- 五数据集正式训练；
+- 正式大型 SRS；
+- 完整数据集 proof / verify；
+- 五数据集 CPU 完整实验；
+- 五数据集 GPU 完整实验；
+- 会触发上述重型计算的正式结果采集。
+
+Codex 不得因为这些操作由项目负责人执行，就提前停止其他仍可完成的代码、配置、测试、构建和静态检查工作。
+
+只有后续工作真实依赖项目负责人执行后产生的新 checkpoint、SRS 或长时间结果，并且其他可完成工作已经完成，才算真正受到阻塞。
+
+### 4.4 Codex 必须准备长时间任务的完整命令
+
+需要项目负责人执行的任务，Codex 必须根据修改后的真实项目准备完整命令、实际参数、输入/输出路径、执行顺序、成功判据以及需要返回继续检查的结果。
+
+不得只给示例命令或使用省略号。
+
+正式长时间训练、SRS、测试和 CPU/GPU 实验默认运行至自然完成或真实失败，不应人为加入固定 timeout，除非项目负责人明确要求。
+
+### 4.5 其他执行边界
+
+本轮默认只读：
+
+```text
+GAT-ZKML-多层多头.md
+PROJECT_CONTEXT_AND_EXECUTION_CONSTRAINTS.md
+```
+
+Codex 不得为了迁就当前代码自行修改这两份文件。
+
+Codex 可以使用 `git status`、`git diff`、`git log`、`git ls-files` 等只读 Git 命令检查当前状态、差异和 tracked/untracked 情况。
+
+不得自行执行 `git pull`、`git commit`、`git push`、merge、rebase、tag、创建/删除分支、`git reset --hard`，也不得执行其他会改变当前 Git 工作区、历史或远程状态的操作。
+
+执行测试前必须确认测试入口不会隐式触发正式训练、大型 SRS、完整数据集 proof 或最终正式实验。
+
+### 4.6 后续正式执行顺序
+
+Codex 完成本轮工程准备后，后续正式长时间任务按以下依赖顺序执行：
+
+```text
+正式训练
+-> checkpoint / manifest 检查
+-> forward / parity / range 检查通过
+-> 正式 SRS 生成与检查
+-> 必要长时间验证
+-> CPU/GPU 十组正式实验
+-> VERIFY_OK
+-> 正式结果汇总
+```
+
+任何一步发现真实问题，都必须先解决并重新通过对应检查，再进入下一步。不得在已知前置检查失败的情况下继续生成后续正式结果。
+
+这一顺序只是正式执行和验收顺序，不改变当前主实验已经实现的协议流程。
 
 ---
 
-## 5. CPU、GPU 与数据规模专项边界
+## 5. 正式结果要求
 
-### 5.1 CPU 与 GPU 独立评价
+最终论文正式结果只能来自当前：
 
-CPU 和 GPU 是两个独立的正式性能路径，应分别评价其：
+```text
+L = 3
+hidden_profile = [8x8,8x8]
+K_out = 2
+```
 
-- `commitment_time_ms`
-- `prove_time_ms`
-- `verify_time_ms`
-- `formal_total_time`
+的五个完整数据集。
 
-CPU 上的优化收益不能自动视为 GPU 收益，CUDA build 成功也不能视为 GPU 加速证据。
+禁止 toy dataset、sampled subgraph、缩减图、部分节点/边或测试 fixture 替代论文正式结果。
 
-凡声称某项计算实际运行在 GPU 或获得 GPU 加速，必须能够确认真实 CUDA kernel 使用情况。
+旧 `L=2`、旧 hidden profile、`K_out=1` 或其他历史结果不得与新的十组结果混合形成最终主表。
 
-GPU 的最终目标是：在保持协议、安全性和正式计时真实性的前提下，同一数据集的 GPU `formal_total_time` 明显低于 CPU `formal_total_time`。
+正式性能指标继续使用当前正式口径：
 
-### 5.2 允许显式 size / shape-aware CPU fallback
+```text
+commitment_time_ms
+prove_time_ms
+verify_time_ms
+proof_size_bytes
+VERIFY_OK
+```
 
-GPU 模式不要求所有算子强制运行在 CUDA 上。
+正式总时间的统计口径固定为：
 
-如果可靠性能证据表明某种规模、shape 或执行模式在 CPU 上更快，可以在 GPU 总体模式中使用显式 CPU 路由，但必须满足：
+```text
+commitment_time_ms +
+prove_time_ms +
+verify_time_ms
+```
 
-- 路由规则明确；
-- 有真实性能依据；
-- 不进行静默 fallback；
-- 实际执行设备可识别；
-- fallback 的时间真实计入 GPU 正式指标；
-- 不得把 CPU 工作描述为 GPU kernel 性能。
+沿用当前正式实现已有的总时间字段命名。不得仅为了满足本文件重新命名或新增一个语义等价的总时间字段，也不得为了新的模型修改已有 timer 边界或把原本计时内工作移到 timer 外制造性能收益。`proof_size_bytes` 必须是真实 serialized proof 的字节数。
 
-目标是提高完整 GPU 模式的正式性能，而不是追求“所有算子形式上都在 GPU”。
+论文正式结果统一收敛到：results/paper_secure/
 
-### 5.3 PPI 多图专项
+至少包括：
 
-PPI 可以采用协议等价的多图专项工程策略，包括：
+```text
+results/paper_secure/summary.md
+results/paper_secure/latest.csv
+results/paper_secure/latest.json
+results/paper_secure/security_tests_report.md
+```
 
-- 图级并行与图间调度；
-- 多图批处理；
-- 跨图可安全复用且实际减少正式 timer 内重复计算的工作；
-- 图边界感知的数据布局；
-- 同类 polynomial / commitment 的跨图批处理；
-- 多图内存生命周期；
-- CPU/GPU 多图任务划分。
+`security_tests_report.md` 是论
 
-任何专项优化都不得跨图错误聚合、改变图边界、改变 proof relation 或改变验证方程。
 
-### 5.4 OGBN-Arxiv 大图专项
 
-OGBN-Arxiv 可以采用协议等价的超大单图专项工程策略，包括：
+文级正式安全测试汇总；raw test logs、临时测试 proof 和其他测试产物仍然只存在于 `tests/`。
 
-- 超大域算法；
-- large MSM 批处理；
-- chunk / streaming；
-- effective-length-aware 处理；
-- 大对象和大域内存布局；
-- NUMA；
-- GPU residency / transfer；
-- 超大域 verifier evaluation；
-- size-aware routing；
-- 避免不必要的完整域重复 materialization。
-
-本节只规定长期允许的工程边界，不记录任何一轮 OGBN-Arxiv 的具体异常、数值或临时待办。
+正式结果必须能够追溯到当前 dataset、backend、config、checkpoint、SRS、run/proof、`VERIFY_OK` 和正式性能指标。不要求为了本轮重新设计结果 schema；当前导出机制已经具备时保持现状即可。
 
 ---
 
-## 6. 正确性、安全性与资源约束
+## 6. 工作区治理
 
-所有准备保留的性能修改必须满足：
+主实验最终只保留当前唯一正式状态。
 
-- 正确；
-- 安全；
-- 协议等价；
-- 与修改范围匹配的正常回归通过；
-- 与受影响安全边界对应的 security / negative test 通过；
-- 修改涉及共享数学逻辑、公共协议路径或双后端实现时，CPU/GPU 数学语义和公开输出一致；
-- ProofSchema、transcript 和 verifier relation 不被破坏；
-- private value 不泄漏；
-- 用于正式性能结论的完整运行必须 `VERIFY_OK`。
+不得创建或长期保留 `old`、`new`、`backup`、`legacy`、`previous`、`preserved`、`pre_*`、`phase*`、`final/final2`、日期型副本、`multilayer_v2`、`formal_new` 等开发历史式文件或目录。
 
-`VERIFY_FAIL` 只能用于错误诊断，不得进入正式性能结果。
+`v1/v2/vN` 清理规则只针对同一职责并存的开发历史副本，不适用于当前正式代码真实使用的 schema version、file-format version、security-profile version、protocol version、正式 envelope/version ID 或其他具有实际语义的版本标识。不得仅因文件名、字段值或 format ID 中包含 `v1`、`v2` 等字符串就删除或重命名，必须先确认真实引用关系和职责。
 
-fresh proof 不得跨运行复用：
+同一职责只保留一个 canonical 实现。不得通过复制文件、平行实现、大段注释旧代码、备份目录或历史 artifact 保留修改过程。
 
-- witness-dependent polynomial；
-- blinding randomness；
-- quotient；
-- opening；
-- transcript；
-- proof-specific MSM / pairing；
-- verifier result；
-- 其他 proof-specific 动态结果。
+除非项目负责人明确要求，不得新增 `TASK_REPORT.md`、`IMPLEMENTATION_NOTES.md`、`MIGRATION_NOTES.md`、`CHANGES.md`、`TODO_MULTILAYER.md` 或其他本轮任务过程文档。
 
-并行优化必须避免 outer/inner workers、NTT/MSM workers、异步任务和 CUDA concurrency 等组合造成：
+清理文件时必须根据主实验真实引用关系确认已经失效，不得使用宽泛通配符或推测性大范围删除 checkpoint、SRS、results、runs 或其他 artifact。
 
-- oversubscription；
-- 线程数量乘法增长；
-- NUMA 跨节点开销；
-- 过量 context switch；
-- memory-bandwidth saturation。
+当新的正式 checkpoint / SRS 尚未生成时：
 
-内存不是独立性能目标，但不得通过 swap、不可控的大域副本或巨大内存增长换取很小的正式时间收益。
+- canonical config 仍保持最终多层多头目标；
+- 不得为了短时测试临时改回旧模型配置；
+- 不得复制、改名或伪造旧 checkpoint / SRS 填充正式状态；
+- 需要轻量测试 artifact 时使用 `tests/` 内合法 fixture，不污染正式 canonical artifact。
+
+需要人工保留的历史文件移出 `/home/pzh/project`。
+
+`comparison/` 始终不参与任何清理。
 
 ---
 
-## 7. 完整数据集实验权限与性能证据
+## 7. 当前任务完成标准
 
-正式数据集为：
+本节区分两个状态：
 
-- Cora
-- Citeseer
-- Pubmed
-- PPI
-- OGBN-Arxiv
+### 7.1 Codex 本轮工程准备完成
 
-最终需要五个数据集 CPU/GPU 共十组完整结果。
+Codex 本轮的目标不是在没有新 checkpoint、正式 SRS 和完整数据集运行结果的情况下宣称最终实验已经完成，而是把项目准备到只剩项目负责人必须执行的长时间任务。
 
-### 7.1 完整实验权限
+Codex 只有在以下条件满足后，才可以认为本轮“工程准备完成”并停止等待项目负责人执行长时间任务：
 
-最终十组完整实验必须由项目负责人亲自运行。
+1. 已基于主实验真实代码执行链完成分析，而不是依赖 README、注释、历史描述或 `comparison/`。
+2. 五个正式 config 已直接表示 `L=3`、`hidden_profile=[8x8,8x8]`、`K_out=2`，并具有正确 `d_in_profile`；所有由模型结构派生或用于结构绑定的 metadata / ID 已同步到新架构，没有残留旧模型 shape。
+3. 已逐数据集确认存在真正能够训练当前多层多头模型的正式训练路径，固定 seed 为 `11`，不会把 import/export/旧 checkpoint 转换当成训练，也不会把 smoke/minimal 默认参数静默当成正式训练参数；能够导出匹配 checkpoint / manifest。
+4. 已确认 checkpoint loader、模型构造和真实 forward 能够正确处理两个隐藏层和两个 output heads。
+5. 已确认 trace、prove、verify、CPU 和当前正式 CUDA backend / hotspot 路径对新结构的真实支持情况；没有为了本轮改造扩张 GPU 覆盖范围或重构现有 backend。
+6. 对已经正确工作的正式协议代码没有无意义重构。
+7. 如果真实代码发现旧单层/单输出头等硬编码，只进行了当前多层多头所需的最小必要修复，并完成对应短时验证。
+8. 已准备当前模型所需 range audit，且没有擅自修改现有 `range_bits`。
+9. 已根据当前主实验真实的 SRS 生成、加载、manifest/binding 和实际 proof shape，检查当前 dataset-specific canonical SRS 与新的正式多层多头实例是否完整兼容；如果当前正式实现判定需要重新生成，已经按照现有正式 SRS 流程准备好对应生成入口。没有仅依据 nominal capacity 作结论，也没有重新设计 SRS 协议。
+10. 所有 test-only 代码和 test-only 产物均收敛在 `tests/`；正式 checker/validator 是否迁移已依据真实职责和调用关系判断，没有按文件名机械处理。
+11. Codex 已实际完成 CPU/GPU build 及所有合理时间内能够执行的必要短时验证。
+12. 旧 architecture-scaling 草案、真实失效的历史副本和重复实现，在确认没有正式依赖后已经清理；具有实际 schema/format/security/profile/protocol 语义的版本标识没有因 `v1/v2/vN` 字样被误删；现有正式 CPU/GPU 工程优化能力没有被误删。
+13. 没有新建第二套正式 config、checkpoint、SRS、protocol 或 backend 实现。
+14. 没有从 `comparison/` 引入任何主实验不存在的协议关系、代码或测试要求。
+15. 对仍需要项目负责人执行的正式训练、checkpoint 后检查、SRS 生成、长时间测试和最终 CPU/GPU 十组实验，已给出经过检查的完整执行命令和成功判据。
+16. 在要求项目负责人开始长时间任务前，所有不依赖这些任务实际输出即可完成的开发工作已经完成。
+17. 已明确区分“当前代码路径经静态分析/短时验证确认具备支持能力”和“依赖新 checkpoint、新 SRS、完整数据集运行后才能最终确认”的事项；不得在尚未完成长时间正式任务时把后者描述为已经最终验证通过；正式时间仍沿用当前实现既有字段命名和 timer 边界。
 
-开发阶段：
+### 7.2 最终正式实验完成
 
-- Citeseer full 仅由项目负责人运行；
-- Pubmed full 仅由项目负责人运行；
-- PPI full 仅由项目负责人运行；
-- OGBN-Arxiv full 仅由项目负责人运行；
-- 不允许由其他开发执行方自行运行五数据集 CPU/GPU 完整矩阵。
+在 Codex 完成本轮工程准备后，由项目负责人按本文件规定的顺序执行正式训练、训练后检查、正式 SRS、必要长时间验证以及五个数据集 CPU/GPU 共十组完整实验。
 
-项目负责人在性能优化过程中运行的完整数据集结果，除非明确指定为最终冻结实验，否则默认属于当前性能分析和诊断证据，不自动成为论文最终结果。
+只有在新的正式 checkpoint、正式 SRS 和完整数据集实际运行均完成，并且十组当前统一多层多头正式实验全部 `VERIFY_OK`、结果能够正确汇总到当前 canonical 正式结果后，才可以认为“最终正式实验完成”。
 
-### 7.2 Cora full 的唯一开发例外
-
-当形成**预计能够显著降低 `formal_total_time` 的重大结构性性能候选**，并且已有较低成本证据充分支持其生产级价值时，可以进行必要的 Cora full 确认。
-
-该例外仅用于重大候选的生产级验证，不用于：
-
-- 常规 profiling；
-- 刷新基线；
-- 每个小候选的逐项比较；
-- 仅由 micro/stage/kernel benchmark 高百分比触发的验证。
-
-仅运行实际受候选影响的 backend；没有新的重大正式时间变化时，不重复运行。
-
-开发期 Cora full 不能代替最终十组实验，也不能直接计入最终冻结结果。
-
-### 7.3 最终结果冻结要求
-
-最终十组结果必须来自**同一个冻结候选版本**，不得混用不同中间版本的数据。
-
-同一数据集 CPU/GPU 运行必须保持相同的：
-
-- 数据集；
-- 模型；
-- 协议参数；
-- 证明参数；
-- 当前唯一正式 SRS。
-
-只允许 backend 所必需的设备和执行参数不同。
-
-任何进入最终性能表、论文或正式报告的完整运行都必须得到 `VERIFY_OK`。
-
-### 7.4 证据等级
-
-性能结论应按证据范围准确表述：
-
-1. unit / security / equivalence：证明正确性、安全性或数学等价性；
-2. micro / stage / kernel：证明局部路径性质；
-3. representative / integrated measurement：判断正式路径中的绝对贡献和候选价值；
-4. 允许范围内的 Cora full：重大候选的生产级确认；
-5. 五数据集 CPU/GPU full：完整数据集最高级别性能证据。
-
-不得把低等级证据描述成高等级整体结论。
-
-### 7.5 长时间重型操作的执行权限
-
-本节不放宽 §7.1、§7.2 已规定的完整数据集实验权限。凡其中明确要求由项目负责人亲自执行的完整实验，仍只能由项目负责人执行。
-
-对于其他长时间、高资源消耗或用于生成后续正式实验输入的重型操作，原则上也统一留给项目负责人执行；除非项目负责人针对某项具体操作另有明确安排，开发执行方不得自行启动。
-
-此类操作包括但不限于：
-
-* 大型 SRS 生成与正式 ceremony；
-* 基于已有训练流程进行的模型训练、重新训练及 architecture-specific checkpoint 生成；
-* 五个正式数据集的完整 CPU/GPU 运行；
-* architecture scaling 的正式完整实验；
-* 其他预计需要较长时间或大量计算资源的完整生成、训练和实验任务。
-
-在执行上述重型操作之前，开发执行方必须先完成所有不依赖该操作结果即可继续完成的工作，包括相关生产代码、配置、接口、脚本、参数、容量检查、执行入口以及必要的短时正确性验证，使对应任务达到可直接执行状态。
-
-不得因为后续需要生成大型 SRS、训练模型、获得 checkpoint、执行完整数据集实验或其他长时间操作，就提前停止仍然能够继续完成的代码修改、性能优化、正确性修复或实验准备工作。
-
-需要新增或修改的项目源码、CUDA kernel、内部接口、构建配置、脚本和其他能够直接在当前项目中完成的开发工作，均应在重型操作之前完成，不得将其留到项目负责人执行长时间任务之后再处理。
-
-只有当后续工作确实依赖某项重型操作的输出、并且当前所有不依赖该输出的工作均已完成时，才视为真正受到该重型操作阻塞。此时应向项目负责人提供已经检查过的完整执行命令、参数、输入输出位置和执行顺序，由项目负责人执行相应任务。
-
-项目负责人完成重型操作并提供所需结果后，再继续处理必须依赖该结果才能进行的后续工作。
-
-除非项目负责人明确要求提前执行，长时间重型操作原则上集中在相关代码修改和实验准备已经全部就绪后统一进行，避免开发过程中反复生成大型 SRS、反复训练模型或反复执行完整实验。
-
-本节涉及的模型训练仅指在正式工作确实需要相应 checkpoint 时，使用当前已有训练流程完成必要模型生成；不得据此将 GAT 训练流程扩展为新的主实验开发范围。
-
----
-
-## 8. 性能候选的保留与回滚
-
-性能修改只有在同时满足以下条件时才能作为当前正式实现保留：
-
-- 正确；
-- 安全；
-- 协议等价；
-- 不产生不可接受的内存、并发或设备副作用；
-- 有与证据等级相匹配的依据支持其对至少一个正式指标具有真实价值；
-- 整体不违反正式指标之间的权衡规则。
-
-以下候选应回滚或删除：
-
-- 正确性失败；
-- 安全性失败；
-- 明确造成 `formal_total_time` 退化；
-- 违反正式指标权衡边界；
-- 已有充分证据表明没有正式时间价值；
-- 产生新的明显正式性能异常；
-- 实际无收益却增加代码复杂度；
-- 只有局部 benchmark 好看，但无法影响正式路径。
-
-full dataset 不是每个候选保留的前置条件。没有 full 确认时，可以根据充分的局部或集成证据保留候选，但只能按实际证据范围描述收益，不得声称已经确认完整数据集整体提升。
-
----
-
-## 9. 本地主实验工作区唯一当前状态
-
-除 `comparison/` 外，`/home/pzh/project` 的持久状态必须始终表示当前唯一有效的主实验版本。
-
-开发过程中可以临时产生必要的 benchmark、profile、proof、日志和对比产物，但在相应工作完成后必须删除、正式化或归并为唯一 canonical 状态。
-
-主实验工作区不得长期保存开发历史。
-
-禁止长期保留：
-
-- `old`
-- `backup`
-- `legacy`
-- `previous`
-- `pre_*`
-- `preserved`
-- `v1/v2/vN`
-- `phase*`
-- 日期型历史副本
-- 修改前备份
-- 被替代实现
-- 失败候选
-- 大段注释掉的旧实现
-- 新旧两套重复实现
-- 已失效接口、宏、debug path 和临时 workaround
-
-如果某个带有历史或版本式名称的文件仍被当前正式实现引用，应先把正式依赖迁移到按当前职责命名的 canonical 路径，再删除旧名称；不能因为“仍被引用”而永久保留历史命名。
-
-### 9.1 本地实际文件系统是清理依据
-
-工作区治理以 `/home/pzh/project` 当前实际本地内容为依据，包括主实验相关的：
-
-- 源码；
-- 配置；
-- 测试；
-- 数据和 artifacts；
-- SRS；
-- `runs/`；
-- 隐藏的主实验文件/目录；
-- spill；
-- 失效 lock；
-- logs；
-- temporary proof；
-- benchmark/profile/debug 输出；
-- 项目自身 cache；
-- 临时 target；
-- 失效 build 产物。
-
-编辑器、操作系统或外部开发工具自身维护且与主实验无关的元数据不在清理范围内。
-
-### 9.2 SRS 唯一性
-
-每种当前正式用途只保留一个 canonical SRS。
-
-不得为了保留历史而同时保存 `pre`、`v2`、`preserved` 等多个版本。
-
-删除旧 SRS 前应确认当前源码、配置、测试和运行时不再依赖它。
-
-### 9.3 临时测试、benchmark 与运行结果
-
-一次性 benchmark、profiler、test helper、临时 CMake target 和调试输出在完成诊断后：
-
-- 具有长期回归价值的，规范命名并纳入正式体系；
-- 仅服务临时诊断的，删除源码、target、日志和输出。
-
-`runs/` 不作为开发历史档案。
-
-当前仍用于当前实现性能判断、正确性验证或正式结果的内容可以保留；一旦被新的有效状态完全替代且结论已经提取，应删除旧状态结果、旧 proof、旧 profile 和旧日志。
-
-删除任何疑似历史内容前，应先检查当前源码、构建、配置、测试和运行时依赖，不能仅凭文件名盲删。
-
----
-
-## 10. 文档治理
-
-正式文档只描述当前有效状态，不承担开发历史记录功能。
-
-### `GAT-ZKML-多层多头.md`
-
-作为最高技术规范保留，默认只读。
-
-### `PROJECT_CONTEXT_AND_EXECUTION_CONSTRAINTS.md`
-
-只描述当前长期有效的项目背景和约束，不记录：
-
-- 某一轮热点；
-- 某一轮异常；
-- 临时性能数字；
-- 当前日志路径；
-- 当轮执行步骤；
-- 失败优化历史；
-- 临时待办。
-
-### `README.md`
-
-只描述当前有效的：
-
-- 项目用途；
-- 构建与运行方式；
-- CPU/GPU 边界；
-- 安全状态；
-- 当前正式配置；
-- 实验权限；
-- 与当前实现对应的有效性能信息；
-- 当前真实限制。
-
-README 不记录逐轮开发历史。
-
-### Final report
-
-只有真正进入最终冻结结果阶段后，才应存在与同一冻结版本最终十组结果相对应的 final report。
-
-历史阶段文档、旧 benchmark 汇总、旧回滚记录或已经失去当前用途的说明文件，不应仅为了“留档”继续存在于主实验工作区。
-
----
-
-## 11. `comparison/` 完整隔离
-
-`comparison/` 不属于当前主实验处理范围。
-
-主实验相关工作必须：
-
-- 不检查其内部实现；
-- 不修改；
-- 不删除；
-- 不运行；
-- 不清理；
-- 不纳入主实验性能统计；
-- 不让主实验依赖其中代码、配置或结果。
-
-所有“主实验工作区清理”和“唯一当前状态”要求均不进入 `comparison/`。
-
----
-
-## 12. 阶段完成与最终冻结权限
-
-性能阶段是否已经完成，不以以下情况判断：
-
-- 完成了若干局部 benchmark；
-- 优化了若干函数；
-- 某几个 CUDA kernel 大幅提速；
-- 已进行了很多轮修改；
-- 某个局部路径已经没有继续优化空间。
-
-只有当主要正式耗时已经获得实质改善、主要结构性瓶颈均已有明确结论，并且不存在仍然现实可行且预计能显著降低 `formal_total_time` 的大型优化方向时，才可以认为性能阶段接近收敛。
-
-是否：
-
-- 结束当前性能优化阶段；
-- 冻结正式实现；
-- 运行最终五数据集 CPU/GPU 十组实验；
-- 生成最终报告；
-
-均由项目负责人决定。
+是否开始正式训练、生成正式 SRS、执行长时间测试、运行最终十组实验以及是否冻结论文最终结果，由项目负责人决定。
