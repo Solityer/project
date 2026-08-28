@@ -40,6 +40,9 @@ struct GraphDataset {
     std::vector<std::vector<double>> features_fp;
     std::vector<std::vector<algebra::FieldElement>> features;
     std::vector<int> labels;
+    // PPI keeps the original 121-dimensional multi-hot target per node.  It
+    // must not be collapsed into the single-label compatibility vector above.
+    std::vector<std::vector<int>> labels_multi;
     std::vector<Edge> edges;
     std::size_t graph_count = 1;
     std::vector<std::size_t> node_ptr;
@@ -59,6 +62,7 @@ struct LocalGraph {
     std::vector<std::vector<double>> features_fp;
     std::vector<std::vector<algebra::FieldElement>> features;
     std::vector<int> labels;
+    std::vector<std::vector<int>> labels_multi;
     std::vector<Edge> edges;
     NormalizedGraphInput public_input;
     std::size_t graph_count = 1;

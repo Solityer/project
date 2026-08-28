@@ -21,8 +21,9 @@ from train_planetoid_gat import (
     cfg_float,
     cfg_int,
     parse_cfg,
-    parse_hidden_profile_expr,
+    require_canonical_model_config,
     set_seed,
+    _override,
 )
 
 
@@ -54,7 +55,7 @@ def main() -> None:
         else (
             project_root
             / cfg.get(
-                "checkpoint_dir",
+                "checkpoint_bundle",
                 "artifacts/checkpoints/ogbn_arxiv_gat",
             )
         ).resolve()
@@ -70,46 +71,39 @@ def main() -> None:
     ensure_cache(project_root, data_root)
 
     seed = cfg_int(cfg, "seed", 11)
-    if "hidden_profile" not in cfg:
-        raise ValueError("training config must expose hidden_profile")
-    hidden_profile = parse_hidden_profile_expr(cfg["hidden_profile"])
-    k_out = cfg_int(cfg, "K_out", 1)
-    if k_out <= 0:
-        raise ValueError("K_out must be positive")
-    seed = args.seed if args.seed is not None else seed
-    epochs = args.epochs if args.epochs is not None else cfg_int(cfg, "epochs", 1)
-    patience = (
-        args.patience
-        if args.patience is not None
-        else cfg_int(cfg, "patience", 1)
+    hidden_profile = require_canonical_model_config(cfg, dataset)
+    k_out = 2
+    seed = int(_override(args.seed, seed))
+    epochs = int(_override(args.epochs, cfg_int(cfg, "epochs", 500)))
+    patience = int(_override(args.patience, cfg_int(cfg, "patience", 100)))
+    lr = float(_override(args.learning_rate, cfg_float(cfg, "learning_rate", 0.005)))
+    weight_decay = float(
+        _override(args.weight_decay, cfg_float(cfg, "weight_decay", 0.0005))
     )
-    lr = (
-        args.learning_rate
-        if args.learning_rate is not None
-        else cfg_float(cfg, "learning_rate", 0.005)
-    )
-    weight_decay = (
-        args.weight_decay
-        if args.weight_decay is not None
-        else cfg_float(cfg, "weight_decay", 0.0005)
-    )
-    dropout = (
-        args.dropout
-        if args.dropout is not None
-        else cfg_float(cfg, "dropout", 0.6)
-    )
-    use_cuda = (
-        args.use_cuda
-        if args.use_cuda is not None
-        else cfg_bool(cfg, "use_cuda", False)
-    )
+    dropout = float(_override(args.dropout, cfg_float(cfg, "dropout", 0.5)))
+    use_cuda = bool(_override(args.use_cuda, True))
+    if (epochs, patience, lr, weight_decay, dropout) != (
+        500,
+        100,
+        0.005,
+        0.0005,
+        0.5,
+    ) or seed != 11:
+        raise ValueError(
+            "ogbn-arxiv formal training requires epochs=500, patience=100, "
+            "lr=0.005, weight_decay=0.0005, dropout=0.5, seed=11"
+        )
     if epochs <= 0 or patience <= 0:
         raise ValueError("epochs and patience must be positive")
     if not 0.0 <= dropout < 1.0:
         raise ValueError("dropout must be in [0, 1)")
-    if use_cuda and not torch.cuda.is_available():
+    if not use_cuda:
         raise RuntimeError(
-            "CUDA training was requested but torch.cuda.is_available() is false"
+            "formal training requires CUDA; refusing to create a CPU checkpoint"
+        )
+    if not torch.cuda.is_available():
+        raise RuntimeError(
+            "CUDA training is required but torch.cuda.is_available() is false"
         )
     symmetrize = cfg_bool(cfg, "symmetrize_edges", False)
 

@@ -31,6 +31,14 @@ def main() -> None:
     features = np.load(data_root / "ppi-feats.npy")
 
     node_count = len(id_map)
+    if features.ndim != 2 or features.shape[0] != node_count or features.shape[1] != 50:
+        raise ValueError(
+            f"PPI features must have shape ({node_count}, 50), got {features.shape}"
+        )
+    if len(class_map) != node_count:
+        raise ValueError(
+            f"PPI class map must cover {node_count} nodes, got {len(class_map)}"
+        )
     adjacency: list[list[int]] = [[] for _ in range(node_count)]
     edge_pairs: list[tuple[int, int]] = []
     for link in graph["links"]:
@@ -62,10 +70,47 @@ def main() -> None:
     inverse = {old: new for new, old in enumerate(permutation)}
     features_permuted = features[permutation]
 
-    class_vectors = np.zeros((node_count, len(next(iter(class_map.values())))), dtype=np.int64)
+    class_vectors = np.zeros(
+        (node_count, len(next(iter(class_map.values())))), dtype=np.int64
+    )
     for raw_node, vector in class_map.items():
-        class_vectors[int(raw_node)] = np.asarray(vector, dtype=np.int64)
-    labels_permuted = np.argmax(class_vectors[permutation], axis=1)
+        class_index = int(id_map[raw_node])
+        raw_class_vector = np.asarray(vector)
+        if raw_class_vector.shape != (class_vectors.shape[1],):
+            raise ValueError(f"PPI class vector shape mismatch for node {raw_node}")
+        if not np.all((raw_class_vector == 0) | (raw_class_vector == 1)):
+            raise ValueError(f"PPI class vector is not multi-hot for node {raw_node}")
+        class_vector = raw_class_vector.astype(np.int64, copy=False)
+        class_vectors[class_index] = class_vector
+
+    # The GraphSAGE PPI release stores split membership on each raw node.  Keep
+    # the masks in the same permutation as features/edges; labels remain the
+    # original 121-dimensional multi-hot vectors for BCEWithLogitsLoss.
+    split_masks = {
+        "train": np.ones(node_count, dtype=bool),
+        "val": np.zeros(node_count, dtype=bool),
+        "test": np.zeros(node_count, dtype=bool),
+    }
+    for node in graph["nodes"]:
+        raw_node = str(node["id"])
+        node_index = int(id_map[raw_node])
+        is_val = bool(node.get("val", False))
+        is_test = bool(node.get("test", False))
+        if is_val and is_test:
+            raise ValueError(f"PPI node belongs to both val and test splits: {raw_node}")
+        split_masks["val"][node_index] = is_val
+        split_masks["test"][node_index] = is_test
+        split_masks["train"][node_index] = not (is_val or is_test)
+    if len(graph["nodes"]) != node_count:
+        raise ValueError(
+            f"PPI graph node list must cover {node_count} nodes, got {len(graph['nodes'])}"
+        )
+
+    labels_multi_permuted = class_vectors[permutation].astype(np.float32, copy=False)
+    split_masks_permuted = {
+        name: mask[np.asarray(permutation, dtype=np.int64)]
+        for name, mask in split_masks.items()
+    }
 
     node_ptr = [0]
     for component in components:
@@ -87,11 +132,25 @@ def main() -> None:
         handle.write("\n".join(str(value) for value in node_ptr))
         handle.write("\n")
 
-    with (output_root / "labels.txt").open("w", encoding="utf-8") as handle:
-        handle.write("\n".join(str(int(value)) for value in labels_permuted))
-        handle.write("\n")
-
     np.save(output_root / "features.npy", features_permuted.astype(np.float32, copy=False))
+    np.save(output_root / "labels_multi.npy", labels_multi_permuted)
+    # The C++ formal data loader intentionally does not depend on NumPy.  Keep
+    # the same node order and full 121-column target in an explicit dependency-
+    # free text representation as well; it is never reduced to an argmax/single label.
+    np.savetxt(
+        output_root / "labels_multi.txt",
+        labels_multi_permuted.astype(np.int8, copy=False),
+        fmt="%d",
+        header=f"{node_count} {class_vectors.shape[1]}",
+        comments="",
+    )
+    for split_name, mask in split_masks_permuted.items():
+        np.save(output_root / f"{split_name}_mask.npy", mask)
+    # Never leave the old argmax cache in a canonical prepared directory.  It
+    # is not a valid representation of PPI's multi-label task.
+    stale_single_label_path = output_root / "labels.txt"
+    if stale_single_label_path.exists():
+        stale_single_label_path.unlink()
     write_meta(
         output_root / "meta.cfg",
         {
@@ -102,6 +161,8 @@ def main() -> None:
             "graph_count": len(components),
             "task_type": "inductive_multi_graph_node_classification",
             "report_unit": "graph",
+            "label_format": "multi_hot",
+            "split_format": "node_masks_v1",
         },
     )
 

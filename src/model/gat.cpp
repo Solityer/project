@@ -570,17 +570,12 @@ namespace gatzk::model
             const auto hardware_workers =
                 forward_worker_budget();
 
-            // Workload-class scheduling only:
-            //
-            // Many independent heads:
-            //   parallelize heads and keep each head internally serial.
-            //
-            // One/few heads:
-            //   keep heads serial and parallelize independent rows/edges
-            //   inside the head.
-            //
-            // This avoids nested oversubscription while covering both the
-            // multi-head and huge-single-head production shapes.
+            // Workload-class scheduling only.  For many independent heads,
+            // parallelize heads and keep each head internally serial.  For a
+            // small head count, keep heads serial and parallelize independent
+            // rows/edges inside each head.  This is a generic non-nested
+            // execution policy; formal model shape validation and the retained
+            // flattened compatibility view are handled by their callers.
             if (head_count >= 4 && hardware_workers >= 4)
             {
                 return ForwardHeadExecutionPlan{
@@ -1554,6 +1549,11 @@ namespace gatzk::model
 
         ModelParameters out;
         out.has_real_multihead = true;
+        out.model_arch_id = manifest_info.model_arch_id;
+        out.model_param_id = manifest_info.model_param_id;
+        out.quant_cfg_id = manifest_info.quant_cfg_id;
+        out.static_table_id = manifest_info.static_table_id;
+        out.degree_bound_id = manifest_info.degree_bound_id;
         out.L = manifest_info.layer_count;
         out.d_in_profile = manifest_info.d_in_profile;
         out.hidden_profile = manifest_info.hidden_profile;

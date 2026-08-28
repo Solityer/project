@@ -11022,6 +11022,31 @@ namespace gatzk::protocol
                 throw std::runtime_error(
                     "config num_classes=" + std::to_string(config.num_classes) + " conflicts with model C=" + std::to_string(context.model.C));
             }
+            if (context.model.model_arch_id != config.model_arch_id)
+            {
+                throw std::runtime_error(
+                    "config model_arch_id conflicts with checkpoint manifest model_arch_id");
+            }
+            if (context.model.model_param_id != config.model_param_id)
+            {
+                throw std::runtime_error(
+                    "config model_param_id conflicts with checkpoint manifest model_param_id");
+            }
+            if (context.model.quant_cfg_id != config.quant_cfg_id)
+            {
+                throw std::runtime_error(
+                    "config quant_cfg_id conflicts with checkpoint manifest quant_cfg_id");
+            }
+            if (context.model.static_table_id != config.static_table_id)
+            {
+                throw std::runtime_error(
+                    "config static_table_id conflicts with checkpoint manifest static_table_id");
+            }
+            if (context.model.degree_bound_id != config.degree_bound_id)
+            {
+                throw std::runtime_error(
+                    "config degree_bound_id conflicts with checkpoint manifest degree_bound_id");
+            }
         }
         auto end = Clock::now();
         if (metrics != nullptr)

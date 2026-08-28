@@ -1,235 +1,276 @@
-# zkGAT 正式主实验
+# zkGAT 主实验
 
-本仓库的唯一生产入口是编译后的 `gatzk_run`。协议、模型语义和安全边界以只读文件
-`GAT-ZKML-多层多头.md` 与 `PROJECT_CONTEXT_AND_EXECUTION_CONSTRAINTS.md` 为最高规范。
-正式数据的 CPU/CUDA 路径共用 `src/` 中同一套 Context、Trace、Prover、
-Verifier、KZG、canonical serializer 和 strict parser。
+本仓库只有一条正式主实验路径：`gatzk_run` 加载当前 canonical 配置、真实训练得到的
+PyTorch checkpoint bundle、对应的 trusted SRS 和同一份公开数据，执行统一的
+commitment、prove、verify 与结果导出。协议约束以只读文件
+`GAT-ZKML-多层多头.md` 和 `PROJECT_CONTEXT_AND_EXECUTION_CONSTRAINTS.md` 为准。
 
-第三阶段尚未收敛。部分正确性、file-backed 生命周期、内存、quotient 和 verify
-优化已经完成并保留，但 commitment 尚无可信下降，当前完整 Cora prove 仅下降
-4.33%，三项合计没有显著净收益；commitment、prove 和总体时间的大幅优化仍在进行。
-当前源码 Cora CPU 完整证明为 `VERIFY_OK`。五套配置所引用的正式 SRS 当前均存在，
-并已通过严格静态绑定扫描。Citeseer、Pubmed 的既有完整
-`VERIFY_OK` 结果属于优化前源码；PPI、ogbn-arxiv 的共同 file-backed opening
-material 生命周期错误已局部验证修复，但两者仍必须标记为“冻结版本最终全量待验证”。
-本轮没有运行 CPU/GPU 十组矩阵。精确证据和受共享主机负载污染的计时边界见
-`MAIN_EXPERIMENT_FINAL_REPORT.md` 与 `PHASE3_PERFORMANCE_OPTIMIZATION.md`。
+当前五个正式数据集都使用同一模型族：
+
+| 数据集 | `d_in_profile` | `L` | `hidden_profile` | `K_out` | `C` | `range_bits` |
+| --- | --- | ---: | --- | ---: | ---: | ---: |
+| Cora | `[1433,64]` | 3 | `[8x8,8x8]` | 2 | 7 | 12 |
+| Citeseer | `[3703,64]` | 3 | `[8x8,8x8]` | 2 | 6 | 12 |
+| Pubmed | `[500,64]` | 3 | `[8x8,8x8]` | 2 | 3 | 12 |
+| PPI | `[50,64]` | 3 | `[8x8,8x8]` | 2 | 121 | 14 |
+| OGBN-Arxiv | `[128,64]` | 3 | `[8x8,8x8]` | 2 | 40 | 21 |
+
+正式 checkpoint、SRS、完整 proof/verify 和 CPU/GPU 十组正式运行需要在本轮之后执行；
+本轮没有把旧工件改名、复制或伪装成新架构结果。训练不启用 strict deterministic
+algorithms，固定 `seed=11`。同一数据集的 CPU 与 CUDA 运行必须使用同一个新 checkpoint、
+同一个配置和同一个 canonical SRS。
+
+## 依赖
+
+正式训练必须使用 CUDA 版 PyTorch；当前训练器在 CUDA 不可用或传入 CPU 选项时直接失败。
+在项目根目录执行：
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install --upgrade pip
+.venv/bin/python -m pip install --upgrade numpy scipy
+.venv/bin/python -m pip install --upgrade torch --index-url https://download.pytorch.org/whl/cu128 --extra-index-url https://pypi.org/simple
+.venv/bin/python -c 'import torch; assert torch.cuda.is_available(); print(torch.__version__, torch.version.cuda, torch.cuda.get_device_name(0))'
+```
 
 ## 构建
 
 CPU Release：
 
 ```bash
-cmake -S . -B build \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DGATZK_ENABLE_CUDA_BACKEND=OFF
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DGATZK_ENABLE_CUDA_BACKEND=OFF
 cmake --build build -j10
 ```
 
 CUDA Release：
 
 ```bash
-cmake -S . -B build_cuda \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DGATZK_ENABLE_CUDA_BACKEND=ON
+cmake -S . -B build_cuda -DCMAKE_BUILD_TYPE=Release -DGATZK_ENABLE_CUDA_BACKEND=ON -DCMAKE_CUDA_ARCHITECTURES=native
 cmake --build build_cuda -j10
 ```
 
-CUDA 后端是同一协议中的 size-aware Fr 热点后端。KZG MSM、pairing、NTT/IFFT、
-quotient materialization 和 opening witness 仍明确在 CPU 上执行。请求
-`cuda_hotspots` 时，CUDA 构建、运行时或设备缺失会直接失败；测量区间内零 CUDA
-kernel 也会失败，不会把 CPU fallback 标成 GPU 结果。
+`--compute-backend cuda_hotspots` 需要 CUDA-enabled binary、可用 CUDA runtime 和至少
+一个真实 CUDA kernel。当前 backend 只把已有 size-aware hotspot 路径放到 CUDA，pairing、
+部分 NTT/IFFT、quotient 和小型/冷启动工作仍按当前实现留在 CPU；零 kernel 或 runtime
+缺失都会失败关闭，不会把 CPU fallback 写成 GPU 结果。
 
-## 五个正式数据集的直接命令
-
-CPU：
+## 数据准备
 
 ```bash
-build/gatzk_run --config configs/cora_secure.cfg --compute-backend cpu --export-tag cpu_default
-build/gatzk_run --config configs/citeseer_secure.cfg --compute-backend cpu --export-tag cpu_default
-build/gatzk_run --config configs/pubmed_secure.cfg --compute-backend cpu --export-tag cpu_default
-build/gatzk_run --config configs/ppi_secure.cfg --compute-backend cpu --export-tag cpu_default
-build/gatzk_run --config configs/ogbn_arxiv_secure.cfg --compute-backend cpu --export-tag cpu_default
+.venv/bin/python scripts/prepare_planetoid.py --data-root data --dataset cora --cache-root data/cache
+.venv/bin/python scripts/prepare_planetoid.py --data-root data --dataset citeseer --cache-root data/cache
+.venv/bin/python scripts/prepare_planetoid.py --data-root data --dataset pubmed --cache-root data/cache
+.venv/bin/python scripts/prepare_ppi.py --data-root data/ppi --output-root data/cache/ppi
+.venv/bin/python scripts/prepare_ogbn_arxiv.py --project-root . --data-root data
 ```
 
-GPU：
+PPI cache 保留原始 121 维 multi-label 矩阵 `labels_multi.npy` 及供 C++ formal loader
+读取的同序 `labels_multi.txt`，并保存 `train_mask.npy`、`val_mask.npy`、`test_mask.npy`；
+不生成单标签 `labels.txt`。图组件、
+特征行、边端点、`node_ptr`、图边界、去重和稳定边排序保持现有正式语义。
+
+## 正式 GPU 训练
+
+以下命令必须自然完成或真实失败，不要包裹固定 timeout。每个命令都写入对应 canonical
+checkpoint 目录；`--overwrite` 只用于在确认没有并发训练后替换该目录中的本轮新模型。
+最佳模型和 early stopping 只依据 validation loss，test split 不参与模型选择。
 
 ```bash
-build_cuda/gatzk_run --config configs/cora_secure.cfg --compute-backend cuda_hotspots --export-tag cuda_default
-build_cuda/gatzk_run --config configs/citeseer_secure.cfg --compute-backend cuda_hotspots --export-tag cuda_default
-build_cuda/gatzk_run --config configs/pubmed_secure.cfg --compute-backend cuda_hotspots --export-tag cuda_default
-build_cuda/gatzk_run --config configs/ppi_secure.cfg --compute-backend cuda_hotspots --export-tag cuda_default
-build_cuda/gatzk_run --config configs/ogbn_arxiv_secure.cfg --compute-backend cuda_hotspots --export-tag cuda_default
+.venv/bin/python scripts/train_planetoid_gat.py --config configs/cora_secure.cfg --epochs 500 --patience 100 --learning-rate 0.005 --weight-decay 0.0005 --dropout 0.6 --seed 11 --use-cuda --overwrite
+.venv/bin/python scripts/train_planetoid_gat.py --config configs/citeseer_secure.cfg --epochs 500 --patience 100 --learning-rate 0.005 --weight-decay 0.0005 --dropout 0.6 --seed 11 --use-cuda --overwrite
+.venv/bin/python scripts/train_planetoid_gat.py --config configs/pubmed_secure.cfg --epochs 500 --patience 100 --learning-rate 0.01 --weight-decay 0.001 --dropout 0.6 --seed 11 --use-cuda --overwrite
+.venv/bin/python scripts/train_ppi_gat.py --config configs/ppi_secure.cfg --epochs 500 --patience 100 --learning-rate 0.005 --weight-decay 0 --dropout 0.0 --seed 11 --use-cuda --overwrite
+.venv/bin/python scripts/train_ogbn_arxiv_gat.py --config configs/ogbn_arxiv_secure.cfg --epochs 500 --patience 100 --learning-rate 0.005 --weight-decay 0.0005 --dropout 0.5 --seed 11 --use-cuda --overwrite
 ```
 
-`gatzk_run` 不设置固定超时；进程会运行到正常结束、真实错误或用户中断。不写 tag 时
-输出到 `runs/<dataset>_secure/warm/`；上面的命令分别写入
-`runs/<dataset>_secure/cpu_default/warm/` 和
-`runs/<dataset>_secure/cuda_default/warm/`，避免两个后端互相覆盖。一般形式
-`--export-tag <tag>` 会写入 `runs/<dataset>_secure/<tag>/warm/`。
-tag 必须是最多 96 个 ASCII 字母、数字、点、下划线或连字符组成的单一路径分量，
-且不能是 `.` 或 `..`；非法路径会直接报错。
+PPI 训练复用 `train_planetoid_gat.py` 的 `PlanetoidGAT`、optimizer、seed 和 checkpoint
+链，但使用 `BCEWithLogitsLoss`，输出维度固定为 121；其 test mask 只保存在数据语义中，
+不用于最佳模型选择。
 
-每次成功运行会在控制台输出一行：
+## checkpoint export 与严格检查
 
-```text
-dataset=... backend=... status=VERIFY_OK commitment_time_ms=... prove_time_ms=... verify_time_ms=... proof_size_bytes=...
-```
-
-运行目录中的正式真源包括：
-
-- `proof.bin`：canonical serialized proof；
-- `benchmark.txt`：五个交付指标；
-- `run_manifest.json`：计时拆分、后端、优化实际状态、工件 hash 和安全审计状态；
-- `metadata.txt`、`proof_block_order.txt`、`commitment_order.txt`；
-- `dynamic_commitment_object_profile.csv`：内部 commitment 热点明细。
-
-`run_manifest.json` 的 `proof_hash` 是 `proof.bin` 的 SHA-256，
-`proof_size_bytes` 必须与 `proof.bin` 文件长度完全一致。
-
-## 默认优化与消融
-
-Release 构建默认开启：
-
-- `fast_msm`
-- `parallel_fft`
-- `fft_backend_upgrade`
-- `fft_kernel_upgrade`
-- `trace_layout_upgrade`
-- `fast_verify_pairing`
-
-CUDA 的 `cuda_trace_hotspots` 与 `cuda_field_hotspots` 由
-`--compute-backend cuda_hotspots` 选择；CPU 运行中二者记录为 `not_applicable`。
-`run_manifest.json` 的 `optimization_flags` 对每项记录实际状态、来源和当前后端适用性。
-
-正常正式运行无需写任何 `--xxx on`。消融时只显式关闭待测项，例如：
+训练完成后，先把真实 `best_model.pt` 导出到同一 canonical bundle 目录：
 
 ```bash
-build/gatzk_run --config configs/cora_secure.cfg --compute-backend cpu \
-  --fast-msm off --export-tag ablation_fast_msm_off
+.venv/bin/python scripts/export_torch_gat_bundle.py --checkpoint artifacts/checkpoints/cora_gat/best_model.pt --output-dir artifacts/checkpoints/cora_gat
+.venv/bin/python scripts/export_torch_gat_bundle.py --checkpoint artifacts/checkpoints/citeseer_gat/best_model.pt --output-dir artifacts/checkpoints/citeseer_gat
+.venv/bin/python scripts/export_torch_gat_bundle.py --checkpoint artifacts/checkpoints/pubmed_gat/best_model.pt --output-dir artifacts/checkpoints/pubmed_gat
+.venv/bin/python scripts/import_ppi_bundle.py --torch-checkpoint artifacts/checkpoints/ppi_gat/best_model.pt --output-dir artifacts/checkpoints/ppi_gat
+.venv/bin/python scripts/export_torch_gat_bundle.py --checkpoint artifacts/checkpoints/ogbn_arxiv_gat/best_model.pt --output-dir artifacts/checkpoints/ogbn_arxiv_gat
 ```
 
-其余可关闭参数是 `--parallel-fft off`、`--fft-backend-upgrade off`、
-`--fft-kernel-upgrade off`、`--trace-layout-upgrade off` 和
-`--fast-verify-pairing off`。带 `off` 的目录只能作为消融结果，不能与默认完整优化结果
-混合统计。未知参数、缺失值和非法值都会直接报错。
-
-## 长时间运行与结果读取
-
-启用阶段进度并保留日志：
+然后执行严格的 bundle、source checkpoint、tensor index 和每个 kernel/bias shape 检查：
 
 ```bash
-GATZK_RUN_PROGRESS=1 build/gatzk_run \
-  --config configs/cora_secure.cfg --compute-backend cpu \
-  --export-tag cpu_default \
-  2>&1 | tee cora_cpu.log
+.venv/bin/python scripts/check_checkpoint_bundle.py --dataset cora --bundle-dir artifacts/checkpoints/cora_gat --checkpoint artifacts/checkpoints/cora_gat/best_model.pt
+.venv/bin/python scripts/check_checkpoint_bundle.py --dataset citeseer --bundle-dir artifacts/checkpoints/citeseer_gat --checkpoint artifacts/checkpoints/citeseer_gat/best_model.pt
+.venv/bin/python scripts/check_checkpoint_bundle.py --dataset pubmed --bundle-dir artifacts/checkpoints/pubmed_gat --checkpoint artifacts/checkpoints/pubmed_gat/best_model.pt
+.venv/bin/python scripts/check_checkpoint_bundle.py --dataset ppi --bundle-dir artifacts/checkpoints/ppi_gat --checkpoint artifacts/checkpoints/ppi_gat/best_model.pt
+.venv/bin/python scripts/check_checkpoint_bundle.py --dataset ogbn-arxiv --bundle-dir artifacts/checkpoints/ogbn_arxiv_gat --checkpoint artifacts/checkpoints/ogbn_arxiv_gat/best_model.pt
 ```
 
-另一个终端可用 `tail -f cora_cpu.log` 查看进度，用 `ps` 或 `top` 查看 CPU、内存和
-进程状态。不要为正式主程序包装固定 timeout。
+每个检查都必须报告 `checkpoint bundle shape check passed`。任何旧的单层、单头或单输出
+checkpoint 都会因 metadata、state_dict key 或 shape 不匹配而拒绝；禁止复制、reshape、
+补权重或改名生成正式模型。
 
-读取正式摘要：
+## forward/parity 短检查
+
+三个 Planetoid 数据集可以在完整 proof 前做 checkpoint 与导出 bundle 的 CPU forward trace
+parity。输出是临时文件，检查后删除，不是正式性能结果：
 
 ```bash
-cat runs/cora_secure/cpu_default/warm/benchmark.txt
-jq '{
-  status,
-  commitment_time_ms,
-  prove_time_ms,
-  verify_time_ms,
-  formal_time_sum_ms,
-  proof_size_bytes,
-  optimization_flags,
-  gpu_kernel_invocation_count
-}' runs/cora_secure/cpu_default/warm/run_manifest.json
-sha256sum runs/cora_secure/cpu_default/warm/proof.bin
+parity_cora=$(mktemp /tmp/zkgat-parity-cora.XXXXXX.json)
+.venv/bin/python scripts/check_planetoid_parity.py --checkpoint artifacts/checkpoints/cora_gat/best_model.pt --bundle-dir artifacts/checkpoints/cora_gat --data-root data --dataset cora --output "$parity_cora"
+jq -e '.passed == true and .comparison_count > 0' "$parity_cora"
+unlink "$parity_cora"
+
+parity_citeseer=$(mktemp /tmp/zkgat-parity-citeseer.XXXXXX.json)
+.venv/bin/python scripts/check_planetoid_parity.py --checkpoint artifacts/checkpoints/citeseer_gat/best_model.pt --bundle-dir artifacts/checkpoints/citeseer_gat --data-root data --dataset citeseer --output "$parity_citeseer"
+jq -e '.passed == true and .comparison_count > 0' "$parity_citeseer"
+unlink "$parity_citeseer"
+
+parity_pubmed=$(mktemp /tmp/zkgat-parity-pubmed.XXXXXX.json)
+.venv/bin/python scripts/check_planetoid_parity.py --checkpoint artifacts/checkpoints/pubmed_gat/best_model.pt --bundle-dir artifacts/checkpoints/pubmed_gat --data-root data --dataset pubmed --output "$parity_pubmed"
+jq -e '.passed == true and .comparison_count > 0' "$parity_pubmed"
+unlink "$parity_pubmed"
 ```
 
-可选的 `scripts/export_benchmark_table.py` 只整理已经存在的严格 manifest，不运行协议、
-不改变指标，也不是单数据集运行依赖。十个正式运行全部完成后，可分别生成 CPU/GPU
-统一结果：
+## SRS 检查与必要重建
+
+当前 canonical secure config 的 SRS envelope 已按 `L=3`、16 个 hidden heads、两个输出
+heads、concat width 64 和各数据集真实容量更新。旧 SRS 不能因 nominal degree 足够就复用：
+envelope hash 或 domain catalog 不匹配时必须重建。下列命令使用现有
+`build/gatzk_srs_setup`、当前 degree bound、domain catalog 和 canonical `srs_id`；ceremony
+会采样真实 setup，不能在本轮短验证中执行。
+
+先完成每个数据集的 compile、ceremony 和独立 validate；只有 validate 成功后才删除同名
+canonical 目录并移动 staging 目录，禁止直接在 canonical 目录中部分写入：
 
 ```bash
-python3 scripts/export_benchmark_table.py \
-  --output-dir results/paper_secure/cpu \
-  --run cora=runs/cora_secure/cpu_default/warm \
-  --run citeseer=runs/citeseer_secure/cpu_default/warm \
-  --run pubmed=runs/pubmed_secure/cpu_default/warm \
-  --run ppi=runs/ppi_secure/cpu_default/warm \
-  --run ogbn-arxiv=runs/ogbn_arxiv_secure/cpu_default/warm
+srs_stage_cora=$(mktemp -d /tmp/zkgat-srs-cora.XXXXXX)
+build/gatzk_srs_setup compile "$srs_stage_cora/protocol_compiler_artifact.txt" 16777215 configs/srs_cora_max_envelope_v1.cfg C=16 FH=4194304 N=4096 cat=128 d=16 edge=32768 in=2048
+build/gatzk_srs_setup ceremony "$srs_stage_cora/material" "$srs_stage_cora/protocol_compiler_artifact.txt" cora_formal_srs
+build/gatzk_srs_setup validate "$srs_stage_cora/material" cora_formal_srs
+rm -rf artifacts/srs/cora_formal_srs
+mv "$srs_stage_cora/material" artifacts/srs/cora_formal_srs
+rm -rf "$srs_stage_cora"
 
-python3 scripts/export_benchmark_table.py \
-  --output-dir results/paper_secure/cuda \
-  --run cora=runs/cora_secure/cuda_default/warm \
-  --run citeseer=runs/citeseer_secure/cuda_default/warm \
-  --run pubmed=runs/pubmed_secure/cuda_default/warm \
-  --run ppi=runs/ppi_secure/cuda_default/warm \
-  --run ogbn-arxiv=runs/ogbn_arxiv_secure/cuda_default/warm
+srs_stage_citeseer=$(mktemp -d /tmp/zkgat-srs-citeseer.XXXXXX)
+build/gatzk_srs_setup compile "$srs_stage_citeseer/protocol_compiler_artifact.txt" 67108863 configs/srs_citeseer_max_envelope_v1.cfg C=8 FH=16777216 N=4096 cat=128 d=16 edge=32768 in=4096
+build/gatzk_srs_setup ceremony "$srs_stage_citeseer/material" "$srs_stage_citeseer/protocol_compiler_artifact.txt" citeseer_formal_srs
+build/gatzk_srs_setup validate "$srs_stage_citeseer/material" citeseer_formal_srs
+rm -rf artifacts/srs/citeseer_formal_srs
+mv "$srs_stage_citeseer/material" artifacts/srs/citeseer_formal_srs
+rm -rf "$srs_stage_citeseer"
+
+srs_stage_pubmed=$(mktemp -d /tmp/zkgat-srs-pubmed.XXXXXX)
+build/gatzk_srs_setup compile "$srs_stage_pubmed/protocol_compiler_artifact.txt" 67108863 configs/srs_pubmed_max_envelope_v1.cfg C=8 FH=16777216 N=32768 cat=128 d=16 edge=262144 in=512
+build/gatzk_srs_setup ceremony "$srs_stage_pubmed/material" "$srs_stage_pubmed/protocol_compiler_artifact.txt" pubmed_formal_srs
+build/gatzk_srs_setup validate "$srs_stage_pubmed/material" pubmed_formal_srs
+rm -rf artifacts/srs/pubmed_formal_srs
+mv "$srs_stage_pubmed/material" artifacts/srs/pubmed_formal_srs
+rm -rf "$srs_stage_pubmed"
+
+srs_stage_ppi=$(mktemp -d /tmp/zkgat-srs-ppi.XXXXXX)
+build/gatzk_srs_setup compile "$srs_stage_ppi/protocol_compiler_artifact.txt" 33554431 configs/srs_ppi_max_envelope_v1.cfg C=128 FH=4194304 N=65536 cat=64 d=16 edge=8388608 in=64
+build/gatzk_srs_setup ceremony "$srs_stage_ppi/material" "$srs_stage_ppi/protocol_compiler_artifact.txt" ppi_formal_srs
+build/gatzk_srs_setup validate "$srs_stage_ppi/material" ppi_formal_srs
+rm -rf artifacts/srs/ppi_formal_srs
+mv "$srs_stage_ppi/material" artifacts/srs/ppi_formal_srs
+rm -rf "$srs_stage_ppi"
+
+srs_stage_ogbn=$(mktemp -d /tmp/zkgat-srs-ogbn-arxiv.XXXXXX)
+build/gatzk_srs_setup compile "$srs_stage_ogbn/protocol_compiler_artifact.txt" 134217727 configs/srs_ogbn_arxiv_max_envelope_v1.cfg C=64 FH=33554432 N=262144 cat=64 d=16 edge=8388608 in=256
+build/gatzk_srs_setup ceremony "$srs_stage_ogbn/material" "$srs_stage_ogbn/protocol_compiler_artifact.txt" ogbn_arxiv_formal_srs
+build/gatzk_srs_setup validate "$srs_stage_ogbn/material" ogbn_arxiv_formal_srs
+rm -rf artifacts/srs/ogbn_arxiv_formal_srs
+mv "$srs_stage_ogbn/material" artifacts/srs/ogbn_arxiv_formal_srs
+rm -rf "$srs_stage_ogbn"
 ```
 
-输出为各目录中的 `latest.json`、`latest.csv` 和 `summary.md`；脚本只接受
-`warm + full-dataset + verified` manifest。
-
-## 正式工件状态与 SRS
-
-五个数据集的 cache、checkpoint bundle 和配置引用的正式 SRS 均已由当前生产路径
-读取；五套最大包络已由当前 `gatzk_srs_setup compile` 验证。正式状态如下：
-
-| 数据集 | 配置 | data/cache | checkpoint | compiler artifact | trusted SRS |
-| --- | --- | --- | --- | --- | --- |
-| Cora | `configs/cora_secure.cfg` | 就绪 | 就绪 | 匹配 | 就绪 |
-| Citeseer | `configs/citeseer_secure.cfg` | 就绪 | 就绪 | 匹配 | 就绪 |
-| Pubmed | `configs/pubmed_secure.cfg` | 就绪 | 就绪 | 匹配 | 就绪 |
-| PPI | `configs/ppi_secure.cfg` | 就绪 | 就绪 | 匹配 | 就绪 |
-| ogbn-arxiv | `configs/ogbn_arxiv_secure.cfg` | 就绪 | 就绪 | 匹配 | 就绪 |
-
-正式运行前执行：
+SRS 生成完成后检查五个 canonical manifest，并执行安全绑定扫描：
 
 ```bash
+build/gatzk_srs_setup validate artifacts/srs/cora_formal_srs cora_formal_srs
+build/gatzk_srs_setup validate artifacts/srs/citeseer_formal_srs citeseer_formal_srs
+build/gatzk_srs_setup validate artifacts/srs/pubmed_formal_srs pubmed_formal_srs
+build/gatzk_srs_setup validate artifacts/srs/ppi_formal_srs ppi_formal_srs
+build/gatzk_srs_setup validate artifacts/srs/ogbn_arxiv_formal_srs ogbn_arxiv_formal_srs
 python3 tools/security/static_scan_no_tau.py --require-all-configured-srs
 ```
 
-该扫描已在 2026-07-30 当前工作区通过。它检查静态安全禁项和工件绑定，不等价于
-完整数据集证明通过，也不能把 PPI/ogbn-arxiv 写成已经 `VERIFY_OK`。旧命名 SRS
-目录具有不同 manifest/ceremony provenance，未作为缓存删除；当前正式配置只引用
-`artifacts/srs/<dataset>_formal_srs`。
+## 正式 CPU 与 CUDA runs
 
-## 保留脚本
+完成新 checkpoint、bundle 检查和对应 SRS 后，执行五个 full CPU runs：
 
-单数据集正式运行不依赖任何 Python 或 Shell 脚本。保留脚本仅用于工件重建、检查或
-可选结果整理：
+```bash
+build/gatzk_run --config configs/cora_secure.cfg --compute-backend cpu --export-tag cpu_formal
+build/gatzk_run --config configs/citeseer_secure.cfg --compute-backend cpu --export-tag cpu_formal
+build/gatzk_run --config configs/pubmed_secure.cfg --compute-backend cpu --export-tag cpu_formal
+build/gatzk_run --config configs/ppi_secure.cfg --compute-backend cpu --export-tag cpu_formal
+build/gatzk_run --config configs/ogbn_arxiv_secure.cfg --compute-backend cpu --export-tag cpu_formal
+```
 
-- `prepare_planetoid.py`、`prepare_ppi.py`、`prepare_ogbn_arxiv.py`：重建正式数据 cache；
-- `planetoid_utils.py`、`ogbn_arxiv_utils.py`：上述数据工具的共享加载/规范化逻辑；
-- `train_planetoid_gat.py`、`train_ogbn_arxiv_gat.py`：可复现训练/加载 checkpoint；
-- `export_gat_checkpoint.py`、`export_torch_gat_bundle.py`、`import_ppi_bundle.py`：
-  生成 C++ 生产加载器使用的 checkpoint bundle；
-- `checkpoint_reader_compat.py`：旧 TensorFlow checkpoint 读取兼容层，仅供导出工具使用；
-- `check_planetoid_parity.py`：训练 checkpoint 与导出 bundle 的可选一致性检查；
-- `export_benchmark_table.py`：可选结果整理；
-- `fetch_mcl.sh`：缺少 vendored MCL 时的可选依赖获取工具。
+再执行五个同配置、同 checkpoint、同 SRS 的 CUDA hotspot runs：
 
-## 性能证据边界
+```bash
+build_cuda/gatzk_run --config configs/cora_secure.cfg --compute-backend cuda_hotspots --export-tag cuda_formal
+build_cuda/gatzk_run --config configs/citeseer_secure.cfg --compute-backend cuda_hotspots --export-tag cuda_formal
+build_cuda/gatzk_run --config configs/pubmed_secure.cfg --compute-backend cuda_hotspots --export-tag cuda_formal
+build_cuda/gatzk_run --config configs/ppi_secure.cfg --compute-backend cuda_hotspots --export-tag cuda_formal
+build_cuda/gatzk_run --config configs/ogbn_arxiv_secure.cfg --compute-backend cuda_hotspots --export-tag cuda_formal
+```
 
-优化前完整 CPU 基线为：
+每个目录中的 `warm/run_manifest.json` 和 `proof.bin` 是结果真源。以下检查必须全部成功；
+`range_table_size` 分别对应各配置的 `range_bits`，`private_plain_value_count` 必须为 0，
+GPU manifest 还必须记录 runtime 和正数 kernel invocation：
 
-| 数据集 | commitment | prove | verify | 状态 |
-| --- | ---: | ---: | ---: | --- |
-| Cora | 34.849 s | 159.022 s | 1.199 s | `VERIFY_OK` |
-| Citeseer | 78.635 s | 429.439 s | 3.373 s | `VERIFY_OK` |
-| Pubmed | 113.707 s | 1020.030 s | 12.653 s | `VERIFY_OK` |
+```bash
+jq -e '.status == "VERIFY_OK" and .verified == "true" and .full_dataset == "true" and .stale_result == "false" and .verifier_reads_witness == "false" and .private_plain_value_count == "0" and .range_table_size == "4096" and .gpu_backend_requested == "false"' runs/cora_secure/cpu_formal/warm/run_manifest.json
+jq -e '.status == "VERIFY_OK" and .verified == "true" and .full_dataset == "true" and .stale_result == "false" and .verifier_reads_witness == "false" and .private_plain_value_count == "0" and .range_table_size == "4096" and .gpu_backend_requested == "false"' runs/citeseer_secure/cpu_formal/warm/run_manifest.json
+jq -e '.status == "VERIFY_OK" and .verified == "true" and .full_dataset == "true" and .stale_result == "false" and .verifier_reads_witness == "false" and .private_plain_value_count == "0" and .range_table_size == "4096" and .gpu_backend_requested == "false"' runs/pubmed_secure/cpu_formal/warm/run_manifest.json
+jq -e '.status == "VERIFY_OK" and .verified == "true" and .full_dataset == "true" and .stale_result == "false" and .verifier_reads_witness == "false" and .private_plain_value_count == "0" and .range_table_size == "16384" and .gpu_backend_requested == "false"' runs/ppi_secure/cpu_formal/warm/run_manifest.json
+jq -e '.status == "VERIFY_OK" and .verified == "true" and .full_dataset == "true" and .stale_result == "false" and .verifier_reads_witness == "false" and .private_plain_value_count == "0" and .range_table_size == "2097152" and .gpu_backend_requested == "false"' runs/ogbn_arxiv_secure/cpu_formal/warm/run_manifest.json
 
-这些结果属于优化前源码，对当前源码是 `stale-for-current-source`。当前源码 Cora
-完整 CPU 路径也已 `VERIFY_OK`：43.858/152.137/0.713 s，canonical proof 为
-1,462,616 bytes。该次运行与两个训练任务和其他 CPU 负载重叠，因此正确性与工件
-有效，时间不能当作受控冻结上限。
+jq -e '.status == "VERIFY_OK" and .verified == "true" and .full_dataset == "true" and .stale_result == "false" and .verifier_reads_witness == "false" and .private_plain_value_count == "0" and .gpu_backend_requested == "true" and .gpu_runtime_present == "true" and ((.gpu_kernel_invocation_count | tonumber) > 0)' runs/cora_secure/cuda_formal/warm/run_manifest.json
+jq -e '.status == "VERIFY_OK" and .verified == "true" and .full_dataset == "true" and .stale_result == "false" and .verifier_reads_witness == "false" and .private_plain_value_count == "0" and .gpu_backend_requested == "true" and .gpu_runtime_present == "true" and ((.gpu_kernel_invocation_count | tonumber) > 0)' runs/citeseer_secure/cuda_formal/warm/run_manifest.json
+jq -e '.status == "VERIFY_OK" and .verified == "true" and .full_dataset == "true" and .stale_result == "false" and .verifier_reads_witness == "false" and .private_plain_value_count == "0" and .gpu_backend_requested == "true" and .gpu_runtime_present == "true" and ((.gpu_kernel_invocation_count | tonumber) > 0)' runs/pubmed_secure/cuda_formal/warm/run_manifest.json
+jq -e '.status == "VERIFY_OK" and .verified == "true" and .full_dataset == "true" and .stale_result == "false" and .verifier_reads_witness == "false" and .private_plain_value_count == "0" and .gpu_backend_requested == "true" and .gpu_runtime_present == "true" and ((.gpu_kernel_invocation_count | tonumber) > 0)' runs/ppi_secure/cuda_formal/warm/run_manifest.json
+jq -e '.status == "VERIFY_OK" and .verified == "true" and .full_dataset == "true" and .stale_result == "false" and .verifier_reads_witness == "false" and .private_plain_value_count == "0" and .gpu_backend_requested == "true" and .gpu_runtime_present == "true" and ((.gpu_kernel_invocation_count | tonumber) > 0)' runs/ogbn_arxiv_secure/cuda_formal/warm/run_manifest.json
+```
 
-同源 production profiling 显示 Cora quotient build 从 126.253 s 降至 102.171 s
-（-19.08%），t_edge/t_FH 分别下降 25.56%/17.46%；当前 verifier 对既有 Cora
-canonical proof 的三次直接验证中位为 512.707 ms（均通过）。完整安全形态峰值 RSS
-从 25,899,732 KiB 降至 17,250,228 KiB（-33.40%），t_edge 临时 coset 从
-9,521,070,080 bytes 降至 7,088,373,760 bytes（-25.55%）。
+对每个成功 run 还要核验 `proof_hash` 与 `sha256sum proof.bin` 相等，配置、模型、量化和
+SRS hash 非空；只有这些 current-source manifest 才能进入结果表。运行过程中可设置
+`GATZK_RUN_PROGRESS=1` 观察阶段进度，但不要改变计时边界或添加固定 timeout。
 
-commitment 没有可接受的新整链降幅；当前完整运行中的表面回退与明显外部负载长尾同时
-出现，不作为代码结论。保留/回滚候选、各阶段原始值、PPI/ogbn-arxiv 边界和冻结后
-十行最终验证命令见两份报告。
+## 结果整理
+
+十组正式 run 全部通过上述检查后，生成 CPU 与 CUDA 两份结果目录：
+
+```bash
+.venv/bin/python scripts/export_benchmark_table.py --output-dir results/paper_secure/cpu --run cora=runs/cora_secure/cpu_formal/warm --run citeseer=runs/citeseer_secure/cpu_formal/warm --run pubmed=runs/pubmed_secure/cpu_formal/warm --run ppi=runs/ppi_secure/cpu_formal/warm --run ogbn-arxiv=runs/ogbn_arxiv_secure/cpu_formal/warm
+.venv/bin/python scripts/export_benchmark_table.py --output-dir results/paper_secure/cuda --run cora=runs/cora_secure/cuda_formal/warm --run citeseer=runs/citeseer_secure/cuda_formal/warm --run pubmed=runs/pubmed_secure/cuda_formal/warm --run ppi=runs/ppi_secure/cuda_formal/warm --run ogbn-arxiv=runs/ogbn_arxiv_secure/cuda_formal/warm
+jq -e '.benchmark_mode == "warm" and (.rows | length) == 5' results/paper_secure/cpu/latest.json
+jq -e '.benchmark_mode == "warm" and (.rows | length) == 5' results/paper_secure/cuda/latest.json
+```
+
+将十个已通过上述逐项核验的 manifest 聚合为唯一根结果集。该命令要求五个 CPU 和五个
+CUDA run 全部存在且通过 `VERIFY_OK`、full-dataset、proof hash、配置/模型/量化/SRS
+配对和安全字段检查。聚合器还会重新计算 canonical config、checkpoint bundle 的
+`manifest.json`/`tensors.txt`/`tensors.npz`/`best_model.pt` 以及 SRS
+`srs_manifest.json` 的 SHA-256，并与 run manifest 中的真实记录逐项比对；任一缺失、
+篡改或不一致都会 fail-closed，且不会写出根结果文件：
+
+```bash
+.venv/bin/python scripts/aggregate_secure_results.py --output-dir results/paper_secure --cpu-run cora=runs/cora_secure/cpu_formal/warm --cpu-run citeseer=runs/citeseer_secure/cpu_formal/warm --cpu-run pubmed=runs/pubmed_secure/cpu_formal/warm --cpu-run ppi=runs/ppi_secure/cpu_formal/warm --cpu-run ogbn-arxiv=runs/ogbn_arxiv_secure/cpu_formal/warm --cuda-run cora=runs/cora_secure/cuda_formal/warm --cuda-run citeseer=runs/citeseer_secure/cuda_formal/warm --cuda-run pubmed=runs/pubmed_secure/cuda_formal/warm --cuda-run ppi=runs/ppi_secure/cuda_formal/warm --cuda-run ogbn-arxiv=runs/ogbn_arxiv_secure/cuda_formal/warm
+jq -e '.run_count == 10 and (.rows | length) == 10 and .security_tests.all_passed == true' results/paper_secure/latest.json
+test -s results/paper_secure/security_tests_report.md
+test "$(awk 'END {print NR-1}' results/paper_secure/latest.csv)" -eq 10
+```
+
+上述聚合命令成功后，`results/paper_secure/summary.md`、`latest.csv`、`latest.json` 和
+`security_tests_report.md` 才是十组正式结果的根级交付面；本轮没有执行正式训练、SRS
+ceremony、完整 proof/verify 或十组实验，因此当前不生成这些文件。
+
+当前 README 只描述这套 canonical 状态；正式训练、checkpoint 生成、SRS ceremony、完整
+proof/verify 和十组最终结果在执行完成前均不视为已完成。

@@ -36,6 +36,14 @@ from planetoid_utils import (
 HiddenProfile = List[Dict[str, int]]
 OUTPUT_AVERAGE_RULE = "per_head_bias_then_arithmetic_mean"
 
+CANONICAL_MODEL_SPECS = {
+    "cora": ([1433, 64], 7, "gat_family_L3_hid8x8-8x8_kout2_c7", "cora_planetoid_seed11"),
+    "citeseer": ([3703, 64], 6, "gat_family_L3_hid8x8-8x8_kout2_c6", "citeseer_planetoid_seed11"),
+    "pubmed": ([500, 64], 3, "gat_family_L3_hid8x8-8x8_kout2_c3", "pubmed_planetoid_seed11"),
+    "ppi": ([50, 64], 121, "gat_family_L3_hid8x8-8x8_kout2_c121", "ppi_gat_seed11"),
+    "ogbn_arxiv": ([128, 64], 40, "gat_family_L3_hid8x8-8x8_kout2_c40", "ogbn_arxiv_seed11"),
+}
+
 
 def parse_cfg(path: pathlib.Path) -> Dict[str, str]:
     values: Dict[str, str] = {}
@@ -98,6 +106,43 @@ def parse_hidden_profile_expr(raw: str) -> HiddenProfile:
     if not profile:
         raise ValueError("hidden_profile must be non-empty")
     return profile
+
+
+def require_canonical_model_config(
+    cfg: Mapping[str, str], dataset: str
+) -> HiddenProfile:
+    """Require the one architecture used by every registered formal dataset."""
+    if dataset not in CANONICAL_MODEL_SPECS:
+        raise ValueError(f"unsupported formal dataset: {dataset}")
+    expected_d_in, expected_classes, expected_arch, expected_param = CANONICAL_MODEL_SPECS[
+        dataset
+    ]
+    try:
+        hidden_profile = parse_hidden_profile_expr(cfg["hidden_profile"])
+        raw_d_in = cfg["d_in_profile"].strip().strip("[]")
+        d_in_profile = [int(value.strip()) for value in raw_d_in.split(",") if value.strip()]
+    except (KeyError, ValueError) as error:
+        raise ValueError(f"{dataset} formal config must expose canonical model shape") from error
+    if hidden_profile != [
+        {"head_count": 8, "head_dim": 8},
+        {"head_count": 8, "head_dim": 8},
+    ]:
+        raise ValueError(f"{dataset} formal training requires hidden_profile=[8x8,8x8]")
+    if d_in_profile != expected_d_in:
+        raise ValueError(
+            f"{dataset} formal training requires d_in_profile={expected_d_in}"
+        )
+    if cfg_int(cfg, "L", 0) != 3 or cfg_int(cfg, "K_out", 0) != 2:
+        raise ValueError(f"{dataset} formal training requires L=3 and K_out=2")
+    if cfg_int(cfg, "num_classes", 0) != expected_classes:
+        raise ValueError(f"{dataset} formal config has an unexpected class count")
+    if cfg.get("model_arch_id") != expected_arch:
+        raise ValueError(f"{dataset} formal config has an unexpected model_arch_id")
+    if cfg.get("model_param_id") != expected_param:
+        raise ValueError(f"{dataset} formal config has an unexpected model_param_id")
+    if cfg.get("quant_cfg_id") != "fp32_torch_checkpoint":
+        raise ValueError(f"{dataset} formal training requires quant_cfg_id=fp32_torch_checkpoint")
+    return hidden_profile
 
 
 def normalize_hidden_profile(raw: Sequence[Mapping[str, object]]) -> HiddenProfile:
@@ -411,8 +456,8 @@ class PlanetoidGAT(nn.Module):
             "output_heads": output_traces,
             "output_head_values": [value.detach().cpu() for value in output_values],
             "logits": logits.detach().cpu(),
-            # Compatibility aliases for existing single-layer/single-output
-            # parity consumers.  New consumers should use the structured keys.
+            # Non-formal parity-only aliases for older trace consumers. The
+            # canonical checkpoint/export/proof path uses the structured keys.
             "hidden_concat": hidden_layer_traces[-1]["concat"],
             "hidden_heads": (
                 hidden_layer_traces[0]["heads"]
@@ -499,6 +544,7 @@ def checkpoint_metadata(
         "weight_decay": float(weight_decay),
         "task_type": "transductive_node_classification",
         "report_unit": "node",
+        "selection_metric": "validation_loss",
         "model_arch_id": architecture_id(profile, k_out, num_classes),
         "model_param_id": model_param_id,
         "quant_cfg_id": "fp32_torch_checkpoint",
@@ -696,7 +742,8 @@ def _run_trace(
         )
     assert trace is not None
     result = _numpy_trace(logits, trace)
-    # Compatibility keys retained for historical single-layer parity tooling.
+    # Non-formal parity-only aliases; canonical consumers use hidden_layers and
+    # output_heads directly.
     result["hidden_concat"] = result["hidden_layers"][-1]["concat"]
     result["hidden_heads"] = result["hidden_layers"][0]["heads"]
     if len(result["output_heads"]) == 1:
@@ -760,7 +807,10 @@ def _resolve_output_dir(
         return pathlib.Path(cli_output_dir).expanduser().resolve()
     return (
         project_root
-        / cfg.get("checkpoint_dir", f"artifacts/checkpoints/{dataset}_gat")
+        / cfg.get(
+            "checkpoint_bundle",
+            f"artifacts/checkpoints/{dataset}_gat",
+        )
     ).resolve()
 
 
@@ -772,7 +822,7 @@ def add_training_cli(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--config", required=True)
     parser.add_argument(
         "--output-dir",
-        help="checkpoint destination; use a new directory for scaling runs",
+        help="canonical checkpoint destination (defaults to checkpoint_bundle)",
     )
     parser.add_argument("--epochs", type=int)
     parser.add_argument("--patience", type=int)
@@ -815,12 +865,8 @@ def main() -> None:
         )
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    if "hidden_profile" not in cfg:
-        raise ValueError("training config must expose hidden_profile")
-    hidden_profile = parse_hidden_profile_expr(cfg["hidden_profile"])
-    k_out = cfg_int(cfg, "K_out", 1)
-    if k_out <= 0:
-        raise ValueError("K_out must be positive")
+    hidden_profile = require_canonical_model_config(cfg, dataset)
+    k_out = 2
     epochs = int(_override(args.epochs, cfg_int(cfg, "epochs", 500)))
     patience = int(_override(args.patience, cfg_int(cfg, "patience", 100)))
     learning_rate = float(
@@ -831,16 +877,29 @@ def main() -> None:
     )
     dropout = float(_override(args.dropout, cfg_float(cfg, "dropout", 0.6)))
     seed = int(_override(args.seed, cfg_int(cfg, "seed", 11)))
-    use_cuda = bool(
-        _override(args.use_cuda, cfg_bool(cfg, "use_cuda", False))
-    )
+    use_cuda = bool(_override(args.use_cuda, True))
+    expected_training = {
+        "cora": (500, 100, 0.005, 0.0005, 0.6),
+        "citeseer": (500, 100, 0.005, 0.0005, 0.6),
+        "pubmed": (500, 100, 0.01, 0.001, 0.6),
+    }[dataset]
+    actual_training = (epochs, patience, learning_rate, weight_decay, dropout)
+    if actual_training != expected_training or seed != 11:
+        raise ValueError(
+            f"{dataset} formal training requires epochs/patience/lr/weight_decay/"
+            f"dropout={expected_training} and seed=11"
+        )
     if epochs <= 0 or patience <= 0:
         raise ValueError("epochs and patience must be positive")
     if not 0.0 <= dropout < 1.0:
         raise ValueError("dropout must be in [0, 1)")
-    if use_cuda and not torch.cuda.is_available():
+    if not use_cuda:
         raise RuntimeError(
-            "CUDA training was requested but torch.cuda.is_available() is false"
+            "formal training requires CUDA; refusing to create a CPU checkpoint"
+        )
+    if not torch.cuda.is_available():
+        raise RuntimeError(
+            "CUDA training is required but torch.cuda.is_available() is false"
         )
 
     device = torch.device("cuda" if use_cuda else "cpu")

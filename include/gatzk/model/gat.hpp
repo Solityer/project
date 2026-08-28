@@ -101,6 +101,13 @@ namespace gatzk::model
     {
         std::vector<algebra::FieldElement> a_src;
         bool has_real_multihead = false;
+        // Identity fields are copied from the checkpoint manifest and bound
+        // against the formal run config before any proof work starts.
+        std::string model_arch_id;
+        std::string model_param_id;
+        std::string quant_cfg_id;
+        std::string static_table_id;
+        std::string degree_bound_id;
         std::size_t L = 0;
         std::vector<std::size_t> d_in_profile;
         std::vector<HiddenLayerShape> hidden_profile;

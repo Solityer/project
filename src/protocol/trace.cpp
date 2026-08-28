@@ -10822,7 +10822,7 @@ namespace gatzk::protocol
         return material;
     }
 
-    // trace 总入口：根据模型形状在多头正式路径与单头兼容路径之间分派。
+    // trace 总入口：当前正式路径只接受已校验的多层多头模型。
     TraceArtifacts build_trace(const ProtocolContext &context, RunMetrics *metrics)
     {
         if (!context.model.has_real_multihead)

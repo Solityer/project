@@ -353,6 +353,60 @@ namespace gatzk::util
                     }
                 }
             }
+
+            // The five registered experiments intentionally share one formal
+            // model family.  Rejecting a legacy shape here keeps an old
+            // checkpoint/config pair out of the proving path even when a
+            // caller supplies a non-canonical config file.
+            struct CanonicalShape
+            {
+                std::vector<std::size_t> d_in;
+                std::size_t classes;
+                std::size_t range_bits;
+                const char *model_arch_id;
+            };
+            const CanonicalShape *expected = nullptr;
+            static const CanonicalShape cora{
+                {1433, 64}, 7, 12, "gat_family_L3_hid8x8-8x8_kout2_c7"};
+            static const CanonicalShape citeseer{
+                {3703, 64}, 6, 12, "gat_family_L3_hid8x8-8x8_kout2_c6"};
+            static const CanonicalShape pubmed{
+                {500, 64}, 3, 12, "gat_family_L3_hid8x8-8x8_kout2_c3"};
+            static const CanonicalShape ppi{
+                {50, 64}, 121, 14, "gat_family_L3_hid8x8-8x8_kout2_c121"};
+            static const CanonicalShape ogbn_arxiv{
+                {128, 64}, 40, 21, "gat_family_L3_hid8x8-8x8_kout2_c40"};
+            if (config.dataset == "cora")
+                expected = &cora;
+            else if (config.dataset == "citeseer")
+                expected = &citeseer;
+            else if (config.dataset == "pubmed")
+                expected = &pubmed;
+            else if (config.dataset == "ppi")
+                expected = &ppi;
+            else if (config.dataset == "ogbn_arxiv")
+                expected = &ogbn_arxiv;
+            if (expected != nullptr)
+            {
+                const bool profile_matches =
+                    config.hidden_profile.size() == 2 &&
+                    std::all_of(
+                        config.hidden_profile.begin(),
+                        config.hidden_profile.end(),
+                        [](const HiddenLayerProfile &layer)
+                        {
+                            return layer.head_count == 8 && layer.head_dim == 8;
+                        });
+                if (config.layer_count != 3 || !profile_matches ||
+                    config.d_in_profile != expected->d_in || config.K_out != 2 ||
+                    config.num_classes != expected->classes ||
+                    config.range_bits != expected->range_bits ||
+                    config.model_arch_id != expected->model_arch_id)
+                {
+                    throw std::runtime_error(
+                        "registered dataset requires canonical L=3 hidden_profile=[8x8,8x8], K_out=2 shape and metadata: " + config.dataset);
+                }
+            }
         }
 
     }

@@ -93,6 +93,45 @@ namespace gatzk::protocol
             }
             return out.str();
         }
+
+        std::string sha256_file_hex(const std::filesystem::path &path)
+        {
+            std::ifstream input(path, std::ios::binary);
+            if (!input)
+            {
+                throw std::runtime_error(
+                    "failed to open artifact for SHA-256: " + path.string());
+            }
+            SHA256_CTX context{};
+            SHA256_Init(&context);
+            std::array<char, 1U << 16U> buffer{};
+            while (input)
+            {
+                input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+                const auto count = input.gcount();
+                if (count > 0)
+                {
+                    SHA256_Update(
+                        &context,
+                        buffer.data(),
+                        static_cast<std::size_t>(count));
+                }
+            }
+            if (input.bad())
+            {
+                throw std::runtime_error(
+                    "failed while reading artifact for SHA-256: " + path.string());
+            }
+            std::array<unsigned char, SHA256_DIGEST_LENGTH> digest{};
+            SHA256_Final(digest.data(), &context);
+            std::ostringstream out;
+            out << std::hex << std::setfill('0');
+            for (const auto byte : digest)
+            {
+                out << std::setw(2) << static_cast<unsigned int>(byte);
+            }
+            return out.str();
+        }
         std::vector<std::string> vector_to_lines(const std::vector<FieldElement> &values)
         {
             std::vector<std::string> lines;
@@ -233,6 +272,47 @@ namespace gatzk::protocol
             }
             return metrics.config;
         };
+        auto resolve_project_path = [&](const std::string &configured)
+        {
+            const auto path = std::filesystem::path(configured);
+            if (path.is_absolute())
+            {
+                return path;
+            }
+            return std::filesystem::path(context.config.project_root) / path;
+        };
+        const auto config_file_path = resolve_project_path(metrics.config);
+        const auto checkpoint_bundle_root =
+            resolve_project_path(context.config.checkpoint_bundle);
+        const auto checkpoint_manifest_path =
+            checkpoint_bundle_root / "manifest.json";
+        const auto checkpoint_tensors_path =
+            checkpoint_bundle_root / "tensors.txt";
+        const auto checkpoint_archive_path =
+            checkpoint_bundle_root / "tensors.npz";
+        const auto checkpoint_source_path =
+            checkpoint_bundle_root / "best_model.pt";
+        const auto srs_manifest_path =
+            resolve_project_path(context.config.srs_path) / "srs_manifest.json";
+        // These hashes authenticate the exact files consumed by the formal
+        // run.  Missing canonical bundle material is an export error rather
+        // than an empty/ambiguous provenance field.
+        const auto config_sha256 = sha256_file_hex(config_file_path);
+        const auto checkpoint_manifest_sha256 =
+            sha256_file_hex(checkpoint_manifest_path);
+        const auto checkpoint_tensors_sha256 =
+            sha256_file_hex(checkpoint_tensors_path);
+        const auto checkpoint_archive_sha256 =
+            sha256_file_hex(checkpoint_archive_path);
+        const auto checkpoint_source_sha256 =
+            sha256_file_hex(checkpoint_source_path);
+        const auto srs_manifest_sha256 =
+            sha256_file_hex(srs_manifest_path);
+        if (srs_manifest_sha256 != context.kzg.manifest.manifest_hash)
+        {
+            throw std::runtime_error(
+                "SRS manifest changed after authenticated context load");
+        }
         auto append_public_metadata = [&](std::map<std::string, std::string> &entries)
         {
             entries.insert({
@@ -407,6 +487,7 @@ namespace gatzk::protocol
             {"algebra_backend_name", metrics.algebra_backend_name},
             {"compute_backend_name", metrics.compute_backend_name},
             {"config", display_config_path()},
+            {"config_sha256", config_sha256},
             {"dataset", metrics.dataset},
             {"status", verified ? "VERIFY_OK" : "VERIFY_FAIL"},
             {"benchmark_mode", metrics.benchmark_mode},
@@ -515,10 +596,14 @@ namespace gatzk::protocol
             {"dataset_id", context.dataset.name},
             {"dataset_hash", std::to_string(std::hash<std::string>{}(context.dataset.name + ":" + std::to_string(context.dataset.num_nodes) + ":" + std::to_string(metrics.edge_count)))},
             {"checkpoint_model_hash", stable_hash(proof.public_metadata.model_params)},
+            {"checkpoint_bundle_manifest_hash", checkpoint_manifest_sha256},
+            {"checkpoint_bundle_tensors_hash", checkpoint_tensors_sha256},
+            {"checkpoint_bundle_archive_hash", checkpoint_archive_sha256},
+            {"checkpoint_source_hash", checkpoint_source_sha256},
             {"static_table_hash", stable_hash(proof.public_metadata.static_tables)},
             {"quant_config_hash", stable_hash(proof.public_metadata.quant_config)},
             {"public_metadata_hash", public_metadata_hash},
-            {"srs_manifest_hash", context.kzg.manifest.manifest_hash},
+            {"srs_manifest_hash", srs_manifest_sha256},
             {"proof_hash", proof_hash},
             {"public_logits_hash", trace.public_logits_hash},
             {"reference_fp32_logits_hash", trace.reference_fp32_logits_hash},

@@ -275,6 +275,45 @@ namespace gatzk::data
             return labels;
         }
 
+        std::vector<std::vector<int>> load_multi_labels(
+            const std::filesystem::path &root,
+            std::size_t rows,
+            std::size_t cols)
+        {
+            const auto path = root / "labels_multi.txt";
+            std::ifstream input(path);
+            if (!input)
+            {
+                throw std::runtime_error("failed to open multi-label file: " + path.string());
+            }
+            std::size_t file_rows = 0;
+            std::size_t file_cols = 0;
+            if (!(input >> file_rows >> file_cols) || file_rows != rows || file_cols != cols)
+            {
+                throw std::runtime_error("multi-label metadata mismatch");
+            }
+
+            std::vector<std::vector<int>> labels(rows, std::vector<int>(cols, 0));
+            for (std::size_t row = 0; row < rows; ++row)
+            {
+                for (std::size_t col = 0; col < cols; ++col)
+                {
+                    int value = 0;
+                    if (!(input >> value) || (value != 0 && value != 1))
+                    {
+                        throw std::runtime_error("malformed multi-label value");
+                    }
+                    labels[row][col] = value;
+                }
+            }
+            std::string extra;
+            if (input >> extra)
+            {
+                throw std::runtime_error("extra data in multi-label file");
+            }
+            return labels;
+        }
+
         std::vector<std::size_t> load_size_vector(const std::filesystem::path &path)
         {
             std::ifstream input(path);
@@ -311,6 +350,18 @@ namespace gatzk::data
             {
                 dataset.report_unit = meta.at("report_unit");
             }
+            if (dataset.name == "ppi")
+            {
+                if (!meta.contains("label_format") ||
+                    !meta.contains("split_format") ||
+                    meta.at("label_format") != "multi_hot" ||
+                    meta.at("split_format") != "node_masks_v1" ||
+                    dataset.num_classes != 121)
+                {
+                    throw std::runtime_error(
+                        "PPI cache must declare the canonical 121-column multi-hot label format");
+                }
+            }
 
             // 先恢复浮点特征，再量化成 formal 主线真正消费的域元素矩阵。
             const auto raw_features = load_features_matrix(root, dataset.num_nodes, dataset.num_features);
@@ -323,7 +374,17 @@ namespace gatzk::data
                     dataset.features[row][col] = quantize(dataset.features_fp[row][col]);
                 }
             }
-            dataset.labels = load_labels(root, dataset.num_nodes);
+            if (dataset.name == "ppi")
+            {
+                // PPI is a 121-way multi-label task.  Requiring this file
+                // prevents a missing cache from silently becoming all-zero
+                // single-label targets through the legacy labels.txt path.
+                dataset.labels_multi = load_multi_labels(root, dataset.num_nodes, dataset.num_classes);
+            }
+            else
+            {
+                dataset.labels = load_labels(root, dataset.num_nodes);
+            }
 
             if (std::filesystem::exists(root / "node_ptr.txt"))
             {
@@ -419,7 +480,18 @@ namespace gatzk::data
         // PPI 多图 batch 同样先落缓存，再进入正式 proving 主线。
         void maybe_prepare_ppi_cache(const util::AppConfig &config, const std::filesystem::path &cache_root)
         {
-            if (!config.auto_prepare_dataset || std::filesystem::exists(cache_root / "meta.cfg"))
+            const bool canonical_cache =
+                std::filesystem::exists(cache_root / "meta.cfg") &&
+                std::filesystem::exists(cache_root / "features.npy") &&
+                std::filesystem::exists(cache_root / "edges.txt") &&
+                std::filesystem::exists(cache_root / "node_ptr.txt") &&
+                std::filesystem::exists(cache_root / "labels_multi.npy") &&
+                std::filesystem::exists(cache_root / "labels_multi.txt") &&
+                std::filesystem::exists(cache_root / "train_mask.npy") &&
+                std::filesystem::exists(cache_root / "val_mask.npy") &&
+                std::filesystem::exists(cache_root / "test_mask.npy") &&
+                !std::filesystem::exists(cache_root / "labels.txt");
+            if (!config.auto_prepare_dataset || canonical_cache)
             {
                 return;
             }
@@ -475,12 +547,23 @@ namespace gatzk::data
             local->features_fp.reserve(local->features_fp.size() + absolute_ids.size());
             local->features.reserve(local->features.size() + absolute_ids.size());
             local->labels.reserve(local->labels.size() + absolute_ids.size());
+            if (!dataset.labels_multi.empty())
+            {
+                local->labels_multi.reserve(local->labels_multi.size() + absolute_ids.size());
+            }
             for (const auto absolute_id : absolute_ids)
             {
                 local->absolute_ids.push_back(absolute_id);
                 local->features_fp.push_back(dataset.features_fp.at(absolute_id));
                 local->features.push_back(dataset.features.at(absolute_id));
-                local->labels.push_back(dataset.labels.at(absolute_id));
+                if (!dataset.labels.empty())
+                {
+                    local->labels.push_back(dataset.labels.at(absolute_id));
+                }
+                if (!dataset.labels_multi.empty())
+                {
+                    local->labels_multi.push_back(dataset.labels_multi.at(absolute_id));
+                }
             }
         }
 

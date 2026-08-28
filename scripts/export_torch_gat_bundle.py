@@ -10,7 +10,7 @@ import numpy as np
 import torch
 
 from export_gat_checkpoint import archive_key, build_family_manifest, write_text_tensor_dump
-from train_planetoid_gat import load_checkpoint
+from train_planetoid_gat import CANONICAL_MODEL_SPECS, load_checkpoint
 
 
 def export_linear_kernel(weight: torch.Tensor) -> np.ndarray:
@@ -43,26 +43,22 @@ def parse_hidden_profile(bundle: Dict[str, object]) -> List[Dict[str, int]]:
                 }
             )
         return normalized
-    hidden_heads = bundle.get("hidden_heads")
-    hidden_dim = bundle.get("hidden_dim")
-    if hidden_heads is None or hidden_dim is None:
-        raise ValueError("bundle metadata must expose hidden_profile or hidden_heads/hidden_dim")
-    return [{"head_count": int(hidden_heads), "head_dim": int(hidden_dim)}]
+    raise ValueError(
+        "canonical PyTorch checkpoint metadata must expose hidden_profile"
+    )
 
 
 def parse_d_in_profile(bundle: Dict[str, object], input_dim: int) -> List[int]:
     raw = bundle.get("d_in_profile")
     if isinstance(raw, list) and raw:
         return [int(value) for value in raw]
-    hidden_profile = parse_hidden_profile(bundle)
-    profile = [int(input_dim)]
-    for layer in hidden_profile[:-1]:
-        profile.append(int(layer["head_count"]) * int(layer["head_dim"]))
-    return profile
+    raise ValueError("canonical PyTorch checkpoint metadata must expose d_in_profile")
 
 
 def parse_k_out(bundle: Dict[str, object]) -> int:
-    return int(bundle.get("K_out", 1))
+    if "K_out" not in bundle:
+        raise ValueError("canonical PyTorch checkpoint metadata must expose K_out")
+    return int(bundle["K_out"])
 
 
 def structured_hidden_prefix(layer_index: int, head_index: int) -> str:
@@ -115,6 +111,36 @@ def build_tensors_and_manifest_spec(
     num_classes = int(bundle.get("C", bundle.get("num_classes")))
     k_out = parse_k_out(bundle)
     d_in_profile = parse_d_in_profile(bundle, int(bundle.get("num_features")))
+    dataset = str(bundle.get("dataset", ""))
+    dataset_key = "ogbn_arxiv" if dataset == "ogbn-arxiv" else dataset
+    if dataset_key not in CANONICAL_MODEL_SPECS:
+        raise ValueError(f"unsupported canonical checkpoint dataset: {dataset}")
+    expected_d_in, expected_classes, expected_arch, _ = CANONICAL_MODEL_SPECS[dataset_key]
+    if (
+        int(bundle.get("L", 0)) != 3
+        or hidden_profile != [
+            {"head_count": 8, "head_dim": 8},
+            {"head_count": 8, "head_dim": 8},
+        ]
+        or d_in_profile != expected_d_in
+        or k_out != 2
+        or num_classes != expected_classes
+        or bundle.get("model_arch_id") != expected_arch
+        or bundle.get("quant_cfg_id") != "fp32_torch_checkpoint"
+    ):
+        raise ValueError("PyTorch checkpoint does not match the canonical L=3 multi-head formal shape")
+    if dataset_key == "ppi":
+        ppi_semantics = {
+            "label_format": "multi_hot",
+            "loss": "BCEWithLogitsLoss",
+            "selection_metric": "validation_loss",
+            "split_format": "node_masks_v1",
+        }
+        if any(bundle.get(key) != value for key, value in ppi_semantics.items()):
+            raise ValueError(
+                "PPI checkpoint must declare multi_hot/BCEWithLogitsLoss/"
+                "validation_loss/node_masks_v1 metadata"
+            )
     expected_layers = int(bundle.get("L", len(hidden_profile) + 1))
     if expected_layers != len(hidden_profile) + 1:
         raise ValueError("bundle L conflicts with hidden_profile")
@@ -156,38 +182,10 @@ def build_tensors_and_manifest_spec(
                     **export_head_tensors(tensors, state, state_prefix, tensor_prefix),
                 }
             )
-    elif any(key.startswith("hidden_heads.") for key in state):
-        if len(hidden_profile) != 1:
-            raise ValueError("legacy torch checkpoint layout only supports one hidden layer")
-        if k_out != 1:
-            raise ValueError("legacy torch checkpoint layout only supports K_out=1")
-        hidden_layers.append(
-            {
-                "layer_index": 0,
-                "input_dim": int(d_in_profile[0]),
-                "head_count": int(hidden_profile[0]["head_count"]),
-                "head_dim": int(hidden_profile[0]["head_dim"]),
-            }
-        )
-        for head_index in range(int(hidden_profile[0]["head_count"])):
-            state_prefix = f"hidden_heads.{head_index}"
-            tensor_prefix = structured_hidden_prefix(0, head_index)
-            hidden_head_specs.append(
-                {
-                    "layer_index": 0,
-                    "local_head_index": head_index,
-                    "global_head_index": head_index,
-                    **export_head_tensors(tensors, state, state_prefix, tensor_prefix),
-                }
-            )
-        output_head_specs.append(
-            {
-                "head_index": 0,
-                **export_head_tensors(tensors, state, "output_head", structured_output_prefix(0)),
-            }
-        )
     else:
-        raise ValueError("checkpoint state_dict does not expose a supported GAT family layout")
+        raise ValueError(
+            "canonical checkpoint state_dict must expose structured multi-layer keys"
+        )
 
     return tensors, d_in_profile, hidden_layers, hidden_head_specs, output_head_specs, num_classes, bundle
 
@@ -221,12 +219,15 @@ def main() -> None:
         num_classes=num_classes,
         task_type=str(bundle.get("task_type", "transductive_node_classification")),
         report_unit=str(bundle.get("report_unit", "node")),
-        quant_cfg_id=str(bundle.get("quant_cfg_id", "fp32_bundle_export")),
+        quant_cfg_id=str(bundle.get("quant_cfg_id", "fp32_torch_checkpoint")),
         static_table_id=str(bundle.get("static_table_id", "tables:lrelu+elu+exp+range")),
         degree_bound_id=str(bundle.get("degree_bound_id", "auto")),
         model_arch_id=str(bundle.get("model_arch_id", "")) or None,
         model_param_id=str(bundle.get("model_param_id", "")) or checkpoint_path.name,
     )
+    for metadata_key in ("label_format", "loss", "selection_metric", "split_format"):
+        if metadata_key in bundle:
+            manifest[metadata_key] = bundle[metadata_key]
     arrays = {archive_key(name): tensor for name, tensor in tensors.items()}
     np.savez_compressed(output_dir / "tensors.npz", **arrays)
     write_text_tensor_dump(output_dir / "tensors.txt", tensors)

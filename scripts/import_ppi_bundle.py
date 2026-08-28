@@ -10,8 +10,7 @@ from typing import Dict, Iterable
 
 import numpy as np
 
-from checkpoint_reader_compat import read_checkpoint_tensors
-from export_gat_checkpoint import archive_key, build_manifest, write_text_tensor_dump
+from export_gat_checkpoint import archive_key, write_text_tensor_dump
 from export_torch_gat_bundle import build_tensors_and_manifest_spec
 
 
@@ -68,16 +67,24 @@ def validate_ppi_bundle(manifest: Dict[str, object], bundle_dir: pathlib.Path) -
             "subgraph_rule",
             "self_loop_rule",
             "edge_sort_rule",
+            "label_format",
+            "loss",
+            "selection_metric",
+            "split_format",
         ),
     )
     require((bundle_dir / "tensors.txt").exists(), f"缺少 tensors.txt: {bundle_dir}")
+    require((bundle_dir / "tensors.npz").exists(), f"缺少 tensors.npz: {bundle_dir}")
     require(str(manifest["family_schema_version"]) == "multi_layer_multi_head_v2", "family_schema_version 不受支持")
-    require(int(manifest["L"]) == 2, "PPI 正式配置要求 L=2")
-    require(parse_hidden_profile(manifest) == "1x8", "PPI 正式配置要求 hidden_profile=[1x8]")
+    require(int(manifest["L"]) == 3, "PPI 正式配置要求 L=3")
+    require(parse_hidden_profile(manifest) == "8x8,8x8", "PPI 正式配置要求 hidden_profile=[8x8,8x8]")
     d_in_profile = manifest["d_in_profile"]
-    require(isinstance(d_in_profile, list) and [int(value) for value in d_in_profile] == [50], "PPI 正式配置要求 d_in_profile=[50]")
-    require(int(manifest["K_out"]) == 1, "PPI 正式配置要求 K_out=1")
+    require(isinstance(d_in_profile, list) and [int(value) for value in d_in_profile] == [50, 64], "PPI 正式配置要求 d_in_profile=[50,64]")
+    require(int(manifest["K_out"]) == 2, "PPI 正式配置要求 K_out=2")
     require(int(manifest["C"]) == 121, "PPI 正式配置要求 C=121")
+    require(str(manifest["model_arch_id"]) == "gat_family_L3_hid8x8-8x8_kout2_c121", "PPI bundle 的 model_arch_id 不匹配")
+    require(str(manifest["model_param_id"]) == "ppi_gat_seed11", "PPI bundle 的 model_param_id 不匹配")
+    require(str(manifest["quant_cfg_id"]) == "fp32_torch_checkpoint", "PPI bundle 必须来自 PyTorch checkpoint")
     require(str(manifest["task_type"]) == "inductive_multi_graph_node_classification", "PPI bundle 的 task_type 不匹配")
     require(str(manifest["report_unit"]) == "graph", "PPI bundle 的 report_unit 不匹配")
     require(str(manifest["batching_rule"]) == "multi_graph_batch", "PPI bundle 的 batching_rule 不匹配")
@@ -85,12 +92,70 @@ def validate_ppi_bundle(manifest: Dict[str, object], bundle_dir: pathlib.Path) -
     require(str(manifest["self_loop_rule"]) == "per_node", "PPI bundle 的 self_loop_rule 不匹配")
     require(str(manifest["edge_sort_rule"]) == "edge_gid_then_dst_stable", "PPI bundle 的 edge_sort_rule 不匹配")
     require(str(manifest["output_average_rule"]) == "per_head_bias_then_arithmetic_mean", "PPI bundle 的 output_average_rule 不匹配")
+    require(str(manifest["label_format"]) == "multi_hot", "PPI bundle 必须保留 multi_hot 标签语义")
+    require(str(manifest["loss"]) == "BCEWithLogitsLoss", "PPI bundle 必须声明 BCEWithLogitsLoss")
+    require(str(manifest["selection_metric"]) == "validation_loss", "PPI bundle 必须只按 validation_loss 选择")
+    require(str(manifest["split_format"]) == "node_masks_v1", "PPI bundle 必须声明 node_masks_v1 split")
+
+    hidden_layers = manifest["hidden_layers"]
+    require(isinstance(hidden_layers, list) and len(hidden_layers) == 2, "PPI bundle 必须包含两个 hidden layer")
+    require(all(isinstance(layer, dict) for layer in hidden_layers), "PPI hidden_layers 每项必须是对象")
+    require(
+        [
+            (int(layer["input_dim"]), int(layer["head_count"]), int(layer["head_dim"]))
+            for layer in hidden_layers
+        ]
+        == [(50, 8, 8), (64, 8, 8)],
+        "PPI hidden_layers shape 不匹配",
+    )
+    hidden_specs = manifest["hidden_head_specs"]
+    output_specs = manifest["output_head_specs"]
+    require(isinstance(hidden_specs, list) and len(hidden_specs) == 16, "PPI bundle 必须包含 16 个 hidden head")
+    require(isinstance(output_specs, list) and len(output_specs) == 2, "PPI bundle 必须包含 2 个 output head")
+    require(all(isinstance(spec, dict) for spec in hidden_specs), "PPI hidden_head_specs 每项必须是对象")
+    require(all(isinstance(spec, dict) for spec in output_specs), "PPI output_head_specs 每项必须是对象")
+
+    tensor_index = manifest["tensor_index"]
+    require(isinstance(tensor_index, dict), "PPI bundle tensor_index 必须是对象")
+
+    def tensor_shape(name: object) -> tuple[int, ...]:
+        require(isinstance(name, str) and name in tensor_index, f"PPI bundle 缺少 tensor: {name}")
+        entry = tensor_index[name]
+        require(isinstance(entry, dict) and isinstance(entry.get("shape"), list), f"PPI tensor shape 缺失: {name}")
+        return tuple(int(value) for value in entry["shape"])
+
+    def validate_head(spec: Dict[str, object], input_dim: int, output_dim: int) -> None:
+        for key in ("seq_kernel", "attn_dst_kernel", "attn_dst_bias", "attn_src_kernel", "attn_src_bias", "output_bias"):
+            require(key in spec, f"PPI head spec 缺少 {key}")
+        require(tensor_shape(spec["seq_kernel"]) == (1, input_dim, output_dim), "PPI seq kernel shape 不匹配")
+        require(tensor_shape(spec["attn_dst_kernel"]) == (1, output_dim, 1), "PPI destination attention shape 不匹配")
+        require(tensor_shape(spec["attn_src_kernel"]) == (1, output_dim, 1), "PPI source attention shape 不匹配")
+        require(tensor_shape(spec["attn_dst_bias"]) == (1,), "PPI destination attention bias shape 不匹配")
+        require(tensor_shape(spec["attn_src_bias"]) == (1,), "PPI source attention bias shape 不匹配")
+        require(tensor_shape(spec["output_bias"]) == (output_dim,), "PPI output bias shape 不匹配")
+
+    for layer_index, input_dim in enumerate((50, 64)):
+        layer_specs = [spec for spec in hidden_specs if int(spec["layer_index"]) == layer_index]
+        require(len(layer_specs) == 8, f"PPI hidden layer {layer_index} head count 不匹配")
+        for spec in layer_specs:
+            validate_head(spec, input_dim, 8)
+    for spec in output_specs:
+        validate_head(spec, 64, 121)
 
 
 def install_bundle(source_dir: pathlib.Path, output_dir: pathlib.Path) -> None:
-    if output_dir.exists():
-        shutil.rmtree(output_dir)
-    shutil.copytree(source_dir, output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    # A canonical checkpoint directory also contains best_model.pt and its
+    # training summary. Replace only bundle-owned files so importing the
+    # freshly trained checkpoint cannot erase its source artifact.
+    bundle_files = ("manifest.json", "tensors.npz", "tensors.txt")
+    for name in bundle_files:
+        destination = output_dir / name
+        if destination.exists():
+            destination.unlink()
+        source = source_dir / name
+        require(source.exists(), f"临时 bundle 缺少 {name}")
+        shutil.copy2(source, destination)
 
 
 def write_bundle_from_torch_checkpoint(checkpoint_path: pathlib.Path, bundle_dir: pathlib.Path) -> None:
@@ -128,6 +193,10 @@ def write_bundle_from_torch_checkpoint(checkpoint_path: pathlib.Path, bundle_dir
         "model_arch_id": str(bundle.get("model_arch_id", checkpoint_path.stem)),
         "model_param_id": str(bundle.get("model_param_id", checkpoint_path.stem)),
         "quant_cfg_id": str(bundle.get("quant_cfg_id", "fp32_torch_checkpoint")),
+        "label_format": str(bundle.get("label_format", "multi_hot")),
+        "loss": str(bundle.get("loss", "BCEWithLogitsLoss")),
+        "selection_metric": str(bundle.get("selection_metric", "validation_loss")),
+        "split_format": str(bundle.get("split_format", "node_masks_v1")),
         "static_table_id": str(bundle.get("static_table_id", "tables:lrelu+elu+exp+range")),
         "degree_bound_id": str(bundle.get("degree_bound_id", "auto")),
         "tensor_index": {},
@@ -149,34 +218,11 @@ def write_bundle_from_torch_checkpoint(checkpoint_path: pathlib.Path, bundle_dir
     )
 
 
-def write_bundle_from_tf_checkpoint(checkpoint_prefix: pathlib.Path, bundle_dir: pathlib.Path) -> None:
-    tensors = read_checkpoint_tensors(str(checkpoint_prefix))
-    manifest = build_manifest(tensors, str(checkpoint_prefix))
-    manifest["task_type"] = "inductive_multi_graph_node_classification"
-    manifest["report_unit"] = "graph"
-    manifest["batching_rule"] = "multi_graph_batch"
-    manifest["subgraph_rule"] = "whole_graph"
-    manifest["self_loop_rule"] = "per_node"
-    manifest["edge_sort_rule"] = "edge_gid_then_dst_stable"
-    manifest["model_param_id"] = pathlib.Path(str(checkpoint_prefix)).name
-    manifest["quant_cfg_id"] = "fp32_bundle_export"
-
-    bundle_dir.mkdir(parents=True, exist_ok=True)
-    arrays = {archive_key(name): tensor for name, tensor in tensors.items()}
-    np.savez_compressed(bundle_dir / "tensors.npz", **arrays)
-    write_text_tensor_dump(bundle_dir / "tensors.txt", tensors)
-    (bundle_dir / "manifest.json").write_text(
-        json.dumps(manifest, indent=2, ensure_ascii=False, sort_keys=True),
-        encoding="utf-8",
-    )
-
-
 def main() -> None:
     parser = argparse.ArgumentParser()
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--bundle-dir")
     source.add_argument("--torch-checkpoint")
-    source.add_argument("--tf-checkpoint-prefix")
     parser.add_argument("--output-dir", default="artifacts/checkpoints/ppi_gat")
     args = parser.parse_args()
 
@@ -206,15 +252,7 @@ def main() -> None:
         print(str(output_dir))
         return
 
-    checkpoint_prefix = pathlib.Path(args.tf_checkpoint_prefix).resolve()
-    require(checkpoint_prefix.exists() or checkpoint_prefix.with_suffix(".index").exists(), f"tensorflow checkpoint 前缀不存在: {checkpoint_prefix}")
-    with tempfile.TemporaryDirectory(prefix="ppi_bundle_") as tmp_dir:
-        temp_bundle = pathlib.Path(tmp_dir) / "bundle"
-        write_bundle_from_tf_checkpoint(checkpoint_prefix, temp_bundle)
-        manifest = load_manifest(temp_bundle)
-        validate_ppi_bundle(manifest, temp_bundle)
-        install_bundle(temp_bundle, output_dir)
-    print(str(output_dir))
+    raise RuntimeError("an explicit --bundle-dir or --torch-checkpoint source is required")
 
 
 if __name__ == "__main__":
