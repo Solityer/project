@@ -250,6 +250,118 @@ class LayeredSchemaRegression(unittest.TestCase):
         self.assertIn('"layer_index" in spec and "local_head_index" in spec', checker)
         self.assertIn("hidden head specs must use canonical layer/local pair order", checker)
 
+    def test_attention_scalar_bias_is_fail_closed_and_output_bias_is_explicit(self) -> None:
+        trainer = read("scripts/train_planetoid_gat.py")
+        self.assertIn("self.attn_dst = nn.Linear(out_dim, 1, bias=False)", trainer)
+        self.assertIn("self.attn_src = nn.Linear(out_dim, 1, bias=False)", trainer)
+        self.assertIn("bias-enabled attention checkpoint is not accepted", trainer)
+
+        model = read("src/model/gat.cpp")
+        head_parser = region(
+            model,
+            "CheckpointHeadSpec parse_checkpoint_head_spec",
+            "CheckpointOutputHeadSpec parse_checkpoint_output_head_spec",
+        )
+        output_parser = region(
+            model,
+            "CheckpointOutputHeadSpec parse_checkpoint_output_head_spec",
+            "// 把各个维度乘起来",
+        )
+        self.assertNotIn("attn_dst_bias", head_parser)
+        self.assertNotIn("attn_src_bias", head_parser)
+        self.assertIn('parse_required_string(entry, "output_bias")', output_parser)
+        forward = region(
+            model,
+            "HeadForwardTrace attention_head_forward_impl",
+            "// 只读取 manifest 元数据",
+        )
+        self.assertNotIn("attn_dst_bias_fp", forward)
+        self.assertNotIn("attn_src_bias_fp", forward)
+
+        torch_exporter = read("scripts/export_torch_gat_bundle.py")
+        self.assertIn("attention scalar bias is forbidden", torch_exporter)
+        self.assertNotIn('"attn_dst_bias": dst_bias_name', torch_exporter)
+        self.assertNotIn('"attn_src_bias": src_bias_name', torch_exporter)
+        self.assertIn('result["output_bias"] = output_bias_name', torch_exporter)
+
+        checker = read("scripts/check_checkpoint_bundle.py")
+        self.assertIn("hidden head spec must not expose output_bias", checker)
+        self.assertIn("legacy attention scalar bias fields are forbidden", checker)
+
+    def test_scale_chain_consumers_are_layer_and_head_aware(self) -> None:
+        config = read("src/util/config.cpp")
+        self.assertIn('"gat_l3_scale_chain_v1"', config)
+        self.assertIn("chain.s_h = {1, 16, 16};", config)
+        self.assertIn("chain.s_h[layer + 1] != chain.s_cat[layer]", config)
+        self.assertIn("chain.s_h.back() != output_input_scale", config)
+        self.assertIn("chain.s_out_pre != chain.s_out_head", config)
+        self.assertIn("pre-bias alignment SignedRoundDiv is therefore an identity", config)
+        self.assertIn("shared ELU table scale equality", config)
+        self.assertIn("chain.s_h_prime = {{16, 16, 16, 16, 16, 16, 16, 16},", config)
+        self.assertIn("{256, 256, 256, 256, 256, 256, 256, 256}};", config)
+        prover = read("src/protocol/prover.cpp")
+        self.assertIn("scales.s_w_hidden.at(layer_index).at(head_index)", prover)
+        self.assertIn("scales.s_a_src_hidden.at(layer_index).at(head_index)", prover)
+        self.assertIn("scales.s_w_output.at(head_index)", prover)
+        trace = read("src/protocol/trace.cpp")
+        self.assertIn("aggregate_numerator * aggregate_input_scale", trace)
+        self.assertIn("sum_raw[row]) * h_prime_scale", trace)
+        quotients = read("src/protocol/quotients.cpp")
+        self.assertIn("aggregate_pre_scale * h_agg_num_flat_z", quotients)
+        self.assertIn("h_prime_scale * sum_flat_z", quotients)
+        self.assertIn("output_pre_scale * y_agg_num_flat", quotients)
+        self.assertIn("output_y_prime_scale * sum_flat", quotients)
+
+    def test_quantized_reference_is_independent_and_reported_from_real_match(self) -> None:
+        trace = read("src/protocol/trace.cpp")
+        reference = region(
+            trace,
+            "Matrix independent_quantized_reference_forward(",
+            "std::shared_ptr<const CachedForwardArtifacts> cached_forward_artifacts(",
+        )
+        self.assertIn("context.config.quantization", reference)
+        self.assertIn("project_raw_matrix(", reference)
+        self.assertIn("raw_matvec_no_bias(", reference)
+        self.assertIn("quantize_lrelu_raw(", reference)
+        self.assertIn("quantize_exp_neg_raw(", reference)
+        self.assertIn("signed_round_div_nearest(", reference)
+        self.assertIn("quantize_elu_raw(", reference)
+        self.assertIn("head.output_bias_fp", reference)
+        self.assertNotIn("quantize_hidden_witness_cpu(", reference)
+        self.assertNotIn("quantize_output_witness_cpu(", reference)
+        self.assertNotIn("forward_artifacts", reference)
+
+        artifacts = region(
+            trace,
+            "struct CachedForwardArtifacts",
+            "std::string trace_cache_prefix(",
+        )
+        self.assertIn("Matrix reference_quantized_logits", artifacts)
+        self.assertIn("independent_quantized_reference_forward(", trace)
+        self.assertNotIn(
+            "forward_artifacts->output_y_average,\n                forward_artifacts->output_y_average",
+            trace,
+        )
+        self.assertIn(
+            "secure_trace_logits == reference_quant_logits",
+            trace,
+        )
+
+        main = read("src/main.cpp")
+        self.assertIn("const bool reference_matrix_match = trace.reference_consistency_passed", main)
+        self.assertIn("metrics.reference_consistency_passed = reference_consistent", main)
+        self.assertIn("reference_matrix_match && reference_payload_audit", main)
+
+        exporter = read("src/protocol/artifact_export.cpp")
+        self.assertIn(
+            '{"reference_consistency_passed", metrics.reference_consistency_passed ? "true" : "false"}',
+            exporter,
+        )
+        self.assertNotIn(
+            '{"reference_consistency_passed", verified ? "true" : "false"}',
+            exporter,
+        )
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

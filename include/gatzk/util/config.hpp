@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string_view>
 #include <string>
 #include <utility>
 #include <vector>
@@ -17,6 +18,42 @@ namespace gatzk::util
         std::size_t head_count = 0;
         std::size_t head_dim = 0;
     };
+
+    // Canonical fixed-point scale chain selected solely by quant_cfg_id.  The
+    // vectors retain layer/head coordinates so no consumer can accidentally
+    // reuse a scale from another layer or head.
+    struct QuantizationScaleChain
+    {
+        std::uint64_t s_input = 0;
+        std::uint64_t s_delta = 0;
+        std::uint64_t s_exp = 0;
+        std::vector<std::uint64_t> s_h;
+        std::vector<std::vector<std::uint64_t>> s_w_hidden;
+        std::vector<std::vector<std::uint64_t>> s_h_prime;
+        std::vector<std::vector<std::uint64_t>> s_a_src_hidden;
+        std::vector<std::vector<std::uint64_t>> s_a_dst_hidden;
+        std::vector<std::uint64_t> s_agg_pre;
+        std::vector<std::uint64_t> s_agg;
+        std::vector<std::uint64_t> s_cat;
+        std::uint64_t s_out_pre = 0;
+        std::uint64_t s_out_head = 0;
+        std::uint64_t s_out = 0;
+        std::vector<std::uint64_t> s_w_output;
+        std::vector<std::uint64_t> s_y_prime;
+        std::vector<std::uint64_t> s_a_src_output;
+        std::vector<std::uint64_t> s_a_dst_output;
+        std::vector<std::uint64_t> s_b_output;
+
+        // Deterministic, complete serialization used in PublicMetadata.
+        std::string canonical_serialization() const;
+    };
+
+    // Resolve and validate the one registered scale chain for a formal ID.
+    // Unknown IDs and shape mismatches fail closed.
+    QuantizationScaleChain canonical_quantization_scale_chain(
+        std::string_view quant_cfg_id,
+        const std::vector<HiddenLayerProfile> &hidden_profile,
+        std::size_t K_out);
 
     // 一次正式运行的统一配置。这里的字段会被 context、metadata 与正式 artifact 共同消费。
     struct AppConfig
@@ -36,6 +73,7 @@ namespace gatzk::util
         std::string edge_sort_rule = "edge_gid_then_dst_stable";
         std::string chunking_rule = "none";
         std::string quant_cfg_id;
+        QuantizationScaleChain quantization;
         std::string model_arch_id;
         std::string model_param_id;
         std::string static_table_id;

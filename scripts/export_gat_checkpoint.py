@@ -30,25 +30,16 @@ def hidden_head_manifest(head_index: int) -> Dict[str, str]:
     if head_index == 0:
         seq_kernel = "conv1d/kernel"
         dst_kernel = "conv1d_1/kernel"
-        dst_bias = "conv1d_1/bias"
         src_kernel = "conv1d_2/kernel"
-        src_bias = "conv1d_2/bias"
-        output_bias = "BiasAdd/biases"
     else:
         base = head_index * 3
         seq_kernel = f"conv1d_{base}/kernel"
         dst_kernel = f"conv1d_{base + 1}/kernel"
-        dst_bias = f"conv1d_{base + 1}/bias"
         src_kernel = f"conv1d_{base + 2}/kernel"
-        src_bias = f"conv1d_{base + 2}/bias"
-        output_bias = f"BiasAdd_{head_index}/biases"
     return {
         "seq_kernel": seq_kernel,
         "attn_dst_kernel": dst_kernel,
-        "attn_dst_bias": dst_bias,
         "attn_src_kernel": src_kernel,
-        "attn_src_bias": src_bias,
-        "output_bias": output_bias,
     }
 
 
@@ -98,7 +89,7 @@ def build_family_manifest(
     num_classes: int,
     task_type: str = "transductive_node_classification",
     report_unit: str = "node",
-    quant_cfg_id: str = "fp32_bundle_export",
+    quant_cfg_id: str = "gat_l3_scale_chain_v1",
     static_table_id: str = "tables:lrelu+elu+exp+range",
     degree_bound_id: str = "auto",
     model_arch_id: str | None = None,
@@ -156,6 +147,19 @@ def build_family_manifest(
 
 
 def build_manifest(tensors: Dict[str, np.ndarray], checkpoint_prefix: str) -> Dict[str, object]:
+    legacy_attention_biases = sorted(
+        name
+        for name in tensors
+        if (
+            re.search(r"(^|/|_)(attn|attention)[^/]*/?bias$", name)
+            or re.match(r"^conv1d(?:_\d+)?/bias$", name)
+        )
+    )
+    if legacy_attention_biases:
+        raise ValueError(
+            "formal exporter rejects attention scalar bias tensors: "
+            + ", ".join(legacy_attention_biases)
+        )
     hidden_head_count = infer_hidden_head_count(tensors)
     hidden_head_dim = int(tensors["conv1d/kernel"].shape[2])
     d_in = int(tensors["conv1d/kernel"].shape[1])
@@ -180,9 +184,7 @@ def build_manifest(tensors: Dict[str, np.ndarray], checkpoint_prefix: str) -> Di
             "head_index": 0,
             "seq_kernel": f"conv1d_{hidden_head_count * 3}/kernel",
             "attn_dst_kernel": f"conv1d_{hidden_head_count * 3 + 1}/kernel",
-            "attn_dst_bias": f"conv1d_{hidden_head_count * 3 + 1}/bias",
             "attn_src_kernel": f"conv1d_{hidden_head_count * 3 + 2}/kernel",
-            "attn_src_bias": f"conv1d_{hidden_head_count * 3 + 2}/bias",
             "output_bias": output_bias_name,
         }
     ]

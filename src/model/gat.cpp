@@ -12,6 +12,7 @@
 #include <stdexcept>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace gatzk::model
 {
@@ -175,6 +176,11 @@ namespace gatzk::model
         // 解析隐藏头张量名
         CheckpointHeadSpec parse_checkpoint_head_spec(const std::string &entry)
         {
+            if (entry.find("\"output_bias\"") != std::string::npos)
+            {
+                throw std::runtime_error(
+                    "hidden attention head must not carry output_bias manifest field");
+            }
             CheckpointHeadSpec out;
             out.layer_index = parse_required_size_t(entry, "layer_index");
             out.local_head_index = parse_required_size_t(entry, "local_head_index");
@@ -183,10 +189,7 @@ namespace gatzk::model
             // the layer/local pair above is the sole checkpoint identity.
             out.seq_kernel = parse_required_string(entry, "seq_kernel");
             out.attn_dst_kernel = parse_required_string(entry, "attn_dst_kernel");
-            out.attn_dst_bias = parse_required_string(entry, "attn_dst_bias");
             out.attn_src_kernel = parse_required_string(entry, "attn_src_kernel");
-            out.attn_src_bias = parse_required_string(entry, "attn_src_bias");
-            out.output_bias = parse_required_string(entry, "output_bias");
             return out;
         }
 
@@ -197,9 +200,7 @@ namespace gatzk::model
             out.head_index = parse_required_size_t(entry, "head_index");
             out.seq_kernel = parse_required_string(entry, "seq_kernel");
             out.attn_dst_kernel = parse_required_string(entry, "attn_dst_kernel");
-            out.attn_dst_bias = parse_required_string(entry, "attn_dst_bias");
             out.attn_src_kernel = parse_required_string(entry, "attn_src_kernel");
-            out.attn_src_bias = parse_required_string(entry, "attn_src_bias");
             out.output_bias = parse_required_string(entry, "output_bias");
             return out;
         }
@@ -235,6 +236,15 @@ namespace gatzk::model
                 std::string name;
                 std::size_t rank = 0;
                 input >> name >> rank;
+                if ((name.find("attn_src") != std::string::npos ||
+                     name.find("attn_dst") != std::string::npos) &&
+                    (name.find("/bias") != std::string::npos ||
+                     name.find(".bias") != std::string::npos ||
+                     name.find("_bias") != std::string::npos))
+                {
+                    throw std::runtime_error(
+                        "bias-enabled attention tensor is not accepted by the formal checkpoint loader: " + name);
+                }
                 DenseTensor tensor;
                 tensor.shape.resize(rank);
                 for (std::size_t i = 0; i < rank; ++i)
@@ -300,15 +310,6 @@ namespace gatzk::model
             return tensor.values;
         }
 
-        double reshape_scalar_bias(const DenseTensor &tensor)
-        {
-            if (tensor.shape.size() != 1 || tensor.shape[0] != 1 || tensor.values.size() != 1)
-            {
-                throw std::runtime_error("expected scalar bias tensor shape [1]");
-            }
-            return tensor.values.front();
-        }
-
         std::vector<double> reshape_output_bias(const DenseTensor &tensor)
         {
             if (tensor.shape.size() != 1)
@@ -323,18 +324,17 @@ namespace gatzk::model
             const std::unordered_map<std::string, DenseTensor> &tensors,
             const std::string &seq_kernel_name,
             const std::string &attn_dst_kernel_name,
-            const std::string &attn_dst_bias_name,
             const std::string &attn_src_kernel_name,
-            const std::string &attn_src_bias_name,
-            const std::string &output_bias_name)
+            const std::string *output_bias_name)
         {
             AttentionHeadParameters out;
             out.seq_kernel_fp = reshape_seq_kernel(require_tensor(tensors, seq_kernel_name));
             out.attn_dst_kernel_fp = reshape_attention_kernel(require_tensor(tensors, attn_dst_kernel_name));
-            out.attn_dst_bias_fp = reshape_scalar_bias(require_tensor(tensors, attn_dst_bias_name));
             out.attn_src_kernel_fp = reshape_attention_kernel(require_tensor(tensors, attn_src_kernel_name));
-            out.attn_src_bias_fp = reshape_scalar_bias(require_tensor(tensors, attn_src_bias_name));
-            out.output_bias_fp = reshape_output_bias(require_tensor(tensors, output_bias_name));
+            if (output_bias_name != nullptr)
+            {
+                out.output_bias_fp = reshape_output_bias(require_tensor(tensors, *output_bias_name));
+            }
             return out;
         }
         // Leaky ReLU激活函数，默认斜率为0.2
@@ -988,13 +988,8 @@ namespace gatzk::model
             //
             // Both vectors scan the same H' row. Their individual summation
             // order remains identical to the former two matvec calls.
-            trace.E_dst.assign(
-                node_count,
-                parameters.attn_dst_bias_fp);
-
-            trace.E_src.assign(
-                node_count,
-                parameters.attn_src_bias_fp);
+            trace.E_dst.assign(node_count, 0.0);
+            trace.E_src.assign(node_count, 0.0);
 
             parallel_for_forward_ranges(
                 node_count,
@@ -1336,6 +1331,17 @@ namespace gatzk::model
             throw std::runtime_error("checkpoint bundle manifest not found: " + manifest_path.string());
         }
         const auto manifest = load_text_file(manifest_path);
+        for (const auto *legacy_key : {
+                 "attn_src_bias", "attn_dst_bias", "attn_src/bias",
+                 "attn_dst/bias", "attn_src.bias", "attn_dst.bias"})
+        {
+            if (manifest.find(legacy_key) != std::string::npos)
+            {
+                throw std::runtime_error(
+                    "bias-enabled attention checkpoint manifest is not accepted by the formal loader: " +
+                    std::string(legacy_key));
+            }
+        }
 
         CheckpointBundleInfo info;
         info.bundle_root = bundle_root;
@@ -1556,6 +1562,39 @@ namespace gatzk::model
             throw std::runtime_error("checkpoint bundle tensor dump not found: " + tensor_path.string());
         }
         const auto tensors = load_text_tensors(tensor_path);
+        std::unordered_set<std::string> referenced_tensor_names;
+        const auto register_tensor_name =
+            [&referenced_tensor_names](const std::string &name)
+        {
+            if (!referenced_tensor_names.insert(name).second)
+            {
+                throw std::runtime_error(
+                    "checkpoint manifest references the same tensor more than once: " + name);
+            }
+        };
+        for (const auto &head_spec : manifest_info.hidden_head_specs)
+        {
+            register_tensor_name(head_spec.seq_kernel);
+            register_tensor_name(head_spec.attn_dst_kernel);
+            register_tensor_name(head_spec.attn_src_kernel);
+        }
+        for (const auto &head_spec : manifest_info.output_head_specs)
+        {
+            register_tensor_name(head_spec.seq_kernel);
+            register_tensor_name(head_spec.attn_dst_kernel);
+            register_tensor_name(head_spec.attn_src_kernel);
+            register_tensor_name(head_spec.output_bias);
+        }
+        for (const auto &[name, tensor] : tensors)
+        {
+            (void)tensor;
+            if (!referenced_tensor_names.contains(name))
+            {
+                throw std::runtime_error(
+                    "checkpoint tensor dump contains an unreferenced tensor; formal loader rejects hidden/extra parameters: " +
+                    name);
+            }
+        }
 
         ModelParameters out;
         out.has_real_multihead = true;
@@ -1605,10 +1644,13 @@ namespace gatzk::model
                     tensors,
                     head_spec.seq_kernel,
                     head_spec.attn_dst_kernel,
-                    head_spec.attn_dst_bias,
                     head_spec.attn_src_kernel,
-                    head_spec.attn_src_bias,
-                    head_spec.output_bias));
+                    nullptr));
+                if (!layer.heads.back().output_bias_fp.empty())
+                {
+                    throw std::runtime_error(
+                        "hidden attention head must not carry output_bias");
+                }
                 out.hidden_heads.push_back(layer.heads.back());
             }
             if (layer.heads.size() != layer.shape.head_count)
@@ -1632,10 +1674,8 @@ namespace gatzk::model
                 tensors,
                 head_spec.seq_kernel,
                 head_spec.attn_dst_kernel,
-                head_spec.attn_dst_bias,
                 head_spec.attn_src_kernel,
-                head_spec.attn_src_bias,
-                head_spec.output_bias));
+                &head_spec.output_bias));
         }
         if (out.hidden_heads.empty())
         {

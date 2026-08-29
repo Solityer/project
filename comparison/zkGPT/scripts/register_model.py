@@ -13,9 +13,9 @@ sys.path.insert(0, str(ROOT / "src"))
 from zkgpt_gat.config import generated_config, load_app_config  # noqa: E402
 from zkgpt_gat.data import load_dataset, normalize_graph  # noqa: E402
 from zkgpt_gat.formal_gate import require_formal_experiment  # noqa: E402
-from zkgpt_gat.forward import forward_full  # noqa: E402
 from zkgpt_gat.model import load_model  # noqa: E402
-from zkgpt_gat.proof import _padded_segment_chunks, make_metadata, prepare_input_segments_and_layout  # noqa: E402
+from zkgpt_gat.proof import _model_arrays, _padded_segment_chunks, make_metadata  # noqa: E402
+from zkgpt_gat.registry_layout import build_model_registry_layout  # noqa: E402
 from zkgpt_gat.registry import (  # noqa: E402
     canonical_registry_public_path,
     canonical_registry_secret_path,
@@ -174,10 +174,21 @@ def main() -> int:
         static_table_id=config.entries.get("static_table_id"),
         rounding_mode=config.rounding_mode,
     )
-    trace = forward_full(graph, model, config.rounding_mode)
-    _, input_layout, padded_segments = prepare_input_segments_and_layout(config, dataset, graph, model, trace)
+    # Registration commits only the canonical model weights.  Derive the
+    # proof-equivalent layout and integer-bound ledger from graph/model shapes
+    # instead of executing the complete dataset forward trace during setup.
+    input_layout, _ledger = build_model_registry_layout(config, dataset, graph, model)
     metadata = make_metadata(config, dataset, graph, model, "cpu", {"backend": "cpu"}, input_layout)
-    registry = ensure_model_registry(ROOT, metadata, list(_padded_segment_chunks("com_W", padded_segments["W"])))
+    w_values = [
+        int(value)
+        for _, array in _model_arrays(model)
+        for value in array.ravel().tolist()
+    ]
+    n_in = int(input_layout["N_in"])
+    if len(w_values) > n_in:
+        raise ValueError("canonical W vector exceeds shape-only input layout")
+    w_values.extend([0] * (n_in - len(w_values)))
+    registry = ensure_model_registry(ROOT, metadata, list(_padded_segment_chunks("com_W", w_values)))
     print(registry["public_path"])
     return 0
 

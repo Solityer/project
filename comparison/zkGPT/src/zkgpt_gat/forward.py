@@ -495,3 +495,211 @@ def forward_full(
         metrics=timers.values,
         output_average_division=output_average_division,
     )
+
+
+def _cached_exp_map(values: np.ndarray) -> np.ndarray:
+    """Evaluate the canonical ExpMap table once per distinct integer input."""
+    array = np.asarray(values)
+    unique, inverse = np.unique(array.astype(np.int64, copy=False), return_inverse=True)
+    mapped = np.asarray([_exp_map_fixed(int(value)) for value in unique], dtype=np.int64)
+    return mapped[inverse].reshape(array.shape)
+
+
+def _cached_elu(values: np.ndarray) -> np.ndarray:
+    """Evaluate the canonical integer ELU table once per distinct value."""
+    array = np.asarray(values)
+    flat = np.asarray(array, dtype=np.int64).ravel()
+    unique, inverse = np.unique(flat, return_inverse=True)
+    mapped = np.asarray(
+        [_elu_table_value(int(value)) if int(value) < 0 else int(value) for value in unique],
+        dtype=np.int64,
+    )
+    return mapped[inverse].reshape(array.shape)
+
+
+def _signed_round_div_array(
+    numerator: np.ndarray,
+    denominator: np.ndarray,
+    rounding_mode: str,
+) -> np.ndarray:
+    """Vectorized exact SignedRoundDiv for the resource-only forward path."""
+    rounding_mode = validate_rounding_mode(rounding_mode)
+    raw_numerator, raw_denominator = np.broadcast_arrays(
+        np.asarray(numerator), np.asarray(denominator)
+    )
+    # The canonical relation uses arbitrary-size integer advice.  Keep a
+    # wide-object fallback for inputs outside int64, while using the exact
+    # vectorized route for the staged datasets' certified bounds.
+    try:
+        numerator_i64 = raw_numerator.astype(np.int64)
+        denominator_i64 = raw_denominator.astype(np.int64)
+        if np.any(denominator_i64 <= 0):
+            raise ValueError("SignedRoundDiv denominator must be positive")
+        if np.any(np.asarray(raw_numerator, dtype=object) != numerator_i64):
+            raise OverflowError
+        if np.any(np.asarray(raw_denominator, dtype=object) != denominator_i64):
+            raise OverflowError
+        magnitude = np.abs(numerator_i64)
+        quotient, remainder = np.divmod(magnitude, denominator_i64)
+        if rounding_mode == ROUNDING_MODE_NEAREST:
+            quotient = quotient + (2 * remainder >= denominator_i64)
+        output = np.where(numerator_i64 < 0, -quotient, quotient)
+        return np.asarray(output, dtype=np.int64)
+    except (OverflowError, TypeError, ValueError):
+        numerator_object, denominator_object = np.broadcast_arrays(
+            np.asarray(numerator, dtype=object), np.asarray(denominator, dtype=object)
+        )
+        output = np.empty(numerator_object.shape, dtype=object)
+        for index in np.ndindex(output.shape):
+            output[index] = signed_round_div(
+                int(numerator_object[index]), int(denominator_object[index]), rounding_mode
+            )
+        return output
+
+
+def _aggregate_num_integer(
+    dst: np.ndarray,
+    src: np.ndarray,
+    weights: np.ndarray,
+    source_matrix: np.ndarray,
+    node_count: int,
+) -> np.ndarray:
+    """Accumulate exact integer edge products without retaining proof traces."""
+    source = np.asarray(source_matrix)
+    width = int(source.shape[1])
+    weights_i64 = np.asarray(weights, dtype=np.int64)
+    source_i64 = source.astype(np.int64, copy=False)
+    incoming = np.bincount(np.asarray(dst, dtype=np.int64), minlength=node_count)
+    max_weight = int(np.max(np.abs(weights_i64))) if weights_i64.size else 0
+    max_source = int(np.max(np.abs(source_i64))) if source_i64.size else 0
+    use_i64 = max_weight * max_source * (int(np.max(incoming)) if incoming.size else 0) < (1 << 62)
+    if use_i64:
+        output = np.zeros((node_count, width), dtype=np.int64)
+        for column in range(width):
+            np.add.at(output[:, column], dst, weights_i64 * source_i64[src, column])
+        return output
+    output_object = np.zeros((node_count, width), dtype=object)
+    for edge_index, (source_index, target_index, weight) in enumerate(
+        zip(np.asarray(src, dtype=np.int64), np.asarray(dst, dtype=np.int64), weights_i64)
+    ):
+        del edge_index
+        for column in range(width):
+            output_object[int(target_index), column] = (
+                int(output_object[int(target_index), column])
+                + int(weight) * int(source_i64[int(source_index), column])
+            )
+    return output_object
+
+
+def _attention_head_values(
+    graph: LocalGraph,
+    features: np.ndarray,
+    head: AttentionHead,
+    *,
+    apply_output_bias: bool,
+    h_prime_scale: int,
+    aggregate_output_scale: int,
+    output_head_scale: int,
+    rounding_mode: str,
+) -> np.ndarray:
+    """Compute one canonical integer head while retaining only its output."""
+    source = np.asarray(features, dtype=np.int64)
+    h_prime = _safe_int_matmul(source, np.asarray(head.seq_kernel, dtype=np.int64))
+    h_prime_i64 = np.asarray(h_prime, dtype=np.int64)
+    e_dst = _safe_int_matmul(
+        h_prime_i64, np.asarray(head.attn_dst_kernel, dtype=np.int64).reshape((-1, 1))
+    ).reshape((-1,))
+    e_src = _safe_int_matmul(
+        h_prime_i64, np.asarray(head.attn_src_kernel, dtype=np.int64).reshape((-1, 1))
+    ).reshape((-1,))
+    starts = _group_starts(graph.dst, graph.edge_graph)
+    scores = e_src[graph.src] + e_dst[graph.dst]
+    # This is the exact integer LeakyReLU relation y=x for x>=0 and
+    # y=-ceil(abs(x)*0.2) for x<0, written without a floating operation.
+    scores_i64 = np.asarray(scores, dtype=np.int64)
+    z = np.where(scores_i64 >= 0, scores_i64, -(((-scores_i64) + 2) // 5))
+    max_values = np.maximum.reduceat(z, starts)
+    maxima = np.zeros(graph.num_nodes, dtype=np.int64)
+    maxima[graph.dst[starts]] = max_values
+    delta = maxima[graph.dst] - z
+    weights = _cached_exp_map(delta)
+    sum_values = np.add.reduceat(weights, starts)
+    denominators = np.zeros(graph.num_nodes, dtype=np.int64)
+    denominators[graph.dst[starts]] = sum_values
+    aggregate = _aggregate_num_integer(
+        graph.dst, graph.src, weights, h_prime_i64, graph.num_nodes
+    )
+    numerator = aggregate * int(aggregate_output_scale)
+    denominator = np.asarray(denominators, dtype=object)[:, None] * int(h_prime_scale)
+    elu_input = _signed_round_div_array(numerator, denominator, rounding_mode)
+    if apply_output_bias:
+        aligned = _signed_round_div_array(
+            np.asarray(elu_input, dtype=object) * int(output_head_scale),
+            np.full(np.asarray(elu_input).shape, int(aggregate_output_scale), dtype=object),
+            rounding_mode,
+        )
+        return np.asarray(aligned, dtype=object) + np.asarray(head.output_bias, dtype=object)[None, :]
+    return _cached_elu(elu_input)
+
+
+def forward_public_y(
+    graph: LocalGraph,
+    model: Model,
+    rounding_mode: str | None = None,
+) -> np.ndarray:
+    """Return the exact public Y while discarding proof-only intermediate traces.
+
+    Every operation and scale follows :func:`forward_full`; this bounded
+    resource path exists only to materialize public-Y for large staged graphs,
+    where retaining every per-edge/per-head advice array would consume
+    memory without changing the output relation.
+    """
+    rounding_mode = validate_rounding_mode(
+        model.rounding_mode if rounding_mode is None else rounding_mode
+    )
+    layer_input = np.asarray(
+        [
+            int(np.floor(float(item) + 0.5) if float(item) >= 0 else np.ceil(float(item) - 0.5))
+            for item in np.ravel(graph.features)
+        ],
+        dtype=np.int64,
+    ).reshape(graph.features.shape)
+    scales = model.quant_scales
+    layer_input_scale = int(scales["input"])
+    for layer in model.hidden_layers:
+        outputs = [
+            _attention_head_values(
+                graph,
+                layer_input,
+                head,
+                apply_output_bias=False,
+                h_prime_scale=layer_input_scale * int(scales["hidden_weight"]),
+                aggregate_output_scale=int(scales["aggregate_output"]),
+                output_head_scale=int(scales["output_head"]),
+                rounding_mode=rounding_mode,
+            )
+            for head in layer.heads
+        ]
+        layer_input = np.concatenate(outputs, axis=1)
+        layer_input_scale = int(scales["elu_output"])
+    output_values = [
+        _attention_head_values(
+            graph,
+            layer_input,
+            head,
+            apply_output_bias=True,
+            h_prime_scale=layer_input_scale * int(scales["output_weight"]),
+            aggregate_output_scale=int(scales["aggregate_output"]),
+            output_head_scale=int(scales["output_head"]),
+            rounding_mode=rounding_mode,
+        )
+        for head in model.output_heads
+    ]
+    stacked = np.stack(output_values, axis=0).astype(object)
+    summed = np.sum(stacked, axis=0, dtype=object)
+    output = _signed_round_div_array(
+        summed,
+        np.full(summed.shape, len(output_values), dtype=object),
+        rounding_mode,
+    )
+    return np.asarray(output, dtype=object)

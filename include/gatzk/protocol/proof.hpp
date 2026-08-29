@@ -199,6 +199,7 @@ namespace gatzk::protocol
         std::string reference_fp32_logits_hash;
         std::string reference_quant_logits_hash;
         std::string secure_trace_logits_hash;
+        bool reference_consistency_passed = false;
         std::string proof_public_output_hash;
         std::shared_ptr<PiBindProof> pi_bind;
     };
@@ -540,6 +541,7 @@ namespace gatzk::protocol
         double reference_forward_ms = 0.0;
         double payload_audit_ms = 0.0;
         double reference_consistency_ms = 0.0;
+        bool reference_consistency_passed = false;
         double tamper_tests_ms = 0.0;
         double export_artifact_ms = 0.0;
         double export_manifest_validation_ms = 0.0;

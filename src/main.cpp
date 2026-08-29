@@ -673,8 +673,16 @@ int main(int argc, char **argv)
             const auto audit_end = std::chrono::steady_clock::now();
             metrics.payload_audit_ms = std::chrono::duration<double, std::milli>(audit_end - audit_start).count();
             const auto reference_start = std::chrono::steady_clock::now();
+            const bool reference_matrix_match = trace.reference_consistency_passed;
+            const bool reference_payload_audit =
+                !trace.reference_quant_logits_hash.empty() &&
+                !trace.secure_trace_logits_hash.empty() &&
+                trace.reference_quant_logits_hash == trace.secure_trace_logits_hash &&
+                trace.public_logits == parsed_proof.public_logits &&
+                private_plain_count == 0;
             const bool reference_consistent =
-                !trace.reference_quant_logits_hash.empty() && trace.reference_quant_logits_hash == trace.secure_trace_logits_hash && trace.public_logits == parsed_proof.public_logits && private_plain_count == 0;
+                reference_matrix_match && reference_payload_audit;
+            metrics.reference_consistency_passed = reference_consistent;
             metrics.cpu_gpu_reference_consistency_passed = reference_consistent;
             const auto reference_end = std::chrono::steady_clock::now();
             metrics.reference_consistency_ms =
@@ -694,7 +702,7 @@ int main(int argc, char **argv)
                         trace.reference_quant_logits_hash.empty()
                             ? "false"
                             : "true") +
-                    ", reference_matches_secure=" + std::string(trace.reference_quant_logits_hash == trace.secure_trace_logits_hash ? "true" : "false") + ", proof_output_matches_trace=" + std::string(trace.public_logits == parsed_proof.public_logits ? "true" : "false") + ", private_plain_count=" + std::to_string(private_plain_count) + ")");
+                    ", reference_matrix_match=" + std::string(reference_matrix_match ? "true" : "false") + ", reference_matches_secure=" + std::string(trace.reference_quant_logits_hash == trace.secure_trace_logits_hash ? "true" : "false") + ", proof_output_matches_trace=" + std::string(trace.public_logits == parsed_proof.public_logits ? "true" : "false") + ", private_plain_count=" + std::to_string(private_plain_count) + ")");
             }
             if (!tamper_rejected)
             {

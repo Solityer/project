@@ -84,7 +84,7 @@ def validate_ppi_bundle(manifest: Dict[str, object], bundle_dir: pathlib.Path) -
     require(int(manifest["C"]) == 121, "PPI 正式配置要求 C=121")
     require(str(manifest["model_arch_id"]) == "gat_family_L3_hid8x8-8x8_kout2_c121", "PPI bundle 的 model_arch_id 不匹配")
     require(str(manifest["model_param_id"]) == "ppi_gat_seed11", "PPI bundle 的 model_param_id 不匹配")
-    require(str(manifest["quant_cfg_id"]) == "fp32_torch_checkpoint", "PPI bundle 必须来自 PyTorch checkpoint")
+    require(str(manifest["quant_cfg_id"]) == "gat_l3_scale_chain_v1", "PPI bundle 必须声明 canonical scale chain")
     require(str(manifest["task_type"]) == "inductive_multi_graph_node_classification", "PPI bundle 的 task_type 不匹配")
     require(str(manifest["report_unit"]) == "graph", "PPI bundle 的 report_unit 不匹配")
     require(str(manifest["batching_rule"]) == "multi_graph_batch", "PPI bundle 的 batching_rule 不匹配")
@@ -132,23 +132,35 @@ def validate_ppi_bundle(manifest: Dict[str, object], bundle_dir: pathlib.Path) -
         require(isinstance(entry, dict) and isinstance(entry.get("shape"), list), f"PPI tensor shape 缺失: {name}")
         return tuple(int(value) for value in entry["shape"])
 
-    def validate_head(spec: Dict[str, object], input_dim: int, output_dim: int) -> None:
-        for key in ("seq_kernel", "attn_dst_kernel", "attn_dst_bias", "attn_src_kernel", "attn_src_bias", "output_bias"):
+    def validate_head(
+        spec: Dict[str, object],
+        input_dim: int,
+        output_dim: int,
+        *,
+        require_output_bias: bool,
+    ) -> None:
+        require("attn_dst_bias" not in spec and "attn_src_bias" not in spec,
+                "PPI head must reject legacy attention scalar bias fields")
+        keys = ("seq_kernel", "attn_dst_kernel", "attn_src_kernel")
+        if require_output_bias:
+            keys += ("output_bias",)
+        else:
+            require("output_bias" not in spec, "PPI hidden head must not expose output_bias")
+        for key in keys:
             require(key in spec, f"PPI head spec 缺少 {key}")
         require(tensor_shape(spec["seq_kernel"]) == (1, input_dim, output_dim), "PPI seq kernel shape 不匹配")
         require(tensor_shape(spec["attn_dst_kernel"]) == (1, output_dim, 1), "PPI destination attention shape 不匹配")
         require(tensor_shape(spec["attn_src_kernel"]) == (1, output_dim, 1), "PPI source attention shape 不匹配")
-        require(tensor_shape(spec["attn_dst_bias"]) == (1,), "PPI destination attention bias shape 不匹配")
-        require(tensor_shape(spec["attn_src_bias"]) == (1,), "PPI source attention bias shape 不匹配")
-        require(tensor_shape(spec["output_bias"]) == (output_dim,), "PPI output bias shape 不匹配")
+        if require_output_bias:
+            require(tensor_shape(spec["output_bias"]) == (output_dim,), "PPI output bias shape 不匹配")
 
     for layer_index, input_dim in enumerate((50, 64)):
         layer_specs = [spec for spec in hidden_specs if int(spec["layer_index"]) == layer_index]
         require(len(layer_specs) == 8, f"PPI hidden layer {layer_index} head count 不匹配")
         for spec in layer_specs:
-            validate_head(spec, input_dim, 8)
+            validate_head(spec, input_dim, 8, require_output_bias=False)
     for spec in output_specs:
-        validate_head(spec, 64, 121)
+        validate_head(spec, 64, 121, require_output_bias=True)
 
 
 def install_bundle(source_dir: pathlib.Path, output_dir: pathlib.Path) -> None:
@@ -200,7 +212,7 @@ def write_bundle_from_torch_checkpoint(checkpoint_path: pathlib.Path, bundle_dir
         "tensor_count": len(tensors),
         "model_arch_id": str(bundle.get("model_arch_id", checkpoint_path.stem)),
         "model_param_id": str(bundle.get("model_param_id", checkpoint_path.stem)),
-        "quant_cfg_id": str(bundle.get("quant_cfg_id", "fp32_torch_checkpoint")),
+        "quant_cfg_id": str(bundle.get("quant_cfg_id", "gat_l3_scale_chain_v1")),
         "label_format": str(bundle.get("label_format", "multi_hot")),
         "loss": str(bundle.get("loss", "BCEWithLogitsLoss")),
         "selection_metric": str(bundle.get("selection_metric", "validation_loss")),

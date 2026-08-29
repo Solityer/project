@@ -487,17 +487,17 @@ namespace gatzk::protocol
             }
         }
         metadata.static_tables = "registry_sha256=" + sha256_hex(table_registry.str());
-        const auto limb_count = (64U + context.config.range_bits - 1U) / context.config.range_bits;
-        metadata.quant_config = !context.config.quant_cfg_id.empty()
-                                    ? (context.config.quant_cfg_id
-                                       + "|integer_bound_ledger="
-                                       + sha256_hex(compiler_artifact.instance_canonical_bytes + "|integer_bounds"))
-                                    : ("range_bits=" + std::to_string(context.config.range_bits)
-                                       + "|limbs_i64=" + std::to_string(limb_count)
-                                       + "|signed=balanced-field|round=nearest-ties-away"
-                                       + "|output_rescale=16|output_average=signed_round_div"
-                                       + "|integer_bound_ledger="
-                                       + sha256_hex(compiler_artifact.instance_canonical_bytes + "|integer_bounds"));
+        const auto quantization_serialization =
+            context.config.quantization.canonical_serialization();
+        if (quantization_serialization.empty() || context.config.quant_cfg_id.empty())
+        {
+            throw std::runtime_error(
+                "formal public metadata requires the validated canonical quantization scale chain");
+        }
+        metadata.quant_config =
+            context.config.quant_cfg_id + "|" + quantization_serialization
+            + "|integer_bound_ledger="
+            + sha256_hex(compiler_artifact.instance_canonical_bytes + "|integer_bounds");
         metadata.domain_cfg =
             "FH=" + context.domains.fh->name + ":" + std::to_string(context.domains.fh->size) + ",edge=" + context.domains.edge->name + ":" + std::to_string(context.domains.edge->size) + ",in=" + context.domains.in->name + ":" + std::to_string(context.domains.in->size) + ",d_h=" + context.domains.d->name + ":" + std::to_string(context.domains.d->size) + ",cat=" + context.domains.cat->name + ":" + std::to_string(context.domains.cat->size) + ",C=" + context.domains.c->name + ":" + std::to_string(context.domains.c->size) + ",N=" + context.domains.n->name + ":" + std::to_string(context.domains.n->size);
         metadata.dim_cfg =

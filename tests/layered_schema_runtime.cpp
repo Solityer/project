@@ -1,6 +1,7 @@
 #include "gatzk/model/gat.hpp"
 #include "gatzk/protocol/lookup.hpp"
 #include "gatzk/protocol/schema.hpp"
+#include "gatzk/util/config.hpp"
 
 #include <chrono>
 #include <filesystem>
@@ -19,6 +20,7 @@ namespace
     using gatzk::model::CheckpointLayerInfo;
     using gatzk::model::CheckpointOutputHeadSpec;
     using gatzk::model::HiddenLayerShape;
+    using gatzk::util::HiddenLayerProfile;
 
     void expect(bool condition, const std::string &message)
     {
@@ -77,7 +79,11 @@ namespace
         return info;
     }
 
-    void write_manifest(const std::filesystem::path &path, bool global_only)
+    void write_manifest(
+        const std::filesystem::path &path,
+        bool global_only,
+        bool legacy_attention_bias = false,
+        bool hidden_output_bias = false)
     {
         std::ofstream manifest(path);
         expect(manifest.good(), "unable to create synthetic manifest");
@@ -124,22 +130,93 @@ namespace
                     manifest << "\"layer_index\": " << layer_index
                              << ", \"local_head_index\": " << local_head_index << ", ";
                 }
-                manifest << "\"seq_kernel\": \"s\","
-                         << " \"attn_dst_kernel\": \"dk\","
-                         << " \"attn_dst_bias\": \"db\","
-                         << " \"attn_src_kernel\": \"sk\","
-                         << " \"attn_src_bias\": \"sb\","
-                         << " \"output_bias\": \"ob\"}";
+                const auto tensor_prefix =
+                    "hidden_l" + std::to_string(layer_index) +
+                    "_h" + std::to_string(local_head_index);
+                manifest << "\"seq_kernel\": \"" << tensor_prefix << "/seq\","
+                         << " \"attn_dst_kernel\": \"" << tensor_prefix << "/dst\","
+                         << " \"attn_src_kernel\": \"" << tensor_prefix << "/src\"";
+                if (legacy_attention_bias)
+                {
+                    manifest << ", \"attn_dst_bias\": \"db\"";
+                }
+                if (hidden_output_bias)
+                {
+                    manifest << ", \"output_bias\": \"" << tensor_prefix
+                             << "/output_bias\"";
+                }
+                manifest << "}";
             }
         }
         manifest << R"(
   ],
   "output_head_specs": [
-    {"head_index": 0, "seq_kernel": "os", "attn_dst_kernel": "odk", "attn_dst_bias": "odb", "attn_src_kernel": "osk", "attn_src_bias": "osb", "output_bias": "oob"},
-    {"head_index": 1, "seq_kernel": "os1", "attn_dst_kernel": "odk1", "attn_dst_bias": "odb1", "attn_src_kernel": "osk1", "attn_src_bias": "osb1", "output_bias": "oob1"}
+    {"head_index": 0, "seq_kernel": "os", "attn_dst_kernel": "odk", "attn_src_kernel": "osk", "output_bias": "oob"},
+    {"head_index": 1, "seq_kernel": "os1", "attn_dst_kernel": "odk1", "attn_src_kernel": "osk1", "output_bias": "oob1"}
   ]
 }
 )";
+    }
+
+    void write_tensor(
+        std::ofstream &output,
+        const std::string &name,
+        const std::vector<std::size_t> &shape)
+    {
+        std::size_t count = 1;
+        for (const auto dimension : shape)
+        {
+            count *= dimension;
+        }
+        output << "TENSOR " << name << ' ' << shape.size();
+        for (const auto dimension : shape)
+        {
+            output << ' ' << dimension;
+        }
+        output << ' ' << count << '\n';
+        for (std::size_t index = 0; index < count; ++index)
+        {
+            if (index != 0)
+            {
+                output << ' ';
+            }
+            output << '0';
+        }
+        output << '\n';
+    }
+
+    void write_tensor_dump(
+        const std::filesystem::path &path,
+        bool include_unreferenced_extra)
+    {
+        std::ofstream output(path);
+        expect(output.good(), "unable to create synthetic tensor dump");
+        for (std::size_t layer_index = 0; layer_index < 2; ++layer_index)
+        {
+            const auto input_dim =
+                layer_index == 0 ? std::size_t{5} : std::size_t{6};
+            for (std::size_t local_head_index = 0; local_head_index < 2; ++local_head_index)
+            {
+                const auto tensor_prefix =
+                    "hidden_l" + std::to_string(layer_index) +
+                    "_h" + std::to_string(local_head_index);
+                write_tensor(output, tensor_prefix + "/seq", {1, input_dim, 3});
+                write_tensor(output, tensor_prefix + "/dst", {1, 3, 1});
+                write_tensor(output, tensor_prefix + "/src", {1, 3, 1});
+            }
+        }
+        write_tensor(output, "os", {1, 6, 1});
+        write_tensor(output, "odk", {1, 1, 1});
+        write_tensor(output, "osk", {1, 1, 1});
+        write_tensor(output, "oob", {1});
+        write_tensor(output, "os1", {1, 6, 1});
+        write_tensor(output, "odk1", {1, 1, 1});
+        write_tensor(output, "osk1", {1, 1, 1});
+        write_tensor(output, "oob1", {1});
+        if (include_unreferenced_extra)
+        {
+            write_tensor(output, "hidden_l0_h0/output_bias", {3});
+        }
     }
 }
 
@@ -210,6 +287,55 @@ int main()
         expect(gatzk::model::checkpoint_bundle_matches_formal_proof_shape(parsed, &reason),
                "parsed canonical pair manifest must pass formal shape validation: " + reason);
 
+        const auto scale_chain = gatzk::util::canonical_quantization_scale_chain(
+            "gat_l3_scale_chain_v1",
+            std::vector<HiddenLayerProfile>{{8, 8}, {8, 8}},
+            2);
+        expect(scale_chain.s_h == std::vector<std::uint64_t>{1, 16, 16},
+               "canonical scale chain H values mismatch");
+        expect(scale_chain.s_h[1] == scale_chain.s_cat[0]
+                   && scale_chain.s_h[2] == scale_chain.s_cat[1]
+                   && scale_chain.s_h.back() == scale_chain.s_cat.back(),
+               "every hidden concat must feed the next H scale");
+        expect(scale_chain.s_h_prime[0][0] == 16 && scale_chain.s_h_prime[1][0] == 256,
+               "canonical layer-aware H_prime scales mismatch");
+        expect(scale_chain.s_a_src_hidden[0][0] == 16 && scale_chain.s_a_src_hidden[1][0] == 1,
+               "canonical layer-aware attention scales mismatch");
+        expect(scale_chain.s_out_pre == 16 && scale_chain.s_out_head == 16
+                   && scale_chain.s_out == 16 && scale_chain.s_y_prime[0] == 256
+                   && scale_chain.s_b_output[1] == 16,
+               "canonical output scale chain mismatch");
+        expect(scale_chain.canonical_serialization() == scale_chain.canonical_serialization(),
+               "canonical scale serialization must be deterministic");
+        bool rejected_unknown_scale_id = false;
+        try
+        {
+            (void)gatzk::util::canonical_quantization_scale_chain(
+                "legacy_id", std::vector<HiddenLayerProfile>{{8, 8}, {8, 8}}, 2);
+        }
+        catch (const std::exception &error)
+        {
+            rejected_unknown_scale_id =
+                std::string(error.what()).find("unsupported quant_cfg_id") != std::string::npos;
+        }
+        expect(rejected_unknown_scale_id,
+               "unknown quantization scale-chain ID must fail closed");
+
+        write_manifest(temp_root / "manifest.json", false);
+        write_tensor_dump(temp_root / "tensors.txt", true);
+        bool rejected_unreferenced_tensor = false;
+        try
+        {
+            (void)gatzk::model::load_checkpoint_bundle_parameters(temp_root.string());
+        }
+        catch (const std::exception &error)
+        {
+            rejected_unreferenced_tensor =
+                std::string(error.what()).find("unreferenced tensor") != std::string::npos;
+        }
+        expect(rejected_unreferenced_tensor,
+               "hidden output-bias tensor not referenced by the manifest must fail closed");
+
         write_manifest(temp_root / "manifest.json", true);
         bool rejected_global_only = false;
         try
@@ -220,10 +346,39 @@ int main()
         {
             rejected_global_only = std::string(error.what()).find("layer_index") != std::string::npos;
         }
-        std::error_code cleanup_error;
-        std::filesystem::remove_all(temp_root, cleanup_error);
         expect(rejected_global_only,
                "global-only manifest must be rejected before formal lookup");
+
+        write_manifest(temp_root / "manifest.json", false, true);
+        bool rejected_attention_bias = false;
+        try
+        {
+            (void)gatzk::model::inspect_checkpoint_bundle(temp_root.string());
+        }
+        catch (const std::exception &error)
+        {
+            rejected_attention_bias =
+                std::string(error.what()).find("bias-enabled attention") != std::string::npos;
+        }
+        expect(rejected_attention_bias,
+               "attention scalar bias manifest must be rejected before formal lookup");
+
+        write_manifest(temp_root / "manifest.json", false, false, true);
+        bool rejected_hidden_output_bias = false;
+        try
+        {
+            (void)gatzk::model::inspect_checkpoint_bundle(temp_root.string());
+        }
+        catch (const std::exception &error)
+        {
+            rejected_hidden_output_bias =
+                std::string(error.what()).find("output_bias manifest field") != std::string::npos;
+        }
+        expect(rejected_hidden_output_bias,
+               "hidden output_bias manifest field must be rejected before formal lookup");
+
+        std::error_code cleanup_error;
+        std::filesystem::remove_all(temp_root, cleanup_error);
 
         std::cout << "layered schema runtime checks passed\n";
         return 0;

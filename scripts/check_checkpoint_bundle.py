@@ -33,22 +33,34 @@ def tensor_shape(tensor_index: object, name: object) -> tuple[int, ...]:
     return tuple(int(value) for value in entry["shape"])
 
 
-def head_names(spec: object) -> Iterable[str]:
+def head_names(spec: object, *, require_output_bias: bool) -> Iterable[str]:
     require(isinstance(spec, dict), "head spec must be an object")
-    names = ("seq_kernel", "attn_dst_kernel", "attn_dst_bias", "attn_src_kernel", "attn_src_bias", "output_bias")
+    for legacy in ("attn_dst_bias", "attn_src_bias"):
+        require(legacy not in spec, f"formal head spec must reject legacy attention scalar bias: {legacy}")
+    names = ["seq_kernel", "attn_dst_kernel", "attn_src_kernel"]
+    if require_output_bias:
+        names.append("output_bias")
+    else:
+        require("output_bias" not in spec, "hidden head spec must not expose output_bias")
     for name in names:
         require(name in spec, f"head spec missing {name}")
         yield str(spec[name])
 
 
-def check_head(spec: object, tensor_index: object, input_dim: int, output_dim: int) -> None:
-    names = list(head_names(spec))
+def check_head(
+    spec: object,
+    tensor_index: object,
+    input_dim: int,
+    output_dim: int,
+    *,
+    require_output_bias: bool,
+) -> None:
+    names = list(head_names(spec, require_output_bias=require_output_bias))
     require(tensor_shape(tensor_index, names[0]) == (1, input_dim, output_dim), "seq kernel shape mismatch")
     require(tensor_shape(tensor_index, names[1]) == (1, output_dim, 1), "destination attention shape mismatch")
-    require(tensor_shape(tensor_index, names[2]) == (1,), "destination attention bias shape mismatch")
-    require(tensor_shape(tensor_index, names[3]) == (1, output_dim, 1), "source attention shape mismatch")
-    require(tensor_shape(tensor_index, names[4]) == (1,), "source attention bias shape mismatch")
-    require(tensor_shape(tensor_index, names[5]) == (output_dim,), "output bias shape mismatch")
+    require(tensor_shape(tensor_index, names[2]) == (1, output_dim, 1), "source attention shape mismatch")
+    if require_output_bias:
+        require(tensor_shape(tensor_index, names[3]) == (output_dim,), "output bias shape mismatch")
 
 
 def check_source_checkpoint(
@@ -73,7 +85,7 @@ def check_source_checkpoint(
     require(int(bundle.get("K_out", 0)) == 2, "source checkpoint K_out mismatch")
     require(int(bundle.get("C", 0)) == classes, "source checkpoint class count mismatch")
     require(bundle.get("model_arch_id") == arch_id, "source checkpoint model_arch_id mismatch")
-    require(bundle.get("quant_cfg_id") == "fp32_torch_checkpoint", "source checkpoint quantization metadata mismatch")
+    require(bundle.get("quant_cfg_id") == "gat_l3_scale_chain_v1", "source checkpoint quantization metadata mismatch")
     require(bundle.get("model_param_id") == model_param_id, "source checkpoint model parameter identity mismatch")
     if dataset == "ppi":
         require(bundle.get("label_format") == "multi_hot", "source checkpoint PPI label_format mismatch")
@@ -94,9 +106,7 @@ def check_source_checkpoint(
                 {
                     f"{prefix}.seq.weight": (8, input_dim),
                     f"{prefix}.attn_dst.weight": (1, 8),
-                    f"{prefix}.attn_dst.bias": (1,),
                     f"{prefix}.attn_src.weight": (1, 8),
-                    f"{prefix}.attn_src.bias": (1,),
                 }
             )
     for head_index in range(2):
@@ -105,9 +115,7 @@ def check_source_checkpoint(
             {
                 f"{prefix}.seq.weight": (classes, 64),
                 f"{prefix}.attn_dst.weight": (1, classes),
-                f"{prefix}.attn_dst.bias": (1,),
                 f"{prefix}.attn_src.weight": (1, classes),
-                f"{prefix}.attn_src.bias": (1,),
                 f"{prefix}.output_bias": (classes,),
             }
         )
@@ -136,6 +144,10 @@ def check_bundle(bundle_dir: pathlib.Path, dataset: str, checkpoint: pathlib.Pat
     require(manifest.get("hidden_profile") == [{"head_count": 8, "head_dim": 8}, {"head_count": 8, "head_dim": 8}], "bundle hidden_profile mismatch")
     require(manifest.get("model_arch_id") == arch_id, "bundle model_arch_id mismatch")
     require(manifest.get("model_param_id") == model_param_id, "bundle model_param_id mismatch")
+    for spec in list(manifest.get("hidden_head_specs", [])) + list(manifest.get("output_head_specs", [])):
+        require(isinstance(spec, dict), "head spec must be an object")
+        require("attn_dst_bias" not in spec and "attn_src_bias" not in spec,
+                "legacy attention scalar bias fields are forbidden")
     require(manifest.get("task_type") == task_type, "bundle task_type mismatch")
     require(manifest.get("report_unit") == report_unit, "bundle report_unit mismatch")
     require(manifest.get("output_average_rule") == "per_head_bias_then_arithmetic_mean", "bundle output average rule mismatch")
@@ -185,9 +197,9 @@ def check_bundle(bundle_dir: pathlib.Path, dataset: str, checkpoint: pathlib.Pat
         layer_heads = [spec for spec in hidden_specs if int(spec["layer_index"]) == layer_index]
         require(len(layer_heads) == 8, f"bundle hidden layer {layer_index} head count mismatch")
         for spec in layer_heads:
-            check_head(spec, tensor_index, input_dim, 8)
+            check_head(spec, tensor_index, input_dim, 8, require_output_bias=False)
     for spec in output_specs:
-        check_head(spec, tensor_index, 64, classes)
+        check_head(spec, tensor_index, 64, classes, require_output_bias=True)
 
     with np.load(bundle_dir / "tensors.npz") as archive:
         for logical_name, entry in tensor_index.items():

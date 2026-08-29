@@ -27,9 +27,9 @@ namespace gatzk::model
     {
         FloatMatrix seq_kernel_fp;
         std::vector<double> attn_dst_kernel_fp;
-        double attn_dst_bias_fp = 0.0;
         std::vector<double> attn_src_kernel_fp;
-        double attn_src_bias_fp = 0.0;
+        // Only output heads carry the formal post-aggregation bias. Hidden
+        // heads must leave this vector empty.
         std::vector<double> output_bias_fp;
     };
 
@@ -140,10 +140,7 @@ namespace gatzk::model
         std::size_t global_head_index = 0;
         std::string seq_kernel;
         std::string attn_dst_kernel;
-        std::string attn_dst_bias;
         std::string attn_src_kernel;
-        std::string attn_src_bias;
-        std::string output_bias;
     };
 
     // checkpoint manifest 中记录的输出头张量名。
@@ -152,9 +149,7 @@ namespace gatzk::model
         std::size_t head_index = 0;
         std::string seq_kernel;
         std::string attn_dst_kernel;
-        std::string attn_dst_bias;
         std::string attn_src_kernel;
-        std::string attn_src_bias;
         std::string output_bias;
     };
 

@@ -222,7 +222,7 @@ def check_canonical_config(path: pathlib.Path, dataset: str, context: str) -> No
         "range_bits": str({"cora": 12, "citeseer": 12, "pubmed": 12, "ppi": 14, "ogbn-arxiv": 21}[dataset]),
         "model_arch_id": EXPECTED_MODEL_ARCH[dataset],
         "model_param_id": EXPECTED_MODEL_PARAM[dataset],
-        "quant_cfg_id": "fp32_torch_checkpoint",
+        "quant_cfg_id": "gat_l3_scale_chain_v1",
         "static_table_id": "tables:lrelu+elu+exp+range",
         "degree_bound_id": "auto",
         "checkpoint_bundle": f"artifacts/checkpoints/{dataset.replace('-', '_')}_gat",
@@ -281,7 +281,7 @@ def check_checkpoint_artifacts(
             f"{context}: checkpoint model_arch_id is not canonical")
     require(bundle_manifest.get("model_param_id") == EXPECTED_MODEL_PARAM[dataset],
             f"{context}: checkpoint model_param_id is not canonical")
-    require(bundle_manifest.get("quant_cfg_id") == "fp32_torch_checkpoint",
+    require(bundle_manifest.get("quant_cfg_id") == "gat_l3_scale_chain_v1",
             f"{context}: checkpoint quant_cfg_id is not canonical")
     require(bundle_manifest.get("static_table_id") == "tables:lrelu+elu+exp+range",
             f"{context}: checkpoint static_table_id is not canonical")
@@ -466,8 +466,8 @@ def check_manifest(
             f"{context}: model_arch is not the canonical architecture")
     require(row["model_params"].startswith("registry_sha256="),
             f"{context}: model_params is not a bound model registry")
-    require(row["quant_config"].startswith("fp32_torch_checkpoint|"),
-            f"{context}: quant_config is not the canonical checkpoint binding")
+    require(row["quant_config"].startswith("gat_l3_scale_chain_v1|"),
+            f"{context}: quant_config is not the canonical scale-chain binding")
     require(row["static_tables"].startswith("registry_sha256="),
             f"{context}: static_tables is not a bound static-table registry")
     return row

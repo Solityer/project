@@ -21,10 +21,6 @@ def export_attention_kernel(weight: torch.Tensor) -> np.ndarray:
     return weight.detach().cpu().numpy().reshape(1, -1, 1).astype(np.float32, copy=False)
 
 
-def export_scalar_bias(bias: torch.Tensor) -> np.ndarray:
-    return bias.detach().cpu().numpy().reshape(1).astype(np.float32, copy=False)
-
-
 def export_vector_bias(bias: torch.Tensor) -> np.ndarray:
     return bias.detach().cpu().numpy().reshape(-1).astype(np.float32, copy=False)
 
@@ -74,31 +70,41 @@ def export_head_tensors(
     state: Dict[str, torch.Tensor],
     state_prefix: str,
     tensor_prefix: str,
+    *,
+    require_output_bias: bool,
 ) -> Dict[str, str]:
+    for legacy_key in (
+        f"{state_prefix}.attn_dst.bias",
+        f"{state_prefix}.attn_src.bias",
+        f"{state_prefix}.attn_dst_bias",
+        f"{state_prefix}.attn_src_bias",
+    ):
+        if legacy_key in state:
+            raise ValueError(f"attention scalar bias is forbidden in formal checkpoint: {legacy_key}")
     seq_name = f"{tensor_prefix}/seq/kernel"
     dst_kernel_name = f"{tensor_prefix}/attn_dst/kernel"
-    dst_bias_name = f"{tensor_prefix}/attn_dst/bias"
     src_kernel_name = f"{tensor_prefix}/attn_src/kernel"
-    src_bias_name = f"{tensor_prefix}/attn_src/bias"
     output_bias_name = f"{tensor_prefix}/output_bias"
     tensors[seq_name] = export_linear_kernel(state[f"{state_prefix}.seq.weight"])
     tensors[dst_kernel_name] = export_attention_kernel(state[f"{state_prefix}.attn_dst.weight"])
-    tensors[dst_bias_name] = export_scalar_bias(state[f"{state_prefix}.attn_dst.bias"])
     tensors[src_kernel_name] = export_attention_kernel(state[f"{state_prefix}.attn_src.weight"])
-    tensors[src_bias_name] = export_scalar_bias(state[f"{state_prefix}.attn_src.bias"])
     if f"{state_prefix}.output_bias" in state:
+        if not require_output_bias:
+            raise ValueError(f"hidden head must not expose output_bias: {state_prefix}")
         tensors[output_bias_name] = export_vector_bias(state[f"{state_prefix}.output_bias"])
+    elif require_output_bias:
+        raise ValueError(f"output head {state_prefix} must expose output_bias")
     else:
-        out_dim = int(state[f"{state_prefix}.seq.weight"].shape[0])
-        tensors[output_bias_name] = np.zeros((out_dim,), dtype=np.float32)
-    return {
+        # Hidden heads intentionally have no post-aggregation bias tensor.
+        pass
+    result = {
         "seq_kernel": seq_name,
         "attn_dst_kernel": dst_kernel_name,
-        "attn_dst_bias": dst_bias_name,
         "attn_src_kernel": src_kernel_name,
-        "attn_src_bias": src_bias_name,
-        "output_bias": output_bias_name,
     }
+    if require_output_bias:
+        result["output_bias"] = output_bias_name
+    return result
 
 
 def build_tensors_and_manifest_spec(
@@ -126,7 +132,7 @@ def build_tensors_and_manifest_spec(
         or k_out != 2
         or num_classes != expected_classes
         or bundle.get("model_arch_id") != expected_arch
-        or bundle.get("quant_cfg_id") != "fp32_torch_checkpoint"
+        or bundle.get("quant_cfg_id") != "gat_l3_scale_chain_v1"
     ):
         raise ValueError("PyTorch checkpoint does not match the canonical L=3 multi-head formal shape")
     if dataset_key == "ppi":
@@ -167,7 +173,13 @@ def build_tensors_and_manifest_spec(
                     {
                         "layer_index": layer_index,
                         "local_head_index": local_head_index,
-                        **export_head_tensors(tensors, state, state_prefix, tensor_prefix),
+                        **export_head_tensors(
+                            tensors,
+                            state,
+                            state_prefix,
+                            tensor_prefix,
+                            require_output_bias=False,
+                        ),
                     }
                 )
         for head_index in range(k_out):
@@ -176,7 +188,13 @@ def build_tensors_and_manifest_spec(
             output_head_specs.append(
                 {
                     "head_index": head_index,
-                    **export_head_tensors(tensors, state, state_prefix, tensor_prefix),
+                    **export_head_tensors(
+                        tensors,
+                        state,
+                        state_prefix,
+                        tensor_prefix,
+                        require_output_bias=True,
+                    ),
                 }
             )
     else:
@@ -216,7 +234,7 @@ def main() -> None:
         num_classes=num_classes,
         task_type=str(bundle.get("task_type", "transductive_node_classification")),
         report_unit=str(bundle.get("report_unit", "node")),
-        quant_cfg_id=str(bundle.get("quant_cfg_id", "fp32_torch_checkpoint")),
+        quant_cfg_id=str(bundle.get("quant_cfg_id", "gat_l3_scale_chain_v1")),
         static_table_id=str(bundle.get("static_table_id", "tables:lrelu+elu+exp+range")),
         degree_bound_id=str(bundle.get("degree_bound_id", "auto")),
         model_arch_id=str(bundle.get("model_arch_id", "")) or None,

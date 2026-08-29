@@ -140,8 +140,8 @@ def require_canonical_model_config(
         raise ValueError(f"{dataset} formal config has an unexpected model_arch_id")
     if cfg.get("model_param_id") != expected_param:
         raise ValueError(f"{dataset} formal config has an unexpected model_param_id")
-    if cfg.get("quant_cfg_id") != "fp32_torch_checkpoint":
-        raise ValueError(f"{dataset} formal training requires quant_cfg_id=fp32_torch_checkpoint")
+    if cfg.get("quant_cfg_id") != "gat_l3_scale_chain_v1":
+        raise ValueError(f"{dataset} formal training requires quant_cfg_id=gat_l3_scale_chain_v1")
     return hidden_profile
 
 
@@ -250,8 +250,8 @@ class AttentionHead(nn.Module):
         if in_dim <= 0 or out_dim <= 0:
             raise ValueError("attention head dimensions must be positive")
         self.seq = nn.Linear(in_dim, out_dim, bias=False)
-        self.attn_dst = nn.Linear(out_dim, 1, bias=True)
-        self.attn_src = nn.Linear(out_dim, 1, bias=True)
+        self.attn_dst = nn.Linear(out_dim, 1, bias=False)
+        self.attn_src = nn.Linear(out_dim, 1, bias=False)
         if output_bias:
             self.output_bias = nn.Parameter(torch.zeros(out_dim))
         else:
@@ -547,7 +547,7 @@ def checkpoint_metadata(
         "selection_metric": "validation_loss",
         "model_arch_id": architecture_id(profile, k_out, num_classes),
         "model_param_id": model_param_id,
-        "quant_cfg_id": "fp32_torch_checkpoint",
+        "quant_cfg_id": "gat_l3_scale_chain_v1",
         "static_table_id": "tables:lrelu+elu+exp+range",
         "degree_bound_id": "auto",
         "output_average_rule": OUTPUT_AVERAGE_RULE,
@@ -578,6 +578,27 @@ def load_checkpoint(
         raise ValueError(f"checkpoint at {path} is missing bundle metadata")
     if not isinstance(checkpoint.get("state_dict"), dict):
         raise ValueError(f"checkpoint at {path} is missing state_dict")
+    state = checkpoint["state_dict"]
+    for key in state:
+        if (
+            ("attn_src" in str(key) or "attn_dst" in str(key))
+            and (str(key).endswith(".bias") or str(key).endswith("_bias"))
+        ):
+            raise ValueError(
+                "bias-enabled attention checkpoint is not accepted by the formal loader: "
+                + str(key)
+            )
+    bundle = checkpoint["bundle"]
+    for field in ("hidden_head_specs", "output_head_specs"):
+        specs = bundle.get(field)
+        if isinstance(specs, list):
+            for spec in specs:
+                if isinstance(spec, dict) and any(
+                    name in spec for name in ("attn_src_bias", "attn_dst_bias")
+                ):
+                    raise ValueError(
+                        "bias-enabled attention checkpoint metadata is not accepted by the formal loader"
+                    )
     return checkpoint
 
 
@@ -604,6 +625,12 @@ def structured_checkpoint_state(
     num_classes: int,
 ) -> Dict[str, torch.Tensor]:
     """Normalize historical one-layer checkpoints for parity replay only."""
+    for key in state:
+        if ("attn_src.bias" in key or "attn_dst.bias" in key or
+                "attn_src_bias" in key or "attn_dst_bias" in key):
+            raise ValueError(
+                "bias-enabled attention checkpoint is not accepted by the formal loader"
+            )
     if any(key.startswith("hidden_layers.") for key in state):
         return dict(state)
     if not any(key.startswith("hidden_heads.") for key in state):
@@ -634,6 +661,14 @@ def load_bundle_state(
     manifest = json.loads(
         (bundle_dir / "manifest.json").read_text(encoding="utf-8")
     )
+    for head in [*manifest.get("hidden_head_specs", []),
+                 *manifest.get("output_head_specs", [])]:
+        if not isinstance(head, dict):
+            raise ValueError("bundle head spec must be an object")
+        if any(key in head for key in ("attn_dst_bias", "attn_src_bias")):
+            raise ValueError(
+                "bias-enabled attention bundle is not accepted by the formal loader"
+            )
     hidden_profile = normalize_hidden_profile(manifest["hidden_profile"])
     d_in_profile = [int(value) for value in manifest["d_in_profile"]]
     if len(d_in_profile) != len(hidden_profile):
@@ -641,6 +676,16 @@ def load_bundle_state(
     k_out = int(manifest["K_out"])
     num_classes = int(manifest["C"])
     tensor_index = manifest["tensor_index"]
+    if any(
+        (
+            ("attn_src" in str(name) or "attn_dst" in str(name))
+            and (str(name).endswith("/bias") or str(name).endswith(".bias") or str(name).endswith("_bias"))
+        )
+        for name in tensor_index
+    ):
+        raise ValueError(
+            "bias-enabled attention tensor is not accepted by the formal bundle loader"
+        )
 
     with np.load(bundle_dir / "tensors.npz") as archive:
         def tensor(name: str) -> np.ndarray:
@@ -659,14 +704,8 @@ def load_bundle_state(
             state[f"{prefix}.attn_dst.weight"] = torch.from_numpy(
                 tensor(head["attn_dst_kernel"]).reshape(1, -1)
             )
-            state[f"{prefix}.attn_dst.bias"] = torch.from_numpy(
-                tensor(head["attn_dst_bias"]).reshape(1)
-            )
             state[f"{prefix}.attn_src.weight"] = torch.from_numpy(
                 tensor(head["attn_src_kernel"]).reshape(1, -1)
-            )
-            state[f"{prefix}.attn_src.bias"] = torch.from_numpy(
-                tensor(head["attn_src_bias"]).reshape(1)
             )
 
         for head in manifest["output_head_specs"]:
@@ -679,14 +718,8 @@ def load_bundle_state(
             state[f"{prefix}.attn_dst.weight"] = torch.from_numpy(
                 tensor(head["attn_dst_kernel"]).reshape(1, -1)
             )
-            state[f"{prefix}.attn_dst.bias"] = torch.from_numpy(
-                tensor(head["attn_dst_bias"]).reshape(1)
-            )
             state[f"{prefix}.attn_src.weight"] = torch.from_numpy(
                 tensor(head["attn_src_kernel"]).reshape(1, -1)
-            )
-            state[f"{prefix}.attn_src.bias"] = torch.from_numpy(
-                tensor(head["attn_src_bias"]).reshape(1)
             )
             state[f"{prefix}.output_bias"] = torch.from_numpy(
                 tensor(head["output_bias"]).reshape(-1)

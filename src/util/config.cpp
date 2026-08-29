@@ -8,6 +8,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <unordered_map>
+#include <limits>
 
 // 实现正式配置解析与约束检查
 // 负责拦截过时字段和形状冲突，避免错误配置进入 proving / verifying 主链
@@ -16,6 +17,209 @@ namespace gatzk::util
 {
     namespace
     {
+
+        constexpr std::string_view kCanonicalQuantCfgId =
+            "gat_l3_scale_chain_v1";
+
+        std::string serialize_scale_vector(
+            std::string_view name,
+            const std::vector<std::uint64_t> &values)
+        {
+            std::ostringstream out;
+            out << name << "=[";
+            for (std::size_t i = 0; i < values.size(); ++i)
+            {
+                if (i != 0)
+                {
+                    out << ',';
+                }
+                out << values[i];
+            }
+            out << ']';
+            return out.str();
+        }
+
+        std::string serialize_scale_matrix(
+            std::string_view name,
+            const std::vector<std::vector<std::uint64_t>> &values)
+        {
+            std::ostringstream out;
+            out << name << "=[";
+            for (std::size_t row = 0; row < values.size(); ++row)
+            {
+                if (row != 0)
+                {
+                    out << ';';
+                }
+                out << '[';
+                for (std::size_t column = 0; column < values[row].size(); ++column)
+                {
+                    if (column != 0)
+                    {
+                        out << ',';
+                    }
+                    out << values[row][column];
+                }
+                out << ']';
+            }
+            out << ']';
+            return out.str();
+        }
+
+        void require_positive_scale(std::uint64_t value, std::string_view name)
+        {
+            if (value == 0)
+            {
+                throw std::runtime_error(
+                    "registered quantization scale must be positive: " +
+                    std::string(name));
+            }
+        }
+
+        void validate_scale_chain_shape(
+            const QuantizationScaleChain &chain,
+            const std::vector<HiddenLayerProfile> &hidden_profile,
+            std::size_t K_out)
+        {
+            if (hidden_profile.size() != 2 || K_out != 2)
+            {
+                throw std::runtime_error(
+                    "registered quantization scale chain only supports canonical L3/K_out=2");
+            }
+            const auto expected_heads = std::vector<std::size_t>{8, 8};
+            // S_H carries the input scale of every hidden layer plus the
+            // final hidden-concat/output input scale.  Keeping the terminal
+            // entry explicit lets validation enforce every protocol
+            // transition S_H^(l+1) = S_cat^(l), including the output input.
+            if (chain.s_h.size() != hidden_profile.size() + 1 ||
+                chain.s_agg_pre.size() != hidden_profile.size() ||
+                chain.s_agg.size() != hidden_profile.size() ||
+                chain.s_cat.size() != hidden_profile.size() ||
+                chain.s_w_hidden.size() != hidden_profile.size() ||
+                chain.s_h_prime.size() != hidden_profile.size() ||
+                chain.s_a_src_hidden.size() != hidden_profile.size() ||
+                chain.s_a_dst_hidden.size() != hidden_profile.size())
+            {
+                throw std::runtime_error(
+                    "registered quantization scale chain hidden layer count mismatch");
+            }
+            if (chain.s_w_output.size() != K_out ||
+                chain.s_y_prime.size() != K_out ||
+                chain.s_a_src_output.size() != K_out ||
+                chain.s_a_dst_output.size() != K_out ||
+                chain.s_b_output.size() != K_out)
+            {
+                throw std::runtime_error(
+                    "registered quantization scale chain output head count mismatch");
+            }
+            require_positive_scale(chain.s_input, "S_input");
+            require_positive_scale(chain.s_delta, "S_Delta");
+            require_positive_scale(chain.s_exp, "S_exp");
+            require_positive_scale(chain.s_out_pre, "S_out_pre");
+            require_positive_scale(chain.s_out_head, "S_out_head");
+            require_positive_scale(chain.s_out, "S_out");
+            // The canonical output protocol fixes S_out_pre=S_out_head=S_out;
+            // its pre-bias alignment SignedRoundDiv is therefore an identity
+            // and cannot hide an implicit rescale in the production trace.
+            if (chain.s_h.front() != chain.s_input ||
+                chain.s_cat != chain.s_agg ||
+                chain.s_out != chain.s_out_head ||
+                chain.s_out_pre != chain.s_out_head)
+            {
+                throw std::runtime_error(
+                    "registered quantization scale chain violates H/cat/output equalities; canonical output alignment requires S_out_pre=S_out_head=S_out");
+            }
+            for (std::size_t layer = 0;
+                 layer < hidden_profile.size();
+                 ++layer)
+            {
+                if (chain.s_h[layer + 1] != chain.s_cat[layer])
+                {
+                    throw std::runtime_error(
+                        "registered quantization scale chain violates S_H[l+1]=S_cat[l] at layer " +
+                        std::to_string(layer));
+                }
+            }
+            // StaticTables owns one shared authenticated ELU table.  The
+            // canonical runtime therefore requires every hidden layer to use
+            // the same ELU input/output scales before the table is built from
+            // the first entry; a layer-specific table would need a distinct
+            // formal table commitment and is intentionally not accepted.
+            const auto elu_input_scale = chain.s_agg_pre.front();
+            const auto elu_output_scale = chain.s_agg.front();
+            for (std::size_t layer = 0;
+                 layer < hidden_profile.size();
+                 ++layer)
+            {
+                if (chain.s_agg_pre[layer] != elu_input_scale ||
+                    chain.s_agg[layer] != elu_output_scale)
+                {
+                    throw std::runtime_error(
+                        "registered quantization scale chain violates shared ELU table scale equality");
+                }
+            }
+            for (std::size_t layer = 0; layer < hidden_profile.size(); ++layer)
+            {
+                if (hidden_profile[layer].head_count != expected_heads[layer])
+                {
+                    throw std::runtime_error(
+                        "registered quantization scale chain hidden head count mismatch");
+                }
+                const auto head_count = hidden_profile[layer].head_count;
+                for (const auto *family : {
+                         &chain.s_w_hidden[layer],
+                         &chain.s_h_prime[layer],
+                         &chain.s_a_src_hidden[layer],
+                         &chain.s_a_dst_hidden[layer]})
+                {
+                    if (family->size() != head_count)
+                    {
+                        throw std::runtime_error(
+                            "registered quantization scale chain hidden head count mismatch");
+                    }
+                }
+                for (std::size_t head = 0; head < head_count; ++head)
+                {
+                    require_positive_scale(chain.s_w_hidden[layer][head], "S_W_hidden");
+                    require_positive_scale(chain.s_h_prime[layer][head], "S_H_prime_hidden");
+                    require_positive_scale(chain.s_a_src_hidden[layer][head], "S_a_src_hidden");
+                    require_positive_scale(chain.s_a_dst_hidden[layer][head], "S_a_dst_hidden");
+                    if (chain.s_h_prime[layer][head] !=
+                            chain.s_h[layer] * chain.s_w_hidden[layer][head] ||
+                        chain.s_h_prime[layer][head] * chain.s_a_src_hidden[layer][head] != chain.s_delta ||
+                        chain.s_h_prime[layer][head] * chain.s_a_dst_hidden[layer][head] != chain.s_delta)
+                    {
+                        throw std::runtime_error(
+                            "registered quantization scale chain violates hidden H/W/a equations");
+                    }
+                }
+                require_positive_scale(chain.s_agg_pre[layer], "S_agg_pre");
+                require_positive_scale(chain.s_agg[layer], "S_agg");
+                require_positive_scale(chain.s_cat[layer], "S_cat");
+            }
+            for (std::size_t head = 0; head < K_out; ++head)
+            {
+                require_positive_scale(chain.s_w_output[head], "S_W_output");
+                require_positive_scale(chain.s_y_prime[head], "S_Y_prime_output");
+                require_positive_scale(chain.s_a_src_output[head], "S_a_src_output");
+                require_positive_scale(chain.s_a_dst_output[head], "S_a_dst_output");
+                require_positive_scale(chain.s_b_output[head], "S_b_output");
+                // Output projection consumes the final hidden concat scale;
+                // require its explicit S_H terminal entry to agree with the
+                // final S_cat transition rather than silently selecting a
+                // different input scale.
+                const auto output_input_scale = chain.s_cat.back();
+                if (chain.s_h.back() != output_input_scale ||
+                    chain.s_y_prime[head] != output_input_scale * chain.s_w_output[head] ||
+                    chain.s_y_prime[head] * chain.s_a_src_output[head] != chain.s_delta ||
+                    chain.s_y_prime[head] * chain.s_a_dst_output[head] != chain.s_delta ||
+                    chain.s_b_output[head] != chain.s_out_head)
+                {
+                    throw std::runtime_error(
+                        "registered quantization scale chain violates output H/W/a/b equations");
+                }
+            }
+        }
 
         std::string trim(std::string value)
         {
@@ -411,6 +615,83 @@ namespace gatzk::util
 
     }
 
+    std::string QuantizationScaleChain::canonical_serialization() const
+    {
+        std::ostringstream out;
+        out << "schema=gat_l3_scale_chain_v1"
+            << "|S_input=" << s_input
+            << "|S_Delta=" << s_delta
+            << "|S_exp=" << s_exp
+            << '|' << serialize_scale_vector("S_H", s_h)
+            << '|' << serialize_scale_matrix("S_W_hidden", s_w_hidden)
+            << '|' << serialize_scale_matrix("S_H_prime_hidden", s_h_prime)
+            << '|' << serialize_scale_matrix("S_a_src_hidden", s_a_src_hidden)
+            << '|' << serialize_scale_matrix("S_a_dst_hidden", s_a_dst_hidden)
+            << '|' << serialize_scale_vector("S_agg_pre", s_agg_pre)
+            << '|' << serialize_scale_vector("S_agg", s_agg)
+            << '|' << serialize_scale_vector("S_cat", s_cat)
+            << "|S_out_pre=" << s_out_pre
+            << "|S_out_head=" << s_out_head
+            << "|S_out=" << s_out
+            << '|' << serialize_scale_vector("S_W_output", s_w_output)
+            << '|' << serialize_scale_vector("S_Y_prime_output", s_y_prime)
+            << '|' << serialize_scale_vector("S_a_src_output", s_a_src_output)
+            << '|' << serialize_scale_vector("S_a_dst_output", s_a_dst_output)
+            << '|' << serialize_scale_vector("S_b_output", s_b_output)
+            << "|S_inv=field_exact|S_alpha=field_exact"
+            << "|round=nearest_ties_away|rescale=none|output_average=signed_round_div";
+        return out.str();
+    }
+
+    QuantizationScaleChain canonical_quantization_scale_chain(
+        std::string_view quant_cfg_id,
+        const std::vector<HiddenLayerProfile> &hidden_profile,
+        std::size_t K_out)
+    {
+        if (quant_cfg_id != kCanonicalQuantCfgId)
+        {
+            throw std::runtime_error(
+                "unsupported quant_cfg_id; formal runtime requires the registered canonical scale chain: " +
+                std::string(quant_cfg_id));
+        }
+        if (hidden_profile.size() != 2 ||
+            hidden_profile[0].head_count != 8 || hidden_profile[0].head_dim != 8 ||
+            hidden_profile[1].head_count != 8 || hidden_profile[1].head_dim != 8 ||
+            K_out != 2)
+        {
+            throw std::runtime_error(
+                "canonical quantization scale chain requires hidden_profile=[8x8,8x8], K_out=2");
+        }
+
+        // This is the sole declaration of the formal L3 fixed-point scales.
+        QuantizationScaleChain chain;
+        chain.s_input = 1;
+        chain.s_delta = 256;
+        chain.s_exp = 16;
+        chain.s_h = {1, 16, 16};
+        chain.s_w_hidden = {{16, 16, 16, 16, 16, 16, 16, 16},
+                            {16, 16, 16, 16, 16, 16, 16, 16}};
+        chain.s_h_prime = {{16, 16, 16, 16, 16, 16, 16, 16},
+                           {256, 256, 256, 256, 256, 256, 256, 256}};
+        chain.s_a_src_hidden = {{16, 16, 16, 16, 16, 16, 16, 16},
+                                {1, 1, 1, 1, 1, 1, 1, 1}};
+        chain.s_a_dst_hidden = {{16, 16, 16, 16, 16, 16, 16, 16},
+                                {1, 1, 1, 1, 1, 1, 1, 1}};
+        chain.s_agg_pre = {16, 16};
+        chain.s_agg = {16, 16};
+        chain.s_cat = {16, 16};
+        chain.s_out_pre = 16;
+        chain.s_out_head = 16;
+        chain.s_out = 16;
+        chain.s_w_output = {16, 16};
+        chain.s_y_prime = {256, 256};
+        chain.s_a_src_output = {1, 1};
+        chain.s_a_dst_output = {1, 1};
+        chain.s_b_output = {16, 16};
+        validate_scale_chain_shape(chain, hidden_profile, K_out);
+        return chain;
+    }
+
     // 解析 `.cfg` 文件并补齐工程根路径等派生字段
     AppConfig load_config(const std::string &path)
     {
@@ -535,7 +816,8 @@ namespace gatzk::util
             config.d_in_profile = parse_size_list(entries["d_in_profile"]);
         if (config.quant_cfg_id.empty())
         {
-            config.quant_cfg_id = "range_bits=" + std::to_string(config.range_bits);
+            throw std::runtime_error(
+                "formal config must set the registered quant_cfg_id explicitly");
         }
         if (config.static_table_id.empty())
         {
@@ -545,6 +827,10 @@ namespace gatzk::util
         {
             config.degree_bound_id = "auto";
         }
+        config.quantization = canonical_quantization_scale_chain(
+            config.quant_cfg_id,
+            config.hidden_profile,
+            config.K_out);
         // 这里最后做一次 shape 和 formal 约束校验，保证 prover / verifier 看到的是同一套配置含义。
         validate_config(config);
         return config;

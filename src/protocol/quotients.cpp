@@ -2134,6 +2134,11 @@ namespace gatzk::protocol
                 const auto query_dst_z = z_head("Query_dst");
                 const auto sum_edge_z = z_head("Sum_edge");
                 const auto h_agg_star_edge_z = z_head("H_agg_star_edge");
+                const auto &scales = context.config.quantization;
+                const auto aggregate_pre_scale =
+                    FieldElement(scales.s_agg_pre.at(layer_index));
+                const auto h_prime_scale =
+                    FieldElement(scales.s_h_prime.at(layer_index).at(local_head_index));
 
                 acc.add(first * r_src_z);
                 acc.add(q_edge * ((query_src_z + beta_src) * z_head("J_src_edge") - one));
@@ -2209,8 +2214,8 @@ namespace gatzk::protocol
                         ? planned->division_selector
                         : hidden_q_nd_h_selector_label(layer_index));
                 acc.add(q_div * (h_agg_num_flat_z - sum_flat_z * h_agg_pre_flat_z));
-                acc.add(q_div * (z_head("Div_X") - h_agg_num_flat_z));
-                acc.add(q_div * (z_head("Div_D") - FieldElement(16) * sum_flat_z));
+                acc.add(q_div * (z_head("Div_X") - aggregate_pre_scale * h_agg_num_flat_z));
+                acc.add(q_div * (z_head("Div_D") - h_prime_scale * sum_flat_z));
                 acc.add(q_div * (z_head("Div_Y") - h_elu_in_flat_z));
                 for (const auto &padding_value : {
                          sum_flat_z, h_agg_pre_flat_z, h_agg_num_flat_z,
@@ -2409,9 +2414,13 @@ namespace gatzk::protocol
                 const auto y_agg_num_flat = z_out("Y_agg_num_flat");
                 const auto bias_flat = z_out("Bias_flat");
                 const auto y_flat = z_out("Y_flat");
+                const auto &scales = context.config.quantization;
+                const auto output_pre_scale = FieldElement(scales.s_out_pre);
+                const auto output_y_prime_scale =
+                    FieldElement(scales.s_y_prime.at(head_index));
                 acc.add(q_div * (y_agg_num_flat - sum_flat * y_pre_field_flat));
-                acc.add(q_div * (z_out("Div_X") - y_agg_num_flat));
-                acc.add(q_div * (z_out("Div_D") - FieldElement(16) * sum_flat));
+                acc.add(q_div * (z_out("Div_X") - output_pre_scale * y_agg_num_flat));
+                acc.add(q_div * (z_out("Div_D") - output_y_prime_scale * sum_flat));
                 acc.add(q_div * (y_pre_flat - z_out("Div_Y")));
                 acc.add(q_div * (y_flat - y_pre_flat - bias_flat));
                 acc.add((one - q_div) * sum_flat);

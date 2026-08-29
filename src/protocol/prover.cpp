@@ -971,20 +971,24 @@ namespace gatzk::protocol
             return out;
         }
 
-        std::int64_t quantize_float_model_value_signed(double value)
+        std::int64_t quantize_float_model_value_signed(
+            double value,
+            std::uint64_t scale)
         {
+            const auto scaled = value * static_cast<double>(scale);
             return static_cast<std::int64_t>(
-                value >= 0.0 ? value * 16.0 + 0.5 : value * 16.0 - 0.5);
+                scaled >= 0.0 ? scaled + 0.5 : scaled - 0.5);
         }
 
-        FieldElement quantize_float_model_value(double value)
+        FieldElement quantize_float_model_value(double value, std::uint64_t scale)
         {
-            return FieldElement::from_signed(quantize_float_model_value_signed(value));
+            return FieldElement::from_signed(
+                quantize_float_model_value_signed(value, scale));
         }
 
-        double dequantize_trace_scalar(std::int64_t value)
+        double dequantize_trace_scalar(std::int64_t value, std::uint64_t scale)
         {
-            return static_cast<double>(value) / 16.0;
+            return static_cast<double>(value) / static_cast<double>(scale);
         }
 
         std::size_t signed_table_size(std::int64_t min_raw, std::int64_t max_raw, std::string_view label)
@@ -1002,17 +1006,19 @@ namespace gatzk::protocol
             return static_cast<std::size_t>(span);
         }
 
-        std::vector<std::pair<FieldElement, FieldElement>> make_lrelu_table(std::int64_t min_raw, std::int64_t max_raw)
+        std::vector<std::pair<FieldElement, FieldElement>> make_lrelu_table(
+            std::int64_t min_raw,
+            std::int64_t max_raw,
+            std::uint64_t input_scale,
+            std::uint64_t output_scale)
         {
-            constexpr double kAttentionScale = 256.0;
             std::vector<std::pair<FieldElement, FieldElement>> out;
             out.reserve(signed_table_size(min_raw, max_raw, "lrelu"));
             for (std::int64_t raw = min_raw; raw <= max_raw; ++raw)
             {
-                const auto input = static_cast<double>(raw) / kAttentionScale;
+                const auto input = static_cast<double>(raw) / static_cast<double>(input_scale);
                 const auto output = input >= 0.0 ? input : 0.2 * input;
-                const auto output_raw = static_cast<std::int64_t>(
-                    output >= 0.0 ? output * kAttentionScale + 0.5 : output * kAttentionScale - 0.5);
+                const auto output_raw = quantize_float_model_value_signed(output, output_scale);
                 out.push_back({FieldElement::from_signed(raw), FieldElement::from_signed(output_raw)});
                 if (raw == max_raw)
                 {
@@ -1022,14 +1028,19 @@ namespace gatzk::protocol
             return out;
         }
 
-        std::vector<std::pair<FieldElement, FieldElement>> make_elu_table(std::size_t bound)
+        std::vector<std::pair<FieldElement, FieldElement>> make_elu_table(
+            std::size_t bound,
+            std::uint64_t input_scale,
+            std::uint64_t output_scale)
         {
             std::vector<std::pair<FieldElement, FieldElement>> out;
             out.reserve(bound * 2 + 1);
             for (std::int64_t raw = -static_cast<std::int64_t>(bound); raw <= static_cast<std::int64_t>(bound); ++raw)
             {
-                const auto input = dequantize_trace_scalar(raw);
-                const auto central_signed = quantize_float_model_value_signed(input >= 0.0 ? input : std::exp(input) - 1.0);
+                const auto input = dequantize_trace_scalar(raw, input_scale);
+                const auto central_signed = quantize_float_model_value_signed(
+                    input >= 0.0 ? input : std::exp(input) - 1.0,
+                    output_scale);
                 out.push_back({
                     FieldElement::from_signed(raw),
                     FieldElement::from_signed(central_signed),
@@ -1038,16 +1049,19 @@ namespace gatzk::protocol
             return out;
         }
 
-        std::vector<std::pair<FieldElement, FieldElement>> make_exp_table(std::size_t size)
+        std::vector<std::pair<FieldElement, FieldElement>> make_exp_table(
+            std::size_t size,
+            std::uint64_t input_scale,
+            std::uint64_t output_scale)
         {
-            constexpr double kAttentionScale = 256.0;
             std::vector<std::pair<FieldElement, FieldElement>> out;
             out.reserve(size);
             for (std::size_t i = 0; i < size; ++i)
             {
                 const auto input = static_cast<std::int64_t>(i);
                 const auto central_signed = quantize_float_model_value_signed(
-                    std::exp(-static_cast<double>(input) / kAttentionScale));
+                    std::exp(-static_cast<double>(input) / static_cast<double>(input_scale)),
+                    output_scale);
                 const auto candidate = std::max<std::int64_t>(0, central_signed);
                 out.push_back({
                     FieldElement(static_cast<std::uint64_t>(i)),
@@ -1074,36 +1088,39 @@ namespace gatzk::protocol
             }
         }
 
-        std::vector<FieldElement> quantize_model_vector(const std::vector<double> &values)
+        std::vector<FieldElement> quantize_model_vector(
+            const std::vector<double> &values,
+            std::uint64_t scale)
         {
             std::vector<FieldElement> out(values.size(), FieldElement::zero());
             for (std::size_t i = 0; i < values.size(); ++i)
             {
-                out[i] = quantize_float_model_value(values[i]);
+                out[i] = quantize_float_model_value(values[i], scale);
             }
             return out;
         }
 
         std::vector<FieldElement> quantize_model_vector_at_scale(
             const std::vector<double> &values,
-            double scale)
+            std::uint64_t scale)
         {
             std::vector<FieldElement> out(values.size(), FieldElement::zero());
             for (std::size_t i = 0; i < values.size(); ++i)
             {
-                const auto scaled = values[i] * scale;
-                out[i] = FieldElement::from_signed(static_cast<std::int64_t>(
-                    scaled >= 0.0 ? scaled + 0.5 : scaled - 0.5));
+                out[i] = FieldElement::from_signed(
+                    quantize_float_model_value_signed(values[i], scale));
             }
             return out;
         }
 
-        model::Matrix quantize_model_matrix(const model::FloatMatrix &matrix)
+        model::Matrix quantize_model_matrix(
+            const model::FloatMatrix &matrix,
+            std::uint64_t scale)
         {
             model::Matrix out(matrix.size());
             for (std::size_t row = 0; row < matrix.size(); ++row)
             {
-                out[row] = quantize_model_vector(matrix[row]);
+                out[row] = quantize_model_vector(matrix[row], scale);
             }
             return out;
         }
@@ -1152,6 +1169,8 @@ namespace gatzk::protocol
                    << config.opening_mode << '|'
                    << config.binding_mode << '|'
                    << config.proof_task << '|'
+                   << config.quant_cfg_id << '|'
+                   << config.quantization.canonical_serialization() << '|'
                    << "formal";
             for (const auto input_dim : config.d_in_profile)
             {
@@ -10989,13 +11008,20 @@ namespace gatzk::protocol
     // 这里禁止注入任何依赖单次 proof 的 witness 或挑战状态。
     ProtocolContext build_context(const util::AppConfig &config, RunMetrics *metrics)
     {
+        // Resolve the registered scale chain before cache lookup so every
+        // context identity includes the complete typed chain, not only an ID.
+        auto canonical_config = config;
+        canonical_config.quantization = util::canonical_quantization_scale_chain(
+            config.quant_cfg_id,
+            config.hidden_profile,
+            config.K_out);
         static std::mutex cache_mutex;
         static std::unordered_map<std::string, ProtocolContext> cache;
         // 这里只复用静态上下文对象，见证和挑战相关状态必须按每次正式证明重新生成。
         const bool allow_static_context_cache = true;
 
         const auto cache_lookup_start = Clock::now();
-        const auto cache_key = context_cache_key(config);
+        const auto cache_key = context_cache_key(canonical_config);
         if (allow_static_context_cache)
         {
             std::lock_guard<std::mutex> lock(cache_mutex);
@@ -11005,7 +11031,7 @@ namespace gatzk::protocol
                 // 每次 proof 的 witness 与挑战派生值都必须重新生成。
                 auto node = cache.extract(it);
                 auto context = std::move(node.mapped());
-                context.config = config;
+                context.config = canonical_config;
                 if (metrics != nullptr)
                 {
                     metrics->load_static_ms += elapsed_ms(cache_lookup_start, Clock::now());
@@ -11017,7 +11043,7 @@ namespace gatzk::protocol
 
         append_note(metrics, "static_context_cache=miss");
         ProtocolContext context;
-        context.config = config;
+        context.config = canonical_config;
 
         progress_note("context:load_static:start");
         auto start = Clock::now();
@@ -11273,9 +11299,24 @@ namespace gatzk::protocol
         start = Clock::now();
         // 这里开始布置公开列、静态表和静态承诺；它们会直接进入 transcript 与 verifier 的公共视图。
         context.tables.range = make_range_table(range_size);
-        context.tables.exp = make_exp_table(range_size);
-        context.tables.lrelu = make_lrelu_table(lrelu_min_raw, lrelu_max_raw);
-        context.tables.elu = make_elu_table(elu_bound);
+        const auto &scales = context.config.quantization;
+        context.tables.exp = make_exp_table(
+            range_size,
+            scales.s_delta,
+            scales.s_exp);
+        context.tables.lrelu = make_lrelu_table(
+            lrelu_min_raw,
+            lrelu_max_raw,
+            scales.s_delta,
+            scales.s_delta);
+        // `context.tables.elu` is one shared authenticated table for every
+        // hidden layer.  validate_scale_chain_shape has already rejected any
+        // layer-specific S_agg_pre/S_agg values, so selecting the canonical
+        // first entry is explicit and not an unchecked implicit rescale.
+        context.tables.elu = make_elu_table(
+            elu_bound,
+            scales.s_agg_pre.at(0),
+            scales.s_agg.at(0));
         require_functional_pair_table(context.tables.lrelu, "LeakyReLU");
         require_functional_pair_table(context.tables.elu, "ELU");
         require_functional_pair_table(context.tables.exp, "ExpMap");
@@ -11774,7 +11815,9 @@ namespace gatzk::protocol
                      ++head_index)
                 {
                     const auto &head = layer.heads[head_index];
-                    const auto weight = quantize_model_matrix(head.seq_kernel_fp);
+                    const auto weight = quantize_model_matrix(
+                        head.seq_kernel_fp,
+                        scales.s_w_hidden.at(layer_index).at(head_index));
                     const auto column_count = weight.empty() ? 0 : weight.front().size();
                     for (std::size_t column = 0; column < column_count; ++column)
                     {
@@ -11793,7 +11836,9 @@ namespace gatzk::protocol
                         context, src_label,
                         make_eval_poly(
                             src_label,
-                            padded(quantize_model_vector(head.attn_src_kernel_fp),
+                            padded(quantize_model_vector_at_scale(
+                                       head.attn_src_kernel_fp,
+                                       scales.s_a_src_hidden.at(layer_index).at(head_index)),
                                    context.domains.d->size),
                             context.domains.d));
                     const auto dst_label = hidden_dst_label(layer_index, head_index);
@@ -11801,7 +11846,9 @@ namespace gatzk::protocol
                         context, dst_label,
                         make_eval_poly(
                             dst_label,
-                            padded(quantize_model_vector(head.attn_dst_kernel_fp),
+                            padded(quantize_model_vector_at_scale(
+                                       head.attn_dst_kernel_fp,
+                                       scales.s_a_dst_hidden.at(layer_index).at(head_index)),
                                    context.domains.d->size),
                             context.domains.d));
                 }
@@ -11809,7 +11856,9 @@ namespace gatzk::protocol
             for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
             {
                 const auto &head = context.model.output_layer.heads[head_index];
-                const auto weight = quantize_model_matrix(head.seq_kernel_fp);
+                const auto weight = quantize_model_matrix(
+                    head.seq_kernel_fp,
+                    scales.s_w_output.at(head_index));
                 const auto column_count = weight.empty() ? 0 : weight.front().size();
                 for (std::size_t column = 0; column < column_count; ++column)
                 {
@@ -11824,14 +11873,20 @@ namespace gatzk::protocol
                     output_src_label(head_index),
                     make_eval_poly(
                         output_src_label(head_index),
-                        padded(quantize_model_vector_at_scale(head.attn_src_kernel_fp, 1.0), context.domains.c->size),
+                        padded(quantize_model_vector_at_scale(
+                                   head.attn_src_kernel_fp,
+                                   scales.s_a_src_output.at(head_index)),
+                               context.domains.c->size),
                         context.domains.c));
                 add_static_commitment(
                     context,
                     output_dst_label(head_index),
                     make_eval_poly(
                         output_dst_label(head_index),
-                        padded(quantize_model_vector_at_scale(head.attn_dst_kernel_fp, 1.0), context.domains.c->size),
+                        padded(quantize_model_vector_at_scale(
+                                   head.attn_dst_kernel_fp,
+                                   scales.s_a_dst_output.at(head_index)),
+                               context.domains.c->size),
                         context.domains.c));
                 add_static_commitment(
                     context,
@@ -11839,7 +11894,9 @@ namespace gatzk::protocol
                     make_eval_poly(
                         output_bias_label(head_index),
                         padded(
-                            quantize_model_vector(head.output_bias_fp),
+                            quantize_model_vector(
+                                head.output_bias_fp,
+                                scales.s_b_output.at(head_index)),
                             context.domains.c->size),
                         context.domains.c));
             }
