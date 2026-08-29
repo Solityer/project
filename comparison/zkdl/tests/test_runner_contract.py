@@ -16,6 +16,7 @@ BASELINE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BASELINE / "scripts"))
 
 from collect_results import inspect_cell  # noqa: E402
+import preflight as preflight_module  # noqa: E402
 from runner_contract import (  # noqa: E402
     CELL_FILES,
     DATASETS,
@@ -27,6 +28,13 @@ from runner_contract import (  # noqa: E402
     ensure_regular_file,
     load_resource_manifest,
     load_resource_policy,
+    parse_config,
+    static_table_row_cap_blocker,
+    STATIC_TABLE_ROW_CAP,
+    validate_preflight_metadata,
+    validate_checkpoint_structure,
+    validate_checkpoint_tensor_shapes,
+    validate_model_structure_config,
     pp_binding_from_manifest,
 )
 import validate_final_results as final_validator  # noqa: E402
@@ -34,6 +42,63 @@ from validate_final_results import check_cell  # noqa: E402
 
 
 class RunnerContractTests(unittest.TestCase):
+    def test_adapter_rejects_each_preflight_metadata_binding_field(self) -> None:
+        expected = {
+            "L": 3,
+            "hidden_profile": [[8, 8], [8, 8]],
+            "d_in_profile": [1433, 64],
+            "K_out": 2,
+            "model_arch_id": "arch",
+            "model_param_id": "param",
+            "checkpoint_manifest_id": "checkpoint",
+            "config_sha256": "config",
+        }
+        for key, value in expected.items():
+            with self.subTest(key=key):
+                tampered = dict(expected)
+                tampered[key] = "tampered" if isinstance(value, str) else -1
+                with self.assertRaisesRegex(ValueError, rf"canonical/preflight metadata mismatch: {key}"):
+                    validate_preflight_metadata(tampered, expected)
+
+    def test_native_static_table_row_cap_boundary(self) -> None:
+        profile = {
+            "lrelu": {"min": 0, "max": STATIC_TABLE_ROW_CAP - 1, "rows": STATIC_TABLE_ROW_CAP},
+            "elu": {"min": 0, "max": 0, "rows": 1},
+            "exp": {"min": 0, "max": 0, "rows": 1},
+        }
+        self.assertIsNone(static_table_row_cap_blocker(profile))
+        profile["lrelu"]["max"] = STATIC_TABLE_ROW_CAP
+        profile["lrelu"]["rows"] = STATIC_TABLE_ROW_CAP + 1
+        blocker = static_table_row_cap_blocker(profile)
+        self.assertIsNotNone(blocker)
+        assert blocker is not None
+        self.assertEqual(blocker["code"], "static_table_domain_exceeds_native_cap")
+        self.assertEqual(blocker["native_row_cap"], STATIC_TABLE_ROW_CAP)
+        self.assertEqual(blocker["offending_tables"][0]["rows"], STATIC_TABLE_ROW_CAP + 1)
+
+    def test_preflight_cap_skips_full_table_generator(self) -> None:
+        original = preflight_module.static_table_profile
+
+        def unexpected_generator(*args, **kwargs):
+            raise AssertionError("full static table generator must not run over native cap")
+
+        preflight_module.static_table_profile = unexpected_generator
+        try:
+            descriptor, blocker = preflight_module.build_static_tables(
+                12,
+                "fixture-static-source",
+                STATIC_TABLE_ROW_CAP,
+                0,
+                0,
+                "nearest_ties_away",
+            )
+        finally:
+            preflight_module.static_table_profile = original
+        self.assertEqual(descriptor["lrelu"]["rows"], 2 * STATIC_TABLE_ROW_CAP + 1)
+        self.assertIsNotNone(blocker)
+        assert blocker is not None
+        self.assertEqual(blocker["code"], "static_table_domain_exceeds_native_cap")
+
     def test_resource_preparation_is_baseline_local_only(self) -> None:
         script = BASELINE / "scripts" / "prepare_resources.py"
         source = script.read_text(encoding="utf-8")
@@ -122,6 +187,126 @@ class RunnerContractTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             pp_binding_from_manifest(staged)
 
+    def test_current_l3_pair_profile_is_accepted(self) -> None:
+        config = parse_config(config_path("cora"))
+        structure = validate_model_structure_config(config, feature_dim=1433)
+        self.assertEqual(structure["L"], 3)
+        self.assertEqual(structure["hidden_profile"], [(8, 8), (8, 8)])
+        self.assertEqual(structure["d_in_profile"], [1433, 64])
+        self.assertEqual(structure["K_out"], 2)
+        manifest = {
+            "dataset": None,
+            "L": 3,
+            "K_out": 2,
+            "C": 7,
+            "model_arch_id": config["model_arch_id"],
+            "model_param_id": config["model_param_id"],
+            "hidden_profile": [
+                {"head_count": 8, "head_dim": 8},
+                {"head_count": 8, "head_dim": 8},
+            ],
+            "d_in_profile": [1433, 64],
+            "hidden_layers": [
+                {"layer_index": 0, "input_dim": 1433, "head_count": 8, "head_dim": 8},
+                {"layer_index": 1, "input_dim": 64, "head_count": 8, "head_dim": 8},
+            ],
+            "hidden_head_specs": [
+                {
+                    "layer_index": layer,
+                    "local_head_index": local,
+                    "global_head_index": layer * 8 + local,
+                    "seq_kernel": f"hidden/layer{layer}/head{local}/seq/kernel",
+                    "attn_src_kernel": f"hidden/layer{layer}/head{local}/attn_src/kernel",
+                    "attn_dst_kernel": f"hidden/layer{layer}/head{local}/attn_dst/kernel",
+                    "attn_src_bias": f"hidden/layer{layer}/head{local}/attn_src/bias",
+                    "attn_dst_bias": f"hidden/layer{layer}/head{local}/attn_dst/bias",
+                    "output_bias": f"hidden/layer{layer}/head{local}/output_bias",
+                }
+                for layer in range(2)
+                for local in range(8)
+            ],
+            "output_head_specs": [
+                {
+                    "head_index": index,
+                    "seq_kernel": f"output/head{index}/seq/kernel",
+                    "attn_src_kernel": f"output/head{index}/attn_src/kernel",
+                    "attn_dst_kernel": f"output/head{index}/attn_dst/kernel",
+                    "attn_src_bias": f"output/head{index}/attn_src/bias",
+                    "attn_dst_bias": f"output/head{index}/attn_dst/bias",
+                    "output_bias": f"output/head{index}/output_bias",
+                }
+                for index in range(2)
+            ],
+        }
+        binding = validate_checkpoint_structure(config, manifest, graph_count=1, feature_dim=1433)
+        self.assertEqual(binding["d_in_profile"], [1433, 64])
+        self.assertEqual(binding["K_out"], 2)
+        tensor_shapes = {}
+        for spec in manifest["hidden_head_specs"]:
+            layer = manifest["hidden_layers"][spec["layer_index"]]
+            tensor_shapes.update(
+                {
+                    spec["seq_kernel"]: (1, layer["input_dim"], layer["head_dim"]),
+                    spec["attn_src_kernel"]: (1, layer["head_dim"], 1),
+                    spec["attn_dst_kernel"]: (1, layer["head_dim"], 1),
+                    spec["attn_src_bias"]: (1,),
+                    spec["attn_dst_bias"]: (1,),
+                    spec["output_bias"]: (layer["head_dim"],),
+                }
+            )
+        for spec in manifest["output_head_specs"]:
+            tensor_shapes.update(
+                {
+                    spec["seq_kernel"]: (1, 64, 7),
+                    spec["attn_src_kernel"]: (1, 7, 1),
+                    spec["attn_dst_kernel"]: (1, 7, 1),
+                    spec["attn_src_bias"]: (1,),
+                    spec["attn_dst_bias"]: (1,),
+                    spec["output_bias"]: (7,),
+                }
+            )
+        validate_checkpoint_tensor_shapes(manifest, tensor_shapes)
+        malformed_shapes = dict(tensor_shapes)
+        malformed_shapes[manifest["output_head_specs"][1]["seq_kernel"]] = (1, 63, 7)
+        with self.assertRaises(ValueError):
+            validate_checkpoint_tensor_shapes(manifest, malformed_shapes)
+        pair_manifest = dict(manifest)
+        pair_manifest["hidden_head_specs"] = [
+            {key: value for key, value in spec.items() if key != "global_head_index"}
+            for spec in manifest["hidden_head_specs"]
+        ]
+        self.assertEqual(
+            validate_checkpoint_structure(config, pair_manifest, graph_count=1, feature_dim=1433)["L"],
+            3,
+        )
+
+        duplicate_local = dict(manifest)
+        duplicate_local["hidden_head_specs"] = [dict(spec) for spec in manifest["hidden_head_specs"]]
+        duplicate_local["hidden_head_specs"][1]["local_head_index"] = 0
+        with self.assertRaises(ValueError):
+            validate_checkpoint_structure(config, duplicate_local, graph_count=1, feature_dim=1433)
+
+        wrong_layer = dict(manifest)
+        wrong_layer["hidden_head_specs"] = [dict(spec) for spec in manifest["hidden_head_specs"]]
+        wrong_layer["hidden_head_specs"][0]["layer_index"] = 1
+        with self.assertRaises(ValueError):
+            validate_checkpoint_structure(config, wrong_layer, graph_count=1, feature_dim=1433)
+
+        duplicate_global = dict(manifest)
+        duplicate_global["hidden_head_specs"] = [dict(spec) for spec in manifest["hidden_head_specs"]]
+        duplicate_global["hidden_head_specs"][1]["global_head_index"] = 0
+        with self.assertRaises(ValueError):
+            validate_checkpoint_structure(config, duplicate_global, graph_count=1, feature_dim=1433)
+
+    def test_legacy_l2_k1_singleton_profiles_are_rejected(self) -> None:
+        config = parse_config(config_path("cora"))
+        for field, value in (("L", "2"), ("K_out", "1"), ("d_in_profile", "1433"), ("hidden_profile", "8x8")):
+            with self.subTest(field=field):
+                legacy = dict(config)
+                legacy[field] = value
+                with self.assertRaises(ValueError):
+                    validate_model_structure_config(legacy, feature_dim=1433)
+
     def test_collector_marks_missing_fixture_without_success(self) -> None:
         with tempfile.TemporaryDirectory(dir=BASELINE / "tests") as directory:
             row, errors = inspect_cell(Path(directory) / "cora" / "cpu" / "warm", "cora", "cpu")
@@ -178,10 +363,12 @@ class RunnerContractTests(unittest.TestCase):
             "source_static_table_id": "fixture-static-source",
             "checkpoint_binding": {
                 "dataset": "cora",
-                "L": 1,
-                "hidden_profile": [(1, 1)],
-                "d_in_profile": [1],
-                "K_out": 1,
+                "L": 3,
+                "hidden_profile": [[8, 8], [8, 8]],
+                "d_in_profile": [1, 64],
+                "K_out": 2,
+                "model_arch_id": "fixture-arch",
+                "model_param_id": "fixture-param",
                 "batching_rule": "whole_graph_single",
                 "batch_graphs": 1,
             },
@@ -222,6 +409,19 @@ class RunnerContractTests(unittest.TestCase):
             "static_table_rows_id": final_validator._table_rows_digest(operation_families),
             "model_arch_id": current["model_arch_id"],
             "model_param_id": current["model_param_id"],
+            "canonical_schema": {
+                "schema": "zkDL_gat_canonical_relation_schema_v1",
+                "version": 1,
+                "architecture": {
+                    "L": 3,
+                    "hidden_profile": [
+                        {"head_count": 8, "head_dim": 8},
+                        {"head_count": 8, "head_dim": 8},
+                    ],
+                    "d_in_profile": [1, 64],
+                    "K_out": 2,
+                },
+            },
         }
         public = final_validator._public_instance(relation)
         relation["graph_features_digest"] = "sha256:" + final_validator._feature_digest(relation, public)
@@ -244,6 +444,10 @@ class RunnerContractTests(unittest.TestCase):
             "graph_count": 1,
             "feature_dim": 1,
             "class_count": 1,
+            "L": 3,
+            "hidden_profile": [[8, 8], [8, 8]],
+            "d_in_profile": [1, 64],
+            "K_out": 2,
             "resource_manifest_id": manifest_id,
             "config_sha256": current["config_sha256"],
             "checkpoint_manifest_id": current["checkpoint_manifest_id"],
@@ -261,6 +465,10 @@ class RunnerContractTests(unittest.TestCase):
             "status": "accepted",
             "dataset": "cora",
             **public,
+            "L": 3,
+            "hidden_profile": [[8, 8], [8, 8]],
+            "d_in_profile": [1, 64],
+            "K_out": 2,
             "config_sha256": current["config_sha256"],
             "protocol_sha256": current["protocol_sha256"],
             "resource_manifest_id": manifest_id,
@@ -334,6 +542,11 @@ class RunnerContractTests(unittest.TestCase):
             "privacy_profile_status": "supported_multi_session_registered_model",
             "gpu_telemetry": None,
             **{key: preflight[key] for key in ("config_sha256", "protocol_sha256", "resource_manifest_id", "resource_inventory_digest", "graph_features_digest", "topology_digest", "checkpoint_manifest_id", "model_shape_id", "static_tables_id", "static_table_rows_id", "model_arch_id", "model_param_id")},
+            "L": 3,
+            "hidden_profile": [[8, 8], [8, 8]],
+            "d_in_profile": [1, 64],
+            "K_out": 2,
+            "checkpoint_binding": current["checkpoint_binding"],
             "integer_bound_ledger_id": ledger["integer_bound_ledger_id"],
             "public_instance": public,
         }
@@ -364,6 +577,11 @@ class RunnerContractTests(unittest.TestCase):
             "statement_id": proof["statement_id"],
             "model_registry_id": proof["model_registry_id"],
             "gpu_telemetry": None,
+            "L": 3,
+            "hidden_profile": [[8, 8], [8, 8]],
+            "d_in_profile": [1, 64],
+            "K_out": 2,
+            "checkpoint_binding": current["checkpoint_binding"],
             "provenance": provenance,
             "files": inventory,
         }

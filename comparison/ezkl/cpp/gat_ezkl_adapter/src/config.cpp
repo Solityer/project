@@ -136,33 +136,61 @@ namespace gat_ezkl
         }
 
         void validate_shape_fields(const AppConfig& config) {
+            constexpr std::size_t canonical_layer_count = 3;
+            constexpr std::size_t canonical_hidden_layers = 2;
+            constexpr std::size_t canonical_hidden_heads = 8;
+            constexpr std::size_t canonical_hidden_dim = 8;
+            constexpr std::size_t canonical_second_input_dim = 64;
+            constexpr std::size_t canonical_output_heads = 2;
             if (config.subgraph_rule != "whole_graph") {
                 throw std::runtime_error("only subgraph_rule=whole_graph is allowed");
             }
             if (config.hidden_profile.empty()) {
                 throw std::runtime_error("hidden_profile must be explicit");
             }
-            if (config.layer_count < 2) {
-                throw std::runtime_error("L must be >= 2");
+            if (config.layer_count != canonical_layer_count) {
+                throw std::runtime_error("formal ezkl configs require canonical L=3");
             }
             if (config.layer_count != config.hidden_profile.size() + 1) {
                 throw std::runtime_error("L conflicts with hidden_profile size");
             }
-            if (!config.d_in_profile.empty() && config.d_in_profile.size() != config.hidden_profile.size()) {
+            if (config.hidden_profile.size() != canonical_hidden_layers) {
+                throw std::runtime_error("formal ezkl configs require two hidden layers");
+            }
+            if (config.d_in_profile.empty()) {
+                throw std::runtime_error("d_in_profile must be explicit for every hidden layer");
+            }
+            if (config.d_in_profile.size() != config.hidden_profile.size()) {
                 throw std::runtime_error("d_in_profile size conflicts with hidden_profile");
             }
-            if (config.K_out == 0) {
-                throw std::runtime_error("K_out must be >= 1");
+            if (config.K_out != canonical_output_heads) {
+                throw std::runtime_error("formal ezkl configs require canonical K_out=2");
             }
             if (config.num_classes == 0) {
                 throw std::runtime_error("num_classes must be >= 1");
+            }
+            for (const auto& layer : config.hidden_profile) {
+                if (layer.head_count != canonical_hidden_heads
+                    || layer.head_dim != canonical_hidden_dim) {
+                    throw std::runtime_error(
+                        "formal ezkl configs require hidden_profile=[8x8,8x8]");
+                }
+            }
+            if (config.d_in_profile[1] != canonical_second_input_dim) {
+                throw std::runtime_error(
+                    "formal ezkl configs require d_in_profile=[D,64]");
+            }
+            const auto expected_arch =
+                "gat_family_L3_hid8x8-8x8_kout2_c" + std::to_string(config.num_classes);
+            if (config.model_arch_id != expected_arch) {
+                throw std::runtime_error("model_arch_id is not the canonical L3/K2 architecture id");
             }
             for (std::size_t layer_index = 0; layer_index < config.hidden_profile.size(); ++layer_index) {
                 const auto& layer = config.hidden_profile[layer_index];
                 if (layer.head_count == 0 || layer.head_dim == 0) {
                     throw std::runtime_error("hidden_profile entries must be non-zero");
                 }
-                if (layer_index + 1 < config.hidden_profile.size() && !config.d_in_profile.empty()) {
+                if (layer_index + 1 < config.hidden_profile.size()) {
                     if (layer.head_count > std::numeric_limits<std::size_t>::max() / layer.head_dim) {
                         throw std::runtime_error("hidden head width overflows size_t");
                     }
@@ -290,6 +318,22 @@ namespace gat_ezkl
         }
         if (config.allow_synthetic_model) {
             throw std::runtime_error("formal ezkl baseline cannot use synthetic model parameters");
+        }
+        if (config.quant_cfg_id != "fp32_torch_checkpoint"
+            || config.static_table_id != "tables:lrelu+elu+exp+range") {
+            throw std::runtime_error("config quantization/table profile is not canonical");
+        }
+        static const std::unordered_map<std::string, std::string> canonical_model_params = {
+            {"cora", "cora_planetoid_seed11"},
+            {"citeseer", "citeseer_planetoid_seed11"},
+            {"pubmed", "pubmed_planetoid_seed11"},
+            {"ppi", "ppi_full_seed11"},
+            {"ogbn_arxiv", "ogbn_arxiv_seed11"},
+        };
+        const auto model_param = canonical_model_params.find(config.dataset);
+        if (model_param == canonical_model_params.end()
+            || config.model_param_id != model_param->second) {
+            throw std::runtime_error("model_param_id is not the canonical dataset checkpoint id");
         }
     }
 }

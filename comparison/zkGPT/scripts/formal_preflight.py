@@ -11,10 +11,18 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from zkgpt_gat.constants import DATASET_ORDER  # noqa: E402
+from zkgpt_gat.constants import (  # noqa: E402
+    DATASET_ORDER,
+    FORMAL_GAT_CLASS_COUNTS,
+    FORMAL_GAT_D_IN_PROFILE,
+    FORMAL_GAT_HIDDEN_PROFILE,
+    FORMAL_GAT_K_OUT,
+    FORMAL_GAT_LAYER_COUNT,
+    FORMAL_GAT_MODEL_ARCH_IDS,
+)
 from zkgpt_gat.formal_gate import formal_gate_status  # noqa: E402
 from zkgpt_gat.resources import check_resource_layout, read_resource_manifest, validate_static_table_descriptor  # noqa: E402
-from zkgpt_gat.config import read_config  # noqa: E402
+from zkgpt_gat.config import load_app_config  # noqa: E402
 from zkgpt_gat.util import assert_contained_path, lexical_path, require_dir, write_json  # noqa: E402
 
 
@@ -65,9 +73,23 @@ def main() -> int:
     config_errors: list[str] = []
     for config_path in sorted((ROOT / "configs" / "formal").glob("*.cfg")) + sorted((ROOT / "configs" / "generated").glob("*/*.cfg")):
         try:
-            entries = read_config(config_path)
-            if not entries.get("dataset"):
-                config_errors.append(f"config_missing_dataset:{config_path.relative_to(ROOT)}")
+            config = load_app_config(config_path, base)
+            dataset = config.dataset
+            canonical_dataset = "ogbn-arxiv" if dataset == "ogbn_arxiv" else dataset
+            expected_hidden = list(FORMAL_GAT_HIDDEN_PROFILE)
+            actual_hidden = [(item.head_count, item.head_dim) for item in config.hidden_profile]
+            if config.layer_count != FORMAL_GAT_LAYER_COUNT:
+                config_errors.append(f"config_L_not_canonical:{config_path.relative_to(ROOT)}")
+            if actual_hidden != expected_hidden:
+                config_errors.append(f"config_hidden_profile_not_canonical:{config_path.relative_to(ROOT)}")
+            if config.d_in_profile != list(FORMAL_GAT_D_IN_PROFILE[canonical_dataset]):
+                config_errors.append(f"config_d_in_profile_not_canonical:{config_path.relative_to(ROOT)}")
+            if config.k_out != FORMAL_GAT_K_OUT:
+                config_errors.append(f"config_K_out_not_canonical:{config_path.relative_to(ROOT)}")
+            if config.num_classes != FORMAL_GAT_CLASS_COUNTS[canonical_dataset]:
+                config_errors.append(f"config_class_count_not_canonical:{config_path.relative_to(ROOT)}")
+            if config.entries.get("model_arch_id") != FORMAL_GAT_MODEL_ARCH_IDS[canonical_dataset]:
+                config_errors.append(f"config_model_arch_not_canonical:{config_path.relative_to(ROOT)}")
         except (OSError, ValueError) as exc:
             config_errors.append(f"config_invalid:{config_path.relative_to(ROOT)}:{exc}")
     source_checks["formal_configs"] = not config_errors

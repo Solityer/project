@@ -39,6 +39,11 @@ RESOURCE_MANIFEST_SCHEMA = RESOURCE_POLICY_SCHEMA
 PP_INFO_SCHEMA = "zkDL_gat_pp_info_v1"
 PP_CANONICAL_RELATIVE = "artifacts/setup/pp.bin"
 PP_DEFAULT_MAX_VECTOR_LEN = 1 << 28
+# Must stay in lockstep with ``expected_table`` in src/formal/protocol.rs:
+# native relation validation materializes a full public vector and accepts at
+# most 2^26 raw rows.  Python callers fail closed before attempting the same
+# materialization, rather than changing the relation to a compact encoding.
+STATIC_TABLE_ROW_CAP = 1 << 26
 PP_SETUP_ID = "zkDL-GAT-transparent-PP-v1"
 PP_SECURITY_ID = "zkdl_gat_bls12_381_multi_session_v2"
 PP_PROTOCOL = "zkDL-hiding-Hyrax-IPA-BLS12-381-v1"
@@ -58,6 +63,34 @@ PP_FIELDS = (
 DATASET_CACHE_SCHEMA = "zkDL_gat_dataset_cache_v1"
 CHECKPOINT_BUNDLE_SCHEMA = "zkDL_gat_checkpoint_bundle_v1"
 BUILD_MANIFEST_SCHEMA = "zkDL_gat_build_manifest_v1"
+# The comparison baseline is intentionally pinned to the same current formal
+# GAT shape as the main experiment.  These values are consumed by every
+# production entry point (preflight, adapter, collector, and validator); a
+# stale L2/single-head config must fail closed instead of silently describing a
+# different relation.
+CANONICAL_MODEL_L = 3
+CANONICAL_HIDDEN_PROFILE = ((8, 8), (8, 8))
+CANONICAL_MODEL_K_OUT = 2
+CANONICAL_SCALE_VALUES = {
+    "feature_scale": 1,
+    "hidden_weight_scale": 16,
+    "hidden_attention_scale": 16,
+    "hidden_projection_scale": 16,
+    "delta_scale": 256,
+    "exp_scale": 16,
+    "hidden_recovery_num_scale": 1,
+    "hidden_recovery_den_scale": 16,
+    "elu_input_scale": 16,
+    "elu_output_scale": 16,
+    "agg_scale": 16,
+    "output_weight_scale": 16,
+    "output_attention_scale": 1,
+    "output_projection_scale": 256,
+    "output_pre_scale": 16,
+    "output_head_scale": 16,
+    "output_bias_scale": 16,
+    "output_scale": 16,
+}
 CELL_SCHEMA = "zkDL_gat_cell_success_manifest_v1"
 CELL_FILES = frozenset(
     {
@@ -239,6 +272,419 @@ def parse_config(path: Path) -> dict[str, str]:
             key, value = line.split("=", 1)
             values[key.strip()] = value.strip()
     return values
+
+
+def parse_int_profile(value: Any, *, label: str) -> list[int]:
+    """Parse a comma-separated integer profile from config or metadata.
+
+    Both ``d_in_profile = 1433,64`` and JSON-style ``[1433, 64]`` are
+    accepted at the boundary, while all downstream code receives a canonical
+    integer list.  A scalar is deliberately rejected: it was the source of
+    the old L2/single-input assumption.
+    """
+    if isinstance(value, list):
+        raw_items = value
+    elif isinstance(value, str):
+        text = value.strip()
+        if text.startswith("[") and text.endswith("]"):
+            text = text[1:-1].strip()
+        if not text:
+            raise ValueError(f"{label} must not be empty")
+        raw_items = [item.strip() for item in text.split(",")]
+    else:
+        raise ValueError(f"{label} must be a comma-separated integer profile")
+    result: list[int] = []
+    for item in raw_items:
+        if isinstance(item, bool):
+            raise ValueError(f"{label} contains a boolean")
+        try:
+            number = int(item)
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"{label} contains a non-integer") from error
+        if number <= 0:
+            raise ValueError(f"{label} contains a non-positive dimension")
+        result.append(number)
+    if not result:
+        raise ValueError(f"{label} must not be empty")
+    return result
+
+
+def parse_hidden_profile(value: Any, *, label: str = "hidden_profile") -> list[tuple[int, int]]:
+    """Parse the canonical ``head_count x head_dim`` hidden profile."""
+    if isinstance(value, list):
+        tokens = value
+    elif isinstance(value, str):
+        text = value.strip()
+        if text.startswith("[") and text.endswith("]"):
+            text = text[1:-1].strip()
+        tokens = [item.strip() for item in text.split(",")] if text else []
+    else:
+        raise ValueError(f"{label} must be a comma-separated head profile")
+    result: list[tuple[int, int]] = []
+    for token in tokens:
+        if isinstance(token, dict):
+            try:
+                heads = int(token["head_count"])
+                width = int(token["head_dim"])
+            except (KeyError, TypeError, ValueError) as error:
+                raise ValueError(f"{label} contains a malformed object") from error
+        else:
+            parts = str(token).strip().lower().split("x")
+            if len(parts) != 2:
+                raise ValueError(f"{label} contains a malformed entry")
+            try:
+                heads, width = int(parts[0]), int(parts[1])
+            except ValueError as error:
+                raise ValueError(f"{label} contains a malformed entry") from error
+        if heads <= 0 or width <= 0:
+            raise ValueError(f"{label} contains a non-positive dimension")
+        result.append((heads, width))
+    if not result:
+        raise ValueError(f"{label} must not be empty")
+    return result
+
+
+def validate_quantization_config(config: dict[str, str]) -> dict[str, int]:
+    """Authenticate the native zkDL integer scale constants.
+
+    The 5-way LeakyReLU divisor and table input/output scales are protocol
+    constants.  Configurable model-dependent scales are checked here too, so
+    adapter code cannot accidentally reinterpret a layer with a stale
+    single-layer scale.
+    """
+    values: dict[str, int] = {}
+    for key, expected in CANONICAL_SCALE_VALUES.items():
+        try:
+            actual = int(config[key])
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError(f"missing or malformed zkDL scale: {key}") from error
+        if actual != expected:
+            raise ValueError(f"zkDL scale {key}={actual} is not canonical ({expected})")
+        values[key] = actual
+    return values
+
+
+def validate_model_structure_config(
+    config: dict[str, str], *, feature_dim: int | None = None
+) -> dict[str, Any]:
+    """Validate the current L3, two-hidden-layer, two-output-head shape."""
+    try:
+        layer_count = int(config["L"])
+        output_head_count = int(config["K_out"])
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError("config L/K_out are malformed") from error
+    profile = parse_hidden_profile(config.get("hidden_profile"), label="config hidden_profile")
+    d_in_profile = parse_int_profile(config.get("d_in_profile"), label="config d_in_profile")
+    if layer_count != CANONICAL_MODEL_L or output_head_count != CANONICAL_MODEL_K_OUT:
+        raise ValueError("zkDL config must use the current L=3/K_out=2 model")
+    if tuple(profile) != CANONICAL_HIDDEN_PROFILE:
+        raise ValueError("zkDL config must use hidden_profile=8x8,8x8")
+    if layer_count != len(profile) + 1 or len(d_in_profile) != len(profile):
+        raise ValueError("L, hidden_profile, and d_in_profile lengths are inconsistent")
+    if feature_dim is not None and d_in_profile[0] != int(feature_dim):
+        raise ValueError("config d_in_profile[0] does not match public feature dimension")
+    expected_d_in = [d_in_profile[0]] + [heads * width for heads, width in profile[:-1]]
+    if d_in_profile != expected_d_in:
+        raise ValueError(
+            "config d_in_profile must be [dataset_feature_dim, previous_layer_concat_width]"
+        )
+    if not config.get("model_arch_id") or not config.get("model_param_id"):
+        raise ValueError("config model_arch_id/model_param_id are required")
+    return {
+        "L": layer_count,
+        "hidden_profile": profile,
+        "d_in_profile": d_in_profile,
+        "K_out": output_head_count,
+    }
+
+
+def validate_checkpoint_structure(
+    config: dict[str, str],
+    manifest: dict[str, Any],
+    *,
+    graph_count: int,
+    feature_dim: int,
+) -> dict[str, Any]:
+    """Bind checkpoint metadata to every layer/input/head dimension."""
+    structure = validate_model_structure_config(config, feature_dim=feature_dim)
+    dataset = config["dataset"]
+    manifest_dataset = manifest.get("dataset")
+    if manifest_dataset not in (None, dataset):
+        raise ValueError("checkpoint manifest dataset mismatch")
+    for key in ("L", "K_out", "C"):
+        if int(manifest.get(key, -1)) != int(config[key]):
+            raise ValueError(f"checkpoint/config {key} mismatch")
+    if manifest.get("model_arch_id") != config["model_arch_id"]:
+        raise ValueError("checkpoint/config model_arch_id mismatch")
+    if manifest.get("model_param_id") != config["model_param_id"]:
+        raise ValueError("checkpoint/config model_param_id mismatch")
+    actual_profile = parse_hidden_profile(
+        manifest.get("hidden_profile"), label="checkpoint hidden_profile"
+    )
+    if actual_profile != structure["hidden_profile"]:
+        raise ValueError("checkpoint/config hidden_profile mismatch")
+    actual_d_in = parse_int_profile(
+        manifest.get("d_in_profile"), label="checkpoint d_in_profile"
+    )
+    if actual_d_in != structure["d_in_profile"]:
+        raise ValueError("checkpoint/config d_in_profile mismatch")
+    layers = manifest.get("hidden_layers")
+    if not isinstance(layers, list) or len(layers) != len(actual_profile):
+        raise ValueError("checkpoint hidden layer/profile count mismatch")
+    for index, (layer, (head_count, head_dim), input_dim) in enumerate(
+        zip(layers, actual_profile, actual_d_in)
+    ):
+        if not isinstance(layer, dict):
+            raise ValueError("checkpoint hidden layer metadata is malformed")
+        if (
+            int(layer.get("layer_index", -1)) != index
+            or int(layer.get("input_dim", -1)) != input_dim
+            or int(layer.get("head_count", -1)) != head_count
+            or int(layer.get("head_dim", -1)) != head_dim
+        ):
+            raise ValueError("checkpoint hidden layer/profile/input mapping mismatch")
+    hidden_specs = manifest.get("hidden_head_specs")
+    expected_hidden_count = sum(heads for heads, _ in actual_profile)
+    if not isinstance(hidden_specs, list) or len(hidden_specs) != expected_hidden_count:
+        raise ValueError("checkpoint hidden head count mismatch")
+    cursor = 0
+    global_indices: list[int] = []
+    for layer_index, (head_count, _) in enumerate(actual_profile):
+        for local_head_index in range(head_count):
+            spec = hidden_specs[cursor]
+            if not isinstance(spec, dict) or (
+                int(spec.get("layer_index", -1)) != layer_index
+                or int(spec.get("local_head_index", -1)) != local_head_index
+            ):
+                raise ValueError("checkpoint hidden head layer/local/global mapping mismatch")
+            global_index = spec.get("global_head_index")
+            if global_index is not None:
+                try:
+                    global_index = int(global_index)
+                except (TypeError, ValueError) as error:
+                    raise ValueError("checkpoint global_head_index is malformed") from error
+                if global_index < 0:
+                    raise ValueError("checkpoint global_head_index is negative")
+                global_indices.append(global_index)
+            cursor += 1
+    if len(global_indices) != len(set(global_indices)):
+        raise ValueError("checkpoint global_head_index values collide")
+    output_specs = manifest.get("output_head_specs")
+    if not isinstance(output_specs, list) or len(output_specs) != structure["K_out"]:
+        raise ValueError("checkpoint output head count mismatch")
+    for index, spec in enumerate(output_specs):
+        if not isinstance(spec, dict) or int(spec.get("head_index", -1)) != index:
+            raise ValueError("checkpoint output head index mapping mismatch")
+    configured_rule = config["batching_rule"]
+    default_rule = "whole_graph_single" if graph_count == 1 else "multi_graph_batch"
+    actual_rule = manifest.get("batching_rule", default_rule)
+    if actual_rule != configured_rule:
+        raise ValueError("checkpoint/config batching_rule mismatch")
+    configured_graphs = int(config["batch_graphs"])
+    actual_graphs = int(
+        manifest.get("batch_graphs", 1 if actual_rule == "whole_graph_single" else graph_count)
+    )
+    if actual_graphs != configured_graphs:
+        raise ValueError("checkpoint/config batch_graphs mismatch")
+    return {
+        "dataset": dataset,
+        "L": int(manifest["L"]),
+        "hidden_profile": [list(item) for item in actual_profile],
+        "d_in_profile": actual_d_in,
+        "K_out": int(manifest["K_out"]),
+        "model_arch_id": manifest["model_arch_id"],
+        "model_param_id": manifest["model_param_id"],
+        "batching_rule": actual_rule,
+        "batch_graphs": actual_graphs,
+    }
+
+
+def validate_checkpoint_tensor_shapes(
+    manifest: dict[str, Any], tensor_shapes: dict[str, Any]
+) -> None:
+    """Authenticate every checkpoint tensor name and shape used by the adapter.
+
+    The canonical bundles use a leading singleton axis for matrices and
+    attention vectors: ``(1, d_in, d_out)``, ``(1, d_out, 1)``, and ``(1,)``.
+    This inventory check is deliberately independent of tensor values and is
+    shared by preflight and the adapter so a stale/partial bundle cannot reach
+    registration.
+    """
+    layers = manifest.get("hidden_layers")
+    hidden_specs = manifest.get("hidden_head_specs")
+    output_specs = manifest.get("output_head_specs")
+    if not isinstance(layers, list) or not isinstance(hidden_specs, list) or not isinstance(output_specs, list):
+        raise ValueError("checkpoint tensor inventory metadata is malformed")
+    expected: dict[str, tuple[int, ...]] = {}
+
+    def add(name: Any, shape: tuple[int, ...]) -> None:
+        if not isinstance(name, str) or not name:
+            raise ValueError("checkpoint tensor name is malformed")
+        if name in expected:
+            raise ValueError(f"checkpoint tensor name collides: {name}")
+        expected[name] = shape
+
+    for spec in hidden_specs:
+        layer_index = int(spec["layer_index"])
+        layer = layers[layer_index]
+        input_dim = int(layer["input_dim"])
+        head_dim = int(layer["head_dim"])
+        add(spec["seq_kernel"], (1, input_dim, head_dim))
+        add(spec["attn_src_kernel"], (1, head_dim, 1))
+        add(spec["attn_dst_kernel"], (1, head_dim, 1))
+        add(spec["attn_src_bias"], (1,))
+        add(spec["attn_dst_bias"], (1,))
+        add(spec["output_bias"], (head_dim,))
+    if not layers:
+        raise ValueError("checkpoint has no hidden layers")
+    output_input_dim = int(layers[-1]["head_count"]) * int(layers[-1]["head_dim"])
+    class_count = int(manifest["C"])
+    for spec in output_specs:
+        add(spec["seq_kernel"], (1, output_input_dim, class_count))
+        add(spec["attn_src_kernel"], (1, class_count, 1))
+        add(spec["attn_dst_kernel"], (1, class_count, 1))
+        add(spec["attn_src_bias"], (1,))
+        add(spec["attn_dst_bias"], (1,))
+        add(spec["output_bias"], (class_count,))
+
+    actual: dict[str, tuple[int, ...]] = {}
+    for name, shape in tensor_shapes.items():
+        try:
+            normalized = tuple(int(value) for value in shape)
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"checkpoint tensor shape is malformed: {name}") from error
+        if name in actual:
+            raise ValueError(f"checkpoint tensor name is duplicated: {name}")
+        actual[name] = normalized
+    if set(actual) != set(expected):
+        missing = sorted(set(expected) - set(actual))
+        extra = sorted(set(actual) - set(expected))
+        raise ValueError(f"checkpoint tensor inventory mismatch missing={missing} extra={extra}")
+    mismatches = [
+        f"{name}: expected {expected[name]} got {actual[name]}"
+        for name in sorted(expected)
+        if actual[name] != expected[name]
+    ]
+    if mismatches:
+        raise ValueError("checkpoint tensor shape mismatch: " + "; ".join(mismatches))
+
+
+def static_table_row_cap_blocker(tables: Any) -> dict[str, Any] | None:
+    """Return a structured blocker before native full-table materialization.
+
+    Rust ``expected_table`` checks the raw (unpadded) domain length against
+    ``1 << 26``.  Keep that exact policy here; do not truncate or replace the
+    authenticated full-vector table.  ``None`` means every profile entry is
+    safe to hand to the native relation builder.
+    """
+    entries: list[dict[str, int | str]] = []
+    malformed: list[str] = []
+    if not isinstance(tables, dict):
+        return {
+            "code": "static_table_profile_malformed",
+            "message": "static table profile must be an object",
+            "native_row_cap": STATIC_TABLE_ROW_CAP,
+            "native_row_cap_expression": "1 << 26",
+        }
+    for kind in ("lrelu", "elu", "exp"):
+        entry = tables.get(kind)
+        if not isinstance(entry, dict):
+            malformed.append(kind)
+            continue
+        try:
+            minimum = int(entry["min"])
+            maximum = int(entry["max"])
+            declared_rows = int(entry["rows"])
+        except (KeyError, TypeError, ValueError):
+            malformed.append(kind)
+            continue
+        raw_rows = maximum - minimum + 1
+        entries.append(
+            {
+                "kind": kind,
+                "min": minimum,
+                "max": maximum,
+                "rows": raw_rows,
+                "declared_rows": declared_rows,
+            }
+        )
+        if raw_rows <= 0 or declared_rows != raw_rows:
+            malformed.append(kind)
+    if malformed:
+        return {
+            "code": "static_table_profile_malformed",
+            "message": "static table domain bounds and row counts are inconsistent",
+            "native_row_cap": STATIC_TABLE_ROW_CAP,
+            "native_row_cap_expression": "1 << 26",
+            "tables": entries,
+            "malformed_tables": sorted(set(malformed)),
+        }
+    offenders = [entry for entry in entries if int(entry["rows"]) > STATIC_TABLE_ROW_CAP]
+    if not offenders:
+        return None
+    return {
+        "code": "static_table_domain_exceeds_native_cap",
+        "message": (
+            "native expected_table materializes a full public vector and "
+            "accepts raw rows <= 2^26; relation construction is blocked"
+        ),
+        "native_row_cap": STATIC_TABLE_ROW_CAP,
+        "native_row_cap_expression": "1 << 26",
+        "tables": entries,
+        "offending_tables": offenders,
+    }
+
+
+def read_checkpoint_tensor_shapes(path: Path) -> dict[str, tuple[int, ...]]:
+    """Read only tensor names/shapes from a canonical ``tensors.txt`` bundle."""
+    tokens = path.read_text(encoding="utf-8").split()
+    index = 0
+    shapes: dict[str, tuple[int, ...]] = {}
+    while index < len(tokens):
+        if tokens[index] != "TENSOR" or index + 2 >= len(tokens):
+            raise ValueError("checkpoint tensor marker is malformed")
+        name = tokens[index + 1]
+        rank = int(tokens[index + 2])
+        index += 3
+        if name in shapes or rank < 0 or index + rank >= len(tokens):
+            raise ValueError(f"checkpoint tensor header is malformed: {name}")
+        shape = tuple(int(value) for value in tokens[index : index + rank])
+        index += rank
+        if index >= len(tokens):
+            raise ValueError(f"checkpoint tensor count is missing: {name}")
+        count = int(tokens[index])
+        index += 1
+        if count < 0 or index + count > len(tokens):
+            raise ValueError(f"checkpoint tensor payload is truncated: {name}")
+        index += count
+        shapes[name] = shape
+    return shapes
+
+
+def model_shape_payload(manifest: dict[str, Any], *, feature_dim: int) -> dict[str, Any]:
+    """Return the shape-only identity payload shared by all production stages."""
+    profile = parse_hidden_profile(manifest.get("hidden_profile"), label="checkpoint hidden_profile")
+    d_in_profile = parse_int_profile(manifest.get("d_in_profile"), label="checkpoint d_in_profile")
+    return {
+        "L": int(manifest["L"]),
+        "hidden_profile": [list(item) for item in profile],
+        "d_in_profile": d_in_profile,
+        "K_out": int(manifest["K_out"]),
+        "hidden_layers": manifest["hidden_layers"],
+        "hidden_head_specs": manifest["hidden_head_specs"],
+        "output_head_specs": manifest["output_head_specs"],
+        "class_count": int(manifest["C"]),
+        "feature_dim": int(feature_dim),
+    }
+
+
+def validate_preflight_metadata(report: dict[str, Any], expected: dict[str, Any]) -> None:
+    """Compare every adapter/preflight binding field fail-closed."""
+    for key, value in expected.items():
+        if key not in report:
+            raise ValueError("preflight metadata missing: " + key)
+        if report[key] != value:
+            raise ValueError("canonical/preflight metadata mismatch: " + key)
 
 
 def _manifest_digest(manifest: dict[str, Any]) -> str:

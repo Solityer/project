@@ -17,7 +17,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from zkgpt_gat.constants import DATASET_ORDER, PROOF_BACKEND_ID, PROTOCOL_ID  # noqa: E402
-from zkgpt_gat.config import read_config  # noqa: E402
+from zkgpt_gat.config import load_app_config  # noqa: E402
 from zkgpt_gat.gpu_execution import validate_gpu_execution_evidence  # noqa: E402
 from zkgpt_gat.privacy import check_multi_session_profiles, registration_identity_fingerprint  # noqa: E402
 from zkgpt_gat.registry import canonical_registry_public_path  # noqa: E402
@@ -72,7 +72,7 @@ def _fresh_independent_replay(manifest_path: pathlib.Path) -> None:
     if not isinstance(metadata, dict):
         raise ValueError("metadata must be a JSON object")
     config = resolve_local(ROOT, manifest.get("config", ""), "config")
-    entries = read_config(config)
+    entries = load_app_config(config, ROOT).entries
     expected_y = required_resource_paths(ROOT, dataset)["public_y_path"]
     configured_y = resolve_local(ROOT, _config_value(entries, "public_y_path"), "public_y_path")
     if configured_y != expected_y or not expected_y.is_file():

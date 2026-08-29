@@ -14,7 +14,18 @@ import pathlib
 import stat
 from typing import Any, Dict, Iterable, Mapping
 
-from .constants import DATASET_ORDER, PROOF_BACKEND_ID, PROTOCOL_ID
+from .config import load_app_config
+from .constants import (
+    DATASET_ORDER,
+    FORMAL_GAT_CLASS_COUNTS,
+    FORMAL_GAT_D_IN_PROFILE,
+    FORMAL_GAT_HIDDEN_PROFILE,
+    FORMAL_GAT_K_OUT,
+    FORMAL_GAT_LAYER_COUNT,
+    FORMAL_GAT_MODEL_ARCH_IDS,
+    PROOF_BACKEND_ID,
+    PROTOCOL_ID,
+)
 from .gpu_execution import validate_gpu_execution_evidence
 from .registry import canonical_registry_public_path
 from .privacy import verify_privacy_profile
@@ -474,6 +485,149 @@ def read_object(path: pathlib.Path, label: str) -> Dict[str, Any]:
     return value
 
 
+def _read_owned_resource_object(path: pathlib.Path, label: str) -> Dict[str, Any]:
+    """Read one baseline-local JSON resource without following aliases."""
+    try:
+        info = path.lstat()
+    except OSError as exc:
+        raise ResultValidationError(f"{label} is missing: {path}") from exc
+    if stat.S_ISLNK(info.st_mode):
+        raise ResultValidationError(f"{label} must not be a symlink: {path}")
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+        raise ResultValidationError(f"{label} must be an owned regular file: {path}")
+    return read_object(path, label)
+
+
+def _validate_formal_model_binding(
+    root: pathlib.Path,
+    config_path: pathlib.Path,
+    metadata: Mapping[str, Any],
+    model_id: Mapping[str, Any],
+    manifest: Mapping[str, Any],
+) -> None:
+    """Bind a result cell to the canonical L3/multi-head checkpoint schema.
+
+    The independent verifier already reconstructs its context from the
+    baseline-local checkpoint manifest.  The collector and final validator
+    also call this check so a stale result row cannot survive after a model
+    profile migration merely because the proof files have the right names.
+    Tensor values are never opened here.
+    """
+    try:
+        config = load_app_config(config_path, root)
+        dataset = canonical_dataset_name(config.dataset)
+    except (OSError, TypeError, ValueError) as exc:
+        raise ResultValidationError(f"formal config/model binding is invalid: {exc}") from exc
+    expected_hidden = list(FORMAL_GAT_HIDDEN_PROFILE)
+    actual_hidden = [(item.head_count, item.head_dim) for item in config.hidden_profile]
+    expected_d_in = list(FORMAL_GAT_D_IN_PROFILE[dataset])
+    if config.layer_count != FORMAL_GAT_LAYER_COUNT:
+        raise ResultValidationError("formal result config is not L3")
+    if actual_hidden != expected_hidden:
+        raise ResultValidationError("formal result config hidden_profile is not canonical")
+    if config.d_in_profile != expected_d_in:
+        raise ResultValidationError("formal result config d_in_profile is not canonical")
+    if config.k_out != FORMAL_GAT_K_OUT or config.num_classes != FORMAL_GAT_CLASS_COUNTS[dataset]:
+        raise ResultValidationError("formal result config output shape is not canonical")
+    expected_arch = FORMAL_GAT_MODEL_ARCH_IDS[dataset]
+    if config.entries.get("model_arch_id") != expected_arch:
+        raise ResultValidationError("formal result config model_arch_id is not canonical")
+    if canonical_dataset_name(str(manifest.get("dataset", ""))) != dataset:
+        raise ResultValidationError("run manifest dataset does not match config identity")
+
+    checkpoint_manifest_path = config.checkpoint_bundle / "manifest.json"
+    checkpoint_manifest = _read_owned_resource_object(
+        checkpoint_manifest_path, "checkpoint manifest"
+    )
+    if checkpoint_manifest.get("model_arch_id") != expected_arch:
+        raise ResultValidationError("checkpoint manifest model_arch_id mismatch")
+    if checkpoint_manifest.get("model_param_id") != config.entries.get("model_param_id"):
+        raise ResultValidationError("checkpoint manifest model_param_id mismatch")
+    if int(checkpoint_manifest.get("L", -1)) != FORMAL_GAT_LAYER_COUNT:
+        raise ResultValidationError("checkpoint manifest L is not canonical")
+    if int(checkpoint_manifest.get("K_out", -1)) != FORMAL_GAT_K_OUT:
+        raise ResultValidationError("checkpoint manifest K_out is not canonical")
+    if int(checkpoint_manifest.get("C", -1)) != FORMAL_GAT_CLASS_COUNTS[dataset]:
+        raise ResultValidationError("checkpoint manifest class count mismatch")
+    hidden = checkpoint_manifest.get("hidden_layers")
+    if not isinstance(hidden, list):
+        raise ResultValidationError("checkpoint manifest hidden_layers is malformed")
+    try:
+        checkpoint_hidden = [
+            (int(item["head_count"]), int(item["head_dim"])) for item in hidden
+        ]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ResultValidationError("checkpoint manifest hidden_layers is malformed") from exc
+    if checkpoint_hidden != expected_hidden:
+        raise ResultValidationError("checkpoint manifest hidden_profile mismatch")
+    checkpoint_d_in = checkpoint_manifest.get("d_in_profile")
+    try:
+        checkpoint_d_in = [int(value) for value in checkpoint_d_in]
+    except (TypeError, ValueError) as exc:
+        raise ResultValidationError("checkpoint manifest d_in_profile is malformed") from exc
+    if checkpoint_d_in != expected_d_in:
+        raise ResultValidationError("checkpoint manifest d_in_profile mismatch")
+    output_heads = checkpoint_manifest.get("output_head_specs")
+    if not isinstance(output_heads, list) or len(output_heads) != FORMAL_GAT_K_OUT:
+        raise ResultValidationError("checkpoint manifest output head count mismatch")
+    try:
+        output_indices = [int(item["head_index"]) for item in output_heads]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ResultValidationError("checkpoint manifest output_head_specs is malformed") from exc
+    if output_indices != list(range(FORMAL_GAT_K_OUT)):
+        raise ResultValidationError("checkpoint manifest output head indices are not contiguous")
+
+    if model_id.get("checkpoint_bundle") != str(config.checkpoint_bundle):
+        raise ResultValidationError("model identity checkpoint bundle is not canonical")
+    model_manifest_id = model_id.get("manifest")
+    if not isinstance(model_manifest_id, Mapping):
+        raise ResultValidationError("model identity manifest record is missing")
+    if model_manifest_id.get("path") != str(checkpoint_manifest_path):
+        raise ResultValidationError("model identity manifest path is not canonical")
+    if model_manifest_id.get("size_bytes") != checkpoint_manifest_path.stat().st_size:
+        raise ResultValidationError("model identity manifest size mismatch")
+    if model_manifest_id.get("sha256") != sha256_file(checkpoint_manifest_path):
+        raise ResultValidationError("model identity manifest digest mismatch")
+
+    dim_cfg = metadata.get("dim_cfg")
+    if not isinstance(dim_cfg, Mapping):
+        raise ResultValidationError("metadata dim_cfg is missing")
+    metadata_hidden = dim_cfg.get("hidden_profile")
+    if not isinstance(metadata_hidden, list):
+        raise ResultValidationError("metadata hidden_profile is missing")
+    try:
+        normalized_metadata_hidden = [
+            (int(item["layer_index"]), int(item["head_count"]), int(item["head_dim"]))
+            for item in metadata_hidden
+        ]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ResultValidationError("metadata hidden_profile is malformed") from exc
+    expected_metadata_hidden = [
+        (index, head_count, head_dim)
+        for index, (head_count, head_dim) in enumerate(expected_hidden)
+    ]
+    if normalized_metadata_hidden != expected_metadata_hidden:
+        raise ResultValidationError("metadata hidden_profile mismatch")
+    if dim_cfg.get("L") != FORMAL_GAT_LAYER_COUNT or dim_cfg.get("K_out") != FORMAL_GAT_K_OUT or dim_cfg.get("C") != FORMAL_GAT_CLASS_COUNTS[dataset]:
+        raise ResultValidationError("metadata output dimensions mismatch")
+    if dim_cfg.get("d_in_profile") != expected_d_in:
+        raise ResultValidationError("metadata d_in_profile mismatch")
+    expected_internal_d_in = expected_d_in + [expected_hidden[-1][0] * expected_hidden[-1][1]]
+    if dim_cfg.get("d_in") != expected_internal_d_in:
+        raise ResultValidationError("metadata internal d_in dimensions mismatch")
+    for key in ("model_arch_id", "model_param_id", "quant_cfg_id"):
+        if metadata.get(key) != config.entries.get(key):
+            raise ResultValidationError(f"metadata {key} does not match formal config")
+    if manifest.get("L") != FORMAL_GAT_LAYER_COUNT:
+        raise ResultValidationError("run manifest L is not canonical")
+    if manifest.get("hidden_profile") != "8x8,8x8":
+        raise ResultValidationError("run manifest hidden_profile is not canonical")
+    if manifest.get("d_in_profile") != ",".join(str(value) for value in expected_d_in):
+        raise ResultValidationError("run manifest d_in_profile is not canonical")
+    if manifest.get("K_out") != FORMAL_GAT_K_OUT or manifest.get("C") != FORMAL_GAT_CLASS_COUNTS[dataset]:
+        raise ResultValidationError("run manifest output dimensions are not canonical")
+
+
 def artifact_digest_map(artifact_dir: pathlib.Path, backend: str) -> Dict[str, Dict[str, Any]]:
     output: Dict[str, Dict[str, Any]] = {}
     for name in required_artifact_names(backend):
@@ -514,6 +668,8 @@ def _verified_fields(report: Mapping[str, Any]) -> Dict[str, Any]:
         "witness_included_in_proof", "public_output_digest",
         "proof_contribution", "gpu_hot_path", "proof_schema_scan",
         "privacy_masking_verified", "verifier_input_boundary",
+        "model_arch_id", "model_param_id", "quant_cfg_id",
+        "L", "hidden_profile", "d_in_profile", "K_out", "C",
     )
     missing = [key for key in required if key not in fields]
     if missing:
@@ -524,6 +680,17 @@ def _verified_fields(report: Mapping[str, Any]) -> Dict[str, Any]:
         raise ResultValidationError("independent verifier protocol identity mismatch")
     if fields.get("backend") not in BACKEND_SET or fields.get("dataset") not in DATASET_SET:
         raise ResultValidationError("independent verifier dataset/backend identity invalid")
+    for key in ("model_arch_id", "model_param_id", "quant_cfg_id"):
+        if not isinstance(fields.get(key), str) or not fields[key]:
+            raise ResultValidationError(f"independent verifier {key} is missing")
+    for key in ("L", "K_out", "C"):
+        value = fields.get(key)
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            raise ResultValidationError(f"independent verifier {key} is invalid")
+    if not isinstance(fields.get("hidden_profile"), list) or not fields["hidden_profile"]:
+        raise ResultValidationError("independent verifier hidden_profile is missing")
+    if not isinstance(fields.get("d_in_profile"), list) or not fields["d_in_profile"]:
+        raise ResultValidationError("independent verifier d_in_profile is missing")
     for key in ("full_dataset", "full_gat_forward_proved", "final_logits_bound", "verifier_reads_witness", "witness_included_in_proof", "gpu_hot_path"):
         _require_bool(fields, key, "verified_fields")
     for key in ("proof_schema_scan", "privacy_masking_verified"):
@@ -593,6 +760,10 @@ def validate_artifact(
         for duplicate in FORBIDDEN_DUPLICATE_ARTIFACTS:
             if (artifact_dir / duplicate).exists():
                 raise ResultValidationError(f"duplicate non-canonical artifact is forbidden: {duplicate}")
+    # Load and type-check metadata before any independent-report binding can
+    # inspect it.  Missing or malformed metadata must fail closed rather than
+    # reaching an unbound-local path in the cross-artifact checks below.
+    metadata = read_object(required_artifact_file(artifact_dir, "metadata.json"), "metadata")
     independent_path = required_artifact_file(artifact_dir, "independent_verification.json")
     report = read_object(independent_path, "independent verifier report")
     fields = _verified_fields(report)
@@ -609,6 +780,15 @@ def validate_artifact(
     ):
         if manifest.get(key) != fields.get(key):
             raise ResultValidationError(f"manifest {key} does not match independent verifier report")
+    dim_cfg = metadata.get("dim_cfg")
+    if not isinstance(dim_cfg, Mapping):
+        raise ResultValidationError("metadata dim_cfg is missing")
+    for key in ("model_arch_id", "model_param_id", "quant_cfg_id"):
+        if fields.get(key) != metadata.get(key):
+            raise ResultValidationError(f"independent verifier {key} does not match metadata")
+    for key in ("L", "hidden_profile", "d_in_profile", "K_out", "C"):
+        if fields.get(key) != dim_cfg.get(key):
+            raise ResultValidationError(f"independent verifier {key} does not match metadata dimensions")
     if manifest.get("status") != "VERIFY_OK" or fields.get("status") != "VERIFY_OK":
         raise ResultValidationError("production result status is not verifier-derived VERIFY_OK")
     if manifest.get("full_dataset") is not True:
@@ -641,7 +821,6 @@ def validate_artifact(
         if recorded.get(name) != actual:
             raise ResultValidationError(f"artifact digest mismatch: {name}")
 
-    metadata = read_object(required_artifact_file(artifact_dir, "metadata.json"), "metadata")
     proof_payload = read_object(required_artifact_file(artifact_dir, "proof_payload.json"), "proof payload")
     fixed_lookup_tables = read_object(required_artifact_file(artifact_dir, "fixed_lookup_tables.json"), "fixed lookup tables")
     lasso = read_object(required_artifact_file(artifact_dir, "lookup_proof.json"), "lookup proof")
@@ -704,6 +883,7 @@ def validate_artifact(
             raise ResultValidationError(f"{label} identity digest mismatch")
     if config_id.get("id") != config_id.get("sha256") or config_id.get("sha256") != sha256_file(config_path):
         raise ResultValidationError("config identity digest mismatch")
+    _validate_formal_model_binding(root, config_path, metadata, model_id, manifest)
     expected_registry = canonical_registry_public_path(
         root, _config_value(config_path, "model_param_id", "")
     )

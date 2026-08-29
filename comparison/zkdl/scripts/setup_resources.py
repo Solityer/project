@@ -39,6 +39,11 @@ def _native_command(binary: Path, subcommand: str) -> list[object]:
         "--project-root",
         str(BASELINE_ROOT),
         subcommand,
+        # clap exposes the required root on each subcommand as well as on the
+        # top-level parser; keep both positions explicit so setup/pp-info are
+        # accepted by the native binary in every supported invocation mode.
+        "--project-root",
+        str(BASELINE_ROOT),
     ]
 
 

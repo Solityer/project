@@ -12,6 +12,16 @@ GAT trace 是 private witness。编译计划固定层数、所有 hidden/output 
 CSR topology wiring、量化链、冻结的 canonical exact lookup rows、整数 bound ledger、security
 profile 和注册模型 Poseidon hash。
 
+本 baseline 的五个正式模型形状已固定为当前 canonical 多层多头结构：`L=3`、
+`hidden_profile=[8x8,8x8]`、`K_out=2`。每个 hidden layer 都显式携带
+`d_in_profile`；第一项是数据集特征维度，第二项固定为第一隐藏层 concat 后的 `64`。
+对应的 `model_arch_id` 为
+`gat_family_L3_hid8x8-8x8_kout2_c{C}`，五个 checkpoint 的 model parameter id 与
+正式 config 一一匹配。adapter 计算的 `shape_hash` 同时进入 graph spec、settings、
+compiled circuit、setup manifest、model registration、public statement、prove/verify
+输出、run manifest、collector 和 final validator；任一旧 L2/K1/单层产物或 d_in profile
+改动都会在 native 或结果验收边界 fail closed。
+
 `src/native_gat.rs` 的 Halo2 circuit 约束 projection、edge route、LReLU、stable group
 max、exact ExpMap、非零 `Sum` 与 field inverse、`alpha`、field/integer 双聚合、hidden
 ELU/concat、output bias、head average，以及协议规定的 recovery/alignment/average
@@ -65,6 +75,13 @@ lookup-cache 已从正式源码中移除，formal table 每次由当前注册资
 CPU formal binary 为 `target/release/ezkl_formal`；CUDA formal binary 为
 `target-gpu/release/ezkl_formal`。CUDA 入口必须成功加载并选择 CUDA device，否则立即失败；
 不会回退到 CPU。CPU runner 也拒绝 GPU-enabled binary。
+
+Cargo release 构建有时会把顶层 binary hard-link 到同一 target 下的 `deps/` binary。正式
+`build.sh` 会在写入 build identity 前，在相同 baseline-local 目录用 exclusive temporary
+regular file 复制并 atomic replace 顶层路径；复制前后都检查路径 containment、symlink/special
+entry、内容大小和 executable mode，最终 `nlink` 必须为 `1`。因此 `write_build_identity.py`
+和所有 verifier/collector 的严格 hard-link gate 保持不变，直接把未 materialize 的 hard-linked
+binary 交给 identity 或 validator 仍会 fail closed。
 
 GPU 构建使用 baseline-local ICICLE CPU/frontend 代码；锁定的公开 ICICLE revision 不包含
 CUDA backend source，因此 CUDA native backend 不是由 CMake 联网下载或从 `/opt`、
@@ -134,6 +151,14 @@ file + atomic replace。
 `resources/resource_manifest.json` 固定五个正式 config、dataset/cache 和 checkpoint
 相对路径。`--check`/`--require-staged` 只检查必需文件名存在，内容、维度、checkpoint
 身份仍由 native adapter 在正式运行时 fail closed 校验。
+
+`prepare_resources.py --check` 在 ceremony、dataset 或 checkpoint 缺失时输出
+`ezkl_formal_resource_check_v1` 的 `status=blocked` JSON 并以非零状态退出，不会以裸
+traceback 掩盖缺口；`preflight.py --require-staged` 同样输出结构化 blocked 报告。
+
+shape identity 的生成与校验由 C++ adapter、Rust native circuit 和 Python final validator
+共享同一 length-prefixed、domain-separated 编码；因此仅修改 manifest 中的 shape 字段而不
+重建 compiled circuit/keys 不能绕过 artifact binding。
 
 ## 单数据集正式运行
 

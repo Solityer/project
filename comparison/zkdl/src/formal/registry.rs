@@ -497,6 +497,10 @@ struct CanonicalLayerProfile {
 
 #[derive(Clone, Debug)]
 struct CanonicalArchitectureProfile {
+    layer_count: usize,
+    hidden_profile: Vec<(usize, usize)>,
+    d_in_profile: Vec<usize>,
+    k_out: usize,
     node_count: usize,
     edge_count: usize,
     graph_count: usize,
@@ -547,6 +551,26 @@ fn canonical_required_usize(
     usize::try_from(value).map_err(|_| anyhow::anyhow!("{label}.{key} overflows usize"))
 }
 
+fn canonical_required_usize_array(
+    object: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    label: &str,
+) -> Result<Vec<usize>> {
+    let value = object
+        .get(key)
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| anyhow::anyhow!("{label}.{key} must be an integer array"))?;
+    value
+        .iter()
+        .map(|item| {
+            let number = item
+                .as_u64()
+                .ok_or_else(|| anyhow::anyhow!("{label}.{key} contains a non-negative integer"))?;
+            usize::try_from(number).map_err(|_| anyhow::anyhow!("{label}.{key} overflows usize"))
+        })
+        .collect()
+}
+
 fn canonical_architecture_profile(
     schema: &serde_json::Value,
     n: usize,
@@ -590,13 +614,17 @@ fn canonical_architecture_profile(
     let architecture = ensure_exact_object_keys(
         architecture,
         &[
+            "L",
             "bit_width",
             "class_count",
+            "d_in_profile",
             "edge_count",
             "feature_dim",
             "graph_count",
             "hidden_head_specs",
             "hidden_layers",
+            "hidden_profile",
+            "K_out",
             "lookup_bits",
             "model_arch_id",
             "model_param_id",
@@ -609,6 +637,29 @@ fn canonical_architecture_profile(
     canonical_required_string(architecture, "model_arch_id", "architecture")?;
     canonical_required_string(architecture, "model_param_id", "architecture")?;
     let profile = CanonicalArchitectureProfile {
+        layer_count: canonical_required_usize(architecture, "L", "architecture")?,
+        hidden_profile: {
+            let values = architecture
+                .get("hidden_profile")
+                .and_then(serde_json::Value::as_array)
+                .ok_or_else(|| anyhow::anyhow!("architecture.hidden_profile must be an array"))?;
+            values
+                .iter()
+                .map(|value| {
+                    let object = ensure_exact_object_keys(
+                        value,
+                        &["head_count", "head_dim"],
+                        "architecture.hidden_profile entry",
+                    )?;
+                    Ok((
+                        canonical_required_usize(object, "head_count", "hidden profile")?,
+                        canonical_required_usize(object, "head_dim", "hidden profile")?,
+                    ))
+                })
+                .collect::<Result<Vec<_>>>()?
+        },
+        d_in_profile: canonical_required_usize_array(architecture, "d_in_profile", "architecture")?,
+        k_out: canonical_required_usize(architecture, "K_out", "architecture")?,
         node_count: canonical_required_usize(architecture, "node_count", "architecture")?,
         edge_count: canonical_required_usize(architecture, "edge_count", "architecture")?,
         graph_count: canonical_required_usize(architecture, "graph_count", "architecture")?,
@@ -655,6 +706,12 @@ fn canonical_architecture_profile(
         "canonical architecture has no output heads"
     );
     ensure!(
+        profile.layer_count == 3
+            && profile.k_out == 2
+            && profile.hidden_profile == vec![(8, 8), (8, 8)],
+        "canonical architecture is not the current L3 two-hidden-layer/two-output GAT"
+    );
+    ensure!(
         (2..254).contains(&profile.bit_width),
         "canonical integer bit width is invalid"
     );
@@ -666,6 +723,12 @@ fn canonical_architecture_profile(
     ensure!(
         !layers.is_empty(),
         "canonical architecture has no hidden layers"
+    );
+    ensure!(
+        profile.layer_count == layers.len() + 1
+            && profile.hidden_profile.len() == layers.len()
+            && profile.d_in_profile.len() == layers.len(),
+        "canonical architecture L/profile/input-profile lengths are inconsistent"
     );
     let mut previous_dim = d;
     let mut parsed_layers = Vec::with_capacity(layers.len());
@@ -693,6 +756,21 @@ fn canonical_architecture_profile(
             head_dim,
         });
     }
+    ensure!(
+        profile
+            .d_in_profile
+            .iter()
+            .copied()
+            .eq(parsed_layers.iter().map(|layer| layer.input_dim))
+            && profile.hidden_profile.iter().copied().eq(parsed_layers
+                .iter()
+                .map(|layer| (layer.head_count, layer.head_dim)),),
+        "canonical architecture profile does not match hidden layer metadata"
+    );
+    ensure!(
+        profile.k_out == profile.output_head_count,
+        "canonical K_out does not match output head count"
+    );
 
     let hidden_specs = architecture
         .get("hidden_head_specs")
@@ -704,6 +782,7 @@ fn canonical_architecture_profile(
         "canonical hidden head specification count mismatch"
     );
     let mut cursor = 0usize;
+    let mut global_indices = BTreeSet::new();
     for layer in &parsed_layers {
         for local_head_index in 0..layer.head_count {
             let value = hidden_specs
@@ -728,11 +807,23 @@ fn canonical_architecture_profile(
                 canonical_required_usize(object, "layer_index", "hidden head")?
                     == layer.layer_index
                     && canonical_required_usize(object, "local_head_index", "hidden head")?
-                        == local_head_index
-                    && canonical_required_usize(object, "global_head_index", "hidden head")?
-                        == cursor,
-                "canonical hidden head order/index mapping is invalid"
+                        == local_head_index,
+                "canonical hidden head layer/local index mapping is invalid"
             );
+            if let Some(global_index) = object.get("global_head_index") {
+                if !global_index.is_null() {
+                    let global_index =
+                        canonical_required_usize(object, "global_head_index", "hidden head")?;
+                    ensure!(
+                        global_index < expected_hidden_count,
+                        "canonical hidden head global index is out of range"
+                    );
+                    ensure!(
+                        global_indices.insert(global_index),
+                        "canonical hidden head global index collides"
+                    );
+                }
+            }
             for key in [
                 "seq_kernel",
                 "attn_dst_kernel",

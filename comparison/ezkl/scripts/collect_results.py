@@ -49,6 +49,32 @@ def sha256(path: Path) -> str:
     return "sha256:" + value.hexdigest()
 
 
+def _validate_shape_bindings(cell: Path, payload: dict[str, object]) -> str:
+    """Require every public artifact to carry the current circuit shape id."""
+
+    shape_hash = payload.get("shape_hash")
+    if not isinstance(shape_hash, str) or not shape_hash.startswith("sha256:"):
+        raise ValueError(f"shape identity is missing or malformed: {cell}")
+    artifact_fields = (
+        ("graph_attention_spec.json", "shape_hash"),
+        ("settings.json", "shape_hash"),
+        ("network.compiled", "shape_hash"),
+        ("circuit_manifest.json", "shape_hash"),
+        ("model_registration.json", "shape_hash"),
+        ("public_statement.json", "shape_hash"),
+        ("verify.json", "shape_hash"),
+    )
+    for filename, field in artifact_fields:
+        path = cell / filename
+        try:
+            artifact = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError(f"cannot read shape-bound artifact: {path}") from exc
+        if not isinstance(artifact, dict) or artifact.get(field) != shape_hash:
+            raise ValueError(f"shape identity mismatch in {path}")
+    return shape_hash
+
+
 def _manifest(
     cell: Path,
     *,
@@ -189,6 +215,7 @@ def _manifest(
     ):
         if payload.get(field) != sha256(cell / name):
             raise ValueError(f"{field} mismatch: {path}")
+    _validate_shape_bindings(cell, payload)
     return payload
 
 
@@ -256,6 +283,7 @@ def _collect(
                         "public_statement_sha256": payload.get("public_statement_sha256"),
                         "compiled_circuit_sha256": payload.get("compiled_circuit_sha256"),
                         "vk_sha256": payload.get("vk_sha256"),
+                        "shape_hash": payload.get("shape_hash"),
                         "runtime_device_marker": payload.get("runtime_device_marker"),
                         "prover_backend": payload.get("prover_backend"),
                         "verifier_backend": payload.get("verifier_backend"),

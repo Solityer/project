@@ -8,9 +8,19 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
-from zkgpt_gat.config import read_config
-from zkgpt_gat.constants import DATASET_ORDER
+from zkgpt_gat.config import load_app_config, read_config
+from zkgpt_gat.constants import (
+    DATASET_ORDER,
+    FORMAL_GAT_CLASS_COUNTS,
+    FORMAL_GAT_D_IN_PROFILE,
+    FORMAL_GAT_HIDDEN_PROFILE,
+    FORMAL_GAT_K_OUT,
+    FORMAL_GAT_LAYER_COUNT,
+    PROOF_BACKEND_ID,
+    PROTOCOL_ID,
+)
 from zkgpt_gat.formal_gate import formal_gate_status, load_capabilities, validate_capabilities
 from zkgpt_gat.resources import check_resource_layout, read_resource_manifest
 from zkgpt_gat.result_validation import (
@@ -28,7 +38,7 @@ from zkgpt_gat.result_validation import (
     validate_artifact,
     validate_matrix_rows,
 )
-from zkgpt_gat.util import write_json
+from zkgpt_gat.util import digest_json, write_json
 from zkgpt_gat.proof import _cleanup_proof_work_dir, _proof_work_dir
 from zkgpt_gat.runner import _prepare_artifact_directory
 
@@ -37,6 +47,14 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
 class ResultValidationTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        # A repository checkout intentionally ignores runtime scratch state,
+        # but these tests use it as the parent of isolated temporary fixtures.
+        # Create only the local directory; no production artifact is seeded.
+        (ROOT / "runs_tmp").mkdir(parents=True, exist_ok=True)
+
     def _canonical_cell_fixture(self):
         """Create one isolated canonical cell without a production manifest."""
         return tempfile.TemporaryDirectory(prefix="zkgpt-containment-")
@@ -99,6 +117,172 @@ class ResultValidationTests(unittest.TestCase):
         )
         return path
 
+    def _metadata_order_fixture(
+        self,
+        root: pathlib.Path,
+        metadata: dict[str, object] | None,
+    ) -> tuple[pathlib.Path, dict[str, object]]:
+        """Create the authenticated prefix needed to exercise metadata ordering.
+
+        The remaining proof files are deliberately empty JSON objects: the
+        valid-metadata case must reach the producer-verifier check after the
+        independent-report/metadata binding, while malformed metadata must
+        fail at that binding point.  This keeps the regression small without
+        manufacturing a proof.
+        """
+        cell = root / "results" / "runs" / "cpu" / "cora"
+        cell.mkdir(parents=True)
+        for name in required_artifact_names("cpu", include_manifest=True):
+            if name == "metadata.json" and metadata is None:
+                continue
+            (cell / name).write_text("{}\n", encoding="utf-8")
+
+        hidden_profile = [
+            {"layer_index": 0, "head_count": 8, "head_dim": 8},
+            {"layer_index": 1, "head_count": 8, "head_dim": 8},
+        ]
+        fields: dict[str, object] = {
+            "status": "VERIFY_OK",
+            "protocol_id": PROTOCOL_ID,
+            "proof_backend_id": PROOF_BACKEND_ID,
+            "dataset": "cora",
+            "backend": "cpu",
+            "full_dataset": True,
+            "proof_scope": "full_gat_forward",
+            "full_gat_forward_proved": True,
+            "final_logits_bound": True,
+            "privacy_extension_profile_id": "privacy-test",
+            "privacy_profile_status": "VERIFY_OK",
+            "verifier_reads_witness": False,
+            "witness_included_in_proof": False,
+            "public_output_digest": "public-output-digest",
+            "proof_contribution": {"Pi_GKR": True},
+            "gpu_hot_path": False,
+            "proof_schema_scan": True,
+            "privacy_masking_verified": True,
+            "verifier_input_boundary": {"private_input_files_read": []},
+            "model_arch_id": "test-model-arch",
+            "model_param_id": "test-model-param",
+            "quant_cfg_id": "exact_integer_gat_v1",
+            "L": 3,
+            "hidden_profile": hidden_profile,
+            "d_in_profile": [1433, 64],
+            "K_out": 2,
+            "C": 7,
+        }
+        report: dict[str, object] = {
+            "schema": "zkGPT_independent_verification_v4",
+            "status": "VERIFY_OK",
+            "checks": {"all_checks": True},
+            "verified_fields": fields,
+        }
+        (cell / "independent_verification.json").write_text(
+            json.dumps(report) + "\n", encoding="utf-8"
+        )
+        if metadata is not None:
+            (cell / "metadata.json").write_text(
+                json.dumps(metadata) + "\n", encoding="utf-8"
+            )
+
+        manifest: dict[str, object] = {
+            "schema": "zkGPT_gat_run_manifest_v4",
+            "dataset": "cora",
+            "backend": "cpu",
+            "artifact_path": str(cell),
+            "status": "VERIFY_OK",
+            "protocol_id": PROTOCOL_ID,
+            "proof_backend_id": PROOF_BACKEND_ID,
+            "gpu_backend": {"backend": "cpu", "status": "VERIFY_OK", "gpu_hot_path": False},
+            "independent_verification_status": "VERIFY_OK",
+            "independent_verification_sha256": "artifact-digest",
+            "independent_report_digest": digest_json(report),
+        }
+        for key in (
+            "proof_scope", "full_gat_forward_proved", "final_logits_bound",
+            "privacy_extension_profile_id", "privacy_profile_status",
+            "verifier_reads_witness", "witness_included_in_proof",
+            "public_output_digest", "proof_contribution", "gpu_hot_path",
+            "proof_schema_scan", "privacy_masking_verified", "verifier_input_boundary",
+        ):
+            manifest[key] = fields[key]
+        manifest["full_dataset"] = fields["full_dataset"]
+        manifest["artifact_digests"] = {
+            name: {
+                "sha256": "artifact-digest",
+                "size_bytes": (cell / name).stat().st_size,
+            }
+            for name in required_artifact_names("cpu")
+            if (cell / name).exists()
+        }
+        manifest_path = cell / "run_manifest.json"
+        manifest_path.write_text(json.dumps(manifest) + "\n", encoding="utf-8")
+        return manifest_path, manifest
+
+    def test_metadata_is_loaded_before_independent_binding(self) -> None:
+        with tempfile.TemporaryDirectory(
+            prefix="zkgpt-metadata-order-", dir=str(ROOT / "runs_tmp")
+        ) as name:
+            root = pathlib.Path(name)
+            metadata = {
+                "dataset": "cora",
+                "backend": "cpu",
+                "protocol_id": PROTOCOL_ID,
+                "proof_backend_id": PROOF_BACKEND_ID,
+                "model_arch_id": "test-model-arch",
+                "model_param_id": "test-model-param",
+                "quant_cfg_id": "exact_integer_gat_v1",
+                "dim_cfg": {
+                    "L": 3,
+                    "hidden_profile": [
+                        {"layer_index": 0, "head_count": 8, "head_dim": 8},
+                        {"layer_index": 1, "head_count": 8, "head_dim": 8},
+                    ],
+                    "d_in_profile": [1433, 64],
+                    "K_out": 2,
+                    "C": 7,
+                },
+            }
+            manifest_path, manifest = self._metadata_order_fixture(root, metadata)
+            cell = manifest_path.parent
+            with (
+                patch("zkgpt_gat.result_validation.load_canonical_manifest", return_value=(cell, manifest)),
+                patch("zkgpt_gat.result_validation.validate_required_artifacts"),
+                patch("zkgpt_gat.result_validation.sha256_file", return_value="artifact-digest"),
+            ):
+                with self.assertRaisesRegex(
+                    ResultValidationError, "producer verifier report is not successful"
+                ):
+                    validate_artifact(root, manifest_path)
+
+    def test_missing_or_malformed_metadata_fails_closed(self) -> None:
+        cases = (
+            ("missing", None, "artifact file is missing"),
+            (
+                "malformed",
+                {
+                    "dataset": "cora",
+                    "backend": "cpu",
+                    "protocol_id": PROTOCOL_ID,
+                    "proof_backend_id": PROOF_BACKEND_ID,
+                },
+                "metadata dim_cfg is missing",
+            ),
+        )
+        for label, metadata, expected in cases:
+            with self.subTest(label=label), tempfile.TemporaryDirectory(
+                prefix="zkgpt-metadata-fail-", dir=str(ROOT / "runs_tmp")
+            ) as name:
+                root = pathlib.Path(name)
+                manifest_path, manifest = self._metadata_order_fixture(root, metadata)
+                cell = manifest_path.parent
+                with (
+                    patch("zkgpt_gat.result_validation.load_canonical_manifest", return_value=(cell, manifest)),
+                    patch("zkgpt_gat.result_validation.validate_required_artifacts"),
+                    patch("zkgpt_gat.result_validation.sha256_file", return_value="artifact-digest"),
+                ):
+                    with self.assertRaisesRegex(ResultValidationError, expected):
+                        validate_artifact(root, manifest_path)
+
     def test_fixture_is_explicit_and_never_production_accepted(self) -> None:
         with tempfile.TemporaryDirectory(prefix="zkgpt-result-fixture-", dir=str(ROOT / "runs_tmp")) as name:
             manifest = self._fixture_manifest(pathlib.Path(name))
@@ -147,6 +331,16 @@ class ResultValidationTests(unittest.TestCase):
                     self.assertFalse(pathlib.Path(entries[key]).is_absolute(), (path, key))
                 self.assertEqual(entries["static_tables_id"], entries["static_table_id"])
                 self.assertEqual(entries["edge_rule_id"], "per_node_self_loop+edge_gid_then_dst_stable")
+                config = load_app_config(path, ROOT)
+                self.assertEqual(config.layer_count, FORMAL_GAT_LAYER_COUNT)
+                self.assertEqual(
+                    [(item.head_count, item.head_dim) for item in config.hidden_profile],
+                    list(FORMAL_GAT_HIDDEN_PROFILE),
+                )
+                canonical_dataset = "ogbn-arxiv" if config.dataset == "ogbn_arxiv" else config.dataset
+                self.assertEqual(config.d_in_profile, list(FORMAL_GAT_D_IN_PROFILE[canonical_dataset]))
+                self.assertEqual(config.k_out, FORMAL_GAT_K_OUT)
+                self.assertEqual(config.num_classes, FORMAL_GAT_CLASS_COUNTS[canonical_dataset])
 
     def test_path_escape_is_rejected(self) -> None:
         with self.assertRaises(ResultValidationError):

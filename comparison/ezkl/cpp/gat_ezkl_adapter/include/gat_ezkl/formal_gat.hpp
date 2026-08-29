@@ -22,6 +22,7 @@ FormalProfileIds write_formal_gat_artifacts(
     const AppConfig& config,
     const NormalizedGraph& graph,
     const CheckpointBundle& checkpoint,
+    const std::string& shape_hash,
     std::size_t max_in_degree);
 
 }  // namespace gat_ezkl

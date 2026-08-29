@@ -154,7 +154,12 @@ std::string formal_hash_shape(const NormalizedGraph& graph, const CheckpointBund
                               graph.class_count,bundle.layer_count,bundle.K_out}) append_u64(&payload,value);
     append_u64(&payload,bundle.hidden_profile.size());
     for (const auto& layer: bundle.hidden_profile) { append_u64(&payload,layer.head_count); append_u64(&payload,layer.head_dim); }
-    return formal_sha256_bytes("fixed_circuit_shape", {{"shape",payload}});
+    // The per-layer input widths are part of the compiled circuit shape.  In
+    // particular, L3's second hidden layer consumes the 64-wide concatenated
+    // output of the first layer; omitting d_in_profile would let a differently
+    // wired circuit reuse the same shape identity.
+    const auto d_in = u64_vector(bundle.d_in_profile);
+    return formal_sha256_bytes("fixed_circuit_shape", {{"shape",payload},{"d_in_profile",d_in}});
 }
 std::string formal_hash_metadata(const std::string& metadata_json) {
     return formal_sha256_text("adapter_metadata", "canonical_json", metadata_json);

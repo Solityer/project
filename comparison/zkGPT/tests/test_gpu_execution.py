@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import unittest
 
 from zkgpt_gat.gpu_execution import (
@@ -8,11 +9,13 @@ from zkgpt_gat.gpu_execution import (
     gpu_execution_transcript_binding,
     validate_gpu_execution_evidence,
 )
+from zkgpt_gat.backend import _GPU_KERNEL
 from zkgpt_gat.util import digest_json
 
 
 def _invocation(label: str, component: str) -> dict[str, object]:
     fr = "0" * 63 + "1"
+    test_binary_sha256 = hashlib.sha256(b"zkGPT-test-native-bn254-fr-batch-v3").hexdigest()
     if component == "sumcheck_product":
         kind = "sumcheck_product2_fold"
         slots = {
@@ -61,8 +64,10 @@ def _invocation(label: str, component: str) -> dict[str, object]:
         "protocol": "zkgpt/native-bn254-fr-batch-v1",
         "message_schema": "zkGPT_gpu_proof_messages_v3",
         "wire_version": "ZKGPT_GPU_BATCH_V3",
-        "cuda_kernel": "zkgpt_native_bn254_fr_batch_v3",
-        "cuda_kernel_version": "zkgpt_native_bn254_fr_batch_v3",
+        "cuda_kernel": _GPU_KERNEL,
+        "cuda_kernel_version": _GPU_KERNEL,
+        "binary_sha256": test_binary_sha256,
+        "build_identity": digest_json({"kernel": _GPU_KERNEL, "binary_sha256": test_binary_sha256}),
         "cuda_event_timing": "cudaEventElapsedTime",
         "cuda_event_elapsed_ms": 1.0,
         "kernel_time_ms": 1.0,

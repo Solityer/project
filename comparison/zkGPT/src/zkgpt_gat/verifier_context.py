@@ -393,7 +393,25 @@ def _dimensions(manifest: Mapping[str, Any]) -> Tuple[List[Dict[str, int]], int,
     hidden.sort(key=lambda item: item["layer_index"])
     outputs = sorted((int(item["head_index"]) for item in manifest.get("output_head_specs", [])))
     classes, k_out, layers = int(manifest.get("C", 0)), int(manifest.get("K_out", 0)), int(manifest.get("L", len(hidden) + 1))
-    if not hidden or [item["layer_index"] for item in hidden] != list(range(len(hidden))) or outputs != list(range(len(outputs))) or classes <= 0 or k_out != len(outputs) or layers != len(hidden) + 1:
+    d_in_profile = manifest.get("d_in_profile")
+    if not isinstance(d_in_profile, (list, tuple)) or len(d_in_profile) != len(hidden):
+        raise ContextError("model manifest d_in_profile cardinality is inconsistent")
+    try:
+        canonical_d_in = [int(value) for value in d_in_profile]
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ContextError("model manifest d_in_profile is not integral") from exc
+    if (
+        not hidden
+        or [item["layer_index"] for item in hidden] != list(range(len(hidden)))
+        or outputs != list(range(len(outputs)))
+        or classes <= 0
+        or k_out <= 0
+        or k_out != len(outputs)
+        or layers != len(hidden) + 1
+        or canonical_d_in != [item["input_dim"] for item in hidden]
+        or any(value <= 0 for value in canonical_d_in)
+        or any(canonical_d_in[index] != hidden[index - 1]["head_count"] * hidden[index - 1]["head_dim"] for index in range(1, len(hidden)))
+    ):
         raise ContextError("model manifest architecture/cardinality is inconsistent")
     return hidden, classes, k_out, layers
 
@@ -422,6 +440,8 @@ def _canonical_model_architecture(manifest: Mapping[str, Any]) -> Dict[str, Any]
         raise ContextError("model manifest d_in_profile is not integral") from exc
     if any(value <= 0 for value in canonical_d_in):
         raise ContextError("model manifest d_in_profile contains a non-positive dimension")
+    if canonical_d_in != [int(item["input_dim"]) for item in hidden]:
+        raise ContextError("model manifest d_in_profile does not match hidden input dimensions")
     output_average_rule = str(manifest.get("output_average_rule", ""))
     if not output_average_rule:
         raise ContextError("model manifest has no output_average_rule")
@@ -446,6 +466,10 @@ def _canonical_model_architecture(manifest: Mapping[str, Any]) -> Dict[str, Any]
         "K_out": k_out,
         "L": layers,
         "d_in_profile": canonical_d_in,
+        "hidden_profile": [
+            {"head_count": int(item["head_count"]), "head_dim": int(item["head_dim"])}
+            for item in hidden
+        ],
         "output_average_rule": output_average_rule,
     }
 
@@ -1107,7 +1131,44 @@ def _gkr_families(
 
 
 def _dims(config: AppConfig, dataset: GraphDataset, graph: LocalGraph, manifest: Mapping[str, Any], n_in: int) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    hidden, classes, k_out, layers = _dimensions(manifest); dcat = [item["head_count"] * item["head_dim"] for item in hidden]; dims = {"G_batch": graph.graph_count, "N": graph.num_nodes, "E": int(graph.src.size), "N_total": graph.n_total, "node_ptr": graph.node_ptr.tolist(), "edge_ptr": graph.edge_ptr.tolist(), "L": layers, "d_in": [int(manifest["d_in_profile"][0])] + dcat, "d_h": [item["head_dim"] for item in hidden], "d_cat": dcat, "C": classes, "B": int(config.range_bits), "K_out": k_out, "hidden_profile": [{"head_count": item["head_count"], "head_dim": item["head_dim"]} for item in hidden]}; domain = {"n_FH": next_power_of_two(max(dataset.num_nodes * graph.num_features, graph.num_nodes * graph.num_features)), "n_edge": next_power_of_two(max(int(graph.src.size), graph.num_nodes, graph.num_nodes * max([item["head_dim"] for item in hidden] + [classes]))), "n_in": int(n_in), "n_d_h": next_power_of_two(max(item["head_dim"] for item in hidden)), "n_cat": next_power_of_two(max(dcat)), "n_C": next_power_of_two(classes), "n_N": next_power_of_two(graph.num_nodes)}; return dims, domain
+    hidden, classes, k_out, layers = _dimensions(manifest)
+    manifest_d_in = [int(value) for value in manifest["d_in_profile"]]
+    if config.d_in_profile != manifest_d_in:
+        raise ContextError("formal d_in_profile does not match canonical model dimensions")
+    dcat = [item["head_count"] * item["head_dim"] for item in hidden]
+    dims = {
+        "G_batch": graph.graph_count,
+        "N": graph.num_nodes,
+        "E": int(graph.src.size),
+        "N_total": graph.n_total,
+        "node_ptr": graph.node_ptr.tolist(),
+        "edge_ptr": graph.edge_ptr.tolist(),
+        "L": layers,
+        # ``d_in`` is the internal circuit chain: public input, each hidden
+        # concat, and the output-layer input.  The config/manifest
+        # ``d_in_profile`` remains the one-entry-per-hidden-layer wire.
+        "d_in": manifest_d_in + [dcat[-1]],
+        "d_in_profile": manifest_d_in,
+        "d_h": [item["head_dim"] for item in hidden],
+        "d_cat": dcat,
+        "C": classes,
+        "B": int(config.range_bits),
+        "K_out": k_out,
+        "hidden_profile": [
+            {"head_count": item["head_count"], "head_dim": item["head_dim"]}
+            for item in hidden
+        ],
+    }
+    domain = {
+        "n_FH": next_power_of_two(max(dataset.num_nodes * graph.num_features, graph.num_nodes * graph.num_features)),
+        "n_edge": next_power_of_two(max(int(graph.src.size), graph.num_nodes, graph.num_nodes * max([item["head_dim"] for item in hidden] + [classes]))),
+        "n_in": int(n_in),
+        "n_d_h": next_power_of_two(max(item["head_dim"] for item in hidden)),
+        "n_cat": next_power_of_two(max(dcat)),
+        "n_C": next_power_of_two(classes),
+        "n_N": next_power_of_two(graph.num_nodes),
+    }
+    return dims, domain
 
 
 @dataclass(frozen=True)

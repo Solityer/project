@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 import hashlib
+import io
 import os
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
@@ -28,12 +30,17 @@ from resource_policy import (  # noqa: E402
     validate_cell_inventory,
 )
 from collect_results import selected_cells  # noqa: E402
-from validate_final_results import validate_matrix_records  # noqa: E402
+from validate_final_results import (  # noqa: E402
+    canonical_shape_hash,
+    validate_matrix_records,
+    validate_shape_artifacts,
+)
 from formal_source_manifest import (  # noqa: E402
     FORMAL_SOURCE_ROOTS,
     GENERATED_SOURCE_DIR_NAMES,
     GENERATED_SOURCE_SUFFIXES,
     SOURCE_FILTER_CONTRACT,
+    checked_path,
     formal_source_files,
     formal_source_id,
     formal_vendor_files,
@@ -44,6 +51,7 @@ from prepare_resources import (  # noqa: E402
     main as prepare_resources_main,
 )
 from build_identity_contract import _cuda_backend_provenance  # noqa: E402
+from materialize_binary import materialize_binary  # noqa: E402
 from run_gat_ezkl_baseline import (  # noqa: E402
     PRIVATE_DIRECTORY_MODE,
     PRIVATE_FILE_MODE,
@@ -52,6 +60,7 @@ from run_gat_ezkl_baseline import (  # noqa: E402
     _redact_private_stage_paths,
     _remove_private_stage_artifacts,
     build_independent_verify_command,
+    validate_canonical_shape_spec,
 )
 
 
@@ -103,6 +112,30 @@ def matrix_fixture() -> list[dict[str, object]]:
                 }
             records.append(record)
     return records
+
+
+def canonical_shape_fixture() -> dict[str, object]:
+    spec: dict[str, object] = {
+        "route_id": "ezkl_gat_native_compressed_csr_attention_full",
+        "dataset": "cora",
+        "node_count": 2,
+        "edge_count": 2,
+        "graph_count": 1,
+        "feature_dim": 3,
+        "class_count": 2,
+        "L": 3,
+        "K_out": 2,
+        "hidden_profile": [
+            {"head_count": 8, "head_dim": 8},
+            {"head_count": 8, "head_dim": 8},
+        ],
+        "d_in_profile": [3, 64],
+        "model_arch_id": "gat_family_L3_hid8x8-8x8_kout2_c2",
+    }
+    shape_hash = canonical_shape_hash(spec)
+    assert shape_hash is not None
+    spec["shape_hash"] = shape_hash
+    return spec
 
 
 def make_vendor_fixture(root: Path, entries: tuple[str, ...] = ("a.txt", "nested/b.txt")) -> None:
@@ -165,11 +198,11 @@ def make_source_fixture(root: Path) -> None:
         path.write_text(payload, encoding="utf-8")
 
 
-def invoke_main(main, argv: list[str]) -> None:
+def invoke_main(main, argv: list[str]) -> object:
     previous = sys.argv
     sys.argv = ["fixture"] + argv
     try:
-        main()
+        return main()
     finally:
         sys.argv = previous
 
@@ -206,6 +239,112 @@ class ResultContractTests(unittest.TestCase):
             unknown.write_text("not production source", encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "unknown formal production source entry"):
                 formal_source_files(root)
+
+    def test_canonical_l3_shape_is_accepted(self) -> None:
+        spec = canonical_shape_fixture()
+        validate_canonical_shape_spec(spec, "cora_full")
+
+    def test_all_official_configs_bind_the_canonical_l3_model(self) -> None:
+        baseline = Path(__file__).resolve().parents[1]
+        expected = {
+            "cora_full.cfg": ("1433", "c7", "cora_planetoid_seed11"),
+            "citeseer_full.cfg": ("3703", "c6", "citeseer_planetoid_seed11"),
+            "pubmed_full.cfg": ("500", "c3", "pubmed_planetoid_seed11"),
+            "ppi_full.cfg": ("50", "c121", "ppi_full_seed11"),
+            "ogbn_arxiv_full.cfg": ("128", "c40", "ogbn_arxiv_seed11"),
+        }
+        for filename, (feature_dim, class_suffix, model_param_id) in expected.items():
+            text = (baseline / "configs" / filename).read_text(encoding="utf-8")
+            self.assertIn("L = 3", text)
+            self.assertIn("hidden_profile = [8x8,8x8]", text)
+            self.assertIn(f"d_in_profile = [{feature_dim},64]", text)
+            self.assertIn("K_out = 2", text)
+            self.assertIn(
+                f"model_arch_id = gat_family_L3_hid8x8-8x8_kout2_{class_suffix}",
+                text,
+            )
+            self.assertIn(f"model_param_id = {model_param_id}", text)
+
+    def test_legacy_l2_k1_and_single_hidden_shapes_are_rejected(self) -> None:
+        for field, value in (
+            ("L", 2),
+            ("K_out", 1),
+            ("hidden_profile", [{"head_count": 8, "head_dim": 8}]),
+        ):
+            spec = canonical_shape_fixture()
+            spec[field] = value
+            with self.subTest(field=field), self.assertRaisesRegex(
+                RuntimeError, "canonical L3"
+            ):
+                validate_canonical_shape_spec(spec, "cora_full")
+
+    def test_shape_hash_changes_when_second_layer_input_changes(self) -> None:
+        spec = canonical_shape_fixture()
+        changed = dict(spec)
+        changed["d_in_profile"] = [3, 65]
+        self.assertNotEqual(canonical_shape_hash(spec), canonical_shape_hash(changed))
+
+    def test_build_identity_rejects_hardlink_input_and_materialized_output_is_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            binary = root / "target" / "release" / "ezkl_formal"
+            counterpart = root / "target" / "release" / "deps" / "ezkl_formal"
+            counterpart.parent.mkdir(parents=True)
+            counterpart.write_bytes(b"formal binary fixture")
+            counterpart.chmod(0o755)
+            binary.hardlink_to(counterpart)
+            self.assertEqual(binary.stat().st_nlink, 2)
+            with self.assertRaisesRegex(ValueError, "hard-linked"):
+                checked_path(root, binary, "formal binary")
+
+            materialize_binary(root, binary)
+            self.assertEqual(binary.read_bytes(), counterpart.read_bytes())
+            self.assertEqual(binary.stat().st_nlink, 1)
+            self.assertEqual(counterpart.stat().st_nlink, 1)
+            checked = checked_path(root, binary, "formal binary")
+            self.assertEqual(checked, binary)
+
+    def test_old_compiled_circuit_or_manifest_shape_is_rejected(self) -> None:
+        spec = canonical_shape_fixture()
+        shape_hash = spec["shape_hash"]
+        compiled = {
+            "layer_count": 3,
+            "k_out": 2,
+            "hidden_profile": spec["hidden_profile"],
+            "d_in_profile": spec["d_in_profile"],
+            "feature_dim": 3,
+            "class_count": 2,
+            "model_arch_id": spec["model_arch_id"],
+            "shape_hash": shape_hash,
+        }
+        settings = {"shape_hash": shape_hash}
+        circuit = {"shape_hash": shape_hash}
+        registration = {
+            "shape_hash": shape_hash,
+            "model_arch_id": spec["model_arch_id"],
+        }
+        statement = {
+            "shape_hash": shape_hash,
+            "model_arch_id": spec["model_arch_id"],
+        }
+        verify = {"shape_hash": shape_hash}
+        manifest = {"shape_hash": shape_hash}
+        common = (spec, compiled, settings, circuit, registration, statement, verify, manifest)
+        self.assertEqual(validate_shape_artifacts(Path("fixture"), *common), [])
+        bad_compiled = dict(compiled)
+        bad_compiled["shape_hash"] = "sha256:" + "0" * 64
+        errors = validate_shape_artifacts(
+            Path("fixture"), spec, bad_compiled, settings, circuit,
+            registration, statement, verify, manifest
+        )
+        self.assertTrue(any("compiled circuit shape identity mismatch" in error for error in errors))
+        bad_manifest = dict(manifest)
+        bad_manifest["shape_hash"] = "sha256:" + "1" * 64
+        errors = validate_shape_artifacts(
+            Path("fixture"), spec, compiled, settings, circuit,
+            registration, statement, verify, bad_manifest
+        )
+        self.assertTrue(any("run manifest shape identity mismatch" in error for error in errors))
 
     def test_preflight_rejects_parent_and_destination_alias_without_external_write(self) -> None:
         baseline = Path(__file__).resolve().parents[1]
@@ -258,6 +397,20 @@ class ResultContractTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 _validate_resource_layout_paths(fixture2, ("cora_full",))
             self.assertEqual(sentinel.read_text(encoding="utf-8"), "unchanged")
+
+    def test_prepare_resources_check_reports_missing_staged_resources_as_json(self) -> None:
+        output = io.StringIO()
+        with redirect_stdout(output):
+            status = invoke_main(
+                prepare_resources_main,
+                ["--check", "--datasets", "cora_full"],
+            )
+        report = json.loads(output.getvalue())
+        self.assertEqual(status, 2)
+        self.assertEqual(report["schema"], "ezkl_formal_resource_check_v1")
+        self.assertEqual(report["status"], "blocked")
+        self.assertTrue(report["require_staged"])
+        self.assertTrue(report["errors"])
 
     def test_safe_mkdir_rejects_alias_before_creating_children(self) -> None:
         with tempfile.TemporaryDirectory() as temporary, tempfile.TemporaryDirectory() as outside:

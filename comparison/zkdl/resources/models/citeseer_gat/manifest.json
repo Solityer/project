@@ -1,0 +1,1093 @@
+{
+  "C": 6,
+  "K_out": 2,
+  "L": 3,
+  "checkpoint_prefix": "resources/models/citeseer_gat/best_model.pt",
+  "d_in_profile": [
+    3703,
+    64
+  ],
+  "degree_bound_id": "auto",
+  "family_schema_version": "multi_layer_multi_head_v2",
+  "hidden_head_specs": [
+    {
+      "attn_dst_bias": "hidden/layer0/head0/attn_dst/bias",
+      "attn_dst_kernel": "hidden/layer0/head0/attn_dst/kernel",
+      "attn_src_bias": "hidden/layer0/head0/attn_src/bias",
+      "attn_src_kernel": "hidden/layer0/head0/attn_src/kernel",
+      "layer_index": 0,
+      "local_head_index": 0,
+      "output_bias": "hidden/layer0/head0/output_bias",
+      "seq_kernel": "hidden/layer0/head0/seq/kernel"
+    },
+    {
+      "attn_dst_bias": "hidden/layer0/head1/attn_dst/bias",
+      "attn_dst_kernel": "hidden/layer0/head1/attn_dst/kernel",
+      "attn_src_bias": "hidden/layer0/head1/attn_src/bias",
+      "attn_src_kernel": "hidden/layer0/head1/attn_src/kernel",
+      "layer_index": 0,
+      "local_head_index": 1,
+      "output_bias": "hidden/layer0/head1/output_bias",
+      "seq_kernel": "hidden/layer0/head1/seq/kernel"
+    },
+    {
+      "attn_dst_bias": "hidden/layer0/head2/attn_dst/bias",
+      "attn_dst_kernel": "hidden/layer0/head2/attn_dst/kernel",
+      "attn_src_bias": "hidden/layer0/head2/attn_src/bias",
+      "attn_src_kernel": "hidden/layer0/head2/attn_src/kernel",
+      "layer_index": 0,
+      "local_head_index": 2,
+      "output_bias": "hidden/layer0/head2/output_bias",
+      "seq_kernel": "hidden/layer0/head2/seq/kernel"
+    },
+    {
+      "attn_dst_bias": "hidden/layer0/head3/attn_dst/bias",
+      "attn_dst_kernel": "hidden/layer0/head3/attn_dst/kernel",
+      "attn_src_bias": "hidden/layer0/head3/attn_src/bias",
+      "attn_src_kernel": "hidden/layer0/head3/attn_src/kernel",
+      "layer_index": 0,
+      "local_head_index": 3,
+      "output_bias": "hidden/layer0/head3/output_bias",
+      "seq_kernel": "hidden/layer0/head3/seq/kernel"
+    },
+    {
+      "attn_dst_bias": "hidden/layer0/head4/attn_dst/bias",
+      "attn_dst_kernel": "hidden/layer0/head4/attn_dst/kernel",
+      "attn_src_bias": "hidden/layer0/head4/attn_src/bias",
+      "attn_src_kernel": "hidden/layer0/head4/attn_src/kernel",
+      "layer_index": 0,
+      "local_head_index": 4,
+      "output_bias": "hidden/layer0/head4/output_bias",
+      "seq_kernel": "hidden/layer0/head4/seq/kernel"
+    },
+    {
+      "attn_dst_bias": "hidden/layer0/head5/attn_dst/bias",
+      "attn_dst_kernel": "hidden/layer0/head5/attn_dst/kernel",
+      "attn_src_bias": "hidden/layer0/head5/attn_src/bias",
+      "attn_src_kernel": "hidden/layer0/head5/attn_src/kernel",
+      "layer_index": 0,
+      "local_head_index": 5,
+      "output_bias": "hidden/layer0/head5/output_bias",
+      "seq_kernel": "hidden/layer0/head5/seq/kernel"
+    },
+    {
+      "attn_dst_bias": "hidden/layer0/head6/attn_dst/bias",
+      "attn_dst_kernel": "hidden/layer0/head6/attn_dst/kernel",
+      "attn_src_bias": "hidden/layer0/head6/attn_src/bias",
+      "attn_src_kernel": "hidden/layer0/head6/attn_src/kernel",
+      "layer_index": 0,
+      "local_head_index": 6,
+      "output_bias": "hidden/layer0/head6/output_bias",
+      "seq_kernel": "hidden/layer0/head6/seq/kernel"
+    },
+    {
+      "attn_dst_bias": "hidden/layer0/head7/attn_dst/bias",
+      "attn_dst_kernel": "hidden/layer0/head7/attn_dst/kernel",
+      "attn_src_bias": "hidden/layer0/head7/attn_src/bias",
+      "attn_src_kernel": "hidden/layer0/head7/attn_src/kernel",
+      "layer_index": 0,
+      "local_head_index": 7,
+      "output_bias": "hidden/layer0/head7/output_bias",
+      "seq_kernel": "hidden/layer0/head7/seq/kernel"
+    },
+    {
+      "attn_dst_bias": "hidden/layer1/head0/attn_dst/bias",
+      "attn_dst_kernel": "hidden/layer1/head0/attn_dst/kernel",
+      "attn_src_bias": "hidden/layer1/head0/attn_src/bias",
+      "attn_src_kernel": "hidden/layer1/head0/attn_src/kernel",
+      "layer_index": 1,
+      "local_head_index": 0,
+      "output_bias": "hidden/layer1/head0/output_bias",
+      "seq_kernel": "hidden/layer1/head0/seq/kernel"
+    },
+    {
+      "attn_dst_bias": "hidden/layer1/head1/attn_dst/bias",
+      "attn_dst_kernel": "hidden/layer1/head1/attn_dst/kernel",
+      "attn_src_bias": "hidden/layer1/head1/attn_src/bias",
+      "attn_src_kernel": "hidden/layer1/head1/attn_src/kernel",
+      "layer_index": 1,
+      "local_head_index": 1,
+      "output_bias": "hidden/layer1/head1/output_bias",
+      "seq_kernel": "hidden/layer1/head1/seq/kernel"
+    },
+    {
+      "attn_dst_bias": "hidden/layer1/head2/attn_dst/bias",
+      "attn_dst_kernel": "hidden/layer1/head2/attn_dst/kernel",
+      "attn_src_bias": "hidden/layer1/head2/attn_src/bias",
+      "attn_src_kernel": "hidden/layer1/head2/attn_src/kernel",
+      "layer_index": 1,
+      "local_head_index": 2,
+      "output_bias": "hidden/layer1/head2/output_bias",
+      "seq_kernel": "hidden/layer1/head2/seq/kernel"
+    },
+    {
+      "attn_dst_bias": "hidden/layer1/head3/attn_dst/bias",
+      "attn_dst_kernel": "hidden/layer1/head3/attn_dst/kernel",
+      "attn_src_bias": "hidden/layer1/head3/attn_src/bias",
+      "attn_src_kernel": "hidden/layer1/head3/attn_src/kernel",
+      "layer_index": 1,
+      "local_head_index": 3,
+      "output_bias": "hidden/layer1/head3/output_bias",
+      "seq_kernel": "hidden/layer1/head3/seq/kernel"
+    },
+    {
+      "attn_dst_bias": "hidden/layer1/head4/attn_dst/bias",
+      "attn_dst_kernel": "hidden/layer1/head4/attn_dst/kernel",
+      "attn_src_bias": "hidden/layer1/head4/attn_src/bias",
+      "attn_src_kernel": "hidden/layer1/head4/attn_src/kernel",
+      "layer_index": 1,
+      "local_head_index": 4,
+      "output_bias": "hidden/layer1/head4/output_bias",
+      "seq_kernel": "hidden/layer1/head4/seq/kernel"
+    },
+    {
+      "attn_dst_bias": "hidden/layer1/head5/attn_dst/bias",
+      "attn_dst_kernel": "hidden/layer1/head5/attn_dst/kernel",
+      "attn_src_bias": "hidden/layer1/head5/attn_src/bias",
+      "attn_src_kernel": "hidden/layer1/head5/attn_src/kernel",
+      "layer_index": 1,
+      "local_head_index": 5,
+      "output_bias": "hidden/layer1/head5/output_bias",
+      "seq_kernel": "hidden/layer1/head5/seq/kernel"
+    },
+    {
+      "attn_dst_bias": "hidden/layer1/head6/attn_dst/bias",
+      "attn_dst_kernel": "hidden/layer1/head6/attn_dst/kernel",
+      "attn_src_bias": "hidden/layer1/head6/attn_src/bias",
+      "attn_src_kernel": "hidden/layer1/head6/attn_src/kernel",
+      "layer_index": 1,
+      "local_head_index": 6,
+      "output_bias": "hidden/layer1/head6/output_bias",
+      "seq_kernel": "hidden/layer1/head6/seq/kernel"
+    },
+    {
+      "attn_dst_bias": "hidden/layer1/head7/attn_dst/bias",
+      "attn_dst_kernel": "hidden/layer1/head7/attn_dst/kernel",
+      "attn_src_bias": "hidden/layer1/head7/attn_src/bias",
+      "attn_src_kernel": "hidden/layer1/head7/attn_src/kernel",
+      "layer_index": 1,
+      "local_head_index": 7,
+      "output_bias": "hidden/layer1/head7/output_bias",
+      "seq_kernel": "hidden/layer1/head7/seq/kernel"
+    }
+  ],
+  "hidden_layers": [
+    {
+      "head_count": 8,
+      "head_dim": 8,
+      "input_dim": 3703,
+      "layer_index": 0
+    },
+    {
+      "head_count": 8,
+      "head_dim": 8,
+      "input_dim": 64,
+      "layer_index": 1
+    }
+  ],
+  "hidden_profile": [
+    {
+      "head_count": 8,
+      "head_dim": 8
+    },
+    {
+      "head_count": 8,
+      "head_dim": 8
+    }
+  ],
+  "model_arch_id": "gat_family_L3_hid8x8-8x8_kout2_c6",
+  "model_param_id": "citeseer_planetoid_seed11",
+  "output_average_rule": "per_head_bias_then_arithmetic_mean",
+  "output_head_specs": [
+    {
+      "attn_dst_bias": "output/head0/attn_dst/bias",
+      "attn_dst_kernel": "output/head0/attn_dst/kernel",
+      "attn_src_bias": "output/head0/attn_src/bias",
+      "attn_src_kernel": "output/head0/attn_src/kernel",
+      "head_index": 0,
+      "output_bias": "output/head0/output_bias",
+      "seq_kernel": "output/head0/seq/kernel"
+    },
+    {
+      "attn_dst_bias": "output/head1/attn_dst/bias",
+      "attn_dst_kernel": "output/head1/attn_dst/kernel",
+      "attn_src_bias": "output/head1/attn_src/bias",
+      "attn_src_kernel": "output/head1/attn_src/kernel",
+      "head_index": 1,
+      "output_bias": "output/head1/output_bias",
+      "seq_kernel": "output/head1/seq/kernel"
+    }
+  ],
+  "quant_cfg_id": "fp32_torch_checkpoint",
+  "report_unit": "node",
+  "selection_metric": "validation_loss",
+  "static_table_id": "tables:lrelu+elu+exp+range",
+  "task_type": "transductive_node_classification",
+  "tensor_count": 108,
+  "tensor_index": {
+    "hidden/layer0/head0/attn_dst/bias": {
+      "archive_key": "hidden__layer0__head0__attn_dst__bias",
+      "dtype": "float32",
+      "shape": [
+        1
+      ]
+    },
+    "hidden/layer0/head0/attn_dst/kernel": {
+      "archive_key": "hidden__layer0__head0__attn_dst__kernel",
+      "dtype": "float32",
+      "shape": [
+        1,
+        8,
+        1
+      ]
+    },
+    "hidden/layer0/head0/attn_src/bias": {
+      "archive_key": "hidden__layer0__head0__attn_src__bias",
+      "dtype": "float32",
+      "shape": [
+        1
+      ]
+    },
+    "hidden/layer0/head0/attn_src/kernel": {
+      "archive_key": "hidden__layer0__head0__attn_src__kernel",
+      "dtype": "float32",
+      "shape": [
+        1,
+        8,
+        1
+      ]
+    },
+    "hidden/layer0/head0/output_bias": {
+      "archive_key": "hidden__layer0__head0__output_bias",
+      "dtype": "float32",
+      "shape": [
+        8
+      ]
+    },
+    "hidden/layer0/head0/seq/kernel": {
+      "archive_key": "hidden__layer0__head0__seq__kernel",
+      "dtype": "float32",
+      "shape": [
+        1,
+        3703,
+        8
+      ]
+    },
+    "hidden/layer0/head1/attn_dst/bias": {
+      "archive_key": "hidden__layer0__head1__attn_dst__bias",
+      "dtype": "float32",
+      "shape": [
+        1
+      ]
+    },
+    "hidden/layer0/head1/attn_dst/kernel": {
+      "archive_key": "hidden__layer0__head1__attn_dst__kernel",
+      "dtype": "float32",
+      "shape": [
+        1,
+        8,
+        1
+      ]
+    },
+    "hidden/layer0/head1/attn_src/bias": {
+      "archive_key": "hidden__layer0__head1__attn_src__bias",
+      "dtype": "float32",
+      "shape": [
+        1
+      ]
+    },
+    "hidden/layer0/head1/attn_src/kernel": {
+      "archive_key": "hidden__layer0__head1__attn_src__kernel",
+      "dtype": "float32",
+      "shape": [
+        1,
+        8,
+        1
+      ]
+    },
+    "hidden/layer0/head1/output_bias": {
+      "archive_key": "hidden__layer0__head1__output_bias",
+      "dtype": "float32",
+      "shape": [
+        8
+      ]
+    },
+    "hidden/layer0/head1/seq/kernel": {
+      "archive_key": "hidden__layer0__head1__seq__kernel",
+      "dtype": "float32",
+      "shape": [
+        1,
+        3703,
+        8
+      ]
+    },
+    "hidden/layer0/head2/attn_dst/bias": {
+      "archive_key": "hidden__layer0__head2__attn_dst__bias",
+      "dtype": "float32",
+      "shape": [
+        1
+      ]
+    },
+    "hidden/layer0/head2/attn_dst/kernel": {
+      "archive_key": "hidden__layer0__head2__attn_dst__kernel",
+      "dtype": "float32",
+      "shape": [
+        1,
+        8,
+        1
+      ]
+    },
+    "hidden/layer0/head2/attn_src/bias": {
+      "archive_key": "hidden__layer0__head2__attn_src__bias",
+      "dtype": "float32",
+      "shape": [
+        1
+      ]
+    },
+    "hidden/layer0/head2/attn_src/kernel": {
+      "archive_key": "hidden__layer0__head2__attn_src__kernel",
+      "dtype": "float32",
+      "shape": [
+        1,
+        8,
+        1
+      ]
+    },
+    "hidden/layer0/head2/output_bias": {
+      "archive_key": "hidden__layer0__head2__output_bias",
+      "dtype": "float32",
+      "shape": [
+        8
+      ]
+    },
+    "hidden/layer0/head2/seq/kernel": {
+      "archive_key": "hidden__layer0__head2__seq__kernel",
+      "dtype": "float32",
+      "shape": [
+        1,
+        3703,
+        8
+      ]
+    },
+    "hidden/layer0/head3/attn_dst/bias": {
+      "archive_key": "hidden__layer0__head3__attn_dst__bias",
+      "dtype": "float32",
+      "shape": [
+        1
+      ]
+    },
+    "hidden/layer0/head3/attn_dst/kernel": {
+      "archive_key": "hidden__layer0__head3__attn_dst__kernel",
+      "dtype": "float32",
+      "shape": [
+        1,
+        8,
+        1
+      ]
+    },
+    "hidden/layer0/head3/attn_src/bias": {
+      "archive_key": "hidden__layer0__head3__attn_src__bias",
+      "dtype": "float32",
+      "shape": [
+        1
+      ]
+    },
+    "hidden/layer0/head3/attn_src/kernel": {
+      "archive_key": "hidden__layer0__head3__attn_src__kernel",
+      "dtype": "float32",
+      "shape": [
+        1,
+        8,
+        1
+      ]
+    },
+    "hidden/layer0/head3/output_bias": {
+      "archive_key": "hidden__layer0__head3__output_bias",
+      "dtype": "float32",
+      "shape": [
+        8
+      ]
+    },
+    "hidden/layer0/head3/seq/kernel": {
+      "archive_key": "hidden__layer0__head3__seq__kernel",
+      "dtype": "float32",
+      "shape": [
+        1,
+        3703,
+        8
+      ]
+    },
+    "hidden/layer0/head4/attn_dst/bias": {
+      "archive_key": "hidden__layer0__head4__attn_dst__bias",
+      "dtype": "float32",
+      "shape": [
+        1
+      ]
+    },
+    "hidden/layer0/head4/attn_dst/kernel": {
+      "archive_key": "hidden__layer0__head4__attn_dst__kernel",
+      "dtype": "float32",
+      "shape": [
+        1,
+        8,
+        1
+      ]
+    },
+    "hidden/layer0/head4/attn_src/bias": {
+      "archive_key": "hidden__layer0__head4__attn_src__bias",
+      "dtype": "float32",
+      "shape": [
+        1
+      ]
+    },
+    "hidden/layer0/head4/attn_src/kernel": {
+      "archive_key": "hidden__layer0__head4__attn_src__kernel",
+      "dtype": "float32",
+      "shape": [
+        1,
+        8,
+        1
+      ]
+    },
+    "hidden/layer0/head4/output_bias": {
+      "archive_key": "hidden__layer0__head4__output_bias",
+      "dtype": "float32",
+      "shape": [
+        8
+      ]
+    },
+    "hidden/layer0/head4/seq/kernel": {
+      "archive_key": "hidden__layer0__head4__seq__kernel",
+      "dtype": "float32",
+      "shape": [
+        1,
+        3703,
+        8
+      ]
+    },
+    "hidden/layer0/head5/attn_dst/bias": {
+      "archive_key": "hidden__layer0__head5__attn_dst__bias",
+      "dtype": "float32",
+      "shape": [
+        1
+      ]
+    },
+    "hidden/layer0/head5/attn_dst/kernel": {
+      "archive_key": "hidden__layer0__head5__attn_dst__kernel",
+      "dtype": "float32",
+      "shape": [
+        1,
+        8,
+        1
+      ]
+    },
+    "hidden/layer0/head5/attn_src/bias": {
+      "archive_key": "hidden__layer0__head5__attn_src__bias",
+      "dtype": "float32",
+      "shape": [
+        1
+      ]
+    },
+    "hidden/layer0/head5/attn_src/kernel": {
+      "archive_key": "hidden__layer0__head5__attn_src__kernel",
+      "dtype": "float32",
+      "shape": [
+        1,
+        8,
+        1
+      ]
+    },
+    "hidden/layer0/head5/output_bias": {
+      "archive_key": "hidden__layer0__head5__output_bias",
+      "dtype": "float32",
+      "shape": [
+        8
+      ]
+    },
+    "hidden/layer0/head5/seq/kernel": {
+      "archive_key": "hidden__layer0__head5__seq__kernel",
+      "dtype": "float32",
+      "shape": [
+        1,
+        3703,
+        8
+      ]
+    },
+    "hidden/layer0/head6/attn_dst/bias": {
+      "archive_key": "hidden__layer0__head6__attn_dst__bias",
+      "dtype": "float32",
+      "shape": [
+        1
+      ]
+    },
+    "hidden/layer0/head6/attn_dst/kernel": {
+      "archive_key": "hidden__layer0__head6__attn_dst__kernel",
+      "dtype": "float32",
+      "shape": [
+        1,
+        8,
+        1
+      ]
+    },
+    "hidden/layer0/head6/attn_src/bias": {
+      "archive_key": "hidden__layer0__head6__attn_src__bias",
+      "dtype": "float32",
+      "shape": [
+        1
+      ]
+    },
+    "hidden/layer0/head6/attn_src/kernel": {
+      "archive_key": "hidden__layer0__head6__attn_src__kernel",
+      "dtype": "float32",
+      "shape": [
+        1,
+        8,
+        1
+      ]
+    },
+    "hidden/layer0/head6/output_bias": {
+      "archive_key": "hidden__layer0__head6__output_bias",
+      "dtype": "float32",
+      "shape": [
+        8
+      ]
+    },
+    "hidden/layer0/head6/seq/kernel": {
+      "archive_key": "hidden__layer0__head6__seq__kernel",
+      "dtype": "float32",
+      "shape": [
+        1,
+        3703,
+        8
+      ]
+    },
+    "hidden/layer0/head7/attn_dst/bias": {
+      "archive_key": "hidden__layer0__head7__attn_dst__bias",
+      "dtype": "float32",
+      "shape": [
+        1
+      ]
+    },
+    "hidden/layer0/head7/attn_dst/kernel": {
+      "archive_key": "hidden__layer0__head7__attn_dst__kernel",
+      "dtype": "float32",
+      "shape": [
+        1,
+        8,
+        1
+      ]
+    },
+    "hidden/layer0/head7/attn_src/bias": {
+      "archive_key": "hidden__layer0__head7__attn_src__bias",
+      "dtype": "float32",
+      "shape": [
+        1
+      ]
+    },
+    "hidden/layer0/head7/attn_src/kernel": {
+      "archive_key": "hidden__layer0__head7__attn_src__kernel",
+      "dtype": "float32",
+      "shape": [
+        1,
+        8,
+        1
+      ]
+    },
+    "hidden/layer0/head7/output_bias": {
+      "archive_key": "hidden__layer0__head7__output_bias",
+      "dtype": "float32",
+      "shape": [
+        8
+      ]
+    },
+    "hidden/layer0/head7/seq/kernel": {
+      "archive_key": "hidden__layer0__head7__seq__kernel",
+      "dtype": "float32",
+      "shape": [
+        1,
+        3703,
+        8
+      ]
+    },
+    "hidden/layer1/head0/attn_dst/bias": {
+      "archive_key": "hidden__layer1__head0__attn_dst__bias",
+      "dtype": "float32",
+      "shape": [
+        1
+      ]
+    },
+    "hidden/layer1/head0/attn_dst/kernel": {
+      "archive_key": "hidden__layer1__head0__attn_dst__kernel",
+      "dtype": "float32",
+      "shape": [
+        1,
+        8,
+        1
+      ]
+    },
+    "hidden/layer1/head0/attn_src/bias": {
+      "archive_key": "hidden__layer1__head0__attn_src__bias",
+      "dtype": "float32",
+      "shape": [
+        1
+      ]
+    },
+    "hidden/layer1/head0/attn_src/kernel": {
+      "archive_key": "hidden__layer1__head0__attn_src__kernel",
+      "dtype": "float32",
+      "shape": [
+        1,
+        8,
+        1
+      ]
+    },
+    "hidden/layer1/head0/output_bias": {
+      "archive_key": "hidden__layer1__head0__output_bias",
+      "dtype": "float32",
+      "shape": [
+        8
+      ]
+    },
+    "hidden/layer1/head0/seq/kernel": {
+      "archive_key": "hidden__layer1__head0__seq__kernel",
+      "dtype": "float32",
+      "shape": [
+        1,
+        64,
+        8
+      ]
+    },
+    "hidden/layer1/head1/attn_dst/bias": {
+      "archive_key": "hidden__layer1__head1__attn_dst__bias",
+      "dtype": "float32",
+      "shape": [
+        1
+      ]
+    },
+    "hidden/layer1/head1/attn_dst/kernel": {
+      "archive_key": "hidden__layer1__head1__attn_dst__kernel",
+      "dtype": "float32",
+      "shape": [
+        1,
+        8,
+        1
+      ]
+    },
+    "hidden/layer1/head1/attn_src/bias": {
+      "archive_key": "hidden__layer1__head1__attn_src__bias",
+      "dtype": "float32",
+      "shape": [
+        1
+      ]
+    },
+    "hidden/layer1/head1/attn_src/kernel": {
+      "archive_key": "hidden__layer1__head1__attn_src__kernel",
+      "dtype": "float32",
+      "shape": [
+        1,
+        8,
+        1
+      ]
+    },
+    "hidden/layer1/head1/output_bias": {
+      "archive_key": "hidden__layer1__head1__output_bias",
+      "dtype": "float32",
+      "shape": [
+        8
+      ]
+    },
+    "hidden/layer1/head1/seq/kernel": {
+      "archive_key": "hidden__layer1__head1__seq__kernel",
+      "dtype": "float32",
+      "shape": [
+        1,
+        64,
+        8
+      ]
+    },
+    "hidden/layer1/head2/attn_dst/bias": {
+      "archive_key": "hidden__layer1__head2__attn_dst__bias",
+      "dtype": "float32",
+      "shape": [
+        1
+      ]
+    },
+    "hidden/layer1/head2/attn_dst/kernel": {
+      "archive_key": "hidden__layer1__head2__attn_dst__kernel",
+      "dtype": "float32",
+      "shape": [
+        1,
+        8,
+        1
+      ]
+    },
+    "hidden/layer1/head2/attn_src/bias": {
+      "archive_key": "hidden__layer1__head2__attn_src__bias",
+      "dtype": "float32",
+      "shape": [
+        1
+      ]
+    },
+    "hidden/layer1/head2/attn_src/kernel": {
+      "archive_key": "hidden__layer1__head2__attn_src__kernel",
+      "dtype": "float32",
+      "shape": [
+        1,
+        8,
+        1
+      ]
+    },
+    "hidden/layer1/head2/output_bias": {
+      "archive_key": "hidden__layer1__head2__output_bias",
+      "dtype": "float32",
+      "shape": [
+        8
+      ]
+    },
+    "hidden/layer1/head2/seq/kernel": {
+      "archive_key": "hidden__layer1__head2__seq__kernel",
+      "dtype": "float32",
+      "shape": [
+        1,
+        64,
+        8
+      ]
+    },
+    "hidden/layer1/head3/attn_dst/bias": {
+      "archive_key": "hidden__layer1__head3__attn_dst__bias",
+      "dtype": "float32",
+      "shape": [
+        1
+      ]
+    },
+    "hidden/layer1/head3/attn_dst/kernel": {
+      "archive_key": "hidden__layer1__head3__attn_dst__kernel",
+      "dtype": "float32",
+      "shape": [
+        1,
+        8,
+        1
+      ]
+    },
+    "hidden/layer1/head3/attn_src/bias": {
+      "archive_key": "hidden__layer1__head3__attn_src__bias",
+      "dtype": "float32",
+      "shape": [
+        1
+      ]
+    },
+    "hidden/layer1/head3/attn_src/kernel": {
+      "archive_key": "hidden__layer1__head3__attn_src__kernel",
+      "dtype": "float32",
+      "shape": [
+        1,
+        8,
+        1
+      ]
+    },
+    "hidden/layer1/head3/output_bias": {
+      "archive_key": "hidden__layer1__head3__output_bias",
+      "dtype": "float32",
+      "shape": [
+        8
+      ]
+    },
+    "hidden/layer1/head3/seq/kernel": {
+      "archive_key": "hidden__layer1__head3__seq__kernel",
+      "dtype": "float32",
+      "shape": [
+        1,
+        64,
+        8
+      ]
+    },
+    "hidden/layer1/head4/attn_dst/bias": {
+      "archive_key": "hidden__layer1__head4__attn_dst__bias",
+      "dtype": "float32",
+      "shape": [
+        1
+      ]
+    },
+    "hidden/layer1/head4/attn_dst/kernel": {
+      "archive_key": "hidden__layer1__head4__attn_dst__kernel",
+      "dtype": "float32",
+      "shape": [
+        1,
+        8,
+        1
+      ]
+    },
+    "hidden/layer1/head4/attn_src/bias": {
+      "archive_key": "hidden__layer1__head4__attn_src__bias",
+      "dtype": "float32",
+      "shape": [
+        1
+      ]
+    },
+    "hidden/layer1/head4/attn_src/kernel": {
+      "archive_key": "hidden__layer1__head4__attn_src__kernel",
+      "dtype": "float32",
+      "shape": [
+        1,
+        8,
+        1
+      ]
+    },
+    "hidden/layer1/head4/output_bias": {
+      "archive_key": "hidden__layer1__head4__output_bias",
+      "dtype": "float32",
+      "shape": [
+        8
+      ]
+    },
+    "hidden/layer1/head4/seq/kernel": {
+      "archive_key": "hidden__layer1__head4__seq__kernel",
+      "dtype": "float32",
+      "shape": [
+        1,
+        64,
+        8
+      ]
+    },
+    "hidden/layer1/head5/attn_dst/bias": {
+      "archive_key": "hidden__layer1__head5__attn_dst__bias",
+      "dtype": "float32",
+      "shape": [
+        1
+      ]
+    },
+    "hidden/layer1/head5/attn_dst/kernel": {
+      "archive_key": "hidden__layer1__head5__attn_dst__kernel",
+      "dtype": "float32",
+      "shape": [
+        1,
+        8,
+        1
+      ]
+    },
+    "hidden/layer1/head5/attn_src/bias": {
+      "archive_key": "hidden__layer1__head5__attn_src__bias",
+      "dtype": "float32",
+      "shape": [
+        1
+      ]
+    },
+    "hidden/layer1/head5/attn_src/kernel": {
+      "archive_key": "hidden__layer1__head5__attn_src__kernel",
+      "dtype": "float32",
+      "shape": [
+        1,
+        8,
+        1
+      ]
+    },
+    "hidden/layer1/head5/output_bias": {
+      "archive_key": "hidden__layer1__head5__output_bias",
+      "dtype": "float32",
+      "shape": [
+        8
+      ]
+    },
+    "hidden/layer1/head5/seq/kernel": {
+      "archive_key": "hidden__layer1__head5__seq__kernel",
+      "dtype": "float32",
+      "shape": [
+        1,
+        64,
+        8
+      ]
+    },
+    "hidden/layer1/head6/attn_dst/bias": {
+      "archive_key": "hidden__layer1__head6__attn_dst__bias",
+      "dtype": "float32",
+      "shape": [
+        1
+      ]
+    },
+    "hidden/layer1/head6/attn_dst/kernel": {
+      "archive_key": "hidden__layer1__head6__attn_dst__kernel",
+      "dtype": "float32",
+      "shape": [
+        1,
+        8,
+        1
+      ]
+    },
+    "hidden/layer1/head6/attn_src/bias": {
+      "archive_key": "hidden__layer1__head6__attn_src__bias",
+      "dtype": "float32",
+      "shape": [
+        1
+      ]
+    },
+    "hidden/layer1/head6/attn_src/kernel": {
+      "archive_key": "hidden__layer1__head6__attn_src__kernel",
+      "dtype": "float32",
+      "shape": [
+        1,
+        8,
+        1
+      ]
+    },
+    "hidden/layer1/head6/output_bias": {
+      "archive_key": "hidden__layer1__head6__output_bias",
+      "dtype": "float32",
+      "shape": [
+        8
+      ]
+    },
+    "hidden/layer1/head6/seq/kernel": {
+      "archive_key": "hidden__layer1__head6__seq__kernel",
+      "dtype": "float32",
+      "shape": [
+        1,
+        64,
+        8
+      ]
+    },
+    "hidden/layer1/head7/attn_dst/bias": {
+      "archive_key": "hidden__layer1__head7__attn_dst__bias",
+      "dtype": "float32",
+      "shape": [
+        1
+      ]
+    },
+    "hidden/layer1/head7/attn_dst/kernel": {
+      "archive_key": "hidden__layer1__head7__attn_dst__kernel",
+      "dtype": "float32",
+      "shape": [
+        1,
+        8,
+        1
+      ]
+    },
+    "hidden/layer1/head7/attn_src/bias": {
+      "archive_key": "hidden__layer1__head7__attn_src__bias",
+      "dtype": "float32",
+      "shape": [
+        1
+      ]
+    },
+    "hidden/layer1/head7/attn_src/kernel": {
+      "archive_key": "hidden__layer1__head7__attn_src__kernel",
+      "dtype": "float32",
+      "shape": [
+        1,
+        8,
+        1
+      ]
+    },
+    "hidden/layer1/head7/output_bias": {
+      "archive_key": "hidden__layer1__head7__output_bias",
+      "dtype": "float32",
+      "shape": [
+        8
+      ]
+    },
+    "hidden/layer1/head7/seq/kernel": {
+      "archive_key": "hidden__layer1__head7__seq__kernel",
+      "dtype": "float32",
+      "shape": [
+        1,
+        64,
+        8
+      ]
+    },
+    "output/head0/attn_dst/bias": {
+      "archive_key": "output__head0__attn_dst__bias",
+      "dtype": "float32",
+      "shape": [
+        1
+      ]
+    },
+    "output/head0/attn_dst/kernel": {
+      "archive_key": "output__head0__attn_dst__kernel",
+      "dtype": "float32",
+      "shape": [
+        1,
+        6,
+        1
+      ]
+    },
+    "output/head0/attn_src/bias": {
+      "archive_key": "output__head0__attn_src__bias",
+      "dtype": "float32",
+      "shape": [
+        1
+      ]
+    },
+    "output/head0/attn_src/kernel": {
+      "archive_key": "output__head0__attn_src__kernel",
+      "dtype": "float32",
+      "shape": [
+        1,
+        6,
+        1
+      ]
+    },
+    "output/head0/output_bias": {
+      "archive_key": "output__head0__output_bias",
+      "dtype": "float32",
+      "shape": [
+        6
+      ]
+    },
+    "output/head0/seq/kernel": {
+      "archive_key": "output__head0__seq__kernel",
+      "dtype": "float32",
+      "shape": [
+        1,
+        64,
+        6
+      ]
+    },
+    "output/head1/attn_dst/bias": {
+      "archive_key": "output__head1__attn_dst__bias",
+      "dtype": "float32",
+      "shape": [
+        1
+      ]
+    },
+    "output/head1/attn_dst/kernel": {
+      "archive_key": "output__head1__attn_dst__kernel",
+      "dtype": "float32",
+      "shape": [
+        1,
+        6,
+        1
+      ]
+    },
+    "output/head1/attn_src/bias": {
+      "archive_key": "output__head1__attn_src__bias",
+      "dtype": "float32",
+      "shape": [
+        1
+      ]
+    },
+    "output/head1/attn_src/kernel": {
+      "archive_key": "output__head1__attn_src__kernel",
+      "dtype": "float32",
+      "shape": [
+        1,
+        6,
+        1
+      ]
+    },
+    "output/head1/output_bias": {
+      "archive_key": "output__head1__output_bias",
+      "dtype": "float32",
+      "shape": [
+        6
+      ]
+    },
+    "output/head1/seq/kernel": {
+      "archive_key": "output__head1__seq__kernel",
+      "dtype": "float32",
+      "shape": [
+        1,
+        64,
+        6
+      ]
+    }
+  }
+}

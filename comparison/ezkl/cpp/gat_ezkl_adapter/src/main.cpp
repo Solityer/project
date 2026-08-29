@@ -282,7 +282,7 @@ int main(int argc, char** argv) {
                                    std::filesystem::copy_options::overwrite_existing);
 
         const auto profile_ids = gat_ezkl::write_formal_gat_artifacts(
-            output_dir, config, graph, checkpoint, max_in_degree(graph));
+            output_dir, config, graph, checkpoint, shape_hash, max_in_degree(graph));
         gat_ezkl::write_formal_csr_graph_artifacts(
             output_dir, route, config, graph, checkpoint, graph_hash, checkpoint_hash,
             metadata_hash, shape_hash, profile_ids.quant_cfg_id, profile_ids.static_tables_id,
@@ -305,6 +305,7 @@ int main(int argc, char** argv) {
                  << "  \"model_order_digest\": \"" << gat_ezkl::canonical_model_order_digest() << "\",\n"
                  << "  \"static_tables_id\": \"" << profile_ids.static_tables_id << "\",\n"
                  << "  \"backend_aux_tables_id\": \"" << profile_ids.backend_aux_tables_id << "\",\n"
+                 << "  \"shape_hash\": \"" << shape_hash << "\",\n"
                  << "  \"ezkl_security_profile_id\": \"" << security_profile_id << "\",\n"
                  << "  \"witness_generation\": \"ezkl graph-gat-gen-witness reconstructs the full constrained trace\",\n"
                  << "  \"attention_bias_used\": false,\n"

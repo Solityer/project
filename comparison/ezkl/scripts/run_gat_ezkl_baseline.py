@@ -117,6 +117,7 @@ def source_metadata(payload: dict[str, Any], stage: str) -> dict[str, Any]:
         "vendor_tree_digest",
         "prover_backend",
         "verifier_backend",
+        "shape_hash",
     )
     result = {field: payload.get(field) for field in fields}
     expected = formal_source_id(ROOT)
@@ -125,7 +126,40 @@ def source_metadata(payload: dict[str, Any], stage: str) -> dict[str, Any]:
             raise RuntimeError(f"{stage} source identity is not current: {field}")
     if not result["vendor_tree_digest"] or not str(result["vendor_tree_digest"]).startswith("sha256:"):
         raise RuntimeError(f"{stage} vendor source identity is missing")
+    if not isinstance(result["shape_hash"], str) or not result["shape_hash"].startswith("sha256:"):
+        raise RuntimeError(f"{stage} shape identity is missing")
     return result
+
+
+def validate_canonical_shape_spec(spec: dict[str, Any], dataset: str) -> None:
+    """Reject legacy L2/K1/single-layer adapter artifacts before native stages."""
+
+    expected_dataset = {
+        "cora_full": "cora",
+        "citeseer_full": "citeseer",
+        "pubmed_full": "pubmed",
+        "ppi_full_formal": "ppi",
+        "ogbn_arxiv_full": "ogbn_arxiv",
+    }.get(dataset)
+    expected_profile = [
+        {"head_count": 8, "head_dim": 8},
+        {"head_count": 8, "head_dim": 8},
+    ]
+    d_in_profile = spec.get("d_in_profile")
+    if (
+        spec.get("L") != 3
+        or spec.get("K_out") != 2
+        or spec.get("hidden_profile") != expected_profile
+        or not isinstance(d_in_profile, list)
+        or len(d_in_profile) != 2
+        or d_in_profile[1] != 64
+        or d_in_profile[0] != spec.get("feature_dim")
+        or spec.get("model_arch_id") != f"gat_family_L3_hid8x8-8x8_kout2_c{spec.get('class_count')}"
+        or spec.get("dataset") != expected_dataset
+        or not isinstance(spec.get("shape_hash"), str)
+        or not spec["shape_hash"].startswith("sha256:")
+    ):
+        raise RuntimeError("adapter graph spec is not the canonical L3/[8x8,8x8]/K2 shape")
 
 
 def validate_gpu_telemetry(payload: Any, scope: str) -> None:
@@ -624,10 +658,12 @@ def main() -> int:
     manifest["adapter_stderr"] = stderr[-4000:]
     manifest["status"] = "canonical_artifacts_ready"
     spec_identity = json.loads((run_dir / "graph_attention_spec.json").read_text(encoding="utf-8"))
+    validate_canonical_shape_spec(spec_identity, args.dataset)
     manifest["quant_cfg_id"] = spec_identity["quant_cfg_id"]
     manifest["static_tables_id"] = spec_identity["static_tables_id"]
     manifest["backend_aux_tables_id"] = spec_identity["backend_aux_tables_id"]
     manifest["ezkl_security_profile_id"] = spec_identity["security_profile_id"]
+    manifest["shape_hash"] = spec_identity["shape_hash"]
     write_json(manifest_path, manifest)
     if not args.run:
         cleanup_stage()
@@ -754,6 +790,8 @@ def main() -> int:
         raise RuntimeError("prove output backend does not match the authenticated build identity")
     if verify_metadata["verifier_backend"] != "cpu_independent":
         raise RuntimeError("verify output does not identify the independent CPU verifier")
+    if prove_metadata["shape_hash"] != manifest["shape_hash"] or verify_metadata["shape_hash"] != manifest["shape_hash"]:
+        raise RuntimeError("prove/verify shape identity differs from the adapter shape identity")
     if args.device == "cuda":
         validate_gpu_telemetry(prove_output.get("gpu_prove_telemetry"), "formal_prove")
     if "gpu_runtime_telemetry" in verify_output or "gpu_verification_backend" in verify_output:
@@ -764,6 +802,7 @@ def main() -> int:
         "independent_public_statement_reconstruction": True,
         "proof_instances_trusted": False,
         "compiled_circuit_id": circuit_manifest.get("compiled_circuit_id"),
+        "shape_hash": circuit_manifest.get("shape_hash"),
         "settings_id": circuit_manifest.get("settings_id"),
         "vk_id": circuit_manifest.get("vk_id"),
         "static_tables_id": manifest["static_tables_id"],
@@ -806,6 +845,7 @@ def main() -> int:
             "verification_device_runtime_marker": verify.get("verification_device_runtime_marker"),
             "source_srs_sha256": circuit_manifest.get("source_srs_sha256"),
             "source_srs_k": circuit_manifest.get("source_srs_k"),
+            "shape_hash": circuit_manifest.get("shape_hash"),
             "downsized_srs_k": circuit_manifest.get("downsized_srs_k"),
             "proving_srs_sha256": circuit_manifest.get("proving_srs_sha256"),
             "verification_srs_sha256": circuit_manifest.get("verification_srs_sha256"),

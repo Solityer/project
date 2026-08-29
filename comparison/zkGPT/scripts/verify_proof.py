@@ -23,7 +23,7 @@ sys.path.insert(0, str(ROOT / "src"))
 PUBLIC_CONTEXT_FILES = ["config", "model_manifest", "trusted_registry_public", "public_y"]
 
 from zkgpt_gat.proof import _verify_formal  # noqa: E402
-from zkgpt_gat.config import read_config  # noqa: E402
+from zkgpt_gat.config import load_app_config  # noqa: E402
 from zkgpt_gat.gpu_execution import validate_gpu_execution_evidence  # noqa: E402
 from zkgpt_gat.formal_gate import require_formal_experiment  # noqa: E402
 from zkgpt_gat.privacy import verify_privacy_profile  # noqa: E402
@@ -178,7 +178,7 @@ def _canonical_public_y(project_root: pathlib.Path, config_path: pathlib.Path, p
     config = pathlib.Path(config_path).expanduser().resolve()
     if config != root and root not in config.parents:
         raise ValueError(f"config must stay inside baseline root: {config}")
-    entries = read_config(config)
+    entries = load_app_config(config, root).entries
     dataset = canonical_dataset_name(entries.get("dataset", ""))
     expected = required_resource_paths(root, dataset)["public_y_path"]
     configured = resolve_local(root, entries.get("public_y_path", ""), "config public_y_path")
@@ -456,6 +456,9 @@ def verify_artifact_directory(artifact_dir: pathlib.Path, context: VerifierConte
     witness_included = raw_private_payload
     privacy_profile = str(metadata.get("privacy_profile_status", ""))
     privacy_id = str(metadata.get("privacy_extension_profile_id", ""))
+    dim_cfg = metadata.get("dim_cfg")
+    if not isinstance(dim_cfg, dict):
+        dim_cfg = {}
     result["schema"] = "zkGPT_independent_verification_v4"
     result["verified_fields"] = {
         "status": result.get("status"),
@@ -464,6 +467,14 @@ def verify_artifact_directory(artifact_dir: pathlib.Path, context: VerifierConte
         "baseline_identity": "zkGPT",
         "dataset": canonical_dataset_name(str(metadata.get("dataset", ""))),
         "backend": backend,
+        "model_arch_id": metadata.get("model_arch_id", ""),
+        "model_param_id": metadata.get("model_param_id", ""),
+        "quant_cfg_id": metadata.get("quant_cfg_id", ""),
+        "L": dim_cfg.get("L"),
+        "hidden_profile": dim_cfg.get("hidden_profile", []),
+        "d_in_profile": dim_cfg.get("d_in_profile", []),
+        "K_out": dim_cfg.get("K_out"),
+        "C": dim_cfg.get("C"),
         "full_dataset": metadata.get("full_dataset") is True,
         "proof_scope": "full_gat_zkgpt_segment_commitments_lookup_matmul_gkr_openings" if full_gat else "",
         "full_gat_forward_proved": full_gat,
@@ -527,7 +538,7 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError(
                 "metadata dataset/backend does not match canonical artifact path"
             )
-        config_entries = read_config(args.config.expanduser().resolve())
+        config_entries = load_app_config(args.config.expanduser().resolve(), project_root).entries
         model_param_id = config_entries.get("model_param_id", "")
         expected_registry = canonical_registry_public_path(project_root, model_param_id)
         supplied_registry = args.registry_public.expanduser().resolve()

@@ -41,6 +41,8 @@ from runner_contract import (
     validate_pp_file,
     validate_staged_dataset_resources,
     validate_config_resources,
+    validate_model_structure_config,
+    validate_quantization_config,
 )
 
 
@@ -126,6 +128,10 @@ def native_command(binary: Path, subcommand: str) -> list[object]:
         "--project-root",
         str(BASELINE_ROOT),
         subcommand,
+        # clap exposes the required root on each subcommand as well as on the
+        # top-level parser; keep both positions explicit for native calls.
+        "--project-root",
+        str(BASELINE_ROOT),
     ]
 
 
@@ -163,6 +169,8 @@ def main() -> int:
     output_root = ensure_contained(args.output_root, label="runs root")
     config = config_path(args.dataset)
     config_values = parse_config(config)
+    validate_model_structure_config(config_values)
+    validate_quantization_config(config_values)
     # Formal execution accepts only the authenticated manifest emitted by
     # setup_resources.py.  The source policy intentionally carries no PP
     # identity and cannot authorize a proof.
@@ -476,6 +484,11 @@ def main() -> int:
         "config_sha256": config_digest(config),
         "protocol_sha256": protocol_digest(),
         "integer_bound_ledger_id": info["ledger"]["integer_bound_ledger_id"],
+        "L": info["L"],
+        "hidden_profile": info["hidden_profile"],
+        "d_in_profile": info["d_in_profile"],
+        "K_out": info["K_out"],
+        "checkpoint_binding": info["checkpoint_binding"],
         "node_count": info["node_count"],
         "edge_count": info["edge_count"],
         "graph_count": info["graph_count"],
@@ -537,6 +550,11 @@ def main() -> int:
         "resource_manifest_id": result_payload["resource_manifest_id"],
         "resource_inventory_digest": result_payload["resource_inventory_digest"],
         "integer_bound_ledger_id": result_payload["integer_bound_ledger_id"],
+        "L": result_payload["L"],
+        "hidden_profile": result_payload["hidden_profile"],
+        "d_in_profile": result_payload["d_in_profile"],
+        "K_out": result_payload["K_out"],
+        "checkpoint_binding": result_payload["checkpoint_binding"],
         "node_count": result_payload["node_count"],
         "edge_count": result_payload["edge_count"],
         "graph_count": result_payload["graph_count"],

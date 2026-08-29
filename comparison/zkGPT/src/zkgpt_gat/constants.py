@@ -18,6 +18,32 @@ CONFIG_DATASET_VALUE = {
     "ogbn-arxiv": "ogbn_arxiv",
 }
 
+# The comparison baseline consumes the same canonical numerical GAT shape as
+# the current formal model. Keep this contract in one production module so
+# preflight, result validation, and resource-bound metadata all reject stale
+# L2/single-head configurations consistently.
+FORMAL_GAT_LAYER_COUNT = 3
+FORMAL_GAT_HIDDEN_PROFILE = ((8, 8), (8, 8))
+FORMAL_GAT_D_IN_PROFILE = {
+    "cora": (1433, 64),
+    "citeseer": (3703, 64),
+    "pubmed": (500, 64),
+    "ppi": (50, 64),
+    "ogbn-arxiv": (128, 64),
+}
+FORMAL_GAT_K_OUT = 2
+FORMAL_GAT_CLASS_COUNTS = {
+    "cora": 7,
+    "citeseer": 6,
+    "pubmed": 3,
+    "ppi": 121,
+    "ogbn-arxiv": 40,
+}
+FORMAL_GAT_MODEL_ARCH_IDS = {
+    dataset: f"gat_family_L3_hid8x8-8x8_kout2_c{class_count}"
+    for dataset, class_count in FORMAL_GAT_CLASS_COUNTS.items()
+}
+
 PROTOCOL_ID = "GAT-ZKML-zkGPT"
 PROOF_BACKEND_ID = "zkgpt-style-gkr-lasso-matmul-hyrax-mle"
 ROUNDING_MODE_NEAREST = "nearest_ties_away"

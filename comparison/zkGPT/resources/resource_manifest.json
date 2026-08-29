@@ -1,63 +1,104 @@
 {
-  "schema": "zkGPT_baseline_resource_manifest_v1",
   "baseline": "zkGPT",
-  "root_policy": "all_project_resources_must_be_baseline_local",
   "dataset_execution_policy": "full_datasets_are_user_owned_and_not_loaded_by_prepare",
-  "model_registry": {
-    "root": "results/model_registry",
-    "private_root": "artifacts/private_setup/model_registry",
-    "public_name": "registry.json",
-    "secret_name": "registry.secret.json",
-    "registration_policy": "one canonical public registry per model_param_id; private blindings stay under private_root"
-  },
-  "static_table": {
-    "id": "tables:lrelu+elu+exp+range",
-    "quant_cfg_id": "exact_integer_gat_v1",
-    "path": "resources/static_tables/exact_integer_gat_v1.json",
-    "schema": "zkGPT_static_tables_descriptor_v1",
-    "content_digest": "027f1b529c64638b13888c919b4f4ebc07234da4898e245c14511367b77bbd97",
-    "descriptor_digest": "84ad4f14fa96f66b7f9f6a49fdee986530d16c07aa7b2a1794499170ba0118d3"
-  },
   "datasets": {
-    "cora": {
-      "cache_dir": "data/cache/cora",
-      "required_files": ["meta.cfg", "edges.txt", "features.txt or features.npy", "labels.txt (optional for inference)"],
-      "checkpoint_bundle": "artifacts/checkpoints/cora_gat",
-      "checkpoint_required_files": ["manifest.json", "tensors.txt"],
-      "public_y": "resources/public_y/cora.json",
-      "status": "awaiting_user_staged_resources"
-    },
     "citeseer": {
       "cache_dir": "data/cache/citeseer",
-      "required_files": ["meta.cfg", "edges.txt", "features.txt or features.npy", "labels.txt (optional for inference)"],
       "checkpoint_bundle": "artifacts/checkpoints/citeseer_gat",
-      "checkpoint_required_files": ["manifest.json", "tensors.txt"],
+      "checkpoint_required_files": [
+        "manifest.json",
+        "tensors.txt"
+      ],
       "public_y": "resources/public_y/citeseer.json",
+      "required_files": [
+        "meta.cfg",
+        "edges.txt",
+        "features.txt or features.npy",
+        "labels.txt (optional for inference)"
+      ],
       "status": "awaiting_user_staged_resources"
     },
-    "pubmed": {
-      "cache_dir": "data/cache/pubmed",
-      "required_files": ["meta.cfg", "edges.txt", "features.txt or features.npy", "labels.txt (optional for inference)"],
-      "checkpoint_bundle": "artifacts/checkpoints/pubmed_gat",
-      "checkpoint_required_files": ["manifest.json", "tensors.txt"],
-      "public_y": "resources/public_y/pubmed.json",
-      "status": "awaiting_user_staged_resources"
-    },
-    "ppi": {
-      "cache_dir": "data/cache/ppi",
-      "required_files": ["meta.cfg", "edges.txt", "features.txt or features.npy", "labels.txt (optional for inference)", "node_ptr.txt (required for multi-graph PPI)"],
-      "checkpoint_bundle": "artifacts/checkpoints/ppi_gat",
-      "checkpoint_required_files": ["manifest.json", "tensors.txt"],
-      "public_y": "resources/public_y/ppi.json",
+    "cora": {
+      "cache_dir": "data/cache/cora",
+      "checkpoint_bundle": "artifacts/checkpoints/cora_gat",
+      "checkpoint_required_files": [
+        "manifest.json",
+        "tensors.txt"
+      ],
+      "public_y": "resources/public_y/cora.json",
+      "required_files": [
+        "meta.cfg",
+        "edges.txt",
+        "features.txt or features.npy",
+        "labels.txt (optional for inference)"
+      ],
       "status": "awaiting_user_staged_resources"
     },
     "ogbn-arxiv": {
       "cache_dir": "data/cache/ogbn_arxiv",
-      "required_files": ["meta.cfg", "edges.txt", "features.txt or features.npy", "labels.txt (optional for inference)"],
       "checkpoint_bundle": "artifacts/checkpoints/ogbn_arxiv_gat",
-      "checkpoint_required_files": ["manifest.json", "tensors.txt"],
+      "checkpoint_required_files": [
+        "manifest.json",
+        "tensors.txt"
+      ],
       "public_y": "resources/public_y/ogbn_arxiv.json",
+      "required_files": [
+        "meta.cfg",
+        "edges.txt",
+        "features.txt or features.npy",
+        "labels.txt (optional for inference)"
+      ],
+      "status": "awaiting_user_staged_resources"
+    },
+    "ppi": {
+      "cache_dir": "data/cache/ppi",
+      "checkpoint_bundle": "artifacts/checkpoints/ppi_gat",
+      "checkpoint_required_files": [
+        "manifest.json",
+        "tensors.txt"
+      ],
+      "public_y": "resources/public_y/ppi.json",
+      "required_files": [
+        "meta.cfg",
+        "edges.txt",
+        "features.txt or features.npy",
+        "labels.txt (optional for inference)",
+        "node_ptr.txt (required for multi-graph PPI)"
+      ],
+      "status": "awaiting_user_staged_resources"
+    },
+    "pubmed": {
+      "cache_dir": "data/cache/pubmed",
+      "checkpoint_bundle": "artifacts/checkpoints/pubmed_gat",
+      "checkpoint_required_files": [
+        "manifest.json",
+        "tensors.txt"
+      ],
+      "public_y": "resources/public_y/pubmed.json",
+      "required_files": [
+        "meta.cfg",
+        "edges.txt",
+        "features.txt or features.npy",
+        "labels.txt (optional for inference)"
+      ],
       "status": "awaiting_user_staged_resources"
     }
+  },
+  "model_registry": {
+    "private_root": "artifacts/private_setup/model_registry",
+    "public_name": "registry.json",
+    "registration_policy": "one canonical public registry per model_param_id; private blindings stay under private_root",
+    "root": "results/model_registry",
+    "secret_name": "registry.secret.json"
+  },
+  "root_policy": "all_project_resources_must_be_baseline_local",
+  "schema": "zkGPT_baseline_resource_manifest_v1",
+  "static_table": {
+    "content_digest": "027f1b529c64638b13888c919b4f4ebc07234da4898e245c14511367b77bbd97",
+    "descriptor_digest": "84ad4f14fa96f66b7f9f6a49fdee986530d16c07aa7b2a1794499170ba0118d3",
+    "id": "tables:lrelu+elu+exp+range",
+    "path": "resources/static_tables/exact_integer_gat_v1.json",
+    "quant_cfg_id": "exact_integer_gat_v1",
+    "schema": "zkGPT_static_tables_descriptor_v1"
   }
 }

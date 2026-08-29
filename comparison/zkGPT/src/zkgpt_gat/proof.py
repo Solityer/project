@@ -234,7 +234,11 @@ def make_metadata(
     if config.entries.get("static_table_descriptor_digest") != static_descriptor["descriptor_digest"]:
         raise ValueError("formal config is not bound to the canonical static-table descriptor")
     hidden_profile = [{"head_count": layer.head_count, "head_dim": layer.head_dim} for layer in model.hidden_layers]
-    d_in_profile = [int(model.manifest["d_in_profile"][0])]
+    d_in_profile = [int(value) for value in model.manifest["d_in_profile"]]
+    if d_in_profile != [int(layer.input_dim) for layer in model.hidden_layers]:
+        raise ValueError("model d_in_profile does not match hidden layer input dimensions")
+    if d_in_profile != config.d_in_profile:
+        raise ValueError("formal config d_in_profile differs from model architecture")
     d_cat = [item["head_count"] * item["head_dim"] for item in hidden_profile]
     d_in_layers = d_in_profile + d_cat
     domain_cfg = {
@@ -270,6 +274,7 @@ def make_metadata(
             "edge_ptr": graph.edge_ptr.tolist(),
             "L": len(model.hidden_layers) + 1,
             "d_in": d_in_layers,
+            "d_in_profile": d_in_profile,
             "d_h": [item["head_dim"] for item in hidden_profile],
             "d_cat": d_cat,
             "C": model.class_count,

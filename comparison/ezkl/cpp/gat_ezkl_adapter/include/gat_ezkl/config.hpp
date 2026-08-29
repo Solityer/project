@@ -41,7 +41,10 @@ namespace gat_ezkl
         std::size_t range_bits = 0;
         std::uint64_t seed = 0;  // // 全局随机种子（0 表示随机）
         std::size_t layer_count = 0;
-        std::size_t K_out = 1;
+        // Zero is an invalid sentinel: formal configs must declare K_out
+        // explicitly instead of silently inheriting a legacy single-head
+        // default.
+        std::size_t K_out = 0;
         std::size_t batch_graphs = 1;
         bool allow_synthetic_model = false;
         bool dump_trace = false;

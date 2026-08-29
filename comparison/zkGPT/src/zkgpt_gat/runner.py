@@ -315,6 +315,24 @@ def run_one(
         raise RuntimeError(
             f"{dataset_name}/{backend} independent verifier identity does not match the requested cell"
         )
+    expected_hidden = [
+        {"layer_index": int(layer.layer_index), "head_count": int(layer.head_count), "head_dim": int(layer.head_dim)}
+        for layer in model.hidden_layers
+    ]
+    expected_d_in = [int(value) for value in model.manifest["d_in_profile"]]
+    if (
+        verified_fields.get("model_arch_id") != model.model_arch_id
+        or verified_fields.get("model_param_id") != model.model_param_id
+        or verified_fields.get("quant_cfg_id") != model.quant_cfg_id
+        or verified_fields.get("L") != len(model.hidden_layers) + 1
+        or verified_fields.get("hidden_profile") != expected_hidden
+        or verified_fields.get("d_in_profile") != expected_d_in
+        or verified_fields.get("K_out") != model.k_out
+        or verified_fields.get("C") != model.class_count
+    ):
+        raise RuntimeError(
+            f"{dataset_name}/{backend} independent verifier architecture identity does not match the loaded L3 model"
+        )
     manifest = {
         "schema": "zkGPT_gat_run_manifest_v4",
         "status": verified_fields["status"],
@@ -323,6 +341,16 @@ def run_one(
         "backend": verified_fields["backend"],
         "protocol_id": PROTOCOL_ID,
         "proof_backend_id": PROOF_BACKEND_ID,
+        "model_arch_id": verified_fields["model_arch_id"],
+        "model_param_id": verified_fields["model_param_id"],
+        "quant_cfg_id": verified_fields["quant_cfg_id"],
+        "L": verified_fields["L"],
+        "hidden_profile": ",".join(
+            f"{item['head_count']}x{item['head_dim']}" for item in verified_fields["hidden_profile"]
+        ),
+        "d_in_profile": ",".join(str(value) for value in verified_fields["d_in_profile"]),
+        "K_out": verified_fields["K_out"],
+        "C": verified_fields["C"],
         "config": relative_path(baseline, config_path),
         "artifact_path": relative_path(baseline, artifact_dir),
         "metadata_path": relative_path(baseline, artifact_dir / "metadata.json"),

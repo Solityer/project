@@ -1,5 +1,19 @@
 {
   "baseline": "ezkl",
+  "cuda_backend": {
+    "abi": "icicle_cuda_bn254_3.7.0_abi_v1",
+    "backend": "cuda",
+    "icicle_commit": "012e00694f4cf399fe7a42d9cfbfa6cd7a60f876",
+    "library_paths": [
+      "resources/icicle_cuda_backend/lib/backend/libicicle_backend_cuda_device.so",
+      "resources/icicle_cuda_backend/lib/backend/libicicle_backend_cuda_curve_bn254.so",
+      "resources/icicle_cuda_backend/lib/backend/libicicle_backend_cuda_field_bn254.so",
+      "resources/icicle_cuda_backend/lib/backend/libicicle_backend_cuda_hash.so"
+    ],
+    "manifest_path": "resources/icicle_cuda_backend/backend.manifest.json",
+    "schema": "ezkl_formal_icicle_cuda_backend_v1",
+    "status": "awaiting_user_staged_resource"
+  },
   "dataset_execution_policy": "prepare_and_preflight_never_load_dataset_or_checkpoint_contents",
   "datasets": {
     "citeseer_full": {

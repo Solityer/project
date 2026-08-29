@@ -24,6 +24,8 @@ from resource_policy import (
     ICICLE_SOURCE_COMMIT,
     DATASET_ORDER,
     DATASET_SLUG,
+    BASELINE,
+    FORMAL_ROUTE,
     ROOT,
     atomic_write_json,
     check_resource_layout,
@@ -75,6 +77,39 @@ def _validate_resource_layout_paths(root: Path, selected: tuple[str, ...]) -> li
     return directories
 
 
+def _blocked_resource_report(
+    root: Path,
+    selected: tuple[str, ...],
+    backend: str,
+    error: BaseException,
+) -> dict[str, object]:
+    """Return a machine-readable fail-closed report for missing resources."""
+
+    config_names = {
+        "cora_full": "cora_full.cfg",
+        "citeseer_full": "citeseer_full.cfg",
+        "pubmed_full": "pubmed_full.cfg",
+        "ppi_full_formal": "ppi_full.cfg",
+        "ogbn_arxiv_full": "ogbn_arxiv_full.cfg",
+    }
+    return {
+        "schema": "ezkl_formal_resource_check_v1",
+        "baseline": BASELINE,
+        "route_id": FORMAL_ROUTE,
+        "require_staged": True,
+        "datasets": list(selected),
+        "configs": [
+            str((root / "configs" / config_names[dataset]).relative_to(root))
+            for dataset in selected
+        ],
+        "status": "blocked",
+        "errors": [str(error)],
+        "manifest": "resources/resource_manifest.json",
+        "contents_read": False,
+        "backend": backend,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=ROOT)
@@ -123,16 +158,17 @@ def main() -> int:
                 ],
             },
         )
-    if args.check:
+    try:
         report = check_resource_layout(
-            root, selected, require_staged=True, backend=args.backend
+            root, selected, require_staged=args.check, backend=args.backend
         )
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        if not args.check:
+            raise
+        report = _blocked_resource_report(root, selected, args.backend, exc)
         print(json.dumps(report, indent=2, sort_keys=True))
-    else:
-        report = check_resource_layout(
-            root, selected, require_staged=False, backend=args.backend
-        )
-        print(json.dumps(report, indent=2, sort_keys=True))
+        return 2
+    print(json.dumps(report, indent=2, sort_keys=True))
     return 0
 
 

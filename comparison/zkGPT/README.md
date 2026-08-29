@@ -12,6 +12,14 @@ tables and the full public logits. The input layer is canonically
 `X_pub|W|Aux|L_qry`; `X_pub` is reconstructed by the verifier, while `Aux` and
 `L_qry` commitments and all masking/opening randomness are fresh per proof.
 
+Every formal dataset configuration is bound to the current canonical model
+shape: `L=3`, two hidden layers with `hidden_profile=[8x8,8x8]`,
+`d_in_profile=[dataset_feature_dim,64]`, and `K_out=2`. The checkpoint manifest,
+registered model metadata, proof metadata, independent-verifier report, and
+result row must all carry this same shape. The internal proof dimension vector
+therefore extends the public profile to `[dataset_feature_dim,64,64]` for the
+two hidden concatenations; this is not a legacy single-layer profile.
+
 ## Layout
 
 * `src/zkgpt_gat/` — exact integer GAT forward, BN254 group Hyrax/IPA, Lasso,
@@ -58,6 +66,9 @@ python3 scripts/prepare_resources.py
 # artifacts/checkpoints/, and resources/public_y/ before continuing.
 # This creates only empty baseline-local layout directories; model registration
 # later keeps blinders under artifacts/private_setup/model_registry/.
+# resources/public_y/*.json must be owner-authenticated integer logits for this
+# zkGPT quantization profile, not an unscaled floating-point training logit
+# dump or a file referenced from the main experiment.
 python3 scripts/prepare_resources.py --check
 python3 scripts/formal_preflight.py --source-only
 python3 scripts/formal_preflight.py

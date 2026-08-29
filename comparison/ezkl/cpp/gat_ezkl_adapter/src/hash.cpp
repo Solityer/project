@@ -116,6 +116,10 @@ namespace gat_ezkl
         for (const auto& layer : bundle.hidden_profile) {
             out << ";hid=" << layer.head_count << "x" << layer.head_dim;
         }
+        out << ";d_in=";
+        for (const auto dim : bundle.d_in_profile) {
+            out << dim << ',';
+        }
         return hex_u64(fnv1a64_string(out.str()));
     }
 

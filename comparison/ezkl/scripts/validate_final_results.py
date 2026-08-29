@@ -165,17 +165,123 @@ def digest(path: Path) -> str:
 
 
 def formal_digest(domain: str, role: str, payload: bytes) -> str:
+    return formal_digest_fields(domain, ((role, payload),))
+
+
+def formal_digest_fields(domain: str, fields: tuple[tuple[str, bytes], ...]) -> str:
     prefix = b"GAT-ZKML/ezkl/canonical/v1"
     encoded = struct.pack("<Q", len(prefix)) + prefix
     encoded += struct.pack("<Q", len(domain)) + domain.encode()
-    encoded += struct.pack("<Q", 1)
-    encoded += struct.pack("<Q", len(role)) + role.encode()
-    encoded += struct.pack("<Q", len(payload)) + payload
+    encoded += struct.pack("<Q", len(fields))
+    for role, payload in fields:
+        encoded += struct.pack("<Q", len(role)) + role.encode()
+        encoded += struct.pack("<Q", len(payload)) + payload
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
 def canonical_json(payload: object) -> bytes:
     return json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode()
+
+
+def canonical_shape_hash(spec: dict[str, object]) -> str | None:
+    """Recompute the C++/Rust fixed-circuit shape identity byte-for-byte."""
+
+    try:
+        dimensions = [
+            int(spec["node_count"]),
+            int(spec["edge_count"]),
+            int(spec["graph_count"]),
+            int(spec["feature_dim"]),
+            int(spec["class_count"]),
+            int(spec["L"]),
+            int(spec["K_out"]),
+        ]
+        hidden_profile = spec["hidden_profile"]
+        d_in_profile = spec["d_in_profile"]
+        if not isinstance(hidden_profile, list) or not isinstance(d_in_profile, list):
+            return None
+        payload = b"".join(struct.pack("<Q", value) for value in dimensions)
+        payload += struct.pack("<Q", len(hidden_profile))
+        for layer in hidden_profile:
+            if not isinstance(layer, dict):
+                return None
+            payload += struct.pack("<Q", int(layer["head_count"]))
+            payload += struct.pack("<Q", int(layer["head_dim"]))
+        d_in = struct.pack("<Q", len(d_in_profile)) + b"".join(
+            struct.pack("<Q", int(value)) for value in d_in_profile
+        )
+    except (KeyError, TypeError, ValueError, struct.error, OverflowError):
+        return None
+    return formal_digest_fields(
+        "fixed_circuit_shape", (("shape", payload), ("d_in_profile", d_in))
+    )
+
+
+def validate_shape_artifacts(
+    run_dir: Path,
+    spec: dict[str, object],
+    compiled: dict[str, object],
+    settings: dict[str, object],
+    circuit: dict[str, object],
+    registration: dict[str, object],
+    statement: dict[str, object],
+    verify: dict[str, object],
+    manifest: dict[str, object],
+) -> list[str]:
+    """Validate canonical L3/profile/K2 shape and every artifact binding."""
+
+    failures: list[str] = []
+    expected_profile = [
+        {"head_count": 8, "head_dim": 8},
+        {"head_count": 8, "head_dim": 8},
+    ]
+    d_in_profile = spec.get("d_in_profile")
+    if (
+        spec.get("L") != 3
+        or spec.get("K_out") != 2
+        or spec.get("hidden_profile") != expected_profile
+        or not isinstance(d_in_profile, list)
+        or len(d_in_profile) != 2
+        or d_in_profile[1] != 64
+        or d_in_profile[0] != spec.get("feature_dim")
+        or spec.get("model_arch_id")
+        != f"gat_family_L3_hid8x8-8x8_kout2_c{spec.get('class_count')}"
+    ):
+        failures.append(f"{run_dir}: adapter spec is not canonical L3/[8x8,8x8]/K2")
+    expected_hash = canonical_shape_hash(spec)
+    if expected_hash is None or not str(spec.get("shape_hash", "")).startswith("sha256:"):
+        failures.append(f"{run_dir}: canonical shape hash is missing or malformed")
+    elif spec.get("shape_hash") != expected_hash:
+        failures.append(f"{run_dir}: adapter shape hash is not derived from its shape")
+    if (
+        compiled.get("layer_count") != 3
+        or compiled.get("k_out") != 2
+        or compiled.get("hidden_profile") != expected_profile
+        or compiled.get("d_in_profile") != d_in_profile
+        or compiled.get("feature_dim") != spec.get("feature_dim")
+        or compiled.get("class_count") != spec.get("class_count")
+    ):
+        failures.append(f"{run_dir}: compiled circuit carries a non-canonical shape")
+    for label, payload in (
+        ("run manifest", manifest),
+        ("settings", settings),
+        ("compiled circuit", compiled),
+        ("circuit manifest", circuit),
+        ("model registration", registration),
+        ("public statement", statement),
+        ("verify result", verify),
+    ):
+        if expected_hash is not None and payload.get("shape_hash") != expected_hash:
+            failures.append(f"{run_dir}: {label} shape identity mismatch")
+    expected_arch = f"gat_family_L3_hid8x8-8x8_kout2_c{spec.get('class_count')}"
+    for label, payload in (
+        ("compiled circuit", compiled),
+        ("model registration", registration),
+        ("public statement", statement),
+    ):
+        if payload.get("model_arch_id") != expected_arch:
+            failures.append(f"{run_dir}: {label} model_arch_id is stale")
+    return failures
 
 
 def operation_registry_id() -> str:
@@ -434,6 +540,9 @@ def main() -> int:
         registration = json.loads((run_dir / "model_registration.json").read_text(encoding="utf-8"))
         aux = json.loads((run_dir / "backend_aux_table_spec.json").read_text(encoding="utf-8"))
         main_table = json.loads((run_dir / "formal_table_spec.json").read_text(encoding="utf-8"))
+        failures.extend(validate_shape_artifacts(
+            run_dir, spec, compiled, settings, circuit, registration, statement, verify, manifest
+        ))
         ceremony_profile_fields = {
             "ceremony_descriptor_kind": ceremony["descriptor_kind"],
             "ceremony_id": ceremony["ceremony_id"],

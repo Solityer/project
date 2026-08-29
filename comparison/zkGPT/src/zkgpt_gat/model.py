@@ -46,6 +46,27 @@ QUANT_SCALE_PROFILES: Dict[str, Dict[str, int]] = {
         "aggregate_output": 16,
         "output_head": 16,
     },
+    # The canonical main-experiment checkpoint manifests retain this source
+    # format identity.  zkGPT formal configs authenticate the independent
+    # exact-integer profile above, but accepting the source alias here keeps
+    # manifest-only inspection and conversion tools honest without changing
+    # the registered scale chain.
+    "fp32_torch_checkpoint": {
+        "input": 1,
+        "hidden_weight": 16,
+        "hidden_attention": 16,
+        "output_weight": 16,
+        "output_attention": 1,
+        "output_bias": 16,
+        "lrelu_input": 256,
+        "lrelu_output": 256,
+        "exp_input": 256,
+        "exp_output": 16,
+        "elu_input": 16,
+        "elu_output": 16,
+        "aggregate_output": 16,
+        "output_head": 16,
+    },
 }
 
 
@@ -223,9 +244,43 @@ def load_model(
 
 
 def _validate_model(model: Model) -> None:
+    manifest = model.manifest
+    manifest_hidden = manifest.get("hidden_layers")
+    if not isinstance(manifest_hidden, list) or len(manifest_hidden) != len(model.hidden_layers):
+        raise ValueError("model manifest hidden-layer cardinality mismatch")
+    if int(manifest.get("L", -1)) != len(model.hidden_layers) + 1:
+        raise ValueError("model manifest L does not equal hidden layers plus output layer")
+    if [int(item.get("layer_index", -1)) for item in manifest_hidden] != list(range(len(model.hidden_layers))):
+        raise ValueError("model manifest hidden layer indices are not contiguous")
+    manifest_profile = manifest.get("hidden_profile")
+    if manifest_profile is not None:
+        expected_profile = [
+            {"head_count": int(layer.head_count), "head_dim": int(layer.head_dim)}
+            for layer in model.hidden_layers
+        ]
+        if manifest_profile != expected_profile:
+            raise ValueError("model manifest hidden_profile differs from hidden_layers")
+    d_in_profile = manifest.get("d_in_profile")
+    if not isinstance(d_in_profile, (list, tuple)) or len(d_in_profile) != len(model.hidden_layers):
+        raise ValueError("model manifest d_in_profile must have one entry per hidden layer")
+    try:
+        canonical_d_in = [int(value) for value in d_in_profile]
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("model manifest d_in_profile is not integral") from exc
+    if any(value <= 0 for value in canonical_d_in):
+        raise ValueError("model manifest d_in_profile contains a non-positive dimension")
+    if canonical_d_in != [int(layer.input_dim) for layer in model.hidden_layers]:
+        raise ValueError("model manifest d_in_profile does not match hidden input dimensions")
+    if int(manifest.get("C", -1)) != model.class_count or int(manifest.get("K_out", -1)) != model.k_out:
+        raise ValueError("model manifest output dimensions differ from loaded model")
+    output_specs = manifest.get("output_head_specs")
+    if not isinstance(output_specs, list) or len(output_specs) != model.k_out:
+        raise ValueError("model manifest output head cardinality mismatch")
+    if [int(item.get("head_index", -1)) for item in output_specs] != list(range(model.k_out)):
+        raise ValueError("model manifest output head indices are not contiguous")
     if model.k_out != len(model.output_heads):
         raise ValueError("K_out conflicts with output_head_specs")
-    prev_dim = int(model.manifest["d_in_profile"][0])
+    prev_dim = canonical_d_in[0]
     for layer in model.hidden_layers:
         if layer.input_dim != prev_dim:
             raise ValueError("hidden layer input dimension chain mismatch")

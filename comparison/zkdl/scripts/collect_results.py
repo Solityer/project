@@ -53,6 +53,11 @@ IDENTITY_FIELDS = (
     "static_table_rows_id",
     "model_arch_id",
     "model_param_id",
+    "L",
+    "hidden_profile",
+    "d_in_profile",
+    "K_out",
+    "checkpoint_binding",
     "provenance",
 )
 
@@ -297,6 +302,7 @@ def inspect_cell(
             "config_sha256", "protocol_sha256", "resource_manifest_id",
             "resource_inventory_digest", "checkpoint_manifest_id", "model_shape_id",
             "model_arch_id", "model_param_id", "source_identity",
+            "L", "hidden_profile", "d_in_profile", "K_out",
         ):
             for manifest_name, manifest in (("result", result), ("success", success)):
                 _require_equal(errors, f"{manifest_name}_current_{key}", manifest.get(key), current_identity.get(key))

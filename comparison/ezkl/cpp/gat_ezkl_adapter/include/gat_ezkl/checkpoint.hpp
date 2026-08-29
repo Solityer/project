@@ -56,7 +56,8 @@ namespace gat_ezkl
         std::string static_table_id;
         std::string degree_bound_id;
         std::size_t layer_count = 0;
-        std::size_t K_out = 1;
+        // A missing manifest field must not become the legacy K_out=1 model.
+        std::size_t K_out = 0;
         std::size_t class_count = 0;
         std::vector<std::size_t> d_in_profile;
         std::vector<HiddenLayerProfile> hidden_profile;

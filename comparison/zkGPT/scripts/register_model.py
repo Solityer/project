@@ -68,8 +68,23 @@ def _validate_registration_identity(config, checkpoint_manifest: dict, static_de
         raise ValueError("formal registration requires the authenticated nearest_ties_away mode")
     for key, wanted in expected.items():
         actual = checkpoint_manifest.get(key)
+        # The shared checkpoint exporter does not serialize the formal
+        # SignedRoundDiv mode; the zkGPT config is the authenticated owner of
+        # that choice.  All formal configs use the descriptor's explicit
+        # nearest-ties-away mode, so absence is accepted only for this source
+        # manifest field.  The source quantization identity is likewise
+        # mapped to the baseline's exact-integer scale profile below.
+        if key == "rounding_mode" and actual is None and str(wanted) == "nearest_ties_away":
+            continue
+        if key == "quant_cfg_id" and str(actual) == "fp32_torch_checkpoint" and str(wanted) == "exact_integer_gat_v1":
+            continue
         if actual is None or str(actual) != str(wanted):
             raise ValueError(f"checkpoint manifest {key} does not match formal config")
+    d_in_profile = checkpoint_manifest.get("d_in_profile")
+    if [int(value) for value in d_in_profile or []] != config.d_in_profile:
+        raise ValueError("checkpoint manifest d_in_profile does not match formal config")
+    if int(checkpoint_manifest.get("L", -1)) != config.layer_count:
+        raise ValueError("checkpoint manifest L does not match formal config")
     hidden = checkpoint_manifest.get("hidden_layers")
     if not isinstance(hidden, list) or len(hidden) != len(config.hidden_profile):
         raise ValueError("checkpoint architecture does not match formal hidden profile")
@@ -124,11 +139,11 @@ def registration_preflight(dataset: str):
     dataset = canonical_dataset_name(dataset)
     if dataset not in DATASET_NAMES:
         raise ValueError(f"unsupported formal dataset: {dataset}")
-    check_resource_layout(ROOT, [dataset], require_staged=True)
+    check_resource_layout(ROOT, [dataset], require_staged=True, require_public_y=False)
     manifest = read_resource_manifest(ROOT)
     config_path = generated_config(dataset, "cpu", ROOT, ROOT)
     config = load_app_config(config_path, ROOT)
-    if config.dataset != dataset:
+    if canonical_dataset_name(config.dataset) != dataset:
         raise ValueError("generated formal config dataset does not match registration request")
     _validate_registration_paths(config_path, config)
     descriptor = validate_static_table_descriptor(ROOT)

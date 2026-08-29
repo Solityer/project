@@ -411,6 +411,7 @@ struct FormalSettings {
     relation: String,
     route_id: String,
     dataset: String,
+    shape_hash: String,
     logrows: u32,
     quant_cfg_id: String,
     static_tables_id: String,
@@ -432,6 +433,7 @@ struct ModelRegistration {
     model_order_digest: String,
     model_arch_id: String,
     model_param_id: String,
+    shape_hash: String,
     quant_cfg_id: String,
     canonical_parameter_count: usize,
     canonical_parameter_digest: String,
@@ -446,6 +448,7 @@ struct CircuitManifest {
     manifest_kind: String,
     compiled_circuit_id: String,
     settings_id: String,
+    shape_hash: String,
     vk_id: String,
     pk_id: String,
     security_profile_id: String,
@@ -474,6 +477,7 @@ struct PublicStatement {
     security_profile_id: String,
     compiled_circuit_id: String,
     settings_id: String,
+    shape_hash: String,
     vk_id: String,
     graph_hash: String,
     node_count: usize,
@@ -1132,6 +1136,58 @@ fn canonical_graph_hash(
     ))
 }
 
+/// Canonical fixed-circuit shape identity shared byte-for-byte with the C++
+/// adapter.  The per-layer input profile is deliberately a separate field so
+/// changing the second hidden layer input width cannot reuse an L2/legacy
+/// compiled circuit or key.
+fn canonical_shape_hash(
+    node_count: usize,
+    edge_count: usize,
+    graph_count: usize,
+    feature_dim: usize,
+    class_count: usize,
+    layer_count: usize,
+    k_out: usize,
+    hidden_profile: &[HiddenProfile],
+    d_in_profile: &[usize],
+) -> Result<String, EZKLError> {
+    let mut payload = Vec::new();
+    for value in [
+        node_count,
+        edge_count,
+        graph_count,
+        feature_dim,
+        class_count,
+        layer_count,
+        k_out,
+    ] {
+        payload.extend_from_slice(
+            &u64::try_from(value)
+                .map_err(|_| "canonical shape dimension exceeds u64")?
+                .to_le_bytes(),
+        );
+    }
+    payload.extend_from_slice(
+        &u64::try_from(hidden_profile.len())
+            .map_err(|_| "canonical hidden profile length exceeds u64")?
+            .to_le_bytes(),
+    );
+    for layer in hidden_profile {
+        for value in [layer.head_count, layer.head_dim] {
+            payload.extend_from_slice(
+                &u64::try_from(value)
+                    .map_err(|_| "canonical hidden profile value exceeds u64")?
+                    .to_le_bytes(),
+            );
+        }
+    }
+    let d_in = encode_u64_vector(d_in_profile)?;
+    Ok(formal_domain_hash_fields(
+        "fixed_circuit_shape",
+        &[("shape", &payload), ("d_in_profile", &d_in)],
+    ))
+}
+
 fn public_graph_hash(statement: &PublicStatement) -> Result<String, EZKLError> {
     canonical_graph_hash(
         statement.node_count,
@@ -1552,6 +1608,7 @@ fn validate_settings(
         return Err("settings identity mismatch".into());
     }
     if settings.security_profile_id != security_profile_id
+        || !is_tagged_sha256(&settings.shape_hash)
         || settings.program_version != PLAN_KIND
         || settings.program_lanes != PROGRAM_LANES
         || settings.semantic_version != FORMAL_SEMANTIC_VERSION
@@ -1576,6 +1633,7 @@ fn validate_registration(
     if registration.registration_kind != "ezkl_formal_model_registration_v1"
         || registration.model_arch_id != plan.model_arch_id
         || registration.model_param_id != plan.model_param_id
+        || registration.shape_hash != plan.shape_hash
         || registration.quant_cfg_id != plan.quant_cfg_id
         || registration.canonical_parameter_count == 0
         || registration.canonical_parameter_digest.is_empty()
@@ -2902,13 +2960,34 @@ fn validate_plan(plan: &FormalPlan) -> Result<(), EZKLError> {
     {
         return Err("formal public identity is not a domain-separated SHA-256 digest".into());
     }
-    if plan.layer_count < 2
+    if plan.layer_count != 3
         || plan.layer_count != plan.hidden_profile.len() + 1
+        || plan.hidden_profile.len() != 2
         || plan.d_in_profile.len() != plan.hidden_profile.len()
-        || plan.k_out == 0
+        || plan.d_in_profile.get(1).copied() != Some(64)
+        || plan.d_in_profile.first().copied() != Some(plan.feature_dim)
+        || plan
+            .hidden_profile
+            .iter()
+            .any(|profile| profile.head_count != 8 || profile.head_dim != 8)
+        || plan.k_out != 2
         || plan.class_count == 0
     {
-        return Err("invalid formal GAT architecture".into());
+        return Err("formal plan is not the canonical L3/[8x8,8x8]/K2 architecture".into());
+    }
+    if canonical_shape_hash(
+        plan.node_count,
+        plan.edge_count,
+        plan.graph_count,
+        plan.feature_dim,
+        plan.class_count,
+        plan.layer_count,
+        plan.k_out,
+        &plan.hidden_profile,
+        &plan.d_in_profile,
+    )? != plan.shape_hash
+    {
+        return Err("formal plan shape hash does not match its L3/profile identity".into());
     }
     validate_quant(&plan.quant)?;
     if plan.quant_cfg_id != plan.quant.canonical_digest
@@ -3717,6 +3796,20 @@ pub fn graph_gat_gen_settings(
     if spec.route_id != FORMAL_ROUTE_ID {
         return Err("graph spec route is not the registered full GAT route".into());
     }
+    if canonical_shape_hash(
+        spec.node_count,
+        spec.edge_count,
+        spec.graph_count,
+        spec.feature_dim,
+        spec.class_count,
+        spec.layer_count,
+        spec.k_out,
+        &spec.hidden_profile,
+        &spec.d_in_profile,
+    )? != spec.shape_hash
+    {
+        return Err("graph spec shape hash does not match its L3/profile identity".into());
+    }
     let csr = read_csr_layout(&csr_layout_path)?;
     if (spec.node_count, spec.edge_count, spec.graph_count)
         != (csr.node_count, csr.edge_count, csr.graph_count)
@@ -3754,6 +3847,7 @@ pub fn graph_gat_gen_settings(
         relation: "R_GAT-ezkl".to_owned(),
         route_id: spec.route_id,
         dataset: spec.dataset,
+        shape_hash: spec.shape_hash,
         logrows,
         quant_cfg_id: spec.quant_cfg_id,
         static_tables_id: spec.static_tables_id,
@@ -3791,6 +3885,20 @@ pub fn graph_gat_compile(
     if spec.route_id != FORMAL_ROUTE_ID {
         return Err("graph spec route is not the registered full GAT route".into());
     }
+    if canonical_shape_hash(
+        spec.node_count,
+        spec.edge_count,
+        spec.graph_count,
+        spec.feature_dim,
+        spec.class_count,
+        spec.layer_count,
+        spec.k_out,
+        &spec.hidden_profile,
+        &spec.d_in_profile,
+    )? != spec.shape_hash
+    {
+        return Err("graph spec shape hash does not match its L3/profile identity".into());
+    }
     let csr = read_csr_layout(&csr_layout_path)?;
     if csr.absolute_ids.len() != csr.node_count {
         return Err("canonical CSR payload is missing absolute node identities".into());
@@ -3810,6 +3918,7 @@ pub fn graph_gat_compile(
         || settings.relation != "R_GAT-ezkl"
         || settings.route_id != spec.route_id
         || settings.dataset != spec.dataset
+        || settings.shape_hash != spec.shape_hash
         || settings.quant_cfg_id != quant.canonical_digest
         || settings.static_tables_id != tables.canonical_digest
         || settings.backend_aux_tables_id != aux_tables.canonical_digest
@@ -4181,6 +4290,7 @@ pub fn graph_gat_setup(
         manifest_kind: "ezkl_formal_gat_circuit_manifest_v1".to_owned(),
         compiled_circuit_id: plan.compiled_circuit_id.clone(),
         settings_id: plan.settings_id.clone(),
+        shape_hash: plan.shape_hash.clone(),
         vk_id: formal_file_id("halo2_verification_key", &vk_path)?,
         pk_id: formal_file_id("halo2_proving_key", &pk_path)?,
         security_profile_id: plan.security_profile_id.clone(),
@@ -4244,6 +4354,7 @@ fn validate_statement(plan: &FormalPlan, statement: &PublicStatement) -> Result<
         || statement.security_profile_id != plan.security_profile_id
         || statement.compiled_circuit_id != plan.compiled_circuit_id
         || statement.settings_id != plan.settings_id
+        || statement.shape_hash != plan.shape_hash
         || statement.graph_hash != plan.graph_hash
     {
         return Err("public statement metadata/circuit binding mismatch".into());
@@ -4320,6 +4431,7 @@ pub fn graph_gat_gen_witness(
     let manifest: CircuitManifest = read_json(&run_dir.join("circuit_manifest.json"))?;
     if manifest.compiled_circuit_id != plan.compiled_circuit_id
         || manifest.settings_id != plan.settings_id
+        || manifest.shape_hash != plan.shape_hash
     {
         return Err("circuit manifest does not match compiled circuit".into());
     }
@@ -4341,6 +4453,7 @@ pub fn graph_gat_gen_witness(
         security_profile_id: plan.security_profile_id.clone(),
         compiled_circuit_id: plan.compiled_circuit_id.clone(),
         settings_id: plan.settings_id.clone(),
+        shape_hash: plan.shape_hash.clone(),
         vk_id: manifest.vk_id,
         graph_hash: plan.graph_hash.clone(),
         node_count: plan.node_count,
@@ -4437,6 +4550,7 @@ pub fn graph_gat_prove(
     validate_resolved_srs_files(&plan, &circuit_manifest)?;
     if circuit_manifest.manifest_kind != "ezkl_formal_gat_circuit_manifest_v1"
         || circuit_manifest.compiled_circuit_id != plan.compiled_circuit_id
+        || circuit_manifest.shape_hash != plan.shape_hash
         || circuit_manifest.security_profile_id != plan.security_profile_id
         || circuit_manifest.quant_cfg_id != plan.quant_cfg_id
         || circuit_manifest.static_tables_id != plan.static_tables_id
@@ -4511,6 +4625,7 @@ pub fn graph_gat_prove(
         "source_tree_digest": FORMAL_SOURCE_ID,
         "vendor_tree_digest": FORMAL_VENDOR_TREE_ID,
         "compiled_circuit_id": plan.compiled_circuit_id,
+        "shape_hash": plan.shape_hash,
         "public_statement_path": public_statement_path,
         "device_requested": device, "device_runtime_marker": device_marker,
         "prover_backend": if device == "cuda" { "cuda_icicle" } else { "cpu" },
@@ -4553,6 +4668,7 @@ pub fn graph_gat_verify(
     validate_registration(&plan, &registration)?;
     if circuit_manifest.manifest_kind != "ezkl_formal_gat_circuit_manifest_v1"
         || settings.settings_id != plan.settings_id
+        || settings.shape_hash != plan.shape_hash
         || settings.status != "ready_for_formal_execution"
         || settings.relation != "R_GAT-ezkl"
         || settings.route_id != plan.route_id
@@ -4564,6 +4680,7 @@ pub fn graph_gat_verify(
         || settings.security_profile_id != plan.security_profile_id
         || circuit_manifest.compiled_circuit_id != plan.compiled_circuit_id
         || circuit_manifest.settings_id != plan.settings_id
+        || circuit_manifest.shape_hash != plan.shape_hash
         || circuit_manifest.vk_id != formal_file_id("halo2_verification_key", &vk_path)?
         || Path::new(&circuit_manifest.verification_srs_path)
             != fs::canonicalize(native_srs_path(&vk_path))?
@@ -4633,6 +4750,7 @@ pub fn graph_gat_verify(
         "proof_instances_trusted": false,
         "compiled_circuit_id": plan.compiled_circuit_id,
         "settings_id": plan.settings_id,
+        "shape_hash": plan.shape_hash,
         "vk_id": circuit_manifest.vk_id,
         "static_tables_id": plan.static_tables_id,
         "backend_aux_tables_id": plan.backend_aux_tables_id,

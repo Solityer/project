@@ -78,8 +78,20 @@ def validate_dependency_sources() -> None:
                     raise SystemExit(f"non-revision git query in {manifest}: {source}")
             match = re.search(r'path\s*=\s*"([^"]+)"', line)
             if match:
+                raw_path = Path(match.group(1))
+                if raw_path.is_absolute():
+                    raise SystemExit(
+                        f"absolute path dependency in {manifest}: {match.group(1)}"
+                    )
+                # Cargo permits a vendored manifest to refer to a sibling
+                # package with a relative ``../`` component.  Normalize that
+                # lexical spelling before checked_path() inspects every
+                # existing component; containment and symlink/hard-link checks
+                # still happen on the normalized path, so this does not permit
+                # an escape from the authenticated baseline/vendor tree.
+                normalized = Path(os.path.abspath(manifest.parent / raw_path))
                 try:
-                    target = checked_path(ROOT, manifest.parent / match.group(1), "path dependency")
+                    target = checked_path(ROOT, normalized, "path dependency")
                 except (FileNotFoundError, ValueError) as exc:
                     raise SystemExit(str(exc)) from exc
                 if not target.is_relative_to(vendor_root):

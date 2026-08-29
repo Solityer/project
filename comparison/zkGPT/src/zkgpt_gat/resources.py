@@ -286,12 +286,21 @@ def _digest_json(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")).hexdigest()
 
 
-def check_resource_layout(root: pathlib.Path, datasets: Iterable[str], *, require_staged: bool = False) -> Dict[str, Any]:
+def check_resource_layout(
+    root: pathlib.Path,
+    datasets: Iterable[str],
+    *,
+    require_staged: bool = False,
+    require_public_y: bool = True,
+) -> Dict[str, Any]:
     """Check only paths and required file names, never dataset contents.
 
     ``require_staged`` is intended for the real runner.  It checks presence of
     the files needed by the native loader but does not open them; the proof
-    path itself performs the authoritative content/schema checks.
+    path itself performs the authoritative content/schema checks.  Registration
+    may set ``require_public_y=False`` because setup commits only the model
+    weights and does not consume the terminal public output.  Formal preflight
+    and proof execution retain the default strict public-Y requirement.
     """
     root = baseline_root(root)
     manifest = read_resource_manifest(root)
@@ -338,10 +347,11 @@ def check_resource_layout(root: pathlib.Path, datasets: Iterable[str], *, requir
                     _owned_regular(paths["checkpoint_bundle"] / name, f"checkpoint {name}")
                 except (FileNotFoundError, OSError, ValueError):
                     missing.append(str(paths["checkpoint_bundle"] / name))
-            try:
-                _owned_regular(paths["public_y_path"], f"dataset {dataset} public_y")
-            except (FileNotFoundError, OSError, ValueError):
-                missing.append(str(paths["public_y_path"]))
+            if require_public_y:
+                try:
+                    _owned_regular(paths["public_y_path"], f"dataset {dataset} public_y")
+                except (FileNotFoundError, OSError, ValueError):
+                    missing.append(str(paths["public_y_path"]))
             if missing:
                 raise FileNotFoundError("baseline-local resources are not staged: " + ", ".join(missing))
         checked[dataset] = {
@@ -351,7 +361,7 @@ def check_resource_layout(root: pathlib.Path, datasets: Iterable[str], *, requir
             "staged": bool(
                 paths["cache_dir"].is_dir()
                 and paths["checkpoint_bundle"].is_dir()
-                and paths["public_y_path"].is_file()
+                and (not require_public_y or paths["public_y_path"].is_file())
             ),
         }
     return {"schema": RESOURCE_MANIFEST_SCHEMA, "baseline": "zkGPT", "datasets": checked}

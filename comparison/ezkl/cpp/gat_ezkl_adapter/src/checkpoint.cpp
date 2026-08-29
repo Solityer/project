@@ -433,8 +433,9 @@ namespace gat_ezkl
         if (config == nullptr) {
             throw std::runtime_error("checkpoint validation requires a non-null config");
         }
-        if (bundle.family_schema_version.empty()) {
-            throw std::runtime_error("checkpoint family_schema_version is empty");
+        if (bundle.family_schema_version != "multi_layer_multi_head_v2") {
+            throw std::runtime_error(
+                "checkpoint family_schema_version is not the canonical multi-layer schema");
         }
         if (bundle.output_average_rule != "per_head_bias_then_arithmetic_mean") {
             throw std::runtime_error("checkpoint output_average_rule does not match formal note");

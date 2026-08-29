@@ -13,7 +13,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from zkgpt_gat.constants import DATASET_ORDER, PROOF_BACKEND_ID, PROTOCOL_ID  # noqa: E402
-from zkgpt_gat.config import read_config  # noqa: E402
+from zkgpt_gat.config import load_app_config  # noqa: E402
 from zkgpt_gat.privacy import check_multi_session_profiles, registration_identity_fingerprint  # noqa: E402
 from zkgpt_gat.registry import canonical_registry_public_path  # noqa: E402
 from zkgpt_gat.result_validation import (  # noqa: E402
@@ -51,7 +51,7 @@ def _replay(root: pathlib.Path, artifact_dir: pathlib.Path, manifest: dict[str, 
     if artifact_dir != expected_artifact_dir:
         return "artifact directory is not canonical results/runs/backend/dataset"
     config = resolve_inside(root, manifest.get("config", ""), "config")
-    config_entries = read_config(config)
+    config_entries = load_app_config(config, root).entries
     registry = canonical_registry_public_path(
         root, config_entries.get("model_param_id", "")
     )

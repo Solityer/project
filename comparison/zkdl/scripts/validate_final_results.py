@@ -32,7 +32,11 @@ from runner_contract import (
     ensure_regular_file,
     load_build_manifest,
     load_resource_manifest,
+    model_shape_payload,
     parse_config,
+    read_checkpoint_tensor_shapes,
+    validate_checkpoint_structure,
+    validate_checkpoint_tensor_shapes,
     pp_binding_from_manifest,
     pp_path_from_manifest,
     private_publication_fields,
@@ -43,6 +47,7 @@ from runner_contract import (
     source_identity,
     validate_pp_file,
     validate_config_resources,
+    validate_quantization_config,
 )
 
 
@@ -130,6 +135,31 @@ def _feature_digest(relation: dict[str, Any], public: dict[str, Any]) -> str:
     return digest.hexdigest()
 
 
+def _architecture_binding(relation: dict[str, Any]) -> dict[str, Any]:
+    """Extract the explicit L/profile/head binding emitted by the adapter."""
+    schema = relation.get("canonical_schema")
+    if not isinstance(schema, dict) or schema.get("schema") != "zkDL_gat_canonical_relation_schema_v1":
+        raise ValueError("canonical relation schema descriptor is missing")
+    architecture = schema.get("architecture")
+    if not isinstance(architecture, dict):
+        raise ValueError("canonical architecture profile is missing")
+    hidden_profile = architecture.get("hidden_profile")
+    d_in_profile = architecture.get("d_in_profile")
+    if not isinstance(hidden_profile, list) or not isinstance(d_in_profile, list):
+        raise ValueError("canonical architecture profiles are missing")
+    profile = []
+    for item in hidden_profile:
+        if not isinstance(item, dict):
+            raise ValueError("canonical hidden profile entry is malformed")
+        profile.append([int(item["head_count"]), int(item["head_dim"])])
+    return {
+        "L": int(architecture["L"]),
+        "hidden_profile": profile,
+        "d_in_profile": [int(item) for item in d_in_profile],
+        "K_out": int(architecture["K_out"]),
+    }
+
+
 def _table_rows_digest(operation_families: Any) -> str:
     if not isinstance(operation_families, list):
         raise ValueError("operation_families must be a list")
@@ -174,52 +204,9 @@ def _table_rows_digest(operation_families: Any) -> str:
 
 
 def _checkpoint_binding(config: dict[str, str], manifest: dict[str, Any], graph_count: int, feature_dim: int) -> dict[str, Any]:
-    dataset = config["dataset"]
-    if manifest.get("dataset", dataset) != dataset:
-        raise ValueError("checkpoint manifest dataset mismatch")
-    for key in ("L", "K_out", "C"):
-        if int(manifest.get(key, -1)) != int(config[key]):
-            raise ValueError(f"checkpoint/config {key} mismatch")
-    profile: list[tuple[int, int]] = []
-    for token in str(config["hidden_profile"]).split(","):
-        parts = token.strip().split("x")
-        if len(parts) != 2 or any(not part.isdigit() for part in parts):
-            raise ValueError("malformed hidden_profile config")
-        profile.append((int(parts[0]), int(parts[1])))
-    actual_profile = [
-        (int(item.get("head_count", -1)), int(item.get("head_dim", -1)))
-        for item in manifest.get("hidden_profile", [])
-    ]
-    if actual_profile != profile:
-        raise ValueError("checkpoint/config hidden_profile mismatch")
-    if [int(value) for value in manifest.get("d_in_profile", [])] != [int(config["d_in_profile"])]:
-        raise ValueError("checkpoint/config d_in_profile mismatch")
-    layers = manifest.get("hidden_layers", [])
-    if len(layers) != len(profile) or not layers:
-        raise ValueError("checkpoint hidden layer/profile count mismatch")
-    if int(layers[0].get("input_dim", -1)) != feature_dim:
-        raise ValueError("checkpoint input_dim mismatch")
-    for layer, expected in zip(layers, profile):
-        if (int(layer.get("head_count", -1)), int(layer.get("head_dim", -1))) != expected:
-            raise ValueError("checkpoint hidden layer dimensions mismatch")
-    if len(manifest.get("hidden_head_specs", [])) != sum(heads for heads, _ in profile):
-        raise ValueError("checkpoint hidden head count mismatch")
-    if len(manifest.get("output_head_specs", [])) != int(config["K_out"]):
-        raise ValueError("checkpoint output head count mismatch")
-    default_rule = "whole_graph_single" if graph_count == 1 else "multi_graph_batch"
-    actual_rule = manifest.get("batching_rule", default_rule)
-    actual_graphs = int(manifest.get("batch_graphs", 1 if actual_rule == "whole_graph_single" else graph_count))
-    if actual_rule != config["batching_rule"] or actual_graphs != int(config["batch_graphs"]):
-        raise ValueError("checkpoint/config batching mismatch")
-    return {
-        "dataset": dataset,
-        "L": int(manifest["L"]),
-        "hidden_profile": actual_profile,
-        "d_in_profile": [int(value) for value in manifest["d_in_profile"]],
-        "K_out": int(manifest["K_out"]),
-        "batching_rule": actual_rule,
-        "batch_graphs": actual_graphs,
-    }
+    return validate_checkpoint_structure(
+        config, manifest, graph_count=graph_count, feature_dim=feature_dim
+    )
 
 
 def current_source_identities(
@@ -233,6 +220,7 @@ def current_source_identities(
     """Read/hash current source bindings without executing data computation."""
     config_file = config_path(dataset)
     config = parse_config(config_file)
+    validate_quantization_config(config)
     validate_config_resources(dataset, config, resource_manifest)
     entry = resource_manifest["datasets"][dataset]
     checkpoint = ensure_directory(
@@ -242,13 +230,10 @@ def current_source_identities(
     tensors_file = ensure_regular_file(checkpoint / "tensors.txt", label=f"{dataset} model tensors")
     checkpoint_manifest = read_json(manifest_file, label=f"{dataset} model manifest")
     binding = _checkpoint_binding(config, checkpoint_manifest, graph_count, feature_dim)
-    shape_payload = {
-        "hidden_layers": checkpoint_manifest["hidden_layers"],
-        "hidden_head_specs": checkpoint_manifest["hidden_head_specs"],
-        "output_head_specs": checkpoint_manifest["output_head_specs"],
-        "class_count": int(checkpoint_manifest["C"]),
-        "feature_dim": feature_dim,
-    }
+    validate_checkpoint_tensor_shapes(
+        checkpoint_manifest, read_checkpoint_tensor_shapes(tensors_file)
+    )
+    shape_payload = model_shape_payload(checkpoint_manifest, feature_dim=feature_dim)
     pp = pp_path_from_manifest(resource_manifest)
     validate_pp_file(pp, resource_manifest)
     registry = ensure_regular_file(
@@ -266,6 +251,10 @@ def current_source_identities(
         "model_shape_id": _json_id(shape_payload),
         "model_arch_id": checkpoint_manifest["model_arch_id"],
         "model_param_id": checkpoint_manifest["model_param_id"],
+        "L": binding["L"],
+        "hidden_profile": binding["hidden_profile"],
+        "d_in_profile": binding["d_in_profile"],
+        "K_out": binding["K_out"],
         "source_static_table_id": checkpoint_manifest["static_table_id"],
         "checkpoint_binding": binding,
         "source_identity": source_identity(),
@@ -443,6 +432,16 @@ def check_cell(
     else:
         require(relation.get("schema") == "zkDL_gat_canonical_adapter_v2", "relation_schema")
         require(relation.get("dataset") == dataset, "relation_dataset")
+        try:
+            architecture_binding = _architecture_binding(relation)
+        except (KeyError, TypeError, ValueError, OverflowError) as error:
+            errors.append(f"{label}:architecture_binding:{error}")
+            architecture_binding = None
+        if architecture_binding is not None:
+            for key, value in architecture_binding.items():
+                require(preflight.get(key) == value, f"preflight_{key}")
+                require(result.get(key) == value, f"result_{key}")
+                require(success.get(key) == value, f"success_{key}")
         require(relation.get("integer_bound_ledger") == ledger, "relation_ledger_copy")
         require(relation.get("static_table_profile") == profile, "relation_static_profile")
         for key, value in public.items():
@@ -520,6 +519,10 @@ def check_cell(
         require(preflight.get("checkpoint_manifest_sha256") == current_identity.get("checkpoint_manifest_sha256"), "checkpoint_manifest_sha256")
         require(preflight.get("checkpoint_tensors_sha256") == current_identity.get("checkpoint_tensors_sha256"), "checkpoint_tensors_sha256")
         require(preflight.get("checkpoint_binding") == current_identity.get("checkpoint_binding"), "checkpoint_binding")
+        for key in ("L", "hidden_profile", "d_in_profile", "K_out"):
+            require(preflight.get(key) == current_identity.get(key), f"preflight_{key}")
+            require(result.get(key) == current_identity.get(key), f"result_{key}")
+            require(success.get(key) == current_identity.get(key), f"success_{key}")
         if profile is not None:
             require(profile.get("source_static_table_id") == current_identity.get("source_static_table_id"), "source_static_table_id")
         for key in ("graph_count", "feature_dim", "class_count", "static_tables_id", "static_table_rows_id"):

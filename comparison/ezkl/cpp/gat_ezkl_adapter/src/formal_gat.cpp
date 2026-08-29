@@ -455,6 +455,7 @@ FormalProfileIds write_formal_gat_artifacts(
     const AppConfig& config,
     const NormalizedGraph& graph,
     const CheckpointBundle& checkpoint,
+    const std::string& shape_hash,
     std::size_t max_in_degree) {
     Matrix features(graph.node_count, std::vector<Integer>(graph.feature_dim));
     Integer feature_bound = 0;
@@ -791,6 +792,7 @@ FormalProfileIds write_formal_gat_artifacts(
                  << ",\"model_order_digest\":\"" << canonical_model_order_digest() << "\""
                  << ",\"model_arch_id\":\"" << json_escape(checkpoint.model_arch_id) << "\""
                  << ",\"model_param_id\":\"" << json_escape(checkpoint.model_param_id) << "\""
+                 << ",\"shape_hash\":\"" << shape_hash << "\""
                  << ",\"quant_cfg_id\":\"" << quant_id << "\""
                  << ",\"canonical_parameter_count\":0,\"canonical_parameter_digest\":\"\""
                  << ",\"parameter_bounds\":" << bounds.str()

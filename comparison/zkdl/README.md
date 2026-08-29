@@ -6,6 +6,13 @@ FAC-style re-indexing, zero-knowledge masked Sumcheck, and Hyrax evaluation
 openings.  It does not import the main experiment or another baseline's proof
 system.
 
+The formal model is pinned to the current canonical GAT shape: `L = 3`, two
+hidden layers with `hidden_profile = [8x8, 8x8]`, layer input profile
+`d_in_profile = [dataset_dim, 64]`, and `K_out = 2`.  Every config, checkpoint
+manifest, canonical relation architecture descriptor, registry, statement,
+collector, and validator binds these fields.  The native zkDL MLE/Sumcheck,
+Pedersen-Hyrax, FAC4DNN, and evaluation-opening path remains unchanged.
+
 ## Environment and build
 
 Python 3 with NumPy is required by the canonical integer witness adapter.  Rust
@@ -37,7 +44,8 @@ build -> prepare_resources (local layout/check) -> setup_resources (PP + authent
       -> validate_final_results
 ```
 
-Each row performs preflight bound/table checks, uses the authenticated
+Each row performs preflight bound/table checks (including the complete
+L/profile/input/head checkpoint binding), uses the authenticated
 baseline-local transparent Hyrax PP, runs the fixed canonical GAT adapter,
 compiles and checks the public statement, registers the model if no
 registration exists, proves on the selected device, independently verifies,

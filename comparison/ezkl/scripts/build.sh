@@ -47,6 +47,10 @@ if [[ ! -x "${ROOT}/target/release/ezkl_formal" ]]; then
   echo "formal CPU binary was not produced" >&2
   exit 2
 fi
+# Cargo may hard-link the top-level release binary to its deps/ copy.  Keep
+# the strict single-link build-identity gate, but materialize this final
+# baseline-local path before hashing it.
+python3 scripts/materialize_binary.py --binary target/release/ezkl_formal
 if [[ "${EZKL_BUILD_GPU:-0}" == "1" ]]; then
   CARGO_TARGET_DIR="${ROOT}/target-gpu" \
     "${CARGO_BIN}" build --offline --locked --release --bin ezkl_formal --no-default-features \
@@ -55,6 +59,7 @@ if [[ "${EZKL_BUILD_GPU:-0}" == "1" ]]; then
     echo "formal CUDA binary was not produced" >&2
     exit 2
   fi
+  python3 scripts/materialize_binary.py --binary target-gpu/release/ezkl_formal
 fi
 mkdir -p "${ROOT}/build_identity"
 cmake -S cpp/gat_ezkl_adapter -B build_gat_adapter -DCMAKE_BUILD_TYPE=Release

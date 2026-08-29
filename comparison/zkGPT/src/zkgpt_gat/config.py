@@ -78,23 +78,48 @@ class AppConfig:
 
     @property
     def hidden_profile(self) -> List[HiddenShape]:
-        return parse_hidden_profile(self.entries.get("hidden_profile", ""))
+        profile = parse_hidden_profile(self.entries.get("hidden_profile", ""))
+        if not profile:
+            raise ValueError("formal config hidden_profile must contain at least one hidden layer")
+        if any(item.head_count <= 0 or item.head_dim <= 0 for item in profile):
+            raise ValueError("formal config hidden_profile dimensions must be positive")
+        return profile
 
     @property
     def d_in_profile(self) -> List[int]:
-        return parse_int_list(self.entries.get("d_in_profile", ""))
+        profile = parse_int_list(self.entries.get("d_in_profile", ""))
+        hidden = self.hidden_profile
+        if len(profile) != len(hidden):
+            raise ValueError(
+                "formal config d_in_profile must provide one input dimension per hidden layer"
+            )
+        if any(value <= 0 for value in profile):
+            raise ValueError("formal config d_in_profile dimensions must be positive")
+        expected = [hidden[index - 1].head_count * hidden[index - 1].head_dim for index in range(1, len(hidden))]
+        if profile[1:] != expected:
+            raise ValueError("formal config d_in_profile does not follow hidden concat dimensions")
+        return profile
 
     @property
     def layer_count(self) -> int:
-        return int(self.entries.get("L", str(len(self.hidden_profile) + 1)))
+        value = int(self.entries.get("L", str(len(self.hidden_profile) + 1)))
+        if value != len(self.hidden_profile) + 1 or value < 2:
+            raise ValueError("formal config L must equal hidden layer count plus output layer")
+        return value
 
     @property
     def k_out(self) -> int:
-        return int(self.entries.get("K_out", "1"))
+        value = int(self.entries.get("K_out", "0"))
+        if value <= 0:
+            raise ValueError("formal config K_out must be positive")
+        return value
 
     @property
     def num_classes(self) -> int:
-        return int(self.entries.get("num_classes", "0"))
+        value = int(self.entries.get("num_classes", "0"))
+        if value <= 0:
+            raise ValueError("formal config num_classes must be positive")
+        return value
 
     @property
     def rounding_mode(self) -> str:
@@ -151,7 +176,6 @@ def write_config(
         "d_in_profile",
         "K_out",
         "batch_graphs",
-        "hidden_dim",
         "num_classes",
         "range_bits",
         "seed",
@@ -267,6 +291,8 @@ def load_app_config(path: pathlib.Path, project_root: pathlib.Path) -> AppConfig
     if not config_path.is_file() or info.st_nlink != 1:
         raise ValueError(f"config must be an owned regular file: {config_path}")
     entries = read_config(config_path)
+    if "hidden_dim" in entries:
+        raise ValueError("legacy hidden_dim is not supported; use hidden_profile")
     dataset = entries.get("dataset", "")
     if dataset not in CONFIG_DATASET_VALUE.values():
         raise ValueError(f"unsupported config dataset: {dataset}")
@@ -304,4 +330,12 @@ def load_app_config(path: pathlib.Path, project_root: pathlib.Path) -> AppConfig
         raise ValueError("resource manifest is not bound to canonical static-table descriptor")
     if not entries.get("model_arch_id") or not entries.get("model_param_id") or not entries.get("quant_cfg_id") or not entries.get("static_table_id"):
         raise ValueError("formal config is missing model/static-table identity")
+    # Force structural validation before any dataset/checkpoint execution.
+    # The formal schema stores one d_in entry per hidden layer (the internal
+    # proof dimensions append each layer's concatenated width separately).
+    _ = AppConfig(entries=entries, path=config_path, project_root=root).hidden_profile
+    _ = AppConfig(entries=entries, path=config_path, project_root=root).d_in_profile
+    _ = AppConfig(entries=entries, path=config_path, project_root=root).layer_count
+    _ = AppConfig(entries=entries, path=config_path, project_root=root).k_out
+    _ = AppConfig(entries=entries, path=config_path, project_root=root).num_classes
     return AppConfig(entries=entries, path=config_path, project_root=root)
