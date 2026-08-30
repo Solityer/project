@@ -87,6 +87,68 @@ def cfg_bool(cfg: Mapping[str, str], key: str, default: bool) -> bool:
     raise ValueError(f"config {key} must be boolean, got {value!r}")
 
 
+def input_quantization_diagnostic(
+    values: torch.Tensor | np.ndarray,
+    *,
+    scale: int = 1,
+    range_bits: int | None = None,
+) -> Dict[str, object]:
+    """Return a lightweight, non-training diagnostic for input quantization.
+
+    The formal chain currently fixes ``S_input=1``.  This helper deliberately
+    does not alter that chain or clip values; it reports what the registered
+    nearest-integer quantizer would do so a future range decision is based on
+    measured information loss rather than an implicit configuration change.
+    """
+    if scale <= 0:
+        raise ValueError("input quantization diagnostic scale must be positive")
+    if isinstance(values, torch.Tensor):
+        raw = values.detach().float().cpu().numpy()
+    else:
+        raw = np.asarray(values, dtype=np.float64)
+    raw = raw.reshape(-1)
+    if raw.size == 0:
+        raise ValueError("input quantization diagnostic requires non-empty input")
+    if not np.all(np.isfinite(raw)):
+        raise ValueError("input quantization diagnostic rejects NaN/Inf")
+    scaled = raw * float(scale)
+    rounded = np.where(scaled >= 0.0, np.floor(scaled + 0.5), np.ceil(scaled - 0.5))
+    quantized = rounded / float(scale)
+    non_integer = np.abs(scaled - np.trunc(scaled)) > 1e-12
+    changed = np.abs(quantized - raw) > 1e-12
+    result: Dict[str, object] = {
+        "scale": int(scale),
+        "element_count": int(raw.size),
+        "zero_ratio": float(np.mean(rounded == 0.0)),
+        "changed_ratio": float(np.mean(changed)),
+        "non_integer_ratio": float(np.mean(non_integer)),
+        "max_abs_input": float(np.max(np.abs(raw))),
+        "max_abs_quantized": float(np.max(np.abs(quantized))),
+        "abs_input_quantiles": {
+            str(q): float(np.quantile(np.abs(raw), q))
+            for q in (0.0, 0.5, 0.9, 0.99, 1.0)
+        },
+        "max_abs_error": float(np.max(np.abs(quantized - raw))),
+        # S_input quantization has no clipping/saturation branch.  Exposing
+        # both fields makes that fact explicit and still reports values which
+        # would exceed the configured unsigned limb/range capacity.
+        # When a formal limb/range is supplied, saturation is exactly the
+        # fraction of rounded values outside that representable range.  Do
+        # not report a hard-coded zero for a lossy input sample.
+        "saturation_ratio": 0.0,
+    }
+    if range_bits is not None:
+        if range_bits <= 0 or range_bits >= 63:
+            raise ValueError("diagnostic range_bits must be in [1, 62]")
+        capacity = float(1 << range_bits)
+        out_of_range = np.abs(rounded) >= capacity
+        result["range_capacity_abs_exclusive"] = int(1 << range_bits)
+        result["out_of_range_ratio"] = float(np.mean(out_of_range))
+        result["out_of_range_count"] = int(np.count_nonzero(out_of_range))
+        result["saturation_ratio"] = float(np.mean(out_of_range))
+    return result
+
+
 def parse_hidden_profile_expr(raw: str) -> HiddenProfile:
     text = raw.strip()
     if text.startswith("[") and text.endswith("]"):
@@ -873,6 +935,11 @@ def add_training_cli(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="allow replacing best_model.pt in the selected output directory",
     )
+    parser.add_argument(
+        "--diagnostic-test-each-epoch",
+        action="store_true",
+        help="opt in to per-epoch test diagnostics; never affects checkpoint selection",
+    )
 
 
 def main() -> None:
@@ -938,6 +1005,11 @@ def main() -> None:
     device = torch.device("cuda" if use_cuda else "cpu")
     set_seed(seed)
     tensors = load_dataset(data_root, dataset, device)
+    input_quantization = input_quantization_diagnostic(
+        tensors.features,
+        scale=1,
+        range_bits=cfg_int(cfg, "range_bits", 12),
+    )
     model = PlanetoidGAT(
         tensors.num_features,
         num_classes=tensors.num_classes,
@@ -996,23 +1068,30 @@ def main() -> None:
             validation_accuracy = masked_accuracy(
                 eval_logits, tensors.labels, tensors.val_mask
             )
-            test_accuracy = masked_accuracy(
-                eval_logits, tensors.labels, tensors.test_mask
+            diagnostic_test_accuracy = (
+                masked_accuracy(eval_logits, tensors.labels, tensors.test_mask)
+                if args.diagnostic_test_each_epoch
+                else None
             )
-        history.append(
-            {
-                "epoch": float(epoch),
-                "train_loss": float(loss.item()),
-                "train_acc": train_accuracy,
-                "val_loss": validation_loss,
-                "val_acc": validation_accuracy,
-                "test_acc": test_accuracy,
-            }
+        epoch_metrics = {
+            "epoch": float(epoch),
+            "train_loss": float(loss.item()),
+            "train_acc": train_accuracy,
+            "val_loss": validation_loss,
+            "val_acc": validation_accuracy,
+        }
+        if diagnostic_test_accuracy is not None:
+            epoch_metrics["test_acc"] = diagnostic_test_accuracy
+        history.append(epoch_metrics)
+        test_suffix = (
+            f" test_acc={diagnostic_test_accuracy:.4f}"
+            if diagnostic_test_accuracy is not None
+            else ""
         )
         print(
             f"[{dataset}] epoch={epoch:04d} train_loss={loss.item():.6f} "
             f"train_acc={train_accuracy:.4f} val_loss={validation_loss:.6f} "
-            f"val_acc={validation_accuracy:.4f} test_acc={test_accuracy:.4f}",
+            f"val_acc={validation_accuracy:.4f}{test_suffix}",
             flush=True,
         )
         if validation_loss < best_val_loss:
@@ -1027,7 +1106,6 @@ def main() -> None:
                 "train_acc": train_accuracy,
                 "val_loss": validation_loss,
                 "val_acc": validation_accuracy,
-                "test_acc": test_accuracy,
             }
             torch.save(
                 {"bundle": metadata, "state_dict": best_state},
@@ -1051,6 +1129,12 @@ def main() -> None:
             dropout=0.0,
             training=False,
         )
+        final_test_accuracy = masked_accuracy(
+            best_logits, tensors.labels, tensors.test_mask
+        )
+        final_test_loss = float(
+            masked_loss(best_logits, tensors.labels, tensors.test_mask).item()
+        )
     np.save(
         output_dir / "best_logits.npy",
         best_logits.detach().cpu().numpy().astype(np.float32, copy=False),
@@ -1062,6 +1146,12 @@ def main() -> None:
                 "device": str(device),
                 "wall_time_sec": time.perf_counter() - start,
                 "best_metrics": best_metrics,
+                "final_test_metrics": {
+                    "test_loss": final_test_loss,
+                    "test_acc": final_test_accuracy,
+                },
+                "per_epoch_test_diagnostic": bool(args.diagnostic_test_each_epoch),
+                "input_quantization_diagnostic": input_quantization,
                 "history_tail": history[-10:],
                 "checkpoint_metadata": metadata,
             },

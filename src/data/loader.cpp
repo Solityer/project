@@ -1,9 +1,11 @@
 #include "gatzk/data/loader.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <numeric>
 #include <sstream>
 #include <stdexcept>
@@ -28,8 +30,14 @@ namespace gatzk::data
                 double sum = 0.0;
                 for (const auto value : row)
                 {
+                    if (!std::isfinite(value))
+                        throw std::runtime_error(
+                            "input feature contains NaN or Inf");
                     sum += value;
                 }
+                if (!std::isfinite(sum))
+                    throw std::runtime_error(
+                        "input feature normalization sum is not finite");
                 if (sum == 0.0)
                 {
                     continue;
@@ -37,6 +45,9 @@ namespace gatzk::data
                 for (auto &value : row)
                 {
                     value /= sum;
+                    if (!std::isfinite(value))
+                        throw std::runtime_error(
+                            "input feature normalization produced NaN or Inf");
                 }
             }
             return normalized;
@@ -81,6 +92,10 @@ namespace gatzk::data
         {
             // Registered input scale is one.  Projection weights carry scale 16,
             // so the protocol's no-implicit-rescale chain yields S_H'=16.
+            if (!std::isfinite(value)
+                || std::abs(value) > static_cast<double>(std::numeric_limits<std::int64_t>::max()))
+                throw std::runtime_error(
+                    "input feature cannot be represented by the registered quantizer");
             return FieldElement::from_signed(static_cast<std::int64_t>(value >= 0.0 ? value + 0.5 : value - 0.5));
         }
 

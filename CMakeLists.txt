@@ -26,6 +26,32 @@ set_property(CACHE GATZK_CRYPTO_BACKEND PROPERTY STRINGS mcl)
 
 find_package(Threads REQUIRED)
 find_package(OpenSSL REQUIRED)
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+
+# Embed a canonical source inventory and compiler receipt in every binary.
+# Runtime artifact export additionally hashes the actual executable bytes, so
+# arbitrary provenance environment variables cannot promote a formal run.
+set(GATZK_GENERATED_INCLUDE_DIR "${CMAKE_BINARY_DIR}/generated")
+set(GATZK_BUILD_PROVENANCE_HEADER
+    "${GATZK_GENERATED_INCLUDE_DIR}/gatzk/build_provenance.hpp")
+set(GATZK_SOURCE_MANIFEST
+    "${GATZK_GENERATED_INCLUDE_DIR}/gatzk/source_manifest.json")
+file(MAKE_DIRECTORY "${GATZK_GENERATED_INCLUDE_DIR}/gatzk")
+set(GATZK_BUILD_FLAGS
+    "CXX=${CMAKE_CXX_FLAGS};BUILD=${CMAKE_BUILD_TYPE};NATIVE=${GATZK_ENABLE_NATIVE_ARCH};CUDA=${GATZK_ENABLE_CUDA_BACKEND};FAST_MSM=${GATZK_ENABLE_FAST_MSM_DEFAULT};PARALLEL_FFT=${GATZK_ENABLE_PARALLEL_FFT_DEFAULT};FFT_BACKEND=${GATZK_ENABLE_FFT_BACKEND_UPGRADE_DEFAULT};FFT_KERNEL=${GATZK_ENABLE_FFT_KERNEL_UPGRADE_DEFAULT};TRACE_LAYOUT=${GATZK_ENABLE_TRACE_LAYOUT_UPGRADE_DEFAULT};FAST_VERIFY=${GATZK_ENABLE_FAST_VERIFY_PAIRING_DEFAULT}")
+execute_process(
+    COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/build_provenance.py"
+            --root "${PROJECT_SOURCE_DIR}"
+            --output "${GATZK_BUILD_PROVENANCE_HEADER}"
+            --source-manifest-output "${GATZK_SOURCE_MANIFEST}"
+            --compiler-id "${CMAKE_CXX_COMPILER_ID}"
+            --compiler-version "${CMAKE_CXX_COMPILER_VERSION}"
+            --build-type "${CMAKE_BUILD_TYPE}"
+            --flags "${GATZK_BUILD_FLAGS}"
+    RESULT_VARIABLE GATZK_PROVENANCE_RESULT)
+if(NOT GATZK_PROVENANCE_RESULT EQUAL 0)
+    message(FATAL_ERROR "failed to generate source-locked build provenance")
+endif()
 if(GATZK_ENABLE_NATIVE_ARCH)
     include(CheckCXXCompilerFlag)
     check_cxx_compiler_flag("-march=native" GATZK_CXX_SUPPORTS_MARCH_NATIVE)
@@ -72,6 +98,8 @@ set(GATZK_SOURCES
     src/protocol/schema_labels.cpp
     src/protocol/trace.cpp
     src/protocol/verifier.cpp
+    src/protocol/verifier_context.cpp
+    src/protocol/verifier_registration_artifact.cpp
     src/protocol/zkmap.cpp
     src/util/config.cpp
     src/util/logging.cpp
@@ -155,7 +183,9 @@ if(GATZK_ENABLE_CUDA_BACKEND)
 endif()
 
 add_library(gatzkml STATIC ${GATZK_SOURCES})
-target_include_directories(gatzkml PUBLIC ${PROJECT_SOURCE_DIR}/include)
+target_include_directories(gatzkml PUBLIC
+    "${GATZK_GENERATED_INCLUDE_DIR}"
+    ${PROJECT_SOURCE_DIR}/include)
 target_compile_options(gatzkml PRIVATE -Wall -Wextra -Wpedantic)
 if(GATZK_ENABLE_NATIVE_ARCH AND GATZK_CXX_SUPPORTS_MARCH_NATIVE)
     target_compile_options(
@@ -197,6 +227,19 @@ endif()
 add_executable(gatzk_run src/main.cpp)
 target_link_libraries(gatzk_run PRIVATE gatzkml)
 
+# Explicit setup utility for the authenticated point-only VK_model/VK_static
+# registry.  Formal runs consume an existing registry and fail closed when it
+# is absent; this target is never invoked implicitly by gatzk_run.
+add_executable(gatzk_registry_register tools/register_verifier_registry.cpp)
+target_link_libraries(gatzk_registry_register PRIVATE gatzkml)
+
+# Short-lived independent inspection utility used by the fail-closed result
+# aggregator.  It consumes only the canonical point-only registration artifact
+# and emits authenticated registry/ledger metadata; it never constructs a
+# proving context or starts a proof run.
+add_executable(gatzk_registry_inspect tools/inspect_verifier_registry.cpp)
+target_link_libraries(gatzk_registry_inspect PRIVATE gatzkml)
+
 add_executable(gatzk_srs_setup tools/srs/generate_srs.cpp)
 target_include_directories(gatzk_srs_setup PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(gatzk_srs_setup PRIVATE gatzkml)
@@ -207,3 +250,13 @@ target_link_libraries(gatzk_srs_setup PRIVATE gatzkml)
 add_executable(gatzk_layered_schema_test tests/layered_schema_runtime.cpp)
 target_link_libraries(gatzk_layered_schema_test PRIVATE gatzkml)
 add_test(NAME layered_schema_runtime COMMAND gatzk_layered_schema_test)
+
+add_executable(gatzk_verifier_privacy_test tests/verifier_privacy_runtime.cpp)
+target_link_libraries(gatzk_verifier_privacy_test PRIVATE gatzkml)
+add_test(NAME verifier_privacy_runtime COMMAND gatzk_verifier_privacy_test)
+
+# Short-lived cache identity/TOCTOU regression.  It hashes only small
+# temporary resource fixtures and never loads a real SRS or starts a proof.
+add_executable(gatzk_kzg_resource_identity_test tests/kzg_resource_identity_runtime.cpp)
+target_link_libraries(gatzk_kzg_resource_identity_test PRIVATE gatzkml)
+add_test(NAME kzg_resource_identity_runtime COMMAND gatzk_kzg_resource_identity_test)

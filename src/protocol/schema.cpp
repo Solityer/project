@@ -5,17 +5,20 @@
 #include "gatzk/protocol/quotients.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <set>
 #include <sstream>
 #include <stdexcept>
 #include <array>
 #include <functional>
+#include <iomanip>
 #include <limits>
 #include <map>
 #include <numeric>
 #include <tuple>
 #include <memory>
 #include <openssl/bn.h>
+#include <openssl/sha.h>
 
 // 实现正式 proof schema 的命名与顺序规则。任何标签拼接方式变化都会影响 trace、proof、artifact 与 verifier 的一致性。
 
@@ -212,6 +215,198 @@ namespace gatzk::protocol
             static const ExactInteger modulus(
                 "52435875175126190479447740508185965837690552500527637822603658699938581184513");
             return modulus;
+        }
+
+        std::uint64_t checked_bound_add(
+            std::uint64_t lhs,
+            std::uint64_t rhs,
+            std::string_view label)
+        {
+            if (rhs > std::numeric_limits<std::uint64_t>::max() - lhs)
+                throw std::runtime_error(
+                    "IntegerBoundLedger addition overflow: " + std::string(label));
+            return lhs + rhs;
+        }
+
+        std::uint64_t checked_bound_mul(
+            std::uint64_t lhs,
+            std::uint64_t rhs,
+            std::string_view label)
+        {
+            if (lhs != 0 && rhs > std::numeric_limits<std::uint64_t>::max() / lhs)
+                throw std::runtime_error(
+                    "IntegerBoundLedger multiplication overflow: " + std::string(label));
+            return lhs * rhs;
+        }
+
+        std::string sha256_hex_bytes(std::string_view bytes)
+        {
+            std::array<unsigned char, SHA256_DIGEST_LENGTH> digest{};
+            SHA256(
+                reinterpret_cast<const unsigned char *>(bytes.data()),
+                bytes.size(),
+                digest.data());
+            std::ostringstream out;
+            out << std::hex << std::setfill('0');
+            for (const auto byte : digest)
+                out << std::setw(2) << static_cast<unsigned int>(byte);
+            return out.str();
+        }
+
+        bool canonical_decimal(std::string_view value)
+        {
+            return !value.empty()
+                && !(value.size() > 1 && value.front() == '0')
+                && std::all_of(
+                    value.begin(), value.end(),
+                    [](unsigned char ch) { return ch >= '0' && ch <= '9'; });
+        }
+
+        ExactRational parse_exact_rational(
+            std::string_view value,
+            std::string_view label)
+        {
+            const auto slash = value.find('/');
+            if (slash == std::string_view::npos
+                || !canonical_decimal(value.substr(0, slash))
+                || !canonical_decimal(value.substr(slash + 1)))
+                throw std::runtime_error(
+                    "SecurityBudgetLedger malformed rational: "
+                    + std::string(label));
+            ExactRational out{
+                ExactInteger(std::string(value.substr(0, slash))),
+                ExactInteger(std::string(value.substr(slash + 1)))};
+            out.normalize();
+            return out;
+        }
+
+        std::string summary_rational(
+            std::string_view expression,
+            std::string_view key)
+        {
+            const auto marker = std::string("|") + std::string(key) + "=";
+            const auto begin = expression.find(marker);
+            if (begin == std::string_view::npos)
+                throw std::runtime_error(
+                    "SecurityBudgetLedger summary is missing "
+                    + std::string(key));
+            const auto value_begin = begin + marker.size();
+            const auto value_end = expression.find('|', value_begin);
+            return std::string(expression.substr(
+                value_begin,
+                value_end == std::string_view::npos
+                    ? expression.size() - value_begin
+                    : value_end - value_begin));
+        }
+
+        std::uint64_t quantized_abs_bound(
+            const std::vector<double> &values,
+            std::uint64_t scale,
+            std::string_view label)
+        {
+            if (scale == 0)
+                throw std::runtime_error(
+                    "IntegerBoundLedger scale is zero: " + std::string(label));
+            std::uint64_t bound = 0;
+            for (const auto value : values)
+            {
+                if (!std::isfinite(value))
+                    throw std::runtime_error(
+                        "IntegerBoundLedger encountered non-finite value: " + std::string(label));
+                const long double scaled =
+                    std::abs(static_cast<long double>(value)) *
+                    static_cast<long double>(scale);
+                if (scaled > static_cast<long double>(std::numeric_limits<std::uint64_t>::max()) - 1.0L)
+                    throw std::runtime_error(
+                        "IntegerBoundLedger quantization overflow: " + std::string(label));
+                const auto rounded = static_cast<std::uint64_t>(
+                    std::floor(scaled + 0.5L));
+                bound = std::max(bound, rounded);
+            }
+            return bound;
+        }
+
+        std::uint64_t quantized_abs_bound(
+            const model::FloatMatrix &matrix,
+            std::uint64_t scale,
+            std::string_view label)
+        {
+            std::uint64_t bound = 0;
+            for (const auto &row : matrix)
+                bound = std::max(bound, quantized_abs_bound(row, scale, label));
+            return bound;
+        }
+
+        std::size_t minimum_bound_limb_count(
+            std::uint64_t bound,
+            std::size_t range_bits)
+        {
+            if (range_bits == 0 || range_bits >= 63)
+                throw std::runtime_error(
+                    "IntegerBoundLedger range_bits must be in [1,62]");
+            std::size_t count = 1;
+            while (bound >= (std::uint64_t{1} << range_bits))
+            {
+                bound >>= range_bits;
+                if (count == std::numeric_limits<std::size_t>::max())
+                    throw std::runtime_error(
+                        "IntegerBoundLedger limb count overflow");
+                ++count;
+            }
+            return count;
+        }
+
+        void require_limb_representation_capacity(
+            std::uint64_t bound,
+            std::size_t limb_count,
+            std::size_t range_bits,
+            std::string_view label)
+        {
+            if (range_bits == 0 || range_bits >= 63 || limb_count == 0)
+                throw std::runtime_error(
+                    "IntegerBoundLedger limb representation parameters are invalid: "
+                    + std::string(label));
+            if (limb_count > std::numeric_limits<std::size_t>::max() / range_bits)
+                throw std::runtime_error(
+                    "IntegerBoundLedger limb bit-width multiplication overflow: "
+                    + std::string(label));
+            const auto bit_count = limb_count * range_bits;
+            const auto representation_max =
+                (ExactInteger(1) << bit_count) - ExactInteger(1);
+            const auto signed_capacity =
+                (bls12_381_scalar_modulus() - ExactInteger(1)) / ExactInteger(2);
+            // The complete registered representation, rather than only the
+            // observed bound, must fit below the signed field decoding range.
+            if (representation_max.compare(signed_capacity) >= 0)
+                throw std::runtime_error(
+                    "IntegerBoundLedger limb representation exceeds field signed capacity: "
+                    + std::string(label));
+            if (ExactInteger(bound).compare(representation_max) > 0)
+                throw std::runtime_error(
+                    "IntegerBoundLedger bound exceeds registered limb representation: "
+                    + std::string(label));
+        }
+
+        void require_field_signed_capacity(
+            std::uint64_t bound,
+            std::string_view label)
+        {
+            const auto signed_capacity =
+                (bls12_381_scalar_modulus() - ExactInteger(1)) / ExactInteger(2);
+            if (ExactInteger(bound).compare(signed_capacity) >= 0)
+                throw std::runtime_error(
+                    "IntegerBoundLedger bound is not strictly below field signed capacity: " +
+                    std::string(label));
+        }
+
+        std::string integer_bound_entry_string(
+            const IntegerBoundLedgerEntry &entry)
+        {
+            return "id=" + entry.id
+                + "|stage=" + entry.stage
+                + "|source=" + entry.source
+                + "|absolute_bound=" + std::to_string(entry.absolute_bound)
+                + "|limb_count=" + std::to_string(entry.limb_count);
         }
 
         bool canonical_field_less(
@@ -511,6 +706,757 @@ namespace gatzk::protocol
     }
 
     // block 顺序是 proof serializer / parser 与 verifier 共享的固定契约。
+    std::string integer_bound_ledger_canonical_bytes(
+        const std::vector<IntegerBoundLedgerEntry> &ledger)
+    {
+        std::string out;
+        out.append("IntegerBoundLedger:v1", sizeof("IntegerBoundLedger:v1") - 1);
+        const auto append_u64 = [&](std::uint64_t value)
+        {
+            for (std::size_t byte = 0; byte < sizeof(value); ++byte)
+                out.push_back(static_cast<char>((value >> (8 * byte)) & 0xffU));
+        };
+        const auto append_string = [&](const std::string &value)
+        {
+            append_u64(value.size());
+            out.append(value);
+        };
+        append_u64(ledger.size());
+        for (const auto &entry : ledger)
+        {
+            append_string(entry.id);
+            append_string(entry.stage);
+            append_string(entry.source);
+            append_u64(entry.absolute_bound);
+            append_u64(entry.limb_count);
+        }
+        return out;
+    }
+
+    std::string security_budget_ledger_canonical_bytes(
+        const std::vector<CompilerLedgerEntry> &ledger)
+    {
+        std::string out;
+        out.append("SecurityBudgetLedger:v1", sizeof("SecurityBudgetLedger:v1") - 1);
+        const auto append_u64 = [&](std::uint64_t value)
+        {
+            for (std::size_t byte = 0; byte < sizeof(value); ++byte)
+                out.push_back(static_cast<char>((value >> (8 * byte)) & 0xffU));
+        };
+        const auto append_string = [&](const std::string &value)
+        {
+            append_u64(value.size());
+            out.append(value);
+        };
+        append_u64(ledger.size());
+        for (const auto &entry : ledger)
+        {
+            append_string(entry.id);
+            append_string(entry.object_or_challenge);
+            append_string(entry.domain);
+            append_string(entry.transcript_stage);
+            append_string(entry.expression_or_certificate);
+            append_u64(entry.degree_bound);
+            append_u64(entry.query_bound);
+            append_u64(entry.exclusion_degree);
+            append_u64(entry.multiplicity);
+        }
+        return out;
+    }
+
+    SecurityBudgetEvaluation evaluate_security_budget(
+        const ProtocolContext &context,
+        const ProtocolCompilerArtifact &artifact)
+    {
+        SecurityBudgetEvaluation result;
+        result.ledger_digest = sha256_hex_bytes(
+            security_budget_ledger_canonical_bytes(
+                artifact.security_budget_ledger));
+        try
+        {
+            constexpr std::size_t kQFsMax = 1048576;
+            constexpr std::size_t kLambdaTarget = 120;
+            constexpr std::size_t kLambdaKzg = 128;
+            constexpr std::size_t kLambdaRegister = 128;
+            constexpr std::size_t kLambdaRandomOracle = 128;
+            const auto summary_it = std::find_if(
+                artifact.security_budget_ledger.begin(),
+                artifact.security_budget_ledger.end(),
+                [](const CompilerLedgerEntry &entry)
+                { return entry.id == "budget:summary"; });
+            if (summary_it == artifact.security_budget_ledger.end()
+                || summary_it != std::prev(artifact.security_budget_ledger.end())
+                || summary_it->object_or_challenge != "epsilon_total"
+                || summary_it->domain != "exact-rational"
+                || summary_it->degree_bound != 1
+                || summary_it->query_bound != kQFsMax
+                || summary_it->multiplicity != 1)
+                return result;
+
+            ExactRational epsilon_alg;
+            for (const auto &entry : artifact.security_budget_ledger)
+            {
+                if (&entry == &*summary_it)
+                    continue;
+                if (entry.id.empty() || !entry.id.starts_with("budget:")
+                    || entry.object_or_challenge.empty()
+                    || entry.domain != "Fr"
+                    || entry.degree_bound == 0
+                    || entry.query_bound != kQFsMax
+                    || entry.multiplicity == 0)
+                    return result;
+                const auto denominator =
+                    bls12_381_scalar_modulus()
+                    - exact_integer(entry.exclusion_degree);
+                if (!denominator.is_positive())
+                    return result;
+                ExactRational term{
+                    exact_integer(kQFsMax)
+                        * exact_integer(entry.multiplicity)
+                        * exact_integer(entry.degree_bound),
+                    denominator};
+                term.normalize();
+                const auto expected =
+                    std::string("exact-rational:Q_FS_max*multiplicity*d_max/(p-B)")
+                    + "|value=" + term.canonical()
+                    + "|Q_FS_max=" + std::to_string(kQFsMax)
+                    + "|d_max=" + std::to_string(entry.degree_bound)
+                    + "|B=" + std::to_string(entry.exclusion_degree)
+                    + "|multiplicity=" + std::to_string(entry.multiplicity);
+                if (entry.expression_or_certificate != expected)
+                    return result;
+                epsilon_alg = exact_add(std::move(epsilon_alg), term);
+            }
+
+            ExactInteger epsilon_abort_numerator(0);
+            for (const auto &entry : artifact.random_identity_ledger)
+            {
+                if (entry.id.find(":logup-cleared-endpoint")
+                    == std::string::npos)
+                    continue;
+                constexpr std::string_view marker =
+                    "|active-denominator-count=";
+                const auto marker_position =
+                    entry.expression_or_certificate.find(marker);
+                if (marker_position == std::string::npos)
+                    return result;
+                const auto number_begin = marker_position + marker.size();
+                const auto number_end = entry.expression_or_certificate.find(
+                    '|', number_begin);
+                const auto encoded_count = entry.expression_or_certificate.substr(
+                    number_begin,
+                    number_end == std::string::npos
+                        ? entry.expression_or_certificate.size() - number_begin
+                        : number_end - number_begin);
+                if (!canonical_decimal(encoded_count)
+                    || encoded_count == "0")
+                    return result;
+                epsilon_abort_numerator = epsilon_abort_numerator
+                    + ExactInteger(encoded_count);
+            }
+            ExactRational epsilon_abort{
+                epsilon_abort_numerator,
+                bls12_381_scalar_modulus()};
+            epsilon_abort.normalize();
+
+            const auto max_domain_size = std::max({
+                context.domains.fh == nullptr ? std::size_t{0} : context.domains.fh->size,
+                context.domains.edge == nullptr ? std::size_t{0} : context.domains.edge->size,
+                context.domains.in == nullptr ? std::size_t{0} : context.domains.in->size,
+                context.domains.d == nullptr ? std::size_t{0} : context.domains.d->size,
+                context.domains.cat == nullptr ? std::size_t{0} : context.domains.cat->size,
+                context.domains.c == nullptr ? std::size_t{0} : context.domains.c->size,
+                context.domains.n == nullptr ? std::size_t{0} : context.domains.n->size});
+            if (max_domain_size == 0)
+                return result;
+            const auto n_tau = bls12_381_scalar_modulus()
+                - exact_integer(1) - exact_integer(max_domain_size);
+            if (!n_tau.is_positive())
+                return result;
+            ExactInteger epsilon_crs_numerator(0);
+            for (const auto &entry : artifact.observation_ledger)
+            {
+                if (entry.exclusion_degree != 0)
+                    epsilon_crs_numerator = epsilon_crs_numerator
+                        + exact_integer(entry.exclusion_degree);
+            }
+            ExactRational epsilon_crs{
+                epsilon_crs_numerator,
+                n_tau};
+            epsilon_crs.normalize();
+
+            ExactRational epsilon_total = epsilon_alg;
+            epsilon_total = exact_add(std::move(epsilon_total), epsilon_abort);
+            epsilon_total = exact_add(std::move(epsilon_total), epsilon_crs);
+            for (const auto lambda : {
+                     kLambdaKzg, kLambdaRegister, kLambdaRandomOracle})
+            {
+                ExactRational direct{
+                    ExactInteger(1), ExactInteger(1) << lambda};
+                epsilon_total = exact_add(std::move(epsilon_total), direct);
+            }
+
+            const auto &expression = summary_it->expression_or_certificate;
+            if (!expression.starts_with(
+                    "exact-rational:lambda_target="))
+                return result;
+            const auto expected_prefix =
+                std::string("exact-rational:lambda_target=")
+                + std::to_string(kLambdaTarget)
+                + "|Q_FS_max=" + std::to_string(kQFsMax)
+                + "|lambda_KZG=" + std::to_string(kLambdaKzg)
+                + "|lambda_register=" + std::to_string(kLambdaRegister)
+                + "|lambda_RO=" + std::to_string(kLambdaRandomOracle)
+                + "|epsilon_alg=" + epsilon_alg.canonical()
+                + "|epsilon_abort=" + epsilon_abort.canonical()
+                + "|epsilon_crs=" + epsilon_crs.canonical()
+                + "|epsilon_total=" + epsilon_total.canonical()
+                + "|gate=epsilon_total<=2^-120";
+            if (expression != expected_prefix
+                || !exact_at_most_power_of_two(epsilon_total, kLambdaTarget))
+                return result;
+            result.passed = true;
+            result.exact_budget = epsilon_total.canonical();
+        }
+        catch (const std::exception &)
+        {
+            result.passed = false;
+            result.exact_budget.clear();
+        }
+        catch (...)
+        {
+            result.passed = false;
+            result.exact_budget.clear();
+        }
+        return result;
+    }
+
+    namespace
+    {
+        constexpr std::size_t kMaxCanonicalStaticTableRows = 1ULL << 24;
+
+        std::int64_t canonical_quantize_signed(
+            double value,
+            std::uint64_t scale)
+        {
+            if (scale == 0)
+                throw std::runtime_error(
+                    "canonical static-table generator received a zero scale");
+            const auto scaled = value * static_cast<double>(scale);
+            if (!std::isfinite(scaled)
+                || scaled > static_cast<double>(std::numeric_limits<std::int64_t>::max())
+                || scaled < static_cast<double>(std::numeric_limits<std::int64_t>::min()))
+                throw std::runtime_error(
+                    "canonical static-table generator quantization overflow");
+            return static_cast<std::int64_t>(
+                scaled >= 0.0 ? scaled + 0.5 : scaled - 0.5);
+        }
+
+        std::size_t canonical_signed_table_size(
+            std::int64_t min_raw,
+            std::int64_t max_raw)
+        {
+            if (min_raw > max_raw)
+                throw std::runtime_error(
+                    "canonical static-table generator signed interval is invalid");
+            const auto span =
+                static_cast<std::uint64_t>(max_raw)
+                - static_cast<std::uint64_t>(min_raw) + 1U;
+            if (span == 0 || span > kMaxCanonicalStaticTableRows
+                || span > std::numeric_limits<std::size_t>::max())
+                throw std::runtime_error(
+                    "canonical static-table generator interval is too large");
+            return static_cast<std::size_t>(span);
+        }
+
+        void require_canonical_table_rows(
+            std::size_t rows,
+            std::string_view label)
+        {
+            if (rows == 0 || rows > kMaxCanonicalStaticTableRows)
+                throw std::runtime_error(
+                    "canonical static-table generator row cap exceeded: "
+                    + std::string(label));
+        }
+
+        std::vector<algebra::FieldElement> canonical_range_table(
+            std::size_t range_bits)
+        {
+            if (range_bits == 0 || range_bits >= 63)
+                throw std::runtime_error(
+                    "canonical static-table generator range_bits must be in [1,62]");
+            const auto rows = std::size_t{1} << range_bits;
+            require_canonical_table_rows(rows, "T_range");
+            std::vector<algebra::FieldElement> out(rows, algebra::FieldElement::zero());
+            for (std::size_t index = 0; index < rows; ++index)
+                out[index] = algebra::FieldElement(index);
+            return out;
+        }
+
+        std::vector<std::pair<algebra::FieldElement, algebra::FieldElement>>
+        canonical_lrelu_table(
+            std::int64_t min_raw,
+            std::int64_t max_raw,
+            std::uint64_t input_scale,
+            std::uint64_t output_scale)
+        {
+            const auto rows = canonical_signed_table_size(min_raw, max_raw);
+            std::vector<std::pair<algebra::FieldElement, algebra::FieldElement>> out;
+            out.reserve(rows);
+            for (std::int64_t raw = min_raw;; ++raw)
+            {
+                const auto input =
+                    static_cast<double>(raw) / static_cast<double>(input_scale);
+                const auto output = input >= 0.0 ? input : 0.2 * input;
+                const auto output_raw =
+                    canonical_quantize_signed(output, output_scale);
+                out.push_back({
+                    algebra::FieldElement::from_signed(raw),
+                    algebra::FieldElement::from_signed(output_raw)});
+                if (raw == max_raw)
+                    break;
+            }
+            return out;
+        }
+
+        std::vector<std::pair<algebra::FieldElement, algebra::FieldElement>>
+        canonical_elu_table(
+            std::size_t bound,
+            std::uint64_t input_scale,
+            std::uint64_t output_scale)
+        {
+            if (bound > (kMaxCanonicalStaticTableRows - 1U) / 2U)
+                throw std::runtime_error(
+                    "canonical static-table generator ELU interval is too large");
+            const auto rows = bound * 2U + 1U;
+            require_canonical_table_rows(rows, "T_ELU");
+            std::vector<std::pair<algebra::FieldElement, algebra::FieldElement>> out;
+            out.reserve(rows);
+            if (bound > static_cast<std::size_t>(std::numeric_limits<std::int64_t>::max()))
+                throw std::runtime_error(
+                    "canonical static-table generator ELU bound exceeds signed range");
+            const auto signed_bound = static_cast<std::int64_t>(bound);
+            for (std::int64_t raw = -signed_bound;; ++raw)
+            {
+                const auto input =
+                    static_cast<double>(raw) / static_cast<double>(input_scale);
+                const auto central = input >= 0.0
+                                         ? input
+                                         : std::exp(input) - 1.0;
+                out.push_back({
+                    algebra::FieldElement::from_signed(raw),
+                    algebra::FieldElement::from_signed(
+                        canonical_quantize_signed(central, output_scale))});
+                if (raw == signed_bound)
+                    break;
+            }
+            return out;
+        }
+
+        std::vector<std::pair<algebra::FieldElement, algebra::FieldElement>>
+        canonical_exp_table(
+            std::size_t rows,
+            std::uint64_t input_scale,
+            std::uint64_t output_scale)
+        {
+            require_canonical_table_rows(rows, "T_exp");
+            std::vector<std::pair<algebra::FieldElement, algebra::FieldElement>> out;
+            out.reserve(rows);
+            std::int64_t previous = std::numeric_limits<std::int64_t>::max();
+            for (std::size_t index = 0; index < rows; ++index)
+            {
+                if (index > static_cast<std::size_t>(std::numeric_limits<std::int64_t>::max()))
+                    throw std::runtime_error(
+                        "canonical static-table generator ExpMap index exceeds signed range");
+                const auto central = canonical_quantize_signed(
+                    std::exp(-static_cast<double>(index)
+                             / static_cast<double>(input_scale)),
+                    output_scale);
+                const auto candidate = std::max<std::int64_t>(1, central);
+                if (candidate > previous)
+                    throw std::runtime_error(
+                        "canonical static-table generator ExpMap is not non-increasing");
+                out.push_back({
+                    algebra::FieldElement(static_cast<std::uint64_t>(index)),
+                    algebra::FieldElement::from_signed(candidate)});
+                previous = candidate;
+            }
+            return out;
+        }
+
+        std::uint64_t canonical_lrelu_output_bound(
+            std::int64_t min_raw,
+            std::int64_t max_raw,
+            std::uint64_t input_scale,
+            std::uint64_t output_scale)
+        {
+            // The canonical LReLU is monotone on either side of zero.  Its
+            // absolute quantized maximum is therefore attained at one of the
+            // two interval endpoints; computing those endpoints avoids
+            // materializing millions of rows merely to plan T_exp.
+            const auto endpoint_bound = [&](std::int64_t raw)
+                -> std::uint64_t
+            {
+                const auto input = static_cast<double>(raw)
+                    / static_cast<double>(input_scale);
+                const auto output = input >= 0.0 ? input : 0.2 * input;
+                const auto quantized = canonical_quantize_signed(
+                    output, output_scale);
+                if (quantized == std::numeric_limits<std::int64_t>::min())
+                    throw std::runtime_error(
+                        "canonical static-table generator LReLU output bound overflows signed range");
+                return static_cast<std::uint64_t>(
+                    quantized < 0 ? -quantized : quantized);
+            };
+            return std::max(
+                endpoint_bound(min_raw), endpoint_bound(max_raw));
+        }
+
+        std::size_t checked_table_product(
+            std::size_t lhs,
+            std::size_t rhs,
+            std::string_view label)
+        {
+            if (lhs != 0 && rhs > std::numeric_limits<std::size_t>::max() / lhs)
+                throw std::runtime_error(
+                    "canonical static-table generator size overflow: "
+                    + std::string(label));
+            return lhs * rhs;
+        }
+    }
+
+    std::size_t canonical_exp_table_size_from_delta_bound(
+        std::uint64_t delta_bound)
+    {
+        if (delta_bound == std::numeric_limits<std::uint64_t>::max())
+            throw std::runtime_error(
+                "canonical static-table generator ExpMap row-count overflow for delta bound "
+                + std::to_string(delta_bound));
+        const auto rows = delta_bound + 1U;
+        if (rows > std::numeric_limits<std::size_t>::max()
+            || rows == 0
+            || rows > kMaxCanonicalStaticTableRows)
+            throw std::runtime_error(
+                "canonical static-table generator ExpMap interval is too large for delta bound "
+                + std::to_string(delta_bound) + " (required rows="
+                + std::to_string(rows) + ", row cap="
+                + std::to_string(kMaxCanonicalStaticTableRows) + ")");
+        return static_cast<std::size_t>(rows);
+    }
+
+    CanonicalStaticTableShape plan_canonical_static_table_shape(
+        const CanonicalStaticTableShapeInputs &inputs)
+    {
+        const auto range_bits = inputs.range_bits;
+        if (range_bits == 0 || range_bits >= 63)
+            throw std::runtime_error(
+                "canonical static-table generator range_bits must be in [1,62]");
+        const auto configured_range_size = std::size_t{1} << range_bits;
+        if (configured_range_size > kMaxCanonicalStaticTableRows)
+            throw std::runtime_error(
+                "canonical static-table generator T_range interval is too large: required rows="
+                + std::to_string(configured_range_size) + ", row cap="
+                + std::to_string(kMaxCanonicalStaticTableRows));
+
+        std::size_t feature_cardinality = 0;
+        if (inputs.dataset_num_features != 0
+            && inputs.dataset_num_nodes
+                   > std::numeric_limits<std::size_t>::max()
+                       / inputs.dataset_num_features)
+            throw std::runtime_error(
+                "canonical static-table generator dataset feature cardinality overflow");
+        feature_cardinality = inputs.dataset_num_nodes
+            * inputs.dataset_num_features;
+        const bool large_whole_graph_gat =
+            inputs.batching_rule == "whole_graph_single"
+            && inputs.local_num_nodes == inputs.dataset_num_nodes
+            && (inputs.local_edge_count >= (1ULL << 18)
+                || feature_cardinality >= (1ULL << 24));
+
+        const auto lrelu_interval_bound = std::max<std::size_t>(
+            large_whole_graph_gat ? (1ULL << 20)
+                                   : configured_range_size,
+            configured_range_size);
+        if (lrelu_interval_bound
+            > static_cast<std::size_t>(std::numeric_limits<std::int64_t>::max()))
+            throw std::runtime_error(
+                "canonical static-table generator LReLU interval exceeds signed range");
+        std::int64_t lrelu_min_raw = -static_cast<std::int64_t>(
+            lrelu_interval_bound);
+        std::int64_t lrelu_max_raw = -lrelu_min_raw;
+        if (large_whole_graph_gat)
+        {
+            // Preserve the canonical asymmetric large-graph LReLU interval.
+            // It is an input interval policy, not the edge-domain capacity;
+            // ExpMap is sized independently from its certified output bound.
+            constexpr std::size_t kLargeLReluIntervalRows =
+                (1ULL << 23) - 2U;
+            constexpr std::size_t kLargeLReluNegativeRows = 3ULL << 18;
+            if (kLargeLReluNegativeRows >= kLargeLReluIntervalRows)
+                throw std::runtime_error(
+                    "canonical static-table generator large-graph LReLU interval is invalid");
+            lrelu_min_raw = -static_cast<std::int64_t>(
+                kLargeLReluNegativeRows);
+            lrelu_max_raw = static_cast<std::int64_t>(
+                kLargeLReluIntervalRows - kLargeLReluNegativeRows - 1U);
+        }
+
+        const auto &scales = inputs.quantization;
+        if (scales.s_delta == 0 || scales.s_exp == 0)
+            throw std::runtime_error(
+                "canonical static-table generator ExpMap scales are missing");
+        const auto lrelu_table_size = canonical_signed_table_size(
+            lrelu_min_raw, lrelu_max_raw);
+        const auto lrelu_output_bound = canonical_lrelu_output_bound(
+            lrelu_min_raw,
+            lrelu_max_raw,
+            scales.s_delta,
+            scales.s_delta);
+        const auto exp_input_bound = checked_bound_mul(
+            2,
+            lrelu_output_bound,
+            "canonical static-table ExpMap input delta");
+        const auto exp_table_size =
+            canonical_exp_table_size_from_delta_bound(exp_input_bound);
+
+        const auto elu_bound = std::max<std::size_t>(
+            large_whole_graph_gat ? (1ULL << 20)
+                                   : configured_range_size,
+            configured_range_size);
+        if (elu_bound > (kMaxCanonicalStaticTableRows - 1U) / 2U)
+            throw std::runtime_error(
+                "canonical static-table generator ELU interval is too large");
+        const auto elu_table_size = elu_bound * 2U + 1U;
+        if (elu_table_size > kMaxCanonicalStaticTableRows)
+            throw std::runtime_error(
+                "canonical static-table generator ELU interval is too large");
+
+        const auto max_table_rows = std::max({
+            configured_range_size,
+            lrelu_table_size,
+            elu_table_size,
+            exp_table_size});
+        if (max_table_rows > std::numeric_limits<std::size_t>::max() - 2U)
+            throw std::runtime_error(
+                "canonical static-table generator table-domain size overflow");
+        const auto table_edge_domain_size = next_power_of_two_checked(
+            max_table_rows + 2U);
+        return CanonicalStaticTableShape{
+            .range_table_size = configured_range_size,
+            .lrelu_min_raw = lrelu_min_raw,
+            .lrelu_max_raw = lrelu_max_raw,
+            .lrelu_table_size = lrelu_table_size,
+            .elu_bound = elu_bound,
+            .elu_table_size = elu_table_size,
+            .lrelu_output_bound = lrelu_output_bound,
+            .exp_input_bound = exp_input_bound,
+            .exp_table_size = exp_table_size,
+            .table_edge_domain_size = table_edge_domain_size,
+            .large_whole_graph = large_whole_graph_gat,
+        };
+    }
+
+    CanonicalStaticTableShape plan_canonical_static_table_shape(
+        const ProtocolContext &context)
+    {
+        return plan_canonical_static_table_shape(
+            CanonicalStaticTableShapeInputs{
+                .range_bits = context.config.range_bits,
+                .quantization = context.config.quantization,
+                .batching_rule = context.config.batching_rule,
+                .dataset_num_nodes = context.dataset.num_nodes,
+                .dataset_num_features = context.dataset.num_features,
+                .local_num_nodes = context.local.num_nodes,
+                .local_edge_count = context.local.edges.size(),
+            });
+    }
+
+    CanonicalStaticTableShape plan_canonical_static_table_shape(
+        const VerifierContext &context)
+    {
+        return plan_canonical_static_table_shape(
+            CanonicalStaticTableShapeInputs{
+                .range_bits = context.config.range_bits,
+                .quantization = context.config.quantization,
+                .batching_rule = context.config.batching_rule,
+                .dataset_num_nodes = context.dataset.num_nodes,
+                .dataset_num_features = context.dataset.num_features,
+                .local_num_nodes = context.local.num_nodes,
+                .local_edge_count = context.local.edges.size(),
+            });
+    }
+
+    StaticTables build_canonical_static_tables(const ProtocolContext &context)
+    {
+        const auto shape = plan_canonical_static_table_shape(context);
+        if (context.domains.edge != nullptr
+            && shape.table_edge_domain_size > context.domains.edge->size)
+            throw std::runtime_error(
+                "canonical static-table/domain capacity mismatch: derived table edge domain="
+                + std::to_string(shape.table_edge_domain_size)
+                + " exceeds authenticated context edge domain="
+                + std::to_string(context.domains.edge->size)
+                + " (T_exp rows=" + std::to_string(shape.exp_table_size)
+                + ", delta_bound=" + std::to_string(shape.exp_input_bound)
+                + ")");
+        const auto &scales = context.config.quantization;
+        StaticTables out;
+        out.range = canonical_range_table(context.config.range_bits);
+        out.lrelu = canonical_lrelu_table(
+            shape.lrelu_min_raw,
+            shape.lrelu_max_raw,
+            scales.s_delta,
+            scales.s_delta);
+        if (canonical_lrelu_output_bound(
+                shape.lrelu_min_raw,
+                shape.lrelu_max_raw,
+                scales.s_delta,
+                scales.s_delta)
+            != shape.lrelu_output_bound)
+            throw std::runtime_error(
+                "canonical static-table generator LReLU bound planner mismatch");
+        out.exp = canonical_exp_table(
+            shape.exp_table_size,
+            scales.s_delta,
+            scales.s_exp);
+        if (scales.s_agg_pre.empty() || scales.s_agg.empty())
+            throw std::runtime_error(
+                "canonical static-table generator ELU scales are missing");
+        out.elu = canonical_elu_table(
+            shape.elu_bound,
+            scales.s_agg_pre.front(),
+            scales.s_agg.front());
+        if (out.range.size() != shape.range_table_size
+            || out.lrelu.size() != shape.lrelu_table_size
+            || out.elu.size() != shape.elu_table_size
+            || out.exp.size() != shape.exp_table_size)
+            throw std::runtime_error(
+                "canonical static-table generator planned cardinality mismatch");
+        return out;
+    }
+
+    bool validate_static_tables(
+        const ProtocolContext &context,
+        std::string *reason)
+    {
+        const auto fail = [&](std::string message)
+        {
+            if (reason != nullptr)
+                *reason = std::move(message);
+            return false;
+        };
+        try
+        {
+            const auto expected = build_canonical_static_tables(context);
+            const auto compare_pairs = [&](const auto &actual,
+                                           const auto &canonical,
+                                           std::string_view label)
+            {
+                if (actual.size() != canonical.size())
+                    return fail(
+                        std::string(label) + " cardinality differs from canonical generator");
+                for (std::size_t index = 0; index < actual.size(); ++index)
+                {
+                    if (actual[index] != canonical[index])
+                        return fail(
+                            std::string(label) + " row " + std::to_string(index)
+                            + " differs from canonical generator");
+                }
+                return true;
+            };
+            if (context.tables.range.size() != expected.range.size())
+                return fail("T_range cardinality differs from canonical generator");
+            for (std::size_t index = 0; index < expected.range.size(); ++index)
+                if (context.tables.range[index] != expected.range[index])
+                    return fail(
+                        "T_range row " + std::to_string(index)
+                        + " differs from canonical generator");
+            if (!compare_pairs(context.tables.lrelu, expected.lrelu, "T_LReLU")
+                || !compare_pairs(context.tables.elu, expected.elu, "T_ELU")
+                || !compare_pairs(context.tables.exp, expected.exp, "T_exp"))
+                return false;
+            if (reason != nullptr)
+                reason->clear();
+            return true;
+        }
+        catch (const std::exception &error)
+        {
+            return fail(error.what());
+        }
+        catch (...)
+        {
+            return fail("canonical static-table validation failed with non-standard exception");
+        }
+    }
+
+    bool validate_static_tables(
+        const StaticTables &tables,
+        std::size_t range_bits,
+        std::string *reason)
+    {
+        const auto fail = [&](std::string message)
+        {
+            if (reason != nullptr)
+                *reason = std::move(message);
+            return false;
+        };
+        try
+        {
+            if (range_bits == 0 || range_bits >= 63)
+                return fail("static table range_bits must be in [1,62]");
+            const auto expected_range_size = std::size_t{1} << range_bits;
+            if (tables.range.size() != expected_range_size)
+                return fail("T_range cardinality is not exactly 2^B");
+            for (std::size_t index = 0; index < tables.range.size(); ++index)
+                if (tables.range[index].value() != index)
+                    return fail("T_range is not canonical at row "
+                        + std::to_string(index));
+
+            const auto validate_pairs = [&](
+                const auto &table,
+                std::string_view name)
+            {
+                if (table.empty())
+                    return fail(std::string(name) + " table is empty");
+                std::set<std::string> inputs;
+                for (const auto &[input, output] : table)
+                {
+                    if (!inputs.insert(input.to_string()).second)
+                        return fail(std::string(name)
+                            + " table contains duplicate input rows");
+                    (void)output;
+                }
+                return true;
+            };
+            if (!validate_pairs(tables.lrelu, "LReLU")
+                || !validate_pairs(tables.elu, "ELU")
+                || !validate_pairs(tables.exp, "ExpMap"))
+                return false;
+            std::uint64_t previous = std::numeric_limits<std::uint64_t>::max();
+            for (std::size_t index = 0; index < tables.exp.size(); ++index)
+            {
+                if (tables.exp[index].first
+                    != algebra::FieldElement(static_cast<std::uint64_t>(index)))
+                    return fail("ExpMap input sequence is not canonical");
+                const auto output = tables.exp[index].second.value();
+                if (output == 0 || (index != 0 && output > previous))
+                    return fail("ExpMap output is not positive/non-increasing");
+                previous = output;
+            }
+            if (reason != nullptr)
+                reason->clear();
+            return true;
+        }
+        catch (const std::exception &error)
+        {
+            return fail(error.what());
+        }
+        catch (...)
+        {
+            return fail("static table validation failed with non-standard exception");
+        }
+    }
+
     const std::vector<std::string> &proof_block_order()
     {
         static const std::vector<std::string> order = {
@@ -1807,9 +2753,470 @@ namespace gatzk::protocol
 
     ProtocolCompilerArtifact build_protocol_compiler_artifact(const ProtocolContext &context)
     {
+        if (context.verifier_shape_only)
+            throw std::runtime_error(
+                "cannot build a compiler artifact from a verifier shape-only context");
         ProtocolCompilerArtifact artifact;
         artifact.proof_schema = build_proof_schema(context);
         populate_protocol_template(artifact);
+        std::string static_table_reason;
+        if (!validate_static_tables(context, &static_table_reason))
+            throw std::runtime_error(
+                "static table registry validation failed: " + static_table_reason);
+
+        // Build a concrete fixed-point no-wrap ledger from public dimensions,
+        // the registered scale chain, the authenticated static-table
+        // endpoints and the model's registered parameter values.  This is an
+        // instance certificate, not a hash placeholder: every intermediate
+        // product that enters a SignedRoundDiv, lookup or concat relation has
+        // an explicit conservative absolute bound and canonical limb width.
+        const auto signed_abs_field = [&](const algebra::FieldElement &value)
+            -> std::uint64_t
+        {
+            const ExactInteger canonical(value.to_string());
+            const auto half =
+                (bls12_381_scalar_modulus() - ExactInteger(1)) / ExactInteger(2);
+            const auto magnitude = canonical.compare(half) <= 0
+                                       ? canonical
+                                       : bls12_381_scalar_modulus() - canonical;
+            const auto decimal = magnitude.decimal();
+            try
+            {
+                std::size_t consumed = 0;
+                const auto result = std::stoull(decimal, &consumed);
+                if (consumed != decimal.size())
+                    throw std::invalid_argument("trailing digits");
+                return result;
+            }
+            catch (const std::exception &)
+            {
+                throw std::runtime_error(
+                    "IntegerBoundLedger field magnitude exceeds u64");
+            }
+        };
+        const auto table_component_bound = [&](const auto &table,
+                                               bool first)
+            -> std::uint64_t
+        {
+            if (table.empty())
+                throw std::runtime_error(
+                    "IntegerBoundLedger static table is empty");
+            std::uint64_t bound = 0;
+            for (const auto &row : table)
+            {
+                const auto value = signed_abs_field(first ? row.first : row.second);
+                if (value > bound)
+                    bound = value;
+            }
+            return bound;
+        };
+        const auto add_integer_bound = [&](std::string id,
+                                           std::string stage,
+                                           std::string source,
+                                           std::uint64_t bound)
+        {
+            require_field_signed_capacity(bound, id);
+            artifact.integer_bound_ledger.push_back({
+                .id = std::move(id),
+                .stage = std::move(stage),
+                .source = std::move(source),
+                .absolute_bound = bound,
+                .limb_count = minimum_bound_limb_count(
+                    bound, context.config.range_bits),
+            });
+            require_limb_representation_capacity(
+                artifact.integer_bound_ledger.back().absolute_bound,
+                artifact.integer_bound_ledger.back().limb_count,
+                context.config.range_bits,
+                artifact.integer_bound_ledger.back().id);
+        };
+        const auto max_quantized_model_vector =
+            [&](const std::vector<double> &values, std::uint64_t scale,
+                std::string_view label)
+        { return quantized_abs_bound(values, scale, label); };
+        const auto max_quantized_model_matrix =
+            [&](const model::FloatMatrix &values, std::uint64_t scale,
+                std::string_view label)
+        { return quantized_abs_bound(values, scale, label); };
+
+        if (context.local.features_fp.empty())
+            throw std::runtime_error(
+                "IntegerBoundLedger requires non-empty public input features");
+        const auto &scales = context.config.quantization;
+        const auto input_bound = quantized_abs_bound(
+            context.local.features_fp,
+            scales.s_h.at(0),
+            "public input features");
+        add_integer_bound(
+            "input.features",
+            "input",
+            "max_abs(round(features_fp*S_H[0]))",
+            input_bound);
+
+        std::vector<std::size_t> indegree(context.local.num_nodes, 0);
+        for (const auto &edge : context.local.edges)
+        {
+            if (edge.dst >= indegree.size())
+                throw std::runtime_error(
+                    "IntegerBoundLedger edge destination is out of range");
+            if (indegree[edge.dst] == std::numeric_limits<std::size_t>::max())
+                throw std::runtime_error(
+                    "IntegerBoundLedger indegree overflow");
+            ++indegree[edge.dst];
+        }
+        const auto max_indegree_size = indegree.empty()
+                                           ? std::size_t{0}
+                                           : *std::max_element(
+                                                 indegree.begin(), indegree.end());
+        if (max_indegree_size > std::numeric_limits<std::uint64_t>::max())
+            throw std::runtime_error(
+                "IntegerBoundLedger indegree exceeds u64");
+        const auto max_indegree = static_cast<std::uint64_t>(max_indegree_size);
+        add_integer_bound(
+            "graph.max_indegree",
+            "topology",
+            "max_dst_in_degree(public_edges)",
+            max_indegree);
+
+        const auto lrelu_input_bound =
+            table_component_bound(context.tables.lrelu, true);
+        const auto lrelu_output_bound =
+            table_component_bound(context.tables.lrelu, false);
+        const auto elu_input_bound = table_component_bound(context.tables.elu, true);
+        const auto elu_output_bound = table_component_bound(context.tables.elu, false);
+        const auto exp_input_bound = table_component_bound(context.tables.exp, true);
+        const auto exp_output_bound = table_component_bound(context.tables.exp, false);
+        add_integer_bound(
+            "table.LReLU.input",
+            "static_table",
+            "max_abs(T_LReLU[:,0])",
+            lrelu_input_bound);
+        add_integer_bound(
+            "table.LReLU.output",
+            "static_table",
+            "max_abs(T_LReLU[:,1])",
+            lrelu_output_bound);
+        add_integer_bound(
+            "table.ELU.input",
+            "static_table",
+            "max_abs(T_ELU[:,0])",
+            elu_input_bound);
+        add_integer_bound(
+            "table.ELU.output",
+            "static_table",
+            "max_abs(T_ELU[:,1])",
+            elu_output_bound);
+        add_integer_bound(
+            "table.ExpMap.input",
+            "static_table",
+            "max_abs(T_exp[:,0])",
+            exp_input_bound);
+        add_integer_bound(
+            "table.ExpMap.output",
+            "static_table",
+            "max_abs(T_exp[:,1])",
+            exp_output_bound);
+        add_integer_bound(
+            "table.Range.output",
+            "static_table",
+            "max(T_range)",
+            context.tables.range.empty()
+                ? 0
+                : context.tables.range.back().value());
+        const auto require_table_cover = [&](std::uint64_t required,
+                                             std::uint64_t registered,
+                                             std::string_view table_name)
+        {
+            if (required > registered)
+                throw std::runtime_error(
+                    "IntegerBoundLedger " + std::string(table_name) +
+                    " input bound exceeds registered table interval");
+        };
+
+        const auto add_division_bounds =
+            [&](const std::string &prefix,
+                std::uint64_t numerator_bound,
+                std::uint64_t denominator_bound)
+        {
+            const auto q_bound = checked_bound_add(
+                numerator_bound, 1, prefix + ".q");
+            const auto remainder_bound = checked_bound_add(
+                checked_bound_mul(2, numerator_bound, prefix + ".r:2A"),
+                denominator_bound,
+                prefix + ".r");
+            const auto delta_bound = checked_bound_mul(
+                2, denominator_bound, prefix + ".delta");
+            add_integer_bound(
+                prefix + ".A",
+                "division",
+                "abs(numerator)",
+                numerator_bound);
+            add_integer_bound(
+                prefix + ".D",
+                "division",
+                "positive denominator",
+                denominator_bound);
+            add_integer_bound(
+                prefix + ".q",
+                "division",
+                "SignedRoundDiv quotient bound <= A+1",
+                q_bound);
+            add_integer_bound(
+                prefix + ".r",
+                "division",
+                "SignedRoundDiv remainder bound <= 2A+D",
+                remainder_bound);
+            add_integer_bound(
+                prefix + ".delta",
+                "division",
+                "SignedRoundDiv delta bound <= 2D",
+                delta_bound);
+        };
+
+        auto input_layer_bound = input_bound;
+        for (std::size_t layer_index = 0;
+             layer_index < context.model.hidden_layers.size(); ++layer_index)
+        {
+            const auto &layer = context.model.hidden_layers.at(layer_index);
+            std::uint64_t concat_bound = 0;
+            for (std::size_t head_index = 0;
+                 head_index < layer.heads.size(); ++head_index)
+            {
+                const auto &head = layer.heads.at(head_index);
+                const auto prefix = "hidden:l" + std::to_string(layer_index)
+                    + ":h" + std::to_string(head_index);
+                const auto w_bound = max_quantized_model_matrix(
+                    head.seq_kernel_fp,
+                    scales.s_w_hidden.at(layer_index).at(head_index),
+                    prefix + ".W");
+                const auto a_src_bound = max_quantized_model_vector(
+                    head.attn_src_kernel_fp,
+                    scales.s_a_src_hidden.at(layer_index).at(head_index),
+                    prefix + ".a_src");
+                const auto a_dst_bound = max_quantized_model_vector(
+                    head.attn_dst_kernel_fp,
+                    scales.s_a_dst_hidden.at(layer_index).at(head_index),
+                    prefix + ".a_dst");
+                add_integer_bound(
+                    prefix + ".model.W",
+                    "model",
+                    "max_abs(round(W_fp*S_W_hidden))",
+                    w_bound);
+                add_integer_bound(
+                    prefix + ".model.a_src",
+                    "model",
+                    "max_abs(round(a_src_fp*S_a_src_hidden))",
+                    a_src_bound);
+                add_integer_bound(
+                    prefix + ".model.a_dst",
+                    "model",
+                    "max_abs(round(a_dst_fp*S_a_dst_hidden))",
+                    a_dst_bound);
+
+                const auto h_prime_bound = checked_bound_mul(
+                    checked_bound_mul(
+                        static_cast<std::uint64_t>(layer.input_dim),
+                        input_layer_bound,
+                        prefix + ".H_prime:dimension"),
+                    w_bound,
+                    prefix + ".H_prime");
+                const auto e_src_bound = checked_bound_mul(
+                    static_cast<std::uint64_t>(layer.shape.head_dim),
+                    checked_bound_mul(h_prime_bound, a_src_bound,
+                                      prefix + ".E_src:product"),
+                    prefix + ".E_src");
+                const auto e_dst_bound = checked_bound_mul(
+                    static_cast<std::uint64_t>(layer.shape.head_dim),
+                    checked_bound_mul(h_prime_bound, a_dst_bound,
+                                      prefix + ".E_dst:product"),
+                    prefix + ".E_dst");
+                const auto score_bound = checked_bound_add(
+                    e_src_bound, e_dst_bound, prefix + ".S");
+                const auto delta_bound = checked_bound_mul(
+                    2, lrelu_output_bound, prefix + ".Delta");
+                const auto sum_bound = checked_bound_mul(
+                    max_indegree, exp_output_bound, prefix + ".Sum");
+                const auto numerator_bound = checked_bound_mul(
+                    sum_bound, h_prime_bound, prefix + ".H_num");
+                const auto scaled_numerator_bound = checked_bound_mul(
+                    scales.s_agg_pre.at(layer_index), numerator_bound,
+                    prefix + ".H_num_scaled");
+                const auto scaled_denominator_bound = checked_bound_mul(
+                    scales.s_h_prime.at(layer_index).at(head_index),
+                    sum_bound,
+                    prefix + ".Sum_scaled");
+                require_table_cover(score_bound, lrelu_input_bound, "LReLU");
+                require_table_cover(delta_bound, exp_input_bound, "ExpMap");
+                require_table_cover(
+                    checked_bound_add(scaled_numerator_bound, 1,
+                                      prefix + ".ELU_input"),
+                    elu_input_bound,
+                    "ELU");
+                add_integer_bound(prefix + ".H_prime", "projection",
+                                  "d_in*B_H_in*B_W", h_prime_bound);
+                add_integer_bound(prefix + ".E_src", "attention",
+                                  "d_h*B_H_prime*B_a_src", e_src_bound);
+                add_integer_bound(prefix + ".E_dst", "attention",
+                                  "d_h*B_H_prime*B_a_dst", e_dst_bound);
+                add_integer_bound(prefix + ".S", "attention",
+                                  "B_E_src+B_E_dst", score_bound);
+                add_integer_bound(prefix + ".LReLU", "lookup",
+                                  "max_abs(T_LReLU[:,1])", lrelu_output_bound);
+                add_integer_bound(prefix + ".M", "attention",
+                                  "group maximum of LReLU values", lrelu_output_bound);
+                add_integer_bound(prefix + ".Delta", "lookup",
+                                  "|M-Z| <= 2*B_LReLU_output", delta_bound);
+                add_integer_bound(prefix + ".ExpMap", "lookup",
+                                  "max_abs(T_exp[:,1])", exp_output_bound);
+                add_integer_bound(prefix + ".Sum", "aggregation",
+                                  "Delta_in_max*B_U", sum_bound);
+                add_integer_bound(prefix + ".H_num", "aggregation",
+                                  "Delta_in_max*B_U*B_H_prime", numerator_bound);
+                add_integer_bound(prefix + ".H_num_scaled", "aggregation",
+                                  "S_agg_pre*B_H_num", scaled_numerator_bound);
+                add_integer_bound(prefix + ".Sum_scaled", "aggregation",
+                                  "S_H_prime*B_Sum", scaled_denominator_bound);
+                add_division_bounds(
+                    prefix + ".SignedRoundDiv",
+                    scaled_numerator_bound,
+                    scaled_denominator_bound);
+                add_integer_bound(prefix + ".ELU_input", "activation",
+                                  "SignedRoundDiv output <= A+1",
+                                  checked_bound_add(scaled_numerator_bound, 1,
+                                                    prefix + ".ELU_input"));
+                add_integer_bound(prefix + ".ELU_output", "activation",
+                                  "max_abs(T_ELU[:,1])", elu_output_bound);
+                concat_bound = std::max(concat_bound, elu_output_bound);
+            }
+            add_integer_bound(
+                "hidden:l" + std::to_string(layer_index) + ".concat",
+                "concat",
+                "max_abs(concat(head_ELU_outputs))",
+                concat_bound);
+            input_layer_bound = concat_bound;
+        }
+
+        std::uint64_t output_head_bound = 0;
+        for (std::size_t head_index = 0;
+             head_index < context.model.output_layer.heads.size(); ++head_index)
+        {
+            const auto &head = context.model.output_layer.heads.at(head_index);
+            const auto prefix = "output:h" + std::to_string(head_index);
+            const auto w_bound = max_quantized_model_matrix(
+                head.seq_kernel_fp,
+                scales.s_w_output.at(head_index),
+                prefix + ".W");
+            const auto a_src_bound = max_quantized_model_vector(
+                head.attn_src_kernel_fp,
+                scales.s_a_src_output.at(head_index),
+                prefix + ".a_src");
+            const auto a_dst_bound = max_quantized_model_vector(
+                head.attn_dst_kernel_fp,
+                scales.s_a_dst_output.at(head_index),
+                prefix + ".a_dst");
+            const auto bias_bound = max_quantized_model_vector(
+                head.output_bias_fp,
+                scales.s_b_output.at(head_index),
+                prefix + ".bias");
+            add_integer_bound(prefix + ".model.W", "model",
+                              "max_abs(round(W_fp*S_W_output))", w_bound);
+            add_integer_bound(prefix + ".model.a_src", "model",
+                              "max_abs(round(a_src_fp*S_a_src_output))", a_src_bound);
+            add_integer_bound(prefix + ".model.a_dst", "model",
+                              "max_abs(round(a_dst_fp*S_a_dst_output))", a_dst_bound);
+            add_integer_bound(prefix + ".model.bias", "model",
+                              "max_abs(round(bias_fp*S_b_output))", bias_bound);
+            const auto y_prime_bound = checked_bound_mul(
+                checked_bound_mul(
+                    static_cast<std::uint64_t>(context.model.output_layer.input_dim),
+                    input_layer_bound,
+                    prefix + ".Y_prime:dimension"),
+                w_bound,
+                prefix + ".Y_prime");
+            const auto e_src_bound = checked_bound_mul(
+                static_cast<std::uint64_t>(context.model.output_layer.output_dim),
+                checked_bound_mul(y_prime_bound, a_src_bound,
+                                  prefix + ".E_src:product"),
+                prefix + ".E_src");
+            const auto e_dst_bound = checked_bound_mul(
+                static_cast<std::uint64_t>(context.model.output_layer.output_dim),
+                checked_bound_mul(y_prime_bound, a_dst_bound,
+                                  prefix + ".E_dst:product"),
+                prefix + ".E_dst");
+            const auto score_bound = checked_bound_add(
+                e_src_bound, e_dst_bound, prefix + ".S");
+            const auto delta_bound = checked_bound_mul(
+                2, lrelu_output_bound, prefix + ".Delta");
+            const auto sum_bound = checked_bound_mul(
+                max_indegree, exp_output_bound, prefix + ".Sum");
+            const auto numerator_bound = checked_bound_mul(
+                sum_bound, y_prime_bound, prefix + ".Y_num");
+            const auto scaled_numerator_bound = checked_bound_mul(
+                scales.s_out_pre, numerator_bound, prefix + ".Y_num_scaled");
+            const auto scaled_denominator_bound = checked_bound_mul(
+                scales.s_y_prime.at(head_index), sum_bound,
+                prefix + ".Sum_scaled");
+            require_table_cover(score_bound, lrelu_input_bound, "LReLU");
+            require_table_cover(delta_bound, exp_input_bound, "ExpMap");
+            add_integer_bound(prefix + ".Y_prime", "projection",
+                              "d_in*B_H_cat*B_W_output", y_prime_bound);
+            add_integer_bound(prefix + ".E_src", "attention",
+                              "d_C*B_Y_prime*B_a_src", e_src_bound);
+            add_integer_bound(prefix + ".E_dst", "attention",
+                              "d_C*B_Y_prime*B_a_dst", e_dst_bound);
+            add_integer_bound(prefix + ".S", "attention",
+                              "B_E_src+B_E_dst", score_bound);
+            add_integer_bound(prefix + ".LReLU", "lookup",
+                              "max_abs(T_LReLU[:,1])", lrelu_output_bound);
+            add_integer_bound(prefix + ".M", "attention",
+                              "group maximum of LReLU values", lrelu_output_bound);
+            add_integer_bound(prefix + ".Delta", "lookup",
+                              "|M-Z| <= 2*B_LReLU_output", delta_bound);
+            add_integer_bound(prefix + ".ExpMap", "lookup",
+                              "max_abs(T_exp[:,1])", exp_output_bound);
+            add_integer_bound(prefix + ".Sum", "aggregation",
+                              "Delta_in_max*B_U", sum_bound);
+            add_integer_bound(prefix + ".Y_num", "aggregation",
+                              "Delta_in_max*B_U*B_Y_prime", numerator_bound);
+            add_integer_bound(prefix + ".Y_num_scaled", "aggregation",
+                              "S_out_pre*B_Y_num", scaled_numerator_bound);
+            add_integer_bound(prefix + ".Sum_scaled", "aggregation",
+                              "S_Y_prime*B_Sum", scaled_denominator_bound);
+            add_division_bounds(
+                prefix + ".SignedRoundDiv",
+                scaled_numerator_bound,
+                scaled_denominator_bound);
+            const auto pre_bias_bound = checked_bound_add(
+                scaled_numerator_bound, 1, prefix + ".pre_bias");
+            const auto post_bias_bound = checked_bound_add(
+                pre_bias_bound, bias_bound, prefix + ".post_bias");
+            add_integer_bound(prefix + ".pre_bias", "output_bias",
+                              "SignedRoundDiv output <= A+1", pre_bias_bound);
+            add_integer_bound(prefix + ".post_bias", "output_bias",
+                              "B_pre_bias+B_bias", post_bias_bound);
+            add_integer_bound(prefix + ".concat", "output",
+                              "one output head post-bias value", post_bias_bound);
+            output_head_bound = std::max(output_head_bound, post_bias_bound);
+        }
+        const auto output_head_sum_bound = checked_bound_mul(
+            static_cast<std::uint64_t>(context.model.output_layer.heads.size()),
+            output_head_bound,
+            "output.average.head_sum");
+        add_integer_bound(
+            "output.average.head_sum",
+            "output_average",
+            "K_out*B_output_head",
+            output_head_sum_bound);
+        add_division_bounds(
+            "output.average.SignedRoundDiv",
+            output_head_sum_bound,
+            static_cast<std::uint64_t>(context.model.output_layer.heads.size()));
+        add_integer_bound(
+            "output.average.final",
+            "output_average",
+            "average SignedRoundDiv output <= A+1",
+            checked_bound_add(output_head_sum_bound, 1,
+                              "output.average.final"));
 
         std::set<std::string> model_reblind_witnesses;
         for (const auto &entry : artifact.proof_schema.entries)
@@ -2945,31 +4352,197 @@ namespace gatzk::protocol
             artifact.binding_relation_registry.push_back(
                 binding_relation_string(meta));
 
-        std::string instance_bytes = artifact.protocol_canonical_bytes;
+        artifact.instance_canonical_bytes =
+            protocol_instance_canonical_bytes(artifact);
+        return artifact;
+    }
+
+    std::string protocol_instance_canonical_bytes(
+        const ProtocolCompilerArtifact &artifact)
+    {
+        // This is an instance digest, not a shape marker.  Keep the protocol
+        // template as a length-delimited field and then encode every concrete
+        // typed registry with explicit tags, counts and fields.  In
+        // particular, do not rely on a delimiter-joined summary: a mutation
+        // of a middle schema/ledger/DAG row must change the digest.
+        std::string instance_bytes;
+        append_canonical_string(
+            instance_bytes, "ProtocolCompilerArtifactInstance:v2");
+        append_canonical_string(instance_bytes, "protocol_template");
+        append_canonical_string(instance_bytes, artifact.protocol_canonical_bytes);
         append_canonical_vector(
             instance_bytes, "binding_relation_registry",
             artifact.binding_relation_registry);
+
+        auto append_size_field = [](std::string &out,
+                                    std::string_view tag,
+                                    std::size_t value)
+        {
+            append_canonical_string(out, tag);
+            append_canonical_string(out, std::to_string(value));
+        };
+        auto append_bool_field = [](std::string &out,
+                                    std::string_view tag,
+                                    bool value)
+        {
+            append_canonical_string(out, tag);
+            append_canonical_string(out, value ? "true" : "false");
+        };
+
         append_canonical_string(instance_bytes, "proof_schema");
+        append_size_field(
+            instance_bytes, "proof_schema.private_plain_value_count",
+            artifact.proof_schema.private_plain_value_count);
+        append_size_field(
+            instance_bytes, "proof_schema.entries.count",
+            artifact.proof_schema.entries.size());
         for (const auto &entry : artifact.proof_schema.entries)
         {
+            std::string encoded;
+            append_canonical_string(encoded, "proof_schema.entry");
+            append_canonical_string(encoded, "tag");
+            append_canonical_string(encoded, entry.tag);
+            append_canonical_string(encoded, "domain");
+            append_canonical_string(encoded, entry.domain);
+            append_canonical_string(encoded, "owner_block");
+            append_canonical_string(encoded, entry.owner_block);
+            append_canonical_string(encoded, "field_type");
+            append_canonical_string(encoded, entry.field_type);
+            append_canonical_string(encoded, "padding_mode");
+            append_canonical_string(encoded, entry.padding_mode);
+            append_canonical_string(encoded, "owner_policy");
+            append_canonical_string(encoded, entry.owner_policy);
+            append_canonical_string(encoded, "visibility");
             append_canonical_string(
-                instance_bytes,
-                entry.tag + "|" + entry.domain + "|visibility=" + std::to_string(static_cast<unsigned>(entry.visibility)) + "|owner=" + entry.owner_block + "|type=" + entry.field_type + "|padding=" + entry.padding_mode + "|owner_policy=" + entry.owner_policy + "|blinding_basis=" + entry.blinding_basis + "|C=" + std::to_string(entry.enters_commitment) + "|O=" + std::to_string(entry.enters_opening) + "|Q=" + std::to_string(entry.enters_quotient));
+                encoded, std::to_string(static_cast<unsigned>(entry.visibility)));
+            append_size_field(encoded, "layer_id", entry.layer_id);
+            append_size_field(encoded, "head_id", entry.head_id);
+            append_canonical_string(encoded, "opening_policy");
+            append_canonical_string(encoded, entry.opening_policy);
+            append_canonical_string(encoded, "binding_mode");
+            append_canonical_string(encoded, entry.binding_mode);
+            append_canonical_string(encoded, "blinding_basis");
+            append_canonical_string(encoded, entry.blinding_basis);
+            append_bool_field(encoded, "enters_commitment", entry.enters_commitment);
+            append_bool_field(encoded, "enters_opening", entry.enters_opening);
+            append_bool_field(encoded, "enters_quotient", entry.enters_quotient);
+            append_canonical_string(instance_bytes, encoded);
         }
-        append_canonical_vector(instance_bytes, "constraints", artifact.constraint_registry);
-        append_canonical_vector(instance_bytes, "degrees", artifact.degree_registry);
-        append_canonical_vector(instance_bytes, "padding", artifact.padding_registry);
+
+        // Keep all fixed compiler registries in the instance encoding even
+        // though the template bytes above already contain their source.  This
+        // makes the dependency explicit and prevents a future template-only
+        // implementation from silently dropping an instance field.
+        append_canonical_vector(
+            instance_bytes, "proof_blocks", artifact.proof_blocks);
+        append_canonical_vector(
+            instance_bytes, "serializer_tag_table", artifact.serializer_tag_table);
+        append_canonical_vector(
+            instance_bytes, "object_canonical_order", artifact.object_canonical_order);
+        append_canonical_vector(
+            instance_bytes, "transcript_stages", artifact.transcript_stages);
+        append_canonical_vector(
+            instance_bytes, "verifier_equation_registry",
+            artifact.verifier_equation_registry);
+        append_canonical_vector(
+            instance_bytes, "ledger_templates", artifact.ledger_templates);
+        append_canonical_vector(
+            instance_bytes, "constraint_registry", artifact.constraint_registry);
+        append_canonical_vector(
+            instance_bytes, "point_group_registry_template",
+            artifact.point_group_registry_template);
+        append_canonical_vector(
+            instance_bytes, "degree_registry", artifact.degree_registry);
+        append_canonical_vector(
+            instance_bytes, "padding_registry", artifact.padding_registry);
+        append_canonical_string(instance_bytes, "kzg_assumption_profile");
+        append_canonical_string(instance_bytes, artifact.kzg_assumption_profile);
+        append_canonical_string(instance_bytes, "shift_algorithm_id");
+        append_canonical_string(instance_bytes, artifact.shift_algorithm_id);
+        append_canonical_string(instance_bytes, "shift_algorithm_spec");
+        append_canonical_string(instance_bytes, artifact.shift_algorithm_spec);
+
         append_canonical_string(instance_bytes, "observation_dependency_dag");
+        append_size_field(
+            instance_bytes, "observation_dependency_dag.count",
+            artifact.observation_dependency_dag.size());
         for (const auto &edge : artifact.observation_dependency_dag)
-            append_canonical_string(instance_bytes, observation_dependency_string(edge));
-        for (const auto &entry : artifact.observation_ledger)
-            append_canonical_string(instance_bytes, ledger_string(entry));
-        for (const auto &entry : artifact.random_identity_ledger)
-            append_canonical_string(instance_bytes, ledger_string(entry));
-        for (const auto &entry : artifact.security_budget_ledger)
-            append_canonical_string(instance_bytes, ledger_string(entry));
-        artifact.instance_canonical_bytes = std::move(instance_bytes);
-        return artifact;
+        {
+            std::string encoded;
+            append_canonical_string(encoded, "observation_dependency_edge");
+            append_canonical_string(encoded, "id");
+            append_canonical_string(encoded, edge.id);
+            append_canonical_string(encoded, "derived_object");
+            append_canonical_string(encoded, edge.derived_object);
+            append_canonical_vector(
+                encoded, "source_objects", edge.source_objects);
+            append_canonical_vector(
+                encoded, "serialized_observations",
+                edge.serialized_observations);
+            append_canonical_string(encoded, "transcript_stage");
+            append_canonical_string(encoded, edge.transcript_stage);
+            append_canonical_string(encoded, "propagation_rule");
+            append_canonical_string(encoded, edge.propagation_rule);
+            append_bool_field(
+                encoded, "introduces_independent_randomness",
+                edge.introduces_independent_randomness);
+            append_canonical_string(instance_bytes, encoded);
+        }
+
+        auto append_compiler_ledger =
+            [&](std::string_view tag,
+                const std::vector<CompilerLedgerEntry> &ledger)
+        {
+            append_canonical_string(instance_bytes, tag);
+            append_size_field(instance_bytes, std::string(tag) + ".count", ledger.size());
+            for (const auto &entry : ledger)
+            {
+                std::string encoded;
+                append_canonical_string(encoded, "compiler_ledger_entry");
+                append_canonical_string(encoded, "id");
+                append_canonical_string(encoded, entry.id);
+                append_canonical_string(encoded, "object_or_challenge");
+                append_canonical_string(encoded, entry.object_or_challenge);
+                append_canonical_string(encoded, "domain");
+                append_canonical_string(encoded, entry.domain);
+                append_canonical_string(encoded, "transcript_stage");
+                append_canonical_string(encoded, entry.transcript_stage);
+                append_canonical_string(encoded, "expression_or_certificate");
+                append_canonical_string(encoded, entry.expression_or_certificate);
+                append_size_field(encoded, "degree_bound", entry.degree_bound);
+                append_size_field(encoded, "query_bound", entry.query_bound);
+                append_size_field(encoded, "exclusion_degree", entry.exclusion_degree);
+                append_size_field(encoded, "multiplicity", entry.multiplicity);
+                append_canonical_string(instance_bytes, encoded);
+            }
+        };
+        append_compiler_ledger("observation_ledger", artifact.observation_ledger);
+        append_compiler_ledger(
+            "random_identity_ledger", artifact.random_identity_ledger);
+        append_compiler_ledger(
+            "security_budget_ledger", artifact.security_budget_ledger);
+
+        append_canonical_string(instance_bytes, "integer_bound_ledger");
+        append_size_field(
+            instance_bytes, "integer_bound_ledger.count",
+            artifact.integer_bound_ledger.size());
+        for (const auto &entry : artifact.integer_bound_ledger)
+        {
+            std::string encoded;
+            append_canonical_string(encoded, "integer_bound_ledger_entry");
+            append_canonical_string(encoded, "id");
+            append_canonical_string(encoded, entry.id);
+            append_canonical_string(encoded, "stage");
+            append_canonical_string(encoded, entry.stage);
+            append_canonical_string(encoded, "source");
+            append_canonical_string(encoded, entry.source);
+            append_canonical_string(encoded, "absolute_bound");
+            append_canonical_string(
+                encoded, std::to_string(entry.absolute_bound));
+            append_size_field(encoded, "limb_count", entry.limb_count);
+            append_canonical_string(instance_bytes, encoded);
+        }
+        return instance_bytes;
     }
 
     bool validate_protocol_compiler_artifact(
@@ -2985,8 +4558,10 @@ namespace gatzk::protocol
         };
         if (artifact.proof_blocks != proof_block_order() || artifact.proof_blocks.size() != 9)
             return fail("proof block registry mismatch");
-        if (artifact.proof_schema.entries.empty() || artifact.binding_relation_registry.empty() || artifact.constraint_registry.empty() || artifact.point_group_registry_template.empty() || artifact.degree_registry.empty() || artifact.padding_registry.empty() || artifact.observation_ledger.empty() || artifact.random_identity_ledger.empty() || artifact.security_budget_ledger.empty() || artifact.serializer_tag_table.size() != artifact.proof_blocks.size() || artifact.object_canonical_order.empty() || artifact.verifier_equation_registry.empty() || artifact.ledger_templates.size() != 3 || artifact.shift_algorithm_id != "coefficient_taylor_shift" || artifact.shift_algorithm_spec.empty())
+        if (artifact.proof_schema.entries.empty() || artifact.binding_relation_registry.empty() || artifact.constraint_registry.empty() || artifact.point_group_registry_template.empty() || artifact.degree_registry.empty() || artifact.padding_registry.empty() || artifact.observation_ledger.empty() || artifact.random_identity_ledger.empty() || artifact.security_budget_ledger.empty() || artifact.integer_bound_ledger.empty() || artifact.serializer_tag_table.size() != artifact.proof_blocks.size() || artifact.object_canonical_order.empty() || artifact.verifier_equation_registry.empty() || artifact.ledger_templates.size() != 3 || artifact.shift_algorithm_id != "coefficient_taylor_shift" || artifact.shift_algorithm_spec.empty() || artifact.protocol_canonical_bytes.empty() || artifact.instance_canonical_bytes.empty())
             return fail("compiler artifact registry is incomplete");
+        if (artifact.protocol_canonical_bytes != protocol_template_canonical_bytes())
+            return fail("compiler artifact protocol canonical bytes mismatch");
         std::set<std::string> tags;
         for (const auto &entry : artifact.proof_schema.entries)
         {
@@ -3072,8 +4647,51 @@ namespace gatzk::protocol
             if (entry.query_bound == 0 || entry.multiplicity == 0 || !entry.expression_or_certificate.starts_with("exact-rational:"))
                 return fail("SecurityBudgetLedger entry is incomplete: " + entry.id);
         }
+        std::set<std::string> integer_bound_ids;
+        for (const auto &entry : artifact.integer_bound_ledger)
+        {
+            if (entry.id.empty() || entry.stage.empty() || entry.source.empty() ||
+                entry.limb_count == 0 || !integer_bound_ids.insert(entry.id).second)
+                return fail("IntegerBoundLedger entry is incomplete or duplicate: " + entry.id);
+            try
+            {
+                require_field_signed_capacity(entry.absolute_bound, entry.id);
+            }
+            catch (const std::exception &error)
+            {
+                return fail(error.what());
+            }
+            const auto minimum_limbs = minimum_bound_limb_count(
+                entry.absolute_bound, context.config.range_bits);
+            if (entry.limb_count < minimum_limbs)
+                return fail("IntegerBoundLedger limb count is insufficient: " + entry.id);
+            try
+            {
+                require_limb_representation_capacity(
+                    entry.absolute_bound,
+                    entry.limb_count,
+                    context.config.range_bits,
+                    entry.id);
+            }
+            catch (const std::exception &error)
+            {
+                return fail(error.what());
+            }
+        }
+        std::string static_table_reason;
+        if (!validate_static_tables(context, &static_table_reason))
+            return fail("static table registry validation failed: " + static_table_reason);
+        if (artifact.instance_canonical_bytes
+            != protocol_instance_canonical_bytes(artifact))
+            return fail("compiler artifact instance canonical bytes mismatch");
+        if (context.verifier_shape_only)
+        {
+            if (reason != nullptr)
+                reason->clear();
+            return true;
+        }
         const auto rebuilt = build_protocol_compiler_artifact(context);
-        if (!(artifact.proof_schema == rebuilt.proof_schema) || artifact.binding_relation_registry != rebuilt.binding_relation_registry || artifact.proof_blocks != rebuilt.proof_blocks || artifact.serializer_tag_table != rebuilt.serializer_tag_table || artifact.object_canonical_order != rebuilt.object_canonical_order || artifact.transcript_stages != rebuilt.transcript_stages || artifact.verifier_equation_registry != rebuilt.verifier_equation_registry || artifact.ledger_templates != rebuilt.ledger_templates || artifact.constraint_registry != rebuilt.constraint_registry || artifact.point_group_registry_template != rebuilt.point_group_registry_template || artifact.degree_registry != rebuilt.degree_registry || artifact.padding_registry != rebuilt.padding_registry || artifact.observation_dependency_dag != rebuilt.observation_dependency_dag || artifact.observation_ledger != rebuilt.observation_ledger || artifact.random_identity_ledger != rebuilt.random_identity_ledger || artifact.security_budget_ledger != rebuilt.security_budget_ledger || artifact.kzg_assumption_profile != rebuilt.kzg_assumption_profile || artifact.shift_algorithm_id != rebuilt.shift_algorithm_id || artifact.shift_algorithm_spec != rebuilt.shift_algorithm_spec || artifact.protocol_canonical_bytes != rebuilt.protocol_canonical_bytes || artifact.instance_canonical_bytes != rebuilt.instance_canonical_bytes)
+        if (!(artifact.proof_schema == rebuilt.proof_schema) || artifact.binding_relation_registry != rebuilt.binding_relation_registry || artifact.proof_blocks != rebuilt.proof_blocks || artifact.serializer_tag_table != rebuilt.serializer_tag_table || artifact.object_canonical_order != rebuilt.object_canonical_order || artifact.transcript_stages != rebuilt.transcript_stages || artifact.verifier_equation_registry != rebuilt.verifier_equation_registry || artifact.ledger_templates != rebuilt.ledger_templates || artifact.constraint_registry != rebuilt.constraint_registry || artifact.point_group_registry_template != rebuilt.point_group_registry_template || artifact.degree_registry != rebuilt.degree_registry || artifact.padding_registry != rebuilt.padding_registry || artifact.observation_dependency_dag != rebuilt.observation_dependency_dag || artifact.observation_ledger != rebuilt.observation_ledger || artifact.random_identity_ledger != rebuilt.random_identity_ledger || artifact.security_budget_ledger != rebuilt.security_budget_ledger || artifact.integer_bound_ledger != rebuilt.integer_bound_ledger || artifact.kzg_assumption_profile != rebuilt.kzg_assumption_profile || artifact.shift_algorithm_id != rebuilt.shift_algorithm_id || artifact.shift_algorithm_spec != rebuilt.shift_algorithm_spec || artifact.protocol_canonical_bytes != rebuilt.protocol_canonical_bytes || artifact.instance_canonical_bytes != rebuilt.instance_canonical_bytes)
             return fail("compiler artifact canonical re-encoding mismatch");
         if (reason != nullptr)
             reason->clear();

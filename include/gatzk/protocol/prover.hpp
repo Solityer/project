@@ -8,6 +8,7 @@
 
 #include "gatzk/algebra/domain_evaluation.hpp"
 #include "gatzk/protocol/proof.hpp"
+#include "gatzk/protocol/verifier_context.hpp"
 
 namespace gatzk::protocol
 {
@@ -64,6 +65,8 @@ namespace gatzk::protocol
         const ProtocolContext &context,
         const TraceArtifacts &trace,
         const Proof &proof,
+        const VerifierContext &verifier_context,
+        const Proof &parsed_proof,
         RunMetrics metrics,
         bool verifier_accepted,
         bool final_accepted);

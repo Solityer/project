@@ -4,7 +4,6 @@
 #include <atomic>
 #include <array>
 #include <cmath>
-#include <cstdlib>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -41,6 +40,8 @@
 #include "gatzk/util/logging.hpp"
 #include "gatzk/util/route2.hpp"
 #include "gatzk/protocol/verifier.hpp"
+#include "gatzk/protocol/verifier_context.hpp"
+#include "gatzk/build_provenance.hpp"
 
 namespace gatzk::protocol
 {
@@ -56,20 +57,18 @@ namespace gatzk::protocol
             return std::chrono::duration<double, std::milli>(end - start).count();
         }
 
-        std::uint64_t fnv1a64(std::string_view text)
+        std::string sha256_hex(std::string_view text)
         {
-            std::uint64_t hash = 1469598103934665603ULL;
-            for (const auto ch : text)
-            {
-                hash ^= static_cast<unsigned char>(ch);
-                hash *= 1099511628211ULL;
-            }
-            return hash;
-        }
-
-        std::string stable_hash(std::string_view text)
-        {
-            return std::to_string(fnv1a64(text));
+            std::array<unsigned char, SHA256_DIGEST_LENGTH> digest{};
+            SHA256(
+                reinterpret_cast<const unsigned char *>(text.data()),
+                text.size(),
+                digest.data());
+            std::ostringstream out;
+            out << std::hex << std::setfill('0');
+            for (const auto byte : digest)
+                out << std::setw(2) << static_cast<unsigned int>(byte);
+            return out.str();
         }
 
         std::string hash_key_values(const std::map<std::string, std::string> &entries)
@@ -79,7 +78,7 @@ namespace gatzk::protocol
             {
                 stream << key << '=' << value << '\n';
             }
-            return stable_hash(stream.str());
+            return sha256_hex(stream.str());
         }
         std::string sha256_hex(const std::vector<std::uint8_t> &bytes)
         {
@@ -132,33 +131,76 @@ namespace gatzk::protocol
             }
             return out.str();
         }
-        std::vector<std::string> vector_to_lines(const std::vector<FieldElement> &values)
+
+        std::vector<std::uint8_t> read_binary_file(
+            const std::filesystem::path &path)
         {
-            std::vector<std::string> lines;
-            lines.reserve(values.size());
-            for (std::size_t i = 0; i < values.size(); ++i)
+            std::ifstream input(path, std::ios::binary);
+            if (!input)
             {
-                lines.push_back(std::to_string(i) + " " + values[i].to_string());
+                throw std::runtime_error(
+                    "failed to open artifact for byte comparison: " + path.string());
             }
-            return lines;
+            input.seekg(0, std::ios::end);
+            const auto end = input.tellg();
+            if (end < 0)
+                throw std::runtime_error(
+                    "failed to seek artifact for byte comparison: " + path.string());
+            input.seekg(0, std::ios::beg);
+            std::vector<std::uint8_t> bytes(static_cast<std::size_t>(end));
+            if (!bytes.empty()
+                && !input.read(
+                    reinterpret_cast<char *>(bytes.data()),
+                    static_cast<std::streamsize>(bytes.size())))
+            {
+                throw std::runtime_error(
+                    "failed to read artifact for byte comparison: " + path.string());
+            }
+            return bytes;
         }
 
-        std::vector<std::string> matrix_to_lines(const model::Matrix &matrix)
+        void write_exact_file(
+            const std::filesystem::path &path,
+            std::string_view bytes)
         {
-            std::vector<std::string> lines;
-            for (std::size_t i = 0; i < matrix.size(); ++i)
+            std::ofstream output(path, std::ios::binary | std::ios::trunc);
+            if (!output
+                || (!bytes.empty()
+                    && !output.write(
+                        bytes.data(),
+                        static_cast<std::streamsize>(bytes.size()))))
             {
-                std::ostringstream row;
-                row << i;
-                for (const auto &value : matrix[i])
-                {
-                    row << ' ' << value.to_string();
-                }
-                lines.push_back(row.str());
+                throw std::runtime_error(
+                    "failed to write artifact: " + path.string());
             }
-            return lines;
         }
 
+        void append_u64(std::string *out, std::uint64_t value)
+        {
+            for (std::size_t i = 0; i < sizeof(value); ++i)
+                out->push_back(static_cast<char>((value >> (8U * i)) & 0xffU));
+        }
+
+        void append_string(std::string *out, std::string_view value)
+        {
+            append_u64(out, value.size());
+            out->append(value.data(), value.size());
+        }
+
+        std::string build_identity(
+            const std::string &source_tree_hash,
+            const std::string &binary_hash)
+        {
+            std::string bytes;
+            append_string(&bytes, gatzk::build_provenance::kBuildIdentityAlgorithm);
+            append_string(&bytes, source_tree_hash);
+            append_string(&bytes, gatzk::build_provenance::kCompilerId);
+            append_string(&bytes, gatzk::build_provenance::kCompilerVersion);
+            append_string(&bytes, gatzk::build_provenance::kBuildType);
+            append_string(&bytes, gatzk::build_provenance::kCompileFlags);
+            append_string(&bytes, binary_hash);
+            return sha256_hex(bytes);
+        }
     } // namespace
 
     // `proof_size_bytes` 统计的是 formal proof 的传输口径，
@@ -174,6 +216,8 @@ namespace gatzk::protocol
         const ProtocolContext &context,
         const TraceArtifacts &trace,
         const Proof &proof,
+        const VerifierContext &verifier_context,
+        const Proof &parsed_proof,
         RunMetrics metrics,
         bool verifier_accepted,
         bool final_accepted)
@@ -188,18 +232,15 @@ namespace gatzk::protocol
                 "exported canonical proof size differs from measured proof size");
         }
         {
-            std::ofstream output(
-                std::filesystem::path(export_root) / "proof.bin",
-                std::ios::binary | std::ios::trunc);
-            if (!output
-                || (!proof_bytes.empty()
-                    && !output.write(
-                        reinterpret_cast<const char *>(proof_bytes.data()),
-                        static_cast<std::streamsize>(proof_bytes.size()))))
-            {
+            const auto proof_path = std::filesystem::path(export_root) / "proof.bin";
+            write_exact_file(
+                proof_path,
+                std::string_view(
+                    reinterpret_cast<const char *>(proof_bytes.data()),
+                    proof_bytes.size()));
+            if (read_binary_file(proof_path) != proof_bytes)
                 throw std::runtime_error(
-                    "failed to write canonical proof artifact");
-            }
+                    "canonical proof artifact is not byte-identical to serialized proof");
         }
 
         std::map<std::string, std::string> challenge_strings;
@@ -262,17 +303,6 @@ namespace gatzk::protocol
         {
             return value ? std::string("true") : std::string("false");
         };
-        auto display_config_path = [&]()
-        {
-            const auto project_root = std::filesystem::path(context.config.project_root);
-            const auto configured = std::filesystem::path(metrics.config);
-            const auto relative = std::filesystem::relative(configured, project_root);
-            if (!relative.empty() && *relative.begin() != "..")
-            {
-                return relative.string();
-            }
-            return metrics.config;
-        };
         auto resolve_project_path = [&](const std::string &configured)
         {
             const auto path = std::filesystem::path(configured);
@@ -282,31 +312,8 @@ namespace gatzk::protocol
             }
             return std::filesystem::path(context.config.project_root) / path;
         };
-        const auto config_file_path = resolve_project_path(metrics.config);
-        const auto checkpoint_bundle_root =
-            resolve_project_path(context.config.checkpoint_bundle);
-        const auto checkpoint_manifest_path =
-            checkpoint_bundle_root / "manifest.json";
-        const auto checkpoint_tensors_path =
-            checkpoint_bundle_root / "tensors.txt";
-        const auto checkpoint_archive_path =
-            checkpoint_bundle_root / "tensors.npz";
-        const auto checkpoint_source_path =
-            checkpoint_bundle_root / "best_model.pt";
         const auto srs_manifest_path =
             resolve_project_path(context.config.srs_path) / "srs_manifest.json";
-        // These hashes authenticate the exact files consumed by the formal
-        // run.  Missing canonical bundle material is an export error rather
-        // than an empty/ambiguous provenance field.
-        const auto config_sha256 = sha256_file_hex(config_file_path);
-        const auto checkpoint_manifest_sha256 =
-            sha256_file_hex(checkpoint_manifest_path);
-        const auto checkpoint_tensors_sha256 =
-            sha256_file_hex(checkpoint_tensors_path);
-        const auto checkpoint_archive_sha256 =
-            sha256_file_hex(checkpoint_archive_path);
-        const auto checkpoint_source_sha256 =
-            sha256_file_hex(checkpoint_source_path);
         const auto srs_manifest_sha256 =
             sha256_file_hex(srs_manifest_path);
         if (srs_manifest_sha256 != context.kzg.manifest.manifest_hash)
@@ -348,11 +355,51 @@ namespace gatzk::protocol
         {
             return metrics.compute_backend_name == "cuda_hotspots" ? std::string("gpu") : std::string("cpu");
         };
-        auto env_or_empty = [](const char *name)
-        {
-            const char *value = std::getenv(name);
-            return value == nullptr ? std::string() : std::string(value);
-        };
+        if (verifier_context.in_process_transition
+            || !validate_verifier_context(verifier_context)
+            || verifier_context.trusted_registry_digest.empty()
+            || verifier_context.authenticated_registry_digest
+                   != verifier_context.trusted_registry_digest)
+            throw std::runtime_error(
+                "artifact export requires the independently loaded authenticated verifier context");
+        if (serialize_proof(parsed_proof) != proof_bytes)
+            throw std::runtime_error(
+                "artifact export parsed proof is not byte-identical to proof.bin");
+        const auto parsed_output_hash = canonical_output_digest(
+            parsed_proof.public_logits,
+            verifier_context.local.num_nodes,
+            verifier_context.local.num_classes);
+        if (trace.proof_public_output_hash.empty()
+            || trace.proof_public_output_hash != parsed_output_hash)
+            throw std::runtime_error(
+                "artifact export proof_public_output_hash is not derived from parsed proof output");
+        const auto source_tree_hash = std::string(
+            gatzk::build_provenance::kSourceTreeHash);
+        if (source_tree_hash.size() != 64
+            || !std::all_of(
+                source_tree_hash.begin(), source_tree_hash.end(),
+                [](unsigned char ch)
+                {
+                    return (ch >= '0' && ch <= '9')
+                        || (ch >= 'a' && ch <= 'f');
+                }))
+            throw std::runtime_error("embedded build source inventory hash is invalid");
+        std::error_code binary_error;
+        const auto binary_target = std::filesystem::read_symlink(
+            "/proc/self/exe", binary_error);
+        if (binary_error || binary_target.empty())
+            throw std::runtime_error(
+                "formal artifact requires the actual executable bytes via /proc/self/exe");
+        const auto binary_path = std::filesystem::absolute(binary_target).lexically_normal();
+        if (binary_path.empty()
+            || std::filesystem::is_symlink(
+                std::filesystem::symlink_status(binary_path, binary_error))
+            || binary_error
+            || !std::filesystem::is_regular_file(binary_path, binary_error))
+            throw std::runtime_error(
+                "formal artifact executable target is not a regular non-symlink file");
+        const auto binary_hash = sha256_file_hex(binary_path);
+        const auto build_identity_value = build_identity(source_tree_hash, binary_hash);
         auto table_endpoint_string = [](const std::vector<FieldElement> &values)
         {
             std::ostringstream out;
@@ -382,10 +429,11 @@ namespace gatzk::protocol
                                                                                                                                               { return value == index++; });
         const bool large_whole_graph_gat =
             context.config.batching_rule == "whole_graph_single" && context.local.num_nodes == context.dataset.num_nodes && (context.local.edges.size() >= (1ULL << 18) || context.dataset.num_nodes * context.dataset.num_features >= (1ULL << 24));
-        const auto table_endpoint_hash = stable_hash(
+        const auto table_endpoint_hash = sha256_hex(
             table_endpoint_string(context.tables.range) + "|" + pair_table_endpoint_string(context.tables.lrelu) + "|" + pair_table_endpoint_string(context.tables.exp) + "|" + pair_table_endpoint_string(context.tables.elu));
         const auto audit_start = Clock::now();
-        const auto audited_private_plain_value_count = private_plain_value_count(context, proof);
+        const auto audited_private_plain_value_count =
+            private_plain_value_count(verifier_context, parsed_proof);
         if (metrics.payload_audit_ms <= 0.0)
         {
             metrics.payload_audit_ms = elapsed_ms(audit_start, Clock::now());
@@ -395,6 +443,67 @@ namespace gatzk::protocol
         append_public_metadata(metadata);
         const auto public_metadata_hash = hash_key_values(metadata);
         const auto proof_hash = sha256_hex(proof_bytes);
+        const auto config_id =
+            context.config.model_arch_id + ":"
+            + context.config.quant_cfg_id + ":"
+            + context.config.static_table_id + ":"
+            + context.config.degree_bound_id;
+        const auto verifier_registry_digest =
+            verifier_context.registry.canonical_digest();
+        const auto source_manifest_path =
+            std::filesystem::path(export_root) / "source_manifest.json";
+        write_exact_file(
+            source_manifest_path,
+            gatzk::build_provenance::kSourceManifestJson);
+        const auto source_manifest_hash = sha256_file_hex(source_manifest_path);
+        const std::map<std::string, std::string> build_receipt = {
+            {"format", "zkgat_build_receipt_v1"},
+            {"source_manifest_path", "source_manifest.json"},
+            {"source_manifest_hash", source_manifest_hash},
+            {"source_inventory_id", gatzk::build_provenance::kSourceInventoryId},
+            {"source_tree_hash", source_tree_hash},
+            {"compiler_id", gatzk::build_provenance::kCompilerId},
+            {"compiler_version", gatzk::build_provenance::kCompilerVersion},
+            {"build_type", gatzk::build_provenance::kBuildType},
+            {"compile_flags", gatzk::build_provenance::kCompileFlags},
+            {"binary_path", binary_path.string()},
+            {"binary_hash", binary_hash},
+            {"build_identity_algorithm", gatzk::build_provenance::kBuildIdentityAlgorithm},
+            {"build_identity", build_identity_value},
+        };
+        util::write_json_object(export_root + "/build_receipt.json", build_receipt);
+        const auto build_receipt_hash = sha256_file_hex(
+            std::filesystem::path(export_root) / "build_receipt.json");
+        // This report is the independent, binary-produced acceptance record
+        // consumed by the aggregate gate.  In particular, the security and
+        // tamper fields are copied from the completed production checks here,
+        // then bound to the proof, authenticated registry, public-input
+        // identity, and exact binary/build provenance.  The aggregate gate
+        // never promotes the corresponding run-manifest fields on their own.
+        const std::map<std::string, std::string> verifier_report = {
+            {"format", "zkgat_verifier_report_v2"},
+            {"trusted_registry_digest", verifier_context.trusted_registry_digest},
+            {"authenticated_registry_digest", verifier_context.authenticated_registry_digest},
+            {"proof_bin_sha256", proof_hash},
+            {"parsed_output_digest", parsed_output_hash},
+            {"proof_public_output_hash", parsed_output_hash},
+            {"parsed_output_count", std::to_string(parsed_proof.public_logits.size())},
+            {"verify_result", verifier_accepted ? "true" : "false"},
+            {"reference_consistency_passed", metrics.reference_consistency_passed ? "true" : "false"},
+            {"tamper_tests_passed", metrics.tamper_tests_passed ? "true" : "false"},
+            {"tamper_test_case_map", metrics.tamper_test_case_map},
+            {"security_budget_passed", metrics.security_budget_passed ? "true" : "false"},
+            {"security_budget_ledger_digest", metrics.security_budget_ledger_digest},
+            {"security_budget_exact", metrics.security_budget_exact},
+            {"public_input_digest", verifier_context.registry.public_input_digest},
+            {"topology_digest", verifier_context.registry.topology_digest},
+            {"source_tree_hash", source_tree_hash},
+            {"binary_hash", binary_hash},
+            {"build_identity", build_identity_value},
+        };
+        util::write_json_object(export_root + "/verifier_report.json", verifier_report);
+        const auto verifier_report_hash = sha256_file_hex(
+            std::filesystem::path(export_root) / "verifier_report.json");
         util::write_key_values(export_root + "/metadata.txt", metadata);
         util::write_lines(export_root + "/proof_block_order.txt", proof.block_order);
 
@@ -402,7 +511,7 @@ namespace gatzk::protocol
         // `benchmark.txt` 只保留正式交付面需要的最小结果，避免把内部剖面重新暴露出来。
         const std::map<std::string, std::string> benchmark_summary = {
             {"dataset", metrics.dataset},
-            {"config", display_config_path()},
+            {"config_id", config_id},
             {"backend", benchmark_backend_label()},
             {"status", final_accepted ? "VERIFY_OK" : "VERIFY_FAIL"},
             {"timing_schema", kFormalTimingSchema},
@@ -480,15 +589,16 @@ namespace gatzk::protocol
         metrics.non_formal_overhead_ms = std::max(
             0.0,
             metrics.total_wall_clock_ms - metrics.formal_time_sum_ms);
-        // `run_manifest.json` 保留完整内部字段，供 formal suite、artifact 校验和内部分析复核。
+        // `run_manifest.json` is public.  Keep only opaque identifiers and
+        // execution results here; checkpoint/tensor/source provenance belongs
+        // to the private setup environment and must never enter the aggregate.
         std::map<std::string, std::string> run_manifest = {
             {"backend", benchmark_backend_label()},
             {"backend_name", metrics.backend_name},
             {"crypto_backend_name", metrics.crypto_backend_name},
             {"algebra_backend_name", metrics.algebra_backend_name},
             {"compute_backend_name", metrics.compute_backend_name},
-            {"config", display_config_path()},
-            {"config_sha256", config_sha256},
+            {"config_id", config_id},
             {"dataset", metrics.dataset},
             {"status", final_accepted ? "VERIFY_OK" : "VERIFY_FAIL"},
             {"verifier_accepted", verifier_accepted ? "true" : "false"},
@@ -519,15 +629,7 @@ namespace gatzk::protocol
             {"node_count", std::to_string(metrics.node_count)},
             {"edge_count", std::to_string(metrics.edge_count)},
             {"gpu_runtime_present", metrics.gpu_runtime_present ? "true" : "false"},
-            {"source_tree_hash", env_or_empty("GATZK_SOURCE_TREE_HASH")},
-            {"binary_hash", env_or_empty("GATZK_BINARY_HASH")},
-            {"build_identity", env_or_empty("GATZK_BUILD_IDENTITY")},
-            {"run_started_at", env_or_empty("GATZK_RUN_STARTED_AT")},
-            {"run_ended_at", env_or_empty("GATZK_RUN_ENDED_AT")},
-            {"exit_code", env_or_empty("GATZK_RUN_EXIT_CODE")},
-            {"timeout", env_or_empty("GATZK_RUN_TIMEOUT").empty() ? "false" : env_or_empty("GATZK_RUN_TIMEOUT")},
             {"stale_result", "false"},
-            {"run_manifest_hash", env_or_empty("GATZK_RUN_MANIFEST_HASH")},
             {"activation_table_policy", large_whole_graph_gat ? "public_large_whole_graph_shape_bound_v1" : "public_default_shape_bound_v1"},
             {"large_graph_table_policy_triggered", large_whole_graph_gat ? "true" : "false"},
             {"feature_lookup_identity_predicate", full_feature_identity ? "full_public_shape_and_absolute_id_identity" : "general_public_shape_and_absolute_ids"},
@@ -595,16 +697,29 @@ namespace gatzk::protocol
             {"proof_payload_audit_status", audited_private_plain_value_count == 0 ? "passed" : "failed"},
             {"reference_consistency_passed", metrics.reference_consistency_passed ? "true" : "false"},
             {"tamper_tests_passed", metrics.tamper_tests_passed ? "true" : "false"},
+            {"tamper_test_case_map", metrics.tamper_test_case_map},
+            {"security_budget_passed", metrics.security_budget_passed ? "true" : "false"},
+            {"security_budget_ledger_digest", metrics.security_budget_ledger_digest},
+            {"security_budget_exact", metrics.security_budget_exact},
             {"full_dataset", metrics.is_full_dataset ? "true" : "false"},
             {"dataset_id", context.dataset.name},
-            {"dataset_hash", std::to_string(std::hash<std::string>{}(context.dataset.name + ":" + std::to_string(context.dataset.num_nodes) + ":" + std::to_string(metrics.edge_count)))},
-            {"checkpoint_model_hash", stable_hash(proof.public_metadata.model_params)},
-            {"checkpoint_bundle_manifest_hash", checkpoint_manifest_sha256},
-            {"checkpoint_bundle_tensors_hash", checkpoint_tensors_sha256},
-            {"checkpoint_bundle_archive_hash", checkpoint_archive_sha256},
-            {"checkpoint_source_hash", checkpoint_source_sha256},
-            {"static_table_hash", stable_hash(proof.public_metadata.static_tables)},
-            {"quant_config_hash", stable_hash(proof.public_metadata.quant_config)},
+            {"static_table_hash", sha256_hex(proof.public_metadata.static_tables)},
+            {"quant_config_hash", sha256_hex(proof.public_metadata.quant_config)},
+            {"public_input_digest", verifier_context.registry.public_input_digest},
+            {"topology_digest", verifier_context.registry.topology_digest},
+            {"source_tree_hash", source_tree_hash},
+            {"source_manifest_path", "source_manifest.json"},
+            {"source_manifest_hash", source_manifest_hash},
+            {"binary_hash", binary_hash},
+            {"build_identity", build_identity_value},
+            {"build_receipt_path", "build_receipt.json"},
+            {"build_receipt_hash", build_receipt_hash},
+            {"binary_path", binary_path.string()},
+            {"verifier_registry_id", verifier_context.registry.registry_id},
+            {"verifier_registry_digest", verifier_registry_digest},
+            {"trusted_registry_digest", verifier_context.trusted_registry_digest},
+            {"verifier_report_path", "verifier_report.json"},
+            {"verifier_report_hash", verifier_report_hash},
             {"public_metadata_hash", public_metadata_hash},
             {"srs_manifest_hash", srs_manifest_sha256},
             {"proof_hash", proof_hash},
@@ -736,21 +851,11 @@ namespace gatzk::protocol
         run_manifest["export_manifest_validation_ms"] = format_double(metrics.export_manifest_validation_ms);
         util::write_json_object(export_root + "/run_manifest.json", run_manifest);
 
-        if (!context.config.dump_trace)
-        {
-            return;
-        }
-
-        util::ensure_directory(export_root + "/columns");
-        util::ensure_directory(export_root + "/matrices");
-        for (const auto &[name, column] : trace.columns)
-        {
-            util::write_lines(export_root + "/columns/" + name + ".txt", vector_to_lines(column));
-        }
-        for (const auto &[name, matrix] : trace.matrices)
-        {
-            util::write_lines(export_root + "/matrices/" + name + ".txt", matrix_to_lines(matrix));
-        }
+        // Trace columns/matrices are prover witness material.  `dump_trace`
+        // remains an execution/debug configuration bit, but public formal
+        // artifacts never materialize those values.  A separately managed
+        // private debug export, if needed, must be invoked outside this public
+        // artifact writer.
     }
 
 } // namespace gatzk::protocol

@@ -496,8 +496,11 @@ namespace gatzk::protocol
         }
         metadata.quant_config =
             context.config.quant_cfg_id + "|" + quantization_serialization
-            + "|integer_bound_ledger="
-            + sha256_hex(compiler_artifact.instance_canonical_bytes + "|integer_bounds");
+            + "|integer_bound_ledger=v1|entries="
+            + std::to_string(compiler_artifact.integer_bound_ledger.size())
+            + "|sha256="
+            + sha256_hex(integer_bound_ledger_canonical_bytes(
+                compiler_artifact.integer_bound_ledger));
         metadata.domain_cfg =
             "FH=" + context.domains.fh->name + ":" + std::to_string(context.domains.fh->size) + ",edge=" + context.domains.edge->name + ":" + std::to_string(context.domains.edge->size) + ",in=" + context.domains.in->name + ":" + std::to_string(context.domains.in->size) + ",d_h=" + context.domains.d->name + ":" + std::to_string(context.domains.d->size) + ",cat=" + context.domains.cat->name + ":" + std::to_string(context.domains.cat->size) + ",C=" + context.domains.c->name + ":" + std::to_string(context.domains.c->size) + ",N=" + context.domains.n->name + ":" + std::to_string(context.domains.n->size);
         metadata.dim_cfg =

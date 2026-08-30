@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <future>
@@ -25,6 +26,7 @@
 #include <unordered_set>
 
 #include <openssl/rand.h>
+#include <openssl/sha.h>
 
 #include "gatzk/algebra/field_io.hpp"
 #include "gatzk/algebra/polynomial.hpp"
@@ -341,58 +343,89 @@ namespace gatzk::protocol
             }
         }
 
-        std::uint64_t fnv1a64(std::string_view text)
+        std::string sha256_hex(std::string_view text)
         {
-            std::uint64_t hash = 1469598103934665603ULL;
-            for (const auto ch : text)
-            {
-                hash ^= static_cast<unsigned char>(ch);
-                hash *= 1099511628211ULL;
-            }
-            return hash;
+            std::array<unsigned char, SHA256_DIGEST_LENGTH> digest{};
+            SHA256(
+                reinterpret_cast<const unsigned char *>(text.data()),
+                text.size(),
+                digest.data());
+            std::ostringstream out;
+            out << std::hex << std::setfill('0');
+            for (const auto byte : digest)
+                out << std::setw(2) << static_cast<unsigned int>(byte);
+            return out.str();
         }
 
-        std::string stable_hash(std::string_view text)
+        // Cache identities are hashes of an unambiguous byte stream.  These
+        // helpers deliberately avoid stream formatting for floating-point
+        // model values: the exact IEEE-754 payload is part of the identity,
+        // while the length prefixes prevent concatenation ambiguity.
+        void append_cache_u64(std::string *out, std::uint64_t value)
         {
-            return std::to_string(fnv1a64(text));
+            for (std::size_t byte = 0; byte < sizeof(value); ++byte)
+                out->push_back(static_cast<char>((value >> (8U * byte)) & 0xffU));
         }
 
-        void append_fnv1a64(
-            std::uint64_t *hash,
-            std::string_view text)
+        void append_cache_string(std::string *out, std::string_view value)
         {
-            if (hash == nullptr)
-            {
+            append_cache_u64(out, value.size());
+            out->append(value.data(), value.size());
+        }
+
+        void append_cache_field(std::string *out, const FieldElement &value)
+        {
+            std::array<std::uint8_t, 32> bytes{};
+            value.write_little_endian(bytes.data(), bytes.size());
+            out->append(
+                reinterpret_cast<const char *>(bytes.data()), bytes.size());
+        }
+
+        void append_cache_double(std::string *out, double value)
+        {
+            if (!std::isfinite(value))
                 throw std::runtime_error(
-                    "cannot append to a null FNV-1a state");
-            }
-            for (const auto ch : text)
-            {
-                *hash ^= static_cast<unsigned char>(ch);
-                *hash *= 1099511628211ULL;
-            }
+                    "cache identity encountered a non-finite model parameter");
+            std::uint64_t bits = 0;
+            static_assert(sizeof(bits) == sizeof(value));
+            std::memcpy(&bits, &value, sizeof(bits));
+            append_cache_u64(out, bits);
         }
 
-        std::string hash_field_matrix(const Matrix &matrix)
+        void append_cache_double_vector(
+            std::string *out,
+            const std::vector<double> &values)
         {
-            std::uint64_t hash = 1469598103934665603ULL;
-            const auto append = [&](std::string_view text)
-            {
-                append_fnv1a64(&hash, text);
-            };
-            append("rows=");
-            append(std::to_string(matrix.size()));
+            append_cache_u64(out, values.size());
+            for (const auto value : values)
+                append_cache_double(out, value);
+        }
+
+        void append_cache_float_matrix(
+            std::string *out,
+            const model::FloatMatrix &matrix)
+        {
+            append_cache_u64(out, matrix.size());
             for (const auto &row : matrix)
-            {
-                append("|cols=");
-                append(std::to_string(row.size()));
-                for (const auto &value : row)
-                {
-                    append(":");
-                    append(value.to_string());
-                }
-            }
-            return std::to_string(hash);
+                append_cache_double_vector(out, row);
+        }
+
+        void append_cache_field_vector(
+            std::string *out,
+            const std::vector<FieldElement> &values)
+        {
+            append_cache_u64(out, values.size());
+            for (const auto &value : values)
+                append_cache_field(out, value);
+        }
+
+        void append_cache_field_matrix(
+            std::string *out,
+            const Matrix &matrix)
+        {
+            append_cache_u64(out, matrix.size());
+            for (const auto &row : matrix)
+                append_cache_field_vector(out, row);
         }
 
         std::string hash_float_matrix(const model::FloatMatrix &matrix)
@@ -408,7 +441,7 @@ namespace gatzk::protocol
                     stream << ':' << value;
                 }
             }
-            return stable_hash(stream.str());
+            return sha256_hex(stream.str());
         }
 
         std::int64_t quantize_raw_at_scale(double value, std::uint64_t scale)
@@ -436,7 +469,21 @@ namespace gatzk::protocol
             // result is a different computation.
             trace.public_logits =
                 algebra::flatten_matrix_coefficients(secure_trace_logits);
-            trace.public_logits_hash = hash_field_matrix(secure_trace_logits);
+            const auto matrix_digest = [](const Matrix &matrix)
+            {
+                if (matrix.empty() || matrix.front().empty())
+                    throw std::runtime_error("public output matrix is empty");
+                const auto width = matrix.front().size();
+                if (!std::all_of(
+                        matrix.begin(), matrix.end(),
+                        [width](const auto &row) { return row.size() == width; }))
+                    throw std::runtime_error("public output matrix is ragged");
+                return canonical_output_digest(
+                    algebra::flatten_matrix_coefficients(matrix),
+                    matrix.size(),
+                    width);
+            };
+            trace.public_logits_hash = matrix_digest(secure_trace_logits);
             // Keep the reference hash independent even on a matching run:
             // equality is a real matrix comparison, while the two hashes are
             // separate audit payloads and must never be aliased.
@@ -444,8 +491,11 @@ namespace gatzk::protocol
                 quantized_reference_matches_secure(
                     secure_trace_logits,
                     reference_quant_logits);
-            trace.reference_quant_logits_hash = hash_field_matrix(reference_quant_logits);
-            trace.secure_trace_logits_hash = trace.public_logits_hash;
+            trace.reference_quant_logits_hash = matrix_digest(reference_quant_logits);
+            // This is a second digest invocation over the secure matrix.  Do
+            // not alias the strings: each producer remains auditable and a
+            // future producer change cannot silently collapse the closure.
+            trace.secure_trace_logits_hash = matrix_digest(secure_trace_logits);
             trace.proof_public_output_hash.clear();
             trace.reference_fp32_logits_hash =
                 hash_float_matrix(reference_fp32_logits);
@@ -2386,7 +2436,10 @@ namespace gatzk::protocol
             const auto &root = ensure_trace_spill_directory(
                 trace, &root_storage);
             const auto unique =
-                sanitize_spill_name(polynomial.name) + "_" + std::to_string(std::hash<std::string>{}(polynomial.name + ":" + std::to_string(polynomial.size())));
+                sanitize_spill_name(polynomial.name) + "_" +
+                sha256_hex(
+                    polynomial.name + ":" + std::to_string(polynomial.size()))
+                    .substr(0, 24);
             const auto path = root / (unique + ".bin");
             std::ofstream stream(path, std::ios::binary | std::ios::trunc);
             if (!stream)
@@ -3115,7 +3168,7 @@ namespace gatzk::protocol
                                 : 0.0;
 
                         const auto fingerprint =
-                            stable_hash(
+                            sha256_hex(
                                 item.commitment
                                     .point
                                     .to_string());
@@ -3366,7 +3419,11 @@ namespace gatzk::protocol
             std::uint64_t output_scale)
         {
             const auto input = static_cast<double>(raw) / static_cast<double>(input_scale);
-            return std::max<std::int64_t>(0, quantize_raw_at_scale(std::exp(-input), output_scale));
+            // Keep the independent reference on the exact same positive
+            // ExpMap contract as the registered static table.  A rounded zero
+            // would create a degenerate Softmax denominator and is not a
+            // permitted certified output.
+            return std::max<std::int64_t>(1, quantize_raw_at_scale(std::exp(-input), output_scale));
         }
 
         std::int64_t quantize_elu_raw(
@@ -3794,8 +3851,169 @@ namespace gatzk::protocol
             return out;
         }
 
+        void append_cache_model_head(
+            std::string *out,
+            const model::AttentionHeadParameters &head)
+        {
+            append_cache_float_matrix(out, head.seq_kernel_fp);
+            append_cache_double_vector(out, head.attn_dst_kernel_fp);
+            append_cache_double_vector(out, head.attn_src_kernel_fp);
+            append_cache_double_vector(out, head.output_bias_fp);
+        }
+
+        void append_cache_model_identity(
+            std::string *out,
+            const model::ModelParameters &model)
+        {
+            append_cache_string(out, model.model_arch_id);
+            append_cache_string(out, model.model_param_id);
+            append_cache_string(out, model.quant_cfg_id);
+            append_cache_string(out, model.static_table_id);
+            append_cache_string(out, model.degree_bound_id);
+            append_cache_u64(out, model.L);
+            append_cache_u64(out, model.K_out);
+            append_cache_u64(out, model.C);
+            append_cache_u64(out, model.d_in_profile.size());
+            for (const auto value : model.d_in_profile)
+                append_cache_u64(out, value);
+            append_cache_u64(out, model.hidden_profile.size());
+            for (const auto &shape : model.hidden_profile)
+            {
+                append_cache_u64(out, shape.head_count);
+                append_cache_u64(out, shape.head_dim);
+            }
+            append_cache_field_vector(out, model.a_src);
+
+            append_cache_u64(out, model.hidden_layers.size());
+            for (const auto &layer : model.hidden_layers)
+            {
+                append_cache_u64(out, layer.layer_index);
+                append_cache_u64(out, layer.input_dim);
+                append_cache_u64(out, layer.shape.head_count);
+                append_cache_u64(out, layer.shape.head_dim);
+                append_cache_u64(out, layer.heads.size());
+                for (const auto &head : layer.heads)
+                    append_cache_model_head(out, head);
+            }
+
+            append_cache_u64(out, model.output_layer.input_dim);
+            append_cache_u64(out, model.output_layer.output_dim);
+            append_cache_u64(out, model.output_layer.head_count);
+            append_cache_u64(out, model.output_layer.heads.size());
+            for (const auto &head : model.output_layer.heads)
+                append_cache_model_head(out, head);
+
+            // The canonical layer-local head records above are the sole
+            // formal model tensor identity.  Do not fold the legacy flat
+            // compatibility projection into this key: it has no independent
+            // layer/head identity and is not consumed by the formal trace.
+        }
+
+        void append_cache_config_identity(
+            std::string *out,
+            const ProtocolContext &context)
+        {
+            const auto &config = context.config;
+            append_cache_string(out, "zkgat:quantized-model-cache:v3");
+            append_cache_string(out, config.dataset);
+            append_cache_string(out, config.task_type);
+            append_cache_string(out, config.report_unit);
+            append_cache_string(out, config.batching_rule);
+            append_cache_string(out, config.subgraph_rule);
+            append_cache_string(out, config.self_loop_rule);
+            append_cache_string(out, config.edge_sort_rule);
+            append_cache_string(out, config.chunking_rule);
+            append_cache_string(out, config.quant_cfg_id);
+            append_cache_string(
+                out,
+                config.quantization.canonical_serialization());
+            append_cache_string(out, config.model_arch_id);
+            append_cache_string(out, config.model_param_id);
+            append_cache_string(out, config.static_table_id);
+            append_cache_string(out, config.degree_bound_id);
+            append_cache_string(out, config.srs_type);
+            append_cache_string(out, config.srs_id);
+            append_cache_string(out, config.privacy_policy);
+            append_cache_string(out, config.input_privacy);
+            append_cache_string(out, config.output_mode);
+            append_cache_string(out, config.opening_mode);
+            append_cache_string(out, config.binding_mode);
+            append_cache_string(out, config.proof_task);
+            append_cache_string(out, config.security_profile_id);
+            append_cache_string(out, config.verifier_registry_digest);
+            append_cache_u64(out, config.hidden_dim);
+            append_cache_u64(out, config.num_classes);
+            append_cache_u64(out, config.range_bits);
+            append_cache_u64(out, config.seed);
+            append_cache_u64(out, config.layer_count);
+            append_cache_u64(out, config.K_out);
+            append_cache_u64(out, config.batch_graphs);
+            append_cache_u64(out, config.d_in_profile.size());
+            for (const auto value : config.d_in_profile)
+                append_cache_u64(out, value);
+            append_cache_u64(out, config.hidden_profile.size());
+            for (const auto &shape : config.hidden_profile)
+            {
+                append_cache_u64(out, shape.head_count);
+                append_cache_u64(out, shape.head_dim);
+            }
+        }
+
+        std::string quantized_model_cache_key(
+            const ProtocolContext &context,
+            std::string_view family,
+            std::size_t layer_index,
+            std::size_t local_head_index)
+        {
+            std::string bytes;
+            append_cache_config_identity(&bytes, context);
+            append_cache_model_identity(&bytes, context.model);
+            append_cache_string(&bytes, family);
+            append_cache_u64(&bytes, layer_index);
+            append_cache_u64(&bytes, local_head_index);
+
+            // Bind the trusted static/model registry and compiler instance as
+            // well as the declared model IDs.  A registry digest is the
+            // trusted identity; serialized points make the check fail closed
+            // even if a caller accidentally reuses the digest with a changed
+            // in-memory registry.
+            std::vector<std::string> labels;
+            labels.reserve(context.static_commitments.size());
+            for (const auto &[label, _] : context.static_commitments)
+                labels.push_back(label);
+            std::sort(labels.begin(), labels.end());
+            append_cache_u64(&bytes, labels.size());
+            for (const auto &label : labels)
+            {
+                append_cache_string(&bytes, label);
+                const auto encoded =
+                    crypto::serialize(context.static_commitments.at(label).point);
+                append_cache_string(
+                    &bytes,
+                    std::string_view(
+                        reinterpret_cast<const char *>(encoded.data()),
+                        encoded.size()));
+            }
+            if (context.compiler_artifact == nullptr)
+            {
+                append_cache_string(&bytes, "compiler-artifact:null");
+            }
+            else
+            {
+                append_cache_string(
+                    &bytes,
+                    context.compiler_artifact->protocol_canonical_bytes);
+                append_cache_string(
+                    &bytes,
+                    context.compiler_artifact->instance_canonical_bytes);
+            }
+            return "sha256:" + sha256_hex(bytes);
+        }
+
         struct HiddenHeadStaticQuantizedParameters
         {
+            std::string identity;
+            std::string payload_digest;
             Matrix seq_kernel;
             std::vector<FieldElement> attn_src;
             std::vector<FieldElement> attn_dst;
@@ -3803,10 +4021,34 @@ namespace gatzk::protocol
 
         struct OutputHeadStaticQuantizedParameters
         {
+            std::string identity;
+            std::string payload_digest;
             Matrix seq_kernel;
             std::vector<FieldElement> attn_src;
             std::vector<FieldElement> attn_dst;
         };
+
+        std::string hidden_quantized_payload_digest(
+            const HiddenHeadStaticQuantizedParameters &payload)
+        {
+            std::string bytes;
+            append_cache_string(&bytes, "zkgat:quantized-model-payload:hidden:v1");
+            append_cache_field_matrix(&bytes, payload.seq_kernel);
+            append_cache_field_vector(&bytes, payload.attn_src);
+            append_cache_field_vector(&bytes, payload.attn_dst);
+            return "sha256:" + sha256_hex(bytes);
+        }
+
+        std::string output_quantized_payload_digest(
+            const OutputHeadStaticQuantizedParameters &payload)
+        {
+            std::string bytes;
+            append_cache_string(&bytes, "zkgat:quantized-model-payload:output:v1");
+            append_cache_field_matrix(&bytes, payload.seq_kernel);
+            append_cache_field_vector(&bytes, payload.attn_src);
+            append_cache_field_vector(&bytes, payload.attn_dst);
+            return "sha256:" + sha256_hex(bytes);
+        }
 
         const HiddenHeadStaticQuantizedParameters &cached_quantized_hidden_head_parameters(
             const ProtocolContext &context,
@@ -3820,14 +4062,23 @@ namespace gatzk::protocol
                 cache;
 
             const auto &head = context.model.hidden_layers.at(layer_index).heads.at(local_head_index);
-            const auto cache_key =
-                context.config.checkpoint_bundle + ":" + context.config.dataset + ":" + std::to_string(context.config.seed) + ":hidden:l" + std::to_string(layer_index) + ":h" + std::to_string(local_head_index) + ":" + std::to_string(head.seq_kernel_fp.size()) + ":" + std::to_string(head.seq_kernel_fp.empty() ? 0 : head.seq_kernel_fp.front().size());
+            const auto cache_key = quantized_model_cache_key(
+                context,
+                "hidden",
+                layer_index,
+                local_head_index);
             {
                 std::lock_guard<std::mutex> lock(cache_mutex);
-                if (const auto it = cache.find(cache_key); it != cache.end())
+                const auto it = cache.find(cache_key);
+                if (it != cache.end() && it->second != nullptr &&
+                    it->second->identity == cache_key &&
+                    it->second->payload_digest ==
+                        hidden_quantized_payload_digest(*it->second))
                 {
                     return *it->second;
                 }
+                if (it != cache.end())
+                    cache.erase(it);
             }
 
             auto packed = std::make_shared<HiddenHeadStaticQuantizedParameters>();
@@ -3841,9 +4092,19 @@ namespace gatzk::protocol
             packed->attn_dst = quantize_vector_at_scale(
                 head.attn_dst_kernel_fp,
                 scales.s_a_dst_hidden.at(layer_index).at(local_head_index));
+            packed->identity = cache_key;
+            packed->payload_digest = hidden_quantized_payload_digest(*packed);
             {
                 std::lock_guard<std::mutex> lock(cache_mutex);
-                const auto [it, _] = cache.emplace(cache_key, packed);
+                auto [it, inserted] = cache.emplace(cache_key, packed);
+                if (!inserted &&
+                    (it->second == nullptr ||
+                     it->second->identity != cache_key ||
+                     it->second->payload_digest !=
+                         hidden_quantized_payload_digest(*it->second)))
+                {
+                    it->second = std::move(packed);
+                }
                 return *it->second;
             }
         }
@@ -3859,14 +4120,23 @@ namespace gatzk::protocol
                 cache;
 
             const auto &head = context.model.output_layer.heads.at(head_index);
-            const auto cache_key =
-                context.config.checkpoint_bundle + ":" + context.config.dataset + ":" + std::to_string(context.config.seed) + ":output:" + std::to_string(head_index) + ":" + std::to_string(head.seq_kernel_fp.size()) + ":" + std::to_string(head.seq_kernel_fp.empty() ? 0 : head.seq_kernel_fp.front().size());
+            const auto cache_key = quantized_model_cache_key(
+                context,
+                "output",
+                0,
+                head_index);
             {
                 std::lock_guard<std::mutex> lock(cache_mutex);
-                if (const auto it = cache.find(cache_key); it != cache.end())
+                const auto it = cache.find(cache_key);
+                if (it != cache.end() && it->second != nullptr &&
+                    it->second->identity == cache_key &&
+                    it->second->payload_digest ==
+                        output_quantized_payload_digest(*it->second))
                 {
                     return *it->second;
                 }
+                if (it != cache.end())
+                    cache.erase(it);
             }
 
             auto packed = std::make_shared<OutputHeadStaticQuantizedParameters>();
@@ -3880,9 +4150,19 @@ namespace gatzk::protocol
             packed->attn_dst = quantize_vector_at_scale(
                 head.attn_dst_kernel_fp,
                 scales.s_a_dst_output.at(head_index));
+            packed->identity = cache_key;
+            packed->payload_digest = output_quantized_payload_digest(*packed);
             {
                 std::lock_guard<std::mutex> lock(cache_mutex);
-                const auto [it, _] = cache.emplace(cache_key, packed);
+                auto [it, inserted] = cache.emplace(cache_key, packed);
+                if (!inserted &&
+                    (it->second == nullptr ||
+                     it->second->identity != cache_key ||
+                     it->second->payload_digest !=
+                         output_quantized_payload_digest(*it->second)))
+                {
+                    it->second = std::move(packed);
+                }
                 return *it->second;
             }
         }
@@ -5168,15 +5448,151 @@ namespace gatzk::protocol
 
         std::string trace_cache_prefix(const ProtocolContext &context)
         {
-            constexpr std::size_t kMinVolatileLargeTraceFhDomainSize = 1ULL << 24;
-            const bool volatile_large_trace = context.config.batching_rule == "whole_graph_single" && context.local.num_nodes == context.dataset.num_nodes && context.local.num_features == context.dataset.num_features && context.domains.fh != nullptr && context.domains.fh->size > kMinVolatileLargeTraceFhDomainSize;
-
-            // trace cache key 只区分会影响执行层对象复用的正式维度，避免把实验标签写进主线 key。
-            return context.config.checkpoint_bundle + ":" + context.config.dataset + ":" + std::to_string(context.local.num_nodes) + ":" + std::to_string(context.local.edges.size()) + (volatile_large_trace ? ":volatile_large_trace" : "") + ":" + std::to_string(context.config.seed);
+            // This identity is deliberately independent of filesystem paths
+            // and process-local addresses.  It binds every public object that
+            // can affect the static trace cache, including selector columns,
+            // topology/order/padding rules, quantized features, the concrete
+            // compiler instance, model/static registries, SRS identity, and
+            // all domain dimensions.
+            std::string bytes;
+            append_cache_string(&bytes, "zkgat:trace-cache-identity:v2");
+            append_cache_string(&bytes, context.config.dataset);
+            append_cache_string(&bytes, context.config.task_type);
+            append_cache_string(&bytes, context.config.batching_rule);
+            append_cache_string(&bytes, context.config.subgraph_rule);
+            append_cache_string(&bytes, context.config.self_loop_rule);
+            append_cache_string(&bytes, context.config.edge_sort_rule);
+            append_cache_string(&bytes, context.config.chunking_rule);
+            append_cache_string(&bytes, context.config.quant_cfg_id);
+            append_cache_string(&bytes, context.config.quantization.canonical_serialization());
+            append_cache_string(&bytes, context.config.model_arch_id);
+            append_cache_string(&bytes, context.config.model_param_id);
+            append_cache_string(&bytes, context.config.static_table_id);
+            append_cache_string(&bytes, context.config.degree_bound_id);
+            append_cache_string(&bytes, context.config.verifier_registry_digest);
+            append_cache_string(&bytes, context.kzg.manifest.srs_id);
+            append_cache_string(&bytes, context.kzg.manifest.manifest_hash);
+            append_cache_u64(&bytes, context.kzg.manifest.degree_bound);
+            append_cache_string(&bytes, context.kzg.manifest.protocol_schema_id);
+            append_cache_string(&bytes, context.kzg.manifest.generator_id);
+            append_cache_string(&bytes, context.kzg.manifest.generator_version);
+            append_cache_string(&bytes, context.kzg.manifest.encoding);
+            if (context.compiler_artifact == nullptr)
+                throw std::runtime_error(
+                    "trace cache identity requires a compiler artifact");
+            append_cache_string(&bytes, context.compiler_artifact->protocol_canonical_bytes);
+            append_cache_string(&bytes, context.compiler_artifact->instance_canonical_bytes);
+            append_cache_u64(&bytes, context.local.num_nodes);
+            append_cache_u64(&bytes, context.local.num_features);
+            append_cache_u64(&bytes, context.local.num_classes);
+            append_cache_u64(&bytes, context.local.graph_count);
+            append_cache_string(&bytes, context.local.batching_rule);
+            append_cache_string(&bytes, context.local.subgraph_rule);
+            append_cache_string(&bytes, context.local.self_loop_rule);
+            append_cache_string(&bytes, context.local.edge_sort_rule);
+            append_cache_string(&bytes, context.local.chunking_rule);
+            const auto append_size_vector = [&](const auto &values)
+            {
+                append_cache_u64(&bytes, values.size());
+                for (const auto value : values)
+                    append_cache_u64(&bytes, value);
+            };
+            append_size_vector(context.local.absolute_ids);
+            append_size_vector(context.local.node_ptr);
+            append_size_vector(context.local.edge_ptr);
+            append_cache_u64(&bytes, context.local.edges.size());
+            for (const auto &edge : context.local.edges)
+            {
+                append_cache_u64(&bytes, edge.src);
+                append_cache_u64(&bytes, edge.dst);
+                append_cache_u64(&bytes, edge.graph_id);
+                append_cache_u64(&bytes, edge.stable_index);
+            }
+            const auto &input = context.local.public_input;
+            append_cache_u64(&bytes, input.N_total);
+            append_cache_u64(&bytes, input.N);
+            append_cache_u64(&bytes, input.E);
+            append_cache_u64(&bytes, input.G_batch);
+            append_size_vector(input.I);
+            append_size_vector(input.src);
+            append_size_vector(input.dst);
+            append_size_vector(input.node_ptr);
+            append_size_vector(input.edge_ptr);
+            append_cache_u64(&bytes, context.local.features.size());
+            for (const auto &row : context.local.features)
+            {
+                append_cache_u64(&bytes, row.size());
+                for (const auto &value : row)
+                    append_cache_field(&bytes, value);
+            }
+            std::vector<std::string> selector_labels;
+            selector_labels.reserve(context.public_polynomials.size());
+            for (const auto &[label, _] : context.public_polynomials)
+                selector_labels.push_back(label);
+            std::sort(selector_labels.begin(), selector_labels.end());
+            append_cache_u64(&bytes, selector_labels.size());
+            for (const auto &label : selector_labels)
+            {
+                append_cache_string(&bytes, label);
+                const auto &polynomial = context.public_polynomials.at(label);
+                append_cache_u64(&bytes, polynomial.size());
+                for (const auto &value : polynomial.values())
+                    append_cache_field(&bytes, value);
+            }
+            std::vector<std::string> registry_labels;
+            registry_labels.reserve(context.static_commitments.size());
+            for (const auto &[label, _] : context.static_commitments)
+                registry_labels.push_back(label);
+            std::sort(registry_labels.begin(), registry_labels.end());
+            append_cache_u64(&bytes, registry_labels.size());
+            for (const auto &label : registry_labels)
+            {
+                append_cache_string(&bytes, label);
+                const auto &point = context.static_commitments.at(label).point;
+                const auto encoded = crypto::serialize(point);
+                append_cache_string(
+                    &bytes,
+                    std::string_view(
+                        reinterpret_cast<const char *>(encoded.data()), encoded.size()));
+            }
+            const auto append_domain = [&](std::string_view name,
+                                          const auto &domain)
+            {
+                append_cache_string(&bytes, name);
+                append_cache_u64(&bytes, domain == nullptr ? 0 : domain->size);
+            };
+            append_domain("FH", context.domains.fh);
+            append_domain("edge", context.domains.edge);
+            append_domain("in", context.domains.in);
+            append_domain("d", context.domains.d);
+            append_domain("cat", context.domains.cat);
+            append_domain("C", context.domains.c);
+            append_domain("N", context.domains.n);
+            append_cache_string(&bytes, "static_tables_v1");
+            append_cache_u64(&bytes, context.tables.range.size());
+            for (const auto &value : context.tables.range)
+                append_cache_field(&bytes, value);
+            const auto append_table = [&](const auto &table)
+            {
+                append_cache_u64(&bytes, table.size());
+                for (const auto &[input_value, output_value] : table)
+                {
+                    append_cache_field(&bytes, input_value);
+                    append_cache_field(&bytes, output_value);
+                }
+            };
+            append_table(context.tables.lrelu);
+            append_table(context.tables.elu);
+            append_table(context.tables.exp);
+            return "sha256:" + sha256_hex(bytes);
         }
 
         struct TraceStaticArtifacts
         {
+            // Canonical identity is stored with the value, so a stale cache
+            // entry can never be accepted merely because an in-memory key
+            // collided or omitted a public-input component.
+            std::string identity;
             std::vector<FieldElement> feature_index_fields;
             std::vector<FieldElement> absolute_id_fields;
             std::vector<FieldElement> dataset_index_fields;
@@ -5202,13 +5618,16 @@ namespace gatzk::protocol
                 trace_cache_prefix(context) + ":trace_static:" + std::to_string(context.local.num_features) + ":" + std::to_string(context.dataset.num_nodes) + ":" + std::to_string(context.domains.n->size) + ":" + std::to_string(context.domains.edge->size);
             {
                 std::lock_guard<std::mutex> lock(cache_mutex);
-                if (const auto it = cache.find(cache_key); it != cache.end())
+                if (const auto it = cache.find(cache_key); it != cache.end()
+                    && it->second != nullptr
+                    && it->second->identity == cache_key)
                 {
                     return *it->second;
                 }
             }
 
             auto artifacts = std::make_shared<TraceStaticArtifacts>();
+            artifacts->identity = cache_key;
             artifacts->feature_index_fields.assign(context.local.num_features, FieldElement::zero());
             for (std::size_t j = 0; j < context.local.num_features; ++j)
             {
@@ -5572,6 +5991,9 @@ namespace gatzk::protocol
             const std::vector<FieldElement> &values,
             std::size_t valid_count)
         {
+            if (valid_count > values.size())
+                throw std::runtime_error(
+                    "value index valid_count exceeds table rows");
             std::unordered_map<std::uint64_t, std::size_t> index;
             index.reserve(valid_count);
             for (std::size_t i = 0; i < valid_count; ++i)
@@ -5581,7 +6003,170 @@ namespace gatzk::protocol
             return index;
         }
 
+        struct CachedValueIndexPayload
+        {
+            std::string identity;
+            std::string payload_digest;
+            std::unordered_map<std::uint64_t, std::size_t> values;
+        };
+
+        struct CachedPairIndexPayload
+        {
+            std::string identity;
+            std::string payload_digest;
+            std::unordered_map<FieldPairKey, std::size_t, FieldPairKeyHash>
+                values;
+        };
+
+        struct CachedFieldVectorPayload
+        {
+            std::string identity;
+            std::string payload_digest;
+            std::vector<FieldElement> values;
+        };
+
+        std::string value_index_cache_key(
+            std::string_view cache_namespace,
+            const std::string &label,
+            const std::vector<FieldElement> &values,
+            std::size_t valid_count)
+        {
+            std::string bytes;
+            append_cache_string(&bytes, "zkgat:lookup-index:value:v2");
+            append_cache_string(&bytes, cache_namespace);
+            append_cache_string(&bytes, label);
+            append_cache_u64(&bytes, valid_count);
+            append_cache_field_vector(&bytes, values);
+            return "sha256:" + sha256_hex(bytes);
+        }
+
+        std::string pair_index_cache_key(
+            std::string_view cache_namespace,
+            const std::string &label,
+            const std::vector<std::pair<FieldElement, FieldElement>> &values)
+        {
+            std::string bytes;
+            append_cache_string(&bytes, "zkgat:lookup-index:pair:v2");
+            append_cache_string(&bytes, cache_namespace);
+            append_cache_string(&bytes, label);
+            append_cache_u64(&bytes, values.size());
+            for (const auto &[left, right] : values)
+            {
+                append_cache_field(&bytes, left);
+                append_cache_field(&bytes, right);
+            }
+            return "sha256:" + sha256_hex(bytes);
+        }
+
+        std::string single_table_cache_key(
+            std::string_view cache_namespace,
+            const std::string &label,
+            const std::vector<FieldElement> &values,
+            std::size_t domain_size)
+        {
+            std::string bytes;
+            append_cache_string(&bytes, "zkgat:lookup-table:single:v2");
+            append_cache_string(&bytes, cache_namespace);
+            append_cache_string(&bytes, label);
+            append_cache_u64(&bytes, domain_size);
+            append_cache_field_vector(&bytes, values);
+            return "sha256:" + sha256_hex(bytes);
+        }
+
+        std::string pair_table_cache_key(
+            std::string_view cache_namespace,
+            const std::string &label,
+            const std::vector<std::pair<FieldElement, FieldElement>> &values,
+            const FieldElement &eta,
+            std::size_t domain_size)
+        {
+            std::string bytes;
+            append_cache_string(&bytes, "zkgat:lookup-table:pair:v2");
+            append_cache_string(&bytes, cache_namespace);
+            append_cache_string(&bytes, label);
+            append_cache_u64(&bytes, domain_size);
+            append_cache_field(&bytes, eta);
+            append_cache_u64(&bytes, values.size());
+            for (const auto &[left, right] : values)
+            {
+                append_cache_field(&bytes, left);
+                append_cache_field(&bytes, right);
+            }
+            return "sha256:" + sha256_hex(bytes);
+        }
+
+        std::string value_index_payload_digest(
+            const std::unordered_map<std::uint64_t, std::size_t> &values)
+        {
+            std::vector<std::pair<std::uint64_t, std::size_t>> entries;
+            entries.reserve(values.size());
+            for (const auto &[value, index] : values)
+                entries.emplace_back(value, index);
+            std::sort(entries.begin(), entries.end());
+            std::string bytes;
+            append_cache_string(&bytes, "zkgat:lookup-index-payload:value:v1");
+            append_cache_u64(&bytes, entries.size());
+            for (const auto &[value, index] : entries)
+            {
+                append_cache_u64(&bytes, value);
+                append_cache_u64(&bytes, index);
+            }
+            return "sha256:" + sha256_hex(bytes);
+        }
+
+        bool field_pair_key_less(
+            const FieldPairKey &lhs,
+            const FieldPairKey &rhs)
+        {
+            if (lhs.first.limbs != rhs.first.limbs)
+                return lhs.first.limbs < rhs.first.limbs;
+            return lhs.second.limbs < rhs.second.limbs;
+        }
+
+        std::string pair_index_payload_digest(
+            const std::unordered_map<FieldPairKey, std::size_t, FieldPairKeyHash>
+                &values)
+        {
+            std::vector<std::pair<FieldPairKey, std::size_t>> entries;
+            entries.reserve(values.size());
+            for (const auto &[value, index] : values)
+                entries.emplace_back(value, index);
+            std::sort(
+                entries.begin(),
+                entries.end(),
+                [](const auto &lhs, const auto &rhs)
+                {
+                    if (field_pair_key_less(lhs.first, rhs.first))
+                        return true;
+                    if (field_pair_key_less(rhs.first, lhs.first))
+                        return false;
+                    return lhs.second < rhs.second;
+                });
+            std::string bytes;
+            append_cache_string(&bytes, "zkgat:lookup-index-payload:pair:v1");
+            append_cache_u64(&bytes, entries.size());
+            for (const auto &[value, index] : entries)
+            {
+                for (const auto limb : value.first.limbs)
+                    append_cache_u64(&bytes, limb);
+                for (const auto limb : value.second.limbs)
+                    append_cache_u64(&bytes, limb);
+                append_cache_u64(&bytes, index);
+            }
+            return "sha256:" + sha256_hex(bytes);
+        }
+
+        std::string field_vector_payload_digest(
+            const std::vector<FieldElement> &values)
+        {
+            std::string bytes;
+            append_cache_string(&bytes, "zkgat:lookup-table-payload:vector:v1");
+            append_cache_field_vector(&bytes, values);
+            return "sha256:" + sha256_hex(bytes);
+        }
+
         std::shared_ptr<const std::unordered_map<std::uint64_t, std::size_t>> cached_value_index_map(
+            std::string_view cache_namespace,
             const std::string &label,
             const std::vector<FieldElement> &values,
             std::size_t valid_count)
@@ -5589,24 +6174,47 @@ namespace gatzk::protocol
             static std::mutex cache_mutex;
             static std::unordered_map<
                 std::string,
-                std::shared_ptr<std::unordered_map<std::uint64_t, std::size_t>>>
+                std::shared_ptr<CachedValueIndexPayload>>
                 cache;
 
-            const auto cache_key =
-                label + ":" + std::to_string(valid_count) + ":" + std::to_string(values.size());
+            const auto cache_key = value_index_cache_key(
+                cache_namespace,
+                label,
+                values,
+                valid_count);
             {
                 std::lock_guard<std::mutex> lock(cache_mutex);
-                if (const auto it = cache.find(cache_key); it != cache.end())
+                const auto it = cache.find(cache_key);
+                if (it != cache.end() && it->second != nullptr &&
+                    it->second->identity == cache_key &&
+                    it->second->payload_digest ==
+                        value_index_payload_digest(it->second->values))
                 {
-                    return it->second;
+                    return std::shared_ptr<const std::unordered_map<std::uint64_t, std::size_t>>(
+                        it->second,
+                        &it->second->values);
                 }
+                if (it != cache.end())
+                    cache.erase(it);
             }
-            auto packed = std::make_shared<std::unordered_map<std::uint64_t, std::size_t>>(
-                build_value_index_map(values, valid_count));
+            auto packed = std::make_shared<CachedValueIndexPayload>();
+            packed->identity = cache_key;
+            packed->values = build_value_index_map(values, valid_count);
+            packed->payload_digest = value_index_payload_digest(packed->values);
             {
                 std::lock_guard<std::mutex> lock(cache_mutex);
-                const auto [it, _] = cache.emplace(cache_key, packed);
-                return it->second;
+                auto [it, inserted] = cache.emplace(cache_key, packed);
+                if (!inserted &&
+                    (it->second == nullptr ||
+                     it->second->identity != cache_key ||
+                     it->second->payload_digest !=
+                         value_index_payload_digest(it->second->values)))
+                {
+                    it->second = std::move(packed);
+                }
+                return std::shared_ptr<const std::unordered_map<std::uint64_t, std::size_t>>(
+                    it->second,
+                    &it->second->values);
             }
         }
 
@@ -5622,6 +6230,7 @@ namespace gatzk::protocol
             return index;
         }
         std::shared_ptr<const std::unordered_map<FieldPairKey, std::size_t, FieldPairKeyHash>> cached_pair_index_map(
+            std::string_view cache_namespace,
             const std::string &label,
             const std::vector<std::pair<FieldElement, FieldElement>> &values)
         {
@@ -5629,27 +6238,46 @@ namespace gatzk::protocol
             static std::unordered_map<
                 std::string,
                 std::shared_ptr<
-                    std::unordered_map<
-                        FieldPairKey,
-                        std::size_t,
-                        FieldPairKeyHash>>>
+                    CachedPairIndexPayload>>
                 cache;
 
-            const auto cache_key =
-                label + ":" + std::to_string(values.size()) + ":first=" + (values.empty() ? std::string("empty") : values.front().first.to_string() + "," + values.front().second.to_string()) + ":last=" + (values.empty() ? std::string("empty") : values.back().first.to_string() + "," + values.back().second.to_string());
+            const auto cache_key = pair_index_cache_key(
+                cache_namespace,
+                label,
+                values);
             {
                 std::lock_guard<std::mutex> lock(cache_mutex);
-                if (const auto it = cache.find(cache_key); it != cache.end())
+                const auto it = cache.find(cache_key);
+                if (it != cache.end() && it->second != nullptr &&
+                    it->second->identity == cache_key &&
+                    it->second->payload_digest ==
+                        pair_index_payload_digest(it->second->values))
                 {
-                    return it->second;
+                    return std::shared_ptr<const std::unordered_map<FieldPairKey, std::size_t, FieldPairKeyHash>>(
+                        it->second,
+                        &it->second->values);
                 }
+                if (it != cache.end())
+                    cache.erase(it);
             }
-            auto packed = std::make_shared<std::unordered_map<FieldPairKey, std::size_t, FieldPairKeyHash>>(
-                build_pair_index_map(values));
+            auto packed = std::make_shared<CachedPairIndexPayload>();
+            packed->identity = cache_key;
+            packed->values = build_pair_index_map(values);
+            packed->payload_digest = pair_index_payload_digest(packed->values);
             {
                 std::lock_guard<std::mutex> lock(cache_mutex);
-                const auto [it, _] = cache.emplace(cache_key, packed);
-                return it->second;
+                auto [it, inserted] = cache.emplace(cache_key, packed);
+                if (!inserted &&
+                    (it->second == nullptr ||
+                     it->second->identity != cache_key ||
+                     it->second->payload_digest !=
+                         pair_index_payload_digest(it->second->values)))
+                {
+                    it->second = std::move(packed);
+                }
+                return std::shared_ptr<const std::unordered_map<FieldPairKey, std::size_t, FieldPairKeyHash>>(
+                    it->second,
+                    &it->second->values);
             }
         }
 
@@ -5684,6 +6312,7 @@ namespace gatzk::protocol
 
         std::shared_ptr<const std::vector<FieldElement>>
         cached_single_lookup_table_shared(
+            std::string_view cache_namespace,
             const std::string &label,
             const std::vector<FieldElement> &values,
             std::size_t domain_size)
@@ -5691,37 +6320,69 @@ namespace gatzk::protocol
             static std::mutex cache_mutex;
             static std::unordered_map<
                 std::string,
-                std::shared_ptr<std::vector<FieldElement>>>
+                std::shared_ptr<CachedFieldVectorPayload>>
                 cache;
 
-            const auto cache_key =
-                label + ":" + std::to_string(domain_size) + ":" + std::to_string(values.size()) + ":first=" + (values.empty() ? std::string("empty") : values.front().to_string()) + ":last=" + (values.empty() ? std::string("empty") : values.back().to_string());
+            const auto cache_key = single_table_cache_key(
+                cache_namespace,
+                label,
+                values,
+                domain_size);
             {
                 std::lock_guard<std::mutex> lock(cache_mutex);
-                if (const auto it = cache.find(cache_key); it != cache.end())
+                const auto it = cache.find(cache_key);
+                if (it != cache.end() && it->second != nullptr &&
+                    it->second->identity == cache_key &&
+                    it->second->payload_digest ==
+                        field_vector_payload_digest(it->second->values))
                 {
-                    return it->second;
+                    return std::shared_ptr<const std::vector<FieldElement>>(
+                        it->second,
+                        &it->second->values);
                 }
+                if (it != cache.end())
+                    cache.erase(it);
             }
-            auto packed = std::make_shared<std::vector<FieldElement>>(domain_size, FieldElement::zero());
-            std::copy(values.begin(), values.end(), packed->begin());
+            if (values.size() > domain_size)
+                throw std::runtime_error(
+                    "single lookup table rows exceed domain size");
+            auto packed = std::make_shared<CachedFieldVectorPayload>();
+            packed->identity = cache_key;
+            packed->values.assign(domain_size, FieldElement::zero());
+            std::copy(values.begin(), values.end(), packed->values.begin());
+            packed->payload_digest = field_vector_payload_digest(packed->values);
             {
                 std::lock_guard<std::mutex> lock(cache_mutex);
-                const auto [it, _] = cache.emplace(cache_key, packed);
-                return it->second;
+                auto [it, inserted] = cache.emplace(cache_key, packed);
+                if (!inserted &&
+                    (it->second == nullptr ||
+                     it->second->identity != cache_key ||
+                     it->second->payload_digest !=
+                         field_vector_payload_digest(it->second->values)))
+                {
+                    it->second = std::move(packed);
+                }
+                return std::shared_ptr<const std::vector<FieldElement>>(
+                    it->second,
+                    &it->second->values);
             }
         }
 
         const std::vector<FieldElement> &cached_single_lookup_table(
+            std::string_view cache_namespace,
             const std::string &label,
             const std::vector<FieldElement> &values,
             std::size_t domain_size)
         {
             return *cached_single_lookup_table_shared(
-                label, values, domain_size);
+                cache_namespace,
+                label,
+                values,
+                domain_size);
         }
 
         const std::vector<FieldElement> &cached_pair_lookup_table(
+            std::string_view cache_namespace,
             const std::string &label,
             const std::vector<std::pair<FieldElement, FieldElement>> &values,
             const FieldElement &eta,
@@ -5730,27 +6391,51 @@ namespace gatzk::protocol
             static std::mutex cache_mutex;
             static std::unordered_map<
                 std::string,
-                std::shared_ptr<std::vector<FieldElement>>>
+                std::shared_ptr<CachedFieldVectorPayload>>
                 cache;
 
-            const auto cache_key =
-                label + ":" + std::to_string(domain_size) + ":" + std::to_string(values.size()) + ":" + eta.to_string() + ":first=" + (values.empty() ? std::string("empty") : values.front().first.to_string() + "," + values.front().second.to_string()) + ":last=" + (values.empty() ? std::string("empty") : values.back().first.to_string() + "," + values.back().second.to_string());
+            const auto cache_key = pair_table_cache_key(
+                cache_namespace,
+                label,
+                values,
+                eta,
+                domain_size);
             {
                 std::lock_guard<std::mutex> lock(cache_mutex);
-                if (const auto it = cache.find(cache_key); it != cache.end())
+                const auto it = cache.find(cache_key);
+                if (it != cache.end() && it->second != nullptr &&
+                    it->second->identity == cache_key &&
+                    it->second->payload_digest ==
+                        field_vector_payload_digest(it->second->values))
                 {
-                    return *it->second;
+                    return it->second->values;
                 }
+                if (it != cache.end())
+                    cache.erase(it);
             }
-            auto packed = std::make_shared<std::vector<FieldElement>>(domain_size, FieldElement::zero());
+            if (values.size() > domain_size)
+                throw std::runtime_error(
+                    "pair lookup table rows exceed domain size");
+            auto packed = std::make_shared<CachedFieldVectorPayload>();
+            packed->identity = cache_key;
+            packed->values.assign(domain_size, FieldElement::zero());
             for (std::size_t i = 0; i < values.size(); ++i)
             {
-                (*packed)[i] = values[i].first + eta * values[i].second;
+                packed->values[i] = values[i].first + eta * values[i].second;
             }
+            packed->payload_digest = field_vector_payload_digest(packed->values);
             {
                 std::lock_guard<std::mutex> lock(cache_mutex);
-                const auto [it, _] = cache.emplace(cache_key, packed);
-                return *it->second;
+                auto [it, inserted] = cache.emplace(cache_key, packed);
+                if (!inserted &&
+                    (it->second == nullptr ||
+                     it->second->identity != cache_key ||
+                     it->second->payload_digest !=
+                         field_vector_payload_digest(it->second->values)))
+                {
+                    it->second = std::move(packed);
+                }
+                return it->second->values;
             }
         }
 
@@ -6427,10 +7112,11 @@ namespace gatzk::protocol
             const auto &hidden_layer_concat_quantized = forward_artifacts->hidden_layer_concat_quantized;
 
             stage_start = Clock::now();
-            const auto lrelu_index = cached_pair_index_map("lrelu", context.tables.lrelu);
-            const auto range_index = cached_value_index_map("range", context.tables.range, context.tables.range.size());
-            const auto exp_index = cached_pair_index_map("exp", context.tables.exp);
-            const auto elu_index = cached_pair_index_map("elu", context.tables.elu);
+            const auto cache_namespace = trace_cache_prefix(context);
+            const auto lrelu_index = cached_pair_index_map(cache_namespace, "lrelu", context.tables.lrelu);
+            const auto range_index = cached_value_index_map(cache_namespace, "range", context.tables.range, context.tables.range.size());
+            const auto exp_index = cached_pair_index_map(cache_namespace, "exp", context.tables.exp);
+            const auto elu_index = cached_pair_index_map(cache_namespace, "elu", context.tables.elu);
             add_metric(metrics != nullptr ? &metrics->lookup_key_build_ms : nullptr, stage_start);
 
             auto commit_signed_division = [&](
@@ -6545,8 +7231,9 @@ namespace gatzk::protocol
                                 return !value.is_zero();
                             }));
 
-                const auto table =
+                    const auto table =
                     cached_single_lookup_table_shared(
+                        cache_namespace,
                         "signed-div-range",
                         context.tables.range,
                         domains.edge->size);
@@ -7596,7 +8283,7 @@ namespace gatzk::protocol
                 const auto eta_l = transcript.challenge(challenge("eta_L_h"));
                 trace.challenges[challenge("eta_L_h")] = eta_l;
                 std::vector<FieldElement> table_l =
-                    cached_pair_lookup_table(prefix + "L", context.tables.lrelu, eta_l, domains.edge->size);
+                    cached_pair_lookup_table(cache_namespace, prefix + "L", context.tables.lrelu, eta_l, domains.edge->size);
                 const auto lrelu_artifacts = cached_pair_lookup_artifacts(
                     [&]()
                     {
@@ -7683,7 +8370,7 @@ namespace gatzk::protocol
                 transcript.absorb_commitment(prefix + "Delta", trace.commitments.at(prefix + "Delta").point);
                 transcript.absorb_commitment("V_T_range", context.static_commitments.at("V_T_range").point);
                 std::vector<FieldElement> table_r =
-                    cached_single_lookup_table(prefix + "R", context.tables.range, domains.edge->size);
+                    cached_single_lookup_table(cache_namespace, prefix + "R", context.tables.range, domains.edge->size);
                 const auto range_artifacts = cached_single_lookup_artifacts(
                     [&]()
                     {
@@ -7746,7 +8433,7 @@ namespace gatzk::protocol
                 const auto eta_exp = transcript.challenge(challenge("eta_exp_h"));
                 trace.challenges[challenge("eta_exp_h")] = eta_exp;
                 std::vector<FieldElement> table_exp =
-                    cached_pair_lookup_table(prefix + "exp", context.tables.exp, eta_exp, domains.edge->size);
+                    cached_pair_lookup_table(cache_namespace, prefix + "exp", context.tables.exp, eta_exp, domains.edge->size);
                 const auto exp_artifacts = cached_pair_lookup_artifacts(
                     [&]()
                     {
@@ -8058,7 +8745,7 @@ namespace gatzk::protocol
                 const auto eta_elu = transcript.challenge(challenge("eta_ELU_h"));
                 trace.challenges[challenge("eta_ELU_h")] = eta_elu;
                 std::vector<FieldElement> table_elu =
-                    cached_pair_lookup_table(prefix + "ELU", context.tables.elu, eta_elu, domains.edge->size);
+                    cached_pair_lookup_table(cache_namespace, prefix + "ELU", context.tables.elu, eta_elu, domains.edge->size);
                 const auto elu_artifacts = cached_pair_lookup_artifacts(
                     [&]()
                     {
@@ -8890,7 +9577,7 @@ namespace gatzk::protocol
                 const auto eta_l_out = transcript.challenge(eta_l_out_name);
                 trace.challenges[eta_l_out_name] = eta_l_out;
                 const std::vector<FieldElement> out_table_l =
-                    cached_pair_lookup_table(prefix_base + "_L", context.tables.lrelu, eta_l_out, domains.edge->size);
+                    cached_pair_lookup_table(cache_namespace, prefix_base + "_L", context.tables.lrelu, eta_l_out, domains.edge->size);
                 const auto out_l_artifacts = cached_pair_lookup_artifacts(
                     [&]()
                     {
@@ -8942,7 +9629,7 @@ namespace gatzk::protocol
                 transcript.absorb_commitment(prefix + "Delta", trace.commitments.at(prefix + "Delta").point);
                 transcript.absorb_commitment("V_T_range", context.static_commitments.at("V_T_range").point);
                 const std::vector<FieldElement> out_table_r =
-                    cached_single_lookup_table(prefix_base + "_R", context.tables.range, domains.edge->size);
+                    cached_single_lookup_table(cache_namespace, prefix_base + "_R", context.tables.range, domains.edge->size);
                 const auto out_r_artifacts = cached_single_lookup_artifacts(
                     [&]()
                     {
@@ -8974,7 +9661,7 @@ namespace gatzk::protocol
                 const auto eta_exp_out = transcript.challenge(eta_exp_out_name);
                 trace.challenges[eta_exp_out_name] = eta_exp_out;
                 const std::vector<FieldElement> out_table_exp =
-                    cached_pair_lookup_table(prefix_base + "_exp", context.tables.exp, eta_exp_out, domains.edge->size);
+                    cached_pair_lookup_table(cache_namespace, prefix_base + "_exp", context.tables.exp, eta_exp_out, domains.edge->size);
                 const auto out_exp_artifacts = cached_pair_lookup_artifacts(
                     [&]()
                     {
@@ -11248,6 +11935,9 @@ namespace gatzk::protocol
     // trace 总入口：当前正式路径只接受已校验的多层多头模型。
     TraceArtifacts build_trace(const ProtocolContext &context, RunMetrics *metrics)
     {
+        if (context.verifier_shape_only)
+            throw std::runtime_error(
+                "trace builder rejects verifier shape-only execution context");
         if (!context.model.has_real_multihead)
         {
             throw std::runtime_error(

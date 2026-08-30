@@ -20,6 +20,7 @@ from train_planetoid_gat import (
     cfg_bool,
     cfg_float,
     cfg_int,
+    input_quantization_diagnostic,
     parse_cfg,
     require_canonical_model_config,
     set_seed,
@@ -112,6 +113,11 @@ def main() -> None:
 
     arrays = load_raw_arrays(data_root)
     normalized_features = row_normalize_dense(arrays.features)
+    input_quantization = input_quantization_diagnostic(
+        normalized_features,
+        scale=1,
+        range_bits=cfg_int(cfg, "range_bits", 21),
+    )
     edge_src, edge_dst = build_sorted_edge_index(
         arrays.edge_src,
         arrays.edge_dst,
@@ -189,21 +195,30 @@ def main() -> None:
             train_acc = masked_accuracy(eval_logits, labels, train_idx)
             val_loss = float(masked_loss(eval_logits, labels, valid_idx).item())
             val_acc = masked_accuracy(eval_logits, labels, valid_idx)
-            test_acc = masked_accuracy(eval_logits, labels, test_idx)
+            diagnostic_test_acc = (
+                masked_accuracy(eval_logits, labels, test_idx)
+                if args.diagnostic_test_each_epoch
+                else None
+            )
 
-        history.append(
-            {
-                "epoch": float(epoch),
-                "train_loss": float(loss.item()),
-                "train_acc": train_acc,
-                "val_loss": val_loss,
-                "val_acc": val_acc,
-                "test_acc": test_acc,
-            }
+        epoch_metrics = {
+            "epoch": float(epoch),
+            "train_loss": float(loss.item()),
+            "train_acc": train_acc,
+            "val_loss": val_loss,
+            "val_acc": val_acc,
+        }
+        if diagnostic_test_acc is not None:
+            epoch_metrics["test_acc"] = diagnostic_test_acc
+        history.append(epoch_metrics)
+        test_suffix = (
+            f" test_acc={diagnostic_test_acc:.4f}"
+            if diagnostic_test_acc is not None
+            else ""
         )
         print(
             f"[ogbn-arxiv] epoch={epoch:04d} train_loss={loss.item():.6f} train_acc={train_acc:.4f} "
-            f"val_loss={val_loss:.6f} val_acc={val_acc:.4f} test_acc={test_acc:.4f}",
+            f"val_loss={val_loss:.6f} val_acc={val_acc:.4f}{test_suffix}",
             flush=True,
         )
 
@@ -216,7 +231,6 @@ def main() -> None:
                 "train_acc": train_acc,
                 "val_loss": val_loss,
                 "val_acc": val_acc,
-                "test_acc": test_acc,
             }
             torch.save(
                 {
@@ -245,6 +259,8 @@ def main() -> None:
             training=False,
             return_trace=False,
         )
+        final_test_acc = masked_accuracy(best_logits, labels, test_idx)
+        final_test_loss = float(masked_loss(best_logits, labels, test_idx).item())
 
     np.save(output_dir / "best_logits.npy", best_logits.detach().cpu().numpy().astype(np.float32, copy=False))
     (output_dir / "training_summary.json").write_text(
@@ -254,6 +270,12 @@ def main() -> None:
                 "device": str(device),
                 "wall_time_sec": time.perf_counter() - start,
                 "best_metrics": best_metrics,
+                "final_test_metrics": {
+                    "test_loss": final_test_loss,
+                    "test_acc": final_test_acc,
+                },
+                "per_epoch_test_diagnostic": bool(args.diagnostic_test_each_epoch),
+                "input_quantization_diagnostic": input_quantization,
                 "history_tail": history[-10:],
                 "checkpoint_metadata": metadata,
             },

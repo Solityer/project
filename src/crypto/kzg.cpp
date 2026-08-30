@@ -37,6 +37,13 @@
 #include "gatzk/util/route2.hpp"
 namespace gatzk::crypto
 {
+    // Forward declarations for the cache identity planner, which lives in the
+    // first implementation namespace while domain selection is defined near
+    // the public key-loading entry point below.
+    std::vector<std::string> select_lagrange_srs_domains(
+        const SRSManifest &manifest,
+        const std::vector<std::pair<std::string, std::size_t>> &required_lagrange_domains);
+
     namespace
     {
         using algebra::FieldElement;
@@ -352,6 +359,127 @@ namespace gatzk::crypto
             std::ostringstream stream;
             stream << input.rdbuf();
             return stream.str();
+        }
+
+        struct CanonicalFileIdentity
+        {
+            std::uintmax_t size = 0;
+            std::string sha256;
+        };
+
+        // Cache keys must authenticate the bytes that are actually consumed by
+        // the key loader.  Filesystem path/mtime metadata is insufficient:
+        // replacing a resource in place must invalidate a resident key even
+        // when the path and timestamps are unchanged.
+        CanonicalFileIdentity canonical_file_identity(
+            const std::filesystem::path &path)
+        {
+            std::error_code error;
+            const auto size = std::filesystem::file_size(path, error);
+            if (error)
+                throw std::runtime_error(
+                    "failed to stat SRS key resource: " + path.string());
+            std::ifstream input(path, std::ios::binary);
+            if (!input)
+                throw std::runtime_error(
+                    "failed to open SRS key resource: " + path.string());
+            SHA256_CTX digest_context{};
+            SHA256_Init(&digest_context);
+            std::array<char, 1U << 20> buffer{};
+            std::uintmax_t consumed = 0;
+            while (input)
+            {
+                input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+                const auto count = input.gcount();
+                if (count > 0)
+                {
+                    SHA256_Update(
+                        &digest_context,
+                        buffer.data(),
+                        static_cast<std::size_t>(count));
+                    consumed += static_cast<std::uintmax_t>(count);
+                }
+            }
+            if (!input.eof() || consumed != size)
+                throw std::runtime_error(
+                    "failed while hashing SRS key resource: " + path.string());
+            std::array<unsigned char, SHA256_DIGEST_LENGTH> digest{};
+            SHA256_Final(digest.data(), &digest_context);
+            return CanonicalFileIdentity{
+                .size = size,
+                .sha256 = bytes_to_hex(digest.data(), digest.size())};
+        }
+
+        std::string canonical_key_resource_identity(
+            const std::filesystem::path &srs_root,
+            const SRSManifest &manifest,
+            const std::vector<std::string> &selected_lagrange_domains)
+        {
+            std::vector<std::pair<std::string, std::filesystem::path>> resources;
+            resources.emplace_back("manifest", srs_root / "srs_manifest.json");
+            resources.emplace_back("pk_coef", srs_root / manifest.pk_coef_path);
+            resources.emplace_back("vk", srs_root / manifest.vk_path);
+            resources.emplace_back(
+                "protocol_compiler_artifact",
+                srs_root / manifest.protocol_compiler_artifact_path);
+            resources.emplace_back(
+                "srs_audit_report",
+                srs_root / manifest.srs_audit_report_path);
+            for (const auto &domain : selected_lagrange_domains)
+            {
+                const auto path_it = manifest.pk_lagrange_paths.find(domain);
+                if (path_it == manifest.pk_lagrange_paths.end())
+                    throw std::runtime_error(
+                        "SRS resource identity lacks Lagrange path: " + domain);
+                resources.emplace_back(
+                    "pk_lagrange:" + domain,
+                    srs_root / path_it->second);
+            }
+            std::sort(
+                resources.begin(), resources.end(),
+                [](const auto &lhs, const auto &rhs)
+                { return lhs.first < rhs.first; });
+
+            std::ostringstream canonical;
+            canonical << "zkgat:kzg-key-resource-identity:v1\n"
+                      << "manifest_hash=" << manifest.manifest_hash << '\n'
+                      << "srs_id=" << manifest.srs_id << '\n'
+                      << "srs_type=" << manifest.srs_type << '\n'
+                      << "degree_bound=" << manifest.degree_bound << '\n'
+                      << "generator_id=" << manifest.generator_id << '\n'
+                      << "generator_version=" << manifest.generator_version << '\n'
+                      << "encoding=" << manifest.encoding << '\n'
+                      << "protocol_schema_id=" << manifest.protocol_schema_id << '\n'
+                      << "protocol_compiler_artifact_hash="
+                      << manifest.protocol_compiler_artifact_hash << '\n'
+                      << "proof_schema_template_hash="
+                      << manifest.proof_schema_template_hash << '\n'
+                      << "observation_ledger_hash="
+                      << manifest.observation_ledger_hash << '\n'
+                      << "random_identity_ledger_hash="
+                      << manifest.random_identity_ledger_hash << '\n'
+                      << "security_budget_ledger_hash="
+                      << manifest.security_budget_ledger_hash << '\n'
+                      << "domain_generator_catalog_hash="
+                      << manifest.domain_generator_catalog_hash << '\n'
+                      << "selected_lagrange_count="
+                      << selected_lagrange_domains.size() << '\n';
+            for (const auto &domain : selected_lagrange_domains)
+                canonical << "selected_lagrange=" << domain << '\n';
+            for (const auto &[label, path] : resources)
+            {
+                const auto identity = canonical_file_identity(path);
+                std::error_code error;
+                const auto absolute = std::filesystem::absolute(path, error);
+                if (error)
+                    throw std::runtime_error(
+                        "failed to canonicalize SRS key resource: " + path.string());
+                canonical << "resource=" << label
+                          << "|path=" << absolute.lexically_normal().generic_string()
+                          << "|size=" << identity.size
+                          << "|sha256=" << identity.sha256 << '\n';
+            }
+            return "sha256:" + sha256_hex(canonical.str());
         }
 
         std::string compiler_artifact_scalar(
@@ -5613,6 +5741,16 @@ namespace gatzk::crypto
             return pairing_equal(numerator, vk.g2_one, witness, rhs);
         }
     }
+
+    std::string canonical_kzg_key_resource_identity(
+        const std::filesystem::path &srs_root,
+        const SRSManifest &manifest,
+        const std::vector<std::string> &selected_lagrange_domains)
+    {
+        return canonical_key_resource_identity(
+            srs_root, manifest, selected_lagrange_domains);
+    }
+
     struct EvaluationCommitmentCache::Impl
     {
         struct PointerKey
@@ -6214,8 +6352,21 @@ namespace gatzk::crypto
                     continue;
                 }
             }
+            const auto available_size_it = manifest.domain_sizes.find(base_key);
+            if (available_size_it != manifest.domain_sizes.end())
+            {
+                throw std::runtime_error(
+                    "SRS manifest lacks Lagrange material for required domain "
+                    + domain_name + ":" + std::to_string(domain_size)
+                    + "; authenticated " + base_key + " domain size is "
+                    + std::to_string(available_size_it->second)
+                    + ", so the derived static-table/domain capacity is not covered; "
+                      "refusing to continue or generate an SRS");
+            }
             throw std::runtime_error(
-                "SRS manifest lacks Lagrange material for domain " + domain_name + ":" + std::to_string(domain_size));
+                "SRS manifest lacks Lagrange material for required domain "
+                + domain_name + ":" + std::to_string(domain_size)
+                + "; no authenticated domain-size entry exists, refusing to continue");
         }
         std::sort(selected.begin(), selected.end());
         return selected;
@@ -6240,22 +6391,33 @@ namespace gatzk::crypto
         static std::unordered_map<std::string, KZGKeyPair> cache;
         const auto cache_key =
             srs_path + "|" + expected_srs_type + "|" + expected_srs_id + "|coef=" + std::to_string(required_coefficient_count) + "|lagrange=" + required_lagrange_cache_fragment(required_lagrange_domains);
+        // Resolve and authenticate the manifest/catalogue before consulting the
+        // process-local cache.  The cache payload stores the resulting
+        // manifest/resource identity; a same-path replacement therefore cannot
+        // return stale PK/VK/domain-zero-G2 material.
+        const auto srs_root = std::filesystem::path(srs_path);
+        const auto manifest = load_manifest_file(srs_path);
+        validate_manifest(manifest, expected_srs_type, expected_srs_id);
+        const auto selected_lagrange_domains =
+            select_lagrange_srs_domains(manifest, required_lagrange_domains);
+        const auto resource_identity = canonical_key_resource_identity(
+            srs_root, manifest, selected_lagrange_domains);
         {
             std::lock_guard<std::mutex> lock(cache_mutex);
             if (const auto it = cache.find(cache_key); it != cache.end())
             {
-                return it->second;
+                if (it->second.resource_identity == resource_identity
+                    && it->second.pk.resource_identity == resource_identity
+                    && it->second.vk.resource_identity == resource_identity)
+                    return it->second;
+                // Erase stale material before reloading.  Do not let a
+                // mismatched payload survive under the same path/config key.
+                cache.erase(it);
             }
         }
         const auto srs_load_start = Clock::now();
-
-        const auto manifest = load_manifest_file(srs_path);
-        validate_manifest(manifest, expected_srs_type, expected_srs_id);
-        const auto srs_root = std::filesystem::path(srs_path);
         validate_protocol_compiler_artifact_material(srs_root, manifest);
         validate_srs_audit_report_material(srs_root, manifest);
-        const auto selected_lagrange_domains =
-            select_lagrange_srs_domains(manifest, required_lagrange_domains);
         std::string pk_coef_hash;
 
         const auto pk_coef_load_start =
@@ -6401,6 +6563,7 @@ namespace gatzk::crypto
             .powers_g1 = std::make_shared<const std::vector<G1Point>>(std::move(powers_g1)),
             .lagrange_srs_by_domain = std::move(lagrange_srs),
             .manifest_hash = manifest.manifest_hash,
+            .resource_identity = resource_identity,
         };
         const KZGVerifierKey vk{
             .srs_id = manifest.srs_id,
@@ -6413,6 +6576,7 @@ namespace gatzk::crypto
             .g2_one_prepared = std::make_shared<PreparedG2>(prepare_g2(g2_one)),
             .g2_tau_prepared = std::make_shared<PreparedG2>(prepare_g2(g2_tau)),
             .manifest_hash = manifest.manifest_hash,
+            .resource_identity = resource_identity,
         };
         const KZGKeyPair key{
             .manifest = manifest,
@@ -6423,7 +6587,16 @@ namespace gatzk::crypto
             .g2_tau = g2_tau,
             .g2_one_prepared = vk.g2_one_prepared,
             .g2_tau_prepared = vk.g2_tau_prepared,
+            .resource_identity = resource_identity,
         };
+        // Close the small TOCTOU window between the pre-cache identity scan
+        // and parsing the large point files.  A resource replacement during
+        // loading is a hard failure, never a cacheable key.
+        const auto post_load_resource_identity = canonical_key_resource_identity(
+            srs_root, manifest, selected_lagrange_domains);
+        if (post_load_resource_identity != resource_identity)
+            throw std::runtime_error(
+                "SRS key resource identity changed while loading");
         {
             std::lock_guard<std::mutex> lock(cache_mutex);
             cache.emplace(cache_key, key);

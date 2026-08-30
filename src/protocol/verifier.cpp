@@ -23,6 +23,7 @@
 #include "gatzk/protocol/quotients.hpp"
 #include "gatzk/protocol/schema.hpp"
 #include "gatzk/util/route2.hpp"
+#include "gatzk/protocol/verifier_context.hpp"
 
 namespace gatzk::protocol
 {
@@ -32,9 +33,10 @@ namespace gatzk::protocol
 
     bool final_formal_run_accepted(
         bool verifier_accepted,
-        bool reference_consistent)
+        bool reference_consistent,
+        bool security_budget_passed)
     {
-        return verifier_accepted && reference_consistent;
+        return verifier_accepted && reference_consistent && security_budget_passed;
     }
 
     namespace
@@ -1869,7 +1871,7 @@ namespace gatzk::protocol
         }
     } // namespace
 
-    std::size_t private_plain_value_count(const ProtocolContext &context, const Proof &proof)
+    std::size_t private_plain_value_count_internal(const ProtocolContext &context, const Proof &proof)
     {
         std::size_t count = 0;
         std::string reason;
@@ -1881,7 +1883,7 @@ namespace gatzk::protocol
     }
 
     // verifier 入口：重放 transcript、批量校验 opening，并确认 quotient / external relation 全部成立。
-    bool verify(const ProtocolContext &context, const Proof &proof, RunMetrics *metrics)
+    bool verify_with_execution_context(const ProtocolContext &context, const Proof &proof, RunMetrics *metrics)
     {
         const auto metadata_start = Clock::now();
         if (!has_formal_public_architecture(context))
@@ -1897,6 +1899,10 @@ namespace gatzk::protocol
             data::validate_normalized_graph_input(context.local);
         }
         catch (const std::exception &)
+        {
+            return false;
+        }
+        catch (...)
         {
             return false;
         }
@@ -2652,6 +2658,10 @@ namespace gatzk::protocol
             {
                 return false;
             }
+            catch (...)
+            {
+                return false;
+            }
 
             std::vector<std::uint8_t> group_results(point_groups.size(), 0);
             std::vector<double> group_elapsed_ms(point_groups.size(), 0.0);
@@ -2754,6 +2764,10 @@ namespace gatzk::protocol
             {
                 return false;
             }
+            catch (...)
+            {
+                return false;
+            }
             const auto failed_group = std::find(
                 group_results.begin(), group_results.end(), 0);
             if (failed_group != group_results.end())
@@ -2790,6 +2804,102 @@ namespace gatzk::protocol
                 }
             }
             return true;
+        }
+    }
+
+    namespace
+    {
+        bool proof_contains_prover_material(const Proof &proof)
+        {
+            const auto has_material = [](const crypto::Commitment &commitment)
+            {
+                return commitment.opening_polynomial != nullptr;
+            };
+            for (const auto &[name, commitment] : proof.dynamic_commitments)
+            {
+                (void)name;
+                if (has_material(commitment)) return true;
+            }
+            for (const auto &[name, commitment] : proof.quotient_commitments)
+            {
+                (void)name;
+                if (has_material(commitment)) return true;
+            }
+            for (const auto &subproof : proof.pi_bind.subproofs)
+            {
+                for (const auto &reblind : subproof.model_reblinds)
+                    if (has_material(reblind.proof_local_commitment)
+                        || has_material(reblind.blinder_commitment))
+                        return true;
+                for (const auto *group : {
+                         &subproof.view_commitments,
+                         &subproof.view_logup_commitments,
+                         &subproof.aggregation_commitments,
+                         &subproof.basis_commitments,
+                         &subproof.crpc_commitments,
+                         &subproof.relation_commitments})
+                    for (const auto &[name, commitment] : *group)
+                    {
+                        (void)name;
+                        if (has_material(commitment)) return true;
+                    }
+            }
+            return false;
+        }
+    } // namespace
+
+    std::size_t private_plain_value_count(
+        const VerifierContext &context,
+        const Proof &proof)
+    {
+        if (proof_contains_prover_material(proof)
+            || context.compiler_artifact == nullptr
+            || !validate_verifier_context(context))
+            return std::numeric_limits<std::size_t>::max();
+        try
+        {
+            auto execution_context =
+                detail::make_verifier_execution_context(context);
+            return private_plain_value_count_internal(execution_context, proof);
+        }
+        catch (const std::exception &)
+        {
+            return std::numeric_limits<std::size_t>::max();
+        }
+        catch (...)
+        {
+            return std::numeric_limits<std::size_t>::max();
+        }
+    }
+
+    bool verify(
+        const VerifierContext &context,
+        const Proof &proof,
+        RunMetrics *metrics)
+    {
+        // Only an authenticated on-disk registry can enter formal verification;
+        // make_verifier_context is deliberately a short-test transition path.
+        if (context.in_process_transition
+            || context.compiler_artifact == nullptr
+            || !validate_verifier_context(context)
+            || proof_contains_prover_material(proof))
+            return false;
+        try
+        {
+            auto execution_context =
+                detail::make_verifier_execution_context(context);
+            return verify_with_execution_context(
+                execution_context,
+                proof,
+                metrics);
+        }
+        catch (const std::exception &)
+        {
+            return false;
+        }
+        catch (...)
+        {
+            return false;
         }
     }
 

@@ -11,5 +11,5 @@ namespace gatzk::protocol
     // strict: tags, order, lengths, scalar encodings and trailing bytes are all
     // checked before the verifier receives a Proof object.
     std::vector<std::uint8_t> serialize_proof(const Proof& proof);
-    Proof parse_proof(const ProtocolContext& context, const std::vector<std::uint8_t>& bytes);
+    Proof parse_proof(const VerifierContext& context, const std::vector<std::uint8_t>& bytes);
 }

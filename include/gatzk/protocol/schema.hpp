@@ -9,14 +9,56 @@
 #include <vector>
 
 #include "gatzk/algebra/field.hpp"
+#include "gatzk/util/config.hpp"
 
 namespace gatzk::protocol
 {
 
     struct ProtocolContext;
+    struct VerifierContext;
+    struct StaticTables;
+    struct ProtocolCompilerArtifact;
     struct BindingRelationMeta;
     struct KZGShiftRelationMeta;
     struct MetadataReference;
+
+    // Deterministic table-shape plan shared by the canonical producer, domain
+    // planner and verifier registration.  It contains only public dimensions,
+    // the registered fixed-point scales and the canonical large-graph shape
+    // rule; it never materializes table rows.  In particular, `T_range` stays
+    // exactly 2^B rows while `T_exp` is derived from the certified LReLU output
+    // bound and therefore covers every delta in [0, delta_bound].
+    struct CanonicalStaticTableShape
+    {
+        std::size_t range_table_size = 0;
+        std::int64_t lrelu_min_raw = 0;
+        std::int64_t lrelu_max_raw = 0;
+        std::size_t lrelu_table_size = 0;
+        std::size_t elu_bound = 0;
+        std::size_t elu_table_size = 0;
+        std::uint64_t lrelu_output_bound = 0;
+        std::uint64_t exp_input_bound = 0;
+        std::size_t exp_table_size = 0;
+        std::size_t table_edge_domain_size = 0;
+        bool large_whole_graph = false;
+        bool operator==(const CanonicalStaticTableShape &) const = default;
+    };
+
+    // Public, context-neutral inputs for the canonical static-table planner.
+    // The planner consumes only dimensions and the authenticated quantization
+    // chain; it never needs model tensors, a proving key, or opening material.
+    // Both the prover and the point-only verifier feed this same value object,
+    // so neither side has to project or fabricate a ProtocolContext.
+    struct CanonicalStaticTableShapeInputs
+    {
+        std::size_t range_bits = 0;
+        util::QuantizationScaleChain quantization;
+        std::string batching_rule;
+        std::size_t dataset_num_nodes = 0;
+        std::size_t dataset_num_features = 0;
+        std::size_t local_num_nodes = 0;
+        std::size_t local_edge_count = 0;
+    };
 
     enum class PolynomialVisibility
     {
@@ -70,6 +112,36 @@ namespace gatzk::protocol
         std::size_t exclusion_degree = 0;
         std::size_t multiplicity = 1;
         bool operator==(const CompilerLedgerEntry &) const = default;
+    };
+
+    // Result of reconstructing the concrete SecurityBudgetLedger.  The
+    // verifier and the run acceptance gate consume this result rather than a
+    // boolean copied from public metadata.  `ledger_digest` authenticates the
+    // complete typed ledger, while `exact_budget` is the canonical reduced
+    // rational epsilon_total string.
+    struct SecurityBudgetEvaluation
+    {
+        bool passed = false;
+        std::string ledger_digest;
+        std::string exact_budget;
+        bool operator==(const SecurityBudgetEvaluation &) const = default;
+    };
+
+    // Canonical, typed integer no-wrap certificate for the fixed-point
+    // execution chain.  `absolute_bound` is the conservative signed-integer
+    // magnitude (never a field element or a hash), and `limb_count` is the
+    // minimum registered base-2^B representation width required by the
+    // corresponding range object.  The verifier rebuilds these rows from the
+    // public dimensions, quantization chain, static tables and authenticated
+    // model bounds before accepting an instance.
+    struct IntegerBoundLedgerEntry
+    {
+        std::string id;
+        std::string stage;
+        std::string source;
+        std::uint64_t absolute_bound = 0;
+        std::size_t limb_count = 0;
+        bool operator==(const IntegerBoundLedgerEntry &) const = default;
     };
 
     // A derived private observation never owns fresh randomness merely because it
@@ -130,6 +202,7 @@ namespace gatzk::protocol
         std::vector<CompilerLedgerEntry> observation_ledger;
         std::vector<CompilerLedgerEntry> random_identity_ledger;
         std::vector<CompilerLedgerEntry> security_budget_ledger;
+        std::vector<IntegerBoundLedgerEntry> integer_bound_ledger;
         std::string kzg_assumption_profile;
         std::string shift_algorithm_id;
         std::string shift_algorithm_spec;
@@ -148,6 +221,49 @@ namespace gatzk::protocol
     std::string protocol_observation_ledger_template_canonical_bytes();
     std::string protocol_random_identity_ledger_template_canonical_bytes();
     std::string protocol_security_budget_ledger_template_canonical_bytes();
+    std::string integer_bound_ledger_canonical_bytes(
+        const std::vector<IntegerBoundLedgerEntry> &ledger);
+    // Rebuild the complete fixed-point no-wrap ledger from public inputs,
+    // authenticated static tables/quantization, shape and point-only model
+    // bound certificates.  This path deliberately does not consume a
+    // ProtocolContext or any raw model tensor.
+    std::vector<IntegerBoundLedgerEntry> rebuild_integer_bound_ledger(
+        const VerifierContext &context);
+    // Compute the canonical static-table row/domain requirements without
+    // allocating or generating any table row.  This is intentionally exposed
+    // for bounded shape/range tests and for the pre-SRS domain planner.
+    CanonicalStaticTableShape plan_canonical_static_table_shape(
+        const ProtocolContext &context);
+    CanonicalStaticTableShape plan_canonical_static_table_shape(
+        const VerifierContext &context);
+    CanonicalStaticTableShape plan_canonical_static_table_shape(
+        const CanonicalStaticTableShapeInputs &inputs);
+    std::size_t canonical_exp_table_size_from_delta_bound(
+        std::uint64_t delta_bound);
+    std::string security_budget_ledger_canonical_bytes(
+        const std::vector<CompilerLedgerEntry> &ledger);
+    SecurityBudgetEvaluation evaluate_security_budget(
+        const ProtocolContext &context,
+        const ProtocolCompilerArtifact &artifact);
+    bool validate_static_tables(
+        const StaticTables &tables,
+        std::size_t range_bits,
+        std::string *reason = nullptr);
+    // Canonical static-table producer shared by the prover and the independent
+    // verifier registration loader.  The table dimensions are derived from the
+    // normalized public graph/configuration, while every row is rebuilt from
+    // the registered fixed-point scales.  Keeping this producer in the schema
+    // module prevents a loader from accepting a table that merely has the
+    // right cardinality or monotonicity.
+    StaticTables build_canonical_static_tables(const ProtocolContext &context);
+    bool validate_static_tables(
+        const ProtocolContext &context,
+        std::string *reason = nullptr);
+    // Canonical re-encoding of a fully populated concrete compiler artifact;
+    // this is usable by a point-only verifier without rebuilding from model
+    // tensors.
+    std::string protocol_instance_canonical_bytes(
+        const ProtocolCompilerArtifact &artifact);
     ProofSchema build_proof_schema(const ProtocolContext &context);
     ProtocolCompilerArtifact build_protocol_compiler_artifact(const ProtocolContext &context);
     std::vector<BindingRelationMeta> build_binding_relation_metadata(const ProtocolContext &context);

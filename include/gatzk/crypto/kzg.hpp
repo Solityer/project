@@ -1,6 +1,7 @@
 #pragma once
 // KZG承诺实现，负责承诺、批量opening与验证侧的批量检查
 #include <array>
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -60,6 +61,16 @@ namespace gatzk::crypto
         std::string manifest_hash;
     };
 
+    // Read-only canonical identity used by the process-local KZG key cache.
+    // The digest authenticates the manifest and every selected on-disk key
+    // resource by canonical path, byte length, and SHA-256.  It is public so
+    // a lightweight regression test can exercise same-path replacement and
+    // TOCTOU invalidation without loading a real SRS.
+    std::string canonical_kzg_key_resource_identity(
+        const std::filesystem::path &srs_root,
+        const SRSManifest &manifest,
+        const std::vector<std::string> &selected_lagrange_domains);
+
     struct KZGProverKey
     {
         std::string srs_id;
@@ -69,6 +80,11 @@ namespace gatzk::crypto
         std::shared_ptr<const std::vector<G1Point>> powers_g1;
         std::unordered_map<std::string, std::shared_ptr<const std::vector<G1Point>>> lagrange_srs_by_domain;
         std::string manifest_hash;
+        // Canonical identity of the manifest and every resource actually
+        // loaded for this key (including size and SHA-256).  This is kept on
+        // the key payload so a process-local cache can never return a key
+        // after a same-path resource replacement.
+        std::string resource_identity;
     };
 
     struct KZGVerifierKey
@@ -83,6 +99,7 @@ namespace gatzk::crypto
         std::shared_ptr<PreparedG2> g2_one_prepared;
         std::shared_ptr<PreparedG2> g2_tau_prepared;
         std::string manifest_hash;
+        std::string resource_identity;
     };
 
     // SRS/验证键的最小实现集合，只从manifest/key文件中加载
@@ -96,6 +113,9 @@ namespace gatzk::crypto
         G2Point g2_tau;
         std::shared_ptr<PreparedG2> g2_one_prepared;
         std::shared_ptr<PreparedG2> g2_tau_prepared;
+        // Canonical manifest/resource identity captured when the key was
+        // loaded.  The value is deliberately part of the cached payload.
+        std::string resource_identity;
     };
 
     // 承诺对象只携带proof可见的群元素；prover侧可保留多项式材料用于生成opening见证

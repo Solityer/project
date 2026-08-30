@@ -14,6 +14,7 @@
 #include "gatzk/crypto/kzg.hpp"
 #include "gatzk/data/dataset.hpp"
 #include "gatzk/model/gat.hpp"
+#include "gatzk/protocol/schema.hpp"
 #include "gatzk/util/config.hpp"
 
 namespace gatzk::protocol
@@ -108,6 +109,265 @@ namespace gatzk::protocol
         // canonical rebuild.  Proof verification rejects a swapped pointer but
         // does not repeat the expensive compiler pass inside verify_time.
         const ProtocolCompilerArtifact *validated_compiler_artifact_identity = nullptr;
+        // Internal verifier compatibility projection marker.  A context with
+        // this bit set carries shape-only model shells and must never be used
+        // by the prover or by an artifact compiler that needs model values.
+        bool verifier_shape_only = false;
+    };
+
+    // The verifier must not receive the proving context.  This deliberately
+    // repeats only public configuration fields; in particular it has no
+    // project/checkpoint/SRS paths, seed, model tensors, proving key, or
+    // opening-polynomial storage.
+    struct VerifierConfig
+    {
+        std::string dataset;
+        std::string task_type = "transductive_node_classification";
+        std::string report_unit = "node";
+        std::string batching_rule = "whole_graph_single";
+        std::string subgraph_rule = "whole_graph";
+        std::string self_loop_rule = "per_node";
+        std::string edge_sort_rule = "edge_gid_then_dst_stable";
+        std::string chunking_rule = "none";
+        std::string quant_cfg_id;
+        util::QuantizationScaleChain quantization;
+        std::string model_arch_id;
+        std::string model_param_id;
+        std::string static_table_id;
+        std::string degree_bound_id;
+        std::string srs_type = "trusted_srs";
+        std::string srs_id;
+        std::string privacy_policy = "model_and_trace_hidden";
+        std::string input_privacy = "public_graph_public_features";
+        std::string output_mode = "public_logits";
+        std::string opening_mode = "point_grouped_batch_opening";
+        std::string binding_mode = "zk_subproof_for_crpc";
+        std::string proof_task = "node_classification_full_gat";
+        std::string security_profile_id = "zkgat_secure_profile_v1";
+        std::size_t hidden_dim = 4;
+        std::size_t num_classes = 2;
+        std::size_t range_bits = 10;
+        std::size_t layer_count = 0;
+        std::size_t K_out = 1;
+        std::size_t batch_graphs = 1;
+        std::vector<util::HiddenLayerProfile> hidden_profile;
+        std::vector<std::size_t> d_in_profile;
+    };
+
+    // Shape-only model view.  Head entries intentionally carry no tensor or
+    // floating-point parameter fields; they exist solely to preserve the
+    // canonical layer/local-head iteration order used by the verifier.
+    struct VerifierModelHeadShape {};
+
+    struct VerifierHiddenLayerShape
+    {
+        std::size_t layer_index = 0;
+        std::size_t input_dim = 0;
+        model::HiddenLayerShape shape;
+        std::vector<VerifierModelHeadShape> heads;
+    };
+
+    struct VerifierOutputLayerShape
+    {
+        std::size_t input_dim = 0;
+        std::size_t output_dim = 0;
+        std::size_t head_count = 0;
+        std::vector<VerifierModelHeadShape> heads;
+    };
+
+    struct VerifierModelShape
+    {
+        bool has_real_multihead = false;
+        std::string model_arch_id;
+        std::string model_param_id;
+        std::string quant_cfg_id;
+        std::string static_table_id;
+        std::string degree_bound_id;
+        std::size_t L = 0;
+        std::vector<std::size_t> d_in_profile;
+        std::vector<model::HiddenLayerShape> hidden_profile;
+        std::size_t K_out = 1;
+        std::size_t C = 0;
+        std::vector<VerifierHiddenLayerShape> hidden_layers;
+        VerifierOutputLayerShape output_layer;
+    };
+
+    struct VerifierSRSMetadata
+    {
+        // Public SRS-manifest identity and verifier-side catalogue metadata.
+        // Path fields and all prover material are deliberately absent.
+        std::string manifest_format;
+        std::string srs_id;
+        std::string curve_id;
+        std::string field_modulus_id;
+        std::string srs_type;
+        std::string ceremony_transcript_hash;
+        std::size_t degree_bound = 0;
+        std::unordered_map<std::string, std::size_t> domain_sizes;
+        std::unordered_map<std::string, std::string> domain_generators;
+        std::string root_derivation_id;
+        std::string row_order;
+        std::string protocol_compiler_artifact_hash;
+        std::string max_instance_envelope_id;
+        std::string max_instance_envelope_hash;
+        std::unordered_map<std::string, std::size_t> max_instance_envelope;
+        std::string proof_schema_template_hash;
+        std::string observation_ledger_hash;
+        std::string random_identity_ledger_hash;
+        std::string security_budget_ledger_hash;
+        std::string vk_hash;
+        std::string vanishing_g2_hash;
+        std::string srs_audit_report_hash;
+        std::string srs_consistency_hash;
+        std::string manifest_hash;
+        std::string generator_id;
+        std::string generator_version;
+        std::string encoding;
+        std::string protocol_schema_id;
+        std::string kzg_assumption_profile_id;
+        std::size_t kzg_assumption_degree_bound = 0;
+        std::size_t kzg_assumption_security_bits = 0;
+        std::string kzg_assumption_domain_catalog_hash;
+        std::string domain_generator_catalog_hash;
+        std::string security_level;
+    };
+
+    // A point-only commitment.  It is intentionally not crypto::Commitment:
+    // the latter owns an optional opening_polynomial for the prover.
+    struct VerifierPointCommitment
+    {
+        std::string name;
+        crypto::G1Point point;
+    };
+
+    // Setup-time, point-only certificate for one model object.  It exposes
+    // only the metadata needed to independently rebuild the fixed-point
+    // no-wrap ledger; raw tensor values and checkpoint provenance never cross
+    // the registration boundary.
+    struct ModelBoundCertificate
+    {
+        bool present = false;
+        std::string label;
+        std::size_t layer_index = 0;
+        std::size_t local_head_index = 0;
+        std::string domain;
+        std::size_t degree_bound = 0;
+        std::uint64_t scale = 0;
+        std::uint64_t absolute_bound = 0;
+        bool operator==(const ModelBoundCertificate &) const = default;
+    };
+
+    struct VerifierRegistryEntry
+    {
+        std::string label;
+        std::string domain;
+        std::size_t degree_bound = 0;
+        std::uint64_t scale = 0;
+        std::int64_t range_min = 0;
+        std::int64_t range_max = 0;
+        crypto::G1Point point;
+        ModelBoundCertificate bound_certificate;
+        bool operator==(const VerifierRegistryEntry &) const = default;
+    };
+
+    // Authenticated VK_model/VK_static material.  Canonical serialization is
+    // length-delimited and SHA-256 hashed; entry order is part of the digest.
+    struct AuthenticatedVerifierRegistry
+    {
+        std::string format = "zkgat_verifier_registry_v1";
+        std::string registry_id;
+        std::string model_arch_id;
+        std::string model_param_id;
+        std::string quant_cfg_id;
+        std::string static_table_id;
+        std::string srs_id;
+        std::string protocol_schema_id;
+        std::string instance_schema_hash;
+        std::string srs_manifest_hash;
+        std::size_t srs_degree_bound = 0;
+        crypto::G1Point srs_g1_generator;
+        std::string srs_generator_id;
+        std::string srs_generator_version;
+        std::string srs_encoding;
+        std::string srs_spec_id;
+        // Exact hash of the compiler artifact material copied into the SRS
+        // directory.  This is distinct from compiler_artifact_digest, which
+        // authenticates the typed instance artifact in this registry.
+        std::string srs_protocol_compiler_artifact_hash;
+        std::string compiler_artifact_digest;
+        std::string model_layout_digest;
+        std::string quant_chain_digest;
+        std::string static_table_digest;
+        // These are produced from the complete registered table bytes and
+        // scale/bound certificate, rather than fixed marker strings.
+        std::string static_table_generator_id;
+        std::string static_table_spec_hash;
+        std::string range_and_scale_certificate;
+        std::string integer_bound_ledger_digest;
+        std::string public_input_digest;
+        std::string topology_digest;
+        std::vector<IntegerBoundLedgerEntry> integer_bound_ledger;
+        std::string security_budget_ledger_digest;
+        std::string security_budget_exact;
+        std::vector<VerifierRegistryEntry> model_entries;
+        std::vector<VerifierRegistryEntry> static_entries;
+        std::string canonical_serialization() const;
+        std::string canonical_digest() const;
+        bool operator==(const AuthenticatedVerifierRegistry &) const = default;
+    };
+
+    // Independent verifier-side context.  The public API below accepts only
+    // this type.  It owns point-only registries and a verifier key, never a
+    // proving key or raw model/checkpoint material.
+    struct VerifierContext
+    {
+        VerifierConfig config;
+        data::GraphDataset dataset;
+        data::LocalGraph local;
+        VerifierModelShape model;
+        StaticTables tables;
+        WorkDomains domains;
+        VerifierSRSMetadata srs;
+        crypto::KZGVerifierKey kzg_vk;
+        std::unordered_map<std::string, algebra::Polynomial> public_polynomials;
+        std::unordered_map<std::string, VerifierPointCommitment> public_commitments;
+        std::unordered_map<std::string, VerifierPointCommitment> static_commitments;
+        std::shared_ptr<const ProtocolCompilerArtifact> compiler_artifact;
+        AuthenticatedVerifierRegistry registry;
+        // Digest captured from the authenticated registry file.  Verifier
+        // entry points reject any post-load mutation of the registry or its
+        // canonical metadata.
+        std::string authenticated_registry_digest;
+        // Out-of-band trust anchor supplied by the run configuration.  The
+        // registry file's own digest is never accepted as its sole root.
+        std::string trusted_registry_digest;
+        bool in_process_transition = false;
+    };
+
+    // Self-contained, canonical verifier registration artifact.  This is the
+    // only wire object accepted by the formal verifier loader.  It owns every
+    // public value needed to reconstruct VerifierContext (including the full
+    // typed compiler artifact); it deliberately contains no model tensors,
+    // checkpoint paths, proving key, or opening polynomial.
+    struct VerifierRegistrationArtifact
+    {
+        std::uint32_t format_version = 1;
+        VerifierConfig config;
+        data::GraphDataset dataset;
+        data::LocalGraph local;
+        VerifierModelShape model;
+        StaticTables tables;
+        WorkDomains domains;
+        VerifierSRSMetadata srs;
+        crypto::KZGVerifierKey kzg_vk;
+        std::unordered_map<std::string, algebra::Polynomial> public_polynomials;
+        std::unordered_map<std::string, VerifierPointCommitment> public_commitments;
+        std::unordered_map<std::string, VerifierPointCommitment> static_commitments;
+        ProtocolCompilerArtifact compiler_artifact;
+        AuthenticatedVerifierRegistry registry;
+
+        std::vector<std::uint8_t> canonical_bytes() const;
+        std::string canonical_digest() const;
     };
 
     struct PiBindProof;
@@ -542,7 +802,11 @@ namespace gatzk::protocol
         double payload_audit_ms = 0.0;
         double reference_consistency_ms = 0.0;
         bool reference_consistency_passed = false;
+        bool security_budget_passed = false;
+        std::string security_budget_ledger_digest;
+        std::string security_budget_exact;
         bool tamper_tests_passed = false;
+        std::string tamper_test_case_map;
         double tamper_tests_ms = 0.0;
         double export_artifact_ms = 0.0;
         double export_manifest_validation_ms = 0.0;

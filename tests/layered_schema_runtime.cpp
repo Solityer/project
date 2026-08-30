@@ -10,6 +10,7 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -346,6 +347,69 @@ int main()
         }
         expect(rejected_unknown_scale_id,
                "unknown quantization scale-chain ID must fail closed");
+
+        // The large whole-graph table planner is intentionally exercised with
+        // dimensions only; it must not load OGBN data or allocate the 15M-row
+        // ExpMap table.  Its derived delta bound is the authenticated LReLU
+        // endpoint bound, while T_range remains exactly 2^B.
+        gatzk::protocol::ProtocolContext ogbn_shape_context;
+        ogbn_shape_context.config.batching_rule = "whole_graph_single";
+        ogbn_shape_context.config.range_bits = 21;
+        ogbn_shape_context.config.quantization.s_delta = 256;
+        ogbn_shape_context.config.quantization.s_exp = 16;
+        ogbn_shape_context.dataset.num_nodes = 169343;
+        ogbn_shape_context.dataset.num_features = 128;
+        ogbn_shape_context.local.num_nodes = 169343;
+        ogbn_shape_context.local.edges.resize(1ULL << 18);
+        const auto ogbn_table_shape =
+            gatzk::protocol::plan_canonical_static_table_shape(
+                ogbn_shape_context);
+        expect(ogbn_table_shape.large_whole_graph,
+               "OGBN dimension planner did not select whole-graph shape");
+        expect(ogbn_table_shape.lrelu_output_bound == 7602173,
+               "OGBN LReLU certified output bound changed unexpectedly");
+        expect(ogbn_table_shape.exp_input_bound == 15204346,
+               "OGBN ExpMap delta bound was not derived from LReLU bound");
+        expect(ogbn_table_shape.exp_table_size == 15204347,
+               "OGBN ExpMap table must include every delta through the bound");
+        expect(ogbn_table_shape.range_table_size == (1ULL << 21),
+               "T_range cardinality must remain exactly 2^B");
+        expect(ogbn_table_shape.table_edge_domain_size == (1ULL << 24),
+               "OGBN derived table domain must be the next power of two");
+        expect(
+            gatzk::protocol::canonical_exp_table_size_from_delta_bound(
+                ogbn_table_shape.exp_input_bound)
+                == ogbn_table_shape.exp_table_size,
+            "ExpMap row planner and shape planner disagree");
+        bool rejected_exp_row_overflow = false;
+        try
+        {
+            (void)gatzk::protocol::canonical_exp_table_size_from_delta_bound(
+                std::numeric_limits<std::uint64_t>::max());
+        }
+        catch (const std::exception &error)
+        {
+            rejected_exp_row_overflow =
+                std::string(error.what()).find("row-count overflow")
+                != std::string::npos;
+        }
+        expect(rejected_exp_row_overflow,
+               "ExpMap delta row-count overflow must fail closed");
+        bool rejected_table_domain_overflow = false;
+        try
+        {
+            auto oversized = ogbn_shape_context;
+            oversized.config.range_bits = 24;
+            (void)gatzk::protocol::plan_canonical_static_table_shape(oversized);
+        }
+        catch (const std::exception &error)
+        {
+            rejected_table_domain_overflow =
+                std::string(error.what()).find("interval is too large")
+                != std::string::npos;
+        }
+        expect(rejected_table_domain_overflow,
+               "static-table/domain row overflow must fail closed");
 
         write_manifest(temp_root / "manifest.json", false);
         write_tensor_dump(temp_root / "tensors.txt", true);

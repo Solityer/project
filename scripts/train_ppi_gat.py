@@ -30,6 +30,7 @@ from train_planetoid_gat import (
     checkpoint_metadata,
     cfg_float,
     cfg_int,
+    input_quantization_diagnostic,
     parse_cfg,
     require_canonical_model_config,
     set_seed,
@@ -257,6 +258,11 @@ def main() -> None:
     device = torch.device("cuda")
     set_seed(seed)
     data = load_ppi_dataset(project_root, data_root, cache_root, device)
+    input_quantization = input_quantization_diagnostic(
+        data.features,
+        scale=1,
+        range_bits=cfg_int(cfg, "range_bits", 14),
+    )
     if data.num_features != 50:
         raise ValueError(f"PPI formal feature width must be 50, got {data.num_features}")
     model = PlanetoidGAT(
@@ -382,6 +388,7 @@ def main() -> None:
                 "device": str(device),
                 "wall_time_sec": time.perf_counter() - start,
                 "best_metrics": best_metrics,
+                "input_quantization_diagnostic": input_quantization,
                 "history_tail": history[-10:],
                 "checkpoint_metadata": metadata,
             },

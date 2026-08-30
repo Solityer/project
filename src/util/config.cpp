@@ -363,6 +363,8 @@ namespace gatzk::util
                 "output_mode",
                 "privacy_policy",
                 "proof_task",
+                "verifier_registry_path",
+                "verifier_registry_digest",
             };
             for (const auto &[key, value] : entries)
             {
@@ -405,6 +407,21 @@ namespace gatzk::util
             {
                 throw std::runtime_error(
                     "formal config must set checkpoint_bundle explicitly");
+            }
+
+            if (!config.verifier_registry_digest.empty()
+                && (config.verifier_registry_digest.size() != 64
+                    || !std::all_of(
+                        config.verifier_registry_digest.begin(),
+                        config.verifier_registry_digest.end(),
+                        [](unsigned char ch)
+                        {
+                            return (ch >= '0' && ch <= '9')
+                                || (ch >= 'a' && ch <= 'f');
+                        })))
+            {
+                throw std::runtime_error(
+                    "verifier_registry_digest must be lowercase SHA-256");
             }
 
             if (config.subgraph_rule != "whole_graph")
@@ -473,6 +490,15 @@ namespace gatzk::util
             {
                 throw std::runtime_error(
                     "C/num_classes must be >= 1");
+            }
+
+            // Registry range certificates are signed 64-bit bounds.  Reject
+            // zero and oversized shifts before any table/ledger construction;
+            // `1 << range_bits` is only defined for the canonical 1..62 range.
+            if (config.range_bits < 1 || config.range_bits > 62)
+            {
+                throw std::runtime_error(
+                    "range_bits must be between 1 and 62 for signed certificates");
             }
 
             if (config.srs_type != "trusted_srs")
@@ -774,6 +800,10 @@ namespace gatzk::util
             config.srs_id = entries["srs_id"];
         if (entries.contains("srs_path"))
             config.srs_path = entries["srs_path"];
+        if (entries.contains("verifier_registry_path"))
+            config.verifier_registry_path = entries["verifier_registry_path"];
+        if (entries.contains("verifier_registry_digest"))
+            config.verifier_registry_digest = entries["verifier_registry_digest"];
         if (entries.contains("privacy_policy"))
             config.privacy_policy = entries["privacy_policy"];
         if (entries.contains("input_privacy"))

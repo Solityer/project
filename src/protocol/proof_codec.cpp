@@ -19,6 +19,7 @@
 #include "gatzk/protocol/opening_registry.hpp"
 #include "gatzk/protocol/quotients.hpp"
 #include "gatzk/protocol/schema.hpp"
+#include "gatzk/protocol/verifier_context.hpp"
 
 namespace gatzk::protocol
 {
@@ -507,6 +508,44 @@ namespace gatzk::protocol
                 throw std::runtime_error(
                     "proof parser domain point-group owner count mismatch");
             }
+        }
+
+        bool proof_contains_prover_material(const Proof &proof)
+        {
+            const auto has_material = [](const crypto::Commitment &commitment)
+            {
+                return commitment.opening_polynomial != nullptr;
+            };
+            for (const auto &[name, commitment] : proof.dynamic_commitments)
+            {
+                (void)name;
+                if (has_material(commitment)) return true;
+            }
+            for (const auto &[name, commitment] : proof.quotient_commitments)
+            {
+                (void)name;
+                if (has_material(commitment)) return true;
+            }
+            for (const auto &subproof : proof.pi_bind.subproofs)
+            {
+                for (const auto &reblind : subproof.model_reblinds)
+                    if (has_material(reblind.proof_local_commitment)
+                        || has_material(reblind.blinder_commitment))
+                        return true;
+                for (const auto *group : {
+                         &subproof.view_commitments,
+                         &subproof.view_logup_commitments,
+                         &subproof.aggregation_commitments,
+                         &subproof.basis_commitments,
+                         &subproof.crpc_commitments,
+                         &subproof.relation_commitments})
+                    for (const auto &[name, commitment] : *group)
+                    {
+                        (void)name;
+                        if (has_material(commitment)) return true;
+                    }
+            }
+            return false;
         }
 
         void require_exact_pi_bind_shape(
@@ -1105,6 +1144,9 @@ namespace gatzk::protocol
 
     std::vector<std::uint8_t> serialize_proof(const Proof& proof)
     {
+        if (proof_contains_prover_material(proof))
+            throw std::runtime_error(
+                "proof serializer refuses prover-only opening polynomial material");
         require_structural_point_group_layout(proof);
         Writer wire;
         wire.raw(kMagic.data(), kMagic.size());
@@ -1411,7 +1453,7 @@ namespace gatzk::protocol
         return wire.take();
     }
 
-    Proof parse_proof(const ProtocolContext& context, const std::vector<std::uint8_t>& bytes)
+    Proof parse_proof_internal(const ProtocolContext& context, const std::vector<std::uint8_t>& bytes)
     {
         if (context.compiler_artifact == nullptr
             || context.validated_compiler_artifact_identity
@@ -2019,6 +2061,23 @@ namespace gatzk::protocol
             throw std::runtime_error(
                 "proof parser S_route reference registry mismatch");
         require_exact_pi_bind_shape(context, proof);
+        return proof;
+    }
+
+    Proof parse_proof(
+        const VerifierContext &context,
+        const std::vector<std::uint8_t> &bytes)
+    {
+        if (context.compiler_artifact == nullptr
+            || !validate_verifier_context(context))
+            throw std::runtime_error(
+                "proof parser requires an authenticated point-only verifier registry");
+        auto execution_context =
+            detail::make_verifier_execution_context(context);
+        auto proof = parse_proof_internal(execution_context, bytes);
+        if (proof_contains_prover_material(proof))
+            throw std::runtime_error(
+                "proof parser rejected non-null prover-only opening polynomial");
         return proof;
     }
 }

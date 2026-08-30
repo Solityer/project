@@ -81,6 +81,14 @@ namespace gatzk::util
         std::string srs_type = "trusted_srs";
         std::string srs_id;
         std::string srs_path;
+        // Authenticated point-only verifier registry.  An empty value means
+        // the canonical dataset-local registry path; formal verification
+        // fails closed when that artifact is absent.
+        std::string verifier_registry_path;
+        // Trusted root for the registry file.  A registry's self-reported
+        // canonical digest is not an authentication mechanism; formal runs
+        // must provide this expected digest out of band.
+        std::string verifier_registry_digest;
         std::string privacy_policy = "model_and_trace_hidden";
         std::string input_privacy = "public_graph_public_features";
         std::string output_mode = "public_logits";

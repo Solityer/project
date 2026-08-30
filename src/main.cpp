@@ -1,8 +1,10 @@
 #include <cstdlib>
 #include <algorithm>
+#include <array>
 #include <cerrno>
 #include <chrono>
 #include <filesystem>
+#include <functional>
 #include <iostream>
 #include <iomanip>
 #include <set>
@@ -20,9 +22,11 @@
 #include "gatzk/algebra/vector_ops.hpp"
 #include "gatzk/crypto/curve.hpp"
 #include "gatzk/protocol/trace.hpp"
+#include "gatzk/protocol/challenges.hpp"
 #include "gatzk/protocol/prover.hpp"
 #include "gatzk/protocol/proof_codec.hpp"
 #include "gatzk/protocol/verifier.hpp"
+#include "gatzk/protocol/verifier_context.hpp"
 #include "gatzk/util/config.hpp"
 #include "gatzk/util/route2.hpp"
 
@@ -588,6 +592,18 @@ int main(int argc, char **argv)
             metrics.edge_count = context.local.edges.size();
             metrics.optimization_profile_id =
                 context.dataset.name + ":" + console_backend_label(metrics) + ":" + metrics.route2_label + ":" + context.kzg.manifest.manifest_hash.substr(0, 12);
+            if (context.compiler_artifact == nullptr)
+                throw std::runtime_error(
+                    "formal run is missing its compiler artifact");
+            const auto security_budget =
+                gatzk::protocol::evaluate_security_budget(
+                    context, *context.compiler_artifact);
+            metrics.security_budget_passed = security_budget.passed;
+            metrics.security_budget_ledger_digest = security_budget.ledger_digest;
+            metrics.security_budget_exact = security_budget.exact_budget;
+            if (!security_budget.passed)
+                throw std::runtime_error(
+                    "formal security budget ledger reconstruction failed");
             metrics.is_full_dataset = context.local.num_nodes == context.dataset.num_nodes;
             if (!metrics.is_full_dataset)
             {
@@ -596,7 +612,7 @@ int main(int argc, char **argv)
 
             progress(mode_label + ":trace:start");
             const auto trace_start = std::chrono::steady_clock::now();
-            const auto trace = gatzk::protocol::build_trace(context, &metrics);
+            auto trace = gatzk::protocol::build_trace(context, &metrics);
             const auto trace_elapsed_ms =
                 std::chrono::duration<double, std::milli>(
                     std::chrono::steady_clock::now() - trace_start)
@@ -652,15 +668,40 @@ int main(int argc, char **argv)
                 metrics.prove_time_ms - prove_without_finalize_ms);
             metrics.prove_accounted_ms = prove_accounted_ms(metrics);
             metrics.prove_accounting_gap_ms = metrics.prove_time_ms - metrics.prove_accounted_ms;
+            // The formal verifier must be constructed from the authenticated
+            // point-only VK registry.  The in-process projection is reserved
+            // for short transition tests and is rejected by verify().
+            const auto configured_registry_path =
+                run_config.verifier_registry_path.empty()
+                    ? gatzk::protocol::canonical_verifier_registry_path(
+                          context)
+                    : run_config.verifier_registry_path;
+            auto verifier_registry_path =
+                std::filesystem::path(configured_registry_path);
+            if (verifier_registry_path.is_relative())
+            {
+                verifier_registry_path =
+                    std::filesystem::path(run_config.project_root) /
+                    verifier_registry_path;
+            }
+            const auto verifier_context =
+                gatzk::protocol::load_verifier_context_from_registry(
+                    verifier_registry_path.string(),
+                    run_config.verifier_registry_digest);
             progress(mode_label + ":verify:start");
             const auto verify_start = std::chrono::steady_clock::now();
             const auto parse_start = std::chrono::steady_clock::now();
-            const auto parsed_proof = gatzk::protocol::parse_proof(context, proof_bytes);
+            const auto parsed_proof = gatzk::protocol::parse_proof(verifier_context, proof_bytes);
+            trace.proof_public_output_hash =
+                gatzk::protocol::canonical_output_digest(
+                    parsed_proof.public_logits,
+                    context.local.num_nodes,
+                    context.local.num_classes);
             metrics.proof_parse_ms = std::chrono::duration<double, std::milli>(
                                          std::chrono::steady_clock::now() - parse_start)
                                          .count();
             const auto verifier_accepted =
-                gatzk::protocol::verify(context, parsed_proof, &metrics);
+                gatzk::protocol::verify(verifier_context, parsed_proof, &metrics);
             const auto verify_end = std::chrono::steady_clock::now();
             progress(mode_label + ":verify:done");
             metrics.verify_time_ms = std::chrono::duration<double, std::milli>(verify_end - verify_start).count();
@@ -670,15 +711,23 @@ int main(int argc, char **argv)
             metrics.verify_accounting_gap_ms = metrics.verify_time_ms - metrics.verify_accounted_ms;
             metrics.proof_size_bytes = proof_bytes.size();
             const auto audit_start = std::chrono::steady_clock::now();
-            const auto private_plain_count = gatzk::protocol::private_plain_value_count(context, parsed_proof);
+            const auto private_plain_count = gatzk::protocol::private_plain_value_count(verifier_context, parsed_proof);
             const auto audit_end = std::chrono::steady_clock::now();
             metrics.payload_audit_ms = std::chrono::duration<double, std::milli>(audit_end - audit_start).count();
             const auto reference_start = std::chrono::steady_clock::now();
             const bool reference_matrix_match = trace.reference_consistency_passed;
+            const auto parsed_output_hash =
+                gatzk::protocol::canonical_output_digest(
+                    parsed_proof.public_logits,
+                    context.local.num_nodes,
+                    context.local.num_classes);
             const bool reference_payload_audit =
                 !trace.reference_quant_logits_hash.empty() &&
                 !trace.secure_trace_logits_hash.empty() &&
-                trace.reference_quant_logits_hash == trace.secure_trace_logits_hash &&
+                !trace.proof_public_output_hash.empty() &&
+                trace.secure_trace_logits_hash == trace.reference_quant_logits_hash &&
+                trace.secure_trace_logits_hash == trace.proof_public_output_hash &&
+                trace.proof_public_output_hash == parsed_output_hash &&
                 trace.public_logits == parsed_proof.public_logits &&
                 private_plain_count == 0;
             const bool reference_consistent =
@@ -687,14 +736,534 @@ int main(int argc, char **argv)
             const bool final_accepted =
                 gatzk::protocol::final_formal_run_accepted(
                     verifier_accepted,
-                    reference_consistent);
+                    reference_consistent,
+                    metrics.security_budget_passed);
             const auto reference_end = std::chrono::steady_clock::now();
             metrics.reference_consistency_ms =
                 std::chrono::duration<double, std::milli>(reference_end - reference_start).count();
             const auto tamper_start = std::chrono::steady_clock::now();
-            auto tampered = proof;
-            tampered.public_metadata.privacy_policy = "tampered_privacy_policy";
-            const bool tamper_rejected = !gatzk::protocol::verify(context, tampered, nullptr);
+            // Every case below must mutate a real proof/context field and then
+            // enter the production serializer, parser, and verifier.  The
+            // status records whether the canonical codec itself rejected the
+            // mutation or the parsed proof reached the verifier and was
+            // rejected there.
+            std::vector<std::pair<std::string, std::string>> tamper_results;
+            static constexpr std::array<std::string_view, 39>
+                kRequiredTamperCases = {
+                    "codec_tag", "codec_length", "codec_trailing",
+                    "public_output", "metadata", "schema", "ids",
+                    "dynamic_commitment", "quotient_commitment", "opening",
+                    "reblind_commitment", "static_registry", "model_registry",
+                    "reference_mismatch", "private_opening", "route_padding",
+                    "route_query", "lookup_inverse", "lookup_multiplicity", "psq",
+                    "shift", "logup", "aggregate", "average", "division",
+                    "transcript_challenge", "transcript_value",
+                    "srs_metadata", "srs_consistency",
+                    "srs_resource_identity", "srs_resource_compromised",
+                    "proof_scope", "observation_ledger",
+                    "random_identity_ledger", "integer_bound_ledger",
+                    "integer_bound_certificate", "security_budget_ledger",
+                    "security_budget_exact", "public_input_digest",
+                };
+            const auto mutate_named_value = [](
+                gatzk::protocol::Proof &candidate,
+                std::initializer_list<std::string_view> tokens)
+            {
+                const auto matches = [&](const std::string &label)
+                {
+                    return std::any_of(
+                        tokens.begin(), tokens.end(),
+                        [&](std::string_view token)
+                        { return label.find(token) != std::string::npos; });
+                };
+                for (auto &subproof : candidate.pi_bind.subproofs)
+                {
+                    for (auto &evaluation : subproof.evaluations)
+                    {
+                        if (matches(evaluation.object_id)
+                            && !evaluation.values.empty())
+                        {
+                            evaluation.values.front() +=
+                                gatzk::algebra::FieldElement::one();
+                            return true;
+                        }
+                    }
+                }
+                for (auto &bundle_entry : candidate.domain_openings)
+                {
+                    for (auto &value : bundle_entry.second.values)
+                    {
+                        if (matches(value.first) && !value.second.empty())
+                        {
+                            value.second.front() +=
+                                gatzk::algebra::FieldElement::one();
+                            return true;
+                        }
+                    }
+                }
+                return false;
+            };
+            const auto mutate_any_value = [](gatzk::protocol::Proof &candidate)
+            {
+                if (!candidate.external_evaluations.empty())
+                {
+                    candidate.external_evaluations.front().second +=
+                        gatzk::algebra::FieldElement::one();
+                    return true;
+                }
+                for (auto &subproof : candidate.pi_bind.subproofs)
+                {
+                    for (auto &evaluation : subproof.evaluations)
+                    {
+                        if (!evaluation.values.empty())
+                        {
+                            evaluation.values.front() +=
+                                gatzk::algebra::FieldElement::one();
+                            return true;
+                        }
+                    }
+                }
+                return false;
+            };
+            const auto run_proof_case = [&](const std::string &name,
+                                            const std::function<bool(gatzk::protocol::Proof &)> &mutator)
+            {
+                std::string status = "fail";
+                try
+                {
+                    auto candidate = proof;
+                    if (!mutator(candidate))
+                    {
+                        tamper_results.emplace_back(name, status);
+                        return;
+                    }
+                    std::vector<std::uint8_t> bytes;
+                    try
+                    {
+                        bytes = gatzk::protocol::serialize_proof(candidate);
+                    }
+                    catch (...)
+                    {
+                        status = "serialization_rejected";
+                        tamper_results.emplace_back(name, status);
+                        return;
+                    }
+                    try
+                    {
+                        const auto parsed =
+                            gatzk::protocol::parse_proof(verifier_context, bytes);
+                        status = gatzk::protocol::verify(
+                                     verifier_context, parsed, nullptr)
+                                     ? "fail"
+                                     : "reject";
+                    }
+                    catch (...)
+                    {
+                        status = "reject";
+                    }
+                }
+                catch (...)
+                {
+                    status = "fail";
+                }
+                tamper_results.emplace_back(name, status);
+            };
+            const auto run_raw_case = [&](const std::string &name,
+                                          const std::function<bool(std::vector<std::uint8_t> &)> &mutator)
+            {
+                std::string status = "fail";
+                try
+                {
+                    auto bytes = proof_bytes;
+                    if (!mutator(bytes))
+                    {
+                        tamper_results.emplace_back(name, status);
+                        return;
+                    }
+                    try
+                    {
+                        const auto parsed =
+                            gatzk::protocol::parse_proof(verifier_context, bytes);
+                        status = gatzk::protocol::verify(
+                                     verifier_context, parsed, nullptr)
+                                     ? "fail"
+                                     : "reject";
+                    }
+                    catch (...)
+                    {
+                        status = "serialization_rejected";
+                    }
+                }
+                catch (...)
+                {
+                    status = "fail";
+                }
+                tamper_results.emplace_back(name, status);
+            };
+            const auto run_context_case = [&](const std::string &name,
+                                              const std::function<bool(gatzk::protocol::VerifierContext &)> &mutator)
+            {
+                std::string status = "fail";
+                try
+                {
+                    auto candidate_context = verifier_context;
+                    if (!mutator(candidate_context))
+                    {
+                        tamper_results.emplace_back(name, status);
+                        return;
+                    }
+                    try
+                    {
+                        const auto parsed =
+                            gatzk::protocol::parse_proof(candidate_context, proof_bytes);
+                        status = gatzk::protocol::verify(
+                                     candidate_context, parsed, nullptr)
+                                     ? "fail"
+                                     : "reject";
+                    }
+                    catch (...)
+                    {
+                        status = "reject";
+                    }
+                }
+                catch (...)
+                {
+                    status = "fail";
+                }
+                tamper_results.emplace_back(name, status);
+            };
+
+            run_raw_case("codec_tag", [](auto &bytes)
+                         {
+                             if (bytes.empty()) return false;
+                             bytes.front() ^= 0x01U;
+                             return true;
+                         });
+            run_raw_case("codec_length", [](auto &bytes)
+                         {
+                             if (bytes.size() < 2) return false;
+                             bytes.pop_back();
+                             return true;
+                         });
+            run_raw_case("codec_trailing", [](auto &bytes)
+                         {
+                             bytes.push_back(0xa5U);
+                             return true;
+                         });
+            run_proof_case("public_output", [](auto &candidate)
+                           {
+                               if (candidate.public_logits.empty()) return false;
+                               candidate.public_logits.front() +=
+                                   gatzk::algebra::FieldElement::one();
+                               return true;
+                           });
+            run_proof_case("route_padding", [&](auto &candidate)
+                           { return mutate_named_value(candidate, {"Q_", "padding"}); });
+            run_proof_case("route_query", [&](auto &candidate)
+                           { return mutate_named_value(candidate, {"Query_", "query"}); });
+            run_proof_case("lookup_inverse", [&](auto &candidate)
+                           { return mutate_named_value(candidate, {"J_", "inv"}); });
+            run_proof_case("lookup_multiplicity", [&](auto &candidate)
+                           { return mutate_named_value(candidate, {"m_", "multiplicity"}); });
+            run_proof_case("psq", [&](auto &candidate)
+                           { return mutate_named_value(candidate, {"PSQ", "psq"}); });
+            run_proof_case("aggregate", [&](auto &candidate)
+                           { return mutate_named_value(candidate, {"agg", "Agg"}); });
+            run_proof_case("average", [&](auto &candidate)
+                           { return mutate_named_value(candidate, {"Div_avg", "average", "avg"}); });
+            run_proof_case("division", [&](auto &candidate)
+                           { return mutate_named_value(candidate, {"Div_", "division"}); });
+            run_proof_case("transcript_challenge", [](auto &candidate)
+                           {
+                               candidate.public_metadata.proof_nonce +=
+                                   "tampered-transcript-challenge";
+                               return true;
+                           });
+            run_proof_case("transcript_value", [&](auto &candidate)
+                           { return mutate_any_value(candidate); });
+            run_proof_case("metadata", [](auto &candidate)
+                           {
+                               candidate.public_metadata.privacy_policy =
+                                   "tampered_privacy_policy";
+                               return true;
+                           });
+            run_proof_case("schema", [](auto &candidate)
+                           {
+                               if (candidate.block_order.empty()) return false;
+                               candidate.block_order.front() = "tampered-block";
+                               return true;
+                           });
+            run_proof_case("ids", [](auto &candidate)
+                           {
+                               candidate.public_metadata.protocol_schema_id =
+                                   "tampered-protocol-schema";
+                               return true;
+                           });
+            run_proof_case("dynamic_commitment", [&verifier_context](auto &candidate)
+                           {
+                               if (candidate.dynamic_commitments.empty()) return false;
+                               candidate.dynamic_commitments.front().second.point =
+                                   gatzk::crypto::g1_add(
+                                       candidate.dynamic_commitments.front().second.point,
+                                       verifier_context.kzg_vk.g1_generator);
+                               return true;
+                           });
+            run_proof_case("quotient_commitment", [&verifier_context](auto &candidate)
+                           {
+                               if (candidate.quotient_commitments.empty()) return false;
+                               candidate.quotient_commitments.front().second.point =
+                                   gatzk::crypto::g1_add(
+                                       candidate.quotient_commitments.front().second.point,
+                                       verifier_context.kzg_vk.g1_generator);
+                               return true;
+                           });
+            run_proof_case("opening", [&verifier_context](auto &candidate)
+                           {
+                               if (candidate.opening_groups.empty()) return false;
+                               candidate.opening_groups.front().witness =
+                                   gatzk::crypto::g1_add(
+                                       candidate.opening_groups.front().witness,
+                                       verifier_context.kzg_vk.g1_generator);
+                               return true;
+                           });
+            run_proof_case("reblind_commitment", [&verifier_context](auto &candidate)
+                           {
+                               for (auto &subproof : candidate.pi_bind.subproofs)
+                               {
+                                   if (!subproof.model_reblinds.empty())
+                                   {
+                                       auto &commitment =
+                                           subproof.model_reblinds.front().blinder_commitment;
+                                       commitment.point = gatzk::crypto::g1_add(
+                                           commitment.point,
+                                           verifier_context.kzg_vk.g1_generator);
+                                       return true;
+                                   }
+                               }
+                               return false;
+                           });
+            run_proof_case("logup", [&verifier_context](auto &candidate)
+                           {
+                               for (auto &subproof : candidate.pi_bind.subproofs)
+                               {
+                                   if (!subproof.view_logup_commitments.empty())
+                                   {
+                                       subproof.view_logup_commitments.front().second.point =
+                                           gatzk::crypto::g1_add(
+                                               subproof.view_logup_commitments.front().second.point,
+                                               verifier_context.kzg_vk.g1_generator);
+                                       return true;
+                                   }
+                               }
+                               return false;
+                           });
+            run_proof_case("shift", [](auto &candidate)
+                           {
+                               for (auto &subproof : candidate.pi_bind.subproofs)
+                               {
+                                   for (auto &relation : subproof.relation_meta.shift_relations)
+                                   {
+                                       if (!relation.deltas.empty())
+                                       {
+                                           relation.deltas.front() +=
+                                               gatzk::algebra::FieldElement::one();
+                                           return true;
+                                       }
+                                   }
+                               }
+                               return false;
+                           });
+            run_context_case("static_registry", [](auto &candidate)
+                             {
+                                 if (candidate.registry.static_entries.empty()) return false;
+                                 candidate.registry.static_entries.front().point =
+                                     gatzk::crypto::g1_add(
+                                         candidate.registry.static_entries.front().point,
+                                         candidate.kzg_vk.g1_generator);
+                                 return true;
+                             });
+            run_context_case("model_registry", [](auto &candidate)
+                             {
+                                 if (candidate.registry.model_entries.empty()) return false;
+                                 candidate.registry.model_entries.front().point =
+                                     gatzk::crypto::g1_add(
+                                         candidate.registry.model_entries.front().point,
+                                         candidate.kzg_vk.g1_generator);
+                                 return true;
+                             });
+            run_proof_case("reference_mismatch", [](auto &candidate)
+                           {
+                               candidate.public_metadata.public_output +=
+                                   "|reference-mismatch-probe";
+                               return true;
+                           });
+            run_context_case("srs_metadata", [](auto &candidate)
+                             {
+                                 candidate.srs.srs_type = "untrusted_srs";
+                                 return true;
+                             });
+            run_context_case("srs_consistency", [](auto &candidate)
+                             {
+                                 if (candidate.srs.srs_consistency_hash.empty())
+                                     return false;
+                                 candidate.srs.srs_consistency_hash[0] =
+                                     candidate.srs.srs_consistency_hash[0] == '0' ? '1' : '0';
+                                 return true;
+                             });
+            run_context_case("srs_resource_identity", [](auto &candidate)
+                             {
+                                 if (candidate.registry.srs_manifest_hash.empty())
+                                     return false;
+                                 candidate.registry.srs_manifest_hash[0] =
+                                     candidate.registry.srs_manifest_hash[0] == '0' ? '1' : '0';
+                                 return true;
+                             });
+            run_context_case("srs_resource_compromised", [](auto &candidate)
+                             {
+                                 candidate.kzg_vk.g2_tau = gatzk::crypto::g2_add(
+                                     candidate.kzg_vk.g2_tau,
+                                     candidate.kzg_vk.g2_one);
+                                 return true;
+                             });
+            run_proof_case("proof_scope", [](auto &candidate)
+                           {
+                               candidate.public_metadata.output_mode = "labels_only";
+                               return true;
+                           });
+            run_context_case("observation_ledger", [](auto &candidate)
+                             {
+                                 if (candidate.compiler_artifact == nullptr
+                                     || candidate.compiler_artifact->observation_ledger.empty())
+                                     return false;
+                                 auto artifact = *candidate.compiler_artifact;
+                                 artifact.observation_ledger.front().expression_or_certificate +=
+                                     "|tamper-observation-ledger";
+                                 candidate.compiler_artifact =
+                                     std::make_shared<const gatzk::protocol::ProtocolCompilerArtifact>(
+                                         std::move(artifact));
+                                 return true;
+                             });
+            run_context_case("random_identity_ledger", [](auto &candidate)
+                             {
+                                 if (candidate.compiler_artifact == nullptr
+                                     || candidate.compiler_artifact->random_identity_ledger.empty())
+                                     return false;
+                                 auto artifact = *candidate.compiler_artifact;
+                                 auto &entry = artifact.random_identity_ledger.front();
+                                 entry.degree_bound = entry.degree_bound == 0
+                                                           ? 1
+                                                           : entry.degree_bound - 1;
+                                 candidate.compiler_artifact =
+                                     std::make_shared<const gatzk::protocol::ProtocolCompilerArtifact>(
+                                         std::move(artifact));
+                                 return true;
+                             });
+            run_context_case("integer_bound_ledger", [](auto &candidate)
+                             {
+                                 if (candidate.registry.integer_bound_ledger.empty())
+                                     return false;
+                                 auto &entry = candidate.registry.integer_bound_ledger.front();
+                                 if (entry.absolute_bound != std::numeric_limits<std::uint64_t>::max())
+                                     ++entry.absolute_bound;
+                                 else
+                                     --entry.absolute_bound;
+                                 return true;
+                             });
+            run_context_case("integer_bound_certificate", [](auto &candidate)
+                             {
+                                 if (candidate.registry.model_entries.empty())
+                                     return false;
+                                 auto &certificate =
+                                     candidate.registry.model_entries.front().bound_certificate;
+                                 if (!certificate.present)
+                                     return false;
+                                 if (certificate.absolute_bound !=
+                                     std::numeric_limits<std::uint64_t>::max())
+                                     ++certificate.absolute_bound;
+                                 else
+                                     --certificate.absolute_bound;
+                                 return true;
+                             });
+            run_context_case("security_budget_ledger", [](auto &candidate)
+                             {
+                                 if (candidate.compiler_artifact == nullptr
+                                     || candidate.compiler_artifact->security_budget_ledger.empty())
+                                     return false;
+                                 auto artifact = *candidate.compiler_artifact;
+                                 artifact.security_budget_ledger.front().expression_or_certificate +=
+                                     "|tamper-security-budget-ledger";
+                                 candidate.compiler_artifact =
+                                     std::make_shared<const gatzk::protocol::ProtocolCompilerArtifact>(
+                                         std::move(artifact));
+                                 return true;
+                             });
+            run_context_case("security_budget_exact", [](auto &candidate)
+                             {
+                                 if (candidate.registry.security_budget_exact.empty())
+                                     return false;
+                                 candidate.registry.security_budget_exact += "/0";
+                                 return true;
+                             });
+            run_context_case("public_input_digest", [](auto &candidate)
+                             {
+                                 if (candidate.registry.public_input_digest.empty())
+                                     return false;
+                                 candidate.registry.public_input_digest[0] =
+                                     candidate.registry.public_input_digest[0] == '0' ? '1' : '0';
+                                 return true;
+                             });
+            if (!tamper_results.empty())
+            {
+                auto &reference_case = tamper_results.back();
+                try
+                {
+                    const auto parsed =
+                        gatzk::protocol::parse_proof(verifier_context, proof_bytes);
+                    const auto accepted = gatzk::protocol::verify(
+                        verifier_context, parsed, nullptr);
+                    reference_case.second =
+                        !gatzk::protocol::final_formal_run_accepted(
+                            accepted, false, metrics.security_budget_passed)
+                            ? "reject"
+                            : "fail";
+                }
+                catch (...)
+                {
+                    reference_case.second = "reject";
+                }
+            }
+            run_proof_case("private_opening", [](auto &candidate)
+                           {
+                               if (candidate.dynamic_commitments.empty())
+                                   return false;
+                               candidate.dynamic_commitments.front().second.opening_polynomial =
+                                   std::make_shared<gatzk::algebra::Polynomial>(
+                                       gatzk::algebra::Polynomial::from_coefficients(
+                                           "tamper-private-opening",
+                                           {gatzk::algebra::FieldElement::one()}));
+                               return true;
+                           });
+            std::ostringstream tamper_map;
+            bool tamper_rejected = !tamper_results.empty();
+            for (std::size_t index = 0; index < tamper_results.size(); ++index)
+            {
+                if (index != 0) tamper_map << ',';
+                tamper_map << tamper_results[index].first << '='
+                           << tamper_results[index].second;
+                tamper_rejected = tamper_rejected
+                    && tamper_results[index].second != "fail";
+            }
+            for (const auto required_case : kRequiredTamperCases)
+            {
+                const auto found = std::find_if(
+                    tamper_results.begin(), tamper_results.end(),
+                    [&](const auto &entry)
+                    { return entry.first == required_case; });
+                if (found == tamper_results.end()
+                    || found->second == "fail")
+                    tamper_rejected = false;
+            }
+            metrics.tamper_test_case_map = tamper_map.str();
             const auto tamper_end = std::chrono::steady_clock::now();
             metrics.tamper_tests_passed = tamper_rejected;
             metrics.tamper_tests_ms = std::chrono::duration<double, std::milli>(tamper_end - tamper_start).count();
@@ -703,10 +1272,10 @@ int main(int argc, char **argv)
                 std::cerr << "reference consistency check failed; final formal acceptance denied"
                     " (reference_hash_present=" +
                     std::string(
-                        trace.reference_quant_logits_hash.empty()
+                        trace.secure_trace_logits_hash.empty()
                             ? "false"
                             : "true") +
-                    ", reference_matrix_match=" + std::string(reference_matrix_match ? "true" : "false") + ", reference_matches_secure=" + std::string(trace.reference_quant_logits_hash == trace.secure_trace_logits_hash ? "true" : "false") + ", proof_output_matches_trace=" + std::string(trace.public_logits == parsed_proof.public_logits ? "true" : "false") + ", private_plain_count=" + std::to_string(private_plain_count) + ")\n";
+                    ", reference_matrix_match=" + std::string(reference_matrix_match ? "true" : "false") + ", reference_matches_secure=" + std::string(trace.reference_quant_logits_hash == trace.secure_trace_logits_hash ? "true" : "false") + ", proof_output_hash_match=" + std::string(trace.proof_public_output_hash == parsed_output_hash ? "true" : "false") + ", proof_output_matches_trace=" + std::string(trace.public_logits == parsed_proof.public_logits ? "true" : "false") + ", private_plain_count=" + std::to_string(private_plain_count) + ")\n";
             }
             if (!tamper_rejected)
             {
@@ -767,6 +1336,8 @@ int main(int argc, char **argv)
                     context,
                     trace,
                     proof,
+                    verifier_context,
+                    parsed_proof,
                     metrics,
                     verifier_accepted,
                     final_accepted);

@@ -36,6 +36,7 @@
 #include <unistd.h>
 
 #include <mcl/ntt.hpp>
+#include <openssl/sha.h>
 #include <openssl/rand.h>
 
 #include "gatzk/algebra/domain_evaluation.hpp"
@@ -1054,19 +1055,48 @@ namespace gatzk::protocol
             std::uint64_t input_scale,
             std::uint64_t output_scale)
         {
+            if (size == 0 || input_scale == 0 || output_scale == 0)
+            {
+                throw std::runtime_error(
+                    "ExpMap table requires a non-empty domain and positive scales");
+            }
             std::vector<std::pair<FieldElement, FieldElement>> out;
             out.reserve(size);
+            std::int64_t previous = std::numeric_limits<std::int64_t>::max();
             for (std::size_t i = 0; i < size; ++i)
             {
                 const auto input = static_cast<std::int64_t>(i);
                 const auto central_signed = quantize_float_model_value_signed(
                     std::exp(-static_cast<double>(input) / static_cast<double>(input_scale)),
                     output_scale);
-                const auto candidate = std::max<std::int64_t>(0, central_signed);
+                // ExpMap is a positive fixed-point weight.  Rounding the tail
+                // of exp(-delta/S_Delta) to zero would make the denominator
+                // relation degenerate and would violate the formal table
+                // contract, so the registered table saturates at one.
+                const auto candidate = std::max<std::int64_t>(1, central_signed);
+                if (candidate > previous)
+                {
+                    throw std::runtime_error(
+                        "ExpMap table is not non-increasing at delta=" +
+                        std::to_string(i));
+                }
+                if (candidate < 1)
+                {
+                    throw std::runtime_error(
+                        "ExpMap table contains a non-positive output at delta=" +
+                        std::to_string(i));
+                }
                 out.push_back({
                     FieldElement(static_cast<std::uint64_t>(i)),
                     FieldElement::from_signed(candidate),
                 });
+                previous = candidate;
+            }
+            if (out.front().second.value() == 0 ||
+                out.front().second.value() < out.back().second.value())
+            {
+                throw std::runtime_error(
+                    "ExpMap table endpoint invariant failed");
             }
             return out;
         }
@@ -1084,6 +1114,71 @@ namespace gatzk::protocol
                 if (!inserted && !(it->second == output))
                 {
                     throw std::runtime_error(std::string(label) + " table is not a function");
+                }
+            }
+        }
+
+        void require_exp_map_table(
+            const std::vector<std::pair<FieldElement, FieldElement>> &table)
+        {
+            if (table.empty())
+            {
+                throw std::runtime_error("ExpMap table must be non-empty");
+            }
+            std::uint64_t previous = std::numeric_limits<std::uint64_t>::max();
+            for (std::size_t index = 0; index < table.size(); ++index)
+            {
+                const auto expected_input =
+                    FieldElement(static_cast<std::uint64_t>(index));
+                if (!(table[index].first == expected_input))
+                {
+                    throw std::runtime_error(
+                        "ExpMap table input order/gap at delta=" +
+                        std::to_string(index));
+                }
+                const auto output = table[index].second.value();
+                if (output == 0)
+                {
+                    throw std::runtime_error(
+                        "ExpMap table output must be >= 1 at delta=" +
+                        std::to_string(index));
+                }
+                if (index != 0 && output > previous)
+                {
+                    throw std::runtime_error(
+                        "ExpMap table must be non-increasing at delta=" +
+                        std::to_string(index));
+                }
+                previous = output;
+            }
+            if (table.front().second.value() < table.back().second.value())
+            {
+                throw std::runtime_error(
+                    "ExpMap(0) must be the maximum registered output");
+            }
+        }
+
+        void require_canonical_range_table(
+            const std::vector<FieldElement> &table,
+            std::size_t range_bits)
+        {
+            if (range_bits == 0 || range_bits >= 63)
+            {
+                throw std::runtime_error(
+                    "T_range requires range_bits in [1,62]");
+            }
+            const auto expected_size = std::size_t{1} << range_bits;
+            if (table.size() != expected_size)
+            {
+                throw std::runtime_error(
+                    "T_range cardinality must be exactly 2^B");
+            }
+            for (std::size_t index = 0; index < table.size(); ++index)
+            {
+                if (table[index].value() != index)
+                {
+                    throw std::runtime_error(
+                        "T_range must contain canonical rows 0..2^B-1");
                 }
             }
         }
@@ -1138,15 +1233,229 @@ namespace gatzk::protocol
             metrics->notes += note;
         }
 
+        std::string cache_sha256_hex(std::string_view bytes)
+        {
+            std::array<unsigned char, SHA256_DIGEST_LENGTH> digest{};
+            SHA256(
+                reinterpret_cast<const unsigned char *>(bytes.data()),
+                bytes.size(),
+                digest.data());
+            std::ostringstream out;
+            out << std::hex << std::setfill('0');
+            for (const auto byte : digest)
+                out << std::setw(2) << static_cast<unsigned int>(byte);
+            return out.str();
+        }
+
+        void append_cache_length_delimited(
+            std::string *out,
+            std::string_view value)
+        {
+            out->append(std::to_string(value.size()));
+            out->push_back(':');
+            out->append(value.data(), value.size());
+            out->push_back('|');
+        }
+
+        std::filesystem::path resolve_project_path(
+            const std::string &project_root,
+            const std::string &relative_or_absolute);
+
+        std::string cache_file_sha256(const std::filesystem::path &path)
+        {
+            std::ifstream input(path, std::ios::binary);
+            if (!input)
+                throw std::runtime_error(
+                    "static context cache cannot read identity file: " +
+                    path.string());
+            SHA256_CTX digest_context{};
+            SHA256_Init(&digest_context);
+            std::array<char, 1U << 20> buffer{};
+            while (input)
+            {
+                input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+                const auto count = input.gcount();
+                if (count > 0)
+                    SHA256_Update(
+                        &digest_context,
+                        buffer.data(),
+                        static_cast<std::size_t>(count));
+            }
+            if (!input.eof())
+                throw std::runtime_error(
+                    "static context cache failed while reading identity file: " +
+                    path.string());
+            std::array<unsigned char, SHA256_DIGEST_LENGTH> digest{};
+            SHA256_Final(digest.data(), &digest_context);
+            std::ostringstream out;
+            out << std::hex << std::setfill('0');
+            for (const auto byte : digest)
+                out << std::setw(2) << static_cast<unsigned int>(byte);
+            return out.str();
+        }
+
+        // Hash the complete content-addressed file set for a private runtime
+        // resource.  Paths are included in sorted order so replacing a file at
+        // the same path cannot preserve a stale cache entry.  This helper is
+        // deliberately used only by the static-context cache; it never enters
+        // public proof metadata or exported artifacts.
+        std::string cache_file_tree_identity(const std::filesystem::path &root)
+        {
+            if (!std::filesystem::exists(root))
+                return "missing:" + root.lexically_normal().generic_string();
+            if (std::filesystem::is_regular_file(root))
+                return "file:" + root.lexically_normal().generic_string() +
+                    ":" + cache_file_sha256(root);
+            if (!std::filesystem::is_directory(root))
+                throw std::runtime_error(
+                    "static context cache identity root is not a file or directory: " +
+                    root.string());
+
+            std::vector<std::filesystem::path> files;
+            std::error_code error;
+            for (std::filesystem::recursive_directory_iterator it(
+                     root,
+                     std::filesystem::directory_options::skip_permission_denied,
+                     error),
+                 end;
+                 it != end;
+                 it.increment(error))
+            {
+                if (error)
+                    throw std::runtime_error(
+                        "static context cache identity traversal failed under: " +
+                        root.string());
+                if (it->is_regular_file(error))
+                    files.push_back(it->path());
+                if (error)
+                    throw std::runtime_error(
+                        "static context cache identity stat failed under: " +
+                        root.string());
+            }
+            std::sort(
+                files.begin(), files.end(),
+                [&](const auto &lhs, const auto &rhs)
+                {
+                    return std::filesystem::relative(lhs, root).generic_string() <
+                        std::filesystem::relative(rhs, root).generic_string();
+                });
+            std::string canonical;
+            append_cache_length_delimited(
+                &canonical,
+                root.lexically_normal().generic_string());
+            for (const auto &file : files)
+            {
+                append_cache_length_delimited(
+                    &canonical,
+                    std::filesystem::relative(file, root).generic_string());
+                append_cache_length_delimited(
+                    &canonical,
+                    cache_file_sha256(file));
+            }
+            return "sha256:" + cache_sha256_hex(canonical);
+        }
+
         std::string context_cache_key(const util::AppConfig &config)
         {
+            std::string canonical = "zkgat:static-context-cache:v3|";
+            const auto append = [&](std::string_view label, std::string_view value)
+            {
+                append_cache_length_delimited(&canonical, label);
+                append_cache_length_delimited(&canonical, value);
+            };
+            const auto append_u64 = [&](std::string_view label, std::uint64_t value)
+            {
+                append(label, std::to_string(value));
+            };
+            append("project_root", config.project_root);
+            append("dataset", config.dataset);
+            append("data_root", config.data_root);
+            append("cache_root", config.cache_root);
+            append("checkpoint_bundle", config.checkpoint_bundle);
+            append("task_type", config.task_type);
+            append("report_unit", config.report_unit);
+            append("batching_rule", config.batching_rule);
+            append("subgraph_rule", config.subgraph_rule);
+            append("self_loop_rule", config.self_loop_rule);
+            append("edge_sort_rule", config.edge_sort_rule);
+            append("chunking_rule", config.chunking_rule);
+            append("quant_cfg_id", config.quant_cfg_id);
+            append("quantization", config.quantization.canonical_serialization());
+            append("model_arch_id", config.model_arch_id);
+            append("model_param_id", config.model_param_id);
+            append("static_table_id", config.static_table_id);
+            append("degree_bound_id", config.degree_bound_id);
+            append("srs_path", config.srs_path);
+            append("srs_id", config.srs_id);
+            append("srs_type", config.srs_type);
+            append("verifier_registry_path", config.verifier_registry_path);
+            append("verifier_registry_digest", config.verifier_registry_digest);
+            append("privacy_policy", config.privacy_policy);
+            append("input_privacy", config.input_privacy);
+            append("output_mode", config.output_mode);
+            append("opening_mode", config.opening_mode);
+            append("binding_mode", config.binding_mode);
+            append("proof_task", config.proof_task);
+            append("security_profile_id", config.security_profile_id);
+            append_u64("hidden_dim", config.hidden_dim);
+            append_u64("num_classes", config.num_classes);
+            append_u64("range_bits", config.range_bits);
+            append_u64("seed", config.seed);
+            append_u64("layer_count", config.layer_count);
+            append_u64("K_out", config.K_out);
+            append_u64("batch_graphs", config.batch_graphs);
+            append_u64("symmetrize_edges", config.symmetrize_edges ? 1U : 0U);
+            append_u64("deduplicate_edges", config.deduplicate_edges ? 1U : 0U);
+            append_u64("auto_prepare_dataset", config.auto_prepare_dataset ? 1U : 0U);
+            for (const auto input_dim : config.d_in_profile)
+                append_u64("d_in_profile", input_dim);
+            for (const auto &layer : config.hidden_profile)
+            {
+                append_u64("hidden_head_count", layer.head_count);
+                append_u64("hidden_head_dim", layer.head_dim);
+            }
+
+            const auto project_root = std::filesystem::path(config.project_root);
+            const auto configured_resource_identity =
+                [&](const std::string &configured_path)
+            {
+                if (configured_path.empty())
+                    return std::string("missing-config");
+                return cache_file_tree_identity(
+                    resolve_project_path(config.project_root, configured_path));
+            };
+            // These private runtime identities bind the actual model registry,
+            // dataset feature/topology source, SRS manifest and all PK/VK
+            // material, plus the compiler source that defines the artifact.
+            append(
+                "checkpoint_bundle_files",
+                configured_resource_identity(config.checkpoint_bundle));
+            append(
+                "dataset_features_topology_public_input_files",
+                cache_file_tree_identity(
+                    project_root / config.cache_root / config.dataset));
+            append(
+                "srs_manifest_vk_pk_files",
+                configured_resource_identity(config.srs_path));
+            append(
+                "compiler_sources",
+                cache_file_tree_identity(project_root / "include") +
+                    "+" + cache_file_tree_identity(project_root / "src"));
+            append(
+                "protocol_compiler_template",
+                cache_sha256_hex(protocol_template_canonical_bytes()));
+            return "sha256:" + cache_sha256_hex(canonical);
+        }
+
+        // The evaluation memoization cache is proof-execution local.  Keep its
+        // key independent from the static-context file scan so opening a proof
+        // does not repeatedly reread large private SRS files.
+        std::string execution_context_key(const util::AppConfig &config)
+        {
             std::ostringstream stream;
-            // `export_dir` 与 `dump_trace` 只影响 artifact 侧行为，不影响可复用的正式协议对象。
-            stream << config.project_root << '|'
+            stream << "zkgat:execution-context:v2|"
+                   << config.project_root << '|'
                    << config.dataset << '|'
-                   << config.data_root << '|'
-                   << config.cache_root << '|'
-                   << config.checkpoint_bundle << '|'
                    << config.hidden_dim << '|'
                    << config.num_classes << '|'
                    << config.range_bits << '|'
@@ -1154,32 +1463,15 @@ namespace gatzk::protocol
                    << config.layer_count << '|'
                    << config.K_out << '|'
                    << config.batch_graphs << '|'
-                   << config.task_type << '|'
-                   << config.report_unit << '|'
                    << config.batching_rule << '|'
-                   << config.subgraph_rule << '|'
-                   << config.self_loop_rule << '|'
-                   << config.edge_sort_rule << '|'
-                   << config.chunking_rule << '|'
                    << config.srs_id << '|'
                    << config.srs_type << '|'
-                   << config.privacy_policy << '|'
-                   << config.input_privacy << '|'
-                   << config.output_mode << '|'
-                   << config.opening_mode << '|'
-                   << config.binding_mode << '|'
-                   << config.proof_task << '|'
                    << config.quant_cfg_id << '|'
-                   << config.quantization.canonical_serialization() << '|'
-                   << "formal";
+                   << config.quantization.canonical_serialization();
             for (const auto input_dim : config.d_in_profile)
-            {
                 stream << "|din=" << input_dim;
-            }
             for (const auto &layer : config.hidden_profile)
-            {
                 stream << "|hid=" << layer.head_count << 'x' << layer.head_dim;
-            }
             return stream.str();
         }
 
@@ -1968,12 +2260,24 @@ namespace gatzk::protocol
                   challenges_(challenges),
                   backend_registry_(std::move(backend_registry)),
                   domain_weight_cache_(std::move(domain_weight_cache)),
-                  context_key_(context_cache_key(context.config)),
+                  context_key_(execution_context_key(context.config)),
+                  proof_cache_key_(context_key_),
                   metrics_(metrics)
             {
                 if (domain_weight_cache_ == nullptr)
                 {
                     domain_weight_cache_ = std::make_shared<algebra::DomainEvaluationWeightCache>();
+                }
+                // Trace evaluations include the proof-local zero-domain
+                // blinding polynomial.  A point/label hit from another proof
+                // is therefore not semantically reusable, even if its point
+                // happens to coincide.  Require the fresh session nonce and
+                // bind it into the process-shared cache key.
+                if (!trace.public_metadata.proof_nonce.empty())
+                {
+                    proof_cache_key_ +=
+                        "|proof_nonce=" + trace.public_metadata.proof_nonce;
+                    trace_cache_reuse_enabled_ = true;
                 }
             }
 
@@ -3365,7 +3669,8 @@ namespace gatzk::protocol
                         continue;
                     }
                     const bool allow_shared_trace_reuse =
-                        group.first->name == "FH" || group.first->name == "edge";
+                        trace_cache_reuse_enabled_ &&
+                        (group.first->name == "FH" || group.first->name == "edge");
                     if (allow_shared_trace_reuse)
                     {
                         bool all_cached = true;
@@ -3373,7 +3678,7 @@ namespace gatzk::protocol
                         for (std::size_t point_index = 0; point_index < points.size(); ++point_index)
                         {
                             cached_values[point_index] = shared_trace_evaluation_cache()->lookup(
-                                context_key_,
+                                proof_cache_key_,
                                 group.first,
                                 eval_labels,
                                 points[point_index]);
@@ -3418,7 +3723,7 @@ namespace gatzk::protocol
                                     if (allow_shared_trace_reuse)
                                     {
                                         shared_trace_evaluation_cache()->store(
-                                            context_key_,
+                                            proof_cache_key_,
                                             group.first,
                                             eval_labels,
                                             points[point_index],
@@ -3455,7 +3760,7 @@ namespace gatzk::protocol
                                 if (allow_shared_trace_reuse)
                                 {
                                     shared_trace_evaluation_cache()->store(
-                                        context_key_,
+                                        proof_cache_key_,
                                         group.first,
                                         eval_labels,
                                         points[point_index],
@@ -3472,7 +3777,7 @@ namespace gatzk::protocol
                         if (allow_shared_trace_reuse)
                         {
                             shared_trace_evaluation_cache()->store(
-                                context_key_,
+                                proof_cache_key_,
                                 group.first,
                                 eval_labels,
                                 point,
@@ -3541,6 +3846,8 @@ namespace gatzk::protocol
             std::shared_ptr<const ProofEvaluationBackendRegistry> backend_registry_;
             std::shared_ptr<algebra::DomainEvaluationWeightCache> domain_weight_cache_;
             std::string context_key_;
+            std::string proof_cache_key_;
+            bool trace_cache_reuse_enabled_ = false;
             RunMetrics *metrics_ = nullptr;
             std::unordered_map<std::string, FieldElement> value_cache_;
         };
@@ -11006,6 +11313,28 @@ namespace gatzk::protocol
 
     // 构建一次 formal run 的静态上下文，产出数据集、模型、工作域、公开列与静态承诺。
     // 这里禁止注入任何依赖单次 proof 的 witness 或挑战状态。
+    struct StaticContextCachePayload
+    {
+        ProtocolContext context;
+        // The cache key is retained in the payload so every hit can re-check
+        // the current private resource identity instead of trusting a map
+        // lookup alone.
+        std::string identity;
+        std::string compiler_artifact_identity;
+    };
+
+    std::string static_context_compiler_artifact_identity(
+        const ProtocolContext &context)
+    {
+        if (context.compiler_artifact == nullptr
+            || context.validated_compiler_artifact_identity
+                   != context.compiler_artifact.get())
+            return "missing";
+        return "sha256:" + cache_sha256_hex(
+            context.compiler_artifact->protocol_canonical_bytes +
+            context.compiler_artifact->instance_canonical_bytes);
+    }
+
     ProtocolContext build_context(const util::AppConfig &config, RunMetrics *metrics)
     {
         // Resolve the registered scale chain before cache lookup so every
@@ -11016,7 +11345,7 @@ namespace gatzk::protocol
             config.hidden_profile,
             config.K_out);
         static std::mutex cache_mutex;
-        static std::unordered_map<std::string, ProtocolContext> cache;
+        static std::unordered_map<std::string, StaticContextCachePayload> cache;
         // 这里只复用静态上下文对象，见证和挑战相关状态必须按每次正式证明重新生成。
         const bool allow_static_context_cache = true;
 
@@ -11027,23 +11356,41 @@ namespace gatzk::protocol
             std::lock_guard<std::mutex> lock(cache_mutex);
             if (const auto it = cache.find(cache_key); it != cache.end())
             {
-                // 这里只缓存静态上下文：工作域、SRS、公开列、静态承诺和模型数据。
-                // 每次 proof 的 witness 与挑战派生值都必须重新生成。
-                auto node = cache.extract(it);
-                auto context = std::move(node.mapped());
-                context.config = canonical_config;
-                if (metrics != nullptr)
+                const auto &payload = it->second;
+                const bool compiler_identity_ok =
+                    payload.compiler_artifact_identity != "missing" &&
+                    payload.compiler_artifact_identity ==
+                        static_context_compiler_artifact_identity(payload.context);
+                if (payload.identity == cache_key && compiler_identity_ok)
                 {
-                    metrics->load_static_ms += elapsed_ms(cache_lookup_start, Clock::now());
-                    append_note(metrics, "static_context_cache=hit_move");
+                    // 这里只缓存静态上下文：工作域、SRS、公开列、静态承诺和模型数据。
+                    // 每次 proof 的 witness 与挑战派生值都必须重新生成。
+                    auto node = cache.extract(it);
+                    auto context = std::move(node.mapped().context);
+                    context.config = canonical_config;
+                    if (metrics != nullptr)
+                    {
+                        metrics->load_static_ms += elapsed_ms(cache_lookup_start, Clock::now());
+                        append_note(metrics, "static_context_cache=hit_identity_revalidated");
+                    }
+                    return context;
                 }
-                return context;
+                // A same-path replacement, missing resource, or corrupted
+                // cached payload is a hard miss.  Never expose the old static
+                // context to a new proof statement.
+                cache.erase(it);
+                append_note(metrics, "static_context_cache=stale_identity_rejected");
             }
         }
 
         append_note(metrics, "static_context_cache=miss");
         ProtocolContext context;
         context.config = canonical_config;
+        // All model commitments below must use the canonical, typed
+        // layer/head-aware chain selected above.  Keep the alias local to the
+        // context builder so no legacy/global scale source can leak into the
+        // formal registry.
+        const auto &scales = context.config.quantization;
 
         progress_note("context:load_static:start");
         auto start = Clock::now();
@@ -11163,7 +11510,6 @@ namespace gatzk::protocol
         // 工作域大小一次性按特征表、边域、隐藏维和查表规模展开，后面 trace / quotient / opening 共用这套布局。
         const std::size_t fh_size = algebra::next_power_of_two(
             std::max(context.dataset.num_nodes * context.dataset.num_features, context.local.num_nodes * context.local.num_features) + 2);
-        const std::size_t configured_range_size = (1ULL << config.range_bits);
         const std::size_t d_h = hidden_head_width(context.model, config);
         const std::size_t d_cat = concat_width(context.model, config);
         // The in-domain is a shared power-of-two capacity.  It must not be
@@ -11177,41 +11523,17 @@ namespace gatzk::protocol
             context.local.edges.size(),
             d_h,
             context.local.num_classes);
-        const bool large_whole_graph_gat =
-            config.batching_rule == "whole_graph_single" && context.local.num_nodes == context.dataset.num_nodes && (context.local.edges.size() >= (1ULL << 18) || context.dataset.num_nodes * context.dataset.num_features >= (1ULL << 24));
-        const std::size_t default_activation_table_bound = configured_range_size;
-        std::size_t range_size = std::max<std::size_t>(
-            configured_range_size,
-            large_whole_graph_gat ? (1ULL << 19) : default_activation_table_bound);
-        std::int64_t lrelu_min_raw = -static_cast<std::int64_t>(std::max<std::size_t>(
-            large_whole_graph_gat ? (1ULL << 20) : default_activation_table_bound,
-            range_size));
-        std::int64_t lrelu_max_raw = -lrelu_min_raw;
-        if (large_whole_graph_gat)
-        {
-            constexpr std::size_t kLargeEdgeDomainSize = 1ULL << 23;
-            constexpr std::size_t kLargeLReluNegativeRows = 3ULL << 18;
-            const std::size_t max_rows_in_edge_domain = kLargeEdgeDomainSize - 2;
-            range_size = std::max<std::size_t>(
-                range_size,
-                max_rows_in_edge_domain);
-            lrelu_min_raw = -static_cast<std::int64_t>(kLargeLReluNegativeRows);
-            lrelu_max_raw = static_cast<std::int64_t>(
-                max_rows_in_edge_domain - kLargeLReluNegativeRows - 1);
-        }
-        const std::size_t elu_bound = std::max<std::size_t>(
-            large_whole_graph_gat ? (1ULL << 20) : default_activation_table_bound,
-            configured_range_size);
-        const std::size_t lrelu_table_size = signed_table_size(lrelu_min_raw, lrelu_max_raw, "lrelu");
-        const std::size_t elu_table_size = elu_bound * 2 + 1;
-        const std::size_t exp_table_size = range_size;
+        // The same pure planner drives canonical table generation and this
+        // pre-SRS domain calculation.  In particular, ExpMap rows are derived
+        // from the certified LReLU output bound; T_range remains exactly 2^B.
+        const auto table_shape = plan_canonical_static_table_shape(context);
         const std::size_t edge_size = algebra::next_power_of_two(
             std::max<std::size_t>({
                 minimum_edge_rows,
-                lrelu_table_size,
-                elu_table_size,
-                exp_table_size,
-                range_size,
+                table_shape.lrelu_table_size,
+                table_shape.elu_table_size,
+                table_shape.exp_table_size,
+                table_shape.range_table_size,
             }) +
             2);
         const std::size_t in_size = algebra::next_power_of_two(in_domain_capacity + 2);
@@ -11298,28 +11620,15 @@ namespace gatzk::protocol
         progress_note("context:public_static:start");
         start = Clock::now();
         // 这里开始布置公开列、静态表和静态承诺；它们会直接进入 transcript 与 verifier 的公共视图。
-        context.tables.range = make_range_table(range_size);
-        const auto &scales = context.config.quantization;
-        context.tables.exp = make_exp_table(
-            range_size,
-            scales.s_delta,
-            scales.s_exp);
-        context.tables.lrelu = make_lrelu_table(
-            lrelu_min_raw,
-            lrelu_max_raw,
-            scales.s_delta,
-            scales.s_delta);
-        // `context.tables.elu` is one shared authenticated table for every
-        // hidden layer.  validate_scale_chain_shape has already rejected any
-        // layer-specific S_agg_pre/S_agg values, so selecting the canonical
-        // first entry is explicit and not an unchecked implicit rescale.
-        context.tables.elu = make_elu_table(
-            elu_bound,
-            scales.s_agg_pre.at(0),
-            scales.s_agg.at(0));
-        require_functional_pair_table(context.tables.lrelu, "LeakyReLU");
-        require_functional_pair_table(context.tables.elu, "ELU");
-        require_functional_pair_table(context.tables.exp, "ExpMap");
+        // The canonical producer lives in the schema module and is also used
+        // by the independent verifier registration loader.  Keeping one
+        // producer ensures that a table with the right shape cannot diverge in
+        // one row from the table that was formally generated and committed.
+        context.tables = build_canonical_static_tables(context);
+        std::string static_table_reason;
+        if (!validate_static_tables(context, &static_table_reason))
+            throw std::runtime_error(
+                "canonical static table validation failed: " + static_table_reason);
 
         const auto edge_valid = build_selector(context.local.edges.size(), edge_size);
 
@@ -11929,12 +12238,21 @@ namespace gatzk::protocol
             context.dataset.features_fp.shrink_to_fit();
         }
 
+        const auto final_cache_key = context_cache_key(context.config);
+        if (final_cache_key != cache_key)
+            throw std::runtime_error(
+                "static context identity changed while loading private resources");
         const bool cacheable_static_context =
             context.domains.fh != nullptr && context.domains.edge != nullptr && context.domains.fh->size < (1ULL << 24) && context.domains.edge->size < (1ULL << 22);
         if (allow_static_context_cache && cacheable_static_context)
         {
             std::lock_guard<std::mutex> lock(cache_mutex);
-            cache[cache_key] = context;
+            cache[cache_key] = StaticContextCachePayload{
+                .context = context,
+                .identity = final_cache_key,
+                .compiler_artifact_identity =
+                    static_context_compiler_artifact_identity(context),
+            };
         }
         return context;
     }
@@ -11942,6 +12260,9 @@ namespace gatzk::protocol
     // 消费 trace 生成最终 proof，对外保证 commitment 顺序、block 顺序与 opening 结构稳定。
     Proof prove(const ProtocolContext &context, const TraceArtifacts &trace, RunMetrics *metrics)
     {
+        if (context.verifier_shape_only)
+            throw std::runtime_error(
+                "prover rejects verifier shape-only execution context");
         const auto &route2 = util::route2_options();
         if (!context.model.has_real_multihead)
         {
