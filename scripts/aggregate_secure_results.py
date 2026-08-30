@@ -84,6 +84,34 @@ REQUIRED_HASHES = (
     "static_table_hash",
 )
 
+# Actual same-dataset fields that must agree between CPU and CUDA manifests.
+# public_metadata_hash is intentionally excluded because proof_nonce differs.
+PAIR_CONSISTENCY_FIELDS = (
+    "protocol_schema_id",
+    "instance_schema_hash",
+    "dim_cfg",
+    "model_params",
+    "quant_config",
+    "static_tables",
+    "public_output",
+    "public_logits_hash",
+    "secure_trace_logits_hash",
+    "reference_quant_logits_hash",
+    "config",
+    "config_sha256",
+    "checkpoint_bundle_manifest_hash",
+    "checkpoint_bundle_tensors_hash",
+    "checkpoint_bundle_archive_hash",
+    "checkpoint_source_hash",
+    "checkpoint_model_hash",
+    "quant_config_hash",
+    "srs_manifest_hash",
+    "static_table_hash",
+    "srs_id",
+    "model_arch",
+    "srs_degree_bound",
+)
+
 
 def require(condition: bool, message: str) -> None:
     if not condition:
@@ -344,7 +372,7 @@ def check_security(manifest: Dict[str, Any], proof_path: pathlib.Path, context: 
             f"{context}: private_plain_value_count must be zero")
     require(nonempty_string(manifest.get("proof_payload_audit_status"), "proof_payload_audit_status", context) == "passed",
             f"{context}: proof payload audit did not pass")
-    for field in ("reference_consistency_passed", "cpu_gpu_reference_consistency_passed", "tamper_tests_passed"):
+    for field in ("reference_consistency_passed", "tamper_tests_passed"):
         require(as_bool(manifest.get(field), field, context), f"{context}: {field} must be true")
     tamper_ms = as_float(manifest.get("tamper_tests_ms"), "tamper_tests_ms", context)
     require(tamper_ms > 0.0, f"{context}: tamper_tests_ms must be positive")
@@ -359,11 +387,39 @@ def check_security(manifest: Dict[str, Any], proof_path: pathlib.Path, context: 
         "private_plain_value_count": 0,
         "proof_payload_audit_status": "passed",
         "reference_consistency_passed": True,
-        "cpu_gpu_reference_consistency_passed": True,
         "tamper_tests_passed": True,
         "tamper_tests_ms": tamper_ms,
         "proof_hash_audit_passed": True,
     }
+
+
+def check_single_run_acceptance_state(
+    manifest: Dict[str, Any],
+    context: str,
+) -> None:
+    """Validate independent verifier/final states before accepting a run."""
+    verifier_accepted = as_bool(
+        manifest.get("verifier_accepted"),
+        "verifier_accepted",
+        context,
+    )
+    final_accepted = as_bool(
+        manifest.get("final_formal_run_accepted"),
+        "final_formal_run_accepted",
+        context,
+    )
+    verified = as_bool(manifest.get("verified"), "verified", context)
+    require(verifier_accepted, f"{context}: verifier_accepted must be true")
+    require(final_accepted, f"{context}: final_formal_run_accepted must be true")
+    require(
+        verified is verifier_accepted,
+        f"{context}: verified must equal verifier_accepted",
+    )
+    require(
+        manifest.get("status") != "VERIFY_OK" or final_accepted,
+        f"{context}: VERIFY_OK status requires final_formal_run_accepted",
+    )
+    require(manifest.get("status") == "VERIFY_OK", f"{context}: status is not VERIFY_OK")
 
 
 def check_manifest(
@@ -377,8 +433,7 @@ def check_manifest(
     expected_manifest_dataset = DATASET_ALIASES[dataset]
     require(manifest.get("dataset") == expected_manifest_dataset,
             f"{context}: manifest dataset is not {expected_manifest_dataset}")
-    require(manifest.get("status") == "VERIFY_OK", f"{context}: status is not VERIFY_OK")
-    require(as_bool(manifest.get("verified"), "verified", context), f"{context}: verified is not true")
+    check_single_run_acceptance_state(manifest, context)
     require(as_bool(manifest.get("full_dataset"), "full_dataset", context), f"{context}: full_dataset is not true")
     require(as_bool(manifest.get("is_full_dataset"), "is_full_dataset", context), f"{context}: is_full_dataset is not true")
     require(as_bool(manifest.get("stale_result"), "stale_result", context) is False,
@@ -437,6 +492,13 @@ def check_manifest(
         "run_dir": str(run_dir.relative_to(project_root)),
         "config": str(config_path.relative_to(project_root)),
         "config_sha256": recorded_config_hash,
+        "protocol_schema_id": nonempty_string(manifest.get("protocol_schema_id"), "protocol_schema_id", context),
+        "instance_schema_hash": nonempty_string(manifest.get("instance_schema_hash"), "instance_schema_hash", context),
+        "dim_cfg": nonempty_string(manifest.get("dim_cfg"), "dim_cfg", context),
+        "public_output": nonempty_string(manifest.get("public_output"), "public_output", context),
+        "public_logits_hash": nonempty_string(manifest.get("public_logits_hash"), "public_logits_hash", context),
+        "secure_trace_logits_hash": nonempty_string(manifest.get("secure_trace_logits_hash"), "secure_trace_logits_hash", context),
+        "reference_quant_logits_hash": nonempty_string(manifest.get("reference_quant_logits_hash"), "reference_quant_logits_hash", context),
         "proof_size_bytes": proof_size,
         "proof_hash": manifest["proof_hash"],
         "checkpoint_model_hash": manifest["checkpoint_model_hash"],
@@ -473,37 +535,37 @@ def check_manifest(
     return row
 
 
-def ensure_pair_consistency(rows: Iterable[Dict[str, Any]]) -> None:
+def compare_cpu_cuda_pair(
+    dataset: str,
+    cpu: Dict[str, Any],
+    cuda: Dict[str, Any],
+) -> None:
+    """Fail closed unless every canonical pair field exists and is equal."""
+    for field in PAIR_CONSISTENCY_FIELDS:
+        require(field in cpu, f"{dataset}: CPU manifest is missing pair field {field}")
+        require(field in cuda, f"{dataset}: CUDA manifest is missing pair field {field}")
+        require(cpu[field] == cuda[field], f"{dataset}: CPU/CUDA {field} mismatch")
+
+
+def ensure_pair_consistency(rows: Iterable[Dict[str, Any]]) -> bool:
     grouped: Dict[str, Dict[str, Dict[str, Any]]] = {}
     for row in rows:
         grouped.setdefault(row["dataset"], {})[row["backend"]] = row
     for dataset in DATASET_ORDER:
+        require(dataset in grouped, f"{dataset}: CPU/CUDA pair is missing")
         pair = grouped[dataset]
         require(set(pair) == {"cpu", "cuda"}, f"{dataset}: CPU/CUDA pair is incomplete")
         cpu = pair["cpu"]
         cuda = pair["cuda"]
-        for field in (
-            "config",
-            "config_sha256",
-            "checkpoint_bundle_manifest_hash",
-            "checkpoint_bundle_tensors_hash",
-            "checkpoint_bundle_archive_hash",
-            "checkpoint_source_hash",
-            "checkpoint_model_hash",
-            "quant_config_hash",
-            "srs_manifest_hash",
-            "static_table_hash",
-            "srs_id",
-            "model_arch",
-            "model_params",
-            "quant_config",
-            "static_tables",
-            "srs_degree_bound",
-        ):
-            require(cpu[field] == cuda[field], f"{dataset}: CPU/CUDA {field} mismatch")
+        compare_cpu_cuda_pair(dataset, cpu, cuda)
+    return True
 
 
-def write_outputs(output_dir: pathlib.Path, rows: List[Dict[str, Any]]) -> None:
+def write_outputs(
+    output_dir: pathlib.Path,
+    rows: List[Dict[str, Any]],
+    cpu_gpu_reference_consistency_passed: bool,
+) -> None:
     # All validation, including pair consistency, has completed before this function is called.
     output_dir.mkdir(parents=True, exist_ok=True)
     security_rows = [
@@ -517,7 +579,6 @@ def write_outputs(output_dir: pathlib.Path, rows: List[Dict[str, Any]]) -> None:
             "private_plain_value_count": row["private_plain_value_count"],
             "proof_payload_audit_status": row["proof_payload_audit_status"],
             "reference_consistency_passed": row["reference_consistency_passed"],
-            "cpu_gpu_reference_consistency_passed": row["cpu_gpu_reference_consistency_passed"],
             "tamper_tests_passed": row["tamper_tests_passed"],
             "tamper_tests_ms": row["tamper_tests_ms"],
         }
@@ -535,11 +596,11 @@ def write_outputs(output_dir: pathlib.Path, rows: List[Dict[str, Any]]) -> None:
                 and item["private_plain_value_count"] == 0
                 and item["proof_payload_audit_status"] == "passed"
                 and item["reference_consistency_passed"]
-                and item["cpu_gpu_reference_consistency_passed"]
                 and item["tamper_tests_passed"]
                 for item in security_rows
-            ),
+            ) and cpu_gpu_reference_consistency_passed,
             "run_count": len(security_rows),
+            "cpu_gpu_reference_consistency_passed": cpu_gpu_reference_consistency_passed,
             "checks": security_rows,
         },
     }
@@ -606,8 +667,8 @@ def write_outputs(output_dir: pathlib.Path, rows: List[Dict[str, Any]]) -> None:
         "",
         "以下字段直接来自十个正式 run manifest，并额外核验了 `proof.bin` 的 SHA-256。所有行都必须通过，聚合器才会写出本报告。",
         "",
-        "| 数据集 | 后端 | proof hash | proof 审计 | witness 读取 | private plain values | payload audit | reference | CPU/GPU reference | tamper | tamper ms |",
-        "| --- | --- | --- | --- | --- | ---: | --- | --- | --- | --- | ---: |",
+        "| 数据集 | 后端 | proof hash | proof 审计 | witness 读取 | private plain values | payload audit | reference | tamper | tamper ms |",
+        "| --- | --- | --- | --- | --- | ---: | --- | --- | --- | ---: |",
     ]
     for item in security_rows:
         security_lines.append(
@@ -616,11 +677,12 @@ def write_outputs(output_dir: pathlib.Path, rows: List[Dict[str, Any]]) -> None:
             f"{str(item['verifier_reads_witness']).lower()} | {item['private_plain_value_count']} | "
             f"{item['proof_payload_audit_status']} | "
             f"{str(item['reference_consistency_passed']).lower()} | "
-            f"{str(item['cpu_gpu_reference_consistency_passed']).lower()} | "
             f"{str(item['tamper_tests_passed']).lower()} | {item['tamper_tests_ms']:.3f} |"
         )
     security_lines.extend(
         [
+            "",
+            f"CPU/CUDA pair-level reference consistency: `{str(cpu_gpu_reference_consistency_passed).lower()}`.",
             "",
             "结论：`all_passed=true`（由 `latest.json` 的 `security_tests` 字段记录）。这不是未执行 run 的占位结论。",
             "",
@@ -650,9 +712,13 @@ def main() -> None:
         require(seen == set(DATASET_ORDER), f"--{backend}-run must cover exactly {', '.join(DATASET_ORDER)}")
 
     require(len(rows) == 10, "exactly ten formal runs are required")
-    ensure_pair_consistency(rows)
+    pair_consistency_passed = ensure_pair_consistency(rows)
     ordered_rows = sorted(rows, key=lambda row: (DATASET_ORDER.index(row["dataset"]), row["backend"]))
-    write_outputs(resolve_input_path(project_root, args.output_dir), ordered_rows)
+    write_outputs(
+        resolve_input_path(project_root, args.output_dir),
+        ordered_rows,
+        pair_consistency_passed,
+    )
 
 
 if __name__ == "__main__":

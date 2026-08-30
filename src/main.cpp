@@ -659,7 +659,8 @@ int main(int argc, char **argv)
             metrics.proof_parse_ms = std::chrono::duration<double, std::milli>(
                                          std::chrono::steady_clock::now() - parse_start)
                                          .count();
-            const auto accepted = gatzk::protocol::verify(context, parsed_proof, &metrics);
+            const auto verifier_accepted =
+                gatzk::protocol::verify(context, parsed_proof, &metrics);
             const auto verify_end = std::chrono::steady_clock::now();
             progress(mode_label + ":verify:done");
             metrics.verify_time_ms = std::chrono::duration<double, std::milli>(verify_end - verify_start).count();
@@ -683,7 +684,10 @@ int main(int argc, char **argv)
             const bool reference_consistent =
                 reference_matrix_match && reference_payload_audit;
             metrics.reference_consistency_passed = reference_consistent;
-            metrics.cpu_gpu_reference_consistency_passed = reference_consistent;
+            const bool final_accepted =
+                gatzk::protocol::final_formal_run_accepted(
+                    verifier_accepted,
+                    reference_consistent);
             const auto reference_end = std::chrono::steady_clock::now();
             metrics.reference_consistency_ms =
                 std::chrono::duration<double, std::milli>(reference_end - reference_start).count();
@@ -692,17 +696,17 @@ int main(int argc, char **argv)
             tampered.public_metadata.privacy_policy = "tampered_privacy_policy";
             const bool tamper_rejected = !gatzk::protocol::verify(context, tampered, nullptr);
             const auto tamper_end = std::chrono::steady_clock::now();
+            metrics.tamper_tests_passed = tamper_rejected;
             metrics.tamper_tests_ms = std::chrono::duration<double, std::milli>(tamper_end - tamper_start).count();
             if (!reference_consistent)
             {
-                throw std::runtime_error(
-                    "reference consistency check failed"
+                std::cerr << "reference consistency check failed; final formal acceptance denied"
                     " (reference_hash_present=" +
                     std::string(
                         trace.reference_quant_logits_hash.empty()
                             ? "false"
                             : "true") +
-                    ", reference_matrix_match=" + std::string(reference_matrix_match ? "true" : "false") + ", reference_matches_secure=" + std::string(trace.reference_quant_logits_hash == trace.secure_trace_logits_hash ? "true" : "false") + ", proof_output_matches_trace=" + std::string(trace.public_logits == parsed_proof.public_logits ? "true" : "false") + ", private_plain_count=" + std::to_string(private_plain_count) + ")");
+                    ", reference_matrix_match=" + std::string(reference_matrix_match ? "true" : "false") + ", reference_matches_secure=" + std::string(trace.reference_quant_logits_hash == trace.secure_trace_logits_hash ? "true" : "false") + ", proof_output_matches_trace=" + std::string(trace.public_logits == parsed_proof.public_logits ? "true" : "false") + ", private_plain_count=" + std::to_string(private_plain_count) + ")\n";
             }
             if (!tamper_rejected)
             {
@@ -749,7 +753,7 @@ int main(int argc, char **argv)
                     << "dataset=" << metrics.dataset
                     << " config=" << config_path
                     << " backend=" << console_backend_label(metrics)
-                    << " status=" << (accepted ? "VERIFY_OK" : "VERIFY_FAIL")
+                    << " status=" << (final_accepted ? "VERIFY_OK" : "VERIFY_FAIL")
                     << " commitment_time_ms=" << format_ms(metrics.commitment_time_ms)
                     << " prove_time_ms=" << format_ms(metrics.prove_time_ms)
                     << " verify_time_ms=" << format_ms(metrics.verify_time_ms)
@@ -759,10 +763,16 @@ int main(int argc, char **argv)
             if (export_artifacts)
             {
                 progress(mode_label + ":export:start");
-                gatzk::protocol::export_run_artifacts(context, trace, proof, metrics, accepted);
+                gatzk::protocol::export_run_artifacts(
+                    context,
+                    trace,
+                    proof,
+                    metrics,
+                    verifier_accepted,
+                    final_accepted);
                 progress(mode_label + ":export:done");
             }
-            return accepted;
+            return final_accepted;
         };
 
         auto warm_up_context = [&](const gatzk::util::AppConfig &run_config, const std::string &label)

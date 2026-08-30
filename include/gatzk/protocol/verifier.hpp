@@ -9,6 +9,12 @@ namespace gatzk::protocol {
 // 验证 proof 是否与当前 formal 上下文一致。
 bool verify(const ProtocolContext& context, const Proof& proof, RunMetrics* metrics = nullptr);
 
+// Final run acceptance is separate from the cryptographic verifier result.
+// Both independent checks must pass, while callers preserve each status.
+bool final_formal_run_accepted(
+    bool verifier_accepted,
+    bool reference_consistent);
+
 // Verifier-side leakage audit over the actual typed proof payload.
 std::size_t private_plain_value_count(const ProtocolContext& context, const Proof& proof);
 

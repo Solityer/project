@@ -19,6 +19,12 @@ namespace gatzk::protocol
         const std::vector<std::vector<std::string>> &produced_labels,
         const std::vector<std::vector<std::string>> &required_labels);
 
+    // Compare the independently computed integer reference matrix with the
+    // secure-trace matrix through the production equality seam.
+    bool quantized_reference_matches_secure(
+        const model::Matrix &secure_trace_logits,
+        const model::Matrix &reference_quant_logits);
+
     // Compute the exact integer attention numerators in canonical edge order.
     // The destination groups come from the formal edge ordering and let the
     // production trace avoid rescanning every edge for every node and column.

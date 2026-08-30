@@ -65,6 +65,7 @@ namespace gatzk::protocol
         const TraceArtifacts &trace,
         const Proof &proof,
         RunMetrics metrics,
-        bool verified);
+        bool verifier_accepted,
+        bool final_accepted);
 
 } // namespace gatzk::protocol

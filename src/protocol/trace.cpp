@@ -126,6 +126,13 @@ namespace gatzk::protocol
         return order;
     }
 
+    bool quantized_reference_matches_secure(
+        const model::Matrix &secure_trace_logits,
+        const model::Matrix &reference_quant_logits)
+    {
+        return secure_trace_logits == reference_quant_logits;
+    }
+
     namespace
     {
 
@@ -434,7 +441,9 @@ namespace gatzk::protocol
             // equality is a real matrix comparison, while the two hashes are
             // separate audit payloads and must never be aliased.
             trace.reference_consistency_passed =
-                secure_trace_logits == reference_quant_logits;
+                quantized_reference_matches_secure(
+                    secure_trace_logits,
+                    reference_quant_logits);
             trace.reference_quant_logits_hash = hash_field_matrix(reference_quant_logits);
             trace.secure_trace_logits_hash = trace.public_logits_hash;
             trace.proof_public_output_hash.clear();

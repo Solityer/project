@@ -1,6 +1,8 @@
 #include "gatzk/model/gat.hpp"
 #include "gatzk/protocol/lookup.hpp"
 #include "gatzk/protocol/schema.hpp"
+#include "gatzk/protocol/trace.hpp"
+#include "gatzk/protocol/verifier.hpp"
 #include "gatzk/util/config.hpp"
 
 #include <chrono>
@@ -224,6 +226,30 @@ int main()
 {
     try
     {
+        const gatzk::model::Matrix secure_logits = {
+            {FieldElement::one(), FieldElement(2)}};
+        auto matching_reference_logits = secure_logits;
+        expect(
+            gatzk::protocol::quantized_reference_matches_secure(
+                secure_logits,
+                matching_reference_logits),
+            "identical secure/reference matrices must match");
+        matching_reference_logits[0][1] = FieldElement(3);
+        expect(
+            !gatzk::protocol::quantized_reference_matches_secure(
+                secure_logits,
+                matching_reference_logits),
+            "one-element reference mutation must fail matrix equality");
+        expect(
+            gatzk::protocol::final_formal_run_accepted(true, true),
+            "verifier/reference success must be finally accepted");
+        expect(
+            !gatzk::protocol::final_formal_run_accepted(true, false),
+            "reference mismatch must deny final acceptance");
+        expect(
+            !gatzk::protocol::final_formal_run_accepted(false, true),
+            "cryptographic verifier failure must deny final acceptance");
+
         const auto h00 = gatzk::protocol::hidden_head_prefix(0, 0);
         const auto h10 = gatzk::protocol::hidden_head_prefix(1, 0);
         expect(h00 == "P_h_l0_h0" && h10 == "P_h_l1_h0" && h00 != h10,

@@ -343,7 +343,7 @@ class LayeredSchemaRegression(unittest.TestCase):
             trace,
         )
         self.assertIn(
-            "secure_trace_logits == reference_quant_logits",
+            "quantized_reference_matches_secure(",
             trace,
         )
 
@@ -351,6 +351,8 @@ class LayeredSchemaRegression(unittest.TestCase):
         self.assertIn("const bool reference_matrix_match = trace.reference_consistency_passed", main)
         self.assertIn("metrics.reference_consistency_passed = reference_consistent", main)
         self.assertIn("reference_matrix_match && reference_payload_audit", main)
+        self.assertIn("final_formal_run_accepted(", main)
+        self.assertIn("return final_accepted", main)
 
         exporter = read("src/protocol/artifact_export.cpp")
         self.assertIn(

@@ -175,7 +175,8 @@ namespace gatzk::protocol
         const TraceArtifacts &trace,
         const Proof &proof,
         RunMetrics metrics,
-        bool verified)
+        bool verifier_accepted,
+        bool final_accepted)
     {
         const auto export_start = Clock::now();
         const auto export_root = (std::filesystem::path(context.config.project_root) / context.config.export_dir).string();
@@ -403,7 +404,7 @@ namespace gatzk::protocol
             {"dataset", metrics.dataset},
             {"config", display_config_path()},
             {"backend", benchmark_backend_label()},
-            {"status", verified ? "VERIFY_OK" : "VERIFY_FAIL"},
+            {"status", final_accepted ? "VERIFY_OK" : "VERIFY_FAIL"},
             {"timing_schema", kFormalTimingSchema},
             {"commitment_time_ms", format_double(metrics.commitment_time_ms)},
             {"prove_time_ms", format_double(metrics.prove_time_ms)},
@@ -489,7 +490,9 @@ namespace gatzk::protocol
             {"config", display_config_path()},
             {"config_sha256", config_sha256},
             {"dataset", metrics.dataset},
-            {"status", verified ? "VERIFY_OK" : "VERIFY_FAIL"},
+            {"status", final_accepted ? "VERIFY_OK" : "VERIFY_FAIL"},
+            {"verifier_accepted", verifier_accepted ? "true" : "false"},
+            {"final_formal_run_accepted", final_accepted ? "true" : "false"},
             {"benchmark_mode", metrics.benchmark_mode},
             {"timing_schema", kFormalTimingSchema},
             {"enabled_fft_backend_upgrade", metrics.enabled_fft_backend_upgrade ? "true" : "false"},
@@ -513,7 +516,6 @@ namespace gatzk::protocol
             {"gpu_runtime_loaded", metrics.gpu_runtime_present ? "true" : "false"},
             {"gpu_kernel_invocation_count", std::to_string(metrics.gpu_kernel_invocation_count)},
             {"reference_consistency_passed", metrics.reference_consistency_passed ? "true" : "false"},
-            {"cpu_gpu_reference_consistency_passed", metrics.cpu_gpu_reference_consistency_passed ? "true" : "false"},
             {"node_count", std::to_string(metrics.node_count)},
             {"edge_count", std::to_string(metrics.edge_count)},
             {"gpu_runtime_present", metrics.gpu_runtime_present ? "true" : "false"},
@@ -592,7 +594,7 @@ namespace gatzk::protocol
             {"private_plain_value_count", std::to_string(audited_private_plain_value_count)},
             {"proof_payload_audit_status", audited_private_plain_value_count == 0 ? "passed" : "failed"},
             {"reference_consistency_passed", metrics.reference_consistency_passed ? "true" : "false"},
-            {"tamper_tests_passed", verified ? "true" : "false"},
+            {"tamper_tests_passed", metrics.tamper_tests_passed ? "true" : "false"},
             {"full_dataset", metrics.is_full_dataset ? "true" : "false"},
             {"dataset_id", context.dataset.name},
             {"dataset_hash", std::to_string(std::hash<std::string>{}(context.dataset.name + ":" + std::to_string(context.dataset.num_nodes) + ":" + std::to_string(metrics.edge_count)))},
@@ -704,7 +706,7 @@ namespace gatzk::protocol
             {"domain_open_cat_ms", format_double(metrics.domain_open_cat_ms)},
             {"domain_open_C_ms", format_double(metrics.domain_open_c_ms)},
             {"domain_open_N_ms", format_double(metrics.domain_open_n_ms)},
-            {"verified", verified ? "true" : "false"},
+            {"verified", verifier_accepted ? "true" : "false"},
             {"verify_time_ms", format_double(metrics.verify_time_ms)},
             {"proof_parse_ms", format_double(metrics.proof_parse_ms)},
             {"verify_metadata_ms", format_double(metrics.verify_metadata_ms)},

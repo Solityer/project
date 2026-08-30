@@ -30,6 +30,13 @@ namespace gatzk::protocol
     // 它会重放 transcript、检查公开元数据契约、批量校验各域 opening，并重算 quotient 与外点关系。
     // 这里允许做求值缓存和并行检查，但任何优化都不能改变验证方程或公开对象集合。
 
+    bool final_formal_run_accepted(
+        bool verifier_accepted,
+        bool reference_consistent)
+    {
+        return verifier_accepted && reference_consistent;
+    }
+
     namespace
     {
         using algebra::FieldElement;

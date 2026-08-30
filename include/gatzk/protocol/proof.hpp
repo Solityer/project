@@ -542,6 +542,7 @@ namespace gatzk::protocol
         double payload_audit_ms = 0.0;
         double reference_consistency_ms = 0.0;
         bool reference_consistency_passed = false;
+        bool tamper_tests_passed = false;
         double tamper_tests_ms = 0.0;
         double export_artifact_ms = 0.0;
         double export_manifest_validation_ms = 0.0;
@@ -702,7 +703,6 @@ namespace gatzk::protocol
         bool is_full_dataset = false;
         bool gpu_runtime_present = false;
         bool gpu_backend_requested = false;
-        bool cpu_gpu_reference_consistency_passed = false;
         std::size_t gpu_kernel_invocation_count = 0;
         std::string gpu_device;
         std::string gpu_used_for;
