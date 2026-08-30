@@ -88,15 +88,34 @@ namespace gatzk::data
             return out;
         }
 
-        FieldElement quantize(double value)
+        std::int64_t quantize_raw_at_scale(
+            double value,
+            std::uint64_t scale)
         {
-            // Registered input scale is one.  Projection weights carry scale 16,
-            // so the protocol's no-implicit-rescale chain yields S_H'=16.
-            if (!std::isfinite(value)
-                || std::abs(value) > static_cast<double>(std::numeric_limits<std::int64_t>::max()))
+            if (scale == 0 || !std::isfinite(value))
                 throw std::runtime_error(
                     "input feature cannot be represented by the registered quantizer");
-            return FieldElement::from_signed(static_cast<std::int64_t>(value >= 0.0 ? value + 0.5 : value - 0.5));
+            const auto scaled = value * static_cast<double>(scale);
+            if (!std::isfinite(scaled))
+                throw std::runtime_error(
+                    "input feature cannot be represented by the registered quantizer");
+            const auto rounded = scaled >= 0.0
+                                     ? std::floor(scaled + 0.5)
+                                     : std::ceil(scaled - 0.5);
+            if (!std::isfinite(rounded)
+                || rounded > static_cast<double>(std::numeric_limits<std::int64_t>::max())
+                || rounded < static_cast<double>(std::numeric_limits<std::int64_t>::min()))
+                throw std::runtime_error(
+                    "input feature cannot be represented by the registered quantizer");
+            return static_cast<std::int64_t>(rounded);
+        }
+
+        FieldElement quantize(
+            double value,
+            std::uint64_t scale)
+        {
+            return FieldElement::from_signed(
+                quantize_raw_at_scale(value, scale));
         }
 
         struct NpyArray
@@ -345,8 +364,13 @@ namespace gatzk::data
             return out;
         }
 
-        GraphDataset load_cached_dataset(const std::filesystem::path &root)
+        GraphDataset load_cached_dataset(
+            const std::filesystem::path &root,
+            std::uint64_t input_scale)
         {
+            if (input_scale == 0)
+                throw std::runtime_error(
+                    "formal dataset loading requires a positive S_input");
             const auto meta = read_meta(root / "meta.cfg");
             GraphDataset dataset;
             dataset.name = meta.at("name");
@@ -386,7 +410,9 @@ namespace gatzk::data
             {
                 for (std::size_t col = 0; col < dataset.num_features; ++col)
                 {
-                    dataset.features[row][col] = quantize(dataset.features_fp[row][col]);
+                    dataset.features[row][col] = quantize(
+                        dataset.features_fp[row][col],
+                        input_scale);
                 }
             }
             if (dataset.name == "ppi")
@@ -605,7 +631,75 @@ namespace gatzk::data
         {
             maybe_prepare_planetoid_cache(config, cache_root);
         }
-        return load_cached_dataset(cache_root);
+        return load_cached_dataset(
+            cache_root,
+            config.quantization.s_input);
+    }
+
+    void validate_input_feature_views(
+        const GraphDataset &dataset,
+        const LocalGraph &local,
+        std::uint64_t input_scale)
+    {
+        if (input_scale == 0
+            || dataset.num_nodes == 0
+            || dataset.num_features == 0
+            || dataset.features_fp.size() != dataset.num_nodes
+            || dataset.features.size() != dataset.num_nodes
+            || local.num_nodes == 0
+            || local.num_features != dataset.num_features
+            || local.absolute_ids.size() != local.num_nodes
+            || local.features_fp.size() != local.num_nodes
+            || local.features.size() != local.num_nodes)
+            throw std::runtime_error(
+                "input feature raw/quantized view shape mismatch");
+
+        for (std::size_t row = 0; row < dataset.num_nodes; ++row)
+        {
+            if (dataset.features_fp[row].size() != dataset.num_features
+                || dataset.features[row].size() != dataset.num_features)
+                throw std::runtime_error(
+                    "dataset input feature raw/quantized view shape mismatch");
+            for (std::size_t column = 0;
+                 column < dataset.num_features;
+                 ++column)
+            {
+                const auto expected = quantize(
+                    dataset.features_fp[row][column],
+                    input_scale);
+                if (dataset.features[row][column] != expected)
+                    throw std::runtime_error(
+                        "dataset input feature quantization does not match S_input");
+            }
+        }
+
+        std::unordered_set<std::size_t> seen_ids;
+        seen_ids.reserve(local.absolute_ids.size());
+        for (std::size_t row = 0; row < local.num_nodes; ++row)
+        {
+            const auto absolute_id = local.absolute_ids[row];
+            if (absolute_id >= dataset.num_nodes
+                || !seen_ids.insert(absolute_id).second
+                || local.features_fp[row].size() != local.num_features
+                || local.features[row].size() != local.num_features)
+                throw std::runtime_error(
+                    "local input feature raw/quantized view shape mismatch");
+            for (std::size_t column = 0;
+                 column < local.num_features;
+                 ++column)
+            {
+                const auto expected = quantize(
+                    local.features_fp[row][column],
+                    input_scale);
+                if (local.features[row][column] != expected
+                    || local.features[row][column]
+                           != dataset.features[absolute_id][column]
+                    || local.features_fp[row][column]
+                           != dataset.features_fp[absolute_id][column])
+                    throw std::runtime_error(
+                        "local input feature views are not bound to dataset views");
+            }
+        }
     }
 
     void validate_normalized_graph_input(const LocalGraph &local)

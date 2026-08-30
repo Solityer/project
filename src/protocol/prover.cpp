@@ -11397,11 +11397,15 @@ namespace gatzk::protocol
 
         // 先把数据集和 checkpoint bundle 收束成 formal shape；
         // 这一段还不接触任何 challenge 或 witness。
-        context.dataset = data::load_dataset(config);
+        context.dataset = data::load_dataset(canonical_config);
         context.local =
             data::normalize_graph_input(
                 context.dataset,
-                config);
+                canonical_config);
+        data::validate_input_feature_views(
+            context.dataset,
+            context.local,
+            scales.s_input);
 
         if (config.checkpoint_bundle.empty())
         {

@@ -2,10 +2,12 @@
 // 定义协议层共享的数据契约，
 // 包括 context、trace、proof 与正式运行指标，是 artifact contract 的核心来源。
 
+#include <chrono>
 #include <map>
 #include <memory>
 #include <optional>
 #include <cstdint>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -981,6 +983,139 @@ namespace gatzk::protocol
         std::string hardware_and_device;
         std::string gpu_acceleration_status;
         std::string notes;
+
+        // Execution-only state for the exclusive prover timer.  These fields
+        // are never serialized into a proof or an artifact; they let the
+        // commitment scopes pause the prove clock without deriving prove_time
+        // as a residual from a larger wall-clock interval.
+        bool prove_timer_started = false;
+        bool prove_timer_running = false;
+        std::size_t commitment_timer_depth = 0;
+        std::chrono::steady_clock::time_point prove_timer_segment_start{};
+        std::chrono::steady_clock::time_point commitment_timer_start{};
     };
+
+    namespace timing
+    {
+        using Clock = std::chrono::steady_clock;
+
+        inline double elapsed_ms(
+            const Clock::time_point &start,
+            const Clock::time_point &end)
+        {
+            return std::chrono::duration<double, std::milli>(end - start).count();
+        }
+
+        inline void start_prove_timer(RunMetrics *metrics)
+        {
+            if (metrics == nullptr)
+                return;
+            if (metrics->prove_timer_started
+                || metrics->commitment_timer_depth != 0)
+                throw std::runtime_error(
+                    "formal prove timer started in an invalid timing state");
+            metrics->prove_time_ms = 0.0;
+            metrics->prove_timer_started = true;
+            metrics->prove_timer_running = true;
+            metrics->prove_timer_segment_start = Clock::now();
+        }
+
+        inline void finish_prove_timer(RunMetrics *metrics)
+        {
+            if (metrics == nullptr)
+                return;
+            if (!metrics->prove_timer_started
+                || !metrics->prove_timer_running
+                || metrics->commitment_timer_depth != 0)
+                throw std::runtime_error(
+                    "formal prove timer finished in an invalid timing state");
+            metrics->prove_time_ms += elapsed_ms(
+                metrics->prove_timer_segment_start,
+                Clock::now());
+            if (metrics->prove_time_ms < 0.0)
+                throw std::runtime_error(
+                    "formal prove timer measured a negative duration");
+            metrics->prove_timer_started = false;
+            metrics->prove_timer_running = false;
+        }
+
+        inline void begin_commitment(RunMetrics *metrics)
+        {
+            if (metrics == nullptr)
+                return;
+            if (metrics->commitment_timer_depth == 0)
+            {
+                metrics->commitment_timer_start = Clock::now();
+                if (metrics->prove_timer_started
+                    && metrics->prove_timer_running)
+                {
+                    metrics->prove_time_ms += elapsed_ms(
+                        metrics->prove_timer_segment_start,
+                        metrics->commitment_timer_start);
+                    metrics->prove_timer_running = false;
+                }
+            }
+            ++metrics->commitment_timer_depth;
+        }
+
+        inline void end_commitment(RunMetrics *metrics)
+        {
+            if (metrics == nullptr)
+                return;
+            if (metrics->commitment_timer_depth == 0)
+                throw std::runtime_error(
+                    "formal commitment timer ended without a matching scope");
+            --metrics->commitment_timer_depth;
+            if (metrics->commitment_timer_depth != 0)
+                return;
+
+            const auto finished = Clock::now();
+            metrics->commitment_time_ms += elapsed_ms(
+                metrics->commitment_timer_start,
+                finished);
+            if (metrics->commitment_time_ms < 0.0)
+                throw std::runtime_error(
+                    "formal commitment timer measured a negative duration");
+            if (metrics->prove_timer_started)
+            {
+                metrics->prove_timer_segment_start = finished;
+                metrics->prove_timer_running = true;
+            }
+        }
+
+        class ScopedCommitment
+        {
+        public:
+            explicit ScopedCommitment(RunMetrics *metrics)
+                : metrics_(metrics)
+            {
+                begin_commitment(metrics_);
+                active_ = metrics_ != nullptr;
+            }
+
+            ScopedCommitment(const ScopedCommitment &) = delete;
+            ScopedCommitment &operator=(const ScopedCommitment &) = delete;
+
+            ~ScopedCommitment() noexcept
+            {
+                if (!active_)
+                    return;
+                try
+                {
+                    end_commitment(metrics_);
+                }
+                catch (...)
+                {
+                    // A commitment scope must not hide the original proving
+                    // failure.  The normal path is checked by the timer
+                    // state transitions above.
+                }
+            }
+
+        private:
+            RunMetrics *metrics_ = nullptr;
+            bool active_ = false;
+        };
+    } // namespace timing
 
 } // namespace gatzk::protocol
