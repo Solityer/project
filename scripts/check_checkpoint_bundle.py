@@ -10,6 +10,11 @@ from typing import Dict, Iterable, Tuple
 import numpy as np
 import torch
 
+from quantization_scale_chain import (
+    canonical_input_preprocess_id,
+    canonical_quantization_scale_chain,
+)
+
 
 EXPECTED: Dict[str, Tuple[Tuple[int, ...], int, str, str, str, str]] = {
     "cora": ((1433, 64), 7, "gat_family_L3_hid8x8-8x8_kout2_c7", "cora_planetoid_seed11", "transductive_node_classification", "node"),
@@ -85,7 +90,20 @@ def check_source_checkpoint(
     require(int(bundle.get("K_out", 0)) == 2, "source checkpoint K_out mismatch")
     require(int(bundle.get("C", 0)) == classes, "source checkpoint class count mismatch")
     require(bundle.get("model_arch_id") == arch_id, "source checkpoint model_arch_id mismatch")
+    require(
+        bundle.get("input_preprocess_id") == canonical_input_preprocess_id(dataset),
+        "source checkpoint input_preprocess_id mismatch",
+    )
     require(bundle.get("quant_cfg_id") == "gat_l3_scale_chain_v1", "source checkpoint quantization metadata mismatch")
+    expected_chain = canonical_quantization_scale_chain(
+        str(bundle.get("quant_cfg_id")),
+        bundle.get("hidden_profile"),
+        int(bundle.get("K_out", 0)),
+    )
+    require(
+        bundle.get("quantization_scale_chain") == expected_chain.canonical_serialization(),
+        "source checkpoint complete quantization_scale_chain metadata mismatch",
+    )
     require(bundle.get("model_param_id") == model_param_id, "source checkpoint model parameter identity mismatch")
     if dataset == "ppi":
         require(bundle.get("label_format") == "multi_hot", "source checkpoint PPI label_format mismatch")
@@ -144,6 +162,20 @@ def check_bundle(bundle_dir: pathlib.Path, dataset: str, checkpoint: pathlib.Pat
     require(manifest.get("hidden_profile") == [{"head_count": 8, "head_dim": 8}, {"head_count": 8, "head_dim": 8}], "bundle hidden_profile mismatch")
     require(manifest.get("model_arch_id") == arch_id, "bundle model_arch_id mismatch")
     require(manifest.get("model_param_id") == model_param_id, "bundle model_param_id mismatch")
+    require(manifest.get("dataset") == dataset, "bundle dataset identity mismatch")
+    require(
+        manifest.get("input_preprocess_id") == canonical_input_preprocess_id(dataset),
+        "bundle input_preprocess_id mismatch",
+    )
+    expected_chain = canonical_quantization_scale_chain(
+        str(manifest.get("quant_cfg_id", "")),
+        manifest.get("hidden_profile"),
+        int(manifest.get("K_out", 0)),
+    )
+    require(
+        manifest.get("quantization_scale_chain") == expected_chain.canonical_serialization(),
+        "bundle complete quantization_scale_chain metadata mismatch",
+    )
     for spec in list(manifest.get("hidden_head_specs", [])) + list(manifest.get("output_head_specs", [])):
         require(isinstance(spec, dict), "head spec must be an object")
         require("attn_dst_bias" not in spec and "attn_src_bias" not in spec,

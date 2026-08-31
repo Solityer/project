@@ -15,11 +15,35 @@
 
 namespace gatzk::util
 {
+    std::string canonical_input_preprocess_id(std::string_view dataset)
+    {
+        const auto normalized = [&]
+        {
+            std::string value(dataset);
+            std::transform(
+                value.begin(), value.end(), value.begin(),
+                [](unsigned char ch)
+                {
+                    return static_cast<char>(std::tolower(ch));
+                });
+            std::replace(value.begin(), value.end(), '-', '_');
+            return value;
+        }();
+        if (normalized == "ogbn_arxiv")
+            return "ogbn_arxiv_raw_float32_v1";
+        if (normalized == "cora" || normalized == "citeseer"
+            || normalized == "pubmed" || normalized == "ppi")
+            return "row_normalize_v1";
+        throw std::runtime_error(
+            "unsupported formal dataset for input preprocessing: "
+            + std::string(dataset));
+    }
+
     namespace
     {
 
-        constexpr std::string_view kCanonicalQuantCfgId =
-            "gat_l3_scale_chain_v1";
+        constexpr std::string_view kCanonicalScaleChainSourceName =
+            "configs/quantization_scale_chain_v1.cfg";
 
         std::string serialize_scale_vector(
             std::string_view name,
@@ -284,6 +308,115 @@ namespace gatzk::util
             return out;
         }
 
+        std::unordered_map<std::string, std::string>
+        read_canonical_scale_chain_source(std::string_view source_path)
+        {
+            std::filesystem::path path;
+            if (source_path.empty())
+            {
+#ifdef GATZK_CANONICAL_SCALE_CHAIN_PATH
+                path = GATZK_CANONICAL_SCALE_CHAIN_PATH;
+#else
+                path = std::string(kCanonicalScaleChainSourceName);
+#endif
+            }
+            else
+            {
+                path = std::string(source_path);
+            }
+            std::ifstream input(path);
+            if (!input)
+            {
+                throw std::runtime_error(
+                    "canonical quantization scale-chain source not found: " +
+                    path.string());
+            }
+            std::unordered_map<std::string, std::string> entries;
+            std::string line;
+            while (std::getline(input, line))
+            {
+                const auto hash = line.find('#');
+                if (hash != std::string::npos)
+                {
+                    line = line.substr(0, hash);
+                }
+                line = trim(line);
+                if (line.empty())
+                {
+                    continue;
+                }
+                const auto equal = line.find('=');
+                if (equal == std::string::npos)
+                {
+                    throw std::runtime_error(
+                        "malformed canonical quantization scale-chain source line");
+                }
+                const auto key = trim(line.substr(0, equal));
+                const auto value = trim(line.substr(equal + 1));
+                if (key.empty() || value.empty()
+                    || !entries.emplace(key, value).second)
+                {
+                    throw std::runtime_error(
+                        "malformed or duplicate canonical quantization scale-chain source key");
+                }
+            }
+            return entries;
+        }
+
+        std::uint64_t parse_scale_value(
+            const std::unordered_map<std::string, std::string> &entries,
+            std::string_view key)
+        {
+            const auto it = entries.find(std::string(key));
+            if (it == entries.end())
+            {
+                throw std::runtime_error(
+                    "canonical quantization scale-chain source is missing " +
+                    std::string(key));
+            }
+            const auto value = std::stoull(it->second);
+            if (value == 0)
+            {
+                throw std::runtime_error(
+                    "canonical quantization scale-chain source requires positive " +
+                    std::string(key));
+            }
+            return static_cast<std::uint64_t>(value);
+        }
+
+        std::vector<std::uint64_t> parse_scale_vector(
+            const std::unordered_map<std::string, std::string> &entries,
+            std::string_view key)
+        {
+            const auto it = entries.find(std::string(key));
+            if (it == entries.end())
+            {
+                throw std::runtime_error(
+                    "canonical quantization scale-chain source is missing " +
+                    std::string(key));
+            }
+            const auto parsed = parse_size_list(it->second);
+            if (parsed.empty())
+            {
+                throw std::runtime_error(
+                    "canonical quantization scale-chain source has an empty vector " +
+                    std::string(key));
+            }
+            std::vector<std::uint64_t> out;
+            out.reserve(parsed.size());
+            for (const auto value : parsed)
+            {
+                if (value == 0)
+                {
+                    throw std::runtime_error(
+                        "canonical quantization scale-chain source requires positive vector entries " +
+                        std::string(key));
+                }
+                out.push_back(static_cast<std::uint64_t>(value));
+            }
+            return out;
+        }
+
         std::vector<HiddenLayerProfile> parse_hidden_profile(const std::string &value)
         {
             const auto compact = strip_wrappers(value);
@@ -342,6 +475,7 @@ namespace gatzk::util
                 "export_dir",
                 "hidden_dim",
                 "hidden_profile",
+                "input_preprocess_id",
                 "model_arch_id",
                 "model_param_id",
                 "num_classes",
@@ -407,6 +541,16 @@ namespace gatzk::util
             {
                 throw std::runtime_error(
                     "formal config must set checkpoint_bundle explicitly");
+            }
+
+            const auto expected_input_preprocess_id =
+                canonical_input_preprocess_id(config.dataset);
+            if (config.input_preprocess_id.empty()
+                || config.input_preprocess_id != expected_input_preprocess_id)
+            {
+                throw std::runtime_error(
+                    "formal config input_preprocess_id does not match dataset; expected "
+                    + expected_input_preprocess_id);
             }
 
             if (!config.verifier_registry_digest.empty()
@@ -672,9 +816,15 @@ namespace gatzk::util
     QuantizationScaleChain canonical_quantization_scale_chain(
         std::string_view quant_cfg_id,
         const std::vector<HiddenLayerProfile> &hidden_profile,
-        std::size_t K_out)
+        std::size_t K_out,
+        std::string_view source_path)
     {
-        if (quant_cfg_id != kCanonicalQuantCfgId)
+        const auto source = read_canonical_scale_chain_source(source_path);
+        const auto source_id_it = source.find("quant_cfg_id");
+        const auto source_schema_it = source.find("schema");
+        if (source_id_it == source.end() || source_schema_it == source.end()
+            || source_schema_it->second != "gat_l3_scale_chain_v1"
+            || source_id_it->second != quant_cfg_id)
         {
             throw std::runtime_error(
                 "unsupported quant_cfg_id; formal runtime requires the registered canonical scale chain: " +
@@ -689,31 +839,47 @@ namespace gatzk::util
                 "canonical quantization scale chain requires hidden_profile=[8x8,8x8], K_out=2");
         }
 
-        // This is the sole declaration of the formal L3 fixed-point scales.
+        // All numerical values come from the checked-in canonical source file;
+        // this function only materializes and validates its typed form.
         QuantizationScaleChain chain;
-        chain.s_input = 1;
-        chain.s_delta = 256;
-        chain.s_exp = 16;
-        chain.s_h = {1, 16, 16};
-        chain.s_w_hidden = {{16, 16, 16, 16, 16, 16, 16, 16},
-                            {16, 16, 16, 16, 16, 16, 16, 16}};
-        chain.s_h_prime = {{16, 16, 16, 16, 16, 16, 16, 16},
-                           {256, 256, 256, 256, 256, 256, 256, 256}};
-        chain.s_a_src_hidden = {{16, 16, 16, 16, 16, 16, 16, 16},
-                                {1, 1, 1, 1, 1, 1, 1, 1}};
-        chain.s_a_dst_hidden = {{16, 16, 16, 16, 16, 16, 16, 16},
-                                {1, 1, 1, 1, 1, 1, 1, 1}};
-        chain.s_agg_pre = {16, 16};
-        chain.s_agg = {16, 16};
-        chain.s_cat = {16, 16};
-        chain.s_out_pre = 16;
-        chain.s_out_head = 16;
-        chain.s_out = 16;
-        chain.s_w_output = {16, 16};
-        chain.s_y_prime = {256, 256};
-        chain.s_a_src_output = {1, 1};
-        chain.s_a_dst_output = {1, 1};
-        chain.s_b_output = {16, 16};
+        chain.s_input = parse_scale_value(source, "s_input");
+        chain.s_delta = parse_scale_value(source, "s_delta");
+        chain.s_exp = parse_scale_value(source, "s_exp");
+        chain.s_h = parse_scale_vector(source, "s_h");
+        for (std::size_t layer = 0; layer < hidden_profile.size(); ++layer)
+        {
+            chain.s_w_hidden.push_back(
+                parse_scale_vector(source, "s_w_hidden_" + std::to_string(layer)));
+            chain.s_h_prime.push_back(
+                parse_scale_vector(source, "s_h_prime_hidden_" + std::to_string(layer)));
+            chain.s_a_src_hidden.push_back(
+                parse_scale_vector(source, "s_a_src_hidden_" + std::to_string(layer)));
+            chain.s_a_dst_hidden.push_back(
+                parse_scale_vector(source, "s_a_dst_hidden_" + std::to_string(layer)));
+        }
+        chain.s_agg_pre = parse_scale_vector(source, "s_agg_pre");
+        chain.s_agg = parse_scale_vector(source, "s_agg");
+        chain.s_cat = parse_scale_vector(source, "s_cat");
+        chain.s_out_pre = parse_scale_value(source, "s_out_pre");
+        chain.s_out_head = parse_scale_value(source, "s_out_head");
+        chain.s_out = parse_scale_value(source, "s_out");
+        chain.s_w_output = parse_scale_vector(source, "s_w_output");
+        chain.s_y_prime = parse_scale_vector(source, "s_y_prime");
+        chain.s_a_src_output = parse_scale_vector(source, "s_a_src_output");
+        chain.s_a_dst_output = parse_scale_vector(source, "s_a_dst_output");
+        chain.s_b_output = parse_scale_vector(source, "s_b_output");
+        const auto round_it = source.find("round");
+        const auto rescale_it = source.find("rescale");
+        const auto average_it = source.find("output_average");
+        if (round_it == source.end() || rescale_it == source.end()
+            || average_it == source.end()
+            || round_it->second != "nearest_ties_away"
+            || rescale_it->second != "none"
+            || average_it->second != "signed_round_div")
+        {
+            throw std::runtime_error(
+                "canonical quantization scale-chain source rounding policy mismatch");
+        }
         validate_scale_chain_shape(chain, hidden_profile, K_out);
         return chain;
     }
@@ -784,6 +950,8 @@ namespace gatzk::util
             config.edge_sort_rule = entries["edge_sort_rule"];
         if (entries.contains("chunking_rule"))
             config.chunking_rule = entries["chunking_rule"];
+        if (entries.contains("input_preprocess_id"))
+            config.input_preprocess_id = entries["input_preprocess_id"];
         if (entries.contains("quant_cfg_id"))
             config.quant_cfg_id = entries["quant_cfg_id"];
         if (entries.contains("model_arch_id"))
@@ -860,7 +1028,9 @@ namespace gatzk::util
         config.quantization = canonical_quantization_scale_chain(
             config.quant_cfg_id,
             config.hidden_profile,
-            config.K_out);
+            config.K_out,
+            (std::filesystem::path(config.project_root)
+             / kCanonicalScaleChainSourceName).string());
         // 这里最后做一次 shape 和 formal 约束校验，保证 prover / verifier 看到的是同一套配置含义。
         validate_config(config);
         return config;

@@ -3890,6 +3890,7 @@ namespace gatzk::protocol
         {
             append_cache_string(out, model.model_arch_id);
             append_cache_string(out, model.model_param_id);
+            append_cache_string(out, model.input_preprocess_id);
             append_cache_string(out, model.quant_cfg_id);
             append_cache_string(out, model.static_table_id);
             append_cache_string(out, model.degree_bound_id);
@@ -3952,6 +3953,7 @@ namespace gatzk::protocol
                 config.quantization.canonical_serialization());
             append_cache_string(out, config.model_arch_id);
             append_cache_string(out, config.model_param_id);
+            append_cache_string(out, config.input_preprocess_id);
             append_cache_string(out, config.static_table_id);
             append_cache_string(out, config.degree_bound_id);
             append_cache_string(out, config.srs_type);
@@ -5490,6 +5492,7 @@ namespace gatzk::protocol
             append_cache_string(&bytes, context.config.quantization.canonical_serialization());
             append_cache_string(&bytes, context.config.model_arch_id);
             append_cache_string(&bytes, context.config.model_param_id);
+            append_cache_string(&bytes, context.config.input_preprocess_id);
             append_cache_string(&bytes, context.config.static_table_id);
             append_cache_string(&bytes, context.config.degree_bound_id);
             append_cache_string(&bytes, context.config.verifier_registry_digest);
@@ -11969,7 +11972,8 @@ namespace gatzk::protocol
         data::validate_input_feature_views(
             context.dataset,
             context.local,
-            context.config.quantization.s_input);
+            context.config.quantization.s_input,
+            context.config.input_preprocess_id);
         if (!context.model.has_real_multihead)
         {
             throw std::runtime_error(

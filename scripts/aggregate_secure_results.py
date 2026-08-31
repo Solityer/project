@@ -38,6 +38,10 @@ DATASET_ALIASES = {
     "ogbn-arxiv": "ogbn_arxiv",
 }
 DATASET_ORDER = ("cora", "citeseer", "pubmed", "ppi", "ogbn-arxiv")
+# The verifier timing boundary is part of the result contract.  In particular,
+# v2 measured through final acceptance; accepting it here would silently mix
+# incompatible protocol-verifier costs into one paper table.
+CANONICAL_TIMING_SCHEMA = "exclusive_commit_prove_protocol_verify_v3"
 EXPECTED_MODEL_ARCH = {
     "cora": "gat_family_L3_hid8x8-8x8_kout2_c7",
     "citeseer": "gat_family_L3_hid8x8-8x8_kout2_c6",
@@ -72,6 +76,13 @@ EXPECTED_CLASSES = {
     "pubmed": 3,
     "ppi": 121,
     "ogbn-arxiv": 40,
+}
+EXPECTED_INPUT_PREPROCESS_ID = {
+    "cora": "row_normalize_v1",
+    "citeseer": "row_normalize_v1",
+    "pubmed": "row_normalize_v1",
+    "ppi": "row_normalize_v1",
+    "ogbn-arxiv": "ogbn_arxiv_raw_float32_v1",
 }
 EXPECTED_SRS_DEGREE = {
     "cora": 16777215,
@@ -113,6 +124,7 @@ REQUIRED_HASHES = (
 # backend-specific and therefore must not be equal across CPU and CUDA.
 PAIR_CONSISTENCY_FIELDS = (
     "protocol_schema_id",
+    "timing_schema",
     "instance_schema_hash",
     "dim_cfg",
     "model_params",
@@ -124,6 +136,7 @@ PAIR_CONSISTENCY_FIELDS = (
     "proof_public_output_hash",
     "public_input_digest",
     "topology_digest",
+    "input_preprocess_id",
     "source_tree_hash",
     "trusted_registry_digest",
     "verifier_registry_digest",
@@ -293,6 +306,17 @@ def nonempty_string(value: Any, field: str, context: str) -> str:
     return value.strip()
 
 
+def require_canonical_timing_schema(manifest: Dict[str, Any], context: str) -> str:
+    timing_schema = nonempty_string(
+        manifest.get("timing_schema"), "timing_schema", context
+    )
+    require(
+        timing_schema == CANONICAL_TIMING_SCHEMA,
+        f"{context}: unsupported timing_schema {timing_schema!r}; expected {CANONICAL_TIMING_SCHEMA!r}",
+    )
+    return timing_schema
+
+
 def sha256_string(value: Any, field: str, context: str) -> str:
     encoded = nonempty_string(value, field, context)
     require(
@@ -322,6 +346,11 @@ def load_manifest(project_root: pathlib.Path, value: str) -> Tuple[pathlib.Path,
     except (OSError, json.JSONDecodeError) as exc:
         raise ValueError(f"cannot read run manifest {manifest_path}: {exc}") from exc
     require(isinstance(manifest, dict), f"run manifest must be a JSON object: {manifest_path}")
+    nonempty_string(
+        manifest.get("input_preprocess_id"),
+        "input_preprocess_id",
+        f"run manifest/{manifest_path.parent}",
+    )
     return run_dir, proof_path, manifest
 
 
@@ -735,7 +764,7 @@ def load_config_entries(path: pathlib.Path, context: str) -> Dict[str, str]:
     return entries
 
 
-def check_canonical_config(path: pathlib.Path, dataset: str, context: str) -> None:
+def check_canonical_config(path: pathlib.Path, dataset: str, context: str) -> Dict[str, str]:
     entries = load_config_entries(path, context)
     expected_dataset = DATASET_ALIASES[dataset]
     expected_values = {
@@ -749,6 +778,7 @@ def check_canonical_config(path: pathlib.Path, dataset: str, context: str) -> No
         "model_arch_id": EXPECTED_MODEL_ARCH[dataset],
         "model_param_id": EXPECTED_MODEL_PARAM[dataset],
         "quant_cfg_id": "gat_l3_scale_chain_v1",
+        "input_preprocess_id": EXPECTED_INPUT_PREPROCESS_ID[dataset],
         "static_table_id": "tables:lrelu+elu+exp+range",
         "degree_bound_id": "auto",
         "checkpoint_bundle": f"artifacts/checkpoints/{dataset.replace('-', '_')}_gat",
@@ -761,6 +791,50 @@ def check_canonical_config(path: pathlib.Path, dataset: str, context: str) -> No
             actual = actual.replace(" ", "")
             expected = expected.replace(" ", "")
         require(actual == expected, f"{context}: canonical config {key} mismatch")
+    return entries
+
+
+def check_manifest_config_binding(
+    project_root: pathlib.Path,
+    dataset: str,
+    manifest: Dict[str, Any],
+    context: str,
+) -> Tuple[pathlib.Path, str, str]:
+    """Bind the public manifest to the canonical config and preprocessing ID."""
+    require(dataset in DATASET_ALIASES, f"{context}: unsupported canonical dataset {dataset!r}")
+    expected_manifest_dataset = DATASET_ALIASES[dataset]
+    require(
+        manifest.get("dataset") == expected_manifest_dataset,
+        f"{context}: manifest dataset is not {expected_manifest_dataset}",
+    )
+    config_path = resolve_config(project_root, manifest, context)
+    expected_config = (
+        project_root / "configs" / f"{dataset.replace('-', '_')}_secure.cfg"
+    ).resolve()
+    require(
+        config_path == expected_config,
+        f"{context}: manifest config must be canonical {expected_config.relative_to(project_root)}",
+    )
+    config_entries = check_canonical_config(config_path, dataset, context)
+    config_hash = sha256_file(config_path)
+    recorded_config_hash = nonempty_string(
+        manifest.get("config_sha256"), "config_sha256", context
+    )
+    require(
+        recorded_config_hash == config_hash,
+        f"{context}: config_sha256 does not match {config_path}",
+    )
+    config_preprocess_id = nonempty_string(
+        config_entries.get("input_preprocess_id"), "input_preprocess_id", context
+    )
+    manifest_preprocess_id = nonempty_string(
+        manifest.get("input_preprocess_id"), "input_preprocess_id", context
+    )
+    require(
+        manifest_preprocess_id == config_preprocess_id,
+        f"{context}: manifest input_preprocess_id is not canonical-config bound",
+    )
+    return config_path, recorded_config_hash, manifest_preprocess_id
 
 
 def check_srs_artifacts(
@@ -917,6 +991,80 @@ def check_single_run_acceptance_state(
     require(manifest.get("status") == "VERIFY_OK", f"{context}: status is not VERIFY_OK")
 
 
+def check_formal_acceptance_state(
+    manifest: Dict[str, Any],
+    context: str,
+) -> None:
+    """Validate every manifest-level gate required for an accepted run.
+
+    The independent verifier report, proof bytes, registry, and source/build
+    provenance are checked by their corresponding artifact gates below.  This
+    helper deliberately covers only the acceptance state that is serialized in
+    the public run manifest so benchmark exporters cannot promote a verifier
+    pass whose reference audit, security audit, or final acceptance failed.
+    """
+    check_single_run_acceptance_state(manifest, context)
+    for field in (
+        "reference_consistency_passed",
+        "tamper_tests_passed",
+        "security_budget_passed",
+    ):
+        require(as_bool(manifest.get(field), field, context), f"{context}: {field} must be true")
+    require(
+        as_bool(manifest.get("verifier_reads_witness"), "verifier_reads_witness", context) is False,
+        f"{context}: verifier_reads_witness must be false",
+    )
+    require(
+        as_int(manifest.get("private_plain_value_count"), "private_plain_value_count", context) == 0,
+        f"{context}: private_plain_value_count must be zero",
+    )
+    require(
+        nonempty_string(manifest.get("proof_payload_audit_status"), "proof_payload_audit_status", context)
+        == "passed",
+        f"{context}: proof payload audit did not pass",
+    )
+
+    # Security acceptance is not represented by a single boolean.  Keep the
+    # canonical tamper coverage, exact budget, and independent output hashes
+    # attached to the acceptance gate as well.
+    tamper_map = nonempty_string(
+        manifest.get("tamper_test_case_map"), "tamper_test_case_map", context
+    )
+    canonical_tamper_case_map(tamper_map, "tamper_test_case_map", context)
+    tamper_ms = as_float(manifest.get("tamper_tests_ms"), "tamper_tests_ms", context)
+    require(tamper_ms > 0.0, f"{context}: tamper_tests_ms must be positive")
+    sha256_string(
+        manifest.get("security_budget_ledger_digest"),
+        "security_budget_ledger_digest",
+        context,
+    )
+    budget_exact = nonempty_string(
+        manifest.get("security_budget_exact"), "security_budget_exact", context
+    )
+    require(
+        "/" in budget_exact
+        and all(
+            part.isdigit() and (part == "0" or not part.startswith("0"))
+            for part in budget_exact.split("/", 1)
+        ),
+        f"{context}: security_budget_exact is not canonical",
+    )
+    for field in REQUIRED_HASHES:
+        sha256_string(manifest.get(field), field, context)
+    output_hashes = [
+        sha256_string(manifest.get(field), field, context)
+        for field in (
+            "secure_trace_logits_hash",
+            "reference_quant_logits_hash",
+            "proof_public_output_hash",
+        )
+    ]
+    require(
+        len(set(output_hashes)) == 1,
+        f"{context}: independent public-output hashes disagree",
+    )
+
+
 def check_manifest(
     project_root: pathlib.Path,
     dataset: str,
@@ -936,9 +1084,8 @@ def check_manifest(
         f"{context}: public run manifest must not contain checkpoint/tensor provenance",
     )
     expected_manifest_dataset = DATASET_ALIASES[dataset]
-    require(manifest.get("dataset") == expected_manifest_dataset,
-            f"{context}: manifest dataset is not {expected_manifest_dataset}")
-    check_single_run_acceptance_state(manifest, context)
+    timing_schema = require_canonical_timing_schema(manifest, context)
+    check_formal_acceptance_state(manifest, context)
     require(as_bool(manifest.get("full_dataset"), "full_dataset", context), f"{context}: full_dataset is not true")
     require(as_bool(manifest.get("is_full_dataset"), "is_full_dataset", context), f"{context}: is_full_dataset is not true")
     require(as_bool(manifest.get("stale_result"), "stale_result", context) is False,
@@ -964,15 +1111,9 @@ def check_manifest(
         nonempty_string(manifest.get("gpu_device"), "gpu_device", context)
         nonempty_string(manifest.get("gpu_acceleration_status"), "gpu_acceleration_status", context)
 
-    config_path = resolve_config(project_root, manifest, context)
-    expected_config = (project_root / "configs" / f"{dataset.replace('-', '_')}_secure.cfg").resolve()
-    require(config_path == expected_config,
-            f"{context}: manifest config must be canonical {expected_config.relative_to(project_root)}")
-    check_canonical_config(config_path, dataset, context)
-    config_hash = sha256_file(config_path)
-    recorded_config_hash = nonempty_string(manifest.get("config_sha256"), "config_sha256", context)
-    require(recorded_config_hash == config_hash,
-            f"{context}: config_sha256 does not match {config_path}")
+    config_path, recorded_config_hash, input_preprocess_id = check_manifest_config_binding(
+        project_root, dataset, manifest, context
+    )
     require(
         registry_value is not None
         and registry_digest is not None
@@ -1045,9 +1186,11 @@ def check_manifest(
         "backend": backend,
         "status": "VERIFY_OK",
         "benchmark_mode": "warm",
+        "timing_schema": timing_schema,
         "run_dir": str(run_dir.relative_to(project_root)),
         "config": str(config_path.relative_to(project_root)),
         "config_sha256": recorded_config_hash,
+        "input_preprocess_id": input_preprocess_id,
         "protocol_schema_id": nonempty_string(manifest.get("protocol_schema_id"), "protocol_schema_id", context),
         "instance_schema_hash": nonempty_string(manifest.get("instance_schema_hash"), "instance_schema_hash", context),
         "dim_cfg": nonempty_string(manifest.get("dim_cfg"), "dim_cfg", context),

@@ -1,4 +1,5 @@
 #include "gatzk/model/gat.hpp"
+#include "gatzk/util/config.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -1345,11 +1346,16 @@ namespace gatzk::model
 
         CheckpointBundleInfo info;
         info.bundle_root = bundle_root;
+        info.dataset = parse_required_string(manifest, "dataset");
         info.family_schema_version = parse_required_string(manifest, "family_schema_version");
         info.output_average_rule = parse_required_string(manifest, "output_average_rule");
         info.model_arch_id = parse_required_string(manifest, "model_arch_id");
         info.model_param_id = parse_required_string(manifest, "model_param_id");
+        info.input_preprocess_id =
+            parse_required_string(manifest, "input_preprocess_id");
         info.quant_cfg_id = parse_required_string(manifest, "quant_cfg_id");
+        info.quantization_scale_chain =
+            parse_required_string(manifest, "quantization_scale_chain");
         info.static_table_id = parse_required_string(manifest, "static_table_id");
         info.degree_bound_id = parse_required_string(manifest, "degree_bound_id");
         info.layer_count = parse_required_size_t(manifest, "L");
@@ -1443,6 +1449,35 @@ namespace gatzk::model
         if (info.quant_cfg_id.empty())
         {
             failures.push_back("checkpoint manifest must expose non-empty quant_cfg_id");
+        }
+        if (info.dataset.empty())
+        {
+            failures.push_back("checkpoint manifest must expose dataset");
+        }
+        if (info.input_preprocess_id.empty())
+        {
+            failures.push_back(
+                "checkpoint manifest must expose input_preprocess_id");
+        }
+        else
+        {
+            try
+            {
+                const auto expected = util::canonical_input_preprocess_id(info.dataset);
+                if (info.input_preprocess_id != expected)
+                    failures.push_back(
+                        "checkpoint manifest input_preprocess_id does not match dataset");
+            }
+            catch (const std::exception &)
+            {
+                failures.push_back(
+                    "checkpoint manifest dataset is not a supported formal dataset");
+            }
+        }
+        if (info.quantization_scale_chain.empty())
+        {
+            failures.push_back(
+                "checkpoint manifest must expose complete quantization_scale_chain");
         }
         // The manifest's global_head_index is a legacy serialization aid only.
         // Formal identity is always the pair (layer_index, local_head_index).
@@ -1556,6 +1591,25 @@ namespace gatzk::model
         {
             throw std::runtime_error("checkpoint bundle family metadata is invalid: " + manifest_reason);
         }
+        std::vector<util::HiddenLayerProfile> hidden_profile;
+        hidden_profile.reserve(manifest_info.hidden_profile.size());
+        for (const auto &layer : manifest_info.hidden_profile)
+        {
+            hidden_profile.push_back({
+                .head_count = layer.head_count,
+                .head_dim = layer.head_dim,
+            });
+        }
+        const auto canonical_chain = util::canonical_quantization_scale_chain(
+            manifest_info.quant_cfg_id,
+            hidden_profile,
+            manifest_info.output_head_count);
+        if (manifest_info.quantization_scale_chain
+            != canonical_chain.canonical_serialization())
+        {
+            throw std::runtime_error(
+                "checkpoint manifest quantization_scale_chain does not match the canonical source");
+        }
         const auto tensor_path = std::filesystem::path(bundle_root) / "tensors.txt";
         if (!std::filesystem::exists(tensor_path))
         {
@@ -1600,7 +1654,9 @@ namespace gatzk::model
         out.has_real_multihead = true;
         out.model_arch_id = manifest_info.model_arch_id;
         out.model_param_id = manifest_info.model_param_id;
+        out.input_preprocess_id = manifest_info.input_preprocess_id;
         out.quant_cfg_id = manifest_info.quant_cfg_id;
+        out.quantization_scale_chain = manifest_info.quantization_scale_chain;
         out.static_table_id = manifest_info.static_table_id;
         out.degree_bound_id = manifest_info.degree_bound_id;
         out.L = manifest_info.layer_count;

@@ -8,6 +8,14 @@ ROOT = Path(__file__).resolve().parents[1]
 MAIN = (ROOT / "src/main.cpp").read_text(encoding="utf-8")
 TRACE = (ROOT / "src/protocol/trace.cpp").read_text(encoding="utf-8")
 PROOF = (ROOT / "include/gatzk/protocol/proof.hpp").read_text(encoding="utf-8")
+AGGREGATE = (ROOT / "scripts/aggregate_secure_results.py").read_text(encoding="utf-8")
+EXPORT = (ROOT / "scripts/export_benchmark_table.py").read_text(encoding="utf-8")
+
+
+CANONICAL_TIMING_SCHEMA = "exclusive_commit_prove_protocol_verify_v3"
+assert f'"{CANONICAL_TIMING_SCHEMA}"' in PROOF
+assert f'"{CANONICAL_TIMING_SCHEMA}"' in AGGREGATE
+assert f'"{CANONICAL_TIMING_SCHEMA}"' in EXPORT
 
 
 # The exclusive prove timer starts only after the canonical forward, reference
@@ -71,65 +79,73 @@ for forbidden in (
     assert forbidden not in MAIN, forbidden
 
 
-# The reference timer ends after all data used by final acceptance is ready;
-# verify_end follows final acceptance directly and excludes bookkeeping.
+# The protocol verify clock starts at parse_proof and ends at the protocol
+# verifier return.  Output digest, external payload audit, reference
+# consistency, final acceptance, tamper checks, and export are outside it.
 verify_start = MAIN.index("const auto verify_start = std::chrono::steady_clock::now();")
+verify_end = MAIN.index(
+    "const auto verify_end = std::chrono::steady_clock::now();",
+    verify_start,
+)
 tamper_start = MAIN.index(
     "const auto tamper_start = std::chrono::steady_clock::now();",
     verify_start,
 )
-verify_block = MAIN[verify_start:tamper_start]
+protocol_verify_block = MAIN[verify_start:verify_end]
+post_protocol_block = MAIN[verify_end:tamper_start]
 
 
-parse_call = verify_block.index(
+parse_call = protocol_verify_block.index(
     "const auto parsed_proof = gatzk::protocol::parse_proof(verifier_context, proof_bytes);"
 )
-parse_end = verify_block.index(
+parse_end = protocol_verify_block.index(
     "const auto proof_parse_end = std::chrono::steady_clock::now();",
     parse_call,
 )
 verify_start_statement = "const auto verify_start = std::chrono::steady_clock::now();"
-assert verify_block[len(verify_start_statement):parse_call].strip() == ""
+assert protocol_verify_block[len(verify_start_statement):parse_call].strip() == ""
 parse_statement = (
     "const auto parsed_proof = "
     "gatzk::protocol::parse_proof(verifier_context, proof_bytes);"
 )
-assert verify_block[parse_call + len(parse_statement):parse_end].strip() == ""
-parse_metric = verify_block.index("metrics.proof_parse_ms =", parse_end)
-parse_metric_end = verify_block.index(
-    "trace.proof_public_output_hash =",
+assert protocol_verify_block[parse_call + len(parse_statement):parse_end].strip() == ""
+parse_metric = protocol_verify_block.index("metrics.proof_parse_ms =", parse_end)
+assert parse_call < parse_end < parse_metric
+verifier_call = protocol_verify_block.index(
+    "const auto verifier_accepted =",
     parse_metric,
 )
-digest = verify_block.index("gatzk::protocol::canonical_output_digest(", parse_metric_end)
-assert parse_call < parse_end < parse_metric < parse_metric_end < digest
+assert parse_metric < verifier_call
+assert "gatzk::protocol::canonical_output_digest(" not in protocol_verify_block
+assert "private_plain_value_count(verifier_context, parsed_proof)" not in protocol_verify_block
+assert "payload_audit_ms" not in protocol_verify_block
+assert "reference_consistency" not in protocol_verify_block
+assert "final_formal_run_accepted(" not in protocol_verify_block
+assert "metrics.verify_point_group_registry_ms" in MAIN
 
-reference_end = verify_block.index(
-    "const auto reference_end = std::chrono::steady_clock::now();"
-)
-final_acceptance = verify_block.index(
-    "gatzk::protocol::final_formal_run_accepted("
-)
-verify_end = verify_block.index(
-    "const auto verify_end = std::chrono::steady_clock::now();"
-)
-assert reference_end < final_acceptance < verify_end
-final_acceptance_end = verify_block.index(");", final_acceptance) + 2
-assert verify_block[final_acceptance_end:verify_end].strip() == ""
-reference_metric = verify_block.index(
-    "metrics.reference_consistency_ms =",
-    reference_end,
-)
-assert verify_end < reference_metric
+verify_metric = post_protocol_block.index("metrics.verify_time_ms =")
+assert verify_metric >= 0
+assert "gatzk::protocol::canonical_output_digest(" in post_protocol_block
+assert "private_plain_value_count(verifier_context, parsed_proof)" in post_protocol_block
+assert "metrics.payload_audit_ms" in post_protocol_block
+assert "metrics.reference_consistency_ms" in post_protocol_block
+assert "gatzk::protocol::final_formal_run_accepted(" in post_protocol_block
 
-assert "private_plain_value_count(verifier_context, parsed_proof)" in verify_block
-assert "metrics.verify_point_group_registry_ms" in verify_block
-assert "metrics.payload_audit_ms + metrics.reference_consistency_ms" in MAIN
-assert "metrics.verify_point_group_registry_ms + metrics.verify_quotient_ms" in MAIN
+accounted_start = MAIN.index("auto verify_accounted_ms =")
+accounted_end = MAIN.index("};", accounted_start)
+accounted_block = MAIN[accounted_start:accounted_end]
+assert "payload_audit_ms" not in accounted_block
+assert "reference_consistency_ms" not in accounted_block
+misc_start = MAIN.index("metrics.verify_misc_ms =", verify_end)
+misc_end = MAIN.index(";", misc_start)
+misc_block = MAIN[misc_start:misc_end]
+assert "payload_audit_ms" not in misc_block
+assert "reference_consistency_ms" not in misc_block
 
 # Registration/VK loading and the independent reference forward happen before
 # this source-level verify block; tamper checks and export happen after it.
 assert MAIN.index("load_verifier_context_from_registry(") < verify_start
 assert MAIN.index("const auto tamper_start", verify_start) > verify_end
-assert "independent_quantized_reference_forward(" not in verify_block
+assert "independent_quantized_reference_forward(" not in protocol_verify_block
 
 print("verify timing contract: PASS")

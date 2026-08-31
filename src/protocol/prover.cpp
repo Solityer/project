@@ -1381,6 +1381,7 @@ namespace gatzk::protocol
             append("quantization", config.quantization.canonical_serialization());
             append("model_arch_id", config.model_arch_id);
             append("model_param_id", config.model_param_id);
+            append("input_preprocess_id", config.input_preprocess_id);
             append("static_table_id", config.static_table_id);
             append("degree_bound_id", config.degree_bound_id);
             append("srs_path", config.srs_path);
@@ -1465,6 +1466,7 @@ namespace gatzk::protocol
                    << config.srs_id << '|'
                    << config.srs_type << '|'
                    << config.quant_cfg_id << '|'
+                   << config.input_preprocess_id << '|'
                    << config.quantization.canonical_serialization();
             for (const auto input_dim : config.d_in_profile)
                 stream << "|din=" << input_dim;
@@ -11341,7 +11343,9 @@ namespace gatzk::protocol
         canonical_config.quantization = util::canonical_quantization_scale_chain(
             config.quant_cfg_id,
             config.hidden_profile,
-            config.K_out);
+            config.K_out,
+            (std::filesystem::path(config.project_root)
+             / "configs/quantization_scale_chain_v1.cfg").string());
         static std::mutex cache_mutex;
         static std::unordered_map<std::string, StaticContextCachePayload> cache;
         // 这里只复用静态上下文对象，见证和挑战相关状态必须按每次正式证明重新生成。
@@ -11403,7 +11407,8 @@ namespace gatzk::protocol
         data::validate_input_feature_views(
             context.dataset,
             context.local,
-            scales.s_input);
+            scales.s_input,
+            canonical_config.input_preprocess_id);
 
         if (config.checkpoint_bundle.empty())
         {
@@ -11420,6 +11425,19 @@ namespace gatzk::protocol
         context.model =
             model::load_checkpoint_bundle_parameters(
                 checkpoint_root.string());
+
+        if (context.model.quantization_scale_chain
+            != scales.canonical_serialization())
+        {
+            throw std::runtime_error(
+                "checkpoint bundle quantization scale chain conflicts with formal config");
+        }
+        if (context.model.input_preprocess_id
+            != canonical_config.input_preprocess_id)
+        {
+            throw std::runtime_error(
+                "checkpoint bundle input_preprocess_id conflicts with formal config");
+        }
 
         append_note(
             metrics,
@@ -12271,7 +12289,8 @@ namespace gatzk::protocol
         data::validate_input_feature_views(
             context.dataset,
             context.local,
-            context.config.quantization.s_input);
+            context.config.quantization.s_input,
+            context.config.input_preprocess_id);
         const auto &route2 = util::route2_options();
         if (!context.model.has_real_multihead)
         {

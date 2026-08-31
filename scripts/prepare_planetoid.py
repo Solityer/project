@@ -5,6 +5,7 @@ import argparse
 import pathlib
 
 from planetoid_utils import load_raw_planetoid_dataset, write_edges, write_labels, write_sparse_features
+from quantization_scale_chain import ROW_NORMALIZE_INPUT_PREPROCESS_ID
 
 
 def main() -> None:
@@ -30,6 +31,7 @@ def main() -> None:
         handle.write(f"num_features = {features.shape[1]}\n")
         handle.write(f"num_classes = {labels.shape[1]}\n")
         handle.write(f"test_count = {len(test_idx)}\n")
+        handle.write(f"input_preprocess_id = {ROW_NORMALIZE_INPUT_PREPROCESS_ID}\n")
 
     with (cache_root / "test.index").open("w", encoding="utf-8") as handle:
         for idx in test_idx:

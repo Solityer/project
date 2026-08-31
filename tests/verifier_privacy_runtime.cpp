@@ -104,12 +104,20 @@ namespace
         artifact.registry.registry_id = "runtime-registry";
         artifact.registry.model_arch_id = "runtime-arch";
         artifact.registry.model_param_id = "runtime-params";
+        artifact.registry.input_preprocess_id = "row_normalize_v1";
         artifact.registry.quant_cfg_id = "runtime-quant";
         artifact.registry.static_table_id = "runtime-tables";
         artifact.registry.srs_id = "runtime-srs";
         artifact.registry.protocol_schema_id = "runtime-schema";
         artifact.registry.srs_protocol_compiler_artifact_hash =
             std::string(64, 'a');
+        artifact.config.dataset = "cora";
+        artifact.config.input_preprocess_id = "row_normalize_v1";
+        artifact.dataset.name = "cora";
+        artifact.dataset.input_preprocess_id = "row_normalize_v1";
+        artifact.local.name = "cora_normalized";
+        artifact.local.input_preprocess_id = "row_normalize_v1";
+        artifact.model.input_preprocess_id = "row_normalize_v1";
 
         artifact.domains.fh =
             gatzk::algebra::RootOfUnityDomain::create("FH", 1);
@@ -170,6 +178,7 @@ int main()
         registry.registry_id = "registry";
         registry.model_arch_id = "arch";
         registry.model_param_id = "params";
+        registry.input_preprocess_id = "row_normalize_v1";
         registry.quant_cfg_id = "quant";
         registry.static_table_id = "tables";
         registry.srs_id = "srs";
@@ -185,6 +194,10 @@ int main()
         expect(digest != registry.canonical_digest(),
                "registry canonical digest did not bind SRS compiler artifact hash");
         registry.srs_protocol_compiler_artifact_hash = std::string(64, 'a');
+        registry.input_preprocess_id = "ogbn_arxiv_raw_float32_v1";
+        expect(digest != registry.canonical_digest(),
+               "registry canonical digest did not bind input preprocessing identity");
+        registry.input_preprocess_id = "row_normalize_v1";
         registry.model_entries.push_back({
             .label = "model_l0_h0_w0",
             .domain = "in",
@@ -232,6 +245,9 @@ int main()
             parsed_registration.registry.srs_protocol_compiler_artifact_hash
                 == std::string(64, 'a'),
             "verifier registration codec lost SRS compiler artifact hash");
+        expect(
+            parsed_registration.registry.input_preprocess_id == "row_normalize_v1",
+            "verifier registration codec lost input preprocessing identity");
         expect(
             parsed_registration.public_commitments.size() == 1
                 && parsed_registration.public_commitments.at("runtime_public").point == point,

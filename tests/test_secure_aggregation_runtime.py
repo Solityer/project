@@ -1,5 +1,6 @@
 import hashlib
 import importlib.util
+import json
 import pathlib
 import tempfile
 import unittest
@@ -11,6 +12,11 @@ SPEC = importlib.util.spec_from_file_location("aggregate_secure_results", SCRIPT
 assert SPEC is not None and SPEC.loader is not None
 AGGREGATOR = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(AGGREGATOR)
+EXPORT_SCRIPT = ROOT / "scripts" / "export_benchmark_table.py"
+EXPORT_SPEC = importlib.util.spec_from_file_location("export_benchmark_table", EXPORT_SCRIPT)
+assert EXPORT_SPEC is not None and EXPORT_SPEC.loader is not None
+EXPORTER = importlib.util.module_from_spec(EXPORT_SPEC)
+EXPORT_SPEC.loader.exec_module(EXPORTER)
 
 
 class SecureAggregationRuntimeTests(unittest.TestCase):
@@ -61,6 +67,47 @@ class SecureAggregationRuntimeTests(unittest.TestCase):
             "verified": "true",
         }
 
+    def export_acceptance_manifest(self):
+        manifest = self.acceptance_manifest()
+        manifest.update(
+            {
+                "dataset": "cora",
+                "config": "configs/cora_secure.cfg",
+                "config_sha256": AGGREGATOR.sha256_file(ROOT / "configs" / "cora_secure.cfg"),
+                "input_preprocess_id": "row_normalize_v1",
+                "benchmark_mode": "warm",
+                "full_dataset": True,
+                "is_full_dataset": True,
+                "stale_result": False,
+                "reference_consistency_passed": True,
+                "tamper_tests_passed": True,
+                "security_budget_passed": True,
+                "verifier_reads_witness": False,
+                "private_plain_value_count": 0,
+                "proof_payload_audit_status": "passed",
+                "tamper_tests_ms": "1.0",
+                "tamper_test_case_map": self.tamper_map(),
+                "security_budget_ledger_digest": self.digest("budget-ledger"),
+                "security_budget_exact": "1/2",
+                "timing_schema": EXPORTER.CANONICAL_TIMING_SCHEMA,
+                "commitment_time_ms": "1.0",
+                "prove_time_ms": "2.0",
+                "verify_time_ms": "3.0",
+                "proof_size_bytes": "4",
+            }
+        )
+        for field in AGGREGATOR.REQUIRED_HASHES:
+            manifest[field] = self.digest(field)
+        output_digest = self.digest("public-output")
+        manifest.update(
+            {
+                "secure_trace_logits_hash": output_digest,
+                "reference_quant_logits_hash": output_digest,
+                "proof_public_output_hash": output_digest,
+            }
+        )
+        return manifest
+
     def test_single_run_acceptance_rejects_final_false_status_spoof(self):
         manifest = self.acceptance_manifest()
         manifest["final_formal_run_accepted"] = "false"
@@ -78,6 +125,77 @@ class SecureAggregationRuntimeTests(unittest.TestCase):
         del manifest["verifier_accepted"]
         with self.assertRaises(ValueError):
             AGGREGATOR.check_single_run_acceptance_state(manifest, "synthetic")
+
+    def test_old_timing_schema_is_rejected_by_aggregator(self):
+        manifest = {"timing_schema": AGGREGATOR.CANONICAL_TIMING_SCHEMA}
+        self.assertEqual(
+            AGGREGATOR.require_canonical_timing_schema(manifest, "synthetic"),
+            AGGREGATOR.CANONICAL_TIMING_SCHEMA,
+        )
+        for old_or_missing in ("exclusive_commit_prove_verify_v2", "", None):
+            mutated = {"timing_schema": old_or_missing}
+            with self.assertRaises(ValueError):
+                AGGREGATOR.require_canonical_timing_schema(mutated, "synthetic")
+
+    def test_benchmark_export_requires_canonical_timing_schema(self):
+        manifest = self.export_acceptance_manifest()
+        row = EXPORTER.make_success_row("cora", manifest)
+        self.assertEqual(row["timing_schema"], EXPORTER.CANONICAL_TIMING_SCHEMA)
+        manifest["timing_schema"] = "exclusive_commit_prove_verify_v2"
+        with self.assertRaises(ValueError):
+            EXPORTER.make_success_row("cora", manifest)
+
+    def test_benchmark_export_rejects_missing_or_tampered_input_preprocess_id(self):
+        for value in (None, "ogbn_arxiv_raw_float32_v1"):
+            manifest = self.export_acceptance_manifest()
+            if value is None:
+                del manifest["input_preprocess_id"]
+            else:
+                manifest["input_preprocess_id"] = value
+            with self.assertRaises(ValueError):
+                EXPORTER.make_success_row("cora", manifest)
+
+    def test_benchmark_export_requires_complete_acceptance_state(self):
+        for field in (
+            "verifier_accepted",
+            "reference_consistency_passed",
+            "final_formal_run_accepted",
+            "tamper_tests_passed",
+            "security_budget_passed",
+        ):
+            manifest = self.export_acceptance_manifest()
+            manifest[field] = "false"
+            with self.assertRaises(ValueError, msg=field):
+                EXPORTER.make_success_row("cora", manifest)
+
+    def test_benchmark_export_rejects_incomplete_security_audit(self):
+        for field in (
+            "tamper_test_case_map",
+            "proof_payload_audit_status",
+            "security_budget_exact",
+            "secure_trace_logits_hash",
+        ):
+            manifest = self.export_acceptance_manifest()
+            if field == "proof_payload_audit_status":
+                manifest[field] = "failed"
+            elif field == "secure_trace_logits_hash":
+                manifest[field] = self.digest("different-output")
+            else:
+                manifest.pop(field)
+            with self.assertRaises(ValueError, msg=field):
+                EXPORTER.make_success_row("cora", manifest)
+
+    def test_benchmark_export_load_binds_manifest_to_proof_bytes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            run_dir = pathlib.Path(temporary)
+            proof = b"synthetic proof"
+            (run_dir / "proof.bin").write_bytes(proof)
+            (run_dir / "run_manifest.json").write_text(
+                json.dumps({"proof_hash": hashlib.sha256(b"different proof").hexdigest()}),
+                encoding="utf-8",
+            )
+            with self.assertRaises(ValueError):
+                EXPORTER.load_manifest(run_dir)
 
     def test_single_run_acceptance_rejects_verified_verifier_mismatch(self):
         manifest = self.acceptance_manifest()
@@ -182,6 +300,13 @@ class SecureAggregationRuntimeTests(unittest.TestCase):
         cpu = self.pair_row()
         cuda = dict(cpu)
         del cuda["secure_trace_logits_hash"]
+        with self.assertRaises(ValueError):
+            AGGREGATOR.compare_cpu_cuda_pair("synthetic", cpu, cuda)
+
+    def test_cpu_cuda_pair_input_preprocess_mismatch_fails_closed(self):
+        cpu = self.pair_row()
+        cuda = dict(cpu)
+        cuda["input_preprocess_id"] = "tampered_preprocess"
         with self.assertRaises(ValueError):
             AGGREGATOR.compare_cpu_cuda_pair("synthetic", cpu, cuda)
 

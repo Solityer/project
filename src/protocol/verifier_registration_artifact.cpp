@@ -558,6 +558,7 @@ namespace gatzk::protocol
             append_vector(out, q.s_b_output, [&](auto value) { append_u64(out, value); });
             append_string(out, config.model_arch_id);
             append_string(out, config.model_param_id);
+            append_string(out, config.input_preprocess_id);
             append_string(out, config.static_table_id);
             append_string(out, config.degree_bound_id);
             append_string(out, config.srs_type);
@@ -631,6 +632,7 @@ namespace gatzk::protocol
             q.s_b_output = read_u64_vector(reader);
             config.model_arch_id = reader.string("config.model_arch_id");
             config.model_param_id = reader.string("config.model_param_id");
+            config.input_preprocess_id = reader.string("config.input_preprocess_id");
             config.static_table_id = reader.string("config.static_table_id");
             config.degree_bound_id = reader.string("config.degree_bound_id");
             config.srs_type = reader.string("config.srs_type");
@@ -670,6 +672,7 @@ namespace gatzk::protocol
             if (!dataset.features_fp.empty() || !dataset.labels.empty() || !dataset.labels_multi.empty())
                 throw std::runtime_error("verifier registration cannot contain private dataset material");
             append_string(out, dataset.name);
+            append_string(out, dataset.input_preprocess_id);
             append_size(out, dataset.num_nodes);
             append_size(out, dataset.num_features);
             append_size(out, dataset.num_classes);
@@ -685,6 +688,7 @@ namespace gatzk::protocol
         {
             data::GraphDataset dataset;
             dataset.name = reader.string("dataset.name");
+            dataset.input_preprocess_id = reader.string("dataset.input_preprocess_id");
             dataset.num_nodes = reader.size("dataset.num_nodes");
             dataset.num_features = reader.size("dataset.num_features");
             dataset.num_classes = reader.size("dataset.num_classes");
@@ -706,6 +710,7 @@ namespace gatzk::protocol
             if (!local.features_fp.empty() || !local.labels.empty() || !local.labels_multi.empty())
                 throw std::runtime_error("verifier registration cannot contain raw local model/data material");
             append_string(out, local.name);
+            append_string(out, local.input_preprocess_id);
             append_size(out, local.num_nodes);
             append_size(out, local.num_features);
             append_size(out, local.num_classes);
@@ -729,6 +734,7 @@ namespace gatzk::protocol
         {
             data::LocalGraph local;
             local.name = reader.string("local.name");
+            local.input_preprocess_id = reader.string("local.input_preprocess_id");
             local.num_nodes = reader.size("local.num_nodes");
             local.num_features = reader.size("local.num_features");
             local.num_classes = reader.size("local.num_classes");
@@ -758,6 +764,7 @@ namespace gatzk::protocol
             append_bool(out, model.has_real_multihead);
             append_string(out, model.model_arch_id);
             append_string(out, model.model_param_id);
+            append_string(out, model.input_preprocess_id);
             append_string(out, model.quant_cfg_id);
             append_string(out, model.static_table_id);
             append_string(out, model.degree_bound_id);
@@ -793,6 +800,7 @@ namespace gatzk::protocol
             model.has_real_multihead = has_multihead != 0;
             model.model_arch_id = reader.string("model.model_arch_id");
             model.model_param_id = reader.string("model.model_param_id");
+            model.input_preprocess_id = reader.string("model.input_preprocess_id");
             model.quant_cfg_id = reader.string("model.quant_cfg_id");
             model.static_table_id = reader.string("model.static_table_id");
             model.degree_bound_id = reader.string("model.degree_bound_id");
@@ -1542,6 +1550,7 @@ namespace gatzk::protocol
             append_string(out, registry.registry_id);
             append_string(out, registry.model_arch_id);
             append_string(out, registry.model_param_id);
+            append_string(out, registry.input_preprocess_id);
             append_string(out, registry.quant_cfg_id);
             append_string(out, registry.static_table_id);
             append_string(out, registry.srs_id);
@@ -1586,6 +1595,7 @@ namespace gatzk::protocol
             registry.registry_id = reader.string("registry.id");
             registry.model_arch_id = reader.string("registry.model-arch");
             registry.model_param_id = reader.string("registry.model-param");
+            registry.input_preprocess_id = reader.string("registry.input-preprocess");
             registry.quant_cfg_id = reader.string("registry.quant");
             registry.static_table_id = reader.string("registry.static-table");
             registry.srs_id = reader.string("registry.srs-id");

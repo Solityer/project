@@ -92,6 +92,7 @@ namespace gatzk::data
         {
             std::vector<std::size_t> shape;
             std::vector<double> values;
+            bool is_float32 = false;
         };
 
         NpyArray load_npy_double(const std::filesystem::path &path)
@@ -162,6 +163,7 @@ namespace gatzk::data
             }
 
             NpyArray out;
+            out.is_float32 = is_float32;
             std::stringstream shape_stream(header.substr(shape_pos + 1, shape_end - shape_pos - 1));
             std::string token;
             while (std::getline(shape_stream, token, ','))
@@ -202,8 +204,11 @@ namespace gatzk::data
         std::vector<std::vector<double>> load_features_matrix(
             const std::filesystem::path &root,
             std::size_t rows,
-            std::size_t cols)
+            std::size_t cols,
+            bool *npy_float32)
         {
+            if (npy_float32 != nullptr)
+                *npy_float32 = false;
             if (std::filesystem::exists(root / "features.txt"))
             {
                 std::vector<std::vector<double>> raw_features(rows, std::vector<double>(cols, 0.0));
@@ -238,6 +243,8 @@ namespace gatzk::data
             }
 
             const auto array = load_npy_double(root / "features.npy");
+            if (npy_float32 != nullptr)
+                *npy_float32 = array.is_float32;
             if (array.shape.size() != 2 || array.shape[0] != rows || array.shape[1] != cols)
             {
                 throw std::runtime_error("feature npy shape mismatch");
@@ -336,7 +343,8 @@ namespace gatzk::data
 
         GraphDataset load_cached_dataset(
             const std::filesystem::path &root,
-            std::uint64_t input_scale)
+            std::uint64_t input_scale,
+            std::string_view input_preprocess_id)
         {
             if (input_scale == 0)
                 throw std::runtime_error(
@@ -344,6 +352,18 @@ namespace gatzk::data
             const auto meta = read_meta(root / "meta.cfg");
             GraphDataset dataset;
             dataset.name = meta.at("name");
+            const auto expected_preprocess_id =
+                util::canonical_input_preprocess_id(dataset.name);
+            if (input_preprocess_id.empty()
+                || input_preprocess_id != expected_preprocess_id
+                || !meta.contains("input_preprocess_id")
+                || meta.at("input_preprocess_id") != expected_preprocess_id)
+            {
+                throw std::runtime_error(
+                    "dataset cache input_preprocess_id is missing or not canonical for "
+                    + dataset.name);
+            }
+            dataset.input_preprocess_id = meta.at("input_preprocess_id");
             dataset.num_nodes = std::stoull(meta.at("num_nodes"));
             dataset.num_features = std::stoull(meta.at("num_features"));
             dataset.num_classes = std::stoull(meta.at("num_classes"));
@@ -373,8 +393,21 @@ namespace gatzk::data
             }
 
             // 先恢复浮点特征，再量化成 formal 主线真正消费的域元素矩阵。
-            const auto raw_features = load_features_matrix(root, dataset.num_nodes, dataset.num_features);
-            dataset.features_fp = row_normalize(raw_features);
+            bool npy_float32 = false;
+            const auto raw_features = load_features_matrix(
+                root, dataset.num_nodes, dataset.num_features, &npy_float32);
+            if (dataset.input_preprocess_id == "ogbn_arxiv_raw_float32_v1"
+                && (!std::filesystem::exists(root / "features.npy")
+                    || !npy_float32
+                    || std::filesystem::exists(root / "features.txt")))
+            {
+                throw std::runtime_error(
+                    "ogbn-arxiv raw_float32_v1 requires an unnormalized float32 features.npy cache");
+            }
+            dataset.features_fp = preprocess_input_features(
+                raw_features,
+                dataset.name,
+                dataset.input_preprocess_id);
             dataset.features.assign(dataset.num_nodes, std::vector<FieldElement>(dataset.num_features, FieldElement::zero()));
             for (std::size_t row = 0; row < dataset.num_nodes; ++row)
             {
@@ -585,6 +618,39 @@ namespace gatzk::data
 
     } // namespace
 
+    std::vector<std::vector<double>> preprocess_input_features(
+        const std::vector<std::vector<double>> &raw_features,
+        std::string_view dataset,
+        std::string_view input_preprocess_id)
+    {
+        const auto expected_id = util::canonical_input_preprocess_id(dataset);
+        if (input_preprocess_id != expected_id)
+            throw std::runtime_error(
+                "input_preprocess_id does not match dataset preprocessing contract");
+        if (raw_features.empty())
+            throw std::runtime_error("input feature matrix must not be empty");
+        const auto width = raw_features.front().size();
+        if (width == 0)
+            throw std::runtime_error("input feature matrix must have non-zero width");
+        for (const auto &row : raw_features)
+            if (row.size() != width)
+                throw std::runtime_error("input feature matrix rows have inconsistent widths");
+        if (input_preprocess_id == "ogbn_arxiv_raw_float32_v1")
+        {
+            std::vector<std::vector<double>> raw_float32 = raw_features;
+            for (auto &row : raw_float32)
+                for (auto &value : row)
+                {
+                    value = static_cast<double>(static_cast<float>(value));
+                    if (!std::isfinite(value))
+                        throw std::runtime_error(
+                            "raw float32 input preprocessing rejects NaN/Inf");
+                }
+            return raw_float32;
+        }
+        return row_normalize(raw_features);
+    }
+
     std::int64_t quantize_raw_at_scale(
         double value,
         std::uint64_t scale)
@@ -638,14 +704,27 @@ namespace gatzk::data
         }
         return load_cached_dataset(
             cache_root,
-            config.quantization.s_input);
+            config.quantization.s_input,
+            config.input_preprocess_id);
     }
 
     void validate_input_feature_views(
         const GraphDataset &dataset,
         const LocalGraph &local,
-        std::uint64_t input_scale)
+        std::uint64_t input_scale,
+        std::string_view input_preprocess_id)
     {
+        const auto expected_preprocess_id =
+            util::canonical_input_preprocess_id(dataset.name);
+        const auto requested_preprocess_id = input_preprocess_id.empty()
+                                                 ? dataset.input_preprocess_id
+                                                 : std::string(input_preprocess_id);
+        if (!requested_preprocess_id.empty()
+            && (requested_preprocess_id != expected_preprocess_id
+                || dataset.input_preprocess_id != requested_preprocess_id
+                || local.input_preprocess_id != requested_preprocess_id))
+            throw std::runtime_error(
+                "input feature preprocessing identity mismatch");
         const bool dataset_raw_present = !dataset.features_fp.empty();
         const bool dataset_quantized_present = !dataset.features.empty();
         // A full-graph proving context may deliberately drop the duplicated
@@ -814,6 +893,14 @@ namespace gatzk::data
 
         LocalGraph local;
         local.name = dataset.name + "_normalized";
+        if (config.input_preprocess_id.empty()
+            || dataset.input_preprocess_id.empty()
+            || config.input_preprocess_id != dataset.input_preprocess_id)
+        {
+            throw std::runtime_error(
+                "normalized graph input preprocessing identity mismatch");
+        }
+        local.input_preprocess_id = dataset.input_preprocess_id;
         local.num_features = dataset.num_features;
         local.num_classes = dataset.num_classes;
         local.task_type = config.task_type.empty() ? dataset.task_type : config.task_type;

@@ -25,7 +25,7 @@ namespace gatzk::protocol
     struct ProtocolCompilerArtifact;
 
     inline constexpr const char *kFormalTimingSchema =
-        "exclusive_commit_prove_verify_v2";
+        "exclusive_commit_prove_protocol_verify_v3";
 
     // 固定静态查表集合，对应 formal note 中的激活、指数与范围表。
     struct StaticTables
@@ -78,6 +78,7 @@ namespace gatzk::protocol
         std::string binding_mode;
         std::string model_arch;
         std::string model_params;
+        std::string input_preprocess_id;
         std::string static_tables;
         std::string quant_config;
         std::string domain_cfg;
@@ -135,6 +136,7 @@ namespace gatzk::protocol
         util::QuantizationScaleChain quantization;
         std::string model_arch_id;
         std::string model_param_id;
+        std::string input_preprocess_id;
         std::string static_table_id;
         std::string degree_bound_id;
         std::string srs_type = "trusted_srs";
@@ -182,6 +184,7 @@ namespace gatzk::protocol
         bool has_real_multihead = false;
         std::string model_arch_id;
         std::string model_param_id;
+        std::string input_preprocess_id;
         std::string quant_cfg_id;
         std::string static_table_id;
         std::string degree_bound_id;
@@ -280,6 +283,7 @@ namespace gatzk::protocol
         std::string registry_id;
         std::string model_arch_id;
         std::string model_param_id;
+        std::string input_preprocess_id;
         std::string quant_cfg_id;
         std::string static_table_id;
         std::string srs_id;
@@ -801,6 +805,8 @@ namespace gatzk::protocol
         double formal_time_sum_ms = 0.0;
         double non_formal_overhead_ms = 0.0;
         double reference_forward_ms = 0.0;
+        // Experiment-level audits are intentionally outside verify_time_ms:
+        // the protocol verifier owns only parse_proof through verify(...).
         double payload_audit_ms = 0.0;
         double reference_consistency_ms = 0.0;
         bool reference_consistency_passed = false;
@@ -934,6 +940,10 @@ namespace gatzk::protocol
         double prove_accounted_ms = 0.0;
         double prove_accounting_gap_ms = 0.0;
         double prove_time_ms = 0.0;
+        // Canonical protocol-verifier wall clock: parse_proof start through
+        // the return of verify(...).  Public-output digest, payload audit,
+        // reference consistency, final acceptance, tamper checks, and export
+        // are not part of this metric.
         double verify_time_ms = 0.0;
         double proof_parse_ms = 0.0;
         double verify_metadata_ms = 0.0;

@@ -37,6 +37,9 @@ struct GraphDataset {
     std::size_t num_nodes = 0;
     std::size_t num_features = 0;
     std::size_t num_classes = 0;
+    // Canonical public identity of the feature preprocessing used to build
+    // both floating-point and quantized views.
+    std::string input_preprocess_id;
     std::vector<std::vector<double>> features_fp;
     std::vector<std::vector<algebra::FieldElement>> features;
     std::vector<int> labels;
@@ -58,6 +61,8 @@ struct LocalGraph {
     std::size_t num_nodes = 0;
     std::size_t num_features = 0;
     std::size_t num_classes = 0;
+    // Copied from GraphDataset and carried into public registration metadata.
+    std::string input_preprocess_id;
     std::vector<std::size_t> absolute_ids;
     std::vector<std::vector<double>> features_fp;
     std::vector<std::vector<algebra::FieldElement>> features;

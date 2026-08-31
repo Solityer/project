@@ -321,6 +321,13 @@ namespace gatzk::protocol
             throw std::runtime_error(
                 "SRS manifest changed after authenticated context load");
         }
+        if (proof.public_metadata.input_preprocess_id.empty()
+            || proof.public_metadata.input_preprocess_id
+                   != context.config.input_preprocess_id)
+        {
+            throw std::runtime_error(
+                "artifact export input_preprocess_id is not config-bound");
+        }
         auto append_public_metadata = [&](std::map<std::string, std::string> &entries)
         {
             entries.insert({
@@ -340,6 +347,7 @@ namespace gatzk::protocol
                 {"binding_mode", proof.public_metadata.binding_mode},
                 {"model_arch", proof.public_metadata.model_arch},
                 {"model_params", proof.public_metadata.model_params},
+                {"input_preprocess_id", proof.public_metadata.input_preprocess_id},
                 {"static_tables", proof.public_metadata.static_tables},
                 {"quant_config", proof.public_metadata.quant_config},
                 {"domain_cfg", proof.public_metadata.domain_cfg},
@@ -600,6 +608,7 @@ namespace gatzk::protocol
             {"compute_backend_name", metrics.compute_backend_name},
             {"config_id", config_id},
             {"dataset", metrics.dataset},
+            {"input_preprocess_id", context.config.input_preprocess_id},
             {"status", final_accepted ? "VERIFY_OK" : "VERIFY_FAIL"},
             {"verifier_accepted", verifier_accepted ? "true" : "false"},
             {"final_formal_run_accepted", final_accepted ? "true" : "false"},

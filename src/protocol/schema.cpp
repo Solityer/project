@@ -2579,7 +2579,7 @@ namespace gatzk::protocol
             artifact.proof_blocks = proof_block_order();
             artifact.serializer_tag_table = {
                 "wire:v3:type-tagged-length-prefixed:no-trailing-bytes"
-                "+M_pub:PublicMetadata[25]+Y_public",
+                "+M_pub:PublicMetadata[26]+Y_public",
                 "Com_dyn:Commitment[]",
                 "S_route:MetadataReference[]",
                 "Eval_ext:(PublicValue|MaskedPrivateValue)[]",

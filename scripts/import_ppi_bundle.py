@@ -12,6 +12,10 @@ import numpy as np
 
 from export_gat_checkpoint import archive_key, write_text_tensor_dump
 from export_torch_gat_bundle import build_tensors_and_manifest_spec
+from quantization_scale_chain import (
+    canonical_input_preprocess_id,
+    canonical_quantization_scale_chain,
+)
 
 
 def require(condition: bool, message: str) -> None:
@@ -47,6 +51,8 @@ def validate_ppi_bundle(manifest: Dict[str, object], bundle_dir: pathlib.Path) -
         manifest,
         (
             "family_schema_version",
+            "dataset",
+            "input_preprocess_id",
             "L",
             "hidden_profile",
             "hidden_layers",
@@ -59,6 +65,7 @@ def validate_ppi_bundle(manifest: Dict[str, object], bundle_dir: pathlib.Path) -
             "model_arch_id",
             "model_param_id",
             "quant_cfg_id",
+            "quantization_scale_chain",
             "static_table_id",
             "degree_bound_id",
             "task_type",
@@ -76,6 +83,12 @@ def validate_ppi_bundle(manifest: Dict[str, object], bundle_dir: pathlib.Path) -
     require((bundle_dir / "tensors.txt").exists(), f"缺少 tensors.txt: {bundle_dir}")
     require((bundle_dir / "tensors.npz").exists(), f"缺少 tensors.npz: {bundle_dir}")
     require(str(manifest["family_schema_version"]) == "multi_layer_multi_head_v2", "family_schema_version 不受支持")
+    require(str(manifest["dataset"]) == "ppi", "PPI bundle dataset identity 不匹配")
+    require(
+        str(manifest["input_preprocess_id"])
+        == canonical_input_preprocess_id("ppi"),
+        "PPI bundle input_preprocess_id 不匹配",
+    )
     require(int(manifest["L"]) == 3, "PPI 正式配置要求 L=3")
     require(parse_hidden_profile(manifest) == "8x8,8x8", "PPI 正式配置要求 hidden_profile=[8x8,8x8]")
     d_in_profile = manifest["d_in_profile"]
@@ -85,6 +98,16 @@ def validate_ppi_bundle(manifest: Dict[str, object], bundle_dir: pathlib.Path) -
     require(str(manifest["model_arch_id"]) == "gat_family_L3_hid8x8-8x8_kout2_c121", "PPI bundle 的 model_arch_id 不匹配")
     require(str(manifest["model_param_id"]) == "ppi_gat_seed11", "PPI bundle 的 model_param_id 不匹配")
     require(str(manifest["quant_cfg_id"]) == "gat_l3_scale_chain_v1", "PPI bundle 必须声明 canonical scale chain")
+    expected_chain = canonical_quantization_scale_chain(
+        str(manifest["quant_cfg_id"]),
+        manifest.get("hidden_profile"),
+        int(manifest["K_out"]),
+    )
+    require(
+        str(manifest["quantization_scale_chain"])
+        == expected_chain.canonical_serialization(),
+        "PPI bundle quantization_scale_chain metadata is malformed",
+    )
     require(str(manifest["task_type"]) == "inductive_multi_graph_node_classification", "PPI bundle 的 task_type 不匹配")
     require(str(manifest["report_unit"]) == "graph", "PPI bundle 的 report_unit 不匹配")
     require(str(manifest["batching_rule"]) == "multi_graph_batch", "PPI bundle 的 batching_rule 不匹配")
@@ -190,6 +213,8 @@ def write_bundle_from_torch_checkpoint(checkpoint_path: pathlib.Path, bundle_dir
     ) = build_tensors_and_manifest_spec(checkpoint_path)
     manifest = {
         "checkpoint_prefix": str(checkpoint_path),
+        "dataset": "ppi",
+        "input_preprocess_id": str(bundle["input_preprocess_id"]),
         "family_schema_version": "multi_layer_multi_head_v2",
         "output_average_rule": str(bundle.get("output_average_rule", "per_head_bias_then_arithmetic_mean")),
         "L": len(hidden_layers) + 1,
@@ -213,6 +238,7 @@ def write_bundle_from_torch_checkpoint(checkpoint_path: pathlib.Path, bundle_dir
         "model_arch_id": str(bundle.get("model_arch_id", checkpoint_path.stem)),
         "model_param_id": str(bundle.get("model_param_id", checkpoint_path.stem)),
         "quant_cfg_id": str(bundle.get("quant_cfg_id", "gat_l3_scale_chain_v1")),
+        "quantization_scale_chain": str(bundle["quantization_scale_chain"]),
         "label_format": str(bundle.get("label_format", "multi_hot")),
         "loss": str(bundle.get("loss", "BCEWithLogitsLoss")),
         "selection_metric": str(bundle.get("selection_metric", "validation_loss")),

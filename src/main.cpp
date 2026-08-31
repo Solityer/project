@@ -247,7 +247,7 @@ int main(int argc, char **argv)
         };
         auto verify_accounted_ms = [](const gatzk::protocol::RunMetrics &metrics)
         {
-            return metrics.proof_parse_ms + metrics.verify_metadata_ms + metrics.verify_transcript_ms + metrics.verify_domain_opening_ms + metrics.verify_point_group_registry_ms + metrics.verify_quotient_ms + metrics.verify_external_opening_ms + metrics.payload_audit_ms + metrics.reference_consistency_ms + metrics.verify_misc_ms;
+            return metrics.proof_parse_ms + metrics.verify_metadata_ms + metrics.verify_transcript_ms + metrics.verify_domain_opening_ms + metrics.verify_point_group_registry_ms + metrics.verify_quotient_ms + metrics.verify_external_opening_ms + metrics.verify_misc_ms;
         };
         auto append_note = [](gatzk::protocol::RunMetrics &metrics, const std::string &note)
         {
@@ -664,25 +664,34 @@ int main(int argc, char **argv)
             metrics.proof_parse_ms = std::chrono::duration<double, std::milli>(
                                          proof_parse_end - verify_start)
                                          .count();
+            const auto verifier_accepted =
+                gatzk::protocol::verify(verifier_context, parsed_proof, &metrics);
+            // The formal verify clock closes at the protocol verifier return.
+            // Everything below is an experiment-level audit or acceptance
+            // check and must not be folded into verify_time_ms.
+            const auto verify_end = std::chrono::steady_clock::now();
+            metrics.verify_time_ms = std::chrono::duration<double, std::milli>(
+                                         verify_end - verify_start)
+                                         .count();
+            metrics.verify_misc_ms = clamp_non_negative(
+                metrics.verify_time_ms - metrics.proof_parse_ms - metrics.verify_metadata_ms - metrics.verify_transcript_ms - metrics.verify_domain_opening_ms - metrics.verify_point_group_registry_ms - metrics.verify_quotient_ms - metrics.verify_external_opening_ms);
+            metrics.verify_accounted_ms = verify_accounted_ms(metrics);
+            metrics.verify_accounting_gap_ms = metrics.verify_time_ms - metrics.verify_accounted_ms;
+            metrics.proof_size_bytes = proof_bytes.size();
+            // The parsed public-output digest is an experiment-level payload
+            // audit input, deliberately computed after the protocol timer.
             trace.proof_public_output_hash =
                 gatzk::protocol::canonical_output_digest(
                     parsed_proof.public_logits,
                     context.local.num_nodes,
                     context.local.num_classes);
-            const auto verifier_accepted =
-                gatzk::protocol::verify(verifier_context, parsed_proof, &metrics);
-            metrics.proof_size_bytes = proof_bytes.size();
             const auto audit_start = std::chrono::steady_clock::now();
             const auto private_plain_count = gatzk::protocol::private_plain_value_count(verifier_context, parsed_proof);
             const auto audit_end = std::chrono::steady_clock::now();
             metrics.payload_audit_ms = std::chrono::duration<double, std::milli>(audit_end - audit_start).count();
             const auto reference_start = std::chrono::steady_clock::now();
             const bool reference_matrix_match = trace.reference_consistency_passed;
-            const auto parsed_output_hash =
-                gatzk::protocol::canonical_output_digest(
-                    parsed_proof.public_logits,
-                    context.local.num_nodes,
-                    context.local.num_classes);
+            const auto parsed_output_hash = trace.proof_public_output_hash;
             const bool reference_payload_audit =
                 !trace.reference_quant_logits_hash.empty() &&
                 !trace.secure_trace_logits_hash.empty() &&
@@ -701,15 +710,9 @@ int main(int argc, char **argv)
                     verifier_accepted,
                     reference_consistent,
                     metrics.security_budget_passed);
-            const auto verify_end = std::chrono::steady_clock::now();
             metrics.reference_consistency_ms =
                 std::chrono::duration<double, std::milli>(reference_end - reference_start).count();
             progress(mode_label + ":verify:done");
-            metrics.verify_time_ms = std::chrono::duration<double, std::milli>(verify_end - verify_start).count();
-            metrics.verify_misc_ms = clamp_non_negative(
-                metrics.verify_time_ms - metrics.proof_parse_ms - metrics.verify_metadata_ms - metrics.verify_transcript_ms - metrics.verify_domain_opening_ms - metrics.verify_point_group_registry_ms - metrics.verify_quotient_ms - metrics.verify_external_opening_ms - metrics.payload_audit_ms - metrics.reference_consistency_ms);
-            metrics.verify_accounted_ms = verify_accounted_ms(metrics);
-            metrics.verify_accounting_gap_ms = metrics.verify_time_ms - metrics.verify_accounted_ms;
             const auto tamper_start = std::chrono::steady_clock::now();
             // Every case below must mutate a real proof/context field and then
             // enter the production serializer, parser, and verifier.  The

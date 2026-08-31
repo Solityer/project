@@ -54,9 +54,12 @@ namespace
         CheckpointBundleInfo info;
         info.family_schema_version = "multi_layer_multi_head_v2";
         info.output_average_rule = "per_head_bias_then_arithmetic_mean";
+        info.dataset = "cora";
+        info.input_preprocess_id = "row_normalize_v1";
         info.model_arch_id = "synthetic_layered_arch";
         info.model_param_id = "synthetic_layered_params";
         info.quant_cfg_id = "synthetic_quant";
+        info.quantization_scale_chain = "synthetic_chain_v1";
         info.layer_count = 3;
         info.d_in_profile = {5, 6};
         info.hidden_profile = {{2, 3}, {2, 3}};
@@ -90,31 +93,42 @@ namespace
     {
         std::ofstream manifest(path);
         expect(manifest.good(), "unable to create synthetic manifest");
+        const auto canonical_chain =
+            gatzk::util::canonical_quantization_scale_chain(
+                "gat_l3_scale_chain_v1",
+                std::vector<HiddenLayerProfile>{{8, 8}, {8, 8}},
+                2)
+                .canonical_serialization();
         manifest << R"({
   "family_schema_version": "multi_layer_multi_head_v2",
   "output_average_rule": "per_head_bias_then_arithmetic_mean",
+  "dataset": "cora",
+  "input_preprocess_id": "row_normalize_v1",
   "model_arch_id": "synthetic_layered_arch",
   "model_param_id": "synthetic_layered_params",
-  "quant_cfg_id": "synthetic_quant",
+  "quant_cfg_id": "gat_l3_scale_chain_v1",
+  "quantization_scale_chain": ")"
+                  << canonical_chain
+                  << R"(",
   "static_table_id": "synthetic_tables",
   "degree_bound_id": "synthetic_degree",
   "L": 3,
   "K_out": 2,
   "C": 1,
-  "d_in_profile": [5, 6],
+  "d_in_profile": [5, 64],
   "hidden_layers": [
-    {"layer_index": 0, "input_dim": 5, "head_count": 2, "head_dim": 3},
-    {"layer_index": 1, "input_dim": 6, "head_count": 2, "head_dim": 3}
+    {"layer_index": 0, "input_dim": 5, "head_count": 8, "head_dim": 8},
+    {"layer_index": 1, "input_dim": 64, "head_count": 8, "head_dim": 8}
   ],
   "hidden_profile": [
-    {"head_count": 2, "head_dim": 3},
-    {"head_count": 2, "head_dim": 3}
+    {"head_count": 8, "head_dim": 8},
+    {"head_count": 8, "head_dim": 8}
   ],
   "hidden_head_specs": [
 )";
         for (std::size_t layer_index = 0; layer_index < 2; ++layer_index)
         {
-            for (std::size_t local_head_index = 0; local_head_index < 2; ++local_head_index)
+            for (std::size_t local_head_index = 0; local_head_index < 8; ++local_head_index)
             {
                 if (layer_index != 0 || local_head_index != 0)
                 {
@@ -126,7 +140,7 @@ namespace
                     // This fixture intentionally has only the retired global
                     // identity so the production parser must reject it.
                     manifest << "\"global_head_index\": "
-                             << (layer_index * 2 + local_head_index) << ", ";
+                             << (layer_index * 8 + local_head_index) << ", ";
                 }
                 else
                 {
@@ -197,28 +211,28 @@ namespace
         for (std::size_t layer_index = 0; layer_index < 2; ++layer_index)
         {
             const auto input_dim =
-                layer_index == 0 ? std::size_t{5} : std::size_t{6};
-            for (std::size_t local_head_index = 0; local_head_index < 2; ++local_head_index)
+                layer_index == 0 ? std::size_t{5} : std::size_t{64};
+            for (std::size_t local_head_index = 0; local_head_index < 8; ++local_head_index)
             {
                 const auto tensor_prefix =
                     "hidden_l" + std::to_string(layer_index) +
                     "_h" + std::to_string(local_head_index);
-                write_tensor(output, tensor_prefix + "/seq", {1, input_dim, 3});
-                write_tensor(output, tensor_prefix + "/dst", {1, 3, 1});
-                write_tensor(output, tensor_prefix + "/src", {1, 3, 1});
+                write_tensor(output, tensor_prefix + "/seq", {1, input_dim, 8});
+                write_tensor(output, tensor_prefix + "/dst", {1, 8, 1});
+                write_tensor(output, tensor_prefix + "/src", {1, 8, 1});
             }
         }
-        write_tensor(output, "os", {1, 6, 1});
+        write_tensor(output, "os", {1, 64, 1});
         write_tensor(output, "odk", {1, 1, 1});
         write_tensor(output, "osk", {1, 1, 1});
         write_tensor(output, "oob", {1});
-        write_tensor(output, "os1", {1, 6, 1});
+        write_tensor(output, "os1", {1, 64, 1});
         write_tensor(output, "odk1", {1, 1, 1});
         write_tensor(output, "osk1", {1, 1, 1});
         write_tensor(output, "oob1", {1});
         if (include_unreferenced_extra)
         {
-            write_tensor(output, "hidden_l0_h0/output_bias", {3});
+            write_tensor(output, "hidden_l0_h0/output_bias", {8});
         }
     }
 }
@@ -282,7 +296,7 @@ int main()
 
         auto global_only = valid;
         global_only.hidden_head_specs.clear();
-        for (std::size_t index = 0; index < 4; ++index)
+        for (std::size_t index = 0; index < 16; ++index)
         {
             CheckpointHeadSpec spec;
             spec.global_head_index = index;
@@ -304,12 +318,12 @@ int main()
         expect(canonical_manifest_text.find("global_head_index") == std::string::npos,
                "canonical pair manifest must omit global_head_index");
         const auto parsed = gatzk::model::inspect_checkpoint_bundle(temp_root.string());
-        expect(parsed.hidden_head_specs.size() == 4,
+        expect(parsed.hidden_head_specs.size() == 16,
                "pair-indexed manifest parser count mismatch");
         expect(parsed.hidden_head_specs[0].layer_index == 0
                    && parsed.hidden_head_specs[0].local_head_index == 0
-                   && parsed.hidden_head_specs[3].layer_index == 1
-                   && parsed.hidden_head_specs[3].local_head_index == 1,
+                   && parsed.hidden_head_specs[15].layer_index == 1
+                   && parsed.hidden_head_specs[15].local_head_index == 7,
                "pair-indexed manifest parser identity mismatch");
         expect(gatzk::model::checkpoint_bundle_matches_formal_proof_shape(parsed, &reason),
                "parsed canonical pair manifest must pass formal shape validation: " + reason);
@@ -318,18 +332,27 @@ int main()
             "gat_l3_scale_chain_v1",
             std::vector<HiddenLayerProfile>{{8, 8}, {8, 8}},
             2);
-        expect(scale_chain.s_h == std::vector<std::uint64_t>{1, 16, 16},
+        expect(scale_chain.s_input == 16 && scale_chain.s_delta == 256
+                   && scale_chain.s_exp == 16,
+               "canonical input/attention scale values mismatch");
+        expect(scale_chain.s_h == std::vector<std::uint64_t>{16, 16, 16},
                "canonical scale chain H values mismatch");
         expect(scale_chain.s_h[1] == scale_chain.s_cat[0]
                    && scale_chain.s_h[2] == scale_chain.s_cat[1]
                    && scale_chain.s_h.back() == scale_chain.s_cat.back(),
                "every hidden concat must feed the next H scale");
-        expect(scale_chain.s_h_prime[0][0] == 16 && scale_chain.s_h_prime[1][0] == 256,
+        expect(scale_chain.s_w_hidden[0][0] == 4
+                   && scale_chain.s_w_hidden[1][0] == 4
+                   && scale_chain.s_h_prime[0][0] == 64
+                   && scale_chain.s_h_prime[1][0] == 64,
                "canonical layer-aware H_prime scales mismatch");
-        expect(scale_chain.s_a_src_hidden[0][0] == 16 && scale_chain.s_a_src_hidden[1][0] == 1,
+        expect(scale_chain.s_a_src_hidden[0][0] == 4
+                   && scale_chain.s_a_dst_hidden[1][0] == 4,
                "canonical layer-aware attention scales mismatch");
         expect(scale_chain.s_out_pre == 16 && scale_chain.s_out_head == 16
-                   && scale_chain.s_out == 16 && scale_chain.s_y_prime[0] == 256
+                   && scale_chain.s_out == 16 && scale_chain.s_w_output[0] == 4
+                   && scale_chain.s_y_prime[0] == 64
+                   && scale_chain.s_a_src_output[0] == 4
                    && scale_chain.s_b_output[1] == 16,
                "canonical output scale chain mismatch");
         expect(scale_chain.canonical_serialization() == scale_chain.canonical_serialization(),

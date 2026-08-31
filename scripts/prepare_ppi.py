@@ -8,6 +8,8 @@ from collections import deque
 
 import numpy as np
 
+from quantization_scale_chain import ROW_NORMALIZE_INPUT_PREPROCESS_ID
+
 
 def write_meta(path: pathlib.Path, entries: dict[str, object]) -> None:
     with path.open("w", encoding="utf-8") as handle:
@@ -163,6 +165,7 @@ def main() -> None:
             "report_unit": "graph",
             "label_format": "multi_hot",
             "split_format": "node_masks_v1",
+            "input_preprocess_id": ROW_NORMALIZE_INPUT_PREPROCESS_ID,
         },
     )
 

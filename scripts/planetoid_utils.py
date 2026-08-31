@@ -8,6 +8,11 @@ from typing import Dict, Iterable, List, Tuple
 import numpy as np
 import scipy.sparse as sp
 
+from quantization_scale_chain import (
+    ROW_NORMALIZE_INPUT_PREPROCESS_ID,
+    canonical_row_normalize,
+)
+
 
 def parse_index_file(path: pathlib.Path) -> List[int]:
     return [int(line.strip()) for line in path.read_text().splitlines() if line.strip()]
@@ -85,12 +90,98 @@ def load_planetoid_dataset_with_masks(
 
 
 def row_normalize_features(features: sp.csr_matrix) -> np.ndarray:
-    rowsum = np.asarray(features.sum(1)).reshape(-1)
-    inverse = np.zeros_like(rowsum, dtype=np.float32)
-    non_zero = rowsum != 0
-    inverse[non_zero] = 1.0 / rowsum[non_zero]
-    normalized = sp.diags(inverse).dot(features)
-    return normalized.astype(np.float32).toarray()
+    # Keep the public preprocessing in float64 until the canonical q/S
+    # boundary.  The formal C++ loader performs the same row normalization
+    # before applying S_input; float32 normalization here could move ties.
+    dense = features.toarray().astype(np.float64, copy=False)
+    return canonical_row_normalize(dense)
+
+
+def _read_cache_metadata(path: pathlib.Path) -> Dict[str, str]:
+    if not path.is_file():
+        raise FileNotFoundError(f"canonical Planetoid cache metadata is missing: {path}")
+    values: Dict[str, str] = {}
+    for line_number, raw_line in enumerate(
+        path.read_text(encoding="utf-8").splitlines(), start=1
+    ):
+        line = raw_line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        if "=" not in line:
+            raise ValueError(f"{path}:{line_number}: malformed metadata line")
+        key, value = (part.strip() for part in line.split("=", 1))
+        if not key or key in values:
+            raise ValueError(f"{path}:{line_number}: duplicate or empty metadata key")
+        values[key] = value
+    return values
+
+
+def load_canonical_planetoid_features(
+    cache_root: pathlib.Path,
+    dataset: str,
+) -> np.ndarray:
+    """Read the exact sparse decimal feature producer consumed by C++.
+
+    The formal loader reads ``features.txt`` and parses each value as binary64
+    before applying the row-normalization contract.  Training must consume that
+    same producer output instead of normalizing the pickle object independently.
+    """
+    cache = cache_root / dataset
+    metadata = _read_cache_metadata(cache / "meta.cfg")
+    if metadata.get("name") != dataset:
+        raise ValueError(
+            f"canonical Planetoid cache name mismatch: {metadata.get('name')!r}"
+        )
+    if metadata.get("input_preprocess_id") != ROW_NORMALIZE_INPUT_PREPROCESS_ID:
+        raise ValueError(
+            "canonical Planetoid cache is missing row_normalize_v1 producer identity"
+        )
+    features_path = cache / "features.txt"
+    if not features_path.is_file():
+        raise FileNotFoundError(
+            f"canonical Planetoid cache features.txt is missing: {features_path}"
+        )
+    lines = features_path.read_text(encoding="utf-8").splitlines()
+    if not lines:
+        raise ValueError(f"canonical Planetoid feature cache is empty: {features_path}")
+    shape = lines[0].split()
+    if len(shape) != 2:
+        raise ValueError(f"{features_path}: malformed feature shape header")
+    try:
+        rows, cols = (int(value) for value in shape)
+    except ValueError as error:
+        raise ValueError(f"{features_path}: feature shape is not integral") from error
+    expected_rows = int(metadata.get("num_nodes", rows))
+    expected_cols = int(metadata.get("num_features", cols))
+    if rows <= 0 or cols <= 0 or (rows, cols) != (expected_rows, expected_cols):
+        raise ValueError(f"{features_path}: feature shape conflicts with cache metadata")
+    if len(lines) != rows + 1:
+        raise ValueError(f"{features_path}: expected exactly {rows} feature rows")
+    dense = np.zeros((rows, cols), dtype=np.float64)
+    for row_index, line in enumerate(lines[1:]):
+        seen_columns = set()
+        for token in line.split():
+            if ":" not in token:
+                raise ValueError(f"{features_path}:{row_index + 2}: malformed sparse entry")
+            column_text, value_text = token.split(":", 1)
+            try:
+                column = int(column_text)
+                value = float(value_text)
+            except ValueError as error:
+                raise ValueError(
+                    f"{features_path}:{row_index + 2}: malformed sparse value"
+                ) from error
+            if not 0 <= column < cols or not np.isfinite(value):
+                raise ValueError(
+                    f"{features_path}:{row_index + 2}: sparse entry is out of bounds or non-finite"
+                )
+            if column in seen_columns:
+                raise ValueError(
+                    f"{features_path}:{row_index + 2}: duplicate sparse column"
+                )
+            seen_columns.add(column)
+            dense[row_index, column] = value
+    return dense
 
 
 def build_dense_adjacency(adjacency: Dict[int, Iterable[int]], num_nodes: int) -> np.ndarray:

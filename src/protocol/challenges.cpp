@@ -542,13 +542,14 @@ namespace gatzk::protocol
             + "|ledger="
             + sha256_hex(
                 compiler_artifact.instance_canonical_bytes + "|security_budget");
+        metadata.input_preprocess_id = context.config.input_preprocess_id;
         metadata.public_output.clear();
         return metadata;
     }
 
     void absorb_public_metadata(crypto::Transcript &transcript, const PublicMetadata &metadata)
     {
-        const std::array<std::pair<std::string_view, const std::string *>, 25> fields = {{
+        const std::array<std::pair<std::string_view, const std::string *>, 26> fields = {{
             {"protocol_name", &metadata.protocol_name}, {"proof_nonce", &metadata.proof_nonce},
             {"proof_task", &metadata.proof_task}, {"srs_id", &metadata.srs_id},
             {"protocol_schema_id", &metadata.protocol_schema_id}, {"instance_schema_hash", &metadata.instance_schema_hash},
@@ -557,6 +558,7 @@ namespace gatzk::protocol
             {"input_privacy", &metadata.input_privacy}, {"output_mode", &metadata.output_mode},
             {"opening_mode", &metadata.opening_mode}, {"binding_mode", &metadata.binding_mode},
             {"model_arch", &metadata.model_arch}, {"model_params", &metadata.model_params},
+            {"input_preprocess_id", &metadata.input_preprocess_id},
             {"static_tables", &metadata.static_tables}, {"quant_config", &metadata.quant_config},
             {"domain_cfg", &metadata.domain_cfg}, {"dim_cfg", &metadata.dim_cfg},
             {"encoding", &metadata.encoding}, {"padding_rule", &metadata.padding_rule},

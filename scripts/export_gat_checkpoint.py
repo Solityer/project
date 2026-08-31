@@ -10,6 +10,7 @@ from typing import Dict, List, Sequence
 import numpy as np
 
 from checkpoint_reader_compat import read_checkpoint_tensors
+from quantization_scale_chain import canonical_input_preprocess_id
 
 
 def archive_key(name: str) -> str:
@@ -90,11 +91,24 @@ def build_family_manifest(
     task_type: str = "transductive_node_classification",
     report_unit: str = "node",
     quant_cfg_id: str = "gat_l3_scale_chain_v1",
+    quantization_scale_chain: str | None = None,
     static_table_id: str = "tables:lrelu+elu+exp+range",
     degree_bound_id: str = "auto",
     model_arch_id: str | None = None,
     model_param_id: str | None = None,
+    dataset: str,
+    input_preprocess_id: str,
 ) -> Dict[str, object]:
+    expected_preprocess_id = canonical_input_preprocess_id(dataset)
+    if input_preprocess_id != expected_preprocess_id:
+        raise ValueError(
+            "formal checkpoint manifest input_preprocess_id does not match dataset"
+        )
+    if quant_cfg_id == "gat_l3_scale_chain_v1" and not quantization_scale_chain:
+        raise ValueError(
+            "formal checkpoint manifest requires complete quantization_scale_chain; "
+            "quant_cfg_id alone is insufficient"
+        )
     hidden_profile = [
         {
             "head_count": int(layer["head_count"]),
@@ -115,6 +129,7 @@ def build_family_manifest(
 
     manifest: Dict[str, object] = {
         "checkpoint_prefix": checkpoint_prefix,
+        "dataset": dataset,
         "family_schema_version": "multi_layer_multi_head_v2",
         "output_average_rule": "per_head_bias_then_arithmetic_mean",
         "L": len(hidden_layers) + 1,
@@ -130,11 +145,14 @@ def build_family_manifest(
         "tensor_count": len(tensors),
         "model_arch_id": model_arch_id,
         "model_param_id": model_param_id,
+        "input_preprocess_id": input_preprocess_id,
         "quant_cfg_id": quant_cfg_id,
         "static_table_id": static_table_id,
         "degree_bound_id": degree_bound_id,
         "tensor_index": {},
     }
+    if quantization_scale_chain is not None:
+        manifest["quantization_scale_chain"] = quantization_scale_chain
     tensor_index = manifest["tensor_index"]
     assert isinstance(tensor_index, dict)
     for name, tensor in sorted(tensors.items()):
@@ -146,7 +164,13 @@ def build_family_manifest(
     return manifest
 
 
-def build_manifest(tensors: Dict[str, np.ndarray], checkpoint_prefix: str) -> Dict[str, object]:
+def build_manifest(
+    tensors: Dict[str, np.ndarray],
+    checkpoint_prefix: str,
+    *,
+    dataset: str,
+    input_preprocess_id: str,
+) -> Dict[str, object]:
     legacy_attention_biases = sorted(
         name
         for name in tensors
@@ -197,6 +221,8 @@ def build_manifest(tensors: Dict[str, np.ndarray], checkpoint_prefix: str) -> Di
         output_head_specs=output_head_specs,
         num_classes=c_out,
         model_param_id=pathlib.Path(checkpoint_prefix).name or "checkpoint_bundle",
+        dataset=dataset,
+        input_preprocess_id=input_preprocess_id,
     )
 
 
@@ -204,13 +230,20 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint-prefix", required=True)
     parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--dataset", required=True)
+    parser.add_argument("--input-preprocess-id", required=True)
     args = parser.parse_args()
 
     output_dir = pathlib.Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     tensors = read_checkpoint_tensors(args.checkpoint_prefix)
-    manifest = build_manifest(tensors, args.checkpoint_prefix)
+    manifest = build_manifest(
+        tensors,
+        args.checkpoint_prefix,
+        dataset=args.dataset,
+        input_preprocess_id=args.input_preprocess_id,
+    )
     arrays = {archive_key(name): tensor for name, tensor in tensors.items()}
     np.savez_compressed(output_dir / "tensors.npz", **arrays)
     write_text_tensor_dump(output_dir / "tensors.txt", tensors)

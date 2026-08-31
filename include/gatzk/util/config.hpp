@@ -12,6 +12,11 @@
 namespace gatzk::util
 {
 
+    // Public identity of the dataset feature preprocessing contract.  This is
+    // deliberately separate from quant_cfg_id: changing a raw feature view
+    // must invalidate checkpoints, caches, registries and proof statements.
+    std::string canonical_input_preprocess_id(std::string_view dataset);
+
     // 隐层族形状配置，决定每层头数和单头维度。
     struct HiddenLayerProfile
     {
@@ -53,7 +58,8 @@ namespace gatzk::util
     QuantizationScaleChain canonical_quantization_scale_chain(
         std::string_view quant_cfg_id,
         const std::vector<HiddenLayerProfile> &hidden_profile,
-        std::size_t K_out);
+        std::size_t K_out,
+        std::string_view source_path = {});
 
     // 一次正式运行的统一配置。这里的字段会被 context、metadata 与正式 artifact 共同消费。
     struct AppConfig
@@ -72,6 +78,7 @@ namespace gatzk::util
         std::string self_loop_rule = "per_node";
         std::string edge_sort_rule = "edge_gid_then_dst_stable";
         std::string chunking_rule = "none";
+        std::string input_preprocess_id;
         std::string quant_cfg_id;
         QuantizationScaleChain quantization;
         std::string model_arch_id;

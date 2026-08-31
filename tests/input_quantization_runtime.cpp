@@ -38,7 +38,8 @@ namespace
     GraphDataset make_dataset()
     {
         GraphDataset dataset;
-        dataset.name = "input_quantization_fixture";
+        dataset.name = "cora";
+        dataset.input_preprocess_id = "row_normalize_v1";
         dataset.num_nodes = 2;
         dataset.num_features = 2;
         dataset.num_classes = 1;
@@ -53,7 +54,8 @@ namespace
     LocalGraph make_local()
     {
         LocalGraph local;
-        local.name = "input_quantization_fixture_normalized";
+        local.name = "cora_normalized";
+        local.input_preprocess_id = "row_normalize_v1";
         local.num_nodes = 2;
         local.num_features = 2;
         local.num_classes = 1;
@@ -115,36 +117,36 @@ int main()
 
         const auto dataset = make_dataset();
         const auto local = make_local();
-        gatzk::data::validate_input_feature_views(dataset, local, 1);
+        gatzk::data::validate_input_feature_views(dataset, local, 1, "row_normalize_v1");
 
         auto dataset_raw_tampered = dataset;
         dataset_raw_tampered.features_fp[0][0] = 0.25;
         expect_rejected(
-            [&] { gatzk::data::validate_input_feature_views(dataset_raw_tampered, local, 1); },
+            [&] { gatzk::data::validate_input_feature_views(dataset_raw_tampered, local, 1, "row_normalize_v1"); },
             "dataset raw feature tamper");
 
         auto dataset_quantized_tampered = dataset;
         dataset_quantized_tampered.features[0][0] = FieldElement::zero();
         expect_rejected(
-            [&] { gatzk::data::validate_input_feature_views(dataset_quantized_tampered, local, 1); },
+            [&] { gatzk::data::validate_input_feature_views(dataset_quantized_tampered, local, 1, "row_normalize_v1"); },
             "dataset quantized feature tamper");
 
         auto local_raw_tampered = local;
         local_raw_tampered.features_fp[0][0] = 0.25;
         expect_rejected(
-            [&] { gatzk::data::validate_input_feature_views(dataset, local_raw_tampered, 1); },
+            [&] { gatzk::data::validate_input_feature_views(dataset, local_raw_tampered, 1, "row_normalize_v1"); },
             "local raw feature tamper");
 
         auto local_quantized_tampered = local;
         local_quantized_tampered.features[0][0] = FieldElement::zero();
         expect_rejected(
-            [&] { gatzk::data::validate_input_feature_views(dataset, local_quantized_tampered, 1); },
+            [&] { gatzk::data::validate_input_feature_views(dataset, local_quantized_tampered, 1, "row_normalize_v1"); },
             "local quantized feature tamper");
 
         auto local_id_tampered = local;
         local_id_tampered.absolute_ids = {1, 0};
         expect_rejected(
-            [&] { gatzk::data::validate_input_feature_views(dataset, local_id_tampered, 1); },
+            [&] { gatzk::data::validate_input_feature_views(dataset, local_id_tampered, 1, "row_normalize_v1"); },
             "dataset/local absolute-id binding tamper");
 
         auto redacted_dataset = dataset;
@@ -152,24 +154,24 @@ int main()
         redacted_dataset.features.clear();
         // This is the authenticated full-graph context form after the
         // duplicated dataset view has been dropped for memory/privacy.
-        gatzk::data::validate_input_feature_views(redacted_dataset, local, 1);
+        gatzk::data::validate_input_feature_views(redacted_dataset, local, 1, "row_normalize_v1");
 
         auto redacted_local_tampered = local;
         redacted_local_tampered.features_fp[0][0] = 0.25;
         expect_rejected(
-            [&] { gatzk::data::validate_input_feature_views(redacted_dataset, redacted_local_tampered, 1); },
+            [&] { gatzk::data::validate_input_feature_views(redacted_dataset, redacted_local_tampered, 1, "row_normalize_v1"); },
             "redacted-context raw view tamper");
 
         redacted_local_tampered = local;
         redacted_local_tampered.features[0][0] = FieldElement::zero();
         expect_rejected(
-            [&] { gatzk::data::validate_input_feature_views(redacted_dataset, redacted_local_tampered, 1); },
+            [&] { gatzk::data::validate_input_feature_views(redacted_dataset, redacted_local_tampered, 1, "row_normalize_v1"); },
             "redacted-context quantized view tamper");
 
         auto partial_dataset = dataset;
         partial_dataset.features.clear();
         expect_rejected(
-            [&] { gatzk::data::validate_input_feature_views(partial_dataset, local, 1); },
+            [&] { gatzk::data::validate_input_feature_views(partial_dataset, local, 1, "row_normalize_v1"); },
             "partially redacted dataset view");
 
         auto partial_local = local;
@@ -178,11 +180,11 @@ int main()
         partial_local.features_fp.resize(1);
         partial_local.features.resize(1);
         expect_rejected(
-            [&] { gatzk::data::validate_input_feature_views(redacted_dataset, partial_local, 1); },
+            [&] { gatzk::data::validate_input_feature_views(redacted_dataset, partial_local, 1, "row_normalize_v1"); },
             "partial local view without dataset source");
 
         expect_rejected(
-            [&] { gatzk::data::validate_input_feature_views(dataset, local, 0); },
+            [&] { gatzk::data::validate_input_feature_views(dataset, local, 0, "row_normalize_v1"); },
             "validator zero scale");
 
         std::cout << "input quantization runtime: PASS\n";

@@ -262,7 +262,8 @@ namespace gatzk::protocol
             fn(metadata.srs_type); fn(metadata.srs_degree_bound); fn(metadata.kzg_assumption_profile);
             fn(metadata.privacy_policy); fn(metadata.input_privacy); fn(metadata.output_mode);
             fn(metadata.opening_mode); fn(metadata.binding_mode); fn(metadata.model_arch);
-            fn(metadata.model_params); fn(metadata.static_tables); fn(metadata.quant_config);
+            fn(metadata.model_params); fn(metadata.input_preprocess_id);
+            fn(metadata.static_tables); fn(metadata.quant_config);
             fn(metadata.domain_cfg); fn(metadata.dim_cfg); fn(metadata.encoding);
             fn(metadata.padding_rule); fn(metadata.degree_bound); fn(metadata.security_budget);
             fn(metadata.public_output);

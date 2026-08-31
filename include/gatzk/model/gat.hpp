@@ -105,7 +105,15 @@ namespace gatzk::model
         // against the formal run config before any proof work starts.
         std::string model_arch_id;
         std::string model_param_id;
+        // Canonical identity of the floating-point feature preprocessing used
+        // before the registered S_input quantizer.  This is part of model
+        // provenance even though the model tensors themselves do not change.
+        std::string input_preprocess_id;
         std::string quant_cfg_id;
+        // Complete canonical scale-chain serialization copied from the
+        // checkpoint manifest.  quant_cfg_id alone is intentionally
+        // insufficient to identify formal parameter quantization.
+        std::string quantization_scale_chain;
         std::string static_table_id;
         std::string degree_bound_id;
         std::size_t L = 0;
@@ -157,11 +165,14 @@ namespace gatzk::model
     struct CheckpointBundleInfo
     {
         std::string bundle_root;
+        std::string dataset;
         std::string family_schema_version;
         std::string output_average_rule;
         std::string model_arch_id;
         std::string model_param_id;
+        std::string input_preprocess_id;
         std::string quant_cfg_id;
+        std::string quantization_scale_chain;
         std::string static_table_id;
         std::string degree_bound_id;
         std::size_t layer_count = 0;

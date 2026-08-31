@@ -21,7 +21,6 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from ogbn_arxiv_utils import row_normalize_dense
 from train_planetoid_gat import (
     PlanetoidGAT,
     _override,
@@ -34,6 +33,12 @@ from train_planetoid_gat import (
     parse_cfg,
     require_canonical_model_config,
     set_seed,
+    quantized_input_features,
+)
+from quantization_scale_chain import (
+    canonical_input_preprocess,
+    canonical_input_preprocess_id,
+    canonical_quantization_scale_chain,
 )
 
 
@@ -49,6 +54,7 @@ class PPIData:
     num_nodes: int
     num_features: int
     num_classes: int
+    input_quantization_diagnostic: Dict[str, object]
 
 
 def _ensure_cache(
@@ -95,6 +101,25 @@ def _load_size_vector(path: pathlib.Path) -> np.ndarray:
     if np.any(vector[1:] < vector[:-1]):
         raise ValueError("PPI node_ptr must be non-decreasing")
     return vector
+
+
+def _read_cache_metadata(path: pathlib.Path) -> Dict[str, str]:
+    if not path.is_file():
+        raise FileNotFoundError(f"PPI cache metadata is missing: {path}")
+    metadata: Dict[str, str] = {}
+    for line_number, raw_line in enumerate(
+        path.read_text(encoding="utf-8").splitlines(), start=1
+    ):
+        line = raw_line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        if "=" not in line:
+            raise ValueError(f"{path}:{line_number}: malformed metadata line")
+        key, value = (part.strip() for part in line.split("=", 1))
+        if not key or key in metadata:
+            raise ValueError(f"{path}:{line_number}: duplicate or empty metadata key")
+        metadata[key] = value
+    return metadata
 
 
 def _load_sorted_edges(
@@ -146,8 +171,17 @@ def load_ppi_dataset(
     data_root: pathlib.Path,
     cache_root: pathlib.Path,
     device: torch.device,
+    *,
+    chain=None,
+    range_bits: int | None = None,
 ) -> PPIData:
     cache = _ensure_cache(project_root, data_root, cache_root)
+    metadata = _read_cache_metadata(cache / "meta.cfg")
+    expected_preprocess_id = canonical_input_preprocess_id("ppi")
+    if metadata.get("name") != "ppi" or metadata.get("input_preprocess_id") != expected_preprocess_id:
+        raise ValueError(
+            "PPI cache is missing the canonical row_normalize_v1 producer identity"
+        )
     features = np.asarray(np.load(cache / "features.npy"), dtype=np.float32)
     labels_multi = np.asarray(np.load(cache / "labels_multi.npy"), dtype=np.float32)
     if (
@@ -180,9 +214,17 @@ def load_ppi_dataset(
     edge_src, edge_dst = _load_sorted_edges(
         cache / "edges.txt", node_ptr, int(features.shape[0])
     )
-    normalized_features = row_normalize_dense(features)
+    chain = chain or canonical_quantization_scale_chain()
+    normalized_features = canonical_input_preprocess(
+        features, "ppi", expected_preprocess_id
+    )
+    quantized_features, input_diagnostic = quantized_input_features(
+        normalized_features,
+        chain,
+        range_bits=range_bits,
+    )
     return PPIData(
-        features=torch.tensor(normalized_features, dtype=torch.float32, device=device),
+        features=torch.tensor(quantized_features, dtype=torch.float32, device=device),
         labels_multi=torch.tensor(labels_multi, dtype=torch.float32, device=device),
         train_mask=torch.tensor(masks["train"], dtype=torch.bool, device=device),
         val_mask=torch.tensor(masks["val"], dtype=torch.bool, device=device),
@@ -192,6 +234,7 @@ def load_ppi_dataset(
         num_nodes=int(features.shape[0]),
         num_features=int(features.shape[1]),
         num_classes=int(labels_multi.shape[1]),
+        input_quantization_diagnostic=input_diagnostic,
     )
 
 
@@ -231,6 +274,9 @@ def main() -> None:
 
     hidden_profile = require_canonical_model_config(cfg, "ppi")
     k_out = 2
+    chain = canonical_quantization_scale_chain(
+        cfg["quant_cfg_id"], hidden_profile, k_out
+    )
 
     epochs = int(_override(args.epochs, cfg_int(cfg, "epochs", 500)))
     patience = int(_override(args.patience, cfg_int(cfg, "patience", 100)))
@@ -257,12 +303,15 @@ def main() -> None:
 
     device = torch.device("cuda")
     set_seed(seed)
-    data = load_ppi_dataset(project_root, data_root, cache_root, device)
-    input_quantization = input_quantization_diagnostic(
-        data.features,
-        scale=1,
+    data = load_ppi_dataset(
+        project_root,
+        data_root,
+        cache_root,
+        device,
+        chain=chain,
         range_bits=cfg_int(cfg, "range_bits", 14),
     )
+    input_quantization = data.input_quantization_diagnostic
     if data.num_features != 50:
         raise ValueError(f"PPI formal feature width must be 50, got {data.num_features}")
     model = PlanetoidGAT(
@@ -270,6 +319,7 @@ def main() -> None:
         num_classes=data.num_classes,
         hidden_profile=hidden_profile,
         k_out=k_out,
+        quantization=chain,
     ).to(device)
     optimizer = build_optimizer(model, learning_rate, weight_decay)
     metadata = checkpoint_metadata(
@@ -378,13 +428,14 @@ def main() -> None:
             return_trace=False,
         )
     np.save(
-        output_dir / "best_logits.npy",
+        output_dir / "qat_best_logits.npy",
         best_logits.detach().cpu().numpy().astype(np.float32, copy=False),
     )
     (output_dir / "training_summary.json").write_text(
         json.dumps(
             {
                 "dataset": "ppi",
+                "qat_float32_non_formal": True,
                 "device": str(device),
                 "wall_time_sec": time.perf_counter() - start,
                 "best_metrics": best_metrics,

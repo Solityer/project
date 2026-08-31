@@ -8,6 +8,12 @@ from typing import Dict
 
 import numpy as np
 
+from quantization_scale_chain import (
+    OGBN_ARXIV_RAW_INPUT_PREPROCESS_ID,
+    canonical_input_preprocess,
+    canonical_row_normalize,
+)
+
 
 @dataclass
 class OgbnArxivData:
@@ -19,11 +25,18 @@ class OgbnArxivData:
 
 
 def row_normalize_dense(features: np.ndarray) -> np.ndarray:
-    rowsum = features.sum(axis=1, keepdims=True)
-    normalized = features.copy()
-    non_zero = rowsum.squeeze(-1) != 0.0
-    normalized[non_zero] /= rowsum[non_zero]
-    return normalized.astype(np.float32, copy=False)
+    """Compatibility helper for the PPI trainer; OGBN never calls this."""
+    return canonical_row_normalize(features)
+
+
+def preprocess_input_features(
+    features: np.ndarray,
+    *,
+    dataset: str = "ogbn_arxiv",
+    input_preprocess_id: str = OGBN_ARXIV_RAW_INPUT_PREPROCESS_ID,
+) -> np.ndarray:
+    """Apply the dataset-aware canonical input preprocessing contract."""
+    return canonical_input_preprocess(features, dataset, input_preprocess_id)
 
 
 def dataset_root(data_root: pathlib.Path) -> pathlib.Path:
@@ -105,6 +118,19 @@ def ensure_cache(project_root: pathlib.Path, data_root: pathlib.Path) -> pathlib
     output_root = cache_root(project_root)
     meta_path = output_root / "meta.cfg"
     if meta_path.exists():
+        metadata: dict[str, str] = {}
+        for line in meta_path.read_text(encoding="utf-8").splitlines():
+            line = line.split("#", 1)[0].strip()
+            if not line or "=" not in line:
+                continue
+            key, value = (part.strip() for part in line.split("=", 1))
+            metadata[key] = value
+        cached_id = metadata.get("input_preprocess_id")
+        if cached_id != OGBN_ARXIV_RAW_INPUT_PREPROCESS_ID:
+            raise ValueError(
+                "ogbn-arxiv cache is missing or uses a non-canonical input_preprocess_id; "
+                "refusing to consume legacy normalized features"
+            )
         return output_root
 
     arrays = load_raw_arrays(data_root)
@@ -126,6 +152,7 @@ def ensure_cache(project_root: pathlib.Path, data_root: pathlib.Path) -> pathlib
                 "graph_count = 1",
                 "task_type = transductive_node_classification",
                 "report_unit = node",
+                f"input_preprocess_id = {OGBN_ARXIV_RAW_INPUT_PREPROCESS_ID}",
             ]
         )
         + "\n",

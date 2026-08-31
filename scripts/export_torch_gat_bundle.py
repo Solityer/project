@@ -11,6 +11,7 @@ import torch
 
 from export_gat_checkpoint import archive_key, build_family_manifest, write_text_tensor_dump
 from train_planetoid_gat import CANONICAL_MODEL_SPECS, load_checkpoint
+from quantization_scale_chain import canonical_input_preprocess_id
 
 
 def export_linear_kernel(weight: torch.Tensor) -> np.ndarray:
@@ -135,6 +136,11 @@ def build_tensors_and_manifest_spec(
         or bundle.get("quant_cfg_id") != "gat_l3_scale_chain_v1"
     ):
         raise ValueError("PyTorch checkpoint does not match the canonical L=3 multi-head formal shape")
+    expected_preprocess_id = canonical_input_preprocess_id(dataset)
+    if bundle.get("input_preprocess_id") != expected_preprocess_id:
+        raise ValueError(
+            "PyTorch checkpoint input_preprocess_id does not match its dataset"
+        )
     if dataset_key == "ppi":
         ppi_semantics = {
             "label_format": "multi_hot",
@@ -235,10 +241,13 @@ def main() -> None:
         task_type=str(bundle.get("task_type", "transductive_node_classification")),
         report_unit=str(bundle.get("report_unit", "node")),
         quant_cfg_id=str(bundle.get("quant_cfg_id", "gat_l3_scale_chain_v1")),
+        quantization_scale_chain=str(bundle["quantization_scale_chain"]),
         static_table_id=str(bundle.get("static_table_id", "tables:lrelu+elu+exp+range")),
         degree_bound_id=str(bundle.get("degree_bound_id", "auto")),
         model_arch_id=str(bundle.get("model_arch_id", "")) or None,
         model_param_id=str(bundle.get("model_param_id", "")) or checkpoint_path.name,
+        dataset=str(bundle["dataset"]),
+        input_preprocess_id=str(bundle["input_preprocess_id"]),
     )
     for metadata_key in ("label_format", "loss", "selection_metric", "split_format"):
         if metadata_key in bundle:

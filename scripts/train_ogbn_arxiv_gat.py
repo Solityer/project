@@ -11,7 +11,12 @@ from typing import Dict, List
 import numpy as np
 import torch
 
-from ogbn_arxiv_utils import build_sorted_edge_index, ensure_cache, load_raw_arrays, row_normalize_dense
+from ogbn_arxiv_utils import (
+    build_sorted_edge_index,
+    ensure_cache,
+    load_raw_arrays,
+    preprocess_input_features,
+)
 from train_planetoid_gat import (
     PlanetoidGAT,
     add_training_cli,
@@ -21,11 +26,13 @@ from train_planetoid_gat import (
     cfg_float,
     cfg_int,
     input_quantization_diagnostic,
+    quantized_input_features,
     parse_cfg,
     require_canonical_model_config,
     set_seed,
     _override,
 )
+from quantization_scale_chain import canonical_quantization_scale_chain
 
 
 def masked_accuracy(logits: torch.Tensor, labels: torch.Tensor, indices: torch.Tensor) -> float:
@@ -69,11 +76,14 @@ def main() -> None:
         )
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    ensure_cache(project_root, data_root)
+    cache_root = ensure_cache(project_root, data_root)
 
     seed = cfg_int(cfg, "seed", 11)
     hidden_profile = require_canonical_model_config(cfg, dataset)
     k_out = 2
+    chain = canonical_quantization_scale_chain(
+        cfg["quant_cfg_id"], hidden_profile, k_out
+    )
     seed = int(_override(args.seed, seed))
     epochs = int(_override(args.epochs, cfg_int(cfg, "epochs", 500)))
     patience = int(_override(args.patience, cfg_int(cfg, "patience", 100)))
@@ -112,20 +122,37 @@ def main() -> None:
     set_seed(seed)
 
     arrays = load_raw_arrays(data_root)
-    normalized_features = row_normalize_dense(arrays.features)
-    input_quantization = input_quantization_diagnostic(
-        normalized_features,
-        scale=1,
+    cached_features = np.load(cache_root / "features.npy", allow_pickle=False)
+    if (
+        cached_features.dtype != np.dtype(np.float32)
+        or cached_features.shape != arrays.features.shape
+        or not np.array_equal(cached_features, arrays.features)
+    ):
+        raise ValueError(
+            "ogbn-arxiv cache features.npy is not the exact released float32 producer output"
+        )
+    # OGBN-Arxiv is registered as raw_float32_v1: the released float32
+    # feature matrix enters the canonical ties-away quantizer directly.  Do
+    # not apply the Planetoid/PPI row-normalization contract here.
+    input_preprocess_id = str(cfg["input_preprocess_id"])
+    raw_features = preprocess_input_features(
+        cached_features,
+        dataset="ogbn_arxiv",
+        input_preprocess_id=input_preprocess_id,
+    )
+    quantized_features, input_quantization = quantized_input_features(
+        raw_features,
+        chain,
         range_bits=cfg_int(cfg, "range_bits", 21),
     )
     edge_src, edge_dst = build_sorted_edge_index(
         arrays.edge_src,
         arrays.edge_dst,
-        normalized_features.shape[0],
+        raw_features.shape[0],
         symmetrize=symmetrize,
         add_self_loops=True,
     )
-    features = torch.tensor(normalized_features, dtype=torch.float32, device=device)
+    features = torch.tensor(quantized_features, dtype=torch.float32, device=device)
     labels = torch.tensor(arrays.labels, dtype=torch.long, device=device)
     train_idx = torch.tensor(arrays.split_idx["train"], dtype=torch.long, device=device)
     valid_idx = torch.tensor(arrays.split_idx["valid"], dtype=torch.long, device=device)
@@ -139,6 +166,7 @@ def main() -> None:
         num_classes=num_classes,
         hidden_profile=hidden_profile,
         k_out=k_out,
+        quantization=chain,
     ).to(device)
     optimizer = build_optimizer(model, lr, weight_decay)
     metadata = checkpoint_metadata(
@@ -262,11 +290,12 @@ def main() -> None:
         final_test_acc = masked_accuracy(best_logits, labels, test_idx)
         final_test_loss = float(masked_loss(best_logits, labels, test_idx).item())
 
-    np.save(output_dir / "best_logits.npy", best_logits.detach().cpu().numpy().astype(np.float32, copy=False))
+    np.save(output_dir / "qat_best_logits.npy", best_logits.detach().cpu().numpy().astype(np.float32, copy=False))
     (output_dir / "training_summary.json").write_text(
         json.dumps(
             {
                 "dataset": "ogbn-arxiv",
+                "qat_float32_non_formal": True,
                 "device": str(device),
                 "wall_time_sec": time.perf_counter() - start,
                 "best_metrics": best_metrics,
@@ -277,7 +306,7 @@ def main() -> None:
                 "per_epoch_test_diagnostic": bool(args.diagnostic_test_each_epoch),
                 "input_quantization_diagnostic": input_quantization,
                 "history_tail": history[-10:],
-                "checkpoint_metadata": metadata,
+        "checkpoint_metadata": metadata,
             },
             indent=2,
             sort_keys=True,

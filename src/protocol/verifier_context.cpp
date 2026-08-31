@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -64,6 +65,17 @@ namespace gatzk::protocol
                     { return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'); });
         }
 
+        std::string canonical_dataset_name(std::string_view value)
+        {
+            std::string out(value);
+            std::transform(
+                out.begin(), out.end(), out.begin(),
+                [](unsigned char ch)
+                { return static_cast<char>(std::tolower(ch)); });
+            std::replace(out.begin(), out.end(), '-', '_');
+            return out;
+        }
+
         void append_registry_entry(
             std::string *out,
             const VerifierRegistryEntry &entry)
@@ -99,6 +111,7 @@ namespace gatzk::protocol
             std::ostringstream out;
             out << "model_layout_v1|arch=" << model.model_arch_id
                 << "|param=" << model.model_param_id
+                << "|input_preprocess=" << model.input_preprocess_id
                 << "|L=" << model.L
                 << "|K_out=" << model.K_out
                 << "|C=" << model.C;
@@ -123,6 +136,7 @@ namespace gatzk::protocol
             std::ostringstream out;
             out << "model_layout_v1|arch=" << model.model_arch_id
                 << "|param=" << model.model_param_id
+                << "|input_preprocess=" << model.input_preprocess_id
                 << "|L=" << model.L
                 << "|K_out=" << model.K_out
                 << "|C=" << model.C;
@@ -276,6 +290,7 @@ namespace gatzk::protocol
             std::string bytes;
             append_string(&bytes, "public_input_v1");
             append_string(&bytes, local.name);
+            append_string(&bytes, local.input_preprocess_id);
             append_u64(&bytes, local.num_nodes);
             append_u64(&bytes, local.num_features);
             append_u64(&bytes, local.num_classes);
@@ -537,6 +552,7 @@ namespace gatzk::protocol
             registry.registry_id = context.config.model_param_id;
             registry.model_arch_id = context.config.model_arch_id;
             registry.model_param_id = context.config.model_param_id;
+            registry.input_preprocess_id = context.config.input_preprocess_id;
             registry.quant_cfg_id = context.config.quant_cfg_id;
             registry.static_table_id = context.config.static_table_id;
             registry.srs_id = context.kzg.manifest.srs_id;
@@ -607,6 +623,7 @@ namespace gatzk::protocol
             out.quantization = config.quantization;
             out.model_arch_id = config.model_arch_id;
             out.model_param_id = config.model_param_id;
+            out.input_preprocess_id = config.input_preprocess_id;
             out.static_table_id = config.static_table_id;
             out.degree_bound_id = config.degree_bound_id;
             out.srs_type = config.srs_type;
@@ -635,6 +652,7 @@ namespace gatzk::protocol
             out.has_real_multihead = model.has_real_multihead;
             out.model_arch_id = model.model_arch_id;
             out.model_param_id = model.model_param_id;
+            out.input_preprocess_id = model.input_preprocess_id;
             out.quant_cfg_id = model.quant_cfg_id;
             out.static_table_id = model.static_table_id;
             out.degree_bound_id = model.degree_bound_id;
@@ -1114,6 +1132,8 @@ namespace gatzk::protocol
             if (!model.has_real_multihead
                 || model.L < 2
                 || model.L != config.layer_count
+                || model.input_preprocess_id.empty()
+                || model.input_preprocess_id != config.input_preprocess_id
                 || model.L != model.hidden_layers.size() + 1
                 || model.hidden_layers.size() != config.hidden_profile.size()
                 || !profile_matches
@@ -1157,6 +1177,11 @@ namespace gatzk::protocol
             const auto &local = context.local;
             if (dataset.name.empty() || local.name.empty()
                 || local.name != dataset.name + "_normalized"
+                || dataset.input_preprocess_id.empty()
+                || local.input_preprocess_id != dataset.input_preprocess_id
+                || context.config.input_preprocess_id != dataset.input_preprocess_id
+                || context.config.input_preprocess_id
+                       != util::canonical_input_preprocess_id(context.config.dataset)
                 || dataset.num_nodes == 0
                 || dataset.num_features == 0
                 || dataset.num_classes == 0
@@ -1275,6 +1300,8 @@ namespace gatzk::protocol
                 normalization_config.edge_sort_rule = context.config.edge_sort_rule;
                 normalization_config.chunking_rule = context.config.chunking_rule;
                 normalization_config.batch_graphs = context.config.batch_graphs;
+                normalization_config.input_preprocess_id =
+                    context.config.input_preprocess_id;
                 // These are the only accepted mainline normalization
                 // semantics and are deliberately not caller-controlled by a
                 // verifier artifact that lacks the corresponding raw-data
@@ -1511,7 +1538,15 @@ namespace gatzk::protocol
                     return false;
             if (context.dataset.name.empty()
                 || context.local.name.empty()
-                || context.config.dataset != context.dataset.name
+                || canonical_dataset_name(context.config.dataset)
+                       != canonical_dataset_name(context.dataset.name)
+                || context.config.input_preprocess_id.empty()
+                || context.config.input_preprocess_id
+                       != util::canonical_input_preprocess_id(context.config.dataset)
+                || context.dataset.input_preprocess_id
+                       != context.config.input_preprocess_id
+                || context.local.input_preprocess_id
+                       != context.config.input_preprocess_id
                 || context.dataset.task_type != context.config.task_type
                 || context.dataset.report_unit != context.config.report_unit
                 || context.local.task_type != context.config.task_type
@@ -1567,6 +1602,9 @@ namespace gatzk::protocol
                 || context.registry.registry_id != context.config.model_param_id
                 || context.registry.model_arch_id != context.config.model_arch_id
                 || context.registry.model_param_id != context.config.model_param_id
+                || context.registry.input_preprocess_id.empty()
+                || context.registry.input_preprocess_id
+                       != context.config.input_preprocess_id
                 || context.registry.quant_cfg_id != context.config.quant_cfg_id
                 || context.registry.static_table_id != context.config.static_table_id
                 || context.registry.srs_id != context.srs.srs_id
@@ -2221,6 +2259,7 @@ namespace gatzk::protocol
         append_string(&bytes, registry_id);
         append_string(&bytes, model_arch_id);
         append_string(&bytes, model_param_id);
+        append_string(&bytes, input_preprocess_id);
         append_string(&bytes, quant_cfg_id);
         append_string(&bytes, static_table_id);
         append_string(&bytes, srs_id);
@@ -2478,6 +2517,7 @@ namespace gatzk::protocol
             out.config.quantization = verifier_context.config.quantization;
             out.config.model_arch_id = verifier_context.config.model_arch_id;
             out.config.model_param_id = verifier_context.config.model_param_id;
+            out.config.input_preprocess_id = verifier_context.config.input_preprocess_id;
             out.config.static_table_id = verifier_context.config.static_table_id;
             out.config.degree_bound_id = verifier_context.config.degree_bound_id;
             out.config.srs_type = verifier_context.config.srs_type;
@@ -2511,6 +2551,7 @@ namespace gatzk::protocol
             out.model.has_real_multihead = verifier_context.model.has_real_multihead;
             out.model.model_arch_id = verifier_context.model.model_arch_id;
             out.model.model_param_id = verifier_context.model.model_param_id;
+            out.model.input_preprocess_id = verifier_context.model.input_preprocess_id;
             out.model.quant_cfg_id = verifier_context.model.quant_cfg_id;
             out.model.static_table_id = verifier_context.model.static_table_id;
             out.model.degree_bound_id = verifier_context.model.degree_bound_id;
