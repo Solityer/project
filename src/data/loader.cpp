@@ -88,36 +88,6 @@ namespace gatzk::data
             return out;
         }
 
-        std::int64_t quantize_raw_at_scale(
-            double value,
-            std::uint64_t scale)
-        {
-            if (scale == 0 || !std::isfinite(value))
-                throw std::runtime_error(
-                    "input feature cannot be represented by the registered quantizer");
-            const auto scaled = value * static_cast<double>(scale);
-            if (!std::isfinite(scaled))
-                throw std::runtime_error(
-                    "input feature cannot be represented by the registered quantizer");
-            const auto rounded = scaled >= 0.0
-                                     ? std::floor(scaled + 0.5)
-                                     : std::ceil(scaled - 0.5);
-            if (!std::isfinite(rounded)
-                || rounded > static_cast<double>(std::numeric_limits<std::int64_t>::max())
-                || rounded < static_cast<double>(std::numeric_limits<std::int64_t>::min()))
-                throw std::runtime_error(
-                    "input feature cannot be represented by the registered quantizer");
-            return static_cast<std::int64_t>(rounded);
-        }
-
-        FieldElement quantize(
-            double value,
-            std::uint64_t scale)
-        {
-            return FieldElement::from_signed(
-                quantize_raw_at_scale(value, scale));
-        }
-
         struct NpyArray
         {
             std::vector<std::size_t> shape;
@@ -410,7 +380,7 @@ namespace gatzk::data
             {
                 for (std::size_t col = 0; col < dataset.num_features; ++col)
                 {
-                    dataset.features[row][col] = quantize(
+                    dataset.features[row][col] = quantize_field_at_scale(
                         dataset.features_fp[row][col],
                         input_scale);
                 }
@@ -615,6 +585,41 @@ namespace gatzk::data
 
     } // namespace
 
+    std::int64_t quantize_raw_at_scale(
+        double value,
+        std::uint64_t scale)
+    {
+        // Keep the multiplication and rounding in a wider accumulator.  A
+        // double comparison against INT64_MAX is insufficient because that
+        // endpoint rounds to 2^63 in binary64, which could otherwise permit an
+        // out-of-range conversion to int64_t.
+        if (scale == 0 || !std::isfinite(value))
+            throw std::runtime_error(
+                "registered quantizer requires a positive scale and finite input");
+        const auto scaled =
+            static_cast<long double>(value) * static_cast<long double>(scale);
+        if (!std::isfinite(scaled))
+            throw std::runtime_error(
+                "registered quantizer input scaling overflow");
+        const auto rounded = scaled >= 0.0L
+                                 ? std::floor(scaled + 0.5L)
+                                 : std::ceil(scaled - 0.5L);
+        if (!std::isfinite(rounded)
+            || rounded > static_cast<long double>(std::numeric_limits<std::int64_t>::max())
+            || rounded < static_cast<long double>(std::numeric_limits<std::int64_t>::min()))
+            throw std::runtime_error(
+                "registered quantizer rounded value exceeds int64");
+        return static_cast<std::int64_t>(rounded);
+    }
+
+    algebra::FieldElement quantize_field_at_scale(
+        double value,
+        std::uint64_t scale)
+    {
+        return algebra::FieldElement::from_signed(
+            quantize_raw_at_scale(value, scale));
+    }
+
     GraphDataset load_dataset(const util::AppConfig &config)
     {
         const std::filesystem::path project_root(config.project_root);
@@ -641,11 +646,25 @@ namespace gatzk::data
         const LocalGraph &local,
         std::uint64_t input_scale)
     {
+        const bool dataset_raw_present = !dataset.features_fp.empty();
+        const bool dataset_quantized_present = !dataset.features.empty();
+        // A full-graph proving context may deliberately drop the duplicated
+        // dataset feature matrices after the canonical context has validated
+        // them; LocalGraph remains the sole owned witness view in that case.
+        // Never accept a partially redacted dataset, and never allow a
+        // partial-batch local view to stand in for the missing dataset source.
+        if (dataset_raw_present != dataset_quantized_present
+            || (dataset_raw_present
+                && (dataset.features_fp.size() != dataset.num_nodes
+                    || dataset.features.size() != dataset.num_nodes)))
+            throw std::runtime_error(
+                "dataset input feature views are partially present or malformed");
+
+        const bool dataset_views_present =
+            dataset_raw_present && dataset_quantized_present;
         if (input_scale == 0
             || dataset.num_nodes == 0
             || dataset.num_features == 0
-            || dataset.features_fp.size() != dataset.num_nodes
-            || dataset.features.size() != dataset.num_nodes
             || local.num_nodes == 0
             || local.num_features != dataset.num_features
             || local.absolute_ids.size() != local.num_nodes
@@ -654,22 +673,31 @@ namespace gatzk::data
             throw std::runtime_error(
                 "input feature raw/quantized view shape mismatch");
 
-        for (std::size_t row = 0; row < dataset.num_nodes; ++row)
+        if (!dataset_views_present
+            && (local.num_nodes != dataset.num_nodes
+                || local.absolute_ids.size() != dataset.num_nodes))
+            throw std::runtime_error(
+                "redacted dataset input views require the complete local feature view");
+
+        if (dataset_views_present)
         {
-            if (dataset.features_fp[row].size() != dataset.num_features
-                || dataset.features[row].size() != dataset.num_features)
-                throw std::runtime_error(
-                    "dataset input feature raw/quantized view shape mismatch");
-            for (std::size_t column = 0;
-                 column < dataset.num_features;
-                 ++column)
+            for (std::size_t row = 0; row < dataset.num_nodes; ++row)
             {
-                const auto expected = quantize(
-                    dataset.features_fp[row][column],
-                    input_scale);
-                if (dataset.features[row][column] != expected)
+                if (dataset.features_fp[row].size() != dataset.num_features
+                    || dataset.features[row].size() != dataset.num_features)
                     throw std::runtime_error(
-                        "dataset input feature quantization does not match S_input");
+                        "dataset input feature raw/quantized view shape mismatch");
+                for (std::size_t column = 0;
+                     column < dataset.num_features;
+                     ++column)
+                {
+                    const auto expected = quantize_field_at_scale(
+                        dataset.features_fp[row][column],
+                        input_scale);
+                    if (dataset.features[row][column] != expected)
+                        throw std::runtime_error(
+                            "dataset input feature quantization does not match S_input");
+                }
             }
         }
 
@@ -680,6 +708,7 @@ namespace gatzk::data
             const auto absolute_id = local.absolute_ids[row];
             if (absolute_id >= dataset.num_nodes
                 || !seen_ids.insert(absolute_id).second
+                || (!dataset_views_present && absolute_id != row)
                 || local.features_fp[row].size() != local.num_features
                 || local.features[row].size() != local.num_features)
                 throw std::runtime_error(
@@ -688,14 +717,15 @@ namespace gatzk::data
                  column < local.num_features;
                  ++column)
             {
-                const auto expected = quantize(
+                const auto expected = quantize_field_at_scale(
                     local.features_fp[row][column],
                     input_scale);
                 if (local.features[row][column] != expected
-                    || local.features[row][column]
-                           != dataset.features[absolute_id][column]
-                    || local.features_fp[row][column]
-                           != dataset.features_fp[absolute_id][column])
+                    || (dataset_views_present
+                        && (local.features[row][column]
+                                != dataset.features[absolute_id][column]
+                            || local.features_fp[row][column]
+                                   != dataset.features_fp[absolute_id][column])))
                     throw std::runtime_error(
                         "local input feature views are not bound to dataset views");
             }

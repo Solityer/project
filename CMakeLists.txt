@@ -260,3 +260,7 @@ add_test(NAME verifier_privacy_runtime COMMAND gatzk_verifier_privacy_test)
 add_executable(gatzk_kzg_resource_identity_test tests/kzg_resource_identity_runtime.cpp)
 target_link_libraries(gatzk_kzg_resource_identity_test PRIVATE gatzkml)
 add_test(NAME kzg_resource_identity_runtime COMMAND gatzk_kzg_resource_identity_test)
+
+add_executable(gatzk_input_quantization_test tests/input_quantization_runtime.cpp)
+target_link_libraries(gatzk_input_quantization_test PRIVATE gatzkml)
+add_test(NAME input_quantization_runtime COMMAND gatzk_input_quantization_test)

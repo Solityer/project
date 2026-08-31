@@ -9,6 +9,17 @@
 
 namespace gatzk::data
 {
+    // Canonical registered fixed-point quantizer shared by dataset loading,
+    // trace construction, and the independent reference.  It implements
+    // nearest-integer rounding with exact half cases away from zero and
+    // rejects non-finite inputs, zero scales, and int64 overflow.
+    std::int64_t quantize_raw_at_scale(
+        double value,
+        std::uint64_t scale);
+    algebra::FieldElement quantize_field_at_scale(
+        double value,
+        std::uint64_t scale);
+
     // 按配置读取完整数据集，并完成量化前后的基础缓存加载。
     GraphDataset load_dataset(const util::AppConfig &config);
     // 将完整数据集裁剪 / 排序 / 补自环后整理为 formal 主线使用的局部图。

@@ -106,8 +106,11 @@ REQUIRED_HASHES = (
     "security_budget_ledger_digest",
 )
 
-# Actual same-dataset fields that must agree between CPU and CUDA manifests.
-# public_metadata_hash is intentionally excluded because proof_nonce differs.
+# Actual same-dataset semantic fields that must agree between CPU and CUDA
+# manifests.  public_metadata_hash is intentionally excluded because
+# proof_nonce differs.  Build/binary/report provenance remains mandatory and
+# is independently validated for each manifest, but those artifacts are
+# backend-specific and therefore must not be equal across CPU and CUDA.
 PAIR_CONSISTENCY_FIELDS = (
     "protocol_schema_id",
     "instance_schema_hash",
@@ -122,8 +125,6 @@ PAIR_CONSISTENCY_FIELDS = (
     "public_input_digest",
     "topology_digest",
     "source_tree_hash",
-    "binary_hash",
-    "build_identity",
     "trusted_registry_digest",
     "verifier_registry_digest",
     "security_budget_ledger_digest",
@@ -138,8 +139,6 @@ PAIR_CONSISTENCY_FIELDS = (
     "model_arch",
     "srs_degree_bound",
     "source_manifest_hash",
-    "build_receipt_hash",
-    "verifier_report_hash",
 )
 
 REGISTRY_INSPECTION_KEYS = {

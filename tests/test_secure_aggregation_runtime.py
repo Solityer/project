@@ -96,6 +96,81 @@ class SecureAggregationRuntimeTests(unittest.TestCase):
         cuda = dict(cpu)
         AGGREGATOR.compare_cpu_cuda_pair("synthetic", cpu, cuda)
 
+    def test_cpu_cuda_pair_allows_distinct_backend_provenance(self):
+        cpu = self.pair_row()
+        cuda = dict(cpu)
+        for field in (
+            "binary_hash",
+            "build_identity",
+            "build_receipt_hash",
+            "verifier_report_hash",
+        ):
+            cpu[field] = self.digest(f"cpu:{field}")
+            cuda[field] = self.digest(f"cuda:{field}")
+            self.assertIn(field, AGGREGATOR.REQUIRED_HASHES)
+            self.assertNotIn(field, AGGREGATOR.PAIR_CONSISTENCY_FIELDS)
+        AGGREGATOR.compare_cpu_cuda_pair("synthetic", cpu, cuda)
+
+    def test_cpu_cuda_pair_source_tree_mismatch_fails_closed(self):
+        cpu = self.pair_row()
+        cuda = dict(cpu)
+        cuda["source_tree_hash"] = "different-source-tree"
+        with self.assertRaises(ValueError):
+            AGGREGATOR.compare_cpu_cuda_pair("synthetic", cpu, cuda)
+
+    def test_backend_provenance_hashes_remain_required_and_validated(self):
+        proof_bytes = b"synthetic proof"
+        with tempfile.TemporaryDirectory() as temporary:
+            proof_path = pathlib.Path(temporary) / "proof.bin"
+            proof_path.write_bytes(proof_bytes)
+            manifest = {
+                "verifier_reads_witness": "false",
+                "private_plain_value_count": "0",
+                "proof_payload_audit_status": "passed",
+                "reference_consistency_passed": "true",
+                "tamper_tests_passed": "true",
+                "tamper_tests_ms": "1.0",
+                "tamper_test_case_map": self.tamper_map(),
+                "security_budget_passed": "true",
+                "security_budget_exact": "1/2",
+                "proof_hash": hashlib.sha256(proof_bytes).hexdigest(),
+                "secure_trace_logits_hash": self.digest("public-output"),
+                "reference_quant_logits_hash": self.digest("public-output"),
+                "proof_public_output_hash": self.digest("public-output"),
+                "public_input_digest": self.digest("public-input"),
+                "topology_digest": self.digest("topology"),
+                "source_tree_hash": self.digest("source-tree"),
+                "source_manifest_hash": self.digest("source-manifest"),
+                "binary_hash": self.digest("binary"),
+                "build_identity": self.digest("build"),
+                "build_receipt_hash": self.digest("build-receipt"),
+                "verifier_report_hash": self.digest("verifier-report"),
+                "trusted_registry_digest": self.digest("registry"),
+                "verifier_registry_digest": self.digest("registry"),
+                "security_budget_ledger_digest": self.digest("budget-ledger"),
+                "quant_config_hash": self.digest("quant-config"),
+                "srs_manifest_hash": self.digest("srs-manifest"),
+                "public_metadata_hash": self.digest("proof-specific-metadata"),
+                "static_table_hash": self.digest("static-tables"),
+            }
+            for field in (
+                "binary_hash",
+                "build_identity",
+                "build_receipt_hash",
+                "verifier_report_hash",
+            ):
+                for invalid in ("", "not-a-sha256"):
+                    mutated = dict(manifest)
+                    mutated[field] = invalid
+                    with self.assertRaises(ValueError):
+                        AGGREGATOR.check_security(
+                            mutated,
+                            proof_path,
+                            self.report(),
+                            self.registration(),
+                            f"synthetic/cpu/{field}",
+                        )
+
     def test_cpu_cuda_pair_hash_mutation_fails_closed(self):
         cpu = self.pair_row()
         cuda = dict(cpu)

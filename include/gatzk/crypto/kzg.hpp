@@ -303,6 +303,12 @@ namespace gatzk::crypto
         // Build the unique compiler-sized commitment to F(X + delta) using the
         // protocol's coefficient_taylor_shift implementation.  The source
         // opening material includes its registered domain/counter blinder.
+        static algebra::Polynomial materialize_taylor_shifted_polynomial(
+            const Commitment &source,
+            const std::string &shifted_name,
+            std::size_t configured_degree,
+            const algebra::FieldElement &delta,
+            const KZGKeyPair &key);
         static Commitment commit_taylor_shifted(
             const Commitment &source,
             const std::string &shifted_name,

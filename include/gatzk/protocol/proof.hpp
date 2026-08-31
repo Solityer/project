@@ -988,8 +988,11 @@ namespace gatzk::protocol
         // are never serialized into a proof or an artifact; they let the
         // commitment scopes pause the prove clock without deriving prove_time
         // as a residual from a larger wall-clock interval.
+        bool timing_state_valid = true;
+        std::string timing_state_error;
         bool prove_timer_started = false;
         bool prove_timer_running = false;
+        bool prove_timer_finished = false;
         std::size_t commitment_timer_depth = 0;
         std::chrono::steady_clock::time_point prove_timer_segment_start{};
         std::chrono::steady_clock::time_point commitment_timer_start{};
@@ -1006,17 +1009,44 @@ namespace gatzk::protocol
             return std::chrono::duration<double, std::milli>(end - start).count();
         }
 
+        inline void mark_invalid(
+            RunMetrics *metrics,
+            const char *reason)
+        {
+            if (metrics == nullptr)
+                return;
+            metrics->timing_state_valid = false;
+            metrics->timing_state_error = reason != nullptr ? reason : "formal timing state is invalid";
+        }
+
+        inline void require_valid(const RunMetrics &metrics)
+        {
+            if (!metrics.timing_state_valid)
+                throw std::runtime_error(
+                    metrics.timing_state_error.empty()
+                        ? "formal timing state is invalid"
+                        : metrics.timing_state_error);
+        }
+
         inline void start_prove_timer(RunMetrics *metrics)
         {
             if (metrics == nullptr)
                 return;
+            require_valid(*metrics);
             if (metrics->prove_timer_started
+                || metrics->prove_timer_finished
                 || metrics->commitment_timer_depth != 0)
+            {
+                mark_invalid(
+                    metrics,
+                    "formal prove timer started in an invalid timing state");
                 throw std::runtime_error(
                     "formal prove timer started in an invalid timing state");
+            }
             metrics->prove_time_ms = 0.0;
             metrics->prove_timer_started = true;
             metrics->prove_timer_running = true;
+            metrics->prove_timer_finished = false;
             metrics->prove_timer_segment_start = Clock::now();
         }
 
@@ -1024,25 +1054,56 @@ namespace gatzk::protocol
         {
             if (metrics == nullptr)
                 return;
+            require_valid(*metrics);
             if (!metrics->prove_timer_started
                 || !metrics->prove_timer_running
                 || metrics->commitment_timer_depth != 0)
+            {
+                mark_invalid(
+                    metrics,
+                    "formal prove timer finished in an invalid timing state");
                 throw std::runtime_error(
                     "formal prove timer finished in an invalid timing state");
-            metrics->prove_time_ms += elapsed_ms(
+            }
+            const auto finished = Clock::now();
+            const auto duration_ms = elapsed_ms(
                 metrics->prove_timer_segment_start,
-                Clock::now());
-            if (metrics->prove_time_ms < 0.0)
+                finished);
+            if (duration_ms < 0.0)
+            {
+                mark_invalid(
+                    metrics,
+                    "formal prove timer measured a negative duration");
                 throw std::runtime_error(
                     "formal prove timer measured a negative duration");
+            }
+            metrics->prove_time_ms += duration_ms;
+            if (metrics->prove_time_ms < 0.0)
+            {
+                mark_invalid(
+                    metrics,
+                    "formal prove timer measured a negative duration");
+                throw std::runtime_error(
+                    "formal prove timer measured a negative duration");
+            }
             metrics->prove_timer_started = false;
             metrics->prove_timer_running = false;
+            metrics->prove_timer_finished = true;
         }
 
         inline void begin_commitment(RunMetrics *metrics)
         {
             if (metrics == nullptr)
                 return;
+            require_valid(*metrics);
+            if (metrics->prove_timer_finished)
+            {
+                mark_invalid(
+                    metrics,
+                    "commitment started after formal prove serialization");
+                throw std::runtime_error(
+                    "commitment started after formal prove serialization");
+            }
             if (metrics->commitment_timer_depth == 0)
             {
                 metrics->commitment_timer_start = Clock::now();
@@ -1062,24 +1123,75 @@ namespace gatzk::protocol
         {
             if (metrics == nullptr)
                 return;
+            require_valid(*metrics);
             if (metrics->commitment_timer_depth == 0)
+            {
+                mark_invalid(
+                    metrics,
+                    "formal commitment timer ended without a matching scope");
                 throw std::runtime_error(
                     "formal commitment timer ended without a matching scope");
+            }
             --metrics->commitment_timer_depth;
             if (metrics->commitment_timer_depth != 0)
                 return;
 
             const auto finished = Clock::now();
-            metrics->commitment_time_ms += elapsed_ms(
+            const auto duration_ms = elapsed_ms(
                 metrics->commitment_timer_start,
                 finished);
-            if (metrics->commitment_time_ms < 0.0)
+            if (duration_ms < 0.0)
+            {
+                mark_invalid(
+                    metrics,
+                    "formal commitment timer measured a negative duration");
                 throw std::runtime_error(
                     "formal commitment timer measured a negative duration");
+            }
+            metrics->commitment_time_ms += duration_ms;
+            if (metrics->commitment_time_ms < 0.0)
+            {
+                mark_invalid(
+                    metrics,
+                    "formal commitment timer measured a negative duration");
+                throw std::runtime_error(
+                    "formal commitment timer measured a negative duration");
+            }
             if (metrics->prove_timer_started)
             {
                 metrics->prove_timer_segment_start = finished;
                 metrics->prove_timer_running = true;
+            }
+        }
+
+        inline void assert_quiescent(RunMetrics &metrics)
+        {
+            require_valid(metrics);
+            if (metrics.commitment_timer_depth != 0
+                || metrics.prove_timer_started
+                || metrics.prove_timer_running)
+            {
+                mark_invalid(
+                    &metrics,
+                    "formal timing state is not quiescent");
+                throw std::runtime_error(
+                    "formal timing state is not quiescent");
+            }
+        }
+
+        inline void assert_prove_finished(RunMetrics &metrics)
+        {
+            require_valid(metrics);
+            if (!metrics.prove_timer_finished
+                || metrics.prove_timer_started
+                || metrics.prove_timer_running
+                || metrics.commitment_timer_depth != 0)
+            {
+                mark_invalid(
+                    &metrics,
+                    "formal prove timer has not completed canonical serialization");
+                throw std::runtime_error(
+                    "formal prove timer has not completed canonical serialization");
             }
         }
 
@@ -1109,6 +1221,9 @@ namespace gatzk::protocol
                     // A commitment scope must not hide the original proving
                     // failure.  The normal path is checked by the timer
                     // state transitions above.
+                    mark_invalid(
+                        metrics_,
+                        "formal commitment scope failed to close");
                 }
             }
 

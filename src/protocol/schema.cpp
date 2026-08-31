@@ -3,6 +3,7 @@
 #include "gatzk/protocol/challenges.hpp"
 #include "gatzk/protocol/proof.hpp"
 #include "gatzk/protocol/quotients.hpp"
+#include "gatzk/data/loader.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -939,17 +940,7 @@ namespace gatzk::protocol
             double value,
             std::uint64_t scale)
         {
-            if (scale == 0)
-                throw std::runtime_error(
-                    "canonical static-table generator received a zero scale");
-            const auto scaled = value * static_cast<double>(scale);
-            if (!std::isfinite(scaled)
-                || scaled > static_cast<double>(std::numeric_limits<std::int64_t>::max())
-                || scaled < static_cast<double>(std::numeric_limits<std::int64_t>::min()))
-                throw std::runtime_error(
-                    "canonical static-table generator quantization overflow");
-            return static_cast<std::int64_t>(
-                scaled >= 0.0 ? scaled + 0.5 : scaled - 0.5);
+            return data::quantize_raw_at_scale(value, scale);
         }
 
         std::size_t canonical_signed_table_size(

@@ -6626,13 +6626,12 @@ namespace gatzk::crypto
         return make_commitment(name, polynomial, key.pk, profile);
     }
 
-    Commitment KZG::commit_taylor_shifted(
+    algebra::Polynomial KZG::materialize_taylor_shifted_polynomial(
         const Commitment &source,
         const std::string &shifted_name,
         std::size_t configured_degree,
         const FieldElement &delta,
-        const KZGKeyPair &key,
-        CommitObjectProfile *profile)
+        const KZGKeyPair &key)
     {
         if (source.opening_polynomial == nullptr)
         {
@@ -6648,10 +6647,28 @@ namespace gatzk::crypto
             *source.opening_polynomial, configured_degree);
         auto shifted = algebra::coefficient_taylor_shift(
             coefficients, configured_degree, delta);
+        return algebra::Polynomial::from_coefficients(
+            shifted_name,
+            std::move(shifted));
+    }
+
+    Commitment KZG::commit_taylor_shifted(
+        const Commitment &source,
+        const std::string &shifted_name,
+        std::size_t configured_degree,
+        const FieldElement &delta,
+        const KZGKeyPair &key,
+        CommitObjectProfile *profile)
+    {
+        auto shifted = materialize_taylor_shifted_polynomial(
+            source,
+            shifted_name,
+            configured_degree,
+            delta,
+            key);
         return make_commitment(
             shifted_name,
-            algebra::Polynomial::from_coefficients(
-                shifted_name, std::move(shifted)),
+            shifted,
             key.pk,
             profile);
     }

@@ -33,6 +33,7 @@
 #include "gatzk/algebra/vector_ops.hpp"
 #include "gatzk/crypto/kzg.hpp"
 #include "gatzk/crypto/transcript.hpp"
+#include "gatzk/data/loader.hpp"
 #include "gatzk/model/gat.hpp"
 #include "gatzk/protocol/challenges.hpp"
 #include "gatzk/protocol/lookup.hpp"
@@ -141,6 +142,8 @@ namespace gatzk::protocol
         using algebra::FieldElement;
         using algebra::Polynomial;
         using data::Edge;
+        using data::quantize_field_at_scale;
+        using data::quantize_raw_at_scale;
         using model::Matrix;
         using Clock = std::chrono::steady_clock;
 
@@ -174,6 +177,7 @@ namespace gatzk::protocol
             Builder builder,
             std::string_view label = {})
         {
+            timing::ScopedCommitment commitment_scope(metrics);
             const auto start = Clock::now();
             auto point = builder();
             const auto duration_ms = elapsed_ms(start, Clock::now());
@@ -197,8 +201,12 @@ namespace gatzk::protocol
             RunMetrics *metrics)
         {
             crypto::CommitObjectProfile profile;
-            auto commitment = crypto::KZG::commit(
-                name, polynomial, key, metrics != nullptr ? &profile : nullptr);
+            auto commitment = [&]()
+            {
+                timing::ScopedCommitment commitment_scope(metrics);
+                return crypto::KZG::commit(
+                    name, polynomial, key, metrics != nullptr ? &profile : nullptr);
+            }();
             if (metrics != nullptr)
             {
                 metrics->derived_commitment_point_ms += profile.msm_ms;
@@ -220,6 +228,7 @@ namespace gatzk::protocol
                 throw std::runtime_error(
                     "proof-local model polynomial differs from its canonical anchor: " + name);
             }
+            timing::ScopedCommitment commitment_scope(metrics);
             const auto start = Clock::now();
             const auto evaluation_component =
                 crypto::KZG::evaluation_commitment_component(anchor, key);
@@ -245,14 +254,25 @@ namespace gatzk::protocol
             const crypto::KZGKeyPair &key,
             RunMetrics *metrics)
         {
-            crypto::CommitObjectProfile profile;
-            auto commitment = crypto::KZG::commit_taylor_shifted(
+            // Coefficient materialization and Taylor convolution are proof
+            // construction work. Only the final coefficient-basis point
+            // generation is a commitment span.
+            auto shifted = crypto::KZG::materialize_taylor_shifted_polynomial(
                 source,
                 shifted_name,
                 configured_degree,
                 delta,
-                key,
-                metrics != nullptr ? &profile : nullptr);
+                key);
+            crypto::CommitObjectProfile profile;
+            auto commitment = [&]()
+            {
+                timing::ScopedCommitment commitment_scope(metrics);
+                return crypto::KZG::commit(
+                    shifted_name,
+                    shifted,
+                    key,
+                    metrics != nullptr ? &profile : nullptr);
+            }();
             if (metrics != nullptr)
             {
                 metrics->derived_commitment_point_ms += profile.msm_ms;
@@ -442,18 +462,6 @@ namespace gatzk::protocol
                 }
             }
             return sha256_hex(stream.str());
-        }
-
-        std::int64_t quantize_raw_at_scale(double value, std::uint64_t scale)
-        {
-            const auto scaled = value * static_cast<double>(scale);
-            return static_cast<std::int64_t>(
-                scaled >= 0.0 ? scaled + 0.5 : scaled - 0.5);
-        }
-
-        FieldElement quantize_field_at_scale(double value, std::uint64_t scale)
-        {
-            return FieldElement::from_signed(quantize_raw_at_scale(value, scale));
         }
 
         void record_public_output_hashes(
@@ -2989,11 +2997,19 @@ namespace gatzk::protocol
                         batch_progress_label +
                         ":msm:start");
                 }
-                const auto commitments = crypto::KZG::commit_batch(
-                    named_polynomials,
-                    key,
-                    &polynomial_profile,
-                    trace.evaluation_commitment_cache.get());
+                const auto commitments = [&]()
+                {
+                    // KZG::commit_batch may dispatch several MSM workers;
+                    // this outer span is deliberately measured on the
+                    // calling thread so commitment_time records one wall
+                    // interval instead of summing worker profiles.
+                    timing::ScopedCommitment commitment_scope(metrics);
+                    return crypto::KZG::commit_batch(
+                        named_polynomials,
+                        key,
+                        &polynomial_profile,
+                        trace.evaluation_commitment_cache.get());
+                }();
                 if (emit_progress)
                 {
                     progress_note(
@@ -3075,12 +3091,19 @@ namespace gatzk::protocol
                                     item.polynomial->domain);
                             },
                             item.name);
-                    item.commitment =
-                        crypto::KZG::commit_evaluation_from_component(
+                    item.commitment = [&]()
+                    {
+                        // This call adds the target's independent
+                        // zero-domain blinder point when present. It is a
+                        // real commitment producer even though it consumes a
+                        // previously derived evaluation component.
+                        timing::ScopedCommitment commitment_scope(metrics);
+                        return crypto::KZG::commit_evaluation_from_component(
                             item.name,
                             *item.polynomial,
                             evaluation_component,
                             key);
+                    }();
                     item.commitment_ready = true;
                     item.linear_commitment_derived = true;
                     batch_commitments[item.name] =
@@ -6834,6 +6857,7 @@ namespace gatzk::protocol
             const auto q_tbl_elu = eval_data(context, "P_Q_tbl_ELU");
             add_metric(metrics != nullptr ? &metrics->public_poly_residual_ms : nullptr, stage_start);
 
+            timing::start_prove_timer(metrics);
             if (static_artifacts.full_feature_identity)
             {
                 append_dynamic_commitment(
@@ -11938,6 +11962,14 @@ namespace gatzk::protocol
         if (context.verifier_shape_only)
             throw std::runtime_error(
                 "trace builder rejects verifier shape-only execution context");
+        // Context construction performs the first validation before it may
+        // redact the duplicated full-graph dataset views.  Revalidate at the
+        // formal trace boundary so callers that assemble or mutate a context
+        // directly cannot bypass the registered S_input semantics.
+        data::validate_input_feature_views(
+            context.dataset,
+            context.local,
+            context.config.quantization.s_input);
         if (!context.model.has_real_multihead)
         {
             throw std::runtime_error(

@@ -976,9 +976,7 @@ namespace gatzk::protocol
             double value,
             std::uint64_t scale)
         {
-            const auto scaled = value * static_cast<double>(scale);
-            return static_cast<std::int64_t>(
-                scaled >= 0.0 ? scaled + 0.5 : scaled - 0.5);
+            return data::quantize_raw_at_scale(value, scale);
         }
 
         FieldElement quantize_float_model_value(double value, std::uint64_t scale)
@@ -12267,6 +12265,13 @@ namespace gatzk::protocol
         if (context.verifier_shape_only)
             throw std::runtime_error(
                 "prover rejects verifier shape-only execution context");
+        // Prove is the commitment-producing boundary.  Revalidate the input
+        // views here as well because a caller may retain a trace and mutate
+        // or replace the context after build_trace returned.
+        data::validate_input_feature_views(
+            context.dataset,
+            context.local,
+            context.config.quantization.s_input);
         const auto &route2 = util::route2_options();
         if (!context.model.has_real_multihead)
         {
@@ -12418,10 +12423,18 @@ namespace gatzk::protocol
             progress_note("prove:quotient:commit_batch:start");
             const auto quotient_commit_batch_start = Clock::now();
             crypto::CommitBatchProfile quotient_commit_profile;
-            auto quotient_commitments = batch_quotient_commitments(
-                std::move(named_quotient_polynomials),
-                context.kzg,
-                metrics != nullptr ? &quotient_commit_profile : nullptr);
+            auto quotient_commitments = [&]()
+            {
+                // The owned batch may use CUDA waves or CPU worker
+                // dispatch. Measure the synchronously joined call as one
+                // wall-clock commitment span; never sum per-worker MSM
+                // profiles into the formal total.
+                timing::ScopedCommitment commitment_scope(metrics);
+                return batch_quotient_commitments(
+                    std::move(named_quotient_polynomials),
+                    context.kzg,
+                    metrics != nullptr ? &quotient_commit_profile : nullptr);
+            }();
             progress_note(
                 "prove:quotient:commit_batch:done:ms=" + std::to_string(elapsed_ms(
                                                              quotient_commit_batch_start, Clock::now())));
