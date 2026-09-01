@@ -1,6 +1,6 @@
 # zkGAT Threat Model
 
-`threat_model_id = zkgat_secure_profile_v1`
+`threat_model_id = zkgat_secure_profile`
 
 ## Parties
 
@@ -50,4 +50,4 @@ Verifier rejection checks cover final-logit/public-output tamper, metadata tampe
 
 ## Consistency Requirements
 
-README, security docs, configs, `PublicMetadata`, run manifests, exporter rows, and `results/paper_secure/` must agree on `public_graph_public_features`, `public_logits`, `point_grouped_batch_opening`, `zk_subproof_for_crpc`, `node_classification_full_gat`, and `zkgat_secure_profile_v1`.
+README, security docs, configs, `PublicMetadata`, run manifests, exporter rows, and `results/paper_secure/` must agree on `public_graph_public_features`, `public_logits`, `point_grouped_batch_opening`, `zk_subproof_for_crpc`, `node_classification_full_gat`, and `zkgat_secure_profile`.

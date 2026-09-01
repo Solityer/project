@@ -12,7 +12,7 @@ AGGREGATE = (ROOT / "scripts/aggregate_secure_results.py").read_text(encoding="u
 EXPORT = (ROOT / "scripts/export_benchmark_table.py").read_text(encoding="utf-8")
 
 
-CANONICAL_TIMING_SCHEMA = "exclusive_commit_prove_protocol_verify_v3"
+CANONICAL_TIMING_SCHEMA = "exclusive_commit_prove_protocol_verify"
 assert f'"{CANONICAL_TIMING_SCHEMA}"' in PROOF
 assert f'"{CANONICAL_TIMING_SCHEMA}"' in AGGREGATE
 assert f'"{CANONICAL_TIMING_SCHEMA}"' in EXPORT

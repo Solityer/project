@@ -19,11 +19,11 @@ import subprocess
 from typing import Any
 
 
-SOURCE_INVENTORY_ID = "zkgat:source-inventory:v1"
-SOURCE_MANIFEST_FORMAT = "zkgat_source_manifest_v1"
-SOURCE_MANIFEST_ALGORITHM = "sha256:length-prefixed-path-content-v1"
-BUILD_RECEIPT_FORMAT = "zkgat_build_receipt_v1"
-BUILD_IDENTITY_ALGORITHM = "zkgat:build-identity:v1"
+SOURCE_INVENTORY_ID = "zkgat:source-inventory"
+SOURCE_MANIFEST_FORMAT = "zkgat_source_manifest"
+SOURCE_MANIFEST_ALGORITHM = "sha256:length-prefixed-path-content"
+BUILD_RECEIPT_FORMAT = "zkgat_build_receipt"
+BUILD_IDENTITY_ALGORITHM = "zkgat:build-identity"
 
 # Generated/runtime trees are never part of a source identity.  ``build*`` is
 # prefix based so local directories such as build_debug are excluded too.
@@ -83,7 +83,7 @@ def inventory_paths(root: pathlib.Path) -> list[str]:
         if relative.is_absolute() or _excluded(relative):
             continue
         absolute = root.joinpath(*relative.parts)
-        # Do not follow aliases into source or artifact material.
+        # Do not follow symlinks into source or artifact material.
         if absolute.is_symlink() or not absolute.is_file():
             continue
         paths.append(relative.as_posix())

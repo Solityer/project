@@ -2877,10 +2877,8 @@ namespace gatzk::protocol
         const Proof &proof,
         RunMetrics *metrics)
     {
-        // Only an authenticated on-disk registry can enter formal verification;
-        // make_verifier_context is deliberately a short-test transition path.
-        if (context.in_process_transition
-            || context.compiler_artifact == nullptr
+        // Only an authenticated registry context can enter formal verification.
+        if (context.compiler_artifact == nullptr
             || !validate_verifier_context(context)
             || proof_contains_prover_material(proof))
             return false;

@@ -444,7 +444,7 @@ namespace gatzk::algebra
         return evaluate_with_native_weight_rotations(labels, native_weights, rotations);
     }
 
-      // CPU 实现的带权重旋转求值（核心算法）（--parallel-fft on）（--fft-kernel-upgrade on）
+      // CPU 实现的带权重旋转求值（核心算法）（--parallel-fft on）（--rotated-fft-kernel on）
     std::vector<std::vector<FieldElement>> PackedEvaluationBackend::evaluate_with_native_weight_rotations(
         const std::vector<std::string>& labels,
         const std::vector<mcl::Fr>& representative_weights,

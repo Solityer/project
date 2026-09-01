@@ -30,73 +30,67 @@ _PROVENANCE = importlib.util.module_from_spec(_PROVENANCE_SPEC)
 _PROVENANCE_SPEC.loader.exec_module(_PROVENANCE)
 
 
-DATASET_ALIASES = {
-    "cora": "cora",
-    "citeseer": "citeseer",
-    "pubmed": "pubmed",
-    "ppi": "ppi",
-    "ogbn-arxiv": "ogbn_arxiv",
-}
-DATASET_ORDER = ("cora", "citeseer", "pubmed", "ppi", "ogbn-arxiv")
-# The verifier timing boundary is part of the result contract.  In particular,
-# v2 measured through final acceptance; accepting it here would silently mix
-# incompatible protocol-verifier costs into one paper table.
-CANONICAL_TIMING_SCHEMA = "exclusive_commit_prove_protocol_verify_v3"
+DATASET_ORDER = ("cora", "citeseer", "pubmed", "ppi", "ogbn_arxiv")
+CANONICAL_DATASETS = frozenset(DATASET_ORDER)
+# The verifier timing boundary is part of the result contract.  Every accepted
+# manifest must use this one timing definition so the paper table has a single
+# measurement meaning.
+CANONICAL_TIMING_SCHEMA = "exclusive_commit_prove_protocol_verify"
 EXPECTED_MODEL_ARCH = {
     "cora": "gat_family_L3_hid8x8-8x8_kout2_c7",
     "citeseer": "gat_family_L3_hid8x8-8x8_kout2_c6",
     "pubmed": "gat_family_L3_hid8x8-8x8_kout2_c3",
     "ppi": "gat_family_L3_hid8x8-8x8_kout2_c121",
-    "ogbn-arxiv": "gat_family_L3_hid8x8-8x8_kout2_c40",
+    "ogbn_arxiv": "gat_family_L3_hid8x8-8x8_kout2_c40",
 }
 EXPECTED_MODEL_PARAM = {
     "cora": "cora_planetoid_seed11",
     "citeseer": "citeseer_planetoid_seed11",
     "pubmed": "pubmed_planetoid_seed11",
     "ppi": "ppi_gat_seed11",
-    "ogbn-arxiv": "ogbn_arxiv_seed11",
+    "ogbn_arxiv": "ogbn_arxiv_seed11",
 }
 EXPECTED_SRS_ID = {
     "cora": "cora_formal_srs",
     "citeseer": "citeseer_formal_srs",
     "pubmed": "pubmed_formal_srs",
     "ppi": "ppi_formal_srs",
-    "ogbn-arxiv": "ogbn_arxiv_formal_srs",
+    "ogbn_arxiv": "ogbn_arxiv_formal_srs",
 }
 EXPECTED_D_IN = {
     "cora": [1433, 64],
     "citeseer": [3703, 64],
     "pubmed": [500, 64],
     "ppi": [50, 64],
-    "ogbn-arxiv": [128, 64],
+    "ogbn_arxiv": [128, 64],
 }
 EXPECTED_CLASSES = {
     "cora": 7,
     "citeseer": 6,
     "pubmed": 3,
     "ppi": 121,
-    "ogbn-arxiv": 40,
+    "ogbn_arxiv": 40,
 }
 EXPECTED_INPUT_PREPROCESS_ID = {
-    "cora": "row_normalize_v1",
-    "citeseer": "row_normalize_v1",
-    "pubmed": "row_normalize_v1",
-    "ppi": "row_normalize_v1",
-    "ogbn-arxiv": "ogbn_arxiv_raw_float32_v1",
+    "cora": "row_normalize",
+    "citeseer": "row_normalize",
+    "pubmed": "row_normalize",
+    "ppi": "row_normalize",
+    "ogbn_arxiv": "ogbn_arxiv_raw_float32",
 }
 EXPECTED_SRS_DEGREE = {
     "cora": 16777215,
     "citeseer": 67108863,
     "pubmed": 67108863,
     "ppi": 33554431,
-    "ogbn-arxiv": 134217727,
+    "ogbn_arxiv": 134217727,
 }
 EXPECTED_SRS_DOMAINS = {
     "cora": {"C": 16, "FH": 4194304, "N": 4096, "cat": 128, "d": 16, "edge": 32768, "in": 2048},
     "citeseer": {"C": 8, "FH": 16777216, "N": 4096, "cat": 128, "d": 16, "edge": 32768, "in": 4096},
     "pubmed": {"C": 8, "FH": 16777216, "N": 32768, "cat": 128, "d": 16, "edge": 262144, "in": 512},
     "ppi": {"C": 128, "FH": 4194304, "N": 65536, "cat": 64, "d": 16, "edge": 8388608, "in": 64},
-    "ogbn-arxiv": {"C": 64, "FH": 33554432, "N": 262144, "cat": 64, "d": 16, "edge": 8388608, "in": 256},
+    "ogbn_arxiv": {"C": 64, "FH": 33554432, "N": 262144, "cat": 64, "d": 16, "edge": 8388608, "in": 256},
 }
 REQUIRED_HASHES = (
     "proof_hash",
@@ -263,7 +257,7 @@ def parse_assignment(value: str, flag: str) -> Tuple[str, str]:
     dataset, payload = value.split("=", 1)
     dataset = dataset.strip()
     payload = payload.strip()
-    require(dataset in DATASET_ALIASES, f"{flag} has unsupported dataset {dataset!r}")
+    require(dataset in CANONICAL_DATASETS, f"{flag} has unsupported dataset {dataset!r}")
     require(payload != "", f"{flag} has an empty path for {dataset}")
     return dataset, payload
 
@@ -482,7 +476,7 @@ def inspect_registration_artifact(
         f"{context}: registry inspection has an unexpected or missing field",
     )
     require(
-        inspection["format"] == "zkgat_registry_inspection_v1",
+        inspection["format"] == "zkgat_registry_inspection",
         f"{context}: registry inspection format mismatch",
     )
     require(
@@ -551,7 +545,7 @@ def inspect_registration_artifact(
     )
     require(
         inspection["model_param_id"] == EXPECTED_MODEL_PARAM[dataset]
-        and inspection["quant_cfg_id"] == "gat_l3_scale_chain_v1"
+        and inspection["quant_cfg_id"] == "gat_l3_scale_chain"
         and inspection["static_table_id"] == "tables:lrelu+elu+exp+range"
         and inspection["srs_id"] == EXPECTED_SRS_ID[dataset],
         f"{context}: registry model/static/SRS identity is not canonical",
@@ -628,7 +622,7 @@ def check_source_provenance(
         set(receipt) == expected_receipt_keys,
         f"{context}: build_receipt.json has an unexpected or missing field",
     )
-    require(receipt["format"] == "zkgat_build_receipt_v1", f"{context}: build receipt format mismatch")
+    require(receipt["format"] == "zkgat_build_receipt", f"{context}: build receipt format mismatch")
     require(receipt["source_manifest_path"] == "source_manifest.json", f"{context}: build receipt source manifest path mismatch")
     require(receipt["source_manifest_hash"] == source_manifest_hash, f"{context}: build receipt source manifest hash mismatch")
     require(receipt["source_inventory_id"] == _PROVENANCE.SOURCE_INVENTORY_ID, f"{context}: build receipt inventory id mismatch")
@@ -685,7 +679,7 @@ def check_verifier_report(
     )
     report = load_json_object(report_path, context)
     require(set(report) == VERIFIER_REPORT_KEYS, f"{context}: verifier_report.json has an unexpected or missing field")
-    require(report["format"] == "zkgat_verifier_report_v2", f"{context}: verifier report format mismatch")
+    require(report["format"] == "zkgat_verifier_report", f"{context}: verifier report format mismatch")
     trusted = sha256_string(report.get("trusted_registry_digest"), "trusted_registry_digest", context)
     authenticated = sha256_string(report.get("authenticated_registry_digest"), "authenticated_registry_digest", context)
     require(trusted == authenticated, f"{context}: verifier report registry trust binding mismatch")
@@ -697,7 +691,7 @@ def check_verifier_report(
     require(proof_hash == nonempty_string(run_manifest.get("proof_hash"), "proof_hash", context), f"{context}: proof_hash is not bound to verifier report")
     parsed_digest = sha256_string(report.get("parsed_output_digest"), "parsed_output_digest", context)
     report_output_digest = sha256_string(report.get("proof_public_output_hash"), "proof_public_output_hash", context)
-    require(parsed_digest == report_output_digest, f"{context}: verifier report output digest aliases disagree")
+    require(parsed_digest == report_output_digest, f"{context}: verifier report output digests disagree")
     require(parsed_digest == sha256_string(run_manifest.get("proof_public_output_hash"), "proof_public_output_hash", context), f"{context}: parsed output digest is not bound to run manifest")
     require(as_int(report.get("parsed_output_count"), "parsed_output_count", context) > 0, f"{context}: verifier report parsed output is empty")
     require(as_bool(report.get("verify_result"), "verify_result", context), f"{context}: verifier report verify_result is not true")
@@ -766,7 +760,7 @@ def load_config_entries(path: pathlib.Path, context: str) -> Dict[str, str]:
 
 def check_canonical_config(path: pathlib.Path, dataset: str, context: str) -> Dict[str, str]:
     entries = load_config_entries(path, context)
-    expected_dataset = DATASET_ALIASES[dataset]
+    expected_dataset = dataset
     expected_values = {
         "dataset": expected_dataset,
         "L": "3",
@@ -774,14 +768,14 @@ def check_canonical_config(path: pathlib.Path, dataset: str, context: str) -> Di
         "d_in_profile": "[" + ",".join(str(value) for value in EXPECTED_D_IN[dataset]) + "]",
         "K_out": "2",
         "num_classes": str(EXPECTED_CLASSES[dataset]),
-        "range_bits": str({"cora": 12, "citeseer": 12, "pubmed": 12, "ppi": 14, "ogbn-arxiv": 21}[dataset]),
+        "range_bits": str({"cora": 12, "citeseer": 12, "pubmed": 12, "ppi": 14, "ogbn_arxiv": 21}[dataset]),
         "model_arch_id": EXPECTED_MODEL_ARCH[dataset],
         "model_param_id": EXPECTED_MODEL_PARAM[dataset],
-        "quant_cfg_id": "gat_l3_scale_chain_v1",
+        "quant_cfg_id": "gat_l3_scale_chain",
         "input_preprocess_id": EXPECTED_INPUT_PREPROCESS_ID[dataset],
         "static_table_id": "tables:lrelu+elu+exp+range",
         "degree_bound_id": "auto",
-        "checkpoint_bundle": f"artifacts/checkpoints/{dataset.replace('-', '_')}_gat",
+        "checkpoint_bundle": f"artifacts/checkpoints/{dataset}_gat",
         "srs_id": EXPECTED_SRS_ID[dataset],
         "srs_path": f"artifacts/srs/{EXPECTED_SRS_ID[dataset]}",
     }
@@ -801,15 +795,15 @@ def check_manifest_config_binding(
     context: str,
 ) -> Tuple[pathlib.Path, str, str]:
     """Bind the public manifest to the canonical config and preprocessing ID."""
-    require(dataset in DATASET_ALIASES, f"{context}: unsupported canonical dataset {dataset!r}")
-    expected_manifest_dataset = DATASET_ALIASES[dataset]
+    require(dataset in CANONICAL_DATASETS, f"{context}: unsupported canonical dataset {dataset!r}")
+    expected_manifest_dataset = dataset
     require(
         manifest.get("dataset") == expected_manifest_dataset,
         f"{context}: manifest dataset is not {expected_manifest_dataset}",
     )
     config_path = resolve_config(project_root, manifest, context)
     expected_config = (
-        project_root / "configs" / f"{dataset.replace('-', '_')}_secure.cfg"
+        project_root / "configs" / f"{dataset}_secure.cfg"
     ).resolve()
     require(
         config_path == expected_config,
@@ -906,8 +900,7 @@ def check_security(
         sha256_string(manifest.get(field), field, context)
     # There are exactly three output producers in the acceptance gate:
     # independent quantized reference, secure trace, and independently parsed
-    # proof output.  ``public_logits_hash`` is a legacy diagnostic alias for
-    # the secure trace and must not count as a fourth source.
+    # proof output.
     output_hashes = [
         sha256_string(manifest.get(field), field, context)
         for field in (
@@ -1083,7 +1076,7 @@ def check_manifest(
         ),
         f"{context}: public run manifest must not contain checkpoint/tensor provenance",
     )
-    expected_manifest_dataset = DATASET_ALIASES[dataset]
+    expected_manifest_dataset = dataset
     timing_schema = require_canonical_timing_schema(manifest, context)
     check_formal_acceptance_state(manifest, context)
     require(as_bool(manifest.get("full_dataset"), "full_dataset", context), f"{context}: full_dataset is not true")
@@ -1195,7 +1188,6 @@ def check_manifest(
         "instance_schema_hash": nonempty_string(manifest.get("instance_schema_hash"), "instance_schema_hash", context),
         "dim_cfg": nonempty_string(manifest.get("dim_cfg"), "dim_cfg", context),
         "public_output": nonempty_string(manifest.get("public_output"), "public_output", context),
-        "public_logits_hash": nonempty_string(manifest.get("public_logits_hash"), "public_logits_hash", context),
         "secure_trace_logits_hash": nonempty_string(manifest.get("secure_trace_logits_hash"), "secure_trace_logits_hash", context),
         "reference_quant_logits_hash": nonempty_string(manifest.get("reference_quant_logits_hash"), "reference_quant_logits_hash", context),
         "proof_public_output_hash": sha256_string(manifest.get("proof_public_output_hash"), "proof_public_output_hash", context),
@@ -1236,7 +1228,7 @@ def check_manifest(
             f"{context}: model_arch is not the canonical architecture")
     require(row["model_params"].startswith("registry_sha256="),
             f"{context}: model_params is not a bound model registry")
-    require(row["quant_config"].startswith("gat_l3_scale_chain_v1|"),
+    require(row["quant_config"].startswith("gat_l3_scale_chain|"),
             f"{context}: quant_config is not the canonical scale-chain binding")
     require(row["static_tables"].startswith("registry_sha256="),
             f"{context}: static_tables is not a bound static-table registry")
@@ -1414,16 +1406,12 @@ def main() -> None:
     parser.add_argument("--cuda-run", action="append", default=[], help="dataset=run_manifest.json_or_dir (exactly five)")
     parser.add_argument(
         "--registry",
-        "--trusted-registry",
-        dest="registry",
         action="append",
         default=[],
         help="dataset=canonical verifier registration artifact (exactly five; externally anchored)",
     )
     parser.add_argument(
         "--registry-digest",
-        "--trusted-registry-digest",
-        dest="registry_digest",
         action="append",
         default=[],
         help="dataset=lowercase SHA-256 of the trusted registration artifact (exactly five)",

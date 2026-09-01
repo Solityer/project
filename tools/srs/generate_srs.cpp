@@ -21,11 +21,61 @@
 #include <mcl/bn.hpp>
 
 #include "gatzk/algebra/field.hpp"
+#include "gatzk/crypto/compiler_artifact.hpp"
 #include "gatzk/crypto/kzg.hpp"
 #include "gatzk/protocol/schema.hpp"
 
 namespace
 {
+    // The ceremony writer emits exactly this top-level JSON schema.  The
+    // loader keeps the same set and rejects every other field before any key
+    // material is opened.
+    [[maybe_unused]] constexpr std::array<std::string_view, 41>
+        kCanonicalSrsManifestFields = {
+            "manifest_format",
+            "srs_id",
+            "curve_id",
+            "field_modulus_id",
+            "srs_type",
+            "ceremony_transcript_hash",
+            "setup_transcript_hash",
+            "degree_bound",
+            "domain_sizes",
+            "domain_generators",
+            "root_derivation_id",
+            "row_order",
+            "protocol_compiler_artifact_path",
+            "protocol_compiler_artifact_hash",
+            "protocol_schema_id",
+            "max_instance_envelope_id",
+            "max_instance_envelope_hash",
+            "max_instance_envelope",
+            "proof_schema_template_hash",
+            "observation_ledger_hash",
+            "random_identity_ledger_hash",
+            "security_budget_ledger_hash",
+            "pk_coef_path",
+            "pk_coef_hash",
+            "pk_lagrange_paths",
+            "pk_lagrange_hashes",
+            "vk_path",
+            "vk_hash",
+            "vanishing_g2_hash",
+            "srs_audit_report_path",
+            "srs_audit_report_hash",
+            "srs_consistency_hash",
+            "encoding",
+            "generator_id",
+            "security_level",
+            "kzg_assumption_profile_id",
+            "kzg_assumption_degree_bound",
+            "kzg_assumption_security_bits",
+            "kzg_assumption_domain_catalog_hash",
+            "domain_generator_catalog_hash",
+            "manifest_hash",
+        };
+    static_assert(kCanonicalSrsManifestFields.size() == 41);
+
     std::size_t srs_worker_count()
     {
         const auto hardware = std::max<std::size_t>(
@@ -392,7 +442,7 @@ namespace
         {
             throw std::runtime_error("failed to open " + path.string());
         }
-        out << "GATZK-VK-v2\n";
+        out << "GATZK-VK\n";
         for (const auto &point : {g2_one, g2_tau})
         {
             const auto bytes = serialize_g2(point);
@@ -454,7 +504,7 @@ namespace
         const std::unordered_map<std::string, std::size_t> &domains)
     {
         std::ostringstream canonical;
-        canonical << "zkgat:domain-size-catalog:v1";
+        canonical << "zkgat:domain-size-catalog";
         for (const auto &name : ordered_domain_names(domains))
         {
             canonical << '|' << name << '=' << domains.at(name);
@@ -469,14 +519,14 @@ namespace
         return bytes_to_hex(bytes.data(), bytes.size());
     }
 
-    constexpr const char *kRootDerivationId = "bls12_381_fr_generator_5_v1";
+    constexpr const char *kRootDerivationId = "bls12_381_fr_generator_5";
     constexpr const char *kRowOrder = "ascending_powers_from_one";
 
     std::string domain_generator_catalog_hash(
         const std::unordered_map<std::string, std::size_t> &domains)
     {
         std::ostringstream canonical;
-        canonical << "zkgat:domain-generator-catalog:v1"
+        canonical << "zkgat:domain-generator-catalog"
                   << "|root_derivation_id=" << kRootDerivationId
                   << "|row_order=" << kRowOrder;
         for (const auto &name : ordered_domain_names(domains))
@@ -493,7 +543,7 @@ namespace
         const std::unordered_map<std::string, mcl::G2> &domain_zero_g2)
     {
         std::ostringstream canonical;
-        canonical << "zkgat:vanishing-g2-catalog:v1";
+        canonical << "zkgat:vanishing-g2-catalog";
         for (const auto &name : ordered_domain_names(domains))
         {
             const auto point = domain_zero_g2.find(name);
@@ -522,7 +572,7 @@ namespace
         const std::string &vanishing_g2_hash)
     {
         std::ostringstream report;
-        report << "GATZK-SRS-CONSISTENCY-AUDIT-v1\n";
+        report << "GATZK-SRS-CONSISTENCY-AUDIT\n";
         report << "status=passed\n";
         report << "sampling=none\n";
         report << "coefficient_relation_method=exact_full_tau_reconstruction\n";
@@ -553,8 +603,9 @@ namespace
         const std::unordered_map<std::string, std::size_t> &domains)
     {
         if (degree_bound == 0) throw std::runtime_error("degree bound must be positive");
-        const std::vector<std::string> required_domains{
-            "C", "FH", "N", "cat", "d", "edge", "in"};
+        const std::vector<std::string> required_domains(
+            gatzk::crypto::kCompilerArtifactDomainNames.begin(),
+            gatzk::crypto::kCompilerArtifactDomainNames.end());
         if (ordered_domain_names(domains) != required_domains)
             throw std::runtime_error(
                 "SRS domain catalogue must contain exactly C,FH,N,cat,d,edge,in");
@@ -665,7 +716,7 @@ namespace
             ++line_index;
         }
         if (line_index != keys.size()
-            || values.at("format") != "zkgat_max_instance_envelope_v2")
+            || values.at("format") != "zkgat_max_instance_envelope")
             throw std::runtime_error(
                 "max instance envelope format or field count mismatch");
         auto number = [&](const std::string &key)
@@ -773,71 +824,42 @@ namespace
         std::string artifact_hash;
     };
 
-    std::string artifact_scalar(const std::string &text, const std::string &key)
-    {
-        const auto prefix = key + "=";
-        const auto begin = text.find(prefix);
-        if (begin == std::string::npos || (begin != 0 && text[begin - 1] != '\n'))
-            throw std::runtime_error("compiler artifact is missing " + key);
-        const auto value_begin = begin + prefix.size();
-        const auto end = text.find('\n', value_begin);
-        return text.substr(value_begin, end - value_begin);
-    }
-
     SRSCompilerArtifact load_compiler_artifact(const std::filesystem::path &path)
     {
         const auto contents = read_file(path);
-        constexpr std::string_view magic = "GATZK-SRS-COMPILER-ARTIFACT-v3\n";
-        if (!contents.starts_with(magic))
-            throw std::runtime_error("compiler artifact magic mismatch");
-        const auto hash_field = contents.rfind("artifact_hash=");
-        if (hash_field == std::string::npos)
-            throw std::runtime_error("compiler artifact hash field is missing");
+        const auto parsed = gatzk::crypto::parse_compiler_artifact(contents);
         SRSCompilerArtifact out;
-        out.protocol_template_hex = artifact_scalar(contents, "protocol_template_hex");
-        out.proof_schema_template_hex = artifact_scalar(
-            contents, "proof_schema_template_hex");
-        out.observation_ledger_template_hex = artifact_scalar(
-            contents, "observation_ledger_template_hex");
-        out.random_identity_ledger_template_hex = artifact_scalar(
-            contents, "random_identity_ledger_template_hex");
-        out.security_budget_ledger_template_hex = artifact_scalar(
-            contents, "security_budget_ledger_template_hex");
-        out.protocol_schema_id = artifact_scalar(contents, "protocol_schema_id");
-        out.max_instance_envelope_id = artifact_scalar(contents, "max_instance_envelope_id");
-        out.max_instance_envelope_hex = artifact_scalar(
-            contents, "max_instance_envelope_hex");
-        out.max_instance_envelope_hash = artifact_scalar(
-            contents, "max_instance_envelope_hash");
+        const auto scalar = [&](std::string_view key) -> const std::string &
+        { return parsed.scalar(key); };
+        out.protocol_template_hex = scalar("protocol_template_hex");
+        out.proof_schema_template_hex = scalar("proof_schema_template_hex");
+        out.observation_ledger_template_hex = scalar("observation_ledger_template_hex");
+        out.random_identity_ledger_template_hex = scalar("random_identity_ledger_template_hex");
+        out.security_budget_ledger_template_hex = scalar("security_budget_ledger_template_hex");
+        out.protocol_schema_id = scalar("protocol_schema_id");
+        out.max_instance_envelope_id = scalar("max_instance_envelope_id");
+        out.max_instance_envelope_hex = scalar("max_instance_envelope_hex");
+        out.max_instance_envelope_hash = scalar("max_instance_envelope_hash");
         out.degree_bound = static_cast<std::size_t>(
-            std::stoull(artifact_scalar(contents, "degree_bound")));
-        out.domain_size_catalog_hash = artifact_scalar(contents, "domain_size_catalog_hash");
-        out.domain_generator_catalog_hash = artifact_scalar(contents, "domain_generator_catalog_hash");
-        out.proof_schema_template_hash = artifact_scalar(contents, "proof_schema_template_hash");
-        out.observation_ledger_hash = artifact_scalar(contents, "observation_ledger_hash");
-        out.random_identity_ledger_hash = artifact_scalar(contents, "random_identity_ledger_hash");
-        out.security_budget_ledger_hash = artifact_scalar(contents, "security_budget_ledger_hash");
-        out.artifact_hash = artifact_scalar(contents, "artifact_hash");
-        if (out.artifact_hash != sha256_hex(contents.substr(0, hash_field)))
+            std::stoull(scalar("degree_bound")));
+        out.domain_size_catalog_hash = scalar("domain_size_catalog_hash");
+        out.domain_generator_catalog_hash = scalar("domain_generator_catalog_hash");
+        out.proof_schema_template_hash = scalar("proof_schema_template_hash");
+        out.observation_ledger_hash = scalar("observation_ledger_hash");
+        out.random_identity_ledger_hash = scalar("random_identity_ledger_hash");
+        out.security_budget_ledger_hash = scalar("security_budget_ledger_hash");
+        out.artifact_hash = parsed.artifact_hash;
+        if (out.artifact_hash != sha256_hex(parsed.canonical_prefix))
             throw std::runtime_error("compiler artifact canonical hash mismatch");
-        std::size_t position = 0;
-        while ((position = contents.find("domain.", position)) != std::string::npos)
+        for (const auto &entry : parsed.domains)
         {
-            if (position != 0 && contents[position - 1] != '\n') { ++position; continue; }
-            const auto equals = contents.find('=', position);
-            const auto comma = contents.find(',', equals + 1);
-            const auto end = contents.find('\n', comma + 1);
-            if (equals == std::string::npos || comma == std::string::npos)
-                throw std::runtime_error("malformed compiler artifact domain entry");
-            const auto name = contents.substr(position + 7, equals - position - 7);
+            const auto &name = entry.name;
             const auto size = static_cast<std::size_t>(
-                std::stoull(contents.substr(equals + 1, comma - equals - 1)));
-            const auto omega = contents.substr(comma + 1, end - comma - 1);
+                std::stoull(entry.size));
             if (!out.domains.emplace(name, size).second
-                || omega != canonical_field_hex(
+                || entry.generator != canonical_field_hex(
                     gatzk::algebra::FieldElement::root_of_unity(size)))
                 throw std::runtime_error("compiler artifact domain entry mismatch: " + name);
-            position = end;
         }
         validate_compiler_inputs(out.degree_bound, out.domains);
         if (out.protocol_template_hex.empty()
@@ -929,7 +951,7 @@ namespace
             throw std::runtime_error("protocol compiler template must not be empty");
         const auto template_hash = sha256_hex(protocol_template);
         std::ostringstream artifact;
-        artifact << "GATZK-SRS-COMPILER-ARTIFACT-v3\n";
+        artifact << gatzk::crypto::kCompilerArtifactMagic;
         artifact << "protocol_template_hex=" << string_hex(protocol_template) << '\n';
         artifact << "proof_schema_template_hex="
                  << string_hex(proof_schema_template) << '\n';
@@ -946,6 +968,8 @@ namespace
         artifact << "max_instance_envelope_hash="
                  << max_instance_envelope.id << '\n';
         artifact << "degree_bound=" << degree_bound << '\n';
+        artifact << "domain_count="
+                 << gatzk::crypto::kCompilerArtifactDomainNames.size() << '\n';
         artifact << "domain_size_catalog_hash=" << domain_catalog_hash(domains) << '\n';
         artifact << "domain_generator_catalog_hash="
                  << domain_generator_catalog_hash(domains) << '\n';
@@ -957,8 +981,10 @@ namespace
                  << sha256_hex(random_identity_ledger_template) << '\n';
         artifact << "security_budget_ledger_hash="
                  << sha256_hex(security_budget_ledger_template) << '\n';
-        for (const auto &name : ordered_domain_names(domains))
+        for (const auto domain_name :
+             gatzk::crypto::kCompilerArtifactDomainNames)
         {
+            const std::string name(domain_name);
             artifact << "domain." << name << '=' << domains.at(name) << ','
                      << canonical_field_hex(
                             gatzk::algebra::FieldElement::root_of_unity(domains.at(name)))
@@ -987,7 +1013,7 @@ namespace
         const auto compiler_artifact_hash = sha256_file_hex(
             out_dir / "protocol_compiler_artifact.txt");
         std::ostringstream public_transcript;
-        public_transcript << "gatzk:trusted-srs-public-transcript:v8|"
+        public_transcript << "gatzk:trusted-srs-public-transcript|"
                           << srs_id << '|' << degree_bound << '|'
                           << pk_coef_hash << '|' << vk_hash << '|'
                           << domain_catalog_hash(domains) << '|'
@@ -1001,7 +1027,7 @@ namespace
         const auto transcript_hash = sha256_hex(public_transcript.str());
         std::ostringstream manifest;
         manifest << "{\n";
-        manifest << "  \"manifest_format\": \"zkgat_srs_manifest_v8\",\n";
+        manifest << "  \"manifest_format\": \"zkgat_srs_manifest\",\n";
         manifest << "  \"srs_id\": \"" << srs_id << "\",\n";
         manifest << "  \"curve_id\": \"bls12_381\",\n";
         manifest << "  \"field_modulus_id\": \"bls12_381_fr\",\n";
@@ -1090,11 +1116,10 @@ namespace
                  << srs_consistency_hash << "\",\n";
         manifest << "  \"srs_consistency_hash\": \""
                  << srs_consistency_hash << "\",\n";
-        manifest << "  \"encoding\": \"canonical_mcl_bls12_381_fixed_v1\",\n";
-        manifest << "  \"generator_id\": \"zkgat_srs_setup_tool_v8\",\n";
-        manifest << "  \"generator_version\": \"zkgat_srs_setup_tool_v8\",\n";
+        manifest << "  \"encoding\": \"canonical_mcl_bls12_381_fixed\",\n";
+        manifest << "  \"generator_id\": \"zkgat_srs_setup_tool\",\n";
         manifest << "  \"security_level\": \"120-bit\",\n";
-        manifest << "  \"kzg_assumption_profile_id\": \"shifted_kzg_divisibility_v1\",\n";
+        manifest << "  \"kzg_assumption_profile_id\": \"shifted_kzg_divisibility\",\n";
         manifest << "  \"kzg_assumption_degree_bound\": " << degree_bound << ",\n";
         manifest << "  \"kzg_assumption_security_bits\": 128,\n";
         manifest << "  \"kzg_assumption_domain_catalog_hash\": \"" << domain_catalog_hash(domains) << "\",\n";

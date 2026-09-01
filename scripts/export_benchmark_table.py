@@ -10,10 +10,10 @@ from datetime import datetime, timezone
 from typing import Dict, List, Tuple
 
 
-# Only manifests produced with the current protocol-verifier timing boundary
-# may enter the official benchmark table.  Older v2 manifests included the
-# independent acceptance audit in verify_time_ms and are incompatible.
-CANONICAL_TIMING_SCHEMA = "exclusive_commit_prove_protocol_verify_v3"
+# Only manifests produced with the canonical protocol-verifier timing boundary
+# may enter the official benchmark table.  This keeps the reported timings
+# under one stable measurement definition.
+CANONICAL_TIMING_SCHEMA = "exclusive_commit_prove_protocol_verify"
 
 
 _AGGREGATE_PATH = pathlib.Path(__file__).resolve().with_name("aggregate_secure_results.py")
@@ -33,7 +33,7 @@ def parse_assignment(value: str, flag: str) -> Tuple[str, str]:
     dataset, payload = value.split("=", 1)
     dataset = dataset.strip()
     payload = payload.strip()
-    if not dataset or not payload:
+    if dataset not in _AGGREGATE.CANONICAL_DATASETS or not payload:
         raise ValueError(f"{flag} expects dataset=path_or_reason")
     return dataset, payload
 
@@ -102,7 +102,7 @@ def _validate_verifier_report_binding(
         raise ValueError(f"{context}: verifier report must be a JSON object")
     if set(report) != _AGGREGATE.VERIFIER_REPORT_KEYS:
         raise ValueError(f"{context}: verifier report has unexpected or missing fields")
-    if report.get("format") != "zkgat_verifier_report_v2":
+    if report.get("format") != "zkgat_verifier_report":
         raise ValueError(f"{context}: verifier report format mismatch")
 
     manifest_verifier = _AGGREGATE.as_bool(
@@ -382,7 +382,7 @@ def main() -> None:
     parser.add_argument("--run", action="append", default=[], help="dataset=run_manifest.json_or_dir")
     parser.add_argument("--blocked", action="append", default=[], help="dataset=reason")
     parser.add_argument("--output-dir", required=True)
-    parser.add_argument("--dataset-order", default="cora,citeseer,pubmed,ppi,ogbn-arxiv")
+    parser.add_argument("--dataset-order", default="cora,citeseer,pubmed,ppi,ogbn_arxiv")
     parser.add_argument("--blocked-benchmark-mode", default="")
     args = parser.parse_args()
 

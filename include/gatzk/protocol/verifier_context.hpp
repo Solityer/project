@@ -7,23 +7,9 @@
 namespace gatzk::protocol
 {
 
-    // Construct a point-only verifier view for short tests and migration
-    // checks.  This path marks the result as an in-process transition and is
-    // therefore rejected by the formal main verifier; it still performs the
-    // complete canonical registry validation.
-    VerifierContext make_verifier_context(const ProtocolContext &prover_context);
-
-    // Copy only public verifier inputs (dataset/features, shape, domains,
-    // public polynomials and VK).  No model/static commitment points are
-    // copied here; the formal loader hydrates those exclusively from the
-    // authenticated registry artifact.
-    VerifierContext make_verifier_public_inputs(
-        const ProtocolContext &prover_context);
-
     // Candidate registration is a setup-time operation.  It is allowed to
     // inspect a proving context, but its result is a self-contained artifact
-    // and the formal loader below never accepts that context (or a transition
-    // verifier projection).
+    // and the formal loader below consumes only the authenticated artifact.
     VerifierRegistrationArtifact make_verifier_registration_artifact(
         const ProtocolContext &prover_context);
 
@@ -59,9 +45,8 @@ namespace gatzk::protocol
     // This is intentionally independent of the proving context.
     bool validate_verifier_context(const VerifierContext &verifier_context);
 
-    // Internal compatibility projection used by the existing proving/schema
-    // implementation.  It contains only shape/public data and a VK copy; it
-    // never points back to the original proving context.
+    // Shape-only projection used by verifier execution.  It contains public
+    // data and a VK copy, and never points back to a proving context.
     namespace detail
     {
         ProtocolContext make_verifier_execution_context(

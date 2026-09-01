@@ -111,7 +111,7 @@ namespace gatzk::algebra
             if (backend == "cuda")
             {
                 throw std::runtime_error(
-                    "legacy GATZK_ALGEBRA_BACKEND=cuda path has been removed; use --compute-backend cuda_hotspots on a CUDA-enabled build");
+                    "GATZK_ALGEBRA_BACKEND=cuda is unsupported; use --compute-backend cuda_hotspots on a CUDA-enabled build");
             }
             throw std::runtime_error("unsupported GATZK_ALGEBRA_BACKEND value: " + backend);
         }
@@ -991,7 +991,7 @@ namespace gatzk::algebra
                 [=](mcl::Fr *values)
             {
                 // Keep transform scratch scoped to this quotient transform.
-                // The previous thread_local buffer could retain hundreds of
+                // A thread_local buffer could retain hundreds of
                 // MiB after quotient materialization and carry that memory
                 // pressure into KZG opening and verification.
                 std::vector<mcl::Fr>

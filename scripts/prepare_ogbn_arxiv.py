@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse
 import pathlib
 
-from ogbn_arxiv_utils import ensure_cache
+from ogbn_arxiv_data import ensure_cache
 
 
 def main() -> None:

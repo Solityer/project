@@ -2,7 +2,7 @@
 """Lightweight source contracts for formal execution-cache identities.
 
 This test intentionally does not construct a proof or a large dataset.  It
-guards the cache boundary against the old shape/endpoint-only keys and against
+guards the cache boundary against incomplete shape/endpoint-only keys and against
 proof-local trace values being reused after a new Fiat--Shamir nonce.
 """
 
@@ -25,7 +25,7 @@ model_key = section(
     "std::string quantized_model_cache_key(",
     "struct HiddenHeadStaticQuantizedParameters",
 )
-assert '"zkgat:quantized-model-cache:v3"' in TRACE
+assert '"zkgat:quantized-model-cache"' in TRACE
 assert "append_cache_model_identity(&bytes, context.model)" in model_key
 assert "config.quantization.canonical_serialization()" in model_key or "append_cache_config_identity" in model_key
 assert "output_bias_fp" in TRACE
@@ -43,10 +43,10 @@ lookup = section(
     "std::string value_index_cache_key(",
     "std::vector<FieldElement> multiplicity_from_indices(",
 )
-assert '"zkgat:lookup-index:value:v2"' in lookup
-assert '"zkgat:lookup-index:pair:v2"' in lookup
-assert '"zkgat:lookup-table:single:v2"' in lookup
-assert '"zkgat:lookup-table:pair:v2"' in lookup
+assert '"zkgat:lookup-index:value"' in lookup
+assert '"zkgat:lookup-index:pair"' in lookup
+assert '"zkgat:lookup-table:single"' in lookup
+assert '"zkgat:lookup-table:pair"' in lookup
 assert "append_cache_field_vector(&bytes, values)" in lookup
 assert "append_cache_field(&bytes, left)" in lookup
 assert "append_cache_field(&bytes, right)" in lookup

@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Prepare/check the baseline-local resource layout without loading data.
+"""Prepare/check the baseline-local zkGPT resource layout.
 
-This command is intentionally a manifest/layout operation.  It never copies
-from an external project directory and never opens a
-dataset, checkpoint, or public-output payload.  The formal owner stages
-authenticated resources below this baseline before running ``--check`` and
-the proof runner.
+The default operation creates only the directory/manifest skeleton.  The
+``--check`` operation is presence-only.  Content generation is intentionally a
+separate official ``gat_zkgpt_experiment.py`` preparation stage so a direct
+formal start can authenticate and cache canonical checkpoints/public outputs
+without asking the operator to copy or convert anything by hand.
 """
 from __future__ import annotations
 

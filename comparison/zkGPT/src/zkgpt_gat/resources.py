@@ -1,10 +1,9 @@
 """Baseline-local resource policy for the formal zkGPT runner.
 
-The comparison baseline is deliberately self-contained.  This module only
-resolves and checks paths; it never downloads, copies, preprocesses, or loads
-dataset/model contents.  A user preparing the formal matrix must stage the
-authenticated resources under this baseline's directory before invoking the
-runner.
+The comparison baseline is deliberately self-contained.  This module resolves
+and checks only baseline-local paths.  Resource *contents* are produced by the
+official preparation entry point from the baseline's authenticated raw inputs;
+the path checker itself never downloads, copies, or silently substitutes data.
 """
 from __future__ import annotations
 
@@ -14,6 +13,7 @@ import pathlib
 from typing import Any, Dict, Iterable
 
 from .util import assert_contained_path, lexical_path, require_dir
+from .quantization import CANONICAL_QUANT_CFG_ID
 
 
 RESOURCE_MANIFEST_SCHEMA = "zkGPT_baseline_resource_manifest_v1"
@@ -142,9 +142,11 @@ def required_resource_paths(root: pathlib.Path, dataset: str) -> Dict[str, pathl
         "data_root": resolve_local(root, "data", "data_root"),
         "cache_root": resolve_local(root, "data/cache", "cache_root"),
         "cache_dir": resolve_local(root, pathlib.Path("data/cache") / slug, "dataset cache"),
-        "checkpoint_bundle": resolve_local(root, pathlib.Path("artifacts/checkpoints") / f"{slug}_gat", "checkpoint_bundle"),
+        # Historical ``*_gat`` bundles contain forbidden hidden biases.  The
+        # formal chain uses a separately generated canonical no-bias bundle.
+        "checkpoint_bundle": resolve_local(root, pathlib.Path("artifacts/checkpoints") / f"{slug}_gat_canonical", "checkpoint_bundle"),
         "static_table_path": resolve_local(root, STATIC_TABLE_DESCRIPTOR_RELATIVE_PATH, "static_table_path"),
-        "public_y_path": resolve_local(root, pathlib.Path("resources/public_y") / f"{slug}.json", "public_y_path"),
+        "public_y_path": resolve_local(root, pathlib.Path("resources/public_y/canonical") / f"{slug}.json", "public_y_path"),
         "resource_manifest": resolve_local(root, "resources/resource_manifest.json", "resource_manifest"),
         "model_registry_root": resolve_local(root, MODEL_REGISTRY_ROOT_RELATIVE_PATH, "model_registry_root"),
         "private_model_setup_root": resolve_local(root, PRIVATE_MODEL_SETUP_ROOT_RELATIVE_PATH, "private_model_setup_root"),
@@ -163,18 +165,18 @@ def resource_manifest_payload(root: pathlib.Path) -> Dict[str, Any]:
                 "meta.cfg",
                 "edges.txt",
                 "features.txt or features.npy",
-                "labels.txt (optional for inference)",
-            ] + (["node_ptr.txt (required for multi-graph PPI)"] if dataset == "ppi" else []),
+                "labels.txt",
+            ] + (["node_ptr.txt", "labels_multi.npy or labels_multi.txt", "train_mask.npy", "val_mask.npy", "test_mask.npy"] if dataset == "ppi" else []),
             "checkpoint_bundle": str(paths["checkpoint_bundle"].relative_to(root)),
             "checkpoint_required_files": ["manifest.json", "tensors.txt"],
             "public_y": str(paths["public_y_path"].relative_to(root)),
-            "status": "awaiting_user_staged_resources",
+            "status": "runtime_generated_from_baseline_local_inputs",
         }
     return {
         "schema": RESOURCE_MANIFEST_SCHEMA,
         "baseline": "zkGPT",
         "root_policy": "all_project_resources_must_be_baseline_local",
-        "dataset_execution_policy": "full_datasets_are_user_owned_and_not_loaded_by_prepare",
+            "dataset_execution_policy": "full_datasets_are_baseline_local_inputs; expensive materialization occurs only in the formal runner",
         "model_registry": {
             "root": MODEL_REGISTRY_ROOT_RELATIVE_PATH,
             "private_root": PRIVATE_MODEL_SETUP_ROOT_RELATIVE_PATH,
@@ -184,7 +186,7 @@ def resource_manifest_payload(root: pathlib.Path) -> Dict[str, Any]:
         },
         "static_table": {
             "id": "tables:lrelu+elu+exp+range",
-            "quant_cfg_id": "exact_integer_gat_v1",
+            "quant_cfg_id": CANONICAL_QUANT_CFG_ID,
             "path": STATIC_TABLE_DESCRIPTOR_RELATIVE_PATH,
             "schema": STATIC_TABLE_DESCRIPTOR_SCHEMA,
             "content_digest": static_descriptor["content_digest"],
@@ -215,7 +217,7 @@ def read_resource_manifest(root: pathlib.Path) -> Dict[str, Any]:
     if (
         not isinstance(static, dict)
         or static.get("id") != "tables:lrelu+elu+exp+range"
-        or static.get("quant_cfg_id") != "exact_integer_gat_v1"
+        or static.get("quant_cfg_id") != CANONICAL_QUANT_CFG_ID
         or static.get("path") != STATIC_TABLE_DESCRIPTOR_RELATIVE_PATH
         or static.get("schema") != STATIC_TABLE_DESCRIPTOR_SCHEMA
         or static.get("content_digest") != descriptor["content_digest"]
@@ -244,8 +246,8 @@ def read_resource_manifest(root: pathlib.Path) -> Dict[str, Any]:
             "meta.cfg",
             "edges.txt",
             "features.txt or features.npy",
-            "labels.txt (optional for inference)",
-        ] + (["node_ptr.txt (required for multi-graph PPI)"] if dataset == "ppi" else [])
+            "labels.txt",
+        ] + (["node_ptr.txt", "labels_multi.npy or labels_multi.txt", "train_mask.npy", "val_mask.npy", "test_mask.npy"] if dataset == "ppi" else [])
         if entry.get("required_files") != expected_required_files:
             raise ValueError(f"baseline resource manifest file requirements mismatch: {dataset}")
         if entry.get("checkpoint_required_files") != ["manifest.json", "tensors.txt"]:
@@ -265,7 +267,7 @@ def validate_static_table_descriptor(root: pathlib.Path) -> Dict[str, Any]:
         raise ValueError(f"cannot read static-table descriptor: {path}: {exc}") from exc
     if not isinstance(payload, dict) or payload.get("schema") != STATIC_TABLE_DESCRIPTOR_SCHEMA:
         raise ValueError("static-table descriptor schema mismatch")
-    if payload.get("static_tables_id") != "tables:lrelu+elu+exp+range" or payload.get("quant_cfg_id") != "exact_integer_gat_v1":
+    if payload.get("static_tables_id") != "tables:lrelu+elu+exp+range" or payload.get("quant_cfg_id") != CANONICAL_QUANT_CFG_ID:
         raise ValueError("static-table descriptor identity mismatch")
     if tuple(payload.get("families", ())) != STATIC_TABLE_FAMILIES:
         raise ValueError("static-table descriptor family order mismatch")
@@ -338,10 +340,13 @@ def check_resource_layout(
             if not feature_present:
                 missing.append(f"{cache}/features.txt or features.npy")
             if dataset == "ppi":
-                try:
-                    _owned_regular(cache / "node_ptr.txt", f"dataset {dataset} node_ptr.txt")
-                except (FileNotFoundError, OSError, ValueError):
-                    missing.append(str(cache / "node_ptr.txt"))
+                for name in ("node_ptr.txt", "train_mask.npy", "val_mask.npy", "test_mask.npy"):
+                    try:
+                        _owned_regular(cache / name, f"dataset {dataset} {name}")
+                    except (FileNotFoundError, OSError, ValueError):
+                        missing.append(str(cache / name))
+                if not ((cache / "labels_multi.npy").is_file() or (cache / "labels_multi.txt").is_file()):
+                    missing.append(f"{cache}/labels_multi.npy or labels_multi.txt")
             for name in ("manifest.json", "tensors.txt"):
                 try:
                     _owned_regular(paths["checkpoint_bundle"] / name, f"checkpoint {name}")

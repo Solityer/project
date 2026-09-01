@@ -24,6 +24,7 @@ namespace gatzk::crypto
         std::string field_modulus_id;
         std::string srs_type;
         std::string ceremony_transcript_hash;
+        std::string setup_transcript_hash;
         std::size_t degree_bound = 0;
         std::unordered_map<std::string, std::size_t> domain_sizes;
         std::unordered_map<std::string, std::string> domain_generators;
@@ -51,7 +52,6 @@ namespace gatzk::crypto
         std::string srs_consistency_hash;
         std::string encoding;
         std::string generator_id;
-        std::string generator_version;
         std::string security_level;
         std::string kzg_assumption_profile_id;
         std::string kzg_assumption_domain_catalog_hash;

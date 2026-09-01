@@ -9,6 +9,7 @@ import numpy as np
 
 from .data import LocalGraph
 from .model import AttentionHead, Model
+from .quantization import quantize_ties_away
 from .field import BN254_FR_MODULUS, to_field_int
 from .util import TimerBook, timed, update_digest_np
 from .rounding import (
@@ -91,6 +92,16 @@ class ForwardTrace:
     lasso_digest: str
     metrics: Dict[str, float]
     output_average_division: SignedRoundDivTrace | None = None
+
+
+def canonical_input_integers(graph: LocalGraph, model: Model) -> np.ndarray:
+    """Quantize already-preprocessed features at the authenticated S_input boundary."""
+    graph_preprocess = str(getattr(graph, "input_preprocess_id", "") or "")
+    model_preprocess = str(getattr(model, "input_preprocess_id", "") or "")
+    if model_preprocess and graph_preprocess and graph_preprocess != model_preprocess:
+        raise ValueError("graph/model input_preprocess_id mismatch")
+    scale = int(model.quant_scales["input"])
+    return np.asarray(quantize_ties_away(graph.features, scale), dtype=np.int64)
 
 
 def leaky_relu(values: np.ndarray, alpha: float = 0.2) -> np.ndarray:
@@ -393,10 +404,11 @@ def forward_full(
     base_hash = hashlib.sha256()
     lasso_hash = hashlib.sha256()
     hidden_layers: List[LayerTrace] = []
-    # Public features are canonical integers at S_H^(1)=1.  The model loader
-    # has already converted every private parameter to its registered integer
-    # scale, so all following operations use the exact branch above.
-    layer_input = np.asarray([int(np.floor(float(item) + 0.5) if float(item) >= 0 else np.ceil(float(item) - 0.5)) for item in np.ravel(graph.features)], dtype=np.int64).reshape(graph.features.shape)
+    # Public features are canonical integers at the registered S_input scale.
+    # The model loader has already converted every private parameter to its
+    # authenticated integer scale, so all following operations use the exact
+    # branch above.
+    layer_input = canonical_input_integers(graph, model)
     scales = model.quant_scales
     layer_input_scale = int(scales["input"])
     update_digest_np(base_hash, "H.input_features", layer_input)
@@ -483,7 +495,7 @@ def forward_full(
     update_digest_np(base_hash, "output.Y_pre_bias_average", y_pre)
     update_digest_np(base_hash, "output.Y", y)
     return ForwardTrace(
-        input_features=graph.features,
+        input_features=layer_input,
         hidden_layers=hidden_layers,
         output_heads=output_heads,
         output_head_values=output_values,
@@ -657,13 +669,7 @@ def forward_public_y(
     rounding_mode = validate_rounding_mode(
         model.rounding_mode if rounding_mode is None else rounding_mode
     )
-    layer_input = np.asarray(
-        [
-            int(np.floor(float(item) + 0.5) if float(item) >= 0 else np.ceil(float(item) - 0.5))
-            for item in np.ravel(graph.features)
-        ],
-        dtype=np.int64,
-    ).reshape(graph.features.shape)
+    layer_input = canonical_input_integers(graph, model)
     scales = model.quant_scales
     layer_input_scale = int(scales["input"])
     for layer in model.hidden_layers:

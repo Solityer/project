@@ -26,6 +26,8 @@ from .constants import (
     PROOF_BACKEND_ID,
     PROTOCOL_ID,
 )
+from .model import CANONICAL_CHECKPOINT_SCHEMA, _validate_canonical_manifest
+from .quantization import CANONICAL_QUANT_CFG_ID, canonical_input_preprocess_id
 from .gpu_execution import validate_gpu_execution_evidence
 from .registry import canonical_registry_public_path
 from .privacy import verify_privacy_profile
@@ -539,10 +541,16 @@ def _validate_formal_model_binding(
     checkpoint_manifest = _read_owned_resource_object(
         checkpoint_manifest_path, "checkpoint manifest"
     )
+    try:
+        _validate_canonical_manifest(checkpoint_manifest)
+    except (TypeError, ValueError) as exc:
+        raise ResultValidationError(f"checkpoint manifest is not canonical: {exc}") from exc
     if checkpoint_manifest.get("model_arch_id") != expected_arch:
         raise ResultValidationError("checkpoint manifest model_arch_id mismatch")
     if checkpoint_manifest.get("model_param_id") != config.entries.get("model_param_id"):
         raise ResultValidationError("checkpoint manifest model_param_id mismatch")
+    if checkpoint_manifest.get("quant_cfg_id") != CANONICAL_QUANT_CFG_ID or checkpoint_manifest.get("input_preprocess_id") != config.input_preprocess_id:
+        raise ResultValidationError("checkpoint manifest numerical/preprocessing identity mismatch")
     if int(checkpoint_manifest.get("L", -1)) != FORMAL_GAT_LAYER_COUNT:
         raise ResultValidationError("checkpoint manifest L is not canonical")
     if int(checkpoint_manifest.get("K_out", -1)) != FORMAL_GAT_K_OUT:
@@ -615,7 +623,7 @@ def _validate_formal_model_binding(
     expected_internal_d_in = expected_d_in + [expected_hidden[-1][0] * expected_hidden[-1][1]]
     if dim_cfg.get("d_in") != expected_internal_d_in:
         raise ResultValidationError("metadata internal d_in dimensions mismatch")
-    for key in ("model_arch_id", "model_param_id", "quant_cfg_id"):
+    for key in ("model_arch_id", "model_param_id", "quant_cfg_id", "input_preprocess_id"):
         if metadata.get(key) != config.entries.get(key):
             raise ResultValidationError(f"metadata {key} does not match formal config")
     if manifest.get("L") != FORMAL_GAT_LAYER_COUNT:
@@ -668,7 +676,7 @@ def _verified_fields(report: Mapping[str, Any]) -> Dict[str, Any]:
         "witness_included_in_proof", "public_output_digest",
         "proof_contribution", "gpu_hot_path", "proof_schema_scan",
         "privacy_masking_verified", "verifier_input_boundary",
-        "model_arch_id", "model_param_id", "quant_cfg_id",
+        "model_arch_id", "model_param_id", "quant_cfg_id", "input_preprocess_id",
         "L", "hidden_profile", "d_in_profile", "K_out", "C",
     )
     missing = [key for key in required if key not in fields]
@@ -680,7 +688,7 @@ def _verified_fields(report: Mapping[str, Any]) -> Dict[str, Any]:
         raise ResultValidationError("independent verifier protocol identity mismatch")
     if fields.get("backend") not in BACKEND_SET or fields.get("dataset") not in DATASET_SET:
         raise ResultValidationError("independent verifier dataset/backend identity invalid")
-    for key in ("model_arch_id", "model_param_id", "quant_cfg_id"):
+    for key in ("model_arch_id", "model_param_id", "quant_cfg_id", "input_preprocess_id"):
         if not isinstance(fields.get(key), str) or not fields[key]:
             raise ResultValidationError(f"independent verifier {key} is missing")
     for key in ("L", "K_out", "C"):
@@ -691,6 +699,9 @@ def _verified_fields(report: Mapping[str, Any]) -> Dict[str, Any]:
         raise ResultValidationError("independent verifier hidden_profile is missing")
     if not isinstance(fields.get("d_in_profile"), list) or not fields["d_in_profile"]:
         raise ResultValidationError("independent verifier d_in_profile is missing")
+    dataset = str(fields.get("dataset", ""))
+    if fields.get("quant_cfg_id") != CANONICAL_QUANT_CFG_ID or fields.get("input_preprocess_id") != canonical_input_preprocess_id(dataset):
+        raise ResultValidationError("independent verifier numerical/preprocessing identity mismatch")
     for key in ("full_dataset", "full_gat_forward_proved", "final_logits_bound", "verifier_reads_witness", "witness_included_in_proof", "gpu_hot_path"):
         _require_bool(fields, key, "verified_fields")
     for key in ("proof_schema_scan", "privacy_masking_verified"):
@@ -783,7 +794,7 @@ def validate_artifact(
     dim_cfg = metadata.get("dim_cfg")
     if not isinstance(dim_cfg, Mapping):
         raise ResultValidationError("metadata dim_cfg is missing")
-    for key in ("model_arch_id", "model_param_id", "quant_cfg_id"):
+    for key in ("model_arch_id", "model_param_id", "quant_cfg_id", "input_preprocess_id"):
         if fields.get(key) != metadata.get(key):
             raise ResultValidationError(f"independent verifier {key} does not match metadata")
     for key in ("L", "hidden_profile", "d_in_profile", "K_out", "C"):

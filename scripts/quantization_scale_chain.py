@@ -14,27 +14,29 @@ from typing import Mapping, Sequence
 import numpy as np
 
 
-_SOURCE_PATH = pathlib.Path(__file__).resolve().parents[1] / "configs" / "quantization_scale_chain_v1.cfg"
-CANONICAL_QUANT_CFG_ID = "gat_l3_scale_chain_v1"
-CANONICAL_CHAIN_SCHEMA = "gat_l3_scale_chain_v1"
+_SOURCE_PATH = pathlib.Path(__file__).resolve().parents[1] / "configs" / "quantization_scale_chain.cfg"
+CANONICAL_QUANT_CFG_ID = "gat_l3_scale_chain"
+CANONICAL_CHAIN_SCHEMA = "gat_l3_scale_chain"
 
 # Input preprocessing is a public part of the formal instance.  The
-# Planetoid/PPI caches retain their historical row-normalized semantics, while
+# Planetoid/PPI caches retain their row-normalized semantics, while
 # ogbn-arxiv deliberately keeps the released float32 node features unchanged
 # until the registered fixed-point boundary.  Keep this mapping here so every
 # Python producer (training, trace/reference replay and export validation)
 # selects the same contract instead of carrying a dataset-local normalization
 # switch.
-ROW_NORMALIZE_INPUT_PREPROCESS_ID = "row_normalize_v1"
-OGBN_ARXIV_RAW_INPUT_PREPROCESS_ID = "ogbn_arxiv_raw_float32_v1"
+ROW_NORMALIZE_INPUT_PREPROCESS_ID = "row_normalize"
+OGBN_ARXIV_INTERNAL_NAME = "ogbn_arxiv"
+OGBN_ARXIV_EXTERNAL_NAME = "ogbn-arxiv"
+OGBN_ARXIV_RAW_INPUT_PREPROCESS_ID = "ogbn_arxiv_raw_float32"
 
 
 def canonical_input_preprocess_id(dataset: str) -> str:
     """Return the one registered input preprocessing identity for a dataset."""
-    normalized_dataset = str(dataset).strip().lower().replace("-", "_")
-    if normalized_dataset == "ogbn_arxiv":
+    dataset_name = str(dataset)
+    if dataset_name == OGBN_ARXIV_INTERNAL_NAME:
         return OGBN_ARXIV_RAW_INPUT_PREPROCESS_ID
-    if normalized_dataset in {"cora", "citeseer", "pubmed", "ppi"}:
+    if dataset_name in {"cora", "citeseer", "pubmed", "ppi"}:
         return ROW_NORMALIZE_INPUT_PREPROCESS_ID
     raise ValueError(f"unsupported formal dataset for input preprocessing: {dataset!r}")
 
@@ -303,7 +305,7 @@ def canonical_input_preprocess(
 ) -> np.ndarray:
     """Materialize the canonical floating-point input view.
 
-    ``ogbn_arxiv_raw_float32_v1`` intentionally casts through float32 before
+    ``ogbn_arxiv_raw_float32`` intentionally casts through float32 before
     returning float64 so a direct raw-array caller has exactly the same
     numerical source as the cached ``features.npy`` producer.  The formal
     quantizer is applied by the caller after this boundary.

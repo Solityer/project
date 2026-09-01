@@ -102,8 +102,7 @@ namespace gatzk::util
         std::string opening_mode = "point_grouped_batch_opening";
         std::string binding_mode = "zk_subproof_for_crpc";
         std::string proof_task = "node_classification_full_gat";
-        std::string security_profile_id = "zkgat_secure_profile_v1";
-        std::size_t hidden_dim = 4;
+        std::string security_profile_id = "zkgat_secure_profile";
         std::size_t num_classes = 2;
         std::size_t range_bits = 10;
         std::uint64_t seed = 7;

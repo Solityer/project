@@ -413,7 +413,7 @@ namespace gatzk::protocol
                 "point-group claims are not in canonical tuple order");
         }
 
-        crypto::Transcript transcript("zkgat-standard-point-group-v2");
+        crypto::Transcript transcript("zkgat-standard-point-group");
         absorb_public_metadata(transcript, metadata);
         transcript.absorb_text("point_group.group_id", group.group_id);
         transcript.absorb_text("point_group.owner_block", group.owner_block);

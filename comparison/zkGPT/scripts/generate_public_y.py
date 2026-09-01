@@ -35,6 +35,7 @@ from zkgpt_gat.constants import (  # noqa: E402
 )
 from zkgpt_gat.data import load_dataset, normalize_graph  # noqa: E402
 from zkgpt_gat.forward import forward_public_y  # noqa: E402
+from zkgpt_gat.reference_forward import reference_forward  # noqa: E402
 from zkgpt_gat.model import load_model  # noqa: E402
 from zkgpt_gat.resources import (  # noqa: E402
     canonical_dataset_name,
@@ -136,6 +137,8 @@ def _expected_contract(config, dataset_name: str, graph, model, raw_manifest: di
         "C": FORMAL_GAT_CLASS_COUNTS[canonical],
         "shape": [int(graph.num_nodes), int(model.class_count)],
         "quant_scale_chain": {key: int(value) for key, value in model.quant_scales.items()},
+        "input_preprocess_id": config.input_preprocess_id,
+        "canonical_scale_chain": raw_manifest.get("quant_scale_chain"),
         "output_average_rule": model.output_average_rule,
     }
     if expected["model_arch_id"] != model.model_arch_id:
@@ -169,6 +172,8 @@ def _validate_public_y(path: pathlib.Path, contract: dict[str, Any], values: np.
     expected_digest = _array_digest(values)
     if payload.get("y_digest") != expected_digest:
         raise RuntimeError("generated public Y digest does not match its integer values")
+    if payload.get("reference_y_digest") != expected_digest or payload.get("independent_reference_forward") is not True:
+        raise RuntimeError("generated public Y lacks independent reference-forward evidence")
     descriptor = dict(payload)
     descriptor_digest = descriptor.pop("descriptor_digest", None)
     if descriptor_digest != digest_json(descriptor):
@@ -211,6 +216,9 @@ def generate_one(dataset_name: str) -> dict[str, Any]:
     # ``forward_full`` (validated against the complete Cora trace) but keeps
     # PPI/OGBN resources bounded instead of retaining every edge/head trace.
     values = np.asarray(forward_public_y(graph, model, config.rounding_mode), dtype=object)
+    reference_values = np.asarray(reference_forward(graph, model, config.rounding_mode), dtype=object)
+    if not np.array_equal(values, reference_values):
+        raise RuntimeError(f"{canonical} production/reference integer forward mismatch")
     if values.ndim != 2 or tuple(values.shape) != tuple(contract["shape"]):
         raise RuntimeError(f"{canonical} native integer forward returned an unexpected shape: {values.shape}")
     if any(not isinstance(value, (int, np.integer)) for value in values.ravel().tolist()):
@@ -228,6 +236,9 @@ def generate_one(dataset_name: str) -> dict[str, Any]:
         "edge_count": int(graph.src.size),
         "input_feature_rounding": "nearest_ties_away",
         "forward_engine": "zkgpt_gat.forward.forward_public_y",
+        "reference_forward_engine": "zkgpt_gat.reference_forward.reference_forward",
+        "reference_y_digest": _array_digest(reference_values),
+        "independent_reference_forward": True,
         "y_digest": _array_digest(values),
         "values": [int(value) for value in values.ravel().tolist()],
     }

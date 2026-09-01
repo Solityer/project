@@ -10,9 +10,9 @@ struct Route2Options {
     // 这些开关只选择底层实现路线，不允许改动 formal 语义。
     bool fast_msm = GATZK_ENABLE_FAST_MSM_DEFAULT != 0;
     bool parallel_fft = GATZK_ENABLE_PARALLEL_FFT_DEFAULT != 0;
-    bool fft_backend_upgrade = GATZK_ENABLE_FFT_BACKEND_UPGRADE_DEFAULT != 0;
-    bool fft_kernel_upgrade = GATZK_ENABLE_FFT_KERNEL_UPGRADE_DEFAULT != 0;
-    bool trace_layout_upgrade = GATZK_ENABLE_TRACE_LAYOUT_UPGRADE_DEFAULT != 0;
+    bool packed_fft_backend = GATZK_ENABLE_PACKED_FFT_DEFAULT != 0;
+    bool rotated_fft_kernel = GATZK_ENABLE_ROTATED_FFT_KERNEL_DEFAULT != 0;
+    bool compact_trace_layout = GATZK_ENABLE_COMPACT_TRACE_LAYOUT_DEFAULT != 0;
     bool fast_verify_pairing = GATZK_ENABLE_FAST_VERIFY_PAIRING_DEFAULT != 0;
     bool cuda_trace_hotspots = false;
     bool cuda_field_hotspots = false;

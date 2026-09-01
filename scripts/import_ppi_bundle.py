@@ -10,7 +10,14 @@ from typing import Dict, Iterable
 
 import numpy as np
 
-from export_gat_checkpoint import archive_key, write_text_tensor_dump
+from checkpoint_bundle import (
+    archive_key,
+    build_family_manifest,
+    load_checkpoint_manifest,
+    validate_checkpoint_manifest,
+    validate_tensor_encodings,
+    write_text_tensor_dump,
+)
 from export_torch_gat_bundle import build_tensors_and_manifest_spec
 from quantization_scale_chain import (
     canonical_input_preprocess_id,
@@ -26,9 +33,7 @@ def require(condition: bool, message: str) -> None:
 def load_manifest(bundle_dir: pathlib.Path) -> Dict[str, object]:
     manifest_path = bundle_dir / "manifest.json"
     require(manifest_path.exists(), f"缺少 manifest.json: {bundle_dir}")
-    data = json.loads(manifest_path.read_text(encoding="utf-8"))
-    require(isinstance(data, dict), "manifest.json 必须是 JSON 对象")
-    return data
+    return load_checkpoint_manifest(manifest_path)
 
 
 def require_keys(manifest: Dict[str, object], keys: Iterable[str]) -> None:
@@ -37,20 +42,21 @@ def require_keys(manifest: Dict[str, object], keys: Iterable[str]) -> None:
 
 
 def parse_hidden_profile(manifest: Dict[str, object]) -> str:
-    raw = manifest.get("hidden_profile")
+    raw = manifest["hidden_profile"]
     require(isinstance(raw, list) and raw, "hidden_profile 必须是非空数组")
     parts = []
     for entry in raw:
         require(isinstance(entry, dict), "hidden_profile 每项都必须是对象")
-        parts.append(f"{int(entry['head_count'])}x{int(entry['head_dim'])}")
+        parts.append(f"{entry['head_count']}x{entry['head_dim']}")
     return ",".join(parts)
 
 
 def validate_ppi_bundle(manifest: Dict[str, object], bundle_dir: pathlib.Path) -> None:
+    validate_checkpoint_manifest(manifest)
     require_keys(
         manifest,
         (
-            "family_schema_version",
+            "family_schema",
             "dataset",
             "input_preprocess_id",
             "L",
@@ -82,50 +88,50 @@ def validate_ppi_bundle(manifest: Dict[str, object], bundle_dir: pathlib.Path) -
     )
     require((bundle_dir / "tensors.txt").exists(), f"缺少 tensors.txt: {bundle_dir}")
     require((bundle_dir / "tensors.npz").exists(), f"缺少 tensors.npz: {bundle_dir}")
-    require(str(manifest["family_schema_version"]) == "multi_layer_multi_head_v2", "family_schema_version 不受支持")
-    require(str(manifest["dataset"]) == "ppi", "PPI bundle dataset identity 不匹配")
+    require(manifest["family_schema"] == "multi_layer_multi_head", "family_schema 不受支持")
+    require(manifest["dataset"] == "ppi", "PPI bundle dataset identity 不匹配")
     require(
-        str(manifest["input_preprocess_id"])
+        manifest["input_preprocess_id"]
         == canonical_input_preprocess_id("ppi"),
         "PPI bundle input_preprocess_id 不匹配",
     )
-    require(int(manifest["L"]) == 3, "PPI 正式配置要求 L=3")
+    require(manifest["L"] == 3, "PPI 正式配置要求 L=3")
     require(parse_hidden_profile(manifest) == "8x8,8x8", "PPI 正式配置要求 hidden_profile=[8x8,8x8]")
     d_in_profile = manifest["d_in_profile"]
-    require(isinstance(d_in_profile, list) and [int(value) for value in d_in_profile] == [50, 64], "PPI 正式配置要求 d_in_profile=[50,64]")
-    require(int(manifest["K_out"]) == 2, "PPI 正式配置要求 K_out=2")
-    require(int(manifest["C"]) == 121, "PPI 正式配置要求 C=121")
-    require(str(manifest["model_arch_id"]) == "gat_family_L3_hid8x8-8x8_kout2_c121", "PPI bundle 的 model_arch_id 不匹配")
-    require(str(manifest["model_param_id"]) == "ppi_gat_seed11", "PPI bundle 的 model_param_id 不匹配")
-    require(str(manifest["quant_cfg_id"]) == "gat_l3_scale_chain_v1", "PPI bundle 必须声明 canonical scale chain")
+    require(isinstance(d_in_profile, list) and d_in_profile == [50, 64], "PPI 正式配置要求 d_in_profile=[50,64]")
+    require(manifest["K_out"] == 2, "PPI 正式配置要求 K_out=2")
+    require(manifest["C"] == 121, "PPI 正式配置要求 C=121")
+    require(manifest["model_arch_id"] == "gat_family_L3_hid8x8-8x8_kout2_c121", "PPI bundle 的 model_arch_id 不匹配")
+    require(manifest["model_param_id"] == "ppi_gat_seed11", "PPI bundle 的 model_param_id 不匹配")
+    require(manifest["quant_cfg_id"] == "gat_l3_scale_chain", "PPI bundle 必须声明 canonical scale chain")
     expected_chain = canonical_quantization_scale_chain(
-        str(manifest["quant_cfg_id"]),
-        manifest.get("hidden_profile"),
-        int(manifest["K_out"]),
+        manifest["quant_cfg_id"],
+        manifest["hidden_profile"],
+        manifest["K_out"],
     )
     require(
-        str(manifest["quantization_scale_chain"])
+        manifest["quantization_scale_chain"]
         == expected_chain.canonical_serialization(),
         "PPI bundle quantization_scale_chain metadata is malformed",
     )
-    require(str(manifest["task_type"]) == "inductive_multi_graph_node_classification", "PPI bundle 的 task_type 不匹配")
-    require(str(manifest["report_unit"]) == "graph", "PPI bundle 的 report_unit 不匹配")
-    require(str(manifest["batching_rule"]) == "multi_graph_batch", "PPI bundle 的 batching_rule 不匹配")
-    require(str(manifest["subgraph_rule"]) == "whole_graph", "PPI bundle 的 subgraph_rule 不匹配")
-    require(str(manifest["self_loop_rule"]) == "per_node", "PPI bundle 的 self_loop_rule 不匹配")
-    require(str(manifest["edge_sort_rule"]) == "edge_gid_then_dst_stable", "PPI bundle 的 edge_sort_rule 不匹配")
-    require(str(manifest["output_average_rule"]) == "per_head_bias_then_arithmetic_mean", "PPI bundle 的 output_average_rule 不匹配")
-    require(str(manifest["label_format"]) == "multi_hot", "PPI bundle 必须保留 multi_hot 标签语义")
-    require(str(manifest["loss"]) == "BCEWithLogitsLoss", "PPI bundle 必须声明 BCEWithLogitsLoss")
-    require(str(manifest["selection_metric"]) == "validation_loss", "PPI bundle 必须只按 validation_loss 选择")
-    require(str(manifest["split_format"]) == "node_masks_v1", "PPI bundle 必须声明 node_masks_v1 split")
+    require(manifest["task_type"] == "inductive_multi_graph_node_classification", "PPI bundle 的 task_type 不匹配")
+    require(manifest["report_unit"] == "graph", "PPI bundle 的 report_unit 不匹配")
+    require(manifest["batching_rule"] == "multi_graph_batch", "PPI bundle 的 batching_rule 不匹配")
+    require(manifest["subgraph_rule"] == "whole_graph", "PPI bundle 的 subgraph_rule 不匹配")
+    require(manifest["self_loop_rule"] == "per_node", "PPI bundle 的 self_loop_rule 不匹配")
+    require(manifest["edge_sort_rule"] == "edge_gid_then_dst_stable", "PPI bundle 的 edge_sort_rule 不匹配")
+    require(manifest["output_average_rule"] == "per_head_bias_then_arithmetic_mean", "PPI bundle 的 output_average_rule 不匹配")
+    require(manifest["label_format"] == "multi_hot", "PPI bundle 必须保留 multi_hot 标签语义")
+    require(manifest["loss"] == "BCEWithLogitsLoss", "PPI bundle 必须声明 BCEWithLogitsLoss")
+    require(manifest["selection_metric"] == "validation_loss", "PPI bundle 必须只按 validation_loss 选择")
+    require(manifest["split_format"] == "node_masks", "PPI bundle 必须声明 node_masks split")
 
     hidden_layers = manifest["hidden_layers"]
     require(isinstance(hidden_layers, list) and len(hidden_layers) == 2, "PPI bundle 必须包含两个 hidden layer")
     require(all(isinstance(layer, dict) for layer in hidden_layers), "PPI hidden_layers 每项必须是对象")
     require(
         [
-            (int(layer["input_dim"]), int(layer["head_count"]), int(layer["head_dim"]))
+            (layer["input_dim"], layer["head_count"], layer["head_dim"])
             for layer in hidden_layers
         ]
         == [(50, 8, 8), (64, 8, 8)],
@@ -137,13 +143,13 @@ def validate_ppi_bundle(manifest: Dict[str, object], bundle_dir: pathlib.Path) -
     require(isinstance(output_specs, list) and len(output_specs) == 2, "PPI bundle 必须包含 2 个 output head")
     require(all(isinstance(spec, dict) for spec in hidden_specs), "PPI hidden_head_specs 每项必须是对象")
     require(all(isinstance(spec, dict) for spec in output_specs), "PPI output_head_specs 每项必须是对象")
-    # Formal identity is the explicit pair; an optional legacy global index is
-    # never consulted, and a global-only manifest is rejected fail-closed.
+    # Formal identity is the explicit layer/local pair; a global-only manifest
+    # is rejected fail-closed.
     expected_pairs = [(layer_index, head_index) for layer_index in range(2) for head_index in range(8)]
     actual_pairs = []
     for spec in hidden_specs:
         require("layer_index" in spec and "local_head_index" in spec, "PPI hidden head spec 必须包含 layer_index/local_head_index")
-        actual_pairs.append((int(spec["layer_index"]), int(spec["local_head_index"])))
+        actual_pairs.append((spec["layer_index"], spec["local_head_index"]))
     require(actual_pairs == expected_pairs, "PPI hidden head specs 必须按 layer/local pair canonical 顺序排列")
 
     tensor_index = manifest["tensor_index"]
@@ -152,8 +158,8 @@ def validate_ppi_bundle(manifest: Dict[str, object], bundle_dir: pathlib.Path) -
     def tensor_shape(name: object) -> tuple[int, ...]:
         require(isinstance(name, str) and name in tensor_index, f"PPI bundle 缺少 tensor: {name}")
         entry = tensor_index[name]
-        require(isinstance(entry, dict) and isinstance(entry.get("shape"), list), f"PPI tensor shape 缺失: {name}")
-        return tuple(int(value) for value in entry["shape"])
+        require(isinstance(entry, dict) and isinstance(entry["shape"], list), f"PPI tensor shape 缺失: {name}")
+        return tuple(entry["shape"])
 
     def validate_head(
         spec: Dict[str, object],
@@ -163,7 +169,7 @@ def validate_ppi_bundle(manifest: Dict[str, object], bundle_dir: pathlib.Path) -
         require_output_bias: bool,
     ) -> None:
         require("attn_dst_bias" not in spec and "attn_src_bias" not in spec,
-                "PPI head must reject legacy attention scalar bias fields")
+                "PPI head must reject attention scalar bias fields")
         keys = ("seq_kernel", "attn_dst_kernel", "attn_src_kernel")
         if require_output_bias:
             keys += ("output_bias",)
@@ -178,12 +184,17 @@ def validate_ppi_bundle(manifest: Dict[str, object], bundle_dir: pathlib.Path) -
             require(tensor_shape(spec["output_bias"]) == (output_dim,), "PPI output bias shape 不匹配")
 
     for layer_index, input_dim in enumerate((50, 64)):
-        layer_specs = [spec for spec in hidden_specs if int(spec["layer_index"]) == layer_index]
+        layer_specs = [spec for spec in hidden_specs if spec["layer_index"] == layer_index]
         require(len(layer_specs) == 8, f"PPI hidden layer {layer_index} head count 不匹配")
         for spec in layer_specs:
             validate_head(spec, input_dim, 8, require_output_bias=False)
     for spec in output_specs:
         validate_head(spec, 64, 121, require_output_bias=True)
+    validate_tensor_encodings(
+        manifest,
+        bundle_dir / "tensors.npz",
+        bundle_dir / "tensors.txt",
+    )
 
 
 def install_bundle(source_dir: pathlib.Path, output_dir: pathlib.Path) -> None:
@@ -211,48 +222,25 @@ def write_bundle_from_torch_checkpoint(checkpoint_path: pathlib.Path, bundle_dir
         num_classes,
         bundle,
     ) = build_tensors_and_manifest_spec(checkpoint_path)
-    manifest = {
-        "checkpoint_prefix": str(checkpoint_path),
-        "dataset": "ppi",
-        "input_preprocess_id": str(bundle["input_preprocess_id"]),
-        "family_schema_version": "multi_layer_multi_head_v2",
-        "output_average_rule": str(bundle.get("output_average_rule", "per_head_bias_then_arithmetic_mean")),
-        "L": len(hidden_layers) + 1,
-        "d_in_profile": [int(value) for value in d_in_profile],
-        "hidden_profile": [
-            {"head_count": int(layer["head_count"]), "head_dim": int(layer["head_dim"])}
-            for layer in hidden_layers
-        ],
-        "hidden_layers": hidden_layers,
-        "hidden_head_specs": hidden_head_specs,
-        "K_out": len(output_head_specs),
-        "output_head_specs": output_head_specs,
-        "C": int(num_classes),
-        "task_type": str(bundle.get("task_type", "inductive_multi_graph_node_classification")),
-        "report_unit": str(bundle.get("report_unit", "graph")),
-        "batching_rule": str(bundle.get("batching_rule", "multi_graph_batch")),
-        "subgraph_rule": str(bundle.get("subgraph_rule", "whole_graph")),
-        "self_loop_rule": str(bundle.get("self_loop_rule", "per_node")),
-        "edge_sort_rule": str(bundle.get("edge_sort_rule", "edge_gid_then_dst_stable")),
-        "tensor_count": len(tensors),
-        "model_arch_id": str(bundle.get("model_arch_id", checkpoint_path.stem)),
-        "model_param_id": str(bundle.get("model_param_id", checkpoint_path.stem)),
-        "quant_cfg_id": str(bundle.get("quant_cfg_id", "gat_l3_scale_chain_v1")),
-        "quantization_scale_chain": str(bundle["quantization_scale_chain"]),
-        "label_format": str(bundle.get("label_format", "multi_hot")),
-        "loss": str(bundle.get("loss", "BCEWithLogitsLoss")),
-        "selection_metric": str(bundle.get("selection_metric", "validation_loss")),
-        "split_format": str(bundle.get("split_format", "node_masks_v1")),
-        "static_table_id": str(bundle.get("static_table_id", "tables:lrelu+elu+exp+range")),
-        "degree_bound_id": str(bundle.get("degree_bound_id", "auto")),
-        "tensor_index": {},
-    }
-    for name, tensor in sorted(tensors.items()):
-        manifest["tensor_index"][name] = {
-            "archive_key": archive_key(name),
-            "dtype": str(tensor.dtype),
-            "shape": list(tensor.shape),
-        }
+    manifest = build_family_manifest(
+        tensors,
+        str(checkpoint_path),
+        d_in_profile=d_in_profile,
+        hidden_layers=hidden_layers,
+        hidden_head_specs=hidden_head_specs,
+        output_head_specs=output_head_specs,
+        num_classes=num_classes,
+        task_type=bundle["task_type"],
+        report_unit=bundle["report_unit"],
+        quant_cfg_id=bundle["quant_cfg_id"],
+        quantization_scale_chain=bundle["quantization_scale_chain"],
+        static_table_id=bundle["static_table_id"],
+        degree_bound_id=bundle["degree_bound_id"],
+        model_arch_id=bundle["model_arch_id"],
+        model_param_id=bundle["model_param_id"],
+        dataset="ppi",
+        input_preprocess_id=bundle["input_preprocess_id"],
+    )
 
     bundle_dir.mkdir(parents=True, exist_ok=True)
     arrays = {archive_key(name): tensor for name, tensor in tensors.items()}
@@ -261,6 +249,11 @@ def write_bundle_from_torch_checkpoint(checkpoint_path: pathlib.Path, bundle_dir
     (bundle_dir / "manifest.json").write_text(
         json.dumps(manifest, indent=2, ensure_ascii=False, sort_keys=True),
         encoding="utf-8",
+    )
+    validate_tensor_encodings(
+        manifest,
+        bundle_dir / "tensors.npz",
+        bundle_dir / "tensors.txt",
     )
 
 

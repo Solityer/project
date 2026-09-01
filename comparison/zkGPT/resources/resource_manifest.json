@@ -1,87 +1,91 @@
 {
   "baseline": "zkGPT",
-  "dataset_execution_policy": "full_datasets_are_user_owned_and_not_loaded_by_prepare",
+  "dataset_execution_policy": "full_datasets_are_baseline_local_inputs; expensive materialization occurs only in the formal runner",
   "datasets": {
     "citeseer": {
       "cache_dir": "data/cache/citeseer",
-      "checkpoint_bundle": "artifacts/checkpoints/citeseer_gat",
+      "checkpoint_bundle": "artifacts/checkpoints/citeseer_gat_canonical",
       "checkpoint_required_files": [
         "manifest.json",
         "tensors.txt"
       ],
-      "public_y": "resources/public_y/citeseer.json",
+      "public_y": "resources/public_y/canonical/citeseer.json",
       "required_files": [
         "meta.cfg",
         "edges.txt",
         "features.txt or features.npy",
-        "labels.txt (optional for inference)"
+        "labels.txt"
       ],
-      "status": "awaiting_user_staged_resources"
+      "status": "runtime_generated_from_baseline_local_inputs"
     },
     "cora": {
       "cache_dir": "data/cache/cora",
-      "checkpoint_bundle": "artifacts/checkpoints/cora_gat",
+      "checkpoint_bundle": "artifacts/checkpoints/cora_gat_canonical",
       "checkpoint_required_files": [
         "manifest.json",
         "tensors.txt"
       ],
-      "public_y": "resources/public_y/cora.json",
+      "public_y": "resources/public_y/canonical/cora.json",
       "required_files": [
         "meta.cfg",
         "edges.txt",
         "features.txt or features.npy",
-        "labels.txt (optional for inference)"
+        "labels.txt"
       ],
-      "status": "awaiting_user_staged_resources"
+      "status": "runtime_generated_from_baseline_local_inputs"
     },
     "ogbn-arxiv": {
       "cache_dir": "data/cache/ogbn_arxiv",
-      "checkpoint_bundle": "artifacts/checkpoints/ogbn_arxiv_gat",
+      "checkpoint_bundle": "artifacts/checkpoints/ogbn_arxiv_gat_canonical",
       "checkpoint_required_files": [
         "manifest.json",
         "tensors.txt"
       ],
-      "public_y": "resources/public_y/ogbn_arxiv.json",
+      "public_y": "resources/public_y/canonical/ogbn_arxiv.json",
       "required_files": [
         "meta.cfg",
         "edges.txt",
         "features.txt or features.npy",
-        "labels.txt (optional for inference)"
+        "labels.txt"
       ],
-      "status": "awaiting_user_staged_resources"
+      "status": "runtime_generated_from_baseline_local_inputs"
     },
     "ppi": {
       "cache_dir": "data/cache/ppi",
-      "checkpoint_bundle": "artifacts/checkpoints/ppi_gat",
+      "checkpoint_bundle": "artifacts/checkpoints/ppi_gat_canonical",
       "checkpoint_required_files": [
         "manifest.json",
         "tensors.txt"
       ],
-      "public_y": "resources/public_y/ppi.json",
+      "public_y": "resources/public_y/canonical/ppi.json",
       "required_files": [
         "meta.cfg",
         "edges.txt",
         "features.txt or features.npy",
-        "labels.txt (optional for inference)",
-        "node_ptr.txt (required for multi-graph PPI)"
+        "labels.txt",
+        "node_ptr.txt",
+        "labels_multi.npy or labels_multi.txt",
+        "train_mask.npy",
+        "val_mask.npy",
+        "test_mask.npy"
       ],
-      "status": "awaiting_user_staged_resources"
+      "status": "runtime_generated_from_baseline_local_inputs"
     },
     "pubmed": {
       "cache_dir": "data/cache/pubmed",
-      "checkpoint_bundle": "artifacts/checkpoints/pubmed_gat",
+      "checkpoint_bundle": "artifacts/checkpoints/pubmed_gat_canonical",
       "checkpoint_required_files": [
         "manifest.json",
         "tensors.txt"
       ],
-      "public_y": "resources/public_y/pubmed.json",
+      "public_y": "resources/public_y/canonical/pubmed.json",
       "required_files": [
         "meta.cfg",
         "edges.txt",
         "features.txt or features.npy",
-        "labels.txt (optional for inference)"
+        "labels.txt"
       ],
-      "status": "awaiting_user_staged_resources"
+      "status": "runtime_generated_from_baseline_local_inputs"
     }
   },
   "model_registry": {
@@ -95,10 +99,10 @@
   "schema": "zkGPT_baseline_resource_manifest_v1",
   "static_table": {
     "content_digest": "027f1b529c64638b13888c919b4f4ebc07234da4898e245c14511367b77bbd97",
-    "descriptor_digest": "84ad4f14fa96f66b7f9f6a49fdee986530d16c07aa7b2a1794499170ba0118d3",
+    "descriptor_digest": "970ea53b3e05c229cf87c5c424462230b7b13b6c3f8583a87d920110e21d0a79",
     "id": "tables:lrelu+elu+exp+range",
     "path": "resources/static_tables/exact_integer_gat_v1.json",
-    "quant_cfg_id": "exact_integer_gat_v1",
+    "quant_cfg_id": "gat_l3_scale_chain_v1",
     "schema": "zkGPT_static_tables_descriptor_v1"
   }
 }

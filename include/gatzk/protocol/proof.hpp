@@ -25,7 +25,7 @@ namespace gatzk::protocol
     struct ProtocolCompilerArtifact;
 
     inline constexpr const char *kFormalTimingSchema =
-        "exclusive_commit_prove_protocol_verify_v3";
+        "exclusive_commit_prove_protocol_verify";
 
     // 固定静态查表集合，对应 formal note 中的激活、指数与范围表。
     struct StaticTables
@@ -54,7 +54,7 @@ namespace gatzk::protocol
         std::shared_ptr<algebra::RootOfUnityDomain> c;
         std::shared_ptr<algebra::RootOfUnityDomain> n;
         // Formal domains retain the layer/head coordinates.  The checkpoint
-        // compatibility view is kept on ModelParameters, not here.
+        // The execution context stores only the canonical public shape here.
         std::vector<std::vector<AttentionHeadDomains>> hidden_layers;
         std::optional<AttentionHeadDomains> output_head;
     };
@@ -112,7 +112,7 @@ namespace gatzk::protocol
         // canonical rebuild.  Proof verification rejects a swapped pointer but
         // does not repeat the expensive compiler pass inside verify_time.
         const ProtocolCompilerArtifact *validated_compiler_artifact_identity = nullptr;
-        // Internal verifier compatibility projection marker.  A context with
+        // Internal verifier shape-only projection marker.  A context with
         // this bit set carries shape-only model shells and must never be used
         // by the prover or by an artifact compiler that needs model values.
         bool verifier_shape_only = false;
@@ -147,8 +147,7 @@ namespace gatzk::protocol
         std::string opening_mode = "point_grouped_batch_opening";
         std::string binding_mode = "zk_subproof_for_crpc";
         std::string proof_task = "node_classification_full_gat";
-        std::string security_profile_id = "zkgat_secure_profile_v1";
-        std::size_t hidden_dim = 4;
+        std::string security_profile_id = "zkgat_secure_profile";
         std::size_t num_classes = 2;
         std::size_t range_bits = 10;
         std::size_t layer_count = 0;
@@ -181,7 +180,6 @@ namespace gatzk::protocol
 
     struct VerifierModelShape
     {
-        bool has_real_multihead = false;
         std::string model_arch_id;
         std::string model_param_id;
         std::string input_preprocess_id;
@@ -226,7 +224,6 @@ namespace gatzk::protocol
         std::string srs_consistency_hash;
         std::string manifest_hash;
         std::string generator_id;
-        std::string generator_version;
         std::string encoding;
         std::string protocol_schema_id;
         std::string kzg_assumption_profile_id;
@@ -279,7 +276,7 @@ namespace gatzk::protocol
     // length-delimited and SHA-256 hashed; entry order is part of the digest.
     struct AuthenticatedVerifierRegistry
     {
-        std::string format = "zkgat_verifier_registry_v1";
+        std::string format = "zkgat_verifier_registry";
         std::string registry_id;
         std::string model_arch_id;
         std::string model_param_id;
@@ -293,7 +290,6 @@ namespace gatzk::protocol
         std::size_t srs_degree_bound = 0;
         crypto::G1Point srs_g1_generator;
         std::string srs_generator_id;
-        std::string srs_generator_version;
         std::string srs_encoding;
         std::string srs_spec_id;
         // Exact hash of the compiler artifact material copied into the SRS
@@ -347,7 +343,6 @@ namespace gatzk::protocol
         // Out-of-band trust anchor supplied by the run configuration.  The
         // registry file's own digest is never accepted as its sole root.
         std::string trusted_registry_digest;
-        bool in_process_transition = false;
     };
 
     // Self-contained, canonical verifier registration artifact.  This is the
@@ -357,7 +352,6 @@ namespace gatzk::protocol
     // checkpoint paths, proving key, or opening polynomial.
     struct VerifierRegistrationArtifact
     {
-        std::uint32_t format_version = 1;
         VerifierConfig config;
         data::GraphDataset dataset;
         data::LocalGraph local;
@@ -461,7 +455,6 @@ namespace gatzk::protocol
         // 主协议的公开 logits，按 N x C 行优先展平。这一份数据必须由
         // verifier 独立重建多项式求值，不得用 trace 内部 hash 代替。
         std::vector<algebra::FieldElement> public_logits;
-        std::string public_logits_hash;
         std::string reference_fp32_logits_hash;
         std::string reference_quant_logits_hash;
         std::string secure_trace_logits_hash;
@@ -970,9 +963,9 @@ namespace gatzk::protocol
         std::size_t proof_size_bytes = 0;
         bool enabled_fast_msm = false;
         bool enabled_parallel_fft = false;
-        bool enabled_fft_backend_upgrade = false;
-        bool enabled_fft_kernel_upgrade = false;
-        bool enabled_trace_layout_upgrade = false;
+        bool enabled_packed_fft_backend = false;
+        bool enabled_rotated_fft_kernel = false;
+        bool enabled_compact_trace_layout = false;
         bool enabled_fast_verify_pairing = false;
         bool enabled_cuda_trace_hotspots = false;
         bool enabled_cuda_field_hotspots = false;

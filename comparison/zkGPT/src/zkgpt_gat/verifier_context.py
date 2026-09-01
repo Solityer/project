@@ -43,7 +43,8 @@ from .data import GraphDataset, LocalGraph, load_dataset, normalize_graph
 from .field import BN254_FR_MODULUS, next_power_of_two, to_field_int
 from .forward import _exp_map_fixed, _elu_table_value
 from .native_gkr import LinearGateSpec, LinearTerm, OracleRef, ProductGateSpec, identity_oracle
-from .model import QUANT_SCALE_PROFILES
+from .model import QUANT_SCALE_PROFILES, _validate_canonical_manifest
+from .quantization import canonical_input_preprocess_id, quantize_ties_away
 from .registry import canonical_registry_public_path, require_registry_transaction_id
 from .resources import STATIC_TABLE_DESCRIPTOR_RELATIVE_PATH, validate_static_table_descriptor
 from .rounding import (
@@ -334,12 +335,13 @@ def _graph_digest(graph: LocalGraph) -> str:
     return digest_json({"absolute_ids": _array_digest("absolute_ids", graph.absolute_ids), "src": _array_digest("src", graph.src), "dst": _array_digest("dst", graph.dst), "node_ptr": graph.node_ptr.tolist(), "edge_ptr": graph.edge_ptr.tolist()})
 
 
-def _round_feature(value: float) -> int:
-    return int(np.floor(float(value) + 0.5) if float(value) >= 0 else np.ceil(float(value) - 0.5))
+def _round_feature(value: float, scale: int = 1) -> int:
+    scaled = float(value) * int(scale)
+    return int(np.floor(scaled + 0.5) if scaled >= 0 else np.ceil(scaled - 0.5))
 
 
-def _x_digest(graph: LocalGraph, layer_count: int, class_count: int, k_out: int) -> str:
-    features = np.asarray([_round_feature(v) for v in np.ravel(graph.features)], dtype=np.int64).reshape(graph.features.shape)
+def _x_digest(graph: LocalGraph, layer_count: int, class_count: int, k_out: int, input_scale: int = 1) -> str:
+    features = np.asarray([_round_feature(v, input_scale) for v in np.ravel(graph.features)], dtype=np.int64).reshape(graph.features.shape)
     return digest_json({"features": _array_digest("X_pub.H_input", features), "topology": _graph_digest(graph), "selectors": {"segment_order": ["X_pub", "W", "Aux", "L_qry"], "graph_count": graph.graph_count}})
 
 
@@ -448,6 +450,10 @@ def _canonical_model_architecture(manifest: Mapping[str, Any]) -> Dict[str, Any]
     if output_average_rule != "per_head_bias_then_arithmetic_mean":
         raise ContextError("model manifest output_average_rule is not the canonical GAT rule")
     return {
+        "dataset": str(manifest.get("dataset", "")),
+        "input_preprocess_id": str(manifest.get("input_preprocess_id", "")),
+        "quant_cfg_id": str(manifest.get("quant_cfg_id", "")),
+        "quant_scale_chain": copy.deepcopy(manifest.get("quant_scale_chain", {})),
         "model_arch_id": model_arch_id,
         "hidden_layers": [
             {
@@ -518,7 +524,7 @@ def _validate_registry(path: pathlib.Path, artifact: pathlib.Path, root: pathlib
     binding = registry.get("registration_binding", {})
     if not isinstance(binding, dict) or registry.get("registration_binding_digest") != digest_json(binding): raise ContextError("trusted registry binding digest is invalid")
     if set(binding) != {
-        "protocol", "model_arch_id", "model_param_id", "quant_cfg_id", "rounding_mode",
+        "protocol", "model_arch_id", "model_param_id", "quant_cfg_id", "input_preprocess_id", "quant_scale_chain_digest", "rounding_mode",
         "static_table_id", "layout", "segment_order", "padding_rule_id",
         "integer_bound_ledger_digest", "Layout_in_digest", "N_in",
         "registered_model_bounds", "arrays",
@@ -528,6 +534,10 @@ def _validate_registry(path: pathlib.Path, artifact: pathlib.Path, root: pathlib
         top_level = registry.get(key)
         if top_level is not None and str(top_level) != str(identities[key]): raise ContextError(f"trusted registry {key} mismatch")
         if str(binding.get(key, "")) != str(identities[key]): raise ContextError(f"trusted registry binding {key} mismatch")
+    if str(binding.get("input_preprocess_id", "")) != canonical_input_preprocess_id(str(manifest.get("dataset", ""))):
+        raise ContextError("trusted registry input_preprocess_id mismatch")
+    if binding.get("quant_scale_chain_digest") != digest_json(manifest.get("quant_scale_chain", {})):
+        raise ContextError("trusted registry quant_scale_chain identity mismatch")
     if registry.get("commitment_backend") != COMMITMENT_BACKEND_ID or binding.get("layout") != "X_pub|W|Aux|L_qry" or binding.get("segment_order") != ["X_pub", "W", "Aux", "L_qry"]: raise ContextError("trusted registry commitment/layout binding mismatch")
     arrays = _model_arrays(manifest); names = ["com_W"]; model_names = [item["name"] for item in arrays]
     binding_arrays = binding.get("arrays", [])
@@ -579,7 +589,7 @@ def _ledger(
         classes=int(classes),
         k_out=int(k_out),
         max_degree=max((int(v) for v in np.bincount(graph.dst, minlength=graph.num_nodes)), default=1),
-        feature_bound=max((abs(_round_feature(float(v))) for v in np.ravel(graph.features)), default=0),
+        feature_bound=max((abs(_round_feature(float(v), QUANT_SCALE_PROFILES[quant_cfg_id]["input"])) for v in np.ravel(graph.features)), default=0),
         node_count=int(graph.num_nodes),
         range_bits=int(range_bits),
     )
@@ -1279,6 +1289,10 @@ def build_verifier_context(project_root: pathlib.Path, config_path: pathlib.Path
     if config.entries.get("static_table_descriptor_digest") != static_descriptor["descriptor_digest"]:
         raise ContextError("formal config is not bound to the canonical static-table descriptor")
     raw_manifest = _manifest(config.checkpoint_bundle)
+    try:
+        _validate_canonical_manifest(raw_manifest)
+    except (TypeError, ValueError) as exc:
+        raise ContextError(f"checkpoint manifest is not canonical: {exc}") from exc
     manifest = _canonical_model_architecture(raw_manifest)
     identities = {}
     configured_arch = str(config.entries.get("model_arch_id", ""))
@@ -1293,6 +1307,10 @@ def build_verifier_context(project_root: pathlib.Path, config_path: pathlib.Path
         if not value:
             raise ContextError(f"formal config is missing {key}")
         identities[key] = value
+    if identities["quant_cfg_id"] != "gat_l3_scale_chain_v1":
+        raise ContextError("formal verifier requires the registered GAT scale chain")
+    if config.input_preprocess_id != canonical_input_preprocess_id(str(raw_manifest.get("dataset", ""))):
+        raise ContextError("formal config/checkpoint input_preprocess_id mismatch")
     hidden_profile = config.hidden_profile
     manifest_hidden = _dimensions(manifest)[0]
     if [(int(item.head_count), int(item.head_dim)) for item in hidden_profile] != [(int(item["head_count"]), int(item["head_dim"])) for item in manifest_hidden]:
@@ -1325,7 +1343,7 @@ def build_verifier_context(project_root: pathlib.Path, config_path: pathlib.Path
         raise ContextError("trusted registry public file must be inside baseline project-root")
     public_path = str(registry_path.relative_to(zk_root))
     registry_metadata = {"protocol": registry["protocol"], "registry_digest": registry["registry_digest"], "registration_binding_digest": registry["registration_binding_digest"], "public_path": public_path, "commitment_backend": registry["commitment_backend"], "public_descriptor": copy.deepcopy(registry)}
-    expected = {"protocol_id": PROTOCOL_ID, "proof_backend_id": PROOF_BACKEND_ID, "commitment_backend_id": COMMITMENT_BACKEND_ID, **identities, "static_table_descriptor_schema": static_descriptor["schema"], "static_table_content_digest": static_descriptor["content_digest"], "static_table_descriptor_digest": static_descriptor["descriptor_digest"], "static_table_descriptor_path": STATIC_TABLE_DESCRIPTOR_RELATIVE_PATH, "domain_cfg": domain, "dim_cfg": dims, "encoding_id": ENCODING_ID, "padding_rule_id": PADDING_RULE_ID, "circuit_layout_id": CIRCUIT_LAYOUT_ID, "lasso_cfg_id": LASSO_CFG_ID, "matrix_proof_cfg_id": MATRIX_PROOF_CFG_ID, "dataset": config.entries.get("dataset"), "dataset_display_name": dataset.name, "task_type": graph.task_type, "report_unit": graph.report_unit, "batching_rule": graph.batching_rule, "self_loop_rule": graph.self_loop_rule, "edge_sort_rule": graph.edge_sort_rule, "chunking_rule": graph.chunking_rule, "full_dataset": graph.num_nodes == dataset.num_nodes, "X_pub_digest": _x_digest(graph, layers, classes, k_out), "public_input_layout": "X_pub=features+topology+selectors; X_pub is verifier-reconstructed and uncommitted", "public_output_policy": "Y is a public statement output claim and is not part of X_pub or any private commitment", "private_input_layout": "X_pub|W|Aux|L_qry", "segment_order": ["X_pub", "W", "Aux", "L_qry"], "privacy_extension_profile_id": "masked_full_multi_session_v1", "privacy_profile_status": "supported_multi_session_masked_full", "registered_model_commitment_scope": "canonical_integer_GAT_model_weights_with_layout_and_bound_ledger", "Layout_in_digest": layout_digest, "integer_bound_ledger": ledger, "integer_bound_ledger_digest": digest_json(ledger), "public_output_digest": y_digest, "model_registry": registry_metadata, "model_registry_digest": digest_json(registry_metadata), "identities": identities}
+    expected = {"protocol_id": PROTOCOL_ID, "proof_backend_id": PROOF_BACKEND_ID, "commitment_backend_id": COMMITMENT_BACKEND_ID, **identities, "input_preprocess_id": config.input_preprocess_id, "quant_scale_chain": raw_manifest["quant_scale_chain"], "static_table_descriptor_schema": static_descriptor["schema"], "static_table_content_digest": static_descriptor["content_digest"], "static_table_descriptor_digest": static_descriptor["descriptor_digest"], "static_table_descriptor_path": STATIC_TABLE_DESCRIPTOR_RELATIVE_PATH, "domain_cfg": domain, "dim_cfg": dims, "encoding_id": ENCODING_ID, "padding_rule_id": PADDING_RULE_ID, "circuit_layout_id": CIRCUIT_LAYOUT_ID, "lasso_cfg_id": LASSO_CFG_ID, "matrix_proof_cfg_id": MATRIX_PROOF_CFG_ID, "dataset": config.entries.get("dataset"), "dataset_display_name": dataset.name, "task_type": graph.task_type, "report_unit": graph.report_unit, "batching_rule": graph.batching_rule, "self_loop_rule": graph.self_loop_rule, "edge_sort_rule": graph.edge_sort_rule, "chunking_rule": graph.chunking_rule, "full_dataset": graph.num_nodes == dataset.num_nodes, "X_pub_digest": _x_digest(graph, layers, classes, k_out, QUANT_SCALE_PROFILES[identities["quant_cfg_id"]]["input"]), "public_input_layout": "X_pub=features+topology+selectors; X_pub is verifier-reconstructed and uncommitted", "public_output_policy": "Y is a public statement output claim and is not part of X_pub or any private commitment", "private_input_layout": "X_pub|W|Aux|L_qry", "segment_order": ["X_pub", "W", "Aux", "L_qry"], "privacy_extension_profile_id": "masked_full_multi_session_v1", "privacy_profile_status": "supported_multi_session_masked_full", "registered_model_commitment_scope": "canonical_integer_GAT_model_weights_with_layout_and_bound_ledger", "Layout_in_digest": layout_digest, "integer_bound_ledger": ledger, "integer_bound_ledger_digest": digest_json(ledger), "public_output_digest": y_digest, "model_registry": registry_metadata, "model_registry_digest": digest_json(registry_metadata), "identities": identities}
     expected["rounding_mode"] = rounding_mode
     canonical_tables = _canonical_static_table_registry(expected)
     artifact_tables = _json(
@@ -1349,6 +1367,7 @@ def build_verifier_context(project_root: pathlib.Path, config_path: pathlib.Path
             "protocol_id": PROTOCOL_ID,
             "dataset": config.entries.get("dataset", dataset.name),
             "dataset_display_name": dataset.name,
+            "input_preprocess_id": config.input_preprocess_id,
             "rounding_mode": rounding_mode,
             "integer_bound_ledger_digest": digest_json(ledger),
         },
@@ -1401,6 +1420,7 @@ def _canonical_public_statement(
             "shape": list(output_array.shape),
             "values": [str(int(value)) for value in output_array.ravel()],
         },
+        "input_preprocess_id": str(metadata["input_preprocess_id"]),
         "rounding_mode": validate_rounding_mode(metadata.get("rounding_mode")),
         "integer_bound_ledger_digest": metadata["integer_bound_ledger_digest"],
     }
@@ -1426,6 +1446,7 @@ def static_table_vk(metadata: Mapping[str, Any]) -> dict[str, Any]:
         "rounding_mode": validate_rounding_mode(metadata.get("rounding_mode")),
         "static_table_id": metadata["static_table_id"],
         "quant_cfg_id": metadata["quant_cfg_id"],
+        "input_preprocess_id": metadata["input_preprocess_id"],
         "static_table_descriptor_schema": metadata["static_table_descriptor_schema"],
         "static_table_content_digest": metadata["static_table_content_digest"],
         "static_table_descriptor_digest": metadata["static_table_descriptor_digest"],
@@ -1453,6 +1474,7 @@ def setup_context(metadata: Mapping[str, Any], registry: Mapping[str, Any], tabl
         "model_arch_id": metadata["model_arch_id"],
         "model_param_id": metadata["model_param_id"],
         "quant_cfg_id": metadata["quant_cfg_id"],
+        "input_preprocess_id": metadata["input_preprocess_id"],
         "rounding_mode": validate_rounding_mode(metadata.get("rounding_mode")),
         "static_table_id": metadata["static_table_id"],
         "registry_digest": registry["registry_digest"],
@@ -1575,6 +1597,7 @@ def validate_external_context(metadata: Mapping[str, Any], context: Mapping[str,
             and statement.get("dataset") == metadata.get("dataset")
             and statement.get("dataset_display_name") == metadata.get("dataset_display_name")
             and statement.get("task_type") == metadata.get("task_type")
+            and statement.get("input_preprocess_id") == metadata.get("input_preprocess_id")
             and statement.get("rounding_mode") == metadata.get("rounding_mode")
             and statement.get("integer_bound_ledger_digest") == metadata.get("integer_bound_ledger_digest")
             and metadata.get("X_pub_digest") == x_digest
@@ -1604,7 +1627,7 @@ def validate_external_context(metadata: Mapping[str, Any], context: Mapping[str,
         vk_digest = table_payload.get("vk_digest")
         table_payload.pop("vk_digest", None)
         expected_table_fields = {
-            "schema", "rounding_mode", "static_table_id", "quant_cfg_id",
+            "schema", "rounding_mode", "static_table_id", "quant_cfg_id", "input_preprocess_id",
             "static_table_descriptor_schema", "static_table_content_digest",
             "static_table_descriptor_digest", "integer_bound_ledger_digest",
             "table_registry_digest",
@@ -1617,6 +1640,7 @@ def validate_external_context(metadata: Mapping[str, Any], context: Mapping[str,
             and table_payload.get("rounding_mode") == metadata.get("rounding_mode")
             and table_payload.get("static_table_id") == metadata.get("static_table_id")
             and table_payload.get("quant_cfg_id") == metadata.get("quant_cfg_id")
+            and table_payload.get("input_preprocess_id") == metadata.get("input_preprocess_id")
             and table_payload.get("static_table_descriptor_schema") == metadata.get("static_table_descriptor_schema")
             and table_payload.get("static_table_content_digest") == metadata.get("static_table_content_digest")
             and table_payload.get("static_table_descriptor_digest") == metadata.get("static_table_descriptor_digest")
@@ -1632,7 +1656,7 @@ def validate_external_context(metadata: Mapping[str, Any], context: Mapping[str,
         setup_payload.pop("setup_digest", None)
         expected_setup_fields = {
             "schema", "protocol_id", "proof_backend_id", "commitment_backend_id",
-            "circuit_layout_id", "model_arch_id", "model_param_id", "quant_cfg_id",
+            "circuit_layout_id", "model_arch_id", "model_param_id", "quant_cfg_id", "input_preprocess_id",
             "rounding_mode", "static_table_id", "registry_digest", "Layout_in_digest",
             "domain_cfg", "dim_cfg", "integer_bound_ledger_digest",
         }
@@ -1648,6 +1672,7 @@ def validate_external_context(metadata: Mapping[str, Any], context: Mapping[str,
             and setup_payload.get("model_arch_id") == metadata.get("model_arch_id")
             and setup_payload.get("model_param_id") == metadata.get("model_param_id")
             and setup_payload.get("quant_cfg_id") == metadata.get("quant_cfg_id")
+            and setup_payload.get("input_preprocess_id") == metadata.get("input_preprocess_id")
             and setup_payload.get("rounding_mode") == metadata.get("rounding_mode")
             and setup_payload.get("static_table_id") == metadata.get("static_table_id")
             and setup_payload.get("registry_digest") == metadata.get("model_registry", {}).get("registry_digest")

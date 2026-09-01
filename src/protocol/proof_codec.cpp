@@ -25,8 +25,7 @@ namespace gatzk::protocol
 {
     namespace
     {
-        constexpr std::array<std::uint8_t, 8> kMagic{'Z', 'K', 'G', 'A', 'T', 'P', 'F', '1'};
-        constexpr std::uint64_t kWireVersion = 3;
+        constexpr std::array<std::uint8_t, 7> kMagic{'Z', 'K', 'G', 'A', 'T', 'P', 'F'};
         constexpr std::uint64_t kMaxContainerItems = 1ULL << 24;
         constexpr std::uint64_t kMaxStringBytes = 1ULL << 20;
 
@@ -1151,8 +1150,6 @@ namespace gatzk::protocol
         require_structural_point_group_layout(proof);
         Writer wire;
         wire.raw(kMagic.data(), kMagic.size());
-        wire.u64(kWireVersion);
-
         Writer m_pub;
         auto metadata = proof.public_metadata;
         metadata_fields(metadata, [&](const std::string& field) { m_pub.string(field); });
@@ -1464,13 +1461,11 @@ namespace gatzk::protocol
                 "proof parser is missing the authenticated ProtocolCompilerArtifact identity");
         }
         // Read the fixed magic without accepting a length-delimited alias.
-        if (bytes.size() < kMagic.size() + 8 || !std::equal(kMagic.begin(), kMagic.end(), bytes.begin()))
+        if (bytes.size() < kMagic.size() || !std::equal(kMagic.begin(), kMagic.end(), bytes.begin()))
         {
             throw std::runtime_error("proof parser magic mismatch");
         }
         Reader body(bytes.data() + kMagic.size(), bytes.size() - kMagic.size());
-        if (body.u64() != kWireVersion) throw std::runtime_error("proof parser version mismatch");
-
         Proof proof;
         auto m_pub = body.block("M_pub");
         metadata_fields(proof.public_metadata, [&](std::string& field) { field = m_pub.string(); });

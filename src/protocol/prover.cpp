@@ -343,28 +343,28 @@ namespace gatzk::protocol
             return lhs.basis == rhs.basis && same_polynomial_domain(lhs.domain, rhs.domain) && lhs.values() == rhs.values();
         }
 
-        void add_public_poly_alias_from_source_checked(
+        void add_public_poly_from_existing_material_checked(
             ProtocolContext &context,
             const std::string &name,
             const std::string &source_name)
         {
             if (!full_graph_feature_identity_enabled(context))
             {
-                throw std::runtime_error("public polynomial source alias requires full feature identity: " + name);
+                throw std::runtime_error("public polynomial source reuse requires full feature identity: " + name);
             }
             const auto polynomial_it = context.public_polynomials.find(source_name);
             if (polynomial_it == context.public_polynomials.end())
             {
-                throw std::runtime_error("missing public polynomial alias source: " + source_name);
+                throw std::runtime_error("missing public polynomial source for reuse: " + source_name);
             }
             const auto commitment_it = context.public_commitments.find(source_name);
             if (commitment_it == context.public_commitments.end())
             {
-                throw std::runtime_error("missing public commitment alias source: " + source_name);
+                throw std::runtime_error("missing public commitment source for reuse: " + source_name);
             }
             if (commitment_it->second.opening_polynomial == nullptr)
             {
-                throw std::runtime_error("public commitment alias source is missing opening material: " + source_name);
+                throw std::runtime_error("public commitment source is missing opening material: " + source_name);
             }
             const auto &source_polynomial = polynomial_it->second;
             const auto &source_material = *commitment_it->second.opening_polynomial;
@@ -372,16 +372,16 @@ namespace gatzk::protocol
                 source_polynomial.shared_data != nullptr && source_material.shared_data != nullptr && source_polynomial.shared_data.get() == source_material.shared_data.get() && source_polynomial.basis == source_material.basis && same_polynomial_domain(source_polynomial.domain, source_material.domain);
             if (!same_shared_material && !same_polynomial_material(source_material, source_polynomial))
             {
-                throw std::runtime_error("public commitment alias opening material mismatch: " + name + " -> " + source_name);
+                throw std::runtime_error("public commitment source material mismatch: " + name + " -> " + source_name);
             }
-            progress_note("context:public_alias:" + name + "->" + source_name + ":start");
-            auto alias_polynomial = source_polynomial;
-            alias_polynomial.name = name;
-            context.public_polynomials[name] = std::move(alias_polynomial);
+            progress_note("context:public_reuse:" + name + "<-" + source_name + ":start");
+            auto reused_polynomial = source_polynomial;
+            reused_polynomial.name = name;
+            context.public_polynomials[name] = std::move(reused_polynomial);
             auto commitment = commitment_it->second;
             commitment.name = name;
             context.public_commitments[name] = std::move(commitment);
-            progress_note("context:public_alias:" + name + "->" + source_name + ":done");
+            progress_note("context:public_reuse:" + name + "<-" + source_name + ":done");
         }
 
         void trim_coefficients(std::vector<FieldElement> *coefficients)
@@ -1355,7 +1355,7 @@ namespace gatzk::protocol
 
         std::string context_cache_key(const util::AppConfig &config)
         {
-            std::string canonical = "zkgat:static-context-cache:v3|";
+            std::string canonical = "zkgat:static-context-cache|";
             const auto append = [&](std::string_view label, std::string_view value)
             {
                 append_cache_length_delimited(&canonical, label);
@@ -1396,7 +1396,6 @@ namespace gatzk::protocol
             append("binding_mode", config.binding_mode);
             append("proof_task", config.proof_task);
             append("security_profile_id", config.security_profile_id);
-            append_u64("hidden_dim", config.hidden_dim);
             append_u64("num_classes", config.num_classes);
             append_u64("range_bits", config.range_bits);
             append_u64("seed", config.seed);
@@ -1424,8 +1423,11 @@ namespace gatzk::protocol
                     resolve_project_path(config.project_root, configured_path));
             };
             // These private runtime identities bind the actual model registry,
-            // dataset feature/topology source, SRS manifest and all PK/VK
-            // material, plus the compiler source that defines the artifact.
+            // the complete checkpoint bundle tree (manifest, tensors.txt,
+            // tensors.npz, and every other regular file), dataset
+            // feature/topology source, SRS manifest and all PK/VK material,
+            // plus the compiler source that defines the artifact.  The two
+            // tensor encodings are both required; neither is a fallback.
             append(
                 "checkpoint_bundle_files",
                 configured_resource_identity(config.checkpoint_bundle));
@@ -1452,10 +1454,9 @@ namespace gatzk::protocol
         std::string execution_context_key(const util::AppConfig &config)
         {
             std::ostringstream stream;
-            stream << "zkgat:execution-context:v2|"
+            stream << "zkgat:execution-context|"
                    << config.project_root << '|'
                    << config.dataset << '|'
-                   << config.hidden_dim << '|'
                    << config.num_classes << '|'
                    << config.range_bits << '|'
                    << config.seed << '|'
@@ -1475,22 +1476,14 @@ namespace gatzk::protocol
             return stream.str();
         }
 
-        std::size_t hidden_head_width(const model::ModelParameters &parameters, const util::AppConfig &config)
+        std::size_t hidden_head_width(const model::ModelParameters &parameters)
         {
-            if (parameters.has_real_multihead)
-            {
-                return model::max_hidden_head_dim(parameters);
-            }
-            return config.hidden_dim;
+            return model::max_hidden_head_dim(parameters);
         }
 
-        std::size_t concat_width(const model::ModelParameters &parameters, const util::AppConfig &config)
+        std::size_t concat_width(const model::ModelParameters &parameters)
         {
-            if (parameters.has_real_multihead)
-            {
-                return model::max_hidden_concat_width(parameters);
-            }
-            return config.hidden_dim;
+            return model::max_hidden_concat_width(parameters);
         }
 
         struct ExternalEvalSpec
@@ -3280,7 +3273,7 @@ namespace gatzk::protocol
                 const std::vector<std::string> &labels,
                 const std::vector<FieldElement> &points)
             {
-                const bool enable_backend_precompute = util::route2_options().fft_backend_upgrade;
+                const bool enable_backend_precompute = util::route2_options().packed_fft_backend;
 
                 auto cache_group_values = [&](const std::vector<std::string> &group_labels,
                                               const FieldElement &point,
@@ -3697,7 +3690,7 @@ namespace gatzk::protocol
                             continue;
                         }
                     }
-                    if (util::route2_options().fft_kernel_upgrade && group.first->size >= 256)
+                    if (util::route2_options().rotated_fft_kernel && group.first->size >= 256)
                     {
                         if (const auto shifts = rotated_point_shifts(group.first, points); shifts.has_value())
                         {
@@ -4210,7 +4203,7 @@ namespace gatzk::protocol
             {
                 // FH/edge lookup relations multiply as many as three blinded
                 // columns.  Each private column includes a registered
-                // Z_D*R tail, so the old 2|D| interpolation coset aliased the
+                // Z_D*R tail, so the interpolation coset must retain the
                 // highest quotient coefficients.  A 4|D| coset covers the
                 // compiled tail budget.  FH's three registered blinder
                 // coefficients give degree at most 3|D|+2 after division.
@@ -5640,7 +5633,7 @@ namespace gatzk::protocol
                 }
                 // This is only a sizing bound for the edge alpha-power cache;
                 // derive it from the formal nested family, never from the
-                // checkpoint/parity flattening compatibility view.
+                // checkpoint/parity nested family representation.
                 std::size_t edge_head_count =
                     context_.model.output_layer.heads.size();
                 for (const auto &layer : context_.model.hidden_layers)
@@ -6761,12 +6754,10 @@ namespace gatzk::protocol
                         "prove:quotient:t_edge:access_plan:entries=" + std::to_string(edge_access_sequence_.size()) + ":bound=" + std::to_string(edge_access_sequence_.size()) + ":late_bound=" + std::to_string(edge_access_plan_late_bind_count_) + ":null_derived_fallback=0");
                     progress_note(
                         "prove:quotient:t_edge:coset_prewarm:done:ms=" + std::to_string(elapsed_ms(prewarm_start, Clock::now())));
-                    // The generic evaluator is the protocol source of truth.  The
-                    // former hand-unrolled route did not reproduce evaluate_t_edge
-                    // after the formal integer-scale constraints changed, producing
-                    // a commitment whose polynomial disagreed with verifier claims.
-                    // Keep it out of the formal path until equivalence is proved by
-                    // a pointwise regression over every registered constraint term.
+                    // The generic evaluator is the protocol source of truth. A
+                    // hand-unrolled route must reproduce evaluate_t_edge exactly
+                    // before it can enter the formal path; otherwise its
+                    // commitment polynomial could disagree with verifier claims.
                 }
                 else if (label_ == "t_FH")
                 {
@@ -7973,7 +7964,7 @@ namespace gatzk::protocol
 
             bool is_direct_t_edge_coset_request(const std::string &name) const
             {
-                if (!context_.model.has_real_multihead || label_ != "t_edge")
+                if (label_ != "t_edge")
                 {
                     return false;
                 }
@@ -8007,7 +7998,7 @@ namespace gatzk::protocol
                 std::vector<std::string> *labels,
                 const std::string &name) const
             {
-                if (!context_.model.has_real_multihead || label_ != "t_edge")
+                if (label_ != "t_edge")
                 {
                     return false;
                 }
@@ -8100,7 +8091,7 @@ namespace gatzk::protocol
 
             std::optional<FieldElement> t_edge_derived_value_at(const std::string &name, std::size_t index)
             {
-                if (!context_.model.has_real_multihead || label_ != "t_edge")
+                if (label_ != "t_edge")
                 {
                     return std::nullopt;
                 }
@@ -8878,7 +8869,7 @@ namespace gatzk::protocol
 
             bool is_edge_derived_coset_request(const std::string &name) const
             {
-                if (!context_.model.has_real_multihead || label_ != "t_edge")
+                if (label_ != "t_edge")
                 {
                     return false;
                 }
@@ -9010,7 +9001,7 @@ namespace gatzk::protocol
 
             QuotientCosetValuesPtr derived_hidden_edge_coset(const std::string &name)
             {
-                if (!context_.model.has_real_multihead || label_ != "t_edge")
+                if (label_ != "t_edge")
                 {
                     return nullptr;
                 }
@@ -9132,7 +9123,7 @@ namespace gatzk::protocol
 
             QuotientCosetValuesPtr derived_output_edge_coset(const std::string &name)
             {
-                if (!context_.model.has_real_multihead || label_ != "t_edge")
+                if (label_ != "t_edge")
                 {
                     return nullptr;
                 }
@@ -9981,7 +9972,7 @@ namespace gatzk::protocol
             auto worker_count_for_labels = [&]()
             {
                 const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
-                if (labels.size() <= 1 || cpu_count < 8 || !context.model.has_real_multihead)
+                if (labels.size() <= 1 || cpu_count < 8)
                 {
                     return std::size_t{1};
                 }
@@ -10023,7 +10014,7 @@ namespace gatzk::protocol
             const auto worker_count = worker_count_for_labels();
             const auto t_edge_it = std::find(labels.begin(), labels.end(), "t_edge");
             const auto edge_size = context.domains.edge != nullptr ? context.domains.edge->size : 0;
-            if (worker_count > 1 && context.model.has_real_multihead && t_edge_it != labels.end() && edge_size >= (1ULL << 15))
+            if (worker_count > 1 && t_edge_it != labels.end() && edge_size >= (1ULL << 15))
             {
                 append_note(metrics, "quotient_materialization_t_edge_priority=1");
                 std::vector<std::optional<std::pair<std::string, algebra::Polynomial>>> results(labels.size());
@@ -10099,7 +10090,6 @@ namespace gatzk::protocol
                         : 0;
 
                 const bool large_family_serial_policy =
-                    context.model.has_real_multihead &&
                     labels.size() > 1 &&
                     (fh_size >= (1ULL << 25) ||
                      edge_size >= (1ULL << 22));
@@ -10590,67 +10580,6 @@ namespace gatzk::protocol
             return out;
         }
 
-        const std::vector<std::string> &quotient_dependencies_edge()
-        {
-            static const std::vector<std::string> labels = {
-                "P_R_src",
-                "P_Query_src",
-                "P_Q_qry_src",
-                "P_E_src_edge",
-                "P_H_src_star_edge",
-                "P_R_dst",
-                "P_Query_dst",
-                "P_Q_qry_dst",
-                "P_E_dst_edge",
-                "P_M_edge",
-                "P_Sum_edge",
-                "P_inv_edge",
-                "P_H_agg_star_edge",
-                "P_R_L",
-                "P_Table_L",
-                "P_Query_L",
-                "P_Q_tbl_L",
-                "P_m_L",
-                "P_Q_qry_L",
-                "P_R_R",
-                "P_Table_R",
-                "P_Query_R",
-                "P_Q_tbl_R",
-                "P_m_R",
-                "P_Q_qry_R",
-                "P_R_exp",
-                "P_Table_exp",
-                "P_Query_exp",
-                "P_Q_tbl_exp",
-                "P_m_exp",
-                "P_Q_qry_exp",
-                "P_M_edge",
-                "P_Delta",
-                "P_Z",
-                "P_s_max",
-                "P_C_max",
-                "P_Q_edge_valid",
-                "P_Q_grp_new_edge",
-                "P_Q_grp_end_edge",
-                "P_alpha",
-                "P_U",
-                "P_inv_edge",
-                "P_v_hat",
-                "P_PSQ",
-                "P_w_psq",
-                "P_T_psq_edge",
-                "P_T_L_x",
-                "P_T_L_y",
-                "P_T_range",
-                "P_T_exp_x",
-                "P_T_exp_y",
-                "P_src",
-                "P_dst",
-                "P_S",
-            };
-            return labels;
-        }
-
         std::vector<std::string> multihead_edge_dependencies(const ProtocolContext &context)
         {
             std::vector<std::string> labels = {
@@ -10919,93 +10848,17 @@ namespace gatzk::protocol
             return labels;
         }
 
-        // Non-formal legacy single-head dependency registry.  Formal context
-        // construction fails closed when has_real_multihead is false, and the
-        // indexed registries above are the only formal route.
-        const std::vector<std::string> &quotient_dependencies_in()
-        {
-            static const std::vector<std::string> labels = {
-                "P_Q_proj_valid",
-                "P_a_proj",
-                "P_b_proj",
-                "P_Acc_proj",
-            };
-            return labels;
-        }
-
-        const std::vector<std::string> &quotient_dependencies_d()
-        {
-            static const std::vector<std::string> labels = {
-                "P_Q_d_valid",
-                "P_a_src",
-                "P_b_src",
-                "P_Acc_src",
-                "P_a_dst",
-                "P_b_dst",
-                "P_Acc_dst",
-                "P_a_star",
-                "P_b_star",
-                "P_Acc_star",
-                "P_a_agg",
-                "P_b_agg",
-                "P_Acc_agg",
-                "P_a_out",
-                "P_b_out",
-                "P_Acc_out",
-            };
-            return labels;
-        }
-
-        const std::vector<std::string> &quotient_dependencies_n()
-        {
-            static const std::vector<std::string> labels = {
-                "P_I",
-                "P_Q_N",
-                "P_E_src",
-                "P_H_star",
-                "P_Table_src",
-                "P_m_src",
-                "P_R_src_node",
-                "P_E_dst",
-                "P_M",
-                "P_Sum",
-                "P_inv",
-                "P_H_agg_star",
-                "P_Table_dst",
-                "P_m_dst",
-                "P_R_dst_node",
-            };
-            return labels;
-        }
-
         std::vector<std::string> quotient_dependency_labels(
             const ProtocolContext &context,
             const std::string &quotient_name)
         {
-            // Non-formal compatibility dispatch only.  build_context rejects
-            // the legacy model before any formal dependency registry is used.
-            if (!context.model.has_real_multihead)
-            {
-                if (quotient_name == "t_FH")
-                    return quotient_dependencies_fh();
-                if (quotient_name == "t_edge")
-                    return quotient_dependencies_edge();
-                if (quotient_name == "t_in")
-                    return quotient_dependencies_in();
-                if (quotient_name == "t_d" || quotient_name == "t_d_h")
-                    return quotient_dependencies_d();
-                if (quotient_name == "t_N")
-                    return quotient_dependencies_n();
-                return {};
-            }
-
             if (quotient_name == "t_FH")
                 return quotient_dependencies_fh();
             if (quotient_name == "t_edge")
                 return multihead_edge_dependencies(context);
             if (quotient_name == "t_in")
                 return multihead_in_dependencies(context);
-            if (quotient_name == "t_d_h" || quotient_name == "t_d")
+            if (quotient_name == "t_d_h")
                 return multihead_d_dependencies(context);
             if (quotient_name == "t_cat")
                 return multihead_cat_dependencies(context);
@@ -11345,7 +11198,7 @@ namespace gatzk::protocol
             config.hidden_profile,
             config.K_out,
             (std::filesystem::path(config.project_root)
-             / "configs/quantization_scale_chain_v1.cfg").string());
+             / "configs/quantization_scale_chain.cfg").string());
         static std::mutex cache_mutex;
         static std::unordered_map<std::string, StaticContextCachePayload> cache;
         // 这里只复用静态上下文对象，见证和挑战相关状态必须按每次正式证明重新生成。
@@ -11378,7 +11231,7 @@ namespace gatzk::protocol
                     return context;
                 }
                 // A same-path replacement, missing resource, or corrupted
-                // cached payload is a hard miss.  Never expose the old static
+                // cached payload is a hard miss. Never expose a cached static
                 // context to a new proof statement.
                 cache.erase(it);
                 append_note(metrics, "static_context_cache=stale_identity_rejected");
@@ -11388,10 +11241,10 @@ namespace gatzk::protocol
         append_note(metrics, "static_context_cache=miss");
         ProtocolContext context;
         context.config = canonical_config;
-        // All model commitments below must use the canonical, typed
-        // layer/head-aware chain selected above.  Keep the alias local to the
-        // context builder so no legacy/global scale source can leak into the
-        // formal registry.
+        // All model commitments below use the canonical, typed,
+        // layer/head-aware scale chain selected above.  Context construction
+        // selects one typed scale chain for the formal registry; no
+        // unvalidated scale source can enter this path.
         const auto &scales = context.config.quantization;
 
         progress_note("context:load_static:start");
@@ -11451,14 +11304,7 @@ namespace gatzk::protocol
             "hidden_head_count=" +
                 std::to_string(formal_hidden_head_count));
 
-        if (!context.model.has_real_multihead)
-        {
-            throw std::runtime_error(
-                "formal protocol requires the indexed multi-layer multi-head model representation");
-        }
-        if (context.model.has_real_multihead)
-        {
-            std::string family_reason;
+        std::string family_reason;
             if (!model::hidden_family_dimension_chain_is_valid(context.model, &family_reason))
             {
                 throw std::runtime_error("formal family shape is invalid: " + family_reason);
@@ -11517,7 +11363,6 @@ namespace gatzk::protocol
                 throw std::runtime_error(
                     "config degree_bound_id conflicts with checkpoint manifest degree_bound_id");
             }
-        }
         auto end = Clock::now();
         if (metrics != nullptr)
         {
@@ -11530,14 +11375,15 @@ namespace gatzk::protocol
         // 工作域大小一次性按特征表、边域、隐藏维和查表规模展开，后面 trace / quotient / opening 共用这套布局。
         const std::size_t fh_size = algebra::next_power_of_two(
             std::max(context.dataset.num_nodes * context.dataset.num_features, context.local.num_nodes * context.local.num_features) + 2);
-        const std::size_t d_h = hidden_head_width(context.model, config);
-        const std::size_t d_cat = concat_width(context.model, config);
+        const std::size_t d_h = hidden_head_width(context.model);
+        const std::size_t d_cat = concat_width(context.model);
         // The in-domain is a shared power-of-two capacity.  It must not be
         // confused with any formal selector: each Q_in below uses its own
         // layer.input_dim support.
-        const std::size_t in_domain_capacity = context.model.has_real_multihead
-                                                    ? std::max<std::size_t>(context.local.num_features, model::max_hidden_input_dim(context.model))
-                                                    : context.local.num_features;
+        const std::size_t in_domain_capacity =
+            std::max<std::size_t>(
+                context.local.num_features,
+                model::max_hidden_input_dim(context.model));
         const auto minimum_edge_rows = minimum_edge_trace_length(
             context.local.num_nodes,
             context.local.edges.size(),
@@ -11573,10 +11419,8 @@ namespace gatzk::protocol
             .hidden_layers = {},
             .output_head = std::nullopt,
         };
-        if (context.model.has_real_multihead)
-        {
-            context.domains.hidden_layers.resize(
-                context.model.hidden_layers.size());
+        context.domains.hidden_layers.resize(
+            context.model.hidden_layers.size());
             for (std::size_t layer_index = 0;
                  layer_index < context.model.hidden_layers.size();
                  ++layer_index)
@@ -11589,8 +11433,7 @@ namespace gatzk::protocol
                         .d = context.domains.d,
                     });
             }
-            context.domains.output_head = AttentionHeadDomains{.in = context.domains.cat, .d = context.domains.c};
-        }
+        context.domains.output_head = AttentionHeadDomains{.in = context.domains.cat, .d = context.domains.c};
         end = Clock::now();
         if (metrics != nullptr)
         {
@@ -11710,9 +11553,7 @@ namespace gatzk::protocol
             context,
             "P_Q_edge_valid",
             make_shared_eval_poly("P_Q_edge_valid", edge_valid, context.domains.edge));
-        if (context.model.has_real_multihead)
-        {
-            // Each hidden layer owns its own valid selectors.  The selector
+        // Each hidden layer owns its own valid selectors.  The selector
             // support is the layer's real shape; the surrounding work domain
             // may still be a shared power-of-two capacity.
             for (std::size_t layer_index = 0;
@@ -11771,7 +11612,6 @@ namespace gatzk::protocol
                     "P_Q_div_avg",
                     build_selector(context.local.num_nodes * context.local.num_classes, edge_size),
                     context.domains.edge));
-        }
         add_public_poly(
             context,
             "P_Q_N",
@@ -11914,10 +11754,10 @@ namespace gatzk::protocol
                     context.domains.fh));
             if (full_graph_feature_identity_enabled(context))
             {
-                add_public_poly_alias_from_source_checked(context, "P_Q_qry_feat", "P_Q_tbl_feat");
-                add_public_poly_alias_from_source_checked(context, "P_Row_feat_qry", "P_Row_feat_tbl");
-                add_public_poly_alias_from_source_checked(context, "P_Col_feat_qry", "P_Col_feat_tbl");
-                add_public_poly_alias_from_source_checked(context, "P_I_feat_qry", "P_Row_feat_tbl");
+                add_public_poly_from_existing_material_checked(context, "P_Q_qry_feat", "P_Q_tbl_feat");
+                add_public_poly_from_existing_material_checked(context, "P_Row_feat_qry", "P_Row_feat_tbl");
+                add_public_poly_from_existing_material_checked(context, "P_Col_feat_qry", "P_Col_feat_tbl");
+                add_public_poly_from_existing_material_checked(context, "P_I_feat_qry", "P_Row_feat_tbl");
             }
             else
             {
@@ -11970,10 +11810,10 @@ namespace gatzk::protocol
                     context.domains.fh));
             if (full_graph_feature_identity_enabled(context))
             {
-                add_public_poly_alias_from_source_checked(context, "P_Q_qry_feat", "P_Q_tbl_feat");
-                add_public_poly_alias_from_source_checked(context, "P_Row_feat_qry", "P_Row_feat_tbl");
-                add_public_poly_alias_from_source_checked(context, "P_Col_feat_qry", "P_Col_feat_tbl");
-                add_public_poly_alias_from_source_checked(context, "P_I_feat_qry", "P_Row_feat_tbl");
+                add_public_poly_from_existing_material_checked(context, "P_Q_qry_feat", "P_Q_tbl_feat");
+                add_public_poly_from_existing_material_checked(context, "P_Row_feat_qry", "P_Row_feat_tbl");
+                add_public_poly_from_existing_material_checked(context, "P_Col_feat_qry", "P_Col_feat_tbl");
+                add_public_poly_from_existing_material_checked(context, "P_I_feat_qry", "P_Row_feat_tbl");
             }
             else
             {
@@ -12131,9 +11971,7 @@ namespace gatzk::protocol
             "V_T_range",
             make_eval_poly("V_T_range", padded(context.tables.range, edge_size), context.domains.edge));
 
-        if (context.model.has_real_multihead)
-        {
-            // 模型参数在 context 阶段就固定成静态承诺，后面的 trace 只引用标签，不再重复构造权重对象。
+        // 模型参数在 context 阶段就固定成静态承诺，后面的 trace 只引用标签，不再重复构造权重对象。
             for (std::size_t layer_index = 0;
                  layer_index < context.model.hidden_layers.size();
                  ++layer_index)
@@ -12229,7 +12067,6 @@ namespace gatzk::protocol
                             context.domains.c->size),
                         context.domains.c));
             }
-        }
         end = Clock::now();
         if (metrics != nullptr)
         {
@@ -12292,11 +12129,6 @@ namespace gatzk::protocol
             context.config.quantization.s_input,
             context.config.input_preprocess_id);
         const auto &route2 = util::route2_options();
-        if (!context.model.has_real_multihead)
-        {
-            throw std::runtime_error(
-                "formal prover rejects the removed single-output compatibility protocol");
-        }
         // prove 入口只消费 trace 和固定挑战顺序，不在这里改写 proof schema 或 block 顺序。
         if (trace.commitment_order != dynamic_commitment_labels(context))
         {
@@ -12306,14 +12138,12 @@ namespace gatzk::protocol
         ScopedCudaProverCacheRelease
             cuda_cache_release_guard;
 
-        if (context.model.has_real_multihead)
-        {
-            auto stage_start = Clock::now();
+        auto stage_start = Clock::now();
             progress_note("prove:quotient:start");
             // 先重放动态承诺之前的 transcript，再在这套固定挑战上构造各工作域 quotient。
             const auto pre_quotient_challenges = replay_challenges(context, trace.commitments, {}, &trace.public_metadata);
             std::shared_ptr<const ProofEvaluationBackendRegistry> backend_registry;
-            if (route2.fft_backend_upgrade)
+            if (route2.packed_fft_backend)
             {
                 // Packed backends retain non-owning polynomial pointers.
                 // Keep this registry proof-local so those pointers never
@@ -14338,10 +14168,6 @@ namespace gatzk::protocol
             cuda_cache_release_guard.dismiss();
 
             return proof;
-        }
-
-        throw std::runtime_error(
-            "formal prover reached the removed single-output compatibility protocol");
     }
 
 } // namespace gatzk::protocol

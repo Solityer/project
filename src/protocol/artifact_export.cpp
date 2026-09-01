@@ -363,8 +363,7 @@ namespace gatzk::protocol
         {
             return metrics.compute_backend_name == "cuda_hotspots" ? std::string("gpu") : std::string("cpu");
         };
-        if (verifier_context.in_process_transition
-            || !validate_verifier_context(verifier_context)
+        if (!validate_verifier_context(verifier_context)
             || verifier_context.trusted_registry_digest.empty()
             || verifier_context.authenticated_registry_digest
                    != verifier_context.trusted_registry_digest)
@@ -465,7 +464,7 @@ namespace gatzk::protocol
             gatzk::build_provenance::kSourceManifestJson);
         const auto source_manifest_hash = sha256_file_hex(source_manifest_path);
         const std::map<std::string, std::string> build_receipt = {
-            {"format", "zkgat_build_receipt_v1"},
+            {"format", "zkgat_build_receipt"},
             {"source_manifest_path", "source_manifest.json"},
             {"source_manifest_hash", source_manifest_hash},
             {"source_inventory_id", gatzk::build_provenance::kSourceInventoryId},
@@ -489,7 +488,7 @@ namespace gatzk::protocol
         // identity, and exact binary/build provenance.  The aggregate gate
         // never promotes the corresponding run-manifest fields on their own.
         const std::map<std::string, std::string> verifier_report = {
-            {"format", "zkgat_verifier_report_v2"},
+            {"format", "zkgat_verifier_report"},
             {"trusted_registry_digest", verifier_context.trusted_registry_digest},
             {"authenticated_registry_digest", verifier_context.authenticated_registry_digest},
             {"proof_bin_sha256", proof_hash},
@@ -614,11 +613,11 @@ namespace gatzk::protocol
             {"final_formal_run_accepted", final_accepted ? "true" : "false"},
             {"benchmark_mode", metrics.benchmark_mode},
             {"timing_schema", kFormalTimingSchema},
-            {"enabled_fft_backend_upgrade", metrics.enabled_fft_backend_upgrade ? "true" : "false"},
-            {"enabled_fft_kernel_upgrade", metrics.enabled_fft_kernel_upgrade ? "true" : "false"},
+            {"enabled_packed_fft_backend", metrics.enabled_packed_fft_backend ? "true" : "false"},
+            {"enabled_rotated_fft_kernel", metrics.enabled_rotated_fft_kernel ? "true" : "false"},
             {"enabled_fast_msm", metrics.enabled_fast_msm ? "true" : "false"},
             {"enabled_parallel_fft", metrics.enabled_parallel_fft ? "true" : "false"},
-            {"enabled_trace_layout_upgrade", metrics.enabled_trace_layout_upgrade ? "true" : "false"},
+            {"enabled_compact_trace_layout", metrics.enabled_compact_trace_layout ? "true" : "false"},
             {"enabled_fast_verify_pairing", metrics.enabled_fast_verify_pairing ? "true" : "false"},
             {"enabled_cuda_trace_hotspots", metrics.enabled_cuda_trace_hotspots ? "true" : "false"},
             {"enabled_cuda_field_hotspots", metrics.enabled_cuda_field_hotspots ? "true" : "false"},
@@ -639,7 +638,7 @@ namespace gatzk::protocol
             {"edge_count", std::to_string(metrics.edge_count)},
             {"gpu_runtime_present", metrics.gpu_runtime_present ? "true" : "false"},
             {"stale_result", "false"},
-            {"activation_table_policy", large_whole_graph_gat ? "public_large_whole_graph_shape_bound_v1" : "public_default_shape_bound_v1"},
+            {"activation_table_policy", large_whole_graph_gat ? "public_large_whole_graph_shape_bound" : "public_default_shape_bound"},
             {"large_graph_table_policy_triggered", large_whole_graph_gat ? "true" : "false"},
             {"feature_lookup_identity_predicate", full_feature_identity ? "full_public_shape_and_absolute_id_identity" : "general_public_shape_and_absolute_ids"},
             {"static_table_endpoint_hash", table_endpoint_hash},
@@ -704,7 +703,6 @@ namespace gatzk::protocol
             {"verifier_reads_witness", "false"},
             {"private_plain_value_count", std::to_string(audited_private_plain_value_count)},
             {"proof_payload_audit_status", audited_private_plain_value_count == 0 ? "passed" : "failed"},
-            {"reference_consistency_passed", metrics.reference_consistency_passed ? "true" : "false"},
             {"tamper_tests_passed", metrics.tamper_tests_passed ? "true" : "false"},
             {"tamper_test_case_map", metrics.tamper_test_case_map},
             {"security_budget_passed", metrics.security_budget_passed ? "true" : "false"},
@@ -732,7 +730,6 @@ namespace gatzk::protocol
             {"public_metadata_hash", public_metadata_hash},
             {"srs_manifest_hash", srs_manifest_sha256},
             {"proof_hash", proof_hash},
-            {"public_logits_hash", trace.public_logits_hash},
             {"reference_fp32_logits_hash", trace.reference_fp32_logits_hash},
             {"reference_quant_logits_hash", trace.reference_quant_logits_hash},
             {"secure_trace_logits_hash", trace.secure_trace_logits_hash},

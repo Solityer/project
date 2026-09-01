@@ -14,6 +14,7 @@ from .resources import (
     required_resource_paths,
     validate_static_table_descriptor,
 )
+from .quantization import canonical_input_preprocess_id
 from .util import assert_contained_path, require_dir, write_text_atomic
 
 
@@ -127,6 +128,24 @@ class AppConfig:
         return configured_rounding_mode(self.entries)
 
     @property
+    def input_preprocess_id(self) -> str:
+        # The production loader accepts only the five registered datasets.
+        # Keep a clearly test-scoped identity for the in-memory synthetic
+        # fixture so existing unit tests do not acquire a production fallback.
+        if self.dataset.startswith("synthetic-"):
+            expected = "synthetic_fixture_v1"
+        else:
+            expected = canonical_input_preprocess_id(self.dataset)
+        value = str(self.entries.get("input_preprocess_id", ""))
+        if self.dataset.startswith("synthetic-") and not value:
+            return expected
+        if expected is None or value != expected:
+            raise ValueError(
+                f"formal config input_preprocess_id mismatch: {value!r} != {expected!r}"
+            )
+        return value
+
+    @property
     def symmetrize_edges(self) -> bool:
         return self.entries.get("symmetrize_edges", "false").lower() == "true"
 
@@ -185,6 +204,7 @@ def write_config(
         "model_arch_id",
         "model_param_id",
         "quant_cfg_id",
+        "input_preprocess_id",
         "rounding_mode",
         "static_table_id",
         "static_tables_id",
@@ -265,6 +285,7 @@ def generated_config(dataset: str, backend: str, project_root: pathlib.Path, zk_
     entries["public_y_path"] = str(paths["public_y_path"].relative_to(zk_root))
     entries["reference_output_dir"] = str((zk_root / "runs" / f"{dataset}_full" / "reference").relative_to(zk_root))
     entries["resource_manifest"] = "resources/resource_manifest.json"
+    entries["input_preprocess_id"] = canonical_input_preprocess_id(entries["dataset"])
     entries["static_tables_id"] = entries.get("static_table_id", "tables:lrelu+elu+exp+range")
     # The immutable formal template must carry an explicit mode.  Do not
     # infer a mode from backend or from a proof artifact.
@@ -326,6 +347,7 @@ def load_app_config(path: pathlib.Path, project_root: pathlib.Path) -> AppConfig
         raise ValueError("static_tables_id and static_table_id must match")
     if entries.get("static_table_id") != descriptor["static_tables_id"] or entries.get("quant_cfg_id") != descriptor["quant_cfg_id"]:
         raise ValueError("formal config static-table identity does not match canonical descriptor")
+    _ = AppConfig(entries=entries, path=config_path, project_root=root).input_preprocess_id
     if manifest.get("static_table", {}).get("descriptor_digest") != descriptor["descriptor_digest"]:
         raise ValueError("resource manifest is not bound to canonical static-table descriptor")
     if not entries.get("model_arch_id") or not entries.get("model_param_id") or not entries.get("quant_cfg_id") or not entries.get("static_table_id"):

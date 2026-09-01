@@ -23,7 +23,7 @@ namespace gatzk::data
 
     // Apply the dataset-aware canonical floating-point preprocessing contract
     // before the registered S_input quantizer.  OGBN-Arxiv uses raw float32;
-    // Planetoid/PPI use row_normalize_v1.
+    // Planetoid/PPI use row_normalize.
     std::vector<std::vector<double>> preprocess_input_features(
         const std::vector<std::vector<double>> &raw_features,
         std::string_view dataset,

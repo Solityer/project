@@ -19,7 +19,6 @@ namespace gatzk::protocol
     namespace
     {
         constexpr std::string_view kMagic = "ZKGATVRA";
-        constexpr std::uint32_t kVersion = 1;
         constexpr std::uint32_t kSectionCount = 12;
         constexpr std::size_t kFieldBytes = 32;
         constexpr std::size_t kMaxArtifactBytes = 2ULL << 30;
@@ -570,7 +569,6 @@ namespace gatzk::protocol
             append_string(out, config.binding_mode);
             append_string(out, config.proof_task);
             append_string(out, config.security_profile_id);
-            append_size(out, config.hidden_dim);
             append_size(out, config.num_classes);
             append_size(out, config.range_bits);
             append_size(out, config.layer_count);
@@ -644,7 +642,6 @@ namespace gatzk::protocol
             config.binding_mode = reader.string("config.binding_mode");
             config.proof_task = reader.string("config.proof_task");
             config.security_profile_id = reader.string("config.security_profile_id");
-            config.hidden_dim = reader.size("config.hidden_dim");
             config.num_classes = reader.size("config.num_classes");
             config.range_bits = reader.size("config.range_bits");
             config.layer_count = reader.size("config.layer_count");
@@ -761,7 +758,6 @@ namespace gatzk::protocol
             std::vector<std::uint8_t> *out,
             const VerifierModelShape &model)
         {
-            append_bool(out, model.has_real_multihead);
             append_string(out, model.model_arch_id);
             append_string(out, model.model_param_id);
             append_string(out, model.input_preprocess_id);
@@ -794,10 +790,6 @@ namespace gatzk::protocol
         VerifierModelShape read_model_shape(Reader &reader)
         {
             VerifierModelShape model;
-            const auto has_multihead = reader.u8("model.has_real_multihead");
-            if (has_multihead > 1)
-                throw std::runtime_error("non-canonical model shape boolean");
-            model.has_real_multihead = has_multihead != 0;
             model.model_arch_id = reader.string("model.model_arch_id");
             model.model_param_id = reader.string("model.model_param_id");
             model.input_preprocess_id = reader.string("model.input_preprocess_id");
@@ -1043,7 +1035,6 @@ namespace gatzk::protocol
             append_string(out, srs.srs_consistency_hash);
             append_string(out, srs.manifest_hash);
             append_string(out, srs.generator_id);
-            append_string(out, srs.generator_version);
             append_string(out, srs.encoding);
             append_string(out, srs.protocol_schema_id);
             append_string(out, srs.kzg_assumption_profile_id);
@@ -1105,7 +1096,6 @@ namespace gatzk::protocol
             srs->srs_consistency_hash = reader.string("srs.srs_consistency_hash");
             srs->manifest_hash = reader.string("srs.manifest_hash");
             srs->generator_id = reader.string("srs.generator_id");
-            srs->generator_version = reader.string("srs.generator_version");
             srs->encoding = reader.string("srs.encoding");
             srs->protocol_schema_id = reader.string("srs.protocol_schema_id");
             srs->kzg_assumption_profile_id = reader.string("srs.assumption_profile");
@@ -1560,7 +1550,6 @@ namespace gatzk::protocol
             append_size(out, registry.srs_degree_bound);
             append_point(out, registry.srs_g1_generator);
             append_string(out, registry.srs_generator_id);
-            append_string(out, registry.srs_generator_version);
             append_string(out, registry.srs_encoding);
             append_string(out, registry.srs_spec_id);
             // Keep the SRS ceremony's compiler-artifact hash as a distinct
@@ -1605,7 +1594,6 @@ namespace gatzk::protocol
             registry.srs_degree_bound = reader.size("registry.degree-bound");
             registry.srs_g1_generator = read_g1(reader, "registry.g1-generator");
             registry.srs_generator_id = reader.string("registry.generator-id");
-            registry.srs_generator_version = reader.string("registry.generator-version");
             registry.srs_encoding = reader.string("registry.encoding");
             registry.srs_spec_id = reader.string("registry.spec-id");
             registry.srs_protocol_compiler_artifact_hash =
@@ -1675,11 +1663,8 @@ namespace gatzk::protocol
 
     std::vector<std::uint8_t> VerifierRegistrationArtifact::canonical_bytes() const
     {
-        if (format_version != kVersion)
-            throw std::runtime_error("unsupported verifier registration artifact version");
         std::vector<std::uint8_t> out;
         out.insert(out.end(), kMagic.begin(), kMagic.end());
-        append_u32(&out, format_version);
         append_u32(&out, kSectionCount);
         const std::array<std::vector<std::uint8_t>, kSectionCount> sections = {
             make_section(Section::Config, [&](auto *payload) { append_config(payload, config); }),
@@ -1719,7 +1704,7 @@ namespace gatzk::protocol
     VerifierRegistrationArtifact parse_verifier_registration_artifact(
         const std::vector<std::uint8_t> &bytes)
     {
-        if (bytes.size() < kMagic.size() + sizeof(std::uint32_t) * 2 + SHA256_DIGEST_LENGTH
+        if (bytes.size() < kMagic.size() + sizeof(std::uint32_t) + SHA256_DIGEST_LENGTH
             || bytes.size() > kMaxArtifactBytes)
             throw std::runtime_error("verifier registration artifact size is invalid");
         const auto body_size = bytes.size() - SHA256_DIGEST_LENGTH;
@@ -1732,11 +1717,9 @@ namespace gatzk::protocol
         const auto magic = reader.take(kMagic.size(), "header.magic");
         if (!std::equal(magic.begin(), magic.end(), kMagic.begin()))
             throw std::runtime_error("verifier registration artifact magic mismatch");
-        if (reader.u32("header.version") != kVersion
-            || reader.u32("header.section-count") != kSectionCount)
-            throw std::runtime_error("verifier registration artifact version/section count mismatch");
+        if (reader.u32("header.section-count") != kSectionCount)
+            throw std::runtime_error("verifier registration artifact section count mismatch");
         VerifierRegistrationArtifact artifact;
-        artifact.format_version = kVersion;
         for (std::uint32_t section_id = 1; section_id <= kSectionCount; ++section_id)
         {
             const auto actual = reader.u32("section.id");

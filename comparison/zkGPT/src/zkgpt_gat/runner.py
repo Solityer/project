@@ -302,6 +302,7 @@ def run_one(
         "final_logits_bound",
         "proof_schema_scan",
         "privacy_masking_verified",
+        "independent_reference_forward",
     )
     if any(verified_fields.get(key) is not True for key in required_verified_true):
         raise RuntimeError(
@@ -324,6 +325,7 @@ def run_one(
         verified_fields.get("model_arch_id") != model.model_arch_id
         or verified_fields.get("model_param_id") != model.model_param_id
         or verified_fields.get("quant_cfg_id") != model.quant_cfg_id
+        or verified_fields.get("input_preprocess_id") != config.input_preprocess_id
         or verified_fields.get("L") != len(model.hidden_layers) + 1
         or verified_fields.get("hidden_profile") != expected_hidden
         or verified_fields.get("d_in_profile") != expected_d_in
@@ -344,6 +346,7 @@ def run_one(
         "model_arch_id": verified_fields["model_arch_id"],
         "model_param_id": verified_fields["model_param_id"],
         "quant_cfg_id": verified_fields["quant_cfg_id"],
+        "input_preprocess_id": verified_fields["input_preprocess_id"],
         "L": verified_fields["L"],
         "hidden_profile": ",".join(
             f"{item['head_count']}x{item['head_dim']}" for item in verified_fields["hidden_profile"]

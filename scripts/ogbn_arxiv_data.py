@@ -9,9 +9,10 @@ from typing import Dict
 import numpy as np
 
 from quantization_scale_chain import (
+    OGBN_ARXIV_EXTERNAL_NAME,
+    OGBN_ARXIV_INTERNAL_NAME,
     OGBN_ARXIV_RAW_INPUT_PREPROCESS_ID,
     canonical_input_preprocess,
-    canonical_row_normalize,
 )
 
 
@@ -24,15 +25,10 @@ class OgbnArxivData:
     split_idx: Dict[str, np.ndarray]
 
 
-def row_normalize_dense(features: np.ndarray) -> np.ndarray:
-    """Compatibility helper for the PPI trainer; OGBN never calls this."""
-    return canonical_row_normalize(features)
-
-
 def preprocess_input_features(
     features: np.ndarray,
     *,
-    dataset: str = "ogbn_arxiv",
+    dataset: str = OGBN_ARXIV_INTERNAL_NAME,
     input_preprocess_id: str = OGBN_ARXIV_RAW_INPUT_PREPROCESS_ID,
 ) -> np.ndarray:
     """Apply the dataset-aware canonical input preprocessing contract."""
@@ -40,7 +36,9 @@ def preprocess_input_features(
 
 
 def dataset_root(data_root: pathlib.Path) -> pathlib.Path:
-    return data_root / "ogbn-arxiv"
+    # The released archive keeps the official PyG/data-directory spelling;
+    # that external boundary never enters formal metadata.
+    return data_root / OGBN_ARXIV_EXTERNAL_NAME
 
 
 def cache_root(project_root: pathlib.Path) -> pathlib.Path:
@@ -68,7 +66,9 @@ def load_raw_arrays(data_root: pathlib.Path) -> OgbnArxivData:
         dtype=np.int64,
     )
     if edges.ndim != 2 or edges.shape[1] != 2:
-        raise ValueError("ogbn-arxiv edge.csv.gz must have shape [E, 2]")
+        raise ValueError(
+            f"{OGBN_ARXIV_EXTERNAL_NAME} edge.csv.gz must have shape [E, 2]"
+        )
 
     split_idx = {
         "train": np.loadtxt(gzip.open(split_root / "train.csv.gz", "rt"), delimiter=",", dtype=np.int64).reshape(-1),
@@ -125,11 +125,17 @@ def ensure_cache(project_root: pathlib.Path, data_root: pathlib.Path) -> pathlib
                 continue
             key, value = (part.strip() for part in line.split("=", 1))
             metadata[key] = value
+        cached_name = metadata.get("name")
+        if cached_name != OGBN_ARXIV_INTERNAL_NAME:
+            raise ValueError(
+                f"{OGBN_ARXIV_INTERNAL_NAME} cache metadata name is not canonical; "
+                "refusing to consume an externally named cache"
+            )
         cached_id = metadata.get("input_preprocess_id")
         if cached_id != OGBN_ARXIV_RAW_INPUT_PREPROCESS_ID:
             raise ValueError(
-                "ogbn-arxiv cache is missing or uses a non-canonical input_preprocess_id; "
-                "refusing to consume legacy normalized features"
+                f"{OGBN_ARXIV_INTERNAL_NAME} cache is missing or uses a non-canonical input_preprocess_id; "
+                "refusing to consume normalized features"
             )
         return output_root
 
@@ -145,7 +151,7 @@ def ensure_cache(project_root: pathlib.Path, data_root: pathlib.Path) -> pathlib
     meta_path.write_text(
         "\n".join(
             [
-                "name = ogbn-arxiv",
+                f"name = {OGBN_ARXIV_INTERNAL_NAME}",
                 f"num_nodes = {arrays.features.shape[0]}",
                 f"num_features = {arrays.features.shape[1]}",
                 f"num_classes = {int(arrays.labels.max()) + 1}",

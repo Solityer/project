@@ -11,7 +11,7 @@ from typing import Dict, List
 import numpy as np
 import torch
 
-from ogbn_arxiv_utils import (
+from ogbn_arxiv_data import (
     build_sorted_edge_index,
     ensure_cache,
     load_raw_arrays,
@@ -32,7 +32,10 @@ from train_planetoid_gat import (
     set_seed,
     _override,
 )
-from quantization_scale_chain import canonical_quantization_scale_chain
+from quantization_scale_chain import (
+    OGBN_ARXIV_INTERNAL_NAME,
+    canonical_quantization_scale_chain,
+)
 
 
 def masked_accuracy(logits: torch.Tensor, labels: torch.Tensor, indices: torch.Tensor) -> float:
@@ -52,7 +55,7 @@ def main() -> None:
     cfg_path = pathlib.Path(args.config).resolve()
     cfg = parse_cfg(cfg_path)
     dataset = cfg["dataset"]
-    if dataset != "ogbn_arxiv":
+    if dataset != OGBN_ARXIV_INTERNAL_NAME:
         raise ValueError("train_ogbn_arxiv_gat only supports dataset=ogbn_arxiv")
 
     project_root = cfg_path.parent.parent.resolve()
@@ -101,7 +104,7 @@ def main() -> None:
         0.5,
     ) or seed != 11:
         raise ValueError(
-            "ogbn-arxiv formal training requires epochs=500, patience=100, "
+            "ogbn_arxiv formal training requires epochs=500, patience=100, "
             "lr=0.005, weight_decay=0.0005, dropout=0.5, seed=11"
         )
     if epochs <= 0 or patience <= 0:
@@ -129,15 +132,15 @@ def main() -> None:
         or not np.array_equal(cached_features, arrays.features)
     ):
         raise ValueError(
-            "ogbn-arxiv cache features.npy is not the exact released float32 producer output"
+            "ogbn_arxiv cache features.npy is not the exact released float32 producer output"
         )
-    # OGBN-Arxiv is registered as raw_float32_v1: the released float32
+    # OGBN-Arxiv is registered as raw_float32: the released float32
     # feature matrix enters the canonical ties-away quantizer directly.  Do
     # not apply the Planetoid/PPI row-normalization contract here.
     input_preprocess_id = str(cfg["input_preprocess_id"])
     raw_features = preprocess_input_features(
         cached_features,
-        dataset="ogbn_arxiv",
+        dataset=OGBN_ARXIV_INTERNAL_NAME,
         input_preprocess_id=input_preprocess_id,
     )
     quantized_features, input_quantization = quantized_input_features(
@@ -170,7 +173,7 @@ def main() -> None:
     ).to(device)
     optimizer = build_optimizer(model, lr, weight_decay)
     metadata = checkpoint_metadata(
-        dataset="ogbn-arxiv",
+        dataset=OGBN_ARXIV_INTERNAL_NAME,
         in_dim=int(features.shape[1]),
         hidden_profile=hidden_profile,
         k_out=k_out,
@@ -245,7 +248,7 @@ def main() -> None:
             else ""
         )
         print(
-            f"[ogbn-arxiv] epoch={epoch:04d} train_loss={loss.item():.6f} train_acc={train_acc:.4f} "
+            f"[ogbn_arxiv] epoch={epoch:04d} train_loss={loss.item():.6f} train_acc={train_acc:.4f} "
             f"val_loss={val_loss:.6f} val_acc={val_acc:.4f}{test_suffix}",
             flush=True,
         )
@@ -294,7 +297,7 @@ def main() -> None:
     (output_dir / "training_summary.json").write_text(
         json.dumps(
             {
-                "dataset": "ogbn-arxiv",
+                "dataset": OGBN_ARXIV_INTERNAL_NAME,
                 "qat_float32_non_formal": True,
                 "device": str(device),
                 "wall_time_sec": time.perf_counter() - start,

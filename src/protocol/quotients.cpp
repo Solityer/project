@@ -103,7 +103,7 @@ namespace gatzk::protocol
         // Formal quotient constants are keyed by (layer, local head).  Keep
         // the same nested identity as the trace and binding registries; a
         // flattened planned index is not a formal object identity.
-        std::vector<std::vector<HiddenHeadEvaluationConstants>> hidden_heads;
+        std::vector<std::vector<HiddenHeadEvaluationConstants>> hidden_head_constants;
         std::vector<OutputHeadEvaluationConstants> output_heads;
     };
 
@@ -182,8 +182,8 @@ namespace gatzk::protocol
 
         std::optional<std::string> hidden_head_suffix(const std::string &label)
         {
-            // Formal hidden labels carry both coordinates.  Do not accept
-            // the legacy flat P_h<index> form on the proof path.
+            // Formal hidden labels carry both coordinates.  Reject any label
+            // that does not encode the layer and local-head coordinates.
             if (!starts_with(label, "P_h_l"))
             {
                 return std::nullopt;
@@ -243,13 +243,6 @@ namespace gatzk::protocol
 
         std::optional<std::string> dynamic_label_domain_name(const ProtocolContext &context, const std::string &label)
         {
-            // The null result is only for the removed legacy single-head
-            // compatibility representation; formal context construction is
-            // fail-closed before dynamic domain lookup.
-            if (!context.model.has_real_multihead)
-            {
-                return std::nullopt;
-            }
             if (label == "P_H" || label == "P_Table_feat" || label == "P_Query_feat" || label == "P_m_feat" || label == "P_J_tbl_feat" || label == "P_J_qry_feat" || label == "P_R_feat")
             {
                 return std::string("FH");
@@ -1325,13 +1318,13 @@ namespace gatzk::protocol
 
         plan->binding_metadata =
             build_binding_relation_metadata(context);
-        plan->hidden_heads.resize(context.model.hidden_layers.size());
+        plan->hidden_head_constants.resize(context.model.hidden_layers.size());
         for (std::size_t layer_index = 0;
              layer_index < context.model.hidden_layers.size();
              ++layer_index)
         {
             const auto &layer = context.model.hidden_layers[layer_index];
-            auto &layer_constants = plan->hidden_heads.at(layer_index);
+            auto &layer_constants = plan->hidden_head_constants.at(layer_index);
             layer_constants.reserve(layer.heads.size());
             for (std::size_t local_head_index = 0;
                  local_head_index < layer.heads.size();
@@ -1356,7 +1349,7 @@ namespace gatzk::protocol
 
             // Q_Nd_h is the sole layer-scoped edge selector for hidden
             // aggregation/ELU queries, including layers whose width happens
-            // to equal the historical maximum.
+            // to equal the configured maximum.
             constants.elu_query_selector = constants.division_selector;
             constants.beta_src = challenges.at(challenge("beta_src_h"));
             constants.beta_dst = challenges.at(challenge("beta_dst_h"));
@@ -1773,9 +1766,7 @@ namespace gatzk::protocol
         const Scalar *symbolic_last =
             nullptr)
     {
-        if (context.model.has_real_multihead)
-        {
-            // edge 域承载大部分“边上对象”约束：softmax 链、lookup、route 和 PSQ 都在这里闭合。
+        // edge 域承载大部分“边上对象”约束：softmax 链、lookup、route 和 PSQ 都在这里闭合。
             const auto omega_z = z * context.domains.edge->omega;
             const auto boundary = boundary_values != nullptr
                                       ? *boundary_values
@@ -2007,7 +1998,7 @@ namespace gatzk::protocol
                      ++local_head_index)
                 {
                 const auto *planned = evaluation_plan != nullptr
-                                          ? &evaluation_plan->hidden_heads
+                                          ? &evaluation_plan->hidden_head_constants
                                                  .at(layer_index)
                                                  .at(local_head_index)
                                           : nullptr;
@@ -2678,10 +2669,6 @@ namespace gatzk::protocol
                     "evaluation requested "
                     "quotient division");
             }
-        }
-
-        throw std::runtime_error(
-            "t_edge reached the removed single-output compatibility protocol");
     }
     TEdgeBoundProgram
     build_t_edge_bound_program(
@@ -2825,9 +2812,7 @@ namespace gatzk::protocol
         const EvalFn &eval,
         const FieldElement &z)
     {
-        if (context.model.has_real_multihead)
-        {
-            // N 域负责把边上广播的量重新收回到目标点，并补上分母倒数、PSQ 目标表和 route 节点侧约束。
+        // N 域负责把边上广播的量重新收回到目标点，并补上分母倒数、PSQ 目标表和 route 节点侧约束。
             const auto omega_z = z * context.domains.n->omega;
             const auto boundary = boundary_lagrange_values(*context.domains.n, z);
             const auto first = boundary.first;
@@ -3019,10 +3004,6 @@ namespace gatzk::protocol
             }
 
             return acc.value() / zero_eval;
-        }
-
-        throw std::runtime_error(
-            "t_N reached the removed single-output compatibility protocol");
     }
 
     FieldElement evaluate_t_in(
@@ -3035,9 +3016,7 @@ namespace gatzk::protocol
         std::size_t *first_nonzero_term,
         FieldElement *first_nonzero_value)
     {
-        if (context.model.has_real_multihead)
-        {
-            const auto omega_z = z * context.domains.in->omega;
+        const auto omega_z = z * context.domains.in->omega;
             const auto boundary = boundary_lagrange_values(*context.domains.in, z);
             const auto first = boundary.first;
             const auto last = boundary.last;
@@ -3076,25 +3055,6 @@ namespace gatzk::protocol
                     *first_nonzero_value = acc.first_nonzero_value();
             }
             return return_numerator ? acc.value() : acc.value() / zero_eval;
-        }
-
-        // Non-formal legacy single-head compatibility branch.  The formal
-        // context builder rejects has_real_multihead == false before any
-        // quotient is evaluated, so these aliases cannot enter the schema.
-        const auto omega_z = z * context.domains.in->omega;
-        const auto l0 = lagrange_first(*context.domains.in, z);
-        const auto not_last = FieldElement::one() - lagrange_last(*context.domains.in, z);
-        const auto ld = lagrange_at(*context.domains.in, context.local.num_features, z);
-        const auto zero_eval = context.domains.in->zero_polynomial_eval(z);
-        const auto c_proj_0 = l0 * eval("P_Acc_proj", z);
-        const auto c_proj_1 = eval("P_Q_proj_valid", z) * (eval("P_Acc_proj", omega_z) - eval("P_Acc_proj", z) - eval("P_a_proj", z) * eval("P_b_proj", z));
-        const auto c_proj_2 = (FieldElement::one() - eval("P_Q_proj_valid", z)) * not_last * (eval("P_Acc_proj", omega_z) - eval("P_Acc_proj", z));
-        const auto c_proj_3 = ld * (eval("P_Acc_proj", z) - external_evaluations.at("mu_proj"));
-        const auto alpha = challenges.at("alpha_quot");
-        const auto alpha_powers = powers(alpha, 33);
-        const auto numerator =
-            alpha_powers[30] * c_proj_0 + alpha_powers[31] * c_proj_1 + alpha_powers[32] * c_proj_2 + alpha_powers[33] * c_proj_3;
-        return numerator / zero_eval;
     }
 
     FieldElement evaluate_t_d(
@@ -3107,9 +3067,7 @@ namespace gatzk::protocol
         std::size_t *first_nonzero_term,
         FieldElement *first_nonzero_value)
     {
-        if (context.model.has_real_multihead)
-        {
-            const auto omega_z = z * context.domains.d->omega;
+        const auto omega_z = z * context.domains.d->omega;
             const auto boundary = boundary_lagrange_values(*context.domains.d, z);
             const auto first = boundary.first;
             const auto last = boundary.last;
@@ -3211,55 +3169,6 @@ namespace gatzk::protocol
                     *first_nonzero_value = acc.first_nonzero_value();
             }
             return return_numerator ? acc.value() : acc.value() / zero_eval;
-        }
-
-        // Non-formal legacy single-head compatibility branch; unreachable from
-        // the fail-closed formal proof context above.
-        const auto omega_z = z * context.domains.d->omega;
-        const auto q_valid = eval("P_Q_d_valid", z);
-        const auto q_invalid = FieldElement::one() - q_valid;
-        const auto l0 = lagrange_first(*context.domains.d, z);
-        const auto not_last = FieldElement::one() - lagrange_last(*context.domains.d, z);
-        const auto ld = lagrange_at(*context.domains.d, context.model.a_src.size(), z);
-        const auto zero_eval = context.domains.d->zero_polynomial_eval(z);
-
-        auto c0 = [&](const std::string &acc)
-        { return l0 * eval(acc, z); };
-        auto c1 = [&](const std::string &a, const std::string &b, const std::string &acc)
-        {
-            return q_valid * (eval(acc, omega_z) - eval(acc, z) - eval(a, z) * eval(b, z));
-        };
-        auto c2 = [&](const std::string &acc)
-        { return not_last * q_invalid * (eval(acc, omega_z) - eval(acc, z)); };
-        auto c3 = [&](const std::string &acc, const std::string &mu_name)
-        {
-            return ld * (eval(acc, z) - external_evaluations.at(mu_name));
-        };
-
-        const auto alpha = challenges.at("alpha_quot");
-        const auto alpha_powers = powers(alpha, 53);
-        FieldElement numerator = FieldElement::zero();
-        numerator += alpha_powers[34] * c0("P_Acc_src");
-        numerator += alpha_powers[35] * c1("P_a_src", "P_b_src", "P_Acc_src");
-        numerator += alpha_powers[36] * c2("P_Acc_src");
-        numerator += alpha_powers[37] * c3("P_Acc_src", "mu_src");
-        numerator += alpha_powers[38] * c0("P_Acc_dst");
-        numerator += alpha_powers[39] * c1("P_a_dst", "P_b_dst", "P_Acc_dst");
-        numerator += alpha_powers[40] * c2("P_Acc_dst");
-        numerator += alpha_powers[41] * c3("P_Acc_dst", "mu_dst");
-        numerator += alpha_powers[42] * c0("P_Acc_star");
-        numerator += alpha_powers[43] * c1("P_a_star", "P_b_star", "P_Acc_star");
-        numerator += alpha_powers[44] * c2("P_Acc_star");
-        numerator += alpha_powers[45] * c3("P_Acc_star", "mu_star");
-        numerator += alpha_powers[46] * c0("P_Acc_agg");
-        numerator += alpha_powers[47] * c1("P_a_agg", "P_b_agg", "P_Acc_agg");
-        numerator += alpha_powers[48] * c2("P_Acc_agg");
-        numerator += alpha_powers[49] * c3("P_Acc_agg", "mu_agg");
-        numerator += alpha_powers[50] * c0("P_Acc_out");
-        numerator += alpha_powers[51] * c1("P_a_out", "P_b_out", "P_Acc_out");
-        numerator += alpha_powers[52] * c2("P_Acc_out");
-        numerator += alpha_powers[53] * c3("P_Acc_out", "mu_Y_lin");
-        return numerator / zero_eval;
     }
 
     FieldElement evaluate_t_cat(

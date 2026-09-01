@@ -16,9 +16,9 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(GATZK_ENABLE_CUDA_BACKEND "Enable optional CUDA algebra backend build" OFF)
 option(GATZK_ENABLE_FAST_MSM_DEFAULT "Enable fast MSM / fixed-base batch route by default" ON)
 option(GATZK_ENABLE_PARALLEL_FFT_DEFAULT "Enable parallel domain/FFT route by default" ON)
-option(GATZK_ENABLE_FFT_BACKEND_UPGRADE_DEFAULT "Enable packed domain evaluation backend by default" ON)
-option(GATZK_ENABLE_FFT_KERNEL_UPGRADE_DEFAULT "Enable fused rotated-point FFT/NTT kernel backend by default" ON)
-option(GATZK_ENABLE_TRACE_LAYOUT_UPGRADE_DEFAULT "Enable trace/materialization layout upgrade by default" ON)
+option(GATZK_ENABLE_PACKED_FFT_DEFAULT "Enable packed domain evaluation backend by default" ON)
+option(GATZK_ENABLE_ROTATED_FFT_KERNEL_DEFAULT "Enable fused rotated-point FFT/NTT kernel backend by default" ON)
+option(GATZK_ENABLE_COMPACT_TRACE_LAYOUT_DEFAULT "Enable compact trace/materialization layout by default" ON)
 option(GATZK_ENABLE_FAST_VERIFY_PAIRING_DEFAULT "Enable fast verifier pairing route by default" ON)
 option(GATZK_ENABLE_NATIVE_ARCH "Enable -march=native for local performance runs; keep OFF for reproducible portable builds" OFF)
 set(GATZK_CRYPTO_BACKEND "mcl" CACHE STRING "Crypto backend preference; only mcl is supported")
@@ -38,7 +38,7 @@ set(GATZK_SOURCE_MANIFEST
     "${GATZK_GENERATED_INCLUDE_DIR}/gatzk/source_manifest.json")
 file(MAKE_DIRECTORY "${GATZK_GENERATED_INCLUDE_DIR}/gatzk")
 set(GATZK_BUILD_FLAGS
-    "CXX=${CMAKE_CXX_FLAGS};BUILD=${CMAKE_BUILD_TYPE};NATIVE=${GATZK_ENABLE_NATIVE_ARCH};CUDA=${GATZK_ENABLE_CUDA_BACKEND};FAST_MSM=${GATZK_ENABLE_FAST_MSM_DEFAULT};PARALLEL_FFT=${GATZK_ENABLE_PARALLEL_FFT_DEFAULT};FFT_BACKEND=${GATZK_ENABLE_FFT_BACKEND_UPGRADE_DEFAULT};FFT_KERNEL=${GATZK_ENABLE_FFT_KERNEL_UPGRADE_DEFAULT};TRACE_LAYOUT=${GATZK_ENABLE_TRACE_LAYOUT_UPGRADE_DEFAULT};FAST_VERIFY=${GATZK_ENABLE_FAST_VERIFY_PAIRING_DEFAULT}")
+    "CXX=${CMAKE_CXX_FLAGS};BUILD=${CMAKE_BUILD_TYPE};NATIVE=${GATZK_ENABLE_NATIVE_ARCH};CUDA=${GATZK_ENABLE_CUDA_BACKEND};FAST_MSM=${GATZK_ENABLE_FAST_MSM_DEFAULT};PARALLEL_FFT=${GATZK_ENABLE_PARALLEL_FFT_DEFAULT};PACKED_FFT=${GATZK_ENABLE_PACKED_FFT_DEFAULT};ROTATED_FFT_KERNEL=${GATZK_ENABLE_ROTATED_FFT_KERNEL_DEFAULT};COMPACT_TRACE_LAYOUT=${GATZK_ENABLE_COMPACT_TRACE_LAYOUT_DEFAULT};FAST_VERIFY=${GATZK_ENABLE_FAST_VERIFY_PAIRING_DEFAULT}")
 execute_process(
     COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/build_provenance.py"
             --root "${PROJECT_SOURCE_DIR}"
@@ -199,12 +199,12 @@ target_compile_definitions(
         GATZK_CRYPTO_BACKEND_NAME="${GATZK_SELECTED_BACKEND}"
         GATZK_ENABLE_FAST_MSM_DEFAULT=$<IF:$<BOOL:${GATZK_ENABLE_FAST_MSM_DEFAULT}>,1,0>
         GATZK_ENABLE_PARALLEL_FFT_DEFAULT=$<IF:$<BOOL:${GATZK_ENABLE_PARALLEL_FFT_DEFAULT}>,1,0>
-        GATZK_ENABLE_FFT_BACKEND_UPGRADE_DEFAULT=$<IF:$<BOOL:${GATZK_ENABLE_FFT_BACKEND_UPGRADE_DEFAULT}>,1,0>
-        GATZK_ENABLE_FFT_KERNEL_UPGRADE_DEFAULT=$<IF:$<BOOL:${GATZK_ENABLE_FFT_KERNEL_UPGRADE_DEFAULT}>,1,0>
-        GATZK_ENABLE_TRACE_LAYOUT_UPGRADE_DEFAULT=$<IF:$<BOOL:${GATZK_ENABLE_TRACE_LAYOUT_UPGRADE_DEFAULT}>,1,0>
+        GATZK_ENABLE_PACKED_FFT_DEFAULT=$<IF:$<BOOL:${GATZK_ENABLE_PACKED_FFT_DEFAULT}>,1,0>
+        GATZK_ENABLE_ROTATED_FFT_KERNEL_DEFAULT=$<IF:$<BOOL:${GATZK_ENABLE_ROTATED_FFT_KERNEL_DEFAULT}>,1,0>
+        GATZK_ENABLE_COMPACT_TRACE_LAYOUT_DEFAULT=$<IF:$<BOOL:${GATZK_ENABLE_COMPACT_TRACE_LAYOUT_DEFAULT}>,1,0>
         GATZK_ENABLE_FAST_VERIFY_PAIRING_DEFAULT=$<IF:$<BOOL:${GATZK_ENABLE_FAST_VERIFY_PAIRING_DEFAULT}>,1,0>
         GATZK_ENABLE_CUDA_BACKEND=$<IF:$<BOOL:${GATZK_ENABLE_CUDA_BACKEND}>,1,0>
-        GATZK_CANONICAL_SCALE_CHAIN_PATH="${PROJECT_SOURCE_DIR}/configs/quantization_scale_chain_v1.cfg"
+        GATZK_CANONICAL_SCALE_CHAIN_PATH="${PROJECT_SOURCE_DIR}/configs/quantization_scale_chain.cfg"
 )
 
 if(GATZK_USE_MCL)
@@ -261,6 +261,10 @@ add_test(NAME verifier_privacy_runtime COMMAND gatzk_verifier_privacy_test)
 add_executable(gatzk_kzg_resource_identity_test tests/kzg_resource_identity_runtime.cpp)
 target_link_libraries(gatzk_kzg_resource_identity_test PRIVATE gatzkml)
 add_test(NAME kzg_resource_identity_runtime COMMAND gatzk_kzg_resource_identity_test)
+
+add_executable(gatzk_compiler_artifact_test tests/compiler_artifact_runtime.cpp)
+target_link_libraries(gatzk_compiler_artifact_test PRIVATE gatzkml)
+add_test(NAME compiler_artifact_runtime COMMAND gatzk_compiler_artifact_test)
 
 add_executable(gatzk_input_quantization_test tests/input_quantization_runtime.cpp)
 target_link_libraries(gatzk_input_quantization_test PRIVATE gatzkml)

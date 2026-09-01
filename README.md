@@ -20,23 +20,17 @@ commitment、prove、verify 与结果导出。协议约束以只读文件
 `Q_in`、`Q_d_h`、`Q_cat`、`Q_Nd_h`，并且最后隐藏层的 `Q_cat` 与输出层的
 `Q_cat` 是两个独立对象。trace、quotient、prover、verifier 和 codec 都按
 `[layer][local_head]` 访问这些对象，隐藏层 concat 也始终保留显式层号。
-checkpoint/parity 中保留的扁平兼容视图不参与正式 proof 身份或 transcript。
+checkpoint、parity、proof 与 transcript 使用同一结构化身份。
 
-本轮 layered schema 修复不改变模型权重和上述训练架构，因此不需要仅因该修复重训
-当前 checkpoint；但它改变了 instance canonical/proof schema 及正式对象顺序。
-`populate_protocol_template` 本轮未变，因此不能据此声称 `protocol_schema_id` 必然变化。
-当前临时 compile 预检记录的 `protocol_schema_id` 为
-`8550a6bcb85e4adacbaeffc0e2841413b3fd122da9d990e4932ffdf0509eac9`；这不是 SRS 已生成的
-证明。degree bound 与工作域大小的计算公式也未变，仍须以当前 compile 产物和 SRS
-manifest 的 `degree_bound`、domain catalogue hash 做完整绑定校验，不能只凭 ID 复用旧 SRS。
-当前 canonical SRS 目录为空，尚未执行 ceremony；后续必须按下方完整命令重新 compile、
-ceremony 和 validate，并直接覆盖同名 canonical 路径。若发现已有旧 SRS，也必须先通过
-compiler artifact、envelope、domain 与 degree binding 的完整校验。
+当前 canonical 设计固定 instance/proof schema、对象顺序、degree bound 计算和工作域
+目录。正式工件必须由当前源码从 canonical 配置重新生成，并通过 compiler artifact、
+envelope、domain 与 degree binding 的完整校验；不能仅凭 nominal degree 或 protocol ID
+接受不匹配的 material。当前 canonical SRS 目录为空，尚未执行 ceremony；后续必须按下方
+完整命令 compile、ceremony 和 validate。
 
 正式 checkpoint、SRS、完整 proof/verify 和 CPU/GPU 十组正式运行需要在本轮之后执行；
-本轮没有把旧工件改名、复制或伪装成新架构结果。训练不启用 strict deterministic
-algorithms，固定 `seed=11`。同一数据集的 CPU 与 CUDA 运行必须使用同一个新 checkpoint、
-同一个配置和同一个 canonical SRS。
+训练不启用 strict deterministic algorithms，固定 `seed=11`。同一数据集的 CPU 与 CUDA
+运行必须使用同一个 canonical checkpoint、配置和 SRS。
 
 ## 依赖
 
@@ -138,12 +132,12 @@ PPI 训练复用 `train_planetoid_gat.py` 的 `PlanetoidGAT`、optimizer、seed 
 .venv/bin/python scripts/check_checkpoint_bundle.py --dataset citeseer --bundle-dir artifacts/checkpoints/citeseer_gat --checkpoint artifacts/checkpoints/citeseer_gat/best_model.pt
 .venv/bin/python scripts/check_checkpoint_bundle.py --dataset pubmed --bundle-dir artifacts/checkpoints/pubmed_gat --checkpoint artifacts/checkpoints/pubmed_gat/best_model.pt
 .venv/bin/python scripts/check_checkpoint_bundle.py --dataset ppi --bundle-dir artifacts/checkpoints/ppi_gat --checkpoint artifacts/checkpoints/ppi_gat/best_model.pt
-.venv/bin/python scripts/check_checkpoint_bundle.py --dataset ogbn-arxiv --bundle-dir artifacts/checkpoints/ogbn_arxiv_gat --checkpoint artifacts/checkpoints/ogbn_arxiv_gat/best_model.pt
+.venv/bin/python scripts/check_checkpoint_bundle.py --dataset ogbn_arxiv --bundle-dir artifacts/checkpoints/ogbn_arxiv_gat --checkpoint artifacts/checkpoints/ogbn_arxiv_gat/best_model.pt
 ```
 
-每个检查都必须报告 `checkpoint bundle shape check passed`。任何旧的单层、单头或单输出
-checkpoint 都会因 metadata、state_dict key 或 shape 不匹配而拒绝；禁止复制、reshape、
-补权重或改名生成正式模型。
+每个检查都必须报告 `checkpoint bundle shape check passed`。任何不符合 canonical
+多层多头结构的 checkpoint 都会因 metadata、state_dict key 或 shape 不匹配而拒绝；禁止
+复制、reshape、补权重或改名生成正式模型。
 
 ## forward/parity 短检查
 
@@ -169,23 +163,19 @@ unlink "$parity_pubmed"
 
 ## SRS 检查与必要重建
 
-当前 canonical secure config 的 SRS envelope 已按 `L=3`、16 个 hidden heads、两个输出
-heads、concat width 64 和各数据集真实容量更新；本轮还改变了 instance canonical/proof
-schema 及对象顺序。`populate_protocol_template` 未变，不能预先断言
-`protocol_schema_id` 会变化；当前临时 compile 预检记录的 ID 是
-`8550a6bcb85e4adacbaeffc0e2841413b3fd122da9d990e4932ffdf0509eac9`。degree bound 与 domain
-公式不变。当前 canonical SRS 目录为空，尚未 ceremony，后续仍必须执行下面完整流程。
-若存在旧 SRS，不能只按 nominal degree 或 protocol ID 复用，必须完整校验 compiler artifact、
-envelope、domain 与 degree binding；任一不匹配都必须重建。下列命令使用现有
-`build/gatzk_srs_setup`、当前 degree bound、domain catalog 和 canonical `srs_id`；ceremony
-会采样真实 setup，不能在本轮短验证中执行。
+当前 canonical secure config 的 SRS envelope 按 `L=3`、16 个 hidden heads、两个输出
+heads、concat width 64 和各数据集真实容量定义。SRS material 必须与当前 compiler artifact、
+envelope、domain、degree binding 和 canonical `srs_id` 完整一致；任一不匹配都拒绝并重新
+生成。当前 canonical SRS 目录为空，尚未 ceremony，后续仍必须执行下面完整流程。下列命令
+使用现有 `build/gatzk_srs_setup`、当前 degree bound 和 domain catalog；ceremony 会采样真实
+setup，不能在本轮短验证中执行。
 
 先完成每个数据集的 compile、ceremony 和独立 validate；只有 validate 成功后才删除同名
 canonical 目录并移动 staging 目录，禁止直接在 canonical 目录中部分写入：
 
 ```bash
 srs_stage_cora=$(mktemp -d /tmp/zkgat-srs-cora.XXXXXX)
-build/gatzk_srs_setup compile "$srs_stage_cora/protocol_compiler_artifact.txt" 16777215 configs/srs_cora_max_envelope_v1.cfg C=16 FH=4194304 N=4096 cat=128 d=16 edge=32768 in=2048
+build/gatzk_srs_setup compile "$srs_stage_cora/protocol_compiler_artifact.txt" 16777215 configs/srs_cora_max_envelope.cfg C=16 FH=4194304 N=4096 cat=128 d=16 edge=32768 in=2048
 build/gatzk_srs_setup ceremony "$srs_stage_cora/material" "$srs_stage_cora/protocol_compiler_artifact.txt" cora_formal_srs
 build/gatzk_srs_setup validate "$srs_stage_cora/material" cora_formal_srs
 rm -rf artifacts/srs/cora_formal_srs
@@ -193,7 +183,7 @@ mv "$srs_stage_cora/material" artifacts/srs/cora_formal_srs
 rm -rf "$srs_stage_cora"
 
 srs_stage_citeseer=$(mktemp -d /tmp/zkgat-srs-citeseer.XXXXXX)
-build/gatzk_srs_setup compile "$srs_stage_citeseer/protocol_compiler_artifact.txt" 67108863 configs/srs_citeseer_max_envelope_v1.cfg C=8 FH=16777216 N=4096 cat=128 d=16 edge=32768 in=4096
+build/gatzk_srs_setup compile "$srs_stage_citeseer/protocol_compiler_artifact.txt" 67108863 configs/srs_citeseer_max_envelope.cfg C=8 FH=16777216 N=4096 cat=128 d=16 edge=32768 in=4096
 build/gatzk_srs_setup ceremony "$srs_stage_citeseer/material" "$srs_stage_citeseer/protocol_compiler_artifact.txt" citeseer_formal_srs
 build/gatzk_srs_setup validate "$srs_stage_citeseer/material" citeseer_formal_srs
 rm -rf artifacts/srs/citeseer_formal_srs
@@ -201,7 +191,7 @@ mv "$srs_stage_citeseer/material" artifacts/srs/citeseer_formal_srs
 rm -rf "$srs_stage_citeseer"
 
 srs_stage_pubmed=$(mktemp -d /tmp/zkgat-srs-pubmed.XXXXXX)
-build/gatzk_srs_setup compile "$srs_stage_pubmed/protocol_compiler_artifact.txt" 67108863 configs/srs_pubmed_max_envelope_v1.cfg C=8 FH=16777216 N=32768 cat=128 d=16 edge=262144 in=512
+build/gatzk_srs_setup compile "$srs_stage_pubmed/protocol_compiler_artifact.txt" 67108863 configs/srs_pubmed_max_envelope.cfg C=8 FH=16777216 N=32768 cat=128 d=16 edge=262144 in=512
 build/gatzk_srs_setup ceremony "$srs_stage_pubmed/material" "$srs_stage_pubmed/protocol_compiler_artifact.txt" pubmed_formal_srs
 build/gatzk_srs_setup validate "$srs_stage_pubmed/material" pubmed_formal_srs
 rm -rf artifacts/srs/pubmed_formal_srs
@@ -209,15 +199,15 @@ mv "$srs_stage_pubmed/material" artifacts/srs/pubmed_formal_srs
 rm -rf "$srs_stage_pubmed"
 
 srs_stage_ppi=$(mktemp -d /tmp/zkgat-srs-ppi.XXXXXX)
-build/gatzk_srs_setup compile "$srs_stage_ppi/protocol_compiler_artifact.txt" 33554431 configs/srs_ppi_max_envelope_v1.cfg C=128 FH=4194304 N=65536 cat=64 d=16 edge=8388608 in=64
+build/gatzk_srs_setup compile "$srs_stage_ppi/protocol_compiler_artifact.txt" 33554431 configs/srs_ppi_max_envelope.cfg C=128 FH=4194304 N=65536 cat=64 d=16 edge=8388608 in=64
 build/gatzk_srs_setup ceremony "$srs_stage_ppi/material" "$srs_stage_ppi/protocol_compiler_artifact.txt" ppi_formal_srs
 build/gatzk_srs_setup validate "$srs_stage_ppi/material" ppi_formal_srs
 rm -rf artifacts/srs/ppi_formal_srs
 mv "$srs_stage_ppi/material" artifacts/srs/ppi_formal_srs
 rm -rf "$srs_stage_ppi"
 
-srs_stage_ogbn=$(mktemp -d /tmp/zkgat-srs-ogbn-arxiv.XXXXXX)
-build/gatzk_srs_setup compile "$srs_stage_ogbn/protocol_compiler_artifact.txt" 134217727 configs/srs_ogbn_arxiv_max_envelope_v1.cfg C=64 FH=33554432 N=262144 cat=64 d=16 edge=8388608 in=256
+srs_stage_ogbn=$(mktemp -d /tmp/zkgat-srs-ogbn_arxiv.XXXXXX)
+build/gatzk_srs_setup compile "$srs_stage_ogbn/protocol_compiler_artifact.txt" 134217727 configs/srs_ogbn_arxiv_max_envelope.cfg C=64 FH=33554432 N=262144 cat=64 d=16 edge=8388608 in=256
 build/gatzk_srs_setup ceremony "$srs_stage_ogbn/material" "$srs_stage_ogbn/protocol_compiler_artifact.txt" ogbn_arxiv_formal_srs
 build/gatzk_srs_setup validate "$srs_stage_ogbn/material" ogbn_arxiv_formal_srs
 rm -rf artifacts/srs/ogbn_arxiv_formal_srs
@@ -285,8 +275,8 @@ SRS hash 非空；只有这些 current-source manifest 才能进入结果表。�
 十组正式 run 全部通过上述检查后，生成 CPU 与 CUDA 两份结果目录：
 
 ```bash
-.venv/bin/python scripts/export_benchmark_table.py --output-dir results/paper_secure/cpu --run cora=runs/cora_secure/cpu_formal/warm --run citeseer=runs/citeseer_secure/cpu_formal/warm --run pubmed=runs/pubmed_secure/cpu_formal/warm --run ppi=runs/ppi_secure/cpu_formal/warm --run ogbn-arxiv=runs/ogbn_arxiv_secure/cpu_formal/warm
-.venv/bin/python scripts/export_benchmark_table.py --output-dir results/paper_secure/cuda --run cora=runs/cora_secure/cuda_formal/warm --run citeseer=runs/citeseer_secure/cuda_formal/warm --run pubmed=runs/pubmed_secure/cuda_formal/warm --run ppi=runs/ppi_secure/cuda_formal/warm --run ogbn-arxiv=runs/ogbn_arxiv_secure/cuda_formal/warm
+.venv/bin/python scripts/export_benchmark_table.py --output-dir results/paper_secure/cpu --run cora=runs/cora_secure/cpu_formal/warm --run citeseer=runs/citeseer_secure/cpu_formal/warm --run pubmed=runs/pubmed_secure/cpu_formal/warm --run ppi=runs/ppi_secure/cpu_formal/warm --run ogbn_arxiv=runs/ogbn_arxiv_secure/cpu_formal/warm
+.venv/bin/python scripts/export_benchmark_table.py --output-dir results/paper_secure/cuda --run cora=runs/cora_secure/cuda_formal/warm --run citeseer=runs/citeseer_secure/cuda_formal/warm --run pubmed=runs/pubmed_secure/cuda_formal/warm --run ppi=runs/ppi_secure/cuda_formal/warm --run ogbn_arxiv=runs/ogbn_arxiv_secure/cuda_formal/warm
 jq -e '.benchmark_mode == "warm" and (.rows | length) == 5' results/paper_secure/cpu/latest.json
 jq -e '.benchmark_mode == "warm" and (.rows | length) == 5' results/paper_secure/cuda/latest.json
 ```
@@ -299,7 +289,7 @@ CUDA run 全部存在且通过 `VERIFY_OK`、full-dataset、proof hash、配置/
 篡改或不一致都会 fail-closed，且不会写出根结果文件：
 
 ```bash
-.venv/bin/python scripts/aggregate_secure_results.py --output-dir results/paper_secure --cpu-run cora=runs/cora_secure/cpu_formal/warm --cpu-run citeseer=runs/citeseer_secure/cpu_formal/warm --cpu-run pubmed=runs/pubmed_secure/cpu_formal/warm --cpu-run ppi=runs/ppi_secure/cpu_formal/warm --cpu-run ogbn-arxiv=runs/ogbn_arxiv_secure/cpu_formal/warm --cuda-run cora=runs/cora_secure/cuda_formal/warm --cuda-run citeseer=runs/citeseer_secure/cuda_formal/warm --cuda-run pubmed=runs/pubmed_secure/cuda_formal/warm --cuda-run ppi=runs/ppi_secure/cuda_formal/warm --cuda-run ogbn-arxiv=runs/ogbn_arxiv_secure/cuda_formal/warm
+.venv/bin/python scripts/aggregate_secure_results.py --output-dir results/paper_secure --cpu-run cora=runs/cora_secure/cpu_formal/warm --cpu-run citeseer=runs/citeseer_secure/cpu_formal/warm --cpu-run pubmed=runs/pubmed_secure/cpu_formal/warm --cpu-run ppi=runs/ppi_secure/cpu_formal/warm --cpu-run ogbn_arxiv=runs/ogbn_arxiv_secure/cpu_formal/warm --cuda-run cora=runs/cora_secure/cuda_formal/warm --cuda-run citeseer=runs/citeseer_secure/cuda_formal/warm --cuda-run pubmed=runs/pubmed_secure/cuda_formal/warm --cuda-run ppi=runs/ppi_secure/cuda_formal/warm --cuda-run ogbn_arxiv=runs/ogbn_arxiv_secure/cuda_formal/warm
 jq -e '.run_count == 10 and (.rows | length) == 10 and .security_tests.all_passed == true' results/paper_secure/latest.json
 test -s results/paper_secure/security_tests_report.md
 test "$(awk 'END {print NR-1}' results/paper_secure/latest.csv)" -eq 10

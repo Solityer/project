@@ -25,6 +25,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from checkpoint_bundle import (
+    canonical_checkpoint_semantics,
+    load_checkpoint_manifest,
+    validate_checkpoint_manifest,
+    validate_checkpoint_metadata,
+    validate_tensor_encodings,
+)
 from planetoid_utils import (
     build_sorted_edge_index,
     labels_to_int,
@@ -37,8 +44,6 @@ from quantization_scale_chain import (
     canonical_quantization_scale_chain,
     canonical_input_preprocess,
     canonical_input_preprocess_id,
-    canonical_row_normalize,
-    dequantize_array_ties_away,
     quantize_array_ties_away,
 )
 
@@ -208,7 +213,12 @@ def parse_hidden_profile_expr(raw: str) -> HiddenProfile:
         if len(parts) != 2:
             raise ValueError(f"invalid hidden_profile entry: {entry}")
         head_count, head_dim = (int(part.strip()) for part in parts)
-        if head_count <= 0 or head_dim <= 0:
+        if (
+            type(head_count) is not int
+            or type(head_dim) is not int
+            or head_count <= 0
+            or head_dim <= 0
+        ):
             raise ValueError(
                 "hidden_profile head counts and dimensions must be positive"
             )
@@ -265,8 +275,8 @@ def normalize_hidden_profile(raw: Sequence[Mapping[str, object]]) -> HiddenProfi
     profile: HiddenProfile = []
     for layer_index, entry in enumerate(raw):
         try:
-            head_count = int(entry["head_count"])
-            head_dim = int(entry["head_dim"])
+            head_count = entry["head_count"]
+            head_dim = entry["head_dim"]
         except (KeyError, TypeError, ValueError) as error:
             raise ValueError(
                 f"invalid hidden_profile layer {layer_index}"
@@ -285,9 +295,9 @@ def derive_d_in_profile(in_dim: int, hidden_profile: Sequence[Mapping[str, objec
     if in_dim <= 0:
         raise ValueError("input dimension must be positive")
     profile = normalize_hidden_profile(hidden_profile)
-    d_in_profile = [int(in_dim)]
+    d_in_profile = [in_dim]
     for layer in profile[:-1]:
-        d_in_profile.append(int(layer["head_count"]) * int(layer["head_dim"]))
+        d_in_profile.append(layer["head_count"] * layer["head_dim"])
     return d_in_profile
 
 
@@ -541,23 +551,15 @@ class PlanetoidGAT(nn.Module):
     def __init__(
         self,
         in_dim: int,
-        hidden_dim: int | None = None,
         num_classes: int | None = None,
-        hidden_heads: int = 8,
         *,
-        hidden_profile: Sequence[Mapping[str, object]] | None = None,
-        k_out: int = 1,
+        hidden_profile: Sequence[Mapping[str, object]],
+        k_out: int = 2,
         quantization: QuantizationScaleChain | None = None,
     ) -> None:
         super().__init__()
         if num_classes is None:
             raise ValueError("num_classes is required")
-        if hidden_profile is None:
-            if hidden_dim is None:
-                raise ValueError("hidden_dim or hidden_profile is required")
-            hidden_profile = [
-                {"head_count": int(hidden_heads), "head_dim": int(hidden_dim)}
-            ]
         self.hidden_profile = normalize_hidden_profile(hidden_profile)
         if k_out <= 0:
             raise ValueError("K_out must be positive")
@@ -663,23 +665,8 @@ class PlanetoidGAT(nn.Module):
         trace: Dict[str, object] = {
             "hidden_layers": hidden_layer_traces,
             "output_heads": output_traces,
-            "output_head_values": [value.detach().cpu() for value in output_values],
             "logits": logits.detach().cpu(),
-            # Non-formal parity-only aliases for older trace consumers. The
-            # canonical checkpoint/export/proof path uses the structured keys.
-            "hidden_concat": hidden_layer_traces[-1]["concat"],
-            "hidden_heads": (
-                hidden_layer_traces[0]["heads"]
-                if len(hidden_layer_traces) == 1
-                else [
-                    head_trace
-                    for layer_trace in hidden_layer_traces
-                    for head_trace in layer_trace["heads"]
-                ]
-            ),
         }
-        if len(output_traces) == 1:
-            trace["output"] = output_traces[0]
         return logits, trace
 
 
@@ -745,6 +732,7 @@ def checkpoint_metadata(
     )
     metadata: Dict[str, object] = {
         "dataset": dataset,
+        "family_schema": "multi_layer_multi_head",
         "L": len(profile) + 1,
         "d_in_profile": derive_d_in_profile(in_dim, profile),
         "hidden_profile": profile,
@@ -768,8 +756,10 @@ def checkpoint_metadata(
         "degree_bound_id": "auto",
         "output_average_rule": OUTPUT_AVERAGE_RULE,
     }
+    metadata.update(canonical_checkpoint_semantics(dataset))
     if extra is not None:
         metadata.update(extra)
+    validate_checkpoint_metadata(metadata)
     return metadata
 
 
@@ -779,7 +769,7 @@ def load_checkpoint(
     *,
     map_location: torch.device | str | None = None,
 ) -> Dict[str, object]:
-    """Load a checkpoint while preserving the historical public interface."""
+    """Load one canonical structured formal checkpoint."""
     if device is not None and map_location is not None:
         raise ValueError("pass either device or map_location, not both")
     location = map_location if map_location is not None else device
@@ -790,9 +780,9 @@ def load_checkpoint(
     )
     if not isinstance(checkpoint, dict):
         raise ValueError(f"checkpoint at {path} must be a dict")
-    if not isinstance(checkpoint.get("bundle"), dict):
+    if "bundle" not in checkpoint or not isinstance(checkpoint["bundle"], dict):
         raise ValueError(f"checkpoint at {path} is missing bundle metadata")
-    if not isinstance(checkpoint.get("state_dict"), dict):
+    if "state_dict" not in checkpoint or not isinstance(checkpoint["state_dict"], dict):
         raise ValueError(f"checkpoint at {path} is missing state_dict")
     state = checkpoint["state_dict"]
     for key in state:
@@ -805,7 +795,12 @@ def load_checkpoint(
                 + str(key)
             )
     bundle = checkpoint["bundle"]
-    bundle_chain = bundle.get("quantization_scale_chain")
+    validate_checkpoint_metadata(bundle)
+    if bundle["family_schema"] != "multi_layer_multi_head":
+        raise ValueError("checkpoint family_schema is not canonical")
+    if bundle["L"] != 3 or bundle["K_out"] != 2:
+        raise ValueError("checkpoint must declare the canonical L=3 and K_out=2")
+    bundle_chain = bundle["quantization_scale_chain"]
     if not isinstance(bundle_chain, str) or not bundle_chain:
         raise ValueError(
             "checkpoint is missing the complete quantization_scale_chain; "
@@ -814,15 +809,15 @@ def load_checkpoint(
     try:
         profile = checkpoint_hidden_profile(bundle)
         chain = canonical_quantization_scale_chain(
-            str(bundle.get("quant_cfg_id", "")),
+            bundle["quant_cfg_id"],
             profile,
-            int(bundle.get("K_out", 0)),
+            bundle["K_out"],
         )
     except (KeyError, TypeError, ValueError) as error:
         raise ValueError("checkpoint quantization metadata is not canonical") from error
-    dataset = str(bundle.get("dataset", ""))
+    dataset = bundle["dataset"]
     expected_preprocess_id = canonical_input_preprocess_id(dataset)
-    if bundle.get("input_preprocess_id") != expected_preprocess_id:
+    if bundle["input_preprocess_id"] != expected_preprocess_id:
         raise ValueError(
             "checkpoint input_preprocess_id does not match its formal dataset"
         )
@@ -830,159 +825,107 @@ def load_checkpoint(
         raise ValueError(
             "checkpoint quantization_scale_chain does not match the canonical source"
         )
-    for field in ("hidden_head_specs", "output_head_specs"):
-        specs = bundle.get(field)
-        if isinstance(specs, list):
-            for spec in specs:
-                if isinstance(spec, dict) and any(
-                    name in spec for name in ("attn_src_bias", "attn_dst_bias")
-                ):
-                    raise ValueError(
-                        "bias-enabled attention checkpoint metadata is not accepted by the formal loader"
-                    )
     return checkpoint
 
 
 def checkpoint_hidden_profile(bundle: Mapping[str, object]) -> HiddenProfile:
-    raw = bundle.get("hidden_profile")
+    raw = bundle["hidden_profile"]
     if isinstance(raw, list) and raw:
         return normalize_hidden_profile(raw)
-    if "hidden_heads" in bundle and "hidden_dim" in bundle:
-        return normalize_hidden_profile(
-            [
-                {
-                    "head_count": int(bundle["hidden_heads"]),
-                    "head_dim": int(bundle["hidden_dim"]),
-                }
-            ]
-        )
-    raise ValueError("checkpoint metadata does not expose hidden_profile")
+    raise ValueError("checkpoint metadata must expose a non-empty hidden_profile")
 
 
 def structured_checkpoint_state(
     state: Mapping[str, torch.Tensor],
-    hidden_profile: Sequence[Mapping[str, object]],
-    k_out: int,
-    num_classes: int,
 ) -> Dict[str, torch.Tensor]:
-    """Normalize historical one-layer checkpoints for parity replay only."""
+    """Load the structured multi-layer checkpoint state for parity replay."""
     for key in state:
         if ("attn_src.bias" in key or "attn_dst.bias" in key or
                 "attn_src_bias" in key or "attn_dst_bias" in key):
             raise ValueError(
                 "bias-enabled attention checkpoint is not accepted by the formal loader"
             )
-    if any(key.startswith("hidden_layers.") for key in state):
-        return dict(state)
-    if not any(key.startswith("hidden_heads.") for key in state):
-        raise ValueError("checkpoint state_dict has no supported GAT layout")
-    profile = normalize_hidden_profile(hidden_profile)
-    if len(profile) != 1 or k_out != 1:
-        raise ValueError(
-            "legacy checkpoint layout only supports one hidden layer and K_out=1"
-        )
-    normalized: Dict[str, torch.Tensor] = {}
-    for key, value in state.items():
-        if key.startswith("hidden_heads."):
-            normalized[f"hidden_layers.0.heads.{key[len('hidden_heads.'):]}"] = value
-        elif key.startswith("output_head."):
-            normalized[f"output_heads.0.{key[len('output_head.'):]}"] = value
-        else:
-            raise ValueError(f"unsupported legacy state key: {key}")
-    normalized.setdefault(
-        "output_heads.0.output_bias",
-        torch.zeros(num_classes, dtype=next(iter(state.values())).dtype),
-    )
-    return normalized
+    if not state or any(
+        not key.startswith(("hidden_layers.", "output_heads."))
+        for key in state
+    ):
+        raise ValueError("checkpoint state_dict must expose only structured model keys")
+    return dict(state)
 
 
 def load_bundle_state(
     bundle_dir: pathlib.Path,
 ) -> Tuple[Dict[str, object], Dict[str, torch.Tensor]]:
-    manifest = json.loads(
-        (bundle_dir / "manifest.json").read_text(encoding="utf-8")
+    manifest = load_checkpoint_manifest(bundle_dir / "manifest.json")
+    validate_checkpoint_manifest(manifest)
+    tensor_map = validate_tensor_encodings(
+        manifest,
+        bundle_dir / "tensors.npz",
+        bundle_dir / "tensors.txt",
     )
-    manifest_chain = manifest.get("quantization_scale_chain")
+    manifest_chain = manifest["quantization_scale_chain"]
+    if manifest["family_schema"] != "multi_layer_multi_head":
+        raise ValueError("formal bundle family_schema is not canonical")
+    if manifest["L"] != 3 or manifest["K_out"] != 2:
+        raise ValueError("formal bundle must declare the canonical L=3 and K_out=2")
     if not isinstance(manifest_chain, str) or not manifest_chain:
         raise ValueError(
             "formal bundle is missing quantization_scale_chain; quant_cfg_id alone is insufficient"
         )
     expected_chain = canonical_quantization_scale_chain(
-        str(manifest.get("quant_cfg_id", "")),
-        manifest.get("hidden_profile"),
-        int(manifest.get("K_out", 0)),
+        manifest["quant_cfg_id"],
+        manifest["hidden_profile"],
+        manifest["K_out"],
     )
     if manifest_chain != expected_chain.canonical_serialization():
         raise ValueError("formal bundle quantization_scale_chain is not canonical")
-    dataset = str(manifest.get("dataset", ""))
+    dataset = manifest["dataset"]
     expected_preprocess_id = canonical_input_preprocess_id(dataset)
-    if manifest.get("input_preprocess_id") != expected_preprocess_id:
+    if manifest["input_preprocess_id"] != expected_preprocess_id:
         raise ValueError(
             "formal bundle input_preprocess_id does not match its dataset"
         )
-    for head in [*manifest.get("hidden_head_specs", []),
-                 *manifest.get("output_head_specs", [])]:
-        if not isinstance(head, dict):
-            raise ValueError("bundle head spec must be an object")
-        if any(key in head for key in ("attn_dst_bias", "attn_src_bias")):
-            raise ValueError(
-                "bias-enabled attention bundle is not accepted by the formal loader"
-            )
     hidden_profile = normalize_hidden_profile(manifest["hidden_profile"])
-    d_in_profile = [int(value) for value in manifest["d_in_profile"]]
+    d_in_profile = list(manifest["d_in_profile"])
     if len(d_in_profile) != len(hidden_profile):
         raise ValueError("bundle d_in_profile must align with hidden_profile")
-    k_out = int(manifest["K_out"])
-    num_classes = int(manifest["C"])
-    tensor_index = manifest["tensor_index"]
-    if any(
-        (
-            ("attn_src" in str(name) or "attn_dst" in str(name))
-            and (str(name).endswith("/bias") or str(name).endswith(".bias") or str(name).endswith("_bias"))
+    k_out = manifest["K_out"]
+    num_classes = manifest["C"]
+    def tensor(name: str) -> np.ndarray:
+        return tensor_map[name]
+
+    state: Dict[str, torch.Tensor] = {}
+    for head in manifest["hidden_head_specs"]:
+        layer_index = head["layer_index"]
+        local_head_index = head["local_head_index"]
+        prefix = f"hidden_layers.{layer_index}.heads.{local_head_index}"
+        seq = tensor(head["seq_kernel"])
+        state[f"{prefix}.seq.weight"] = torch.from_numpy(
+            seq.reshape(seq.shape[1], seq.shape[2]).T.copy()
         )
-        for name in tensor_index
-    ):
-        raise ValueError(
-            "bias-enabled attention tensor is not accepted by the formal bundle loader"
+        state[f"{prefix}.attn_dst.weight"] = torch.from_numpy(
+            tensor(head["attn_dst_kernel"]).reshape(1, -1)
+        )
+        state[f"{prefix}.attn_src.weight"] = torch.from_numpy(
+            tensor(head["attn_src_kernel"]).reshape(1, -1)
         )
 
-    with np.load(bundle_dir / "tensors.npz") as archive:
-        def tensor(name: str) -> np.ndarray:
-            key = tensor_index[name]["archive_key"]
-            return np.asarray(archive[key], dtype=np.float32).copy()
-
-        state: Dict[str, torch.Tensor] = {}
-        for head in manifest["hidden_head_specs"]:
-            layer_index = int(head["layer_index"])
-            local_head_index = int(head["local_head_index"])
-            prefix = f"hidden_layers.{layer_index}.heads.{local_head_index}"
-            seq = tensor(head["seq_kernel"])
-            state[f"{prefix}.seq.weight"] = torch.from_numpy(
-                seq.reshape(seq.shape[1], seq.shape[2]).T.copy()
-            )
-            state[f"{prefix}.attn_dst.weight"] = torch.from_numpy(
-                tensor(head["attn_dst_kernel"]).reshape(1, -1)
-            )
-            state[f"{prefix}.attn_src.weight"] = torch.from_numpy(
-                tensor(head["attn_src_kernel"]).reshape(1, -1)
-            )
-
-        for head in manifest["output_head_specs"]:
-            head_index = int(head["head_index"])
-            prefix = f"output_heads.{head_index}"
-            seq = tensor(head["seq_kernel"])
-            state[f"{prefix}.seq.weight"] = torch.from_numpy(
-                seq.reshape(seq.shape[1], seq.shape[2]).T.copy()
-            )
-            state[f"{prefix}.attn_dst.weight"] = torch.from_numpy(
-                tensor(head["attn_dst_kernel"]).reshape(1, -1)
-            )
-            state[f"{prefix}.attn_src.weight"] = torch.from_numpy(
-                tensor(head["attn_src_kernel"]).reshape(1, -1)
-            )
-            state[f"{prefix}.output_bias"] = torch.from_numpy(
-                tensor(head["output_bias"]).reshape(-1)
-            )
+    for head in manifest["output_head_specs"]:
+        head_index = head["head_index"]
+        prefix = f"output_heads.{head_index}"
+        seq = tensor(head["seq_kernel"])
+        state[f"{prefix}.seq.weight"] = torch.from_numpy(
+            seq.reshape(seq.shape[1], seq.shape[2]).T.copy()
+        )
+        state[f"{prefix}.attn_dst.weight"] = torch.from_numpy(
+            tensor(head["attn_dst_kernel"]).reshape(1, -1)
+        )
+        state[f"{prefix}.attn_src.weight"] = torch.from_numpy(
+            tensor(head["attn_src_kernel"]).reshape(1, -1)
+        )
+        state[f"{prefix}.output_bias"] = torch.from_numpy(
+            tensor(head["output_bias"]).reshape(-1)
+        )
 
     metadata = {
         "L": len(hidden_profile) + 1,
@@ -992,10 +935,10 @@ def load_bundle_state(
         "C": num_classes,
         "num_features": d_in_profile[0],
         "num_classes": num_classes,
-        "output_average_rule": manifest.get("output_average_rule"),
-        "quant_cfg_id": manifest.get("quant_cfg_id"),
+        "output_average_rule": manifest["output_average_rule"],
+        "quant_cfg_id": manifest["quant_cfg_id"],
         "quantization_scale_chain": manifest_chain,
-        "input_preprocess_id": manifest.get("input_preprocess_id"),
+        "input_preprocess_id": manifest["input_preprocess_id"],
     }
     return metadata, state
 
@@ -1017,7 +960,6 @@ def _numpy_trace(logits: torch.Tensor, trace: Dict[str, object]) -> Dict[str, ob
             {key: value.numpy() for key, value in head.items()}
             for head in trace["output_heads"]
         ],
-        "output_head_values": [value.numpy() for value in trace["output_head_values"]],
     }
 
 
@@ -1037,12 +979,6 @@ def _run_trace(
         )
     assert trace is not None
     result = _numpy_trace(logits, trace)
-    # Non-formal parity-only aliases; canonical consumers use hidden_layers and
-    # output_heads directly.
-    result["hidden_concat"] = result["hidden_layers"][-1]["concat"]
-    result["hidden_heads"] = result["hidden_layers"][0]["heads"]
-    if len(result["output_heads"]) == 1:
-        result["output"] = result["output_heads"][0]
     return result
 
 
@@ -1057,9 +993,9 @@ def run_trace_from_checkpoint(
     checkpoint = load_checkpoint(checkpoint_path, device)
     bundle = checkpoint["bundle"]
     hidden_profile = checkpoint_hidden_profile(bundle)
-    k_out = int(bundle.get("K_out", 1))
+    k_out = bundle["K_out"]
     chain = canonical_quantization_scale_chain(
-        str(bundle.get("quant_cfg_id", "")), hidden_profile, k_out
+        bundle["quant_cfg_id"], hidden_profile, k_out
     )
     tensors = load_dataset(
         data_root, dataset, device, cache_root=cache_root, chain=chain
@@ -1072,12 +1008,7 @@ def run_trace_from_checkpoint(
         quantization=chain,
     ).to(device)
     model.load_state_dict(
-        structured_checkpoint_state(
-            checkpoint["state_dict"],
-            hidden_profile,
-            k_out,
-            tensors.num_classes,
-        )
+        structured_checkpoint_state(checkpoint["state_dict"])
     )
     return _run_trace(model, tensors)
 
@@ -1092,9 +1023,9 @@ def run_trace_from_bundle(
 ) -> Dict[str, object]:
     bundle, state = load_bundle_state(bundle_dir)
     hidden_profile = bundle["hidden_profile"]
-    k_out = int(bundle["K_out"])
+    k_out = bundle["K_out"]
     chain = canonical_quantization_scale_chain(
-        str(bundle.get("quant_cfg_id", "")), hidden_profile, k_out
+        bundle["quant_cfg_id"], hidden_profile, k_out
     )
     tensors = load_dataset(
         data_root, dataset, device, cache_root=cache_root, chain=chain

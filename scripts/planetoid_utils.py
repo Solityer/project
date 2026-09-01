@@ -8,10 +8,7 @@ from typing import Dict, Iterable, List, Tuple
 import numpy as np
 import scipy.sparse as sp
 
-from quantization_scale_chain import (
-    ROW_NORMALIZE_INPUT_PREPROCESS_ID,
-    canonical_row_normalize,
-)
+from quantization_scale_chain import ROW_NORMALIZE_INPUT_PREPROCESS_ID
 
 
 def parse_index_file(path: pathlib.Path) -> List[int]:
@@ -89,14 +86,6 @@ def load_planetoid_dataset_with_masks(
     return features.tocsr(), labels, adjacency, train_mask, val_mask, test_mask
 
 
-def row_normalize_features(features: sp.csr_matrix) -> np.ndarray:
-    # Keep the public preprocessing in float64 until the canonical q/S
-    # boundary.  The formal C++ loader performs the same row normalization
-    # before applying S_input; float32 normalization here could move ties.
-    dense = features.toarray().astype(np.float64, copy=False)
-    return canonical_row_normalize(dense)
-
-
 def _read_cache_metadata(path: pathlib.Path) -> Dict[str, str]:
     if not path.is_file():
         raise FileNotFoundError(f"canonical Planetoid cache metadata is missing: {path}")
@@ -134,7 +123,7 @@ def load_canonical_planetoid_features(
         )
     if metadata.get("input_preprocess_id") != ROW_NORMALIZE_INPUT_PREPROCESS_ID:
         raise ValueError(
-            "canonical Planetoid cache is missing row_normalize_v1 producer identity"
+            "canonical Planetoid cache is missing row_normalize producer identity"
         )
     features_path = cache / "features.txt"
     if not features_path.is_file():

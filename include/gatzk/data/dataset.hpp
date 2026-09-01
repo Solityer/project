@@ -44,7 +44,7 @@ struct GraphDataset {
     std::vector<std::vector<algebra::FieldElement>> features;
     std::vector<int> labels;
     // PPI keeps the original 121-dimensional multi-hot target per node.  It
-    // must not be collapsed into the single-label compatibility vector above.
+    // must not be collapsed into the single-label target vector above.
     std::vector<std::vector<int>> labels_multi;
     std::vector<Edge> edges;
     std::size_t graph_count = 1;

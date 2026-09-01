@@ -2,15 +2,18 @@
 #include "gatzk/util/config.hpp"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
+#include <cctype>
 #include <cmath>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <future>
 #include <limits>
-#include <regex>
 #include <sstream>
 #include <stdexcept>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -31,179 +34,601 @@ namespace gatzk::model
             stream << input.rdbuf();
             return stream.str();
         }
-        std::size_t parse_required_size_t(const std::string &text, const std::string &key)
+        constexpr std::array<std::string_view, 31>
+            kCanonicalCheckpointManifestFields = {
+                "checkpoint_prefix",
+                "dataset",
+                "family_schema",
+                "output_average_rule",
+                "L",
+                "d_in_profile",
+                "hidden_profile",
+                "hidden_layers",
+                "hidden_head_specs",
+                "K_out",
+                "output_head_specs",
+                "C",
+                "task_type",
+                "report_unit",
+                "selection_metric",
+                "tensor_count",
+                "model_arch_id",
+                "model_param_id",
+                "input_preprocess_id",
+                "quant_cfg_id",
+                "quantization_scale_chain",
+                "static_table_id",
+                "degree_bound_id",
+                "batching_rule",
+                "subgraph_rule",
+                "self_loop_rule",
+                "edge_sort_rule",
+                "label_format",
+                "loss",
+                "split_format",
+                "tensor_index",
+            };
+
+        // The checkpoint manifest is a small, self-contained JSON document.
+        // Parsing it as an AST makes duplicate keys and nested type/shape
+        // mistakes fail before any field is consumed; substring extraction is
+        // deliberately not used for any manifest identity.
+        enum class JsonKind
         {
-            const std::regex pattern("\"" + key + "\"\\s*:\\s*([0-9]+)");
-            std::smatch match;
-            if (!std::regex_search(text, match, pattern))
+            Null,
+            Boolean,
+            Number,
+            String,
+            Array,
+            Object,
+        };
+
+        struct JsonValue
+        {
+            JsonKind kind = JsonKind::Null;
+            std::string scalar;
+            std::vector<JsonValue> array;
+            std::vector<std::pair<std::string, JsonValue>> object;
+        };
+
+        class JsonParser
+        {
+        public:
+            explicit JsonParser(const std::string &text) : text_(text) {}
+
+            JsonValue parse()
             {
-                throw std::runtime_error("missing numeric key in checkpoint manifest: " + key);
+                skip_whitespace();
+                JsonValue value = parse_value();
+                skip_whitespace();
+                if (position_ != text_.size())
+                    fail("checkpoint manifest has trailing data");
+                return value;
             }
-            return static_cast<std::size_t>(std::stoull(match[1].str()));
+
+        private:
+            [[noreturn]] void fail(const std::string &message) const
+            {
+                throw std::runtime_error(message + " at byte " + std::to_string(position_));
+            }
+
+            void skip_whitespace()
+            {
+                while (position_ < text_.size()
+                       && std::isspace(static_cast<unsigned char>(text_[position_])))
+                    ++position_;
+            }
+
+            bool consume(char expected)
+            {
+                skip_whitespace();
+                if (position_ < text_.size() && text_[position_] == expected)
+                {
+                    ++position_;
+                    return true;
+                }
+                return false;
+            }
+
+            JsonValue parse_value()
+            {
+                skip_whitespace();
+                if (position_ >= text_.size())
+                    fail("checkpoint manifest value is missing");
+                switch (text_[position_])
+                {
+                case '{':
+                    return parse_object();
+                case '[':
+                    return parse_array();
+                case '"':
+                {
+                    JsonValue value;
+                    value.kind = JsonKind::String;
+                    value.scalar = parse_string();
+                    return value;
+                }
+                case 't':
+                    parse_literal("true");
+                    return JsonValue{.kind = JsonKind::Boolean, .scalar = "true"};
+                case 'f':
+                    parse_literal("false");
+                    return JsonValue{.kind = JsonKind::Boolean, .scalar = "false"};
+                case 'n':
+                    parse_literal("null");
+                    return JsonValue{.kind = JsonKind::Null};
+                default:
+                    if (text_[position_] == '-' || std::isdigit(static_cast<unsigned char>(text_[position_])))
+                    {
+                        JsonValue value;
+                        value.kind = JsonKind::Number;
+                        value.scalar = parse_number();
+                        return value;
+                    }
+                    fail("malformed checkpoint manifest value");
+                }
+            }
+
+            void parse_literal(std::string_view literal)
+            {
+                if (text_.compare(position_, literal.size(), literal) != 0)
+                    fail("malformed checkpoint manifest literal");
+                position_ += literal.size();
+            }
+
+            std::string parse_string()
+            {
+                skip_whitespace();
+                if (position_ >= text_.size() || text_[position_] != '"')
+                    fail("checkpoint manifest string is missing");
+                ++position_;
+                std::string result;
+                while (position_ < text_.size())
+                {
+                    const unsigned char character = static_cast<unsigned char>(text_[position_++]);
+                    if (character == '"')
+                        return result;
+                    if (character < 0x20)
+                        fail("checkpoint manifest string contains a control byte");
+                    if (character != '\\')
+                    {
+                        result.push_back(static_cast<char>(character));
+                        continue;
+                    }
+                    if (position_ >= text_.size())
+                        fail("unterminated checkpoint manifest string");
+                    const char escaped = text_[position_++];
+                    switch (escaped)
+                    {
+                    case '"': result.push_back('"'); break;
+                    case '\\': result.push_back('\\'); break;
+                    case '/': result.push_back('/'); break;
+                    case 'b': result.push_back('\b'); break;
+                    case 'f': result.push_back('\f'); break;
+                    case 'n': result.push_back('\n'); break;
+                    case 'r': result.push_back('\r'); break;
+                    case 't': result.push_back('\t'); break;
+                    case 'u':
+                    {
+                        if (position_ + 4 > text_.size())
+                            fail("truncated checkpoint manifest unicode escape");
+                        unsigned value = 0;
+                        for (std::size_t index = 0; index < 4; ++index)
+                        {
+                            const char digit = text_[position_++];
+                            value <<= 4;
+                            if (digit >= '0' && digit <= '9') value |= static_cast<unsigned>(digit - '0');
+                            else if (digit >= 'a' && digit <= 'f') value |= static_cast<unsigned>(digit - 'a' + 10);
+                            else if (digit >= 'A' && digit <= 'F') value |= static_cast<unsigned>(digit - 'A' + 10);
+                            else fail("malformed checkpoint manifest unicode escape");
+                        }
+                        if (value > 0x7f)
+                            fail("checkpoint manifest must use ASCII canonical strings");
+                        result.push_back(static_cast<char>(value));
+                        break;
+                    }
+                    default:
+                        fail("malformed checkpoint manifest escape");
+                    }
+                }
+                fail("unterminated checkpoint manifest string");
+            }
+
+            std::string parse_number()
+            {
+                const std::size_t begin = position_;
+                if (text_[position_] == '-')
+                    ++position_;
+                if (position_ >= text_.size())
+                    fail("malformed checkpoint manifest number");
+                if (text_[position_] == '0')
+                {
+                    ++position_;
+                    if (position_ < text_.size() && std::isdigit(static_cast<unsigned char>(text_[position_])))
+                        fail("checkpoint manifest number has a leading zero");
+                }
+                else if (text_[position_] >= '1' && text_[position_] <= '9')
+                {
+                    while (position_ < text_.size() && std::isdigit(static_cast<unsigned char>(text_[position_])))
+                        ++position_;
+                }
+                else
+                    fail("malformed checkpoint manifest number");
+                if (position_ < text_.size() && text_[position_] == '.')
+                {
+                    ++position_;
+                    const auto fraction_begin = position_;
+                    while (position_ < text_.size() && std::isdigit(static_cast<unsigned char>(text_[position_])))
+                        ++position_;
+                    if (position_ == fraction_begin)
+                        fail("malformed checkpoint manifest fraction");
+                }
+                if (position_ < text_.size() && (text_[position_] == 'e' || text_[position_] == 'E'))
+                {
+                    ++position_;
+                    if (position_ < text_.size() && (text_[position_] == '+' || text_[position_] == '-'))
+                        ++position_;
+                    const auto exponent_begin = position_;
+                    while (position_ < text_.size() && std::isdigit(static_cast<unsigned char>(text_[position_])))
+                        ++position_;
+                    if (position_ == exponent_begin)
+                        fail("malformed checkpoint manifest exponent");
+                }
+                return text_.substr(begin, position_ - begin);
+            }
+
+            JsonValue parse_array()
+            {
+                JsonValue result;
+                result.kind = JsonKind::Array;
+                ++position_;
+                skip_whitespace();
+                if (consume(']'))
+                    return result;
+                while (true)
+                {
+                    result.array.push_back(parse_value());
+                    if (consume(']'))
+                        return result;
+                    if (!consume(','))
+                        fail("malformed checkpoint manifest array");
+                    skip_whitespace();
+                    if (position_ < text_.size() && text_[position_] == ']')
+                        fail("checkpoint manifest array has a trailing comma");
+                }
+            }
+
+            JsonValue parse_object()
+            {
+                JsonValue result;
+                result.kind = JsonKind::Object;
+                const bool top_level_object = object_depth_ == 0;
+                ++object_depth_;
+                ++position_;
+                skip_whitespace();
+                if (consume('}'))
+                {
+                    --object_depth_;
+                    return result;
+                }
+                std::unordered_set<std::string> seen;
+                while (true)
+                {
+                    const auto key = parse_string();
+                    if (!seen.insert(key).second)
+                    {
+                        if (top_level_object)
+                            throw std::runtime_error("checkpoint manifest contains duplicate top-level field: " + key);
+                        throw std::runtime_error("checkpoint manifest contains duplicate object field: " + key);
+                    }
+                    if (!consume(':'))
+                        fail("checkpoint manifest object field lacks a value: " + key);
+                    result.object.emplace_back(key, parse_value());
+                    if (consume('}'))
+                    {
+                        --object_depth_;
+                        return result;
+                    }
+                    if (!consume(','))
+                        fail("malformed checkpoint manifest object");
+                    skip_whitespace();
+                    if (position_ < text_.size() && text_[position_] == '}')
+                        fail("checkpoint manifest object has a trailing comma");
+                }
+            }
+
+            const std::string &text_;
+            std::size_t position_ = 0;
+            std::size_t object_depth_ = 0;
+        };
+
+        const JsonValue &require_object_field(
+            const JsonValue &object,
+            const std::string &key,
+            const std::string &label)
+        {
+            if (object.kind != JsonKind::Object)
+                throw std::runtime_error(label + " must be an object");
+            for (const auto &entry : object.object)
+                if (entry.first == key)
+                    return entry.second;
+            throw std::runtime_error(label + " is missing canonical field: " + key);
         }
 
-        std::vector<std::size_t> parse_required_size_array(
-            const std::string &text,
+        void require_exact_object_fields(
+            const JsonValue &object,
+            std::initializer_list<std::string_view> allowed,
+            const std::string &label)
+        {
+            if (object.kind != JsonKind::Object)
+                throw std::runtime_error(label + " must be an object");
+            std::unordered_set<std::string_view> allowed_set(allowed.begin(), allowed.end());
+            std::unordered_set<std::string> present;
+            for (const auto &entry : object.object)
+            {
+                if (!allowed_set.contains(entry.first))
+                {
+                    if ((entry.first == "attn_dst_bias" || entry.first == "attn_src_bias")
+                        && label.find("head_specs") != std::string::npos)
+                        throw std::runtime_error("bias-enabled attention field is not accepted in " + label);
+                    if (entry.first == "output_bias" && label.find("hidden_head_specs") != std::string::npos)
+                        throw std::runtime_error("hidden attention head must not carry output_bias manifest field");
+                    throw std::runtime_error(
+                        label + " contains unknown/non-canonical field: " + entry.first);
+                }
+                present.insert(entry.first);
+            }
+            for (const auto key : allowed)
+                if (!present.contains(std::string(key)))
+                    throw std::runtime_error(label + " is missing canonical field: " + std::string(key));
+        }
+
+        void validate_checkpoint_manifest_fields(const JsonValue &root)
+        {
+            if (root.kind != JsonKind::Object)
+                throw std::runtime_error("checkpoint manifest must be a JSON object");
+            std::unordered_set<std::string_view> allowed(
+                kCanonicalCheckpointManifestFields.begin(),
+                kCanonicalCheckpointManifestFields.end());
+            std::unordered_set<std::string> present;
+            for (const auto &entry : root.object)
+            {
+                if (!allowed.contains(entry.first))
+                    throw std::runtime_error(
+                        "checkpoint manifest contains unknown/non-canonical manifest field: "
+                        + entry.first);
+                present.insert(entry.first);
+            }
+            for (const auto field : kCanonicalCheckpointManifestFields)
+                if (!present.contains(std::string(field)))
+                    throw std::runtime_error(
+                        "checkpoint manifest is missing canonical field: " + std::string(field));
+
+            for (const auto field : {"checkpoint_prefix", "dataset", "family_schema", "output_average_rule",
+                                     "task_type", "report_unit", "selection_metric", "model_arch_id",
+                                     "model_param_id", "input_preprocess_id", "quant_cfg_id",
+                                     "quantization_scale_chain", "static_table_id", "degree_bound_id",
+                                     "batching_rule", "subgraph_rule", "self_loop_rule", "edge_sort_rule",
+                                     "label_format", "loss", "split_format"})
+            {
+                if (require_object_field(root, field, "checkpoint manifest").kind != JsonKind::String)
+                    throw std::runtime_error("checkpoint manifest field must be a string: " + std::string(field));
+            }
+
+            const auto d_in = require_object_field(root, "d_in_profile", "checkpoint manifest");
+            if (d_in.kind != JsonKind::Array || d_in.array.empty())
+                throw std::runtime_error("checkpoint manifest d_in_profile must be a non-empty array");
+            for (const auto &value : d_in.array)
+                if (value.kind != JsonKind::Number || value.scalar.empty() || value.scalar[0] == '-')
+                    throw std::runtime_error("checkpoint manifest d_in_profile must contain unsigned integers");
+
+            const auto validate_profile = [&root](const char *key)
+            {
+                const auto value = require_object_field(root, key, "checkpoint manifest");
+                if (value.kind != JsonKind::Array || value.array.empty())
+                    throw std::runtime_error(std::string("checkpoint manifest ") + key + " must be a non-empty array");
+                for (std::size_t index = 0; index < value.array.size(); ++index)
+                {
+                    require_exact_object_fields(
+                        value.array[index], {"head_count", "head_dim"},
+                        std::string("checkpoint manifest ") + key + "[" + std::to_string(index) + "]");
+                    for (const auto field : {"head_count", "head_dim"})
+                    {
+                        const auto member = require_object_field(value.array[index], field, key);
+                        if (member.kind != JsonKind::Number || member.scalar.empty() || member.scalar[0] == '-')
+                            throw std::runtime_error(std::string("checkpoint manifest ") + key + " entries must use unsigned integers");
+                    }
+                }
+            };
+            validate_profile("hidden_profile");
+
+            const auto layers = require_object_field(root, "hidden_layers", "checkpoint manifest");
+            if (layers.kind != JsonKind::Array || layers.array.empty())
+                throw std::runtime_error("checkpoint manifest hidden_layers must be a non-empty array");
+            for (std::size_t index = 0; index < layers.array.size(); ++index)
+            {
+                require_exact_object_fields(
+                    layers.array[index], {"layer_index", "input_dim", "head_count", "head_dim"},
+                    "checkpoint manifest hidden_layers[" + std::to_string(index) + "]");
+                for (const auto field : {"layer_index", "input_dim", "head_count", "head_dim"})
+                {
+                    const auto member = require_object_field(layers.array[index], field, "checkpoint manifest hidden_layers");
+                    if (member.kind != JsonKind::Number || member.scalar.empty() || member.scalar[0] == '-')
+                        throw std::runtime_error("checkpoint manifest hidden_layers entries must use unsigned integers");
+                }
+            }
+
+            const auto validate_head_array = [&root](const char *key, std::initializer_list<std::string_view> fields)
+            {
+                const auto heads = require_object_field(root, key, "checkpoint manifest");
+                if (heads.kind != JsonKind::Array || heads.array.empty())
+                    throw std::runtime_error(std::string("checkpoint manifest ") + key + " must be a non-empty array");
+                for (std::size_t index = 0; index < heads.array.size(); ++index)
+                {
+                    require_exact_object_fields(
+                        heads.array[index], fields,
+                        "checkpoint manifest " + std::string(key) + "[" + std::to_string(index) + "]");
+                    for (const auto &entry : heads.array[index].object)
+                    {
+                        if (entry.first == "layer_index" || entry.first == "local_head_index" || entry.first == "head_index")
+                        {
+                            if (entry.second.kind != JsonKind::Number || entry.second.scalar.empty() || entry.second.scalar[0] == '-')
+                                throw std::runtime_error("checkpoint manifest head indices must be unsigned integers");
+                        }
+                        else if (entry.second.kind != JsonKind::String || entry.second.scalar.empty())
+                            throw std::runtime_error("checkpoint manifest head tensor references must be non-empty strings");
+                    }
+                }
+            };
+            validate_head_array(
+                "hidden_head_specs",
+                {"layer_index", "local_head_index", "seq_kernel", "attn_dst_kernel", "attn_src_kernel"});
+            validate_head_array(
+                "output_head_specs",
+                {"head_index", "seq_kernel", "attn_dst_kernel", "attn_src_kernel", "output_bias"});
+
+            const auto tensor_index = require_object_field(root, "tensor_index", "checkpoint manifest");
+            if (tensor_index.kind != JsonKind::Object)
+                throw std::runtime_error("checkpoint manifest tensor_index must be an object");
+            for (const auto &entry : tensor_index.object)
+            {
+                if (entry.first.empty())
+                    throw std::runtime_error("checkpoint manifest tensor_index has an empty logical tensor name");
+                require_exact_object_fields(
+                    entry.second, {"archive_key", "dtype", "shape"},
+                    "checkpoint manifest tensor_index[" + entry.first + "]");
+                for (const auto field : {"archive_key", "dtype"})
+                {
+                    const auto member = require_object_field(entry.second, field, "checkpoint manifest tensor_index");
+                    if (member.kind != JsonKind::String || member.scalar.empty())
+                        throw std::runtime_error("checkpoint manifest tensor_index string field is invalid: " + std::string(field));
+                }
+                if (require_object_field(entry.second, "dtype", "checkpoint manifest tensor_index").scalar != "float32")
+                    throw std::runtime_error("checkpoint manifest tensor_index dtype must be float32");
+                const auto shape = require_object_field(entry.second, "shape", "checkpoint manifest tensor_index");
+                if (shape.kind != JsonKind::Array || shape.array.empty())
+                    throw std::runtime_error("checkpoint manifest tensor_index shape must be a non-empty array");
+                for (const auto &dimension : shape.array)
+                    if (dimension.kind != JsonKind::Number || dimension.scalar.empty() || dimension.scalar[0] == '-')
+                        throw std::runtime_error("checkpoint manifest tensor_index shape must contain unsigned integers");
+            }
+        }
+
+        void validate_checkpoint_manifest_fields(const std::string &text)
+        {
+            const auto root = JsonParser(text).parse();
+            validate_checkpoint_manifest_fields(root);
+        }
+
+        const JsonValue &json_field(
+            const JsonValue &root,
             const std::string &key)
         {
-            const std::regex pattern("\"" + key + "\"\\s*:\\s*\\[([^\\]]*)\\]");
-            std::smatch match;
-            if (!std::regex_search(text, match, pattern))
-            {
-                throw std::runtime_error(
-                    "missing array key in checkpoint manifest: " + key);
-            }
-            std::string body = match[1].str();
-            if (body.find_first_not_of("0123456789, \t\r\n") != std::string::npos)
-            {
-                throw std::runtime_error(
-                    "malformed numeric array in checkpoint manifest: " + key);
-            }
-            std::replace(body.begin(), body.end(), ',', ' ');
-            std::vector<std::size_t> out;
-            std::istringstream input(body);
-            std::size_t value = 0;
-            while (input >> value)
-            {
-                out.push_back(value);
-            }
-            if (out.empty())
-            {
-                throw std::runtime_error(
-                    "empty array in checkpoint manifest: " + key);
-            }
-            return out;
+            return require_object_field(root, key, "checkpoint manifest");
         }
 
-        std::string parse_required_string(const std::string &text, const std::string &key)
+        std::size_t json_unsigned(const JsonValue &value, const std::string &label)
         {
-            const std::regex pattern("\"" + key + "\"\\s*:\\s*\"([^\"]+)\"");
-            std::smatch match;
-            if (!std::regex_search(text, match, pattern))
+            if (value.kind != JsonKind::Number || value.scalar.empty()
+                || value.scalar.front() == '-'
+                || value.scalar.find_first_not_of("0123456789") != std::string::npos)
+                throw std::runtime_error(label + " must be an unsigned integer");
+            try
             {
-                throw std::runtime_error("missing string key in checkpoint manifest: " + key);
+                const auto parsed = std::stoull(value.scalar);
+                if (parsed > std::numeric_limits<std::size_t>::max())
+                    throw std::out_of_range("size_t");
+                return static_cast<std::size_t>(parsed);
             }
-            return match[1].str();
+            catch (const std::exception &)
+            {
+                throw std::runtime_error(label + " is outside the supported unsigned range");
+            }
         }
 
-        std::string extract_array_body(const std::string &text, const std::string &key)
+        std::string json_string(const JsonValue &value, const std::string &label)
         {
-            const auto key_pos = text.find("\"" + key + "\"");
-            if (key_pos == std::string::npos)
-            {
-                throw std::runtime_error("missing array key in checkpoint manifest: " + key);
-            }
-            const auto array_begin = text.find('[', key_pos);
-            if (array_begin == std::string::npos)
-            {
-                throw std::runtime_error("malformed array in checkpoint manifest: " + key);
-            }
-            std::size_t depth = 0;
-            for (std::size_t index = array_begin; index < text.size(); ++index)
-            {
-                if (text[index] == '[')
-                {
-                    ++depth;
-                }
-                else if (text[index] == ']')
-                {
-                    --depth;
-                    if (depth == 0)
-                    {
-                        return text.substr(array_begin + 1, index - array_begin - 1);
-                    }
-                }
-            }
-            throw std::runtime_error("unterminated array in checkpoint manifest: " + key);
+            if (value.kind != JsonKind::String || value.scalar.empty())
+                throw std::runtime_error(label + " must be a non-empty string");
+            return value.scalar;
         }
 
-        // 把一个对象数组拆成多个片段
-        std::vector<std::string> parse_object_array_entries(const std::string &text, const std::string &key)
+        std::vector<std::size_t> json_unsigned_array(const JsonValue &value, const std::string &label)
         {
-            const auto body = extract_array_body(text, key);
-            std::vector<std::string> entries;
-            std::size_t depth = 0;
-            std::size_t object_begin = std::string::npos;
-            for (std::size_t index = 0; index < body.size(); ++index)
+            if (value.kind != JsonKind::Array || value.array.empty())
+                throw std::runtime_error(label + " must be a non-empty array");
+            std::vector<std::size_t> result;
+            result.reserve(value.array.size());
+            for (std::size_t index = 0; index < value.array.size(); ++index)
             {
-                if (body[index] == '{')
-                {
-                    if (depth == 0)
-                    {
-                        object_begin = index;
-                    }
-                    ++depth;
-                }
-                else if (body[index] == '}')
-                {
-                    if (depth == 0)
-                    {
-                        throw std::runtime_error("malformed object array in checkpoint manifest: " + key);
-                    }
-                    --depth;
-                    if (depth == 0 && object_begin != std::string::npos)
-                    {
-                        entries.push_back(body.substr(object_begin, index - object_begin + 1));
-                        object_begin = std::string::npos;
-                    }
-                }
+                const auto dimension = json_unsigned(value.array[index], label + "[" + std::to_string(index) + "]");
+                if (dimension == 0)
+                    throw std::runtime_error(label + " must contain positive dimensions");
+                result.push_back(dimension);
             }
-            if (depth != 0)
-            {
-                throw std::runtime_error("unterminated object array in checkpoint manifest: " + key);
-            }
-            return entries;
+            return result;
         }
 
-        // 解析每层隐藏层的形状信息
-        CheckpointLayerInfo parse_checkpoint_layer_info(const std::string &entry)
+        CheckpointLayerInfo parse_checkpoint_layer_info(const JsonValue &entry, const std::string &label)
         {
-            CheckpointLayerInfo out;
-            out.layer_index = parse_required_size_t(entry, "layer_index");
-            out.input_dim = parse_required_size_t(entry, "input_dim");
-            out.shape.head_count = parse_required_size_t(entry, "head_count");
-            out.shape.head_dim = parse_required_size_t(entry, "head_dim");
-            return out;
-        }
-
-        HiddenLayerShape parse_checkpoint_layer_shape(const std::string &entry)
-        {
-            return HiddenLayerShape{
-                .head_count = parse_required_size_t(entry, "head_count"),
-                .head_dim = parse_required_size_t(entry, "head_dim"),
+            require_exact_object_fields(
+                entry, {"layer_index", "input_dim", "head_count", "head_dim"}, label);
+            return CheckpointLayerInfo{
+                .layer_index = json_unsigned(require_object_field(entry, "layer_index", label), label + ".layer_index"),
+                .input_dim = json_unsigned(require_object_field(entry, "input_dim", label), label + ".input_dim"),
+                .shape = HiddenLayerShape{
+                    .head_count = json_unsigned(require_object_field(entry, "head_count", label), label + ".head_count"),
+                    .head_dim = json_unsigned(require_object_field(entry, "head_dim", label), label + ".head_dim"),
+                },
             };
         }
 
-        // 解析隐藏头张量名
-        CheckpointHeadSpec parse_checkpoint_head_spec(const std::string &entry)
+        HiddenLayerShape parse_checkpoint_layer_shape(const JsonValue &entry, const std::string &label)
         {
-            if (entry.find("\"output_bias\"") != std::string::npos)
-            {
-                throw std::runtime_error(
-                    "hidden attention head must not carry output_bias manifest field");
-            }
-            CheckpointHeadSpec out;
-            out.layer_index = parse_required_size_t(entry, "layer_index");
-            out.local_head_index = parse_required_size_t(entry, "local_head_index");
-            // A flattened global index is optional legacy metadata.  Do not
-            // parse it as a required field and never use it for formal lookup;
-            // the layer/local pair above is the sole checkpoint identity.
-            out.seq_kernel = parse_required_string(entry, "seq_kernel");
-            out.attn_dst_kernel = parse_required_string(entry, "attn_dst_kernel");
-            out.attn_src_kernel = parse_required_string(entry, "attn_src_kernel");
-            return out;
+            require_exact_object_fields(entry, {"head_count", "head_dim"}, label);
+            return HiddenLayerShape{
+                .head_count = json_unsigned(require_object_field(entry, "head_count", label), label + ".head_count"),
+                .head_dim = json_unsigned(require_object_field(entry, "head_dim", label), label + ".head_dim"),
+            };
         }
 
-        // 解析隐藏层每个注意力头的张量名映射
-        CheckpointOutputHeadSpec parse_checkpoint_output_head_spec(const std::string &entry)
+        CheckpointHeadSpec parse_checkpoint_head_spec(const JsonValue &entry, const std::string &label)
         {
-            CheckpointOutputHeadSpec out;
-            out.head_index = parse_required_size_t(entry, "head_index");
-            out.seq_kernel = parse_required_string(entry, "seq_kernel");
-            out.attn_dst_kernel = parse_required_string(entry, "attn_dst_kernel");
-            out.attn_src_kernel = parse_required_string(entry, "attn_src_kernel");
-            out.output_bias = parse_required_string(entry, "output_bias");
-            return out;
+            require_exact_object_fields(
+                entry, {"layer_index", "local_head_index", "seq_kernel", "attn_dst_kernel", "attn_src_kernel"}, label);
+            return CheckpointHeadSpec{
+                .layer_index = json_unsigned(require_object_field(entry, "layer_index", label), label + ".layer_index"),
+                .local_head_index = json_unsigned(require_object_field(entry, "local_head_index", label), label + ".local_head_index"),
+                .seq_kernel = json_string(require_object_field(entry, "seq_kernel", label), label + ".seq_kernel"),
+                .attn_dst_kernel = json_string(require_object_field(entry, "attn_dst_kernel", label), label + ".attn_dst_kernel"),
+                .attn_src_kernel = json_string(require_object_field(entry, "attn_src_kernel", label), label + ".attn_src_kernel"),
+            };
+        }
+
+        CheckpointOutputHeadSpec parse_checkpoint_output_head_spec(const JsonValue &entry, const std::string &label)
+        {
+            require_exact_object_fields(
+                entry, {"head_index", "seq_kernel", "attn_dst_kernel", "attn_src_kernel", "output_bias"}, label);
+            return CheckpointOutputHeadSpec{
+                .head_index = json_unsigned(require_object_field(entry, "head_index", label), label + ".head_index"),
+                .seq_kernel = json_string(require_object_field(entry, "seq_kernel", label), label + ".seq_kernel"),
+                .attn_dst_kernel = json_string(require_object_field(entry, "attn_dst_kernel", label), label + ".attn_dst_kernel"),
+                .attn_src_kernel = json_string(require_object_field(entry, "attn_src_kernel", label), label + ".attn_src_kernel"),
+                .output_bias = json_string(require_object_field(entry, "output_bias", label), label + ".output_bias"),
+            };
+        }
+
+        CheckpointTensorInfo parse_checkpoint_tensor_info(const JsonValue &entry, const std::string &label)
+        {
+            require_exact_object_fields(entry, {"archive_key", "dtype", "shape"}, label);
+            const auto dtype = json_string(require_object_field(entry, "dtype", label), label + ".dtype");
+            if (dtype != "float32")
+                throw std::runtime_error(label + ".dtype must be float32");
+            return CheckpointTensorInfo{
+                .archive_key = json_string(require_object_field(entry, "archive_key", label), label + ".archive_key"),
+                .dtype = dtype,
+                .shape = json_unsigned_array(require_object_field(entry, "shape", label), label + ".shape"),
+            };
         }
 
         // 把各个维度乘起来
@@ -236,34 +661,30 @@ namespace gatzk::model
                 }
                 std::string name;
                 std::size_t rank = 0;
-                input >> name >> rank;
-                if ((name.find("attn_src") != std::string::npos ||
-                     name.find("attn_dst") != std::string::npos) &&
-                    (name.find("/bias") != std::string::npos ||
-                     name.find(".bias") != std::string::npos ||
-                     name.find("_bias") != std::string::npos))
-                {
-                    throw std::runtime_error(
-                        "bias-enabled attention tensor is not accepted by the formal checkpoint loader: " + name);
-                }
+                if (!(input >> name >> rank) || name.empty())
+                    throw std::runtime_error("malformed tensor dump header in " + path.string());
                 DenseTensor tensor;
                 tensor.shape.resize(rank);
                 for (std::size_t i = 0; i < rank; ++i)
                 {
-                    input >> tensor.shape[i];
+                    if (!(input >> tensor.shape[i]) || tensor.shape[i] == 0)
+                        throw std::runtime_error("malformed tensor dump shape for " + name);
                 }
                 std::size_t count = 0;
-                input >> count;
+                if (!(input >> count))
+                    throw std::runtime_error("malformed tensor dump count for " + name);
                 tensor.values.resize(count, 0.0);
                 for (std::size_t i = 0; i < count; ++i)
                 {
-                    input >> tensor.values[i];
+                    if (!(input >> tensor.values[i]) || !std::isfinite(tensor.values[i]))
+                        throw std::runtime_error("malformed tensor dump value for " + name);
                 }
                 if (count != shape_product(tensor.shape))
                 {
                     throw std::runtime_error("tensor dump count mismatch for " + name);
                 }
-                out.emplace(name, std::move(tensor));
+                if (!out.emplace(name, std::move(tensor)).second)
+                    throw std::runtime_error("checkpoint tensor dump contains duplicate tensor record: " + name);
             }
             return out;
         }
@@ -538,8 +959,8 @@ namespace gatzk::model
                     position;
             }
 
-            // The former implementation appended a missing self loop after
-            // all real incoming edges. Preserve that exact ordering.
+            // Append each required self loop after the real incoming edges;
+            // this is the canonical incoming-edge ordering.
             for (std::size_t dst = 0;
                  dst < node_count;
                  ++dst)
@@ -577,8 +998,8 @@ namespace gatzk::model
             // parallelize heads and keep each head internally serial.  For a
             // small head count, keep heads serial and parallelize independent
             // rows/edges inside each head.  This is a generic non-nested
-            // execution policy; formal model shape validation and the retained
-            // flattened compatibility view are handled by their callers.
+            // execution policy; formal model shape validation is handled by
+            // the caller.
             if (head_count >= 4 && hardware_workers >= 4)
             {
                 return ForwardHeadExecutionPlan{
@@ -910,8 +1331,7 @@ namespace gatzk::model
         // Full attention-head forward.
         //
         // The prepared graph layout and worker placement are execution-only.
-        // Every scalar keeps the same arithmetic/reduction ordering as the
-        // previous implementation.
+        // Every scalar keeps the same arithmetic/reduction ordering.
         HeadForwardTrace attention_head_forward_impl(
             const FloatMatrix &features,
             const std::vector<data::Edge> &edges,
@@ -988,7 +1408,7 @@ namespace gatzk::model
             // 2. E_dst / E_src.
             //
             // Both vectors scan the same H' row. Their individual summation
-            // order remains identical to the former two matvec calls.
+            // order remains identical for both attention-vector reductions.
             trace.E_dst.assign(node_count, 0.0);
             trace.E_src.assign(node_count, 0.0);
 
@@ -1072,8 +1492,8 @@ namespace gatzk::model
                     0.0));
 
             // One temporary value per real-or-synthetic incoming edge.
-            // The previous implementation evaluated this identical exp()
-            // repeatedly in Sum, aggregation and edge materialization.
+            // Reuse one exp() value in Sum, aggregation and edge
+            // materialization.
             std::vector<double>
                 incoming_exp(
                     graph->incoming_sources.size(),
@@ -1332,55 +1752,61 @@ namespace gatzk::model
             throw std::runtime_error("checkpoint bundle manifest not found: " + manifest_path.string());
         }
         const auto manifest = load_text_file(manifest_path);
-        for (const auto *legacy_key : {
-                 "attn_src_bias", "attn_dst_bias", "attn_src/bias",
-                 "attn_dst/bias", "attn_src.bias", "attn_dst.bias"})
-        {
-            if (manifest.find(legacy_key) != std::string::npos)
-            {
-                throw std::runtime_error(
-                    "bias-enabled attention checkpoint manifest is not accepted by the formal loader: " +
-                    std::string(legacy_key));
-            }
-        }
+        const auto root = JsonParser(manifest).parse();
+        validate_checkpoint_manifest_fields(root);
 
         CheckpointBundleInfo info;
         info.bundle_root = bundle_root;
-        info.dataset = parse_required_string(manifest, "dataset");
-        info.family_schema_version = parse_required_string(manifest, "family_schema_version");
-        info.output_average_rule = parse_required_string(manifest, "output_average_rule");
-        info.model_arch_id = parse_required_string(manifest, "model_arch_id");
-        info.model_param_id = parse_required_string(manifest, "model_param_id");
-        info.input_preprocess_id =
-            parse_required_string(manifest, "input_preprocess_id");
-        info.quant_cfg_id = parse_required_string(manifest, "quant_cfg_id");
-        info.quantization_scale_chain =
-            parse_required_string(manifest, "quantization_scale_chain");
-        info.static_table_id = parse_required_string(manifest, "static_table_id");
-        info.degree_bound_id = parse_required_string(manifest, "degree_bound_id");
-        info.layer_count = parse_required_size_t(manifest, "L");
-        info.output_head_count = parse_required_size_t(manifest, "K_out");
-        info.class_count = parse_required_size_t(manifest, "C");
-        info.d_in_profile = parse_required_size_array(manifest, "d_in_profile");
+        info.dataset = json_string(json_field(root, "dataset"), "checkpoint manifest.dataset");
+        info.family_schema = json_string(json_field(root, "family_schema"), "checkpoint manifest.family_schema");
+        if (info.family_schema != "multi_layer_multi_head")
+        {
+            throw std::runtime_error(
+                "checkpoint manifest family_schema is not canonical");
+        }
+        info.output_average_rule = json_string(json_field(root, "output_average_rule"), "checkpoint manifest.output_average_rule");
+        info.model_arch_id = json_string(json_field(root, "model_arch_id"), "checkpoint manifest.model_arch_id");
+        info.model_param_id = json_string(json_field(root, "model_param_id"), "checkpoint manifest.model_param_id");
+        info.input_preprocess_id = json_string(json_field(root, "input_preprocess_id"), "checkpoint manifest.input_preprocess_id");
+        info.quant_cfg_id = json_string(json_field(root, "quant_cfg_id"), "checkpoint manifest.quant_cfg_id");
+        info.quantization_scale_chain = json_string(json_field(root, "quantization_scale_chain"), "checkpoint manifest.quantization_scale_chain");
+        info.static_table_id = json_string(json_field(root, "static_table_id"), "checkpoint manifest.static_table_id");
+        info.degree_bound_id = json_string(json_field(root, "degree_bound_id"), "checkpoint manifest.degree_bound_id");
+        info.layer_count = json_unsigned(json_field(root, "L"), "checkpoint manifest.L");
+        info.output_head_count = json_unsigned(json_field(root, "K_out"), "checkpoint manifest.K_out");
+        info.class_count = json_unsigned(json_field(root, "C"), "checkpoint manifest.C");
+        info.tensor_count = json_unsigned(json_field(root, "tensor_count"), "checkpoint manifest.tensor_count");
+        info.d_in_profile = json_unsigned_array(json_field(root, "d_in_profile"), "checkpoint manifest.d_in_profile");
 
-        // 每层的形状摘要
-        for (const auto &entry : parse_object_array_entries(manifest, "hidden_layers"))
+        const auto layers = json_field(root, "hidden_layers");
+        for (std::size_t index = 0; index < layers.array.size(); ++index)
+            info.hidden_layers.push_back(parse_checkpoint_layer_info(
+                layers.array[index], "checkpoint manifest.hidden_layers[" + std::to_string(index) + "]"));
+        const auto profile = json_field(root, "hidden_profile");
+        for (std::size_t index = 0; index < profile.array.size(); ++index)
+            info.hidden_profile.push_back(parse_checkpoint_layer_shape(
+                profile.array[index], "checkpoint manifest.hidden_profile[" + std::to_string(index) + "]"));
+        const auto hidden_heads = json_field(root, "hidden_head_specs");
+        for (std::size_t index = 0; index < hidden_heads.array.size(); ++index)
+            info.hidden_head_specs.push_back(parse_checkpoint_head_spec(
+                hidden_heads.array[index], "checkpoint manifest.hidden_head_specs[" + std::to_string(index) + "]"));
+        const auto output_heads = json_field(root, "output_head_specs");
+        for (std::size_t index = 0; index < output_heads.array.size(); ++index)
+            info.output_head_specs.push_back(parse_checkpoint_output_head_spec(
+                output_heads.array[index], "checkpoint manifest.output_head_specs[" + std::to_string(index) + "]"));
+
+        const auto tensor_index = json_field(root, "tensor_index");
+        std::unordered_set<std::string> archive_keys;
+        for (const auto &entry : tensor_index.object)
         {
-            info.hidden_layers.push_back(parse_checkpoint_layer_info(entry));
+            auto tensor_info = parse_checkpoint_tensor_info(
+                entry.second, "checkpoint manifest.tensor_index[" + entry.first + "]");
+            if (!archive_keys.insert(tensor_info.archive_key).second)
+                throw std::runtime_error("checkpoint manifest tensor_index archive_key is not unique: " + tensor_info.archive_key);
+            info.tensor_index.emplace(entry.first, std::move(tensor_info));
         }
-        for (const auto &entry : parse_object_array_entries(manifest, "hidden_profile"))
-        {
-            info.hidden_profile.push_back(parse_checkpoint_layer_shape(entry));
-        }
-        // 每个头对应的张量名字
-        for (const auto &entry : parse_object_array_entries(manifest, "hidden_head_specs"))
-        {
-            info.hidden_head_specs.push_back(parse_checkpoint_head_spec(entry));
-        }
-        for (const auto &entry : parse_object_array_entries(manifest, "output_head_specs"))
-        {
-            info.output_head_specs.push_back(parse_checkpoint_output_head_spec(entry));
-        }
+        if (info.tensor_count != info.tensor_index.size())
+            throw std::runtime_error("checkpoint manifest tensor_count conflicts with tensor_index");
         info.has_output_attention_head = info.output_head_count > 0;
         return info;
     }
@@ -1395,9 +1821,10 @@ namespace gatzk::model
         {
             failures.push_back("L=" + std::to_string(info.layer_count) + " but checkpoint manifest must expose L >= 2");
         }
-        if (info.family_schema_version.empty())
+        if (info.family_schema != "multi_layer_multi_head")
         {
-            failures.push_back("checkpoint manifest must expose non-empty family_schema_version");
+            failures.push_back(
+                "checkpoint manifest family_schema must be multi_layer_multi_head");
         }
         if (info.output_average_rule != "per_head_bias_then_arithmetic_mean")
         {
@@ -1479,11 +1906,7 @@ namespace gatzk::model
             failures.push_back(
                 "checkpoint manifest must expose complete quantization_scale_chain");
         }
-        // The manifest's global_head_index is a legacy serialization aid only.
-        // Formal identity is always the pair (layer_index, local_head_index).
-        // Validate that every layer/local pair occurs exactly once; never infer
-        // a formal head from the flattened/global position.
-        std::size_t flattened_hidden_heads = 0;
+        std::size_t hidden_head_total = 0;
         for (std::size_t layer_index = 0; layer_index < info.hidden_layers.size(); ++layer_index)
         {
             const auto &layer = info.hidden_layers[layer_index];
@@ -1518,7 +1941,7 @@ namespace gatzk::model
                         "hidden_layers[" + std::to_string(layer_index) + "].input_dim conflicts with previous concat width");
                 }
             }
-            flattened_hidden_heads += layer.shape.head_count;
+            hidden_head_total += layer.shape.head_count;
 
             std::vector<bool> seen_local_heads(layer.shape.head_count, false);
             std::size_t local_head_count = 0;
@@ -1547,10 +1970,10 @@ namespace gatzk::model
                     "hidden_head_specs layer-local count conflicts with hidden_layers[" + std::to_string(layer_index) + "].head_count");
             }
         }
-        if (flattened_hidden_heads != info.hidden_head_specs.size())
+        if (hidden_head_total != info.hidden_head_specs.size())
         {
             failures.push_back(
-                "hidden_head_specs size=" + std::to_string(info.hidden_head_specs.size()) + " conflicts with hidden_layers head counts=" + std::to_string(flattened_hidden_heads));
+                "hidden_head_specs size=" + std::to_string(info.hidden_head_specs.size()) + " conflicts with hidden_layers head counts=" + std::to_string(hidden_head_total));
         }
         for (std::size_t head_index = 0;
              head_index < info.output_head_specs.size(); ++head_index)
@@ -1616,6 +2039,12 @@ namespace gatzk::model
             throw std::runtime_error("checkpoint bundle tensor dump not found: " + tensor_path.string());
         }
         const auto tensors = load_text_tensors(tensor_path);
+        if (tensors.size() != manifest_info.tensor_count)
+        {
+            throw std::runtime_error(
+                "checkpoint tensor dump count conflicts with manifest tensor_count; "
+                "checkpoint tensor dump contains an unreferenced tensor or missing record");
+        }
         std::unordered_set<std::string> referenced_tensor_names;
         const auto register_tensor_name =
             [&referenced_tensor_names](const std::string &name)
@@ -1639,6 +2068,25 @@ namespace gatzk::model
             register_tensor_name(head_spec.attn_src_kernel);
             register_tensor_name(head_spec.output_bias);
         }
+        if (manifest_info.tensor_index.size() != referenced_tensor_names.size())
+        {
+            throw std::runtime_error(
+                "checkpoint manifest tensor_index count does not match referenced tensors");
+        }
+        for (const auto &name : referenced_tensor_names)
+        {
+            const auto metadata_it = manifest_info.tensor_index.find(name);
+            if (metadata_it == manifest_info.tensor_index.end())
+                throw std::runtime_error(
+                    "checkpoint manifest tensor_index is missing referenced tensor: " + name);
+            const auto tensor_it = tensors.find(name);
+            if (tensor_it == tensors.end())
+                throw std::runtime_error(
+                    "checkpoint tensor dump is missing indexed tensor: " + name);
+            if (tensor_it->second.shape != metadata_it->second.shape)
+                throw std::runtime_error(
+                    "checkpoint tensor dump shape conflicts with tensor_index: " + name);
+        }
         for (const auto &[name, tensor] : tensors)
         {
             (void)tensor;
@@ -1648,10 +2096,12 @@ namespace gatzk::model
                     "checkpoint tensor dump contains an unreferenced tensor; formal loader rejects hidden/extra parameters: " +
                     name);
             }
+            if (!manifest_info.tensor_index.contains(name))
+                throw std::runtime_error(
+                    "checkpoint tensor dump contains an unindexed tensor: " + name);
         }
 
         ModelParameters out;
-        out.has_real_multihead = true;
         out.model_arch_id = manifest_info.model_arch_id;
         out.model_param_id = manifest_info.model_param_id;
         out.input_preprocess_id = manifest_info.input_preprocess_id;
@@ -1663,14 +2113,9 @@ namespace gatzk::model
         out.d_in_profile = manifest_info.d_in_profile;
         out.hidden_profile = manifest_info.hidden_profile;
         out.K_out = manifest_info.output_head_count;
-        // Keep this flat vector solely for checkpoint/parity compatibility.
-        // The formal model is built in hidden_layers and indexed by the
-        // (layer, local_head) pair below.
-        out.hidden_heads.reserve(manifest_info.hidden_head_specs.size());
         out.hidden_layers.reserve(manifest_info.hidden_layers.size());
 
-        // Reconstruct each layer in canonical layer -> local-head order.  The
-        // legacy global index is intentionally not consulted for identity.
+        // Reconstruct each layer in canonical layer -> local-head order.
         for (const auto &layer_info : manifest_info.hidden_layers)
         {
             HiddenLayerParameters layer;
@@ -1707,7 +2152,6 @@ namespace gatzk::model
                     throw std::runtime_error(
                         "hidden attention head must not carry output_bias");
                 }
-                out.hidden_heads.push_back(layer.heads.back());
             }
             if (layer.heads.size() != layer.shape.head_count)
             {
@@ -1733,7 +2177,7 @@ namespace gatzk::model
                 head_spec.attn_src_kernel,
                 &head_spec.output_bias));
         }
-        if (out.hidden_heads.empty())
+        if (out.hidden_layers.empty())
         {
             throw std::runtime_error("checkpoint bundle does not contain hidden attention heads");
         }
@@ -1772,15 +2216,9 @@ namespace gatzk::model
         const ModelParameters &parameters,
         ForwardProfile *profile)
     {
-        if (!parameters.has_real_multihead)
-        {
-            throw std::runtime_error(
-                "forward_note_style requires real multi-head checkpoint parameters");
-        }
-
         MultiHeadForwardTrace trace;
 
-        // H is part of the retained compatibility trace.
+        // H is the canonical input matrix for the nested forward trace.
         trace.H = features;
 
         ForwardGraphLayout graph_layout;
@@ -1798,13 +2236,6 @@ namespace gatzk::model
         trace.hidden_layer_traces.reserve(
             parameters.hidden_layers.size());
 
-        std::size_t formal_hidden_head_count = 0;
-        for (const auto &layer : parameters.hidden_layers)
-            formal_hidden_head_count += layer.heads.size();
-        // Reserve the compatibility view from the nested family.  The view is
-        // not consumed by formal trace, quotient, prover, verifier, or codec.
-        trace.hidden_head_traces.reserve(formal_hidden_head_count);
-
         const FloatMatrix *layer_input =
             &trace.H;
 
@@ -1815,9 +2246,8 @@ namespace gatzk::model
             HiddenLayerForwardTrace
                 layer_trace;
 
-            // This retained copy is required by MultiHeadForwardTrace.
-            // Use it directly for all heads instead of creating an additional
-            // transient layer_input matrix.
+            // Use the retained layer input directly for all heads instead of
+            // creating an additional transient matrix.
             layer_trace.input =
                 *layer_input;
 
@@ -1882,16 +2312,6 @@ namespace gatzk::model
                 }
             }
 
-            // Preserve the flattened compatibility view in canonical
-            // layer/head order. No protocol consumer sees the execution order.
-            for (const auto &head_trace :
-                 layer_trace.head_traces)
-            {
-                trace.hidden_head_traces
-                    .push_back(
-                        head_trace);
-            }
-
             if (profile != nullptr)
             {
                 const auto concat_start =
@@ -1934,18 +2354,6 @@ namespace gatzk::model
                      .hidden_layer_traces
                      .back()
                      .concat;
-        }
-
-        if (!trace.hidden_layer_traces.empty())
-        {
-            // Compatibility field stores only the final hidden concat. The old
-            // implementation copied every intermediate concat into this field
-            // and immediately overwrote it on the next layer.
-            trace.hidden_concat =
-                trace
-                    .hidden_layer_traces
-                    .back()
-                    .concat;
         }
 
         // 2. Output heads.
@@ -2015,24 +2423,6 @@ namespace gatzk::model
             }
         }
 
-        // Preserve existing public compatibility views, but populate them
-        // directly from the retained output-head traces. The former path first
-        // copied every matrix into temporary output_pre_bias/output_values and
-        // then copied output_values again into this field.
-        trace.output_head_values.reserve(
-            trace.output_head_traces.size());
-
-        for (const auto &head_trace :
-             trace.output_head_traces)
-        {
-            trace.output_head_values
-                .push_back(
-                    head_trace.H_agg);
-        }
-
-        trace.output_head_trace =
-            trace.output_head_traces.front();
-
         // Same head order and same per-element arithmetic as before.
         trace.Y_lin =
             average_head_outputs(
@@ -2052,17 +2442,13 @@ namespace gatzk::model
     bool supports_current_formal_proof_shape(const ModelParameters &parameters)
     {
         std::string reason;
-        return parameters.has_real_multihead && hidden_family_dimension_chain_is_valid(parameters, &reason);
+        return hidden_family_dimension_chain_is_valid(parameters, &reason);
     }
 
     // 检查多层多头的维度链是不是前后对得上
     bool hidden_family_dimension_chain_is_valid(const ModelParameters &parameters, std::string *reason)
     {
         std::vector<std::string> failures;
-        if (!parameters.has_real_multihead)
-        {
-            failures.push_back("formal family proof requires has_real_multihead=true");
-        }
         if (parameters.L < 2)
         {
             failures.push_back("L must be >= 2");
@@ -2174,12 +2560,6 @@ namespace gatzk::model
         {
             failures.push_back("L conflicts with hidden layer family size");
         }
-        // This check covers only the retained checkpoint/parity flattening;
-        // formal trace/proof code never indexes hidden_heads by this count.
-        if (flattened_hidden_head_count(parameters) != parameters.hidden_heads.size())
-        {
-            failures.push_back("hidden_heads compatibility view must flatten all hidden layers");
-        }
         if (reason != nullptr && !failures.empty())
         {
             std::ostringstream stream;
@@ -2194,18 +2574,6 @@ namespace gatzk::model
             *reason = stream.str();
         }
         return failures.empty();
-    }
-
-    // Count the compatibility view; this is never used to identify a formal
-    // hidden head, whose identity is always (layer, local_head).
-    std::size_t flattened_hidden_head_count(const ModelParameters &parameters)
-    {
-        std::size_t count = 0;
-        for (const auto &layer : parameters.hidden_layers)
-        {
-            count += layer.heads.size();
-        }
-        return count;
     }
 
     // 所有隐藏层里，最大的输入宽度

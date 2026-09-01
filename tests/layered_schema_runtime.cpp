@@ -52,14 +52,14 @@ namespace
     CheckpointBundleInfo synthetic_info()
     {
         CheckpointBundleInfo info;
-        info.family_schema_version = "multi_layer_multi_head_v2";
+        info.family_schema = "multi_layer_multi_head";
         info.output_average_rule = "per_head_bias_then_arithmetic_mean";
         info.dataset = "cora";
-        info.input_preprocess_id = "row_normalize_v1";
+        info.input_preprocess_id = "row_normalize";
         info.model_arch_id = "synthetic_layered_arch";
         info.model_param_id = "synthetic_layered_params";
         info.quant_cfg_id = "synthetic_quant";
-        info.quantization_scale_chain = "synthetic_chain_v1";
+        info.quantization_scale_chain = "synthetic_chain";
         info.layer_count = 3;
         info.d_in_profile = {5, 6};
         info.hidden_profile = {{2, 3}, {2, 3}};
@@ -87,31 +87,62 @@ namespace
 
     void write_manifest(
         const std::filesystem::path &path,
-        bool global_only,
-        bool legacy_attention_bias = false,
-        bool hidden_output_bias = false)
+        bool omit_head_coordinates = false,
+        bool forbidden_attention_bias = false,
+        bool hidden_output_bias = false,
+        const char *unexpected_field = nullptr,
+        const char *family_schema = "multi_layer_multi_head",
+        const char *omit_field = nullptr,
+        const char *duplicate_field = nullptr)
     {
         std::ofstream manifest(path);
         expect(manifest.good(), "unable to create synthetic manifest");
         const auto canonical_chain =
             gatzk::util::canonical_quantization_scale_chain(
-                "gat_l3_scale_chain_v1",
+                "gat_l3_scale_chain",
                 std::vector<HiddenLayerProfile>{{8, 8}, {8, 8}},
                 2)
                 .canonical_serialization();
         manifest << R"({
-  "family_schema_version": "multi_layer_multi_head_v2",
-  "output_average_rule": "per_head_bias_then_arithmetic_mean",
+  "checkpoint_prefix": "synthetic_checkpoint.pt",
+  "family_schema": ")"
+                  << family_schema
+                  << R"(",
+)";
+        if (unexpected_field != nullptr)
+        {
+            manifest << "  \"" << unexpected_field << "\": 1,\n";
+        }
+        manifest << R"(  "output_average_rule": "per_head_bias_then_arithmetic_mean",
   "dataset": "cora",
-  "input_preprocess_id": "row_normalize_v1",
+  "input_preprocess_id": "row_normalize",
   "model_arch_id": "synthetic_layered_arch",
   "model_param_id": "synthetic_layered_params",
-  "quant_cfg_id": "gat_l3_scale_chain_v1",
+  "quant_cfg_id": "gat_l3_scale_chain",
   "quantization_scale_chain": ")"
                   << canonical_chain
                   << R"(",
   "static_table_id": "synthetic_tables",
   "degree_bound_id": "synthetic_degree",
+)"
+                  << ((omit_field == nullptr || std::string(omit_field) != "batching_rule")
+                          ? "  \"batching_rule\": \"whole_graph_single\",\n"
+                          : "")
+                  << R"(  "subgraph_rule": "whole_graph",
+)"
+                  << ((duplicate_field != nullptr)
+                          ? std::string("  \"") + duplicate_field + "\": 1,\n"
+                          : std::string{})
+                  << R"(  "self_loop_rule": "per_node",
+  "edge_sort_rule": "edge_gid_then_dst_stable",
+  "label_format": "class_index",
+  "loss": "CrossEntropyLoss",
+  "split_format": "node_masks",
+  "task_type": "transductive_node_classification",
+  "report_unit": "node",
+  "selection_metric": "validation_loss",
+  "tensor_count": 0,
+  "tensor_index": {},
   "L": 3,
   "K_out": 2,
   "C": 1,
@@ -135,14 +166,7 @@ namespace
                     manifest << ",\n";
                 }
                 manifest << "    {";
-                if (global_only)
-                {
-                    // This fixture intentionally has only the retired global
-                    // identity so the production parser must reject it.
-                    manifest << "\"global_head_index\": "
-                             << (layer_index * 8 + local_head_index) << ", ";
-                }
-                else
+                if (!omit_head_coordinates)
                 {
                     manifest << "\"layer_index\": " << layer_index
                              << ", \"local_head_index\": " << local_head_index << ", ";
@@ -153,7 +177,7 @@ namespace
                 manifest << "\"seq_kernel\": \"" << tensor_prefix << "/seq\","
                          << " \"attn_dst_kernel\": \"" << tensor_prefix << "/dst\","
                          << " \"attn_src_kernel\": \"" << tensor_prefix << "/src\"";
-                if (legacy_attention_bias)
+                if (forbidden_attention_bias)
                 {
                     manifest << ", \"attn_dst_bias\": \"db\"";
                 }
@@ -294,17 +318,6 @@ int main()
         expect(gatzk::model::checkpoint_bundle_matches_formal_proof_shape(valid, &reason),
                "synthetic pair-indexed checkpoint shape must pass: " + reason);
 
-        auto global_only = valid;
-        global_only.hidden_head_specs.clear();
-        for (std::size_t index = 0; index < 16; ++index)
-        {
-            CheckpointHeadSpec spec;
-            spec.global_head_index = index;
-            global_only.hidden_head_specs.push_back(spec);
-        }
-        expect(!gatzk::model::checkpoint_bundle_matches_formal_proof_shape(global_only, &reason),
-               "global-only checkpoint head metadata must fail closed");
-
         const auto suffix = std::to_string(
             std::chrono::steady_clock::now().time_since_epoch().count());
         const auto temp_root = std::filesystem::temp_directory_path()
@@ -315,8 +328,8 @@ int main()
         expect(canonical_manifest.good(), "unable to reopen canonical synthetic manifest");
         const std::string canonical_manifest_text(
             std::istreambuf_iterator<char>(canonical_manifest), {});
-        expect(canonical_manifest_text.find("global_head_index") == std::string::npos,
-               "canonical pair manifest must omit global_head_index");
+        expect(canonical_manifest_text.find("local_head_index") != std::string::npos,
+               "canonical manifest must carry local head coordinates");
         const auto parsed = gatzk::model::inspect_checkpoint_bundle(temp_root.string());
         expect(parsed.hidden_head_specs.size() == 16,
                "pair-indexed manifest parser count mismatch");
@@ -328,8 +341,55 @@ int main()
         expect(gatzk::model::checkpoint_bundle_matches_formal_proof_shape(parsed, &reason),
                "parsed canonical pair manifest must pass formal shape validation: " + reason);
 
+        write_manifest(
+            temp_root / "manifest.json",
+            false,
+            false,
+            false,
+            nullptr,
+            "multi_layer_multi_head",
+            nullptr,
+            "batching_rule");
+        bool rejected_duplicate_manifest_field = false;
+        try
+        {
+            (void)gatzk::model::inspect_checkpoint_bundle(temp_root.string());
+        }
+        catch (const std::exception &error)
+        {
+            rejected_duplicate_manifest_field =
+                std::string(error.what()).find("duplicate top-level field")
+                != std::string::npos;
+        }
+        expect(
+            rejected_duplicate_manifest_field,
+            "duplicate checkpoint manifest field must be rejected");
+
+        write_manifest(
+            temp_root / "manifest.json",
+            false,
+            false,
+            false,
+            nullptr,
+            "multi_layer_multi_head",
+            "batching_rule");
+        bool rejected_missing_manifest_field = false;
+        try
+        {
+            (void)gatzk::model::inspect_checkpoint_bundle(temp_root.string());
+        }
+        catch (const std::exception &error)
+        {
+            rejected_missing_manifest_field =
+                std::string(error.what()).find("missing canonical field")
+                != std::string::npos;
+        }
+        expect(
+            rejected_missing_manifest_field,
+            "missing checkpoint manifest field must be rejected");
+
         const auto scale_chain = gatzk::util::canonical_quantization_scale_chain(
-            "gat_l3_scale_chain_v1",
+            "gat_l3_scale_chain",
             std::vector<HiddenLayerProfile>{{8, 8}, {8, 8}},
             2);
         expect(scale_chain.s_input == 16 && scale_chain.s_delta == 256
@@ -361,7 +421,7 @@ int main()
         try
         {
             (void)gatzk::util::canonical_quantization_scale_chain(
-                "legacy_id", std::vector<HiddenLayerProfile>{{8, 8}, {8, 8}}, 2);
+                "unsupported_id", std::vector<HiddenLayerProfile>{{8, 8}, {8, 8}}, 2);
         }
         catch (const std::exception &error)
         {
@@ -450,17 +510,17 @@ int main()
                "hidden output-bias tensor not referenced by the manifest must fail closed");
 
         write_manifest(temp_root / "manifest.json", true);
-        bool rejected_global_only = false;
+        bool rejected_missing_head_coordinates = false;
         try
         {
             (void)gatzk::model::inspect_checkpoint_bundle(temp_root.string());
         }
         catch (const std::exception &error)
         {
-            rejected_global_only = std::string(error.what()).find("layer_index") != std::string::npos;
+            rejected_missing_head_coordinates = std::string(error.what()).find("layer_index") != std::string::npos;
         }
-        expect(rejected_global_only,
-               "global-only manifest must be rejected before formal lookup");
+        expect(rejected_missing_head_coordinates,
+               "manifest missing head coordinates must be rejected before formal lookup");
 
         write_manifest(temp_root / "manifest.json", false, true);
         bool rejected_attention_bias = false;
@@ -489,6 +549,50 @@ int main()
         }
         expect(rejected_hidden_output_bias,
                "hidden output_bias manifest field must be rejected before formal lookup");
+
+        write_manifest(
+            temp_root / "manifest.json",
+            false,
+            false,
+            false,
+            "unexpected_manifest_field");
+        bool rejected_unexpected_field = false;
+        try
+        {
+            (void)gatzk::model::inspect_checkpoint_bundle(temp_root.string());
+        }
+        catch (const std::exception &error)
+        {
+            rejected_unexpected_field =
+                std::string(error.what()).find(
+                    "unknown/non-canonical manifest field")
+                != std::string::npos;
+        }
+        expect(
+            rejected_unexpected_field,
+            "unexpected checkpoint manifest field must be rejected");
+
+        write_manifest(
+            temp_root / "manifest.json",
+            false,
+            false,
+            false,
+            nullptr,
+            "unsupported_family");
+        bool rejected_noncanonical_family = false;
+        try
+        {
+            (void)gatzk::model::inspect_checkpoint_bundle(temp_root.string());
+        }
+        catch (const std::exception &error)
+        {
+            rejected_noncanonical_family =
+                std::string(error.what()).find("family_schema")
+                != std::string::npos;
+        }
+        expect(
+            rejected_noncanonical_family,
+            "checkpoint manifest with a non-canonical family_schema must be rejected");
 
         std::error_code cleanup_error;
         std::filesystem::remove_all(temp_root, cleanup_error);

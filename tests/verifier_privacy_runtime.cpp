@@ -104,7 +104,7 @@ namespace
         artifact.registry.registry_id = "runtime-registry";
         artifact.registry.model_arch_id = "runtime-arch";
         artifact.registry.model_param_id = "runtime-params";
-        artifact.registry.input_preprocess_id = "row_normalize_v1";
+        artifact.registry.input_preprocess_id = "row_normalize";
         artifact.registry.quant_cfg_id = "runtime-quant";
         artifact.registry.static_table_id = "runtime-tables";
         artifact.registry.srs_id = "runtime-srs";
@@ -112,12 +112,12 @@ namespace
         artifact.registry.srs_protocol_compiler_artifact_hash =
             std::string(64, 'a');
         artifact.config.dataset = "cora";
-        artifact.config.input_preprocess_id = "row_normalize_v1";
+        artifact.config.input_preprocess_id = "row_normalize";
         artifact.dataset.name = "cora";
-        artifact.dataset.input_preprocess_id = "row_normalize_v1";
+        artifact.dataset.input_preprocess_id = "row_normalize";
         artifact.local.name = "cora_normalized";
-        artifact.local.input_preprocess_id = "row_normalize_v1";
-        artifact.model.input_preprocess_id = "row_normalize_v1";
+        artifact.local.input_preprocess_id = "row_normalize";
+        artifact.model.input_preprocess_id = "row_normalize";
 
         artifact.domains.fh =
             gatzk::algebra::RootOfUnityDomain::create("FH", 1);
@@ -152,33 +152,12 @@ int main()
     {
         const auto point = gatzk::crypto::g1_zero();
 
-        // A public point copied from a proving context must not retain its
-        // opening polynomial or alias the source map.
-        gatzk::protocol::ProtocolContext proving_context;
-        gatzk::crypto::Commitment public_commitment;
-        public_commitment.name = "public";
-        public_commitment.point = point;
-        public_commitment.opening_polynomial = std::make_shared<const gatzk::algebra::Polynomial>(
-            gatzk::algebra::Polynomial::from_coefficients(
-                "private-opening",
-                {gatzk::algebra::FieldElement::one()}));
-        proving_context.public_commitments.emplace(
-            public_commitment.name,
-            public_commitment);
-        auto verifier_inputs =
-            gatzk::protocol::make_verifier_public_inputs(proving_context);
-        proving_context.public_commitments.clear();
-        expect(verifier_inputs.public_commitments.size() == 1,
-               "public point copy was not independent");
-        expect(verifier_inputs.public_commitments.at("public").point == point,
-               "public point changed after proving-context mutation");
-
         // Canonical registry serialization binds ordered metadata and points.
         gatzk::protocol::AuthenticatedVerifierRegistry registry;
         registry.registry_id = "registry";
         registry.model_arch_id = "arch";
         registry.model_param_id = "params";
-        registry.input_preprocess_id = "row_normalize_v1";
+        registry.input_preprocess_id = "row_normalize";
         registry.quant_cfg_id = "quant";
         registry.static_table_id = "tables";
         registry.srs_id = "srs";
@@ -194,10 +173,10 @@ int main()
         expect(digest != registry.canonical_digest(),
                "registry canonical digest did not bind SRS compiler artifact hash");
         registry.srs_protocol_compiler_artifact_hash = std::string(64, 'a');
-        registry.input_preprocess_id = "ogbn_arxiv_raw_float32_v1";
+        registry.input_preprocess_id = "ogbn_arxiv_raw_float32";
         expect(digest != registry.canonical_digest(),
                "registry canonical digest did not bind input preprocessing identity");
-        registry.input_preprocess_id = "row_normalize_v1";
+        registry.input_preprocess_id = "row_normalize";
         registry.model_entries.push_back({
             .label = "model_l0_h0_w0",
             .domain = "in",
@@ -215,7 +194,10 @@ int main()
         gatzk::crypto::Commitment leaking_commitment;
         leaking_commitment.name = "leaking";
         leaking_commitment.point = point;
-        leaking_commitment.opening_polynomial = public_commitment.opening_polynomial;
+        leaking_commitment.opening_polynomial = std::make_shared<const gatzk::algebra::Polynomial>(
+            gatzk::algebra::Polynomial::from_coefficients(
+                "private-opening",
+                {gatzk::algebra::FieldElement::one()}));
         proof.dynamic_commitments.emplace_back(
             leaking_commitment.name,
             leaking_commitment);
@@ -246,7 +228,7 @@ int main()
                 == std::string(64, 'a'),
             "verifier registration codec lost SRS compiler artifact hash");
         expect(
-            parsed_registration.registry.input_preprocess_id == "row_normalize_v1",
+            parsed_registration.registry.input_preprocess_id == "row_normalize",
             "verifier registration codec lost input preprocessing identity");
         expect(
             parsed_registration.public_commitments.size() == 1
@@ -254,7 +236,7 @@ int main()
             "verifier registration codec lost point-only public ownership");
 
         auto single_byte_tamper = registration_bytes;
-        single_byte_tamper[16] ^= 0x01U;
+        single_byte_tamper[12] ^= 0x01U;
         expect_rejected(single_byte_tamper, "single-byte artifact tamper");
 
         auto trailing_tamper = registration_bytes;
@@ -265,12 +247,12 @@ int main()
         expect_rejected(trailing_tamper, "artifact trailing byte");
 
         auto noncanonical_tamper = registration_bytes;
-        write_u32(&noncanonical_tamper, 16, 2);
+        write_u32(&noncanonical_tamper, 12, 2);
         refresh_digest(&noncanonical_tamper);
         expect_rejected(noncanonical_tamper, "non-canonical section order");
 
         auto compiler_tamper = registration_bytes;
-        std::size_t cursor = 16;
+        std::size_t cursor = 12;
         std::size_t compiler_payload = 0;
         for (std::uint32_t section = 1; section <= 12; ++section)
         {
@@ -325,10 +307,6 @@ int main()
                 && owned_copy.public_commitments.size() == 1,
             "parsed verifier registration aliases mutable source ownership");
 
-        expect(!gatzk::protocol::validate_verifier_context(verifier_inputs),
-               "incomplete verifier context was accepted");
-        expect(!gatzk::protocol::verify(verifier_inputs, proof, nullptr),
-               "invalid verifier context reached cryptographic verifier");
         std::cout << "verifier_privacy_runtime: PASS\n";
         return 0;
     }

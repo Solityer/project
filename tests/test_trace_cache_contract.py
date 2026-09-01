@@ -7,7 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 trace = (ROOT / "src/protocol/trace.cpp").read_text(encoding="utf-8")
 
-assert '"zkgat:trace-cache-identity:v2"' in trace
+assert '"zkgat:trace-cache-identity"' in trace
 assert 'return "sha256:" + sha256_hex(bytes);' in trace
 assert "context.compiler_artifact->instance_canonical_bytes" in trace
 assert "context.local.public_input" in trace

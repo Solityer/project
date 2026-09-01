@@ -83,28 +83,20 @@ namespace gatzk::protocol
             }
         }
 
-        std::size_t hidden_head_width(const model::ModelParameters &parameters, const util::AppConfig &config)
+        std::size_t hidden_head_width(const model::ModelParameters &parameters)
         {
-            if (parameters.has_real_multihead)
-            {
-                return model::max_hidden_head_dim(parameters);
-            }
-            return config.hidden_dim;
+            return model::max_hidden_head_dim(parameters);
         }
 
-        std::size_t concat_width(const model::ModelParameters &parameters, const util::AppConfig &config)
+        std::size_t concat_width(const model::ModelParameters &parameters)
         {
-            if (parameters.has_real_multihead)
-            {
-                return model::max_hidden_concat_width(parameters);
-            }
-            return config.hidden_dim;
+            return model::max_hidden_concat_width(parameters);
         }
 
-        std::string hidden_profile_string(const model::ModelParameters &parameters, const util::AppConfig &config)
+        std::string hidden_profile_string(const model::ModelParameters &parameters)
         {
             std::ostringstream out;
-            if (parameters.has_real_multihead && !parameters.hidden_profile.empty())
+            if (!parameters.hidden_profile.empty())
             {
                 for (std::size_t i = 0; i < parameters.hidden_profile.size(); ++i)
                 {
@@ -116,8 +108,7 @@ namespace gatzk::protocol
                 }
                 return out.str();
             }
-            out << "1x" << config.hidden_dim;
-            return out.str();
+            throw std::runtime_error("model hidden_profile must be non-empty");
         }
 
 
@@ -423,7 +414,7 @@ namespace gatzk::protocol
         metadata.model_arch = !context.config.model_arch_id.empty()
                                   ? context.config.model_arch_id
                                   : ("L=" + std::to_string(context.model.L)
-                                     + "|hidden=" + hidden_profile_string(context.model, context.config)
+                                     + "|hidden=" + hidden_profile_string(context.model)
                                      + "|K_out=" + std::to_string(context.model.K_out)
                                      + "|C=" + std::to_string(context.local.num_classes)
                                      + "|bias=per_output_head|average=signed_round_div");
@@ -475,7 +466,7 @@ namespace gatzk::protocol
                        << (!context.config.static_table_id.empty()
                                ? context.config.static_table_id
                                : "tables=lrelu,elu,exp,range")
-                       << "|generator=deterministic-v1";
+                       << "|generator=deterministic";
         for (const auto *label : {
                  "V_T_H", "V_T_L_x", "V_T_L_y", "V_T_ELU_x", "V_T_ELU_y",
                  "V_T_exp_x", "V_T_exp_y", "V_T_range"})
@@ -496,7 +487,7 @@ namespace gatzk::protocol
         }
         metadata.quant_config =
             context.config.quant_cfg_id + "|" + quantization_serialization
-            + "|integer_bound_ledger=v1|entries="
+            + "|integer_bound_ledger|entries="
             + std::to_string(compiler_artifact.integer_bound_ledger.size())
             + "|sha256="
             + sha256_hex(integer_bound_ledger_canonical_bytes(
@@ -511,13 +502,13 @@ namespace gatzk::protocol
             + ",node_ptr=" + size_vector_string(context.local.node_ptr)
             + ",edge_ptr=" + size_vector_string(context.local.edge_ptr)
             + ",d_in=" + std::to_string(context.local.num_features)
-            + ",d_h=" + std::to_string(hidden_head_width(context.model, context.config))
-            + ",d_cat=" + std::to_string(concat_width(context.model, context.config))
+            + ",d_h=" + std::to_string(hidden_head_width(context.model))
+            + ",d_cat=" + std::to_string(concat_width(context.model))
             + ",C=" + std::to_string(context.local.num_classes)
             + ",B=" + std::to_string(context.config.range_bits)
             + ",K_out=" + std::to_string(context.model.K_out);
         metadata.encoding =
-            "wire=v2|u64=le|field=canonical-le32|point=canonical-compressed"
+            "wire|u64=le|field=canonical-le32|point=canonical-compressed"
             "|transcript=sha256-hash-chain|strings=type-tagged-u64-length"
             "|hash_suite=sha256|hash_to_field=rejection-counter-u32";
         metadata.padding_rule =
@@ -995,89 +986,6 @@ namespace gatzk::protocol
     {
         // 这里返回的是 proof 中动态承诺的正式顺序。
         // family 形状越宽，标签数量越多，最终 proof_size_bytes 也会随之增加。
-        // Non-formal legacy single-head compatibility labels.  The formal
-        // context builder rejects that representation before this registry is
-        // used for artifact or transcript construction.
-        if (!context.model.has_real_multihead)
-        {
-            return {
-                "P_H",
-                "P_Table_feat",
-                "P_Query_feat",
-                "P_m_feat",
-                "P_R_feat",
-                "P_H_prime",
-                "P_a_proj",
-                "P_b_proj",
-                "P_Acc_proj",
-                "P_E_src",
-                "P_E_dst",
-                "P_H_star",
-                "P_a_src",
-                "P_b_src",
-                "P_Acc_src",
-                "P_a_dst",
-                "P_b_dst",
-                "P_Acc_dst",
-                "P_a_star",
-                "P_b_star",
-                "P_Acc_star",
-                "P_E_src_edge",
-                "P_H_src_star_edge",
-                "P_Table_src",
-                "P_Query_src",
-                "P_m_src",
-                "P_R_src_node",
-                "P_R_src",
-                "P_S",
-                "P_Z",
-                "P_Table_L",
-                "P_Query_L",
-                "P_m_L",
-                "P_R_L",
-                "P_M",
-                "P_M_edge",
-                "P_Delta",
-                "P_s_max",
-                "P_C_max",
-                "P_Table_R",
-                "P_Query_R",
-                "P_m_R",
-                "P_R_R",
-                "P_U",
-                "P_Sum",
-                "P_inv",
-                "P_alpha",
-                "P_Table_exp",
-                "P_Query_exp",
-                "P_m_exp",
-                "P_R_exp",
-                "P_H_agg",
-                "P_H_agg_star",
-                "P_a_agg",
-                "P_b_agg",
-                "P_Acc_agg",
-                "P_E_dst_edge",
-                "P_Sum_edge",
-                "P_inv_edge",
-                "P_H_agg_star_edge",
-                "P_Table_dst",
-                "P_Query_dst",
-                "P_m_dst",
-                "P_R_dst_node",
-                "P_R_dst",
-                "P_v_hat",
-                "P_w_psq",
-                "P_T_psq_edge",
-                "P_PSQ",
-                "P_Y_lin",
-                "P_Y",
-                "P_a_out",
-                "P_b_out",
-                "P_Acc_out",
-            };
-        }
-
         std::vector<std::string> labels = {
             "P_H",
             "P_Table_feat",
@@ -1148,17 +1056,8 @@ namespace gatzk::protocol
 
     std::vector<std::string> quotient_commitment_labels(const ProtocolContext &context)
     {
-        std::vector<std::string> quotient_labels;
-        if (context.model.has_real_multihead)
-        {
-            quotient_labels = {"t_FH", "t_edge", "t_in", "t_d_h", "t_cat", "t_C", "t_N"};
-        }
-        else
-        {
-            // Non-formal legacy quotient names; the formal context builder
-            // rejects this single-head representation before registration.
-            quotient_labels = {"t_FH", "t_edge", "t_in", "t_d", "t_N"};
-        }
+        const std::vector<std::string> quotient_labels = {
+            "t_FH", "t_edge", "t_in", "t_d_h", "t_cat", "t_C", "t_N"};
         std::vector<std::string> labels;
         labels.reserve(quotient_labels.size() * 2);
         for (const auto &label : quotient_labels)
@@ -1237,7 +1136,7 @@ namespace gatzk::protocol
         {
             throw std::runtime_error("public logits shape mismatch");
         }
-        crypto::Transcript transcript("zkgat-public-output-v1");
+        crypto::Transcript transcript("zkgat-public-output");
         absorb_public_metadata(transcript, metadata);
         transcript.absorb_scalar("public_output.N", algebra::FieldElement(node_count));
         transcript.absorb_scalar("public_output.C", algebra::FieldElement(class_count));
@@ -1262,10 +1161,8 @@ namespace gatzk::protocol
         const auto dynamic_labels = dynamic_commitment_labels(context);
         const auto quotient_labels = quotient_commitment_labels(context);
 
-        if (context.model.has_real_multihead)
-        {
-            crypto::Transcript transcript("gatzkml");
-            std::map<std::string, algebra::FieldElement> out;
+        crypto::Transcript transcript("gatzkml");
+        std::map<std::string, algebra::FieldElement> out;
 
             auto replay_signed_division = [&](const std::string &division_prefix)
             {
@@ -2024,169 +1921,7 @@ namespace gatzk::protocol
             for (const auto &[label, point] :
                  derive_domain_opening_challenges(context, transcript))
                 out[label] = point;
-            return out;
-        }
-
-        crypto::Transcript transcript("gatzkml");
-        std::map<std::string, algebra::FieldElement> out;
-
-        if (proof_metadata != nullptr)
-        {
-            absorb_public_metadata(transcript, *proof_metadata);
-        }
-        else
-        {
-            absorb_public_metadata(transcript, canonical_public_metadata(context));
-        }
-        transcript.absorb_scalar("N", algebra::FieldElement(context.local.num_nodes));
-        transcript.absorb_scalar("E", algebra::FieldElement(context.local.edges.size()));
-        transcript.absorb_scalar("d_in", algebra::FieldElement(context.local.num_features));
-        transcript.absorb_scalar("d", algebra::FieldElement(context.config.hidden_dim));
-        transcript.absorb_scalar("C", algebra::FieldElement(context.local.num_classes));
-        transcript.absorb_scalar("B", algebra::FieldElement(context.config.range_bits));
-        absorb_public(transcript, context, "P_I");
-        absorb_public(transcript, context, "P_src");
-        absorb_public(transcript, context, "P_dst");
-        absorb_public(transcript, context, "P_node_gid");
-        absorb_public(transcript, context, "P_edge_gid");
-        absorb_public(transcript, context, "P_Q_graph_new_edge");
-        absorb_public(transcript, context, "P_Q_graph_end_edge");
-        absorb_public(transcript, context, "P_Q_grp_new_edge");
-        absorb_public(transcript, context, "P_Q_grp_end_edge");
-        absorb_public(transcript, context, "P_Q_edge_valid");
-        absorb_public(transcript, context, "P_Q_N");
-        // Non-formal legacy single-head transcript only.  build_context rejects
-        // this model shape before proof work, so these historical labels never
-        // enter the formal schema/artifact/transcript.
-        absorb_public(transcript, context, "P_Q_proj_valid");
-        absorb_public(transcript, context, "P_Q_d_valid");
-        absorb(transcript, "P_H", dynamic_commitments);
-        absorb_static(transcript, context, "V_T_H");
-        out["eta_feat"] = transcript.challenge("eta_feat");
-        out["beta_feat"] = transcript.challenge("beta_feat");
-
-        absorb(transcript, "P_H", dynamic_commitments);
-        absorb(transcript, "P_H_prime", dynamic_commitments);
-        absorb_static(transcript, context, "V_W");
-        out["y_proj"] = transcript.challenge("y_proj");
-
-        absorb(transcript, "P_H_prime", dynamic_commitments);
-        out["xi"] = transcript.challenge("xi");
-
-        absorb(transcript, "P_H_prime", dynamic_commitments);
-        absorb(transcript, "P_E_src", dynamic_commitments);
-        absorb_static(transcript, context, "V_a_src");
-        out["y_src"] = transcript.challenge("y_src");
-
-        absorb(transcript, "P_H_prime", dynamic_commitments);
-        absorb(transcript, "P_E_dst", dynamic_commitments);
-        absorb_static(transcript, context, "V_a_dst");
-        out["y_dst"] = transcript.challenge("y_dst");
-
-        absorb(transcript, "P_H_prime", dynamic_commitments);
-        absorb(transcript, "P_H_star", dynamic_commitments);
-        out["y_star"] = transcript.challenge("y_star");
-
-        absorb(transcript, "P_E_src", dynamic_commitments);
-        absorb(transcript, "P_H_star", dynamic_commitments);
-        out["eta_src"] = transcript.challenge("eta_src");
-        out["beta_src"] = transcript.challenge("beta_src");
-
-        absorb(transcript, "P_S", dynamic_commitments);
-        absorb(transcript, "P_Z", dynamic_commitments);
-        absorb_static(transcript, context, "V_T_L_x");
-        absorb_static(transcript, context, "V_T_L_y");
-        out["eta_L"] = transcript.challenge("eta_L");
-        out["beta_L"] = transcript.challenge("beta_L");
-
-        absorb(transcript, "P_M", dynamic_commitments);
-        absorb(transcript, "P_M_edge", dynamic_commitments);
-        absorb(transcript, "P_Delta", dynamic_commitments);
-        absorb_static(transcript, context, "V_T_range");
-        out["beta_R"] = transcript.challenge("beta_R");
-
-        absorb(transcript, "P_Delta", dynamic_commitments);
-        absorb(transcript, "P_U", dynamic_commitments);
-        absorb_static(transcript, context, "V_T_exp_x");
-        absorb_static(transcript, context, "V_T_exp_y");
-        out["eta_exp"] = transcript.challenge("eta_exp");
-        out["beta_exp"] = transcript.challenge("beta_exp");
-
-        absorb(transcript, "P_H_agg", dynamic_commitments);
-        absorb(transcript, "P_H_agg_star", dynamic_commitments);
-        out["y_agg"] = transcript.challenge("y_agg");
-
-        absorb(transcript, "P_E_dst", dynamic_commitments);
-        absorb(transcript, "P_M", dynamic_commitments);
-        absorb(transcript, "P_Sum", dynamic_commitments);
-        absorb(transcript, "P_inv", dynamic_commitments);
-        absorb(transcript, "P_H_agg_star", dynamic_commitments);
-        absorb(transcript, "P_E_dst_edge", dynamic_commitments);
-        absorb(transcript, "P_M_edge", dynamic_commitments);
-        absorb(transcript, "P_Sum_edge", dynamic_commitments);
-        absorb(transcript, "P_inv_edge", dynamic_commitments);
-        absorb(transcript, "P_H_agg_star_edge", dynamic_commitments);
-        out["eta_dst"] = transcript.challenge("eta_dst");
-        out["beta_dst"] = transcript.challenge("beta_dst");
-
-        absorb(transcript, "P_U", dynamic_commitments);
-        absorb(transcript, "P_alpha", dynamic_commitments);
-        absorb(transcript, "P_H_src_star_edge", dynamic_commitments);
-        absorb(transcript, "P_Sum", dynamic_commitments);
-        absorb(transcript, "P_H_agg_star", dynamic_commitments);
-        absorb(transcript, "P_H_agg_star_edge", dynamic_commitments);
-        absorb(transcript, "P_v_hat", dynamic_commitments);
-        out["lambda_psq"] = transcript.challenge("lambda_psq");
-
-        absorb(transcript, "P_H_agg", dynamic_commitments);
-        absorb(transcript, "P_Y_lin", dynamic_commitments);
-        absorb(transcript, "P_Y", dynamic_commitments);
-        absorb_static(transcript, context, "V_W_out");
-        absorb_static(transcript, context, "V_b");
-        out["y_out"] = transcript.challenge("y_out");
-
-        for (const auto &label : dynamic_labels)
-        {
-            absorb(transcript, label, dynamic_commitments);
-        }
-        for (const auto &label : {
-                 std::string("V_T_H"),
-                 std::string("V_T_L_x"),
-                 std::string("V_T_L_y"),
-                 std::string("V_T_exp_x"),
-                 std::string("V_T_exp_y"),
-                 std::string("V_T_range"),
-                 std::string("V_W"),
-                 std::string("V_a_src"),
-                 std::string("V_a_dst"),
-                 std::string("V_W_out"),
-                 std::string("V_b"),
-             })
-        {
-            absorb_static(transcript, context, label);
-        }
-        out["alpha_quot"] = transcript.challenge("alpha_quot");
-
-        if (quotient_commitments.empty())
-        {
-            return out;
-        }
-
-        for (const auto &label : quotient_labels)
-        {
-            absorb(transcript, label, quotient_commitments);
-        }
-        out["z_FH"] = transcript.challenge("z_FH");
-        out["z_edge"] = transcript.challenge("z_edge");
-        out["z_in"] = transcript.challenge("z_in");
-        out["z_d"] = transcript.challenge("z_d");
-        out["z_N"] = transcript.challenge("z_N");
-        out["v_FH"] = transcript.challenge("v_FH");
-        out["v_edge"] = transcript.challenge("v_edge");
-        out["v_in"] = transcript.challenge("v_in");
-        out["v_d"] = transcript.challenge("v_d");
-        out["v_N"] = transcript.challenge("v_N");
-        out["rho_ext"] = transcript.challenge("rho_ext");
         return out;
+
     }
 }

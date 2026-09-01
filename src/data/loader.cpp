@@ -384,7 +384,7 @@ namespace gatzk::data
                 if (!meta.contains("label_format") ||
                     !meta.contains("split_format") ||
                     meta.at("label_format") != "multi_hot" ||
-                    meta.at("split_format") != "node_masks_v1" ||
+                    meta.at("split_format") != "node_masks" ||
                     dataset.num_classes != 121)
                 {
                     throw std::runtime_error(
@@ -396,13 +396,13 @@ namespace gatzk::data
             bool npy_float32 = false;
             const auto raw_features = load_features_matrix(
                 root, dataset.num_nodes, dataset.num_features, &npy_float32);
-            if (dataset.input_preprocess_id == "ogbn_arxiv_raw_float32_v1"
+            if (dataset.input_preprocess_id == "ogbn_arxiv_raw_float32"
                 && (!std::filesystem::exists(root / "features.npy")
                     || !npy_float32
                     || std::filesystem::exists(root / "features.txt")))
             {
                 throw std::runtime_error(
-                    "ogbn-arxiv raw_float32_v1 requires an unnormalized float32 features.npy cache");
+                    "ogbn_arxiv raw_float32 requires an unnormalized float32 features.npy cache");
             }
             dataset.features_fp = preprocess_input_features(
                 raw_features,
@@ -422,7 +422,7 @@ namespace gatzk::data
             {
                 // PPI is a 121-way multi-label task.  Requiring this file
                 // prevents a missing cache from silently becoming all-zero
-                // single-label targets through the legacy labels.txt path.
+                // single-label targets through the labels.txt path.
                 dataset.labels_multi = load_multi_labels(root, dataset.num_nodes, dataset.num_classes);
             }
             else
@@ -553,7 +553,7 @@ namespace gatzk::data
             }
         }
 
-        // ogbn-arxiv 的缓存准备与其他数据集分开处理，因为原始数据布局不同。
+        // ogbn_arxiv 的缓存准备与其他数据集分开处理，因为原始数据布局不同。
         void maybe_prepare_ogbn_arxiv_cache(const util::AppConfig &config, const std::filesystem::path &cache_root)
         {
             if (!config.auto_prepare_dataset || std::filesystem::exists(cache_root / "meta.cfg"))
@@ -570,7 +570,7 @@ namespace gatzk::data
                                  " --data-root " + config.data_root;
             if (std::system(command.c_str()) != 0)
             {
-                throw std::runtime_error("failed to prepare ogbn-arxiv cache");
+                throw std::runtime_error("failed to prepare ogbn_arxiv cache");
             }
         }
 
@@ -635,7 +635,7 @@ namespace gatzk::data
         for (const auto &row : raw_features)
             if (row.size() != width)
                 throw std::runtime_error("input feature matrix rows have inconsistent widths");
-        if (input_preprocess_id == "ogbn_arxiv_raw_float32_v1")
+        if (input_preprocess_id == "ogbn_arxiv_raw_float32")
         {
             std::vector<std::vector<double>> raw_float32 = raw_features;
             for (auto &row : raw_float32)

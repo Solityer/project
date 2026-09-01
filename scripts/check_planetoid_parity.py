@@ -108,8 +108,8 @@ def main() -> None:
         comparisons.append(
             compare_arrays(
                 f"output/head_{head_index}/biased_value",
-                training_trace["output_head_values"][head_index],
-                bundle_trace["output_head_values"][head_index],
+                training_head["H_agg"],
+                bundle_head["H_agg"],
             )
         )
 

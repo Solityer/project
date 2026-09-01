@@ -41,19 +41,19 @@ std::string route2_feature_label(const Route2Options& options) {
         }
         label += "fft";
     }
-    if (options.fft_backend_upgrade) {
+    if (options.packed_fft_backend) {
         if (!label.empty()) {
             label += "_";
         }
         label += "packed";
     }
-    if (options.fft_backend_upgrade && options.fft_kernel_upgrade) {
+    if (options.packed_fft_backend && options.rotated_fft_kernel) {
         if (!label.empty()) {
             label += "_";
         }
         label += "kernel";
     }
-    if (options.trace_layout_upgrade) {
+    if (options.compact_trace_layout) {
         if (!label.empty()) {
             label += "_";
         }
@@ -84,9 +84,9 @@ std::string route2_feature_label(const Route2Options& options) {
 std::string route2_feature_notes(const Route2Options& options) {
     return "enabled_fast_msm=" + std::string(options.fast_msm ? "true" : "false")
         + "; enabled_parallel_fft=" + std::string(options.parallel_fft ? "true" : "false")
-        + "; enabled_fft_backend_upgrade=" + std::string(options.fft_backend_upgrade ? "true" : "false")
-        + "; enabled_fft_kernel_upgrade=" + std::string(options.fft_kernel_upgrade ? "true" : "false")
-        + "; enabled_trace_layout_upgrade=" + std::string(options.trace_layout_upgrade ? "true" : "false")
+        + "; enabled_packed_fft_backend=" + std::string(options.packed_fft_backend ? "true" : "false")
+        + "; enabled_rotated_fft_kernel=" + std::string(options.rotated_fft_kernel ? "true" : "false")
+        + "; enabled_compact_trace_layout=" + std::string(options.compact_trace_layout ? "true" : "false")
         + "; enabled_fast_verify_pairing=" + std::string(options.fast_verify_pairing ? "true" : "false")
         + "; enabled_cuda_trace_hotspots=" + std::string(options.cuda_trace_hotspots ? "true" : "false")
         + "; enabled_cuda_field_hotspots=" + std::string(options.cuda_field_hotspots ? "true" : "false");

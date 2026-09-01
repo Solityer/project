@@ -1,6 +1,6 @@
 # zkGAT Security Claims And Limitations
 
-`security_profile_id = zkgat_secure_profile_v1`
+`security_profile_id = zkgat_secure_profile`
 
 ## Claims
 

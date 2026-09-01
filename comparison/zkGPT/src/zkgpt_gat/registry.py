@@ -32,7 +32,7 @@ _PUBLIC_REGISTRY_KEYS = {
 }
 _PUBLIC_BINDING_KEYS = {
     "protocol", "model_arch_id", "model_param_id", "quant_cfg_id",
-    "rounding_mode", "static_table_id", "layout", "segment_order",
+    "input_preprocess_id", "quant_scale_chain_digest", "rounding_mode", "static_table_id", "layout", "segment_order",
     "padding_rule_id", "integer_bound_ledger_digest", "Layout_in_digest",
     "N_in", "registered_model_bounds", "arrays",
 }
@@ -393,6 +393,8 @@ def registration_binding(metadata: Dict[str, Any], arrays: Sequence[Tuple[str, S
         "model_arch_id": metadata.get("model_arch_id"),
         "model_param_id": metadata.get("model_param_id"),
         "quant_cfg_id": metadata.get("quant_cfg_id"),
+        "input_preprocess_id": metadata.get("input_preprocess_id"),
+        "quant_scale_chain_digest": digest_json(metadata.get("quant_scale_chain", metadata.get("integer_bound_ledger", {}).get("scales", {}))),
         "rounding_mode": metadata.get("rounding_mode"),
         "static_table_id": metadata.get("static_table_id"),
         "layout": metadata.get("private_input_layout"),

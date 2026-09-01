@@ -99,19 +99,19 @@ def main():
                 if pattern in line:
                     failures.append((path.relative_to(ROOT), line_no, pattern))
         if path.name != "static_scan_no_tau.py":
-            for legacy_marker in (
+            for forbidden_api_marker in (
                 "KZG::open_batch(",
                 "KZG::verify_batch(",
                 "KZG::open_external_fold(",
                 "KZG::verify_external_fold(",
                 "external_proof",
             ):
-                if legacy_marker in text:
+                if forbidden_api_marker in text:
                     line_no = text.count(
-                        "\n", 0, text.index(legacy_marker)
+                        "\n", 0, text.index(forbidden_api_marker)
                     ) + 1
                     failures.append(
-                        (path.relative_to(ROOT), line_no, legacy_marker)
+                        (path.relative_to(ROOT), line_no, forbidden_api_marker)
                     )
             for marker in ("KZG::verify_point_group(",):
                 pos = 0
@@ -198,9 +198,9 @@ def main():
             actual = sha256_file(material)
             if actual != expected:
                 failures.append((material.relative_to(ROOT), 1, f"hash mismatch pk_lagrange_hashes.{domain}"))
-        legacy_aux = srs_root / (aux + ".bin")
-        if legacy_aux.exists():
-            failures.append((legacy_aux.relative_to(ROOT), 1, "forbidden runtime auxiliary scalar material"))
+        forbidden_auxiliary = srs_root / (aux + ".bin")
+        if forbidden_auxiliary.exists():
+            failures.append((forbidden_auxiliary.relative_to(ROOT), 1, "forbidden runtime auxiliary scalar material"))
     if failures:
         for path, line_no, pattern in failures:
             print(f"{path}:{line_no}: blocked pattern {pattern!r}", file=sys.stderr)

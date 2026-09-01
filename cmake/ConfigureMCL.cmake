@@ -47,13 +47,8 @@ function(gatzk_configure_vendored_mcl)
     set(GATZK_VENDOR_MCL_LIBRARY_TARGET gatzk_mcl PARENT_SCOPE)
 endfunction()
 
-if(GATZK_CRYPTO_BACKEND STREQUAL "auto")
-    message(WARNING "GAT-ZKML: GATZK_CRYPTO_BACKEND=auto is deprecated; defaulting to mcl")
-    set(GATZK_CRYPTO_BACKEND mcl)
-endif()
-
 if(NOT GATZK_CRYPTO_BACKEND STREQUAL "mcl")
-    message(FATAL_ERROR "GAT-ZKML: reference backend has been removed; only -DGATZK_CRYPTO_BACKEND=mcl is supported")
+    message(FATAL_ERROR "GAT-ZKML: only -DGATZK_CRYPTO_BACKEND=mcl is supported")
 endif()
 
 gatzk_configure_vendored_mcl()
@@ -64,5 +59,5 @@ if(GATZK_VENDOR_MCL_FOUND)
 else()
     message(FATAL_ERROR
         "GAT-ZKML: canonical vendored mcl is missing from third_party/mcl; "
-        "system mcl fallback is forbidden")
+        "system mcl is not supported")
 endif()

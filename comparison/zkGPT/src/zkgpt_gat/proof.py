@@ -40,7 +40,7 @@ from .gpu_execution import (
     gpu_execution_transcript_binding,
     validate_gpu_execution_evidence,
 )
-from .forward import ForwardTrace, HeadTrace, SignedRoundDivTrace, _elu_table_value, _exp_map_fixed
+from .forward import ForwardTrace, HeadTrace, SignedRoundDivTrace, _elu_table_value, _exp_map_fixed, canonical_input_integers
 from .layout import build_input_layout
 from .input_oracle import equality_weights
 from .model import AttentionHead, Model, QUANT_SCALE_PROFILES
@@ -233,6 +233,11 @@ def make_metadata(
         raise ValueError("model and formal config SignedRoundDiv rounding_mode differ")
     if config.entries.get("static_table_descriptor_digest") != static_descriptor["descriptor_digest"]:
         raise ValueError("formal config is not bound to the canonical static-table descriptor")
+    model_preprocess = str(getattr(model, "input_preprocess_id", "") or "")
+    if not model_preprocess and str(config.dataset).startswith("synthetic-"):
+        model_preprocess = config.input_preprocess_id
+    if config.input_preprocess_id != model_preprocess:
+        raise ValueError("formal config and checkpoint input_preprocess_id differ")
     hidden_profile = [{"head_count": layer.head_count, "head_dim": layer.head_dim} for layer in model.hidden_layers]
     d_in_profile = [int(value) for value in model.manifest["d_in_profile"]]
     if d_in_profile != [int(layer.input_dim) for layer in model.hidden_layers]:
@@ -259,6 +264,8 @@ def make_metadata(
         "model_param_id": model.model_param_id,
         "static_table_id": model.static_table_id,
         "quant_cfg_id": model.quant_cfg_id,
+        "input_preprocess_id": model_preprocess,
+        "quant_scale_chain": model.manifest.get("quant_scale_chain", dict(model.quant_scales)),
         "rounding_mode": rounding_mode,
         "static_table_descriptor_schema": static_descriptor["schema"],
         "static_table_content_digest": static_descriptor["content_digest"],
@@ -329,10 +336,7 @@ def make_metadata(
 
 
 def _public_x_arrays(graph: LocalGraph, model: Model) -> List[Tuple[str, np.ndarray]]:
-    features = np.asarray(
-        [int(np.floor(float(item) + 0.5) if float(item) >= 0 else np.ceil(float(item) - 0.5)) for item in np.ravel(graph.features)],
-        dtype=np.int64,
-    ).reshape(graph.features.shape)
+    features = canonical_input_integers(graph, model)
     dimensions = np.asarray(
         [
             graph.graph_count,
@@ -1138,7 +1142,8 @@ def _integer_bound_ledger(metadata: Dict[str, Any], model: Model, graph: LocalGr
         {"layer_index": int(layer.layer_index), "head_count": int(layer.head_count), "head_dim": int(layer.head_dim)}
         for layer in model.hidden_layers
     ]
-    feature_bound = max((abs(int(round(float(value)))) for value in np.ravel(graph.features)), default=0)
+    feature_values = canonical_input_integers(graph, model)
+    feature_bound = max((abs(int(value)) for value in np.ravel(feature_values)), default=0)
     return build_integer_bound_ledger(
         mode=mode,
         quant_cfg_id=model.quant_cfg_id,
@@ -2488,9 +2493,11 @@ def _verify_registered_model_commitment(metadata: Dict[str, Any], commitments: D
             return False
         if registry.get("registration_binding_digest") != descriptor_full.get("registration_binding_digest"):
             return False
-        for key in ("model_arch_id", "model_param_id", "quant_cfg_id", "rounding_mode", "static_table_id"):
+        for key in ("model_arch_id", "model_param_id", "quant_cfg_id", "input_preprocess_id", "rounding_mode", "static_table_id"):
             if binding.get(key) != metadata.get(key):
                 return False
+        if binding.get("quant_scale_chain_digest") != digest_json(metadata.get("quant_scale_chain", {})):
+            return False
         if binding.get("integer_bound_ledger_digest") != metadata.get("integer_bound_ledger_digest"):
             return False
         if binding.get("layout") != "X_pub|W|Aux|L_qry" or binding.get("segment_order") != ["X_pub", "W", "Aux", "L_qry"]:

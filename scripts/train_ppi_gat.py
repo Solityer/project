@@ -73,10 +73,11 @@ def _ensure_cache(
         "node_ptr.txt",
         "edges.txt",
     )
-    if (
-        not all((cache_root / name).exists() for name in required)
-        or (cache_root / "labels.txt").exists()
-    ):
+    if (cache_root / "labels.txt").exists():
+        raise ValueError(
+            "PPI cache contains unsupported single-label labels.txt; regenerate the cache"
+        )
+    if not all((cache_root / name).exists() for name in required):
         script = pathlib.Path(__file__).with_name("prepare_ppi.py")
         subprocess.run(
             [
@@ -90,6 +91,10 @@ def _ensure_cache(
             cwd=project_root,
             check=True,
         )
+        if (cache_root / "labels.txt").exists():
+            raise ValueError(
+                "PPI cache contains unsupported single-label labels.txt after preparation"
+            )
     return cache_root
 
 
@@ -180,7 +185,7 @@ def load_ppi_dataset(
     expected_preprocess_id = canonical_input_preprocess_id("ppi")
     if metadata.get("name") != "ppi" or metadata.get("input_preprocess_id") != expected_preprocess_id:
         raise ValueError(
-            "PPI cache is missing the canonical row_normalize_v1 producer identity"
+            "PPI cache is missing the canonical row_normalize producer identity"
         )
     features = np.asarray(np.load(cache / "features.npy"), dtype=np.float32)
     labels_multi = np.asarray(np.load(cache / "labels_multi.npy"), dtype=np.float32)
@@ -343,7 +348,7 @@ def main() -> None:
             "label_format": "multi_hot",
             "loss": "BCEWithLogitsLoss",
             "selection_metric": "validation_loss",
-            "split_format": "node_masks_v1",
+            "split_format": "node_masks",
         },
     )
 

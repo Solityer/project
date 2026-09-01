@@ -375,23 +375,23 @@ int main(int argc, char **argv)
                     require_option_value(i, arg), arg);
                 cli_optimization_overrides.insert("parallel_fft");
             }
-            else if (arg == "--fft-backend-upgrade")
+            else if (arg == "--packed-fft-backend")
             {
-                route2.fft_backend_upgrade = parse_switch(
+                route2.packed_fft_backend = parse_switch(
                     require_option_value(i, arg), arg);
-                cli_optimization_overrides.insert("fft_backend_upgrade");
+                cli_optimization_overrides.insert("packed_fft_backend");
             }
-            else if (arg == "--fft-kernel-upgrade")
+            else if (arg == "--rotated-fft-kernel")
             {
-                route2.fft_kernel_upgrade = parse_switch(
+                route2.rotated_fft_kernel = parse_switch(
                     require_option_value(i, arg), arg);
-                cli_optimization_overrides.insert("fft_kernel_upgrade");
+                cli_optimization_overrides.insert("rotated_fft_kernel");
             }
-            else if (arg == "--trace-layout-upgrade")
+            else if (arg == "--compact-trace-layout")
             {
-                route2.trace_layout_upgrade = parse_switch(
+                route2.compact_trace_layout = parse_switch(
                     require_option_value(i, arg), arg);
-                cli_optimization_overrides.insert("trace_layout_upgrade");
+                cli_optimization_overrides.insert("compact_trace_layout");
             }
             else if (arg == "--fast-verify-pairing")
             {
@@ -462,14 +462,14 @@ int main(int argc, char **argv)
             append("fast_msm", route2.fast_msm, true, source("fast_msm"));
             append("parallel_fft", route2.parallel_fft, true, source("parallel_fft"));
             append(
-                "fft_backend_upgrade", route2.fft_backend_upgrade, true,
-                source("fft_backend_upgrade"));
+                "packed_fft_backend", route2.packed_fft_backend, true,
+                source("packed_fft_backend"));
             append(
-                "fft_kernel_upgrade", route2.fft_kernel_upgrade, true,
-                source("fft_kernel_upgrade"));
+                "rotated_fft_kernel", route2.rotated_fft_kernel, true,
+                source("rotated_fft_kernel"));
             append(
-                "trace_layout_upgrade", route2.trace_layout_upgrade, true,
-                source("trace_layout_upgrade"));
+                "compact_trace_layout", route2.compact_trace_layout, true,
+                source("compact_trace_layout"));
             append(
                 "fast_verify_pairing", route2.fast_verify_pairing, true,
                 source("fast_verify_pairing"));
@@ -522,9 +522,9 @@ int main(int argc, char **argv)
             metrics.config = absolute_config_path;
             metrics.enabled_fast_msm = route2.fast_msm;
             metrics.enabled_parallel_fft = route2.parallel_fft;
-            metrics.enabled_fft_backend_upgrade = route2.fft_backend_upgrade;
-            metrics.enabled_fft_kernel_upgrade = route2.fft_kernel_upgrade;
-            metrics.enabled_trace_layout_upgrade = route2.trace_layout_upgrade;
+            metrics.enabled_packed_fft_backend = route2.packed_fft_backend;
+            metrics.enabled_rotated_fft_kernel = route2.rotated_fft_kernel;
+            metrics.enabled_compact_trace_layout = route2.compact_trace_layout;
             metrics.enabled_fast_verify_pairing = route2.fast_verify_pairing;
             metrics.enabled_cuda_trace_hotspots = route2.cuda_trace_hotspots;
             metrics.enabled_cuda_field_hotspots = route2.cuda_field_hotspots;
@@ -550,11 +550,11 @@ int main(int argc, char **argv)
             metrics.gpu_acceleration_status = metrics.compute_backend_name == "cuda_hotspots"
                                                   ? std::string("enabled_cuda_hotspots; accelerated_stages=barycentric_weights,packed_weighted_evaluation,lookup_histogram_size_aware,opening_witness_field_fold_size_aware,KZG_G1_MSM_size_aware,opening_witness_MSM_size_aware; cpu_fallback=pairing,cold_singleton_stable_SRS_MSM,small_opening_folds,small_domains; runtime_present=") + std::string(metrics.gpu_runtime_present ? "true" : "false")
                                                   : std::string("not_requested_cpu_run");
-            if (route2.fft_backend_upgrade && route2.fft_kernel_upgrade)
+            if (route2.packed_fft_backend && route2.rotated_fft_kernel)
             {
                 metrics.fft_backend_route = "packed_rotated_kernel";
             }
-            else if (route2.fft_backend_upgrade)
+            else if (route2.packed_fft_backend)
             {
                 metrics.fft_backend_route = "packed_domain";
             }
@@ -638,8 +638,8 @@ int main(int argc, char **argv)
             metrics.trace_misc_ms =
                 metrics.route_pack_residual_ms + metrics.selector_padding_residual_ms + metrics.public_poly_residual_ms + metrics.hidden_output_object_residual_ms + metrics.shared_helper_build_ms + metrics.field_conversion_residual_ms + metrics.copy_move_residual_ms + metrics.trace_finalize_ms;
             // The formal verifier must be constructed from the authenticated
-            // point-only VK registry.  The in-process projection is reserved
-            // for short transition tests and is rejected by verify().
+            // point-only VK registry; the verifier consumes only this
+            // independently authenticated context.
             const auto configured_registry_path =
                 run_config.verifier_registry_path.empty()
                     ? gatzk::protocol::canonical_verifier_registry_path(

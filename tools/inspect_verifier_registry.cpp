@@ -176,7 +176,7 @@ int main(int argc, char **argv)
 
         bool first = true;
         std::cout << '{';
-        emit_string("format", "zkgat_registry_inspection_v1", &first);
+        emit_string("format", "zkgat_registry_inspection", &first);
         emit_string("artifact_sha256", file_digest, &first);
         emit_string("registry_digest", verifier_context.authenticated_registry_digest, &first);
         emit_string("registry_id", registry.registry_id, &first);

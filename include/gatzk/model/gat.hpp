@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "gatzk/algebra/field.hpp"
@@ -99,8 +100,6 @@ namespace gatzk::model
     // 下面这些查询函数为 domain 规划、metadata 导出与 tests 提供统一形状信息。
     struct ModelParameters
     {
-        std::vector<algebra::FieldElement> a_src;
-        bool has_real_multihead = false;
         // Identity fields are copied from the checkpoint manifest and bound
         // against the formal run config before any proof work starts.
         std::string model_arch_id;
@@ -122,11 +121,8 @@ namespace gatzk::model
         std::size_t K_out = 1;
         std::size_t C = 0;
         // Formal consumers index hidden_layers[layer].heads[local_head].
-        // hidden_heads is retained only as a checkpoint/parity compatibility
-        // view in canonical layer -> local-head serialization order.
         std::vector<HiddenLayerParameters> hidden_layers;
         OutputLayerParameters output_layer;
-        std::vector<AttentionHeadParameters> hidden_heads;
     };
 
     // checkpoint manifest 中记录的层级元数据。
@@ -142,10 +138,6 @@ namespace gatzk::model
     {
         std::size_t layer_index = 0;
         std::size_t local_head_index = 0;
-        // Optional legacy/parity metadata.  Canonical manifests omit it and
-        // formal loading never uses it; (layer_index, local_head_index) is the
-        // sole head identity.
-        std::size_t global_head_index = 0;
         std::string seq_kernel;
         std::string attn_dst_kernel;
         std::string attn_src_kernel;
@@ -161,12 +153,25 @@ namespace gatzk::model
         std::string output_bias;
     };
 
+    // Exact tensor-index metadata from the checkpoint manifest.  archive_key
+    // is only the deterministic NPZ encoding of the logical tensor name.  The
+    // manifest logical names, tensors.txt records, and tensors.npz entries
+    // are required encodings of one canonical tensor map, never alternate
+    // identities or fallback sources.  The formal C++ loader consumes the
+    // required text encoding; Python producers/consumers cross-check both.
+    struct CheckpointTensorInfo
+    {
+        std::string archive_key;
+        std::string dtype;
+        std::vector<std::size_t> shape;
+    };
+
     // 上游 bundle 的结构化摘要，用来校验 formal proof shape 与 artifact contract。
     struct CheckpointBundleInfo
     {
         std::string bundle_root;
         std::string dataset;
-        std::string family_schema_version;
+        std::string family_schema;
         std::string output_average_rule;
         std::string model_arch_id;
         std::string model_param_id;
@@ -181,6 +186,8 @@ namespace gatzk::model
         std::vector<CheckpointLayerInfo> hidden_layers;
         std::vector<CheckpointHeadSpec> hidden_head_specs;
         std::vector<CheckpointOutputHeadSpec> output_head_specs;
+        std::size_t tensor_count = 0;
+        std::unordered_map<std::string, CheckpointTensorInfo> tensor_index;
         std::size_t output_head_count = 0;
         std::size_t class_count = 0;
         bool has_output_attention_head = false;
@@ -198,15 +205,8 @@ namespace gatzk::model
     struct MultiHeadForwardTrace
     {
         FloatMatrix H;
-        FloatMatrix bias;
         std::vector<HiddenLayerForwardTrace> hidden_layer_traces;
-        // Compatibility/parity view only. Formal trace consumers use the
-        // nested hidden_layer_traces representation above.
-        std::vector<HeadForwardTrace> hidden_head_traces;
-        FloatMatrix hidden_concat;
         std::vector<HeadForwardTrace> output_head_traces;
-        std::vector<FloatMatrix> output_head_values;
-        HeadForwardTrace output_head_trace;
         FloatMatrix Y_lin;
         FloatMatrix Y;
     };
@@ -227,8 +227,6 @@ namespace gatzk::model
 
     // 验证多层多头形状链是否自洽，是 context 构建阶段的重要前置约束。
     bool hidden_family_dimension_chain_is_valid(const ModelParameters &parameters, std::string *reason = nullptr);
-    // This count is a compatibility/size query, not a formal identity map.
-    std::size_t flattened_hidden_head_count(const ModelParameters &parameters);
     std::size_t max_hidden_input_dim(const ModelParameters &parameters);
     std::size_t max_hidden_head_dim(const ModelParameters &parameters);
     std::size_t max_hidden_concat_width(const ModelParameters &parameters);

@@ -491,7 +491,6 @@ namespace gatzk::protocol
                     matrix.size(),
                     width);
             };
-            trace.public_logits_hash = matrix_digest(secure_trace_logits);
             // Keep the reference hash independent even on a matching run:
             // equality is a real matrix comparison, while the two hashes are
             // separate audit payloads and must never be aliased.
@@ -1329,8 +1328,8 @@ namespace gatzk::protocol
             static constexpr std::size_t kMaximumBudgetBytes =
                 2ULL * 1024ULL * 1024ULL * 1024ULL;
 
-            // The old fixed 96 MiB window fragments large same-SRS
-            // commitment families before they can reach KZG::commit_batch.
+            // A fixed 96 MiB window can fragment large same-SRS commitment
+            // families before they reach KZG::commit_batch.
             //
             // Size the execution window from the host/unified-memory class,
             // while keeping a conservative hard ceiling. This changes only
@@ -1799,7 +1798,7 @@ namespace gatzk::protocol
             // 这里保持与 row-major 扁平化完全等价的系数多项式，
             // 只是工程上改为“逐行在点评估后再按 `point^cols` 折叠”，
             // 从而避免为矩阵承诺额外构造一次临时扁平系数向量。
-            if (route2.trace_layout_upgrade && row_count >= 8 && cpu_count > 1)
+            if (route2.compact_trace_layout && row_count >= 8 && cpu_count > 1)
             {
                 const auto task_count = std::min<std::size_t>(cpu_count, row_count);
                 const auto chunk_size = (row_count + task_count - 1) / task_count;
@@ -3906,8 +3905,6 @@ namespace gatzk::protocol
                 append_cache_u64(out, shape.head_count);
                 append_cache_u64(out, shape.head_dim);
             }
-            append_cache_field_vector(out, model.a_src);
-
             append_cache_u64(out, model.hidden_layers.size());
             for (const auto &layer : model.hidden_layers)
             {
@@ -3928,9 +3925,7 @@ namespace gatzk::protocol
                 append_cache_model_head(out, head);
 
             // The canonical layer-local head records above are the sole
-            // formal model tensor identity.  Do not fold the legacy flat
-            // compatibility projection into this key: it has no independent
-            // layer/head identity and is not consumed by the formal trace.
+            // formal model tensor identity.
         }
 
         void append_cache_config_identity(
@@ -3938,7 +3933,7 @@ namespace gatzk::protocol
             const ProtocolContext &context)
         {
             const auto &config = context.config;
-            append_cache_string(out, "zkgat:quantized-model-cache:v3");
+            append_cache_string(out, "zkgat:quantized-model-cache");
             append_cache_string(out, config.dataset);
             append_cache_string(out, config.task_type);
             append_cache_string(out, config.report_unit);
@@ -3966,7 +3961,6 @@ namespace gatzk::protocol
             append_cache_string(out, config.proof_task);
             append_cache_string(out, config.security_profile_id);
             append_cache_string(out, config.verifier_registry_digest);
-            append_cache_u64(out, config.hidden_dim);
             append_cache_u64(out, config.num_classes);
             append_cache_u64(out, config.range_bits);
             append_cache_u64(out, config.seed);
@@ -4057,7 +4051,7 @@ namespace gatzk::protocol
             const HiddenHeadStaticQuantizedParameters &payload)
         {
             std::string bytes;
-            append_cache_string(&bytes, "zkgat:quantized-model-payload:hidden:v1");
+            append_cache_string(&bytes, "zkgat:quantized-model-payload:hidden");
             append_cache_field_matrix(&bytes, payload.seq_kernel);
             append_cache_field_vector(&bytes, payload.attn_src);
             append_cache_field_vector(&bytes, payload.attn_dst);
@@ -4068,7 +4062,7 @@ namespace gatzk::protocol
             const OutputHeadStaticQuantizedParameters &payload)
         {
             std::string bytes;
-            append_cache_string(&bytes, "zkgat:quantized-model-payload:output:v1");
+            append_cache_string(&bytes, "zkgat:quantized-model-payload:output");
             append_cache_field_matrix(&bytes, payload.seq_kernel);
             append_cache_field_vector(&bytes, payload.attn_src);
             append_cache_field_vector(&bytes, payload.attn_dst);
@@ -4250,9 +4244,7 @@ namespace gatzk::protocol
             model::ForwardProfile profile;
             std::vector<Matrix> hidden_layer_inputs_quantized;
             std::vector<Matrix> hidden_layer_concat_quantized;
-            // Formal witness storage is keyed by (layer, local head).  The
-            // checkpoint/model compatibility view may be flat, but the proof
-            // path must never recover identity from a global head position.
+            // Formal witness storage is keyed by (layer, local head).
             std::vector<std::vector<HiddenQuantizedWitness>>
                 hidden_head_quantized;
             std::vector<OutputQuantizedWitness> output_head_quantized;
@@ -5480,7 +5472,7 @@ namespace gatzk::protocol
             // compiler instance, model/static registries, SRS identity, and
             // all domain dimensions.
             std::string bytes;
-            append_cache_string(&bytes, "zkgat:trace-cache-identity:v2");
+            append_cache_string(&bytes, "zkgat:trace-cache-identity");
             append_cache_string(&bytes, context.config.dataset);
             append_cache_string(&bytes, context.config.task_type);
             append_cache_string(&bytes, context.config.batching_rule);
@@ -5501,7 +5493,6 @@ namespace gatzk::protocol
             append_cache_u64(&bytes, context.kzg.manifest.degree_bound);
             append_cache_string(&bytes, context.kzg.manifest.protocol_schema_id);
             append_cache_string(&bytes, context.kzg.manifest.generator_id);
-            append_cache_string(&bytes, context.kzg.manifest.generator_version);
             append_cache_string(&bytes, context.kzg.manifest.encoding);
             if (context.compiler_artifact == nullptr)
                 throw std::runtime_error(
@@ -5594,7 +5585,7 @@ namespace gatzk::protocol
             append_domain("cat", context.domains.cat);
             append_domain("C", context.domains.c);
             append_domain("N", context.domains.n);
-            append_cache_string(&bytes, "static_tables_v1");
+            append_cache_string(&bytes, "static_tables");
             append_cache_u64(&bytes, context.tables.range.size());
             for (const auto &value : context.tables.range)
                 append_cache_field(&bytes, value);
@@ -6058,7 +6049,7 @@ namespace gatzk::protocol
             std::size_t valid_count)
         {
             std::string bytes;
-            append_cache_string(&bytes, "zkgat:lookup-index:value:v2");
+            append_cache_string(&bytes, "zkgat:lookup-index:value");
             append_cache_string(&bytes, cache_namespace);
             append_cache_string(&bytes, label);
             append_cache_u64(&bytes, valid_count);
@@ -6072,7 +6063,7 @@ namespace gatzk::protocol
             const std::vector<std::pair<FieldElement, FieldElement>> &values)
         {
             std::string bytes;
-            append_cache_string(&bytes, "zkgat:lookup-index:pair:v2");
+            append_cache_string(&bytes, "zkgat:lookup-index:pair");
             append_cache_string(&bytes, cache_namespace);
             append_cache_string(&bytes, label);
             append_cache_u64(&bytes, values.size());
@@ -6091,7 +6082,7 @@ namespace gatzk::protocol
             std::size_t domain_size)
         {
             std::string bytes;
-            append_cache_string(&bytes, "zkgat:lookup-table:single:v2");
+            append_cache_string(&bytes, "zkgat:lookup-table:single");
             append_cache_string(&bytes, cache_namespace);
             append_cache_string(&bytes, label);
             append_cache_u64(&bytes, domain_size);
@@ -6107,7 +6098,7 @@ namespace gatzk::protocol
             std::size_t domain_size)
         {
             std::string bytes;
-            append_cache_string(&bytes, "zkgat:lookup-table:pair:v2");
+            append_cache_string(&bytes, "zkgat:lookup-table:pair");
             append_cache_string(&bytes, cache_namespace);
             append_cache_string(&bytes, label);
             append_cache_u64(&bytes, domain_size);
@@ -6130,7 +6121,7 @@ namespace gatzk::protocol
                 entries.emplace_back(value, index);
             std::sort(entries.begin(), entries.end());
             std::string bytes;
-            append_cache_string(&bytes, "zkgat:lookup-index-payload:value:v1");
+            append_cache_string(&bytes, "zkgat:lookup-index-payload:value");
             append_cache_u64(&bytes, entries.size());
             for (const auto &[value, index] : entries)
             {
@@ -6169,7 +6160,7 @@ namespace gatzk::protocol
                     return lhs.second < rhs.second;
                 });
             std::string bytes;
-            append_cache_string(&bytes, "zkgat:lookup-index-payload:pair:v1");
+            append_cache_string(&bytes, "zkgat:lookup-index-payload:pair");
             append_cache_u64(&bytes, entries.size());
             for (const auto &[value, index] : entries)
             {
@@ -6186,7 +6177,7 @@ namespace gatzk::protocol
             const std::vector<FieldElement> &values)
         {
             std::string bytes;
-            append_cache_string(&bytes, "zkgat:lookup-table-payload:vector:v1");
+            append_cache_string(&bytes, "zkgat:lookup-table-payload:vector");
             append_cache_field_vector(&bytes, values);
             return "sha256:" + sha256_hex(bytes);
         }
@@ -7517,10 +7508,8 @@ namespace gatzk::protocol
                             });
                     }
 
-                    // This is the cross-call family merge.  The old code sent
-                    // one four-object batch per limb; the complete bounded
-                    // window now reaches KZG at once and can use the explicit
-                    // same-SRS wave scheduler installed in 1e2febc.
+                    // Merge the complete bounded family window so KZG can use
+                    // the explicit same-SRS wave scheduler.
                     add_dynamic_commitment_batch(
                         trace,
                         std::move(
@@ -9242,8 +9231,7 @@ namespace gatzk::protocol
                 keep_trace_payloads,
                 metrics);
 
-            // Transcript absorption remains in exactly the old
-            // canonical head order.
+            // Transcript absorption follows the canonical head order.
             for (const auto &label :
                  output_y_prime_labels)
             {
@@ -10335,10 +10323,9 @@ namespace gatzk::protocol
                 forward_artifacts
                     ->output_y_average;
 
-            // Preserve the old independent consistency check:
-            // average_div.y is the signed-division witness, while
-            // output_y_average was independently produced by the
-            // quantized forward path.
+            // Run the independent consistency check: average_div.y is the
+            // signed-division witness, while output_y_average was independently
+            // produced by the quantized forward path.
             require_flat_row_major_matches_matrix(
                 average_div.y,
                 y_average,
@@ -11974,11 +11961,6 @@ namespace gatzk::protocol
             context.local,
             context.config.quantization.s_input,
             context.config.input_preprocess_id);
-        if (!context.model.has_real_multihead)
-        {
-            throw std::runtime_error(
-                "formal trace builder rejects the removed single-output compatibility protocol");
-        }
         return build_multihead_trace(context, metrics);
     }
 

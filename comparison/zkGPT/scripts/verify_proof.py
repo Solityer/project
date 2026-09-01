@@ -470,6 +470,7 @@ def verify_artifact_directory(artifact_dir: pathlib.Path, context: VerifierConte
         "model_arch_id": metadata.get("model_arch_id", ""),
         "model_param_id": metadata.get("model_param_id", ""),
         "quant_cfg_id": metadata.get("quant_cfg_id", ""),
+        "input_preprocess_id": metadata.get("input_preprocess_id", ""),
         "L": dim_cfg.get("L"),
         "hidden_profile": dim_cfg.get("hidden_profile", []),
         "d_in_profile": dim_cfg.get("d_in_profile", []),

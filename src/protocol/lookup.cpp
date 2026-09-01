@@ -99,7 +99,7 @@ namespace gatzk::protocol
 
                 // Only O(worker_count) values remain, so one serial batch
                 // inversion is cheaper than another task launch and keeps the
-                // same single-inversion algebra as the former implementation.
+                // same single-inversion algebra as the parallel path.
                 std::vector<mcl::Fr> chunk_prefix(chunk_count);
                 mcl::Fr chunk_product = 1;
                 for (std::size_t chunk = 0;

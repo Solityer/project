@@ -74,7 +74,7 @@ class SecureAggregationRuntimeTests(unittest.TestCase):
                 "dataset": "cora",
                 "config": "configs/cora_secure.cfg",
                 "config_sha256": AGGREGATOR.sha256_file(ROOT / "configs" / "cora_secure.cfg"),
-                "input_preprocess_id": "row_normalize_v1",
+                "input_preprocess_id": "row_normalize",
                 "benchmark_mode": "warm",
                 "full_dataset": True,
                 "is_full_dataset": True,
@@ -126,14 +126,14 @@ class SecureAggregationRuntimeTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             AGGREGATOR.check_single_run_acceptance_state(manifest, "synthetic")
 
-    def test_old_timing_schema_is_rejected_by_aggregator(self):
+    def test_timing_schema_rejects_missing_or_malformed_value(self):
         manifest = {"timing_schema": AGGREGATOR.CANONICAL_TIMING_SCHEMA}
         self.assertEqual(
             AGGREGATOR.require_canonical_timing_schema(manifest, "synthetic"),
             AGGREGATOR.CANONICAL_TIMING_SCHEMA,
         )
-        for old_or_missing in ("exclusive_commit_prove_verify_v2", "", None):
-            mutated = {"timing_schema": old_or_missing}
+        for malformed_or_missing in ("malformed_timing_schema", "", None):
+            mutated = {"timing_schema": malformed_or_missing}
             with self.assertRaises(ValueError):
                 AGGREGATOR.require_canonical_timing_schema(mutated, "synthetic")
 
@@ -141,12 +141,12 @@ class SecureAggregationRuntimeTests(unittest.TestCase):
         manifest = self.export_acceptance_manifest()
         row = EXPORTER.make_success_row("cora", manifest)
         self.assertEqual(row["timing_schema"], EXPORTER.CANONICAL_TIMING_SCHEMA)
-        manifest["timing_schema"] = "exclusive_commit_prove_verify_v2"
+        manifest["timing_schema"] = "malformed_timing_schema"
         with self.assertRaises(ValueError):
             EXPORTER.make_success_row("cora", manifest)
 
     def test_benchmark_export_rejects_missing_or_tampered_input_preprocess_id(self):
-        for value in (None, "ogbn_arxiv_raw_float32_v1"):
+        for value in (None, "ogbn_arxiv_raw_float32"):
             manifest = self.export_acceptance_manifest()
             if value is None:
                 del manifest["input_preprocess_id"]
@@ -326,7 +326,6 @@ class SecureAggregationRuntimeTests(unittest.TestCase):
                 "security_budget_passed": "true",
                 "security_budget_exact": "1/2",
                 "proof_hash": hashlib.sha256(proof_bytes).hexdigest(),
-                "public_logits_hash": self.digest("public-output"),
                 "secure_trace_logits_hash": self.digest("public-output"),
                 "reference_quant_logits_hash": self.digest("public-output"),
                 "proof_public_output_hash": self.digest("public-output"),

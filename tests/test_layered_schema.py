@@ -66,7 +66,7 @@ class LayeredSchemaRegression(unittest.TestCase):
         self.assertIn('return "y_cat_l"', labels)
 
         # A same-local-head fixture in two layers must produce two identities;
-        # this guards against silently reintroducing a global-head alias.
+        # this guards against silently reintroducing a global head identity.
         self.assertNotEqual("P_h_l0_h0", "P_h_l1_h0")
         self.assertNotEqual("P_Q_cat_valid_l1", "P_Q_cat_valid_out")
 
@@ -74,7 +74,7 @@ class LayeredSchemaRegression(unittest.TestCase):
         prover = read("src/protocol/prover.cpp")
         formal_selector_block = region(
             prover,
-            "if (context.model.has_real_multihead)\n        {\n            // Each hidden layer owns its own valid selectors.",
+            "// Each hidden layer owns its own valid selectors.",
             "        add_public_poly(\n            context,\n            \"P_Q_N\"",
         )
         self.assertIn("hidden_q_in_selector_label(layer_index)", formal_selector_block)
@@ -105,8 +105,8 @@ class LayeredSchemaRegression(unittest.TestCase):
         challenges = read("src/protocol/challenges.cpp")
         modern_replay = region(
             challenges,
-            "std::map<std::string, algebra::FieldElement> replay_challenges(",
-            "\n        crypto::Transcript transcript(\"gatzkml\");",
+            "crypto::Transcript transcript(\"gatzkml\");",
+            "\n        return out;",
         )
         # The initial public selector schedule absorbs one Q_Nd_h per layer.
         self.assertEqual(
@@ -147,11 +147,11 @@ class LayeredSchemaRegression(unittest.TestCase):
             1,
         )
         self.assertIn(
-            "std::vector<std::vector<HiddenHeadEvaluationConstants>> hidden_heads",
+            "std::vector<std::vector<HiddenHeadEvaluationConstants>> hidden_head_constants",
             quotients,
         )
         self.assertIn(
-            "evaluation_plan->hidden_heads\n                                                 .at(layer_index)\n                                                 .at(local_head_index)",
+            "evaluation_plan->hidden_head_constants\n                                                 .at(layer_index)\n                                                 .at(local_head_index)",
             quotients,
         )
 
@@ -169,7 +169,6 @@ class LayeredSchemaRegression(unittest.TestCase):
             "flat_head_index",
             "planned_index",
             "canonical_hidden_head",
-            "model.hidden_heads",
         ):
             self.assertNotIn(forbidden, joined)
 
@@ -184,15 +183,14 @@ class LayeredSchemaRegression(unittest.TestCase):
         self.assertIn('.layer_id = layer + 1', schema)
         self.assertIn('.head_id = head', schema)
 
-    def test_old_aliases_are_not_in_formal_registry(self) -> None:
+    def test_canonical_names_are_not_aliased(self) -> None:
         challenges = read("src/protocol/challenges.cpp")
         modern_replay = region(
             challenges,
             "std::map<std::string, algebra::FieldElement> replay_challenges(",
             "\n        crypto::Transcript transcript(\"gatzkml\");",
         )
-        # Old names may occur in the unreachable compatibility branch, but not
-        # in the modern formal replay/registry.
+        # Only canonical names are allowed in formal replay and registry data.
         for alias in (
             '"P_Q_proj_valid"',
             '"P_Q_d_valid"',
@@ -229,7 +227,6 @@ class LayeredSchemaRegression(unittest.TestCase):
             "ModelParameters load_checkpoint_bundle_parameters",
             "        // 输出层同样要求索引连续读取",
         )
-        self.assertNotIn("global_head_index", formal_loader)
         self.assertIn("candidate.layer_index == layer.layer_index", formal_loader)
         self.assertIn("candidate.local_head_index == local_head_index", formal_loader)
 
@@ -238,17 +235,39 @@ class LayeredSchemaRegression(unittest.TestCase):
             "CheckpointHeadSpec parse_checkpoint_head_spec",
             "CheckpointOutputHeadSpec parse_checkpoint_output_head_spec",
         )
-        self.assertNotIn("parse_required_size_t(entry, \"global_head_index\")", parser)
-
-        for exporter in (
-            read("scripts/export_torch_gat_bundle.py"),
-            read("scripts/export_gat_checkpoint.py"),
-        ):
-            self.assertNotIn('"global_head_index"', exporter)
-
         checker = read("scripts/check_checkpoint_bundle.py")
         self.assertIn('"layer_index" in spec and "local_head_index" in spec', checker)
         self.assertIn("hidden head specs must use canonical layer/local pair order", checker)
+
+    def test_manifest_and_srs_loaders_have_one_canonical_format(self) -> None:
+        kzg = read("src/crypto/kzg.cpp")
+        self.assertNotIn("load_fixed_or_raw", kzg)
+        self.assertIn("kCanonicalSrsManifestFields", kzg)
+        self.assertIn("SRS manifest contains unknown/non-canonical manifest field", kzg)
+        self.assertIn("canonical SRS G1 header mismatch", kzg)
+        self.assertIn("'G', 'A', 'T', 'Z', 'K', 'G', '1', 'C'", kzg)
+        generator = read("tools/srs/generate_srs.cpp")
+        self.assertIn("kCanonicalSrsManifestFields", generator)
+
+        model = read("src/model/gat.cpp")
+        self.assertIn("kCanonicalCheckpointManifestFields", model)
+        self.assertIn("validate_checkpoint_manifest_fields", model)
+        self.assertIn(
+            "checkpoint manifest contains unknown/non-canonical manifest field",
+            model,
+        )
+        self.assertIn(
+            'info.family_schema != "multi_layer_multi_head"',
+            model,
+        )
+
+        for consumer in (
+            read("scripts/checkpoint_bundle.py"),
+            read("scripts/check_checkpoint_bundle.py"),
+            read("scripts/import_ppi_bundle.py"),
+            read("scripts/train_planetoid_gat.py"),
+        ):
+            self.assertIn("validate_checkpoint_manifest", consumer)
 
     def test_attention_scalar_bias_is_fail_closed_and_output_bias_is_explicit(self) -> None:
         trainer = read("scripts/train_planetoid_gat.py")
@@ -269,7 +288,10 @@ class LayeredSchemaRegression(unittest.TestCase):
         )
         self.assertNotIn("attn_dst_bias", head_parser)
         self.assertNotIn("attn_src_bias", head_parser)
-        self.assertIn('parse_required_string(entry, "output_bias")', output_parser)
+        self.assertIn(
+            'json_string(require_object_field(entry, "output_bias", label)',
+            output_parser,
+        )
         forward = region(
             model,
             "HeadForwardTrace attention_head_forward_impl",
@@ -286,11 +308,11 @@ class LayeredSchemaRegression(unittest.TestCase):
 
         checker = read("scripts/check_checkpoint_bundle.py")
         self.assertIn("hidden head spec must not expose output_bias", checker)
-        self.assertIn("legacy attention scalar bias fields are forbidden", checker)
+        self.assertIn("attention scalar bias fields are forbidden", checker)
 
     def test_scale_chain_consumers_are_layer_and_head_aware(self) -> None:
         config = read("src/util/config.cpp")
-        self.assertIn('"gat_l3_scale_chain_v1"', config)
+        self.assertIn('"gat_l3_scale_chain"', config)
         self.assertIn("chain.s_input = parse_scale_value(source, \"s_input\");", config)
         self.assertIn("chain.s_delta = parse_scale_value(source, \"s_delta\");", config)
         self.assertIn("chain.s_h = parse_scale_vector(source, \"s_h\");", config)
@@ -301,8 +323,8 @@ class LayeredSchemaRegression(unittest.TestCase):
         self.assertIn("shared ELU table scale equality", config)
         self.assertIn("parse_scale_vector(source, \"s_h_prime_hidden_\"", config)
         self.assertIn("parse_scale_vector(source, \"s_a_src_hidden_\"", config)
-        self.assertIn("configs/quantization_scale_chain_v1.cfg", config)
-        source = read("configs/quantization_scale_chain_v1.cfg")
+        self.assertIn("configs/quantization_scale_chain.cfg", config)
+        source = read("configs/quantization_scale_chain.cfg")
         self.assertIn("s_input = 16", source)
         self.assertIn("s_delta = 256", source)
         self.assertIn("s_w_hidden_0 = 4,4,4,4,4,4,4,4", source)

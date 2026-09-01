@@ -69,7 +69,7 @@ def main() -> None:
     components.sort(key=lambda comp: comp[0])
 
     permutation = [node for component in components for node in component]
-    inverse = {old: new for new, old in enumerate(permutation)}
+    inverse = {original_node: new for new, original_node in enumerate(permutation)}
     features_permuted = features[permutation]
 
     class_vectors = np.zeros(
@@ -148,11 +148,6 @@ def main() -> None:
     )
     for split_name, mask in split_masks_permuted.items():
         np.save(output_root / f"{split_name}_mask.npy", mask)
-    # Never leave the old argmax cache in a canonical prepared directory.  It
-    # is not a valid representation of PPI's multi-label task.
-    stale_single_label_path = output_root / "labels.txt"
-    if stale_single_label_path.exists():
-        stale_single_label_path.unlink()
     write_meta(
         output_root / "meta.cfg",
         {
@@ -164,7 +159,7 @@ def main() -> None:
             "task_type": "inductive_multi_graph_node_classification",
             "report_unit": "graph",
             "label_format": "multi_hot",
-            "split_format": "node_masks_v1",
+            "split_format": "node_masks",
             "input_preprocess_id": ROW_NORMALIZE_INPUT_PREPROCESS_ID,
         },
     )

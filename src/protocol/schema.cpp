@@ -697,7 +697,7 @@ namespace gatzk::protocol
                     includes_model_blinder_commitment && !includes_domain_openings && max_rows == 1;
                 if (max_rows != 0 && !max_prefix_is_minimal && !random_only_minimum)
                     continue;
-                return "formal-full-row-rank-v2|specialization=" + trapdoor.to_string() + "," + z1.to_string() + "," + z2.to_string() + "," + y.to_string() + "|A_blind_field_minor=" + field_minor.to_string() + "|A_blind_group_minor=" + group_minor.to_string() + "|A_sec_field_minor=" + field_secret_minor.to_string() + "|A_sec_group_minor=" + group_secret_minor.to_string() + "|coverage=full-row-A_blind-implies-Im(A_sec)-subset" + "|field_qminus1_fails=" + std::to_string(field_prefix_minimal) + "|group_qminus1_fails=" + std::to_string(group_prefix_minimal) + "|minimality=" + (random_only_minimum ? std::string("nonzero-S_model-randomness") : std::string("rank([A_blind_prefix|A_sec])"
+                return "formal-full-row-rank|specialization=" + trapdoor.to_string() + "," + z1.to_string() + "," + z2.to_string() + "," + y.to_string() + "|A_blind_field_minor=" + field_minor.to_string() + "|A_blind_group_minor=" + group_minor.to_string() + "|A_sec_field_minor=" + field_secret_minor.to_string() + "|A_sec_group_minor=" + group_secret_minor.to_string() + "|coverage=full-row-A_blind-implies-Im(A_sec)-subset" + "|field_qminus1_fails=" + std::to_string(field_prefix_minimal) + "|group_qminus1_fails=" + std::to_string(group_prefix_minimal) + "|minimality=" + (random_only_minimum ? std::string("nonzero-S_model-randomness") : std::string("rank([A_blind_prefix|A_sec])"
                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   ">rank(A_blind_prefix)")) +
                        "|certificate=nonzero-specialization-implies-formal-nonidentity";
             }
@@ -711,7 +711,7 @@ namespace gatzk::protocol
         const std::vector<IntegerBoundLedgerEntry> &ledger)
     {
         std::string out;
-        out.append("IntegerBoundLedger:v1", sizeof("IntegerBoundLedger:v1") - 1);
+        out.append("IntegerBoundLedger", sizeof("IntegerBoundLedger") - 1);
         const auto append_u64 = [&](std::uint64_t value)
         {
             for (std::size_t byte = 0; byte < sizeof(value); ++byte)
@@ -738,7 +738,7 @@ namespace gatzk::protocol
         const std::vector<CompilerLedgerEntry> &ledger)
     {
         std::string out;
-        out.append("SecurityBudgetLedger:v1", sizeof("SecurityBudgetLedger:v1") - 1);
+        out.append("SecurityBudgetLedger", sizeof("SecurityBudgetLedger") - 1);
         const auto append_u64 = [&](std::uint64_t value)
         {
             for (std::size_t byte = 0; byte < sizeof(value); ++byte)
@@ -1749,7 +1749,7 @@ namespace gatzk::protocol
                 .view_domain = context.domains.edge->name,
                 .canonical_length = context.local.num_classes,
                 .view_length = context.local.num_nodes * context.local.num_classes,
-                .index_map_id = "row-major-q=i*C+c-to-c-v1",
+                .index_map_id = "row-major-q=i*C+c-to-c",
                 .canonical_selector_id = "Q_C_valid",
                 .query_selector_id = "Q_NC_valid",
                 .multiplicity_id = "m_bias_can[c]=N",
@@ -2578,7 +2578,7 @@ namespace gatzk::protocol
         {
             artifact.proof_blocks = proof_block_order();
             artifact.serializer_tag_table = {
-                "wire:v3:type-tagged-length-prefixed:no-trailing-bytes"
+                "wire:type-tagged-length-prefixed:no-trailing-bytes"
                 "+M_pub:PublicMetadata[26]+Y_public",
                 "Com_dyn:Commitment[]",
                 "S_route:MetadataReference[]",
@@ -2646,20 +2646,20 @@ namespace gatzk::protocol
                 "private_payload_leakage_gate",
             };
             artifact.ledger_templates = {
-                "ObservationLedger:v2:formal_T_and_FS_coordinates"
+                "ObservationLedger:formal_T_and_FS_coordinates"
                 ":field_group_direct_sum:shared_blinder_dependency_DAG"
                 ":canonical_RREF:Im(A_sec)_subset_Im(A_blind)"
                 ":lexicographic_qmax:BadCRS_obs_certificates",
-                "RandomIdentityLedger:v2:verifier_expression_DAG"
+                "RandomIdentityLedger:verifier_expression_DAG"
                 ":challenge_stage:canonical_exclusion_polynomial"
                 ":global_Dmax_degree:multiplicity",
-                "SecurityBudgetLedger:v2:canonical_exact_rational"
+                "SecurityBudgetLedger:canonical_exact_rational"
                 ":Q_FS_max:KZG+register+RO+algebraic+abort+CRS",
             };
-            artifact.kzg_assumption_profile = "shifted_kzg_divisibility_v1";
+            artifact.kzg_assumption_profile = "shifted_kzg_divisibility";
             artifact.shift_algorithm_id = "coefficient_taylor_shift";
             artifact.shift_algorithm_spec =
-                "coefficient_taylor_shift:v1|fixed_d_shift_cfg_plus_one"
+                "coefficient_taylor_shift|fixed_d_shift_cfg_plus_one"
                 "|factorial_inverse_factorial_0_through_Dmax"
                 "|reverse_convolution|n_shift=next_pow2(2*d_shift+1)"
                 "|canonical_root_derivation|PK_coef_fixed_length_MSM"
@@ -3437,7 +3437,7 @@ namespace gatzk::protocol
                     }
                     std::sort(sources.begin(), sources.end());
                     std::string certificate =
-                        "independent-quotient-mask-v1|derived-object=" + entry.tag.substr(2) + "|identity=t_zk=t+Z_D*R_t" + "|t=constraint_accumulator_D/Z_D" + "|field-evaluations-eliminated-by-verifier-quotient-DAG" + "|source-objects=";
+                        "independent-quotient-mask|derived-object=" + entry.tag.substr(2) + "|identity=t_zk=t+Z_D*R_t" + "|t=constraint_accumulator_D/Z_D" + "|field-evaluations-eliminated-by-verifier-quotient-DAG" + "|source-objects=";
                     if (sources.empty())
                     {
                         certificate += "none(public-only-or-zero-constraint-accumulator)";
@@ -3509,7 +3509,7 @@ namespace gatzk::protocol
                 auto relation_pivot = algebra::FieldElement::zero();
                 auto shift_delta = algebra::FieldElement::zero();
                 std::string certificate =
-                    "canonical-rref-prefix-v1:commitment" + std::string(entry.enters_opening
+                    "canonical-rref-prefix:commitment" + std::string(entry.enters_opening
                                                                             ? "+domain-eval(z,z_omega)+point-group-witness(z,z_omega)"
                                                                             : "");
                 for (const auto &[derived, dependencies] :
@@ -4358,7 +4358,7 @@ namespace gatzk::protocol
         // of a middle schema/ledger/DAG row must change the digest.
         std::string instance_bytes;
         append_canonical_string(
-            instance_bytes, "ProtocolCompilerArtifactInstance:v2");
+            instance_bytes, "ProtocolCompilerArtifactInstance");
         append_canonical_string(instance_bytes, "protocol_template");
         append_canonical_string(instance_bytes, artifact.protocol_canonical_bytes);
         append_canonical_vector(

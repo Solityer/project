@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <array>
-#include <cctype>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -24,7 +23,7 @@ namespace gatzk::protocol
     {
         using algebra::FieldElement;
         constexpr std::string_view kStaticTableGeneratorId =
-            "zkgat_static_table_generator_v1";
+            "zkgat_static_table_generator";
         constexpr std::size_t kMaxRegistryEntries = 1ULL << 20;
 
         void append_u64(std::string *out, std::uint64_t value)
@@ -65,17 +64,6 @@ namespace gatzk::protocol
                     { return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'); });
         }
 
-        std::string canonical_dataset_name(std::string_view value)
-        {
-            std::string out(value);
-            std::transform(
-                out.begin(), out.end(), out.begin(),
-                [](unsigned char ch)
-                { return static_cast<char>(std::tolower(ch)); });
-            std::replace(out.begin(), out.end(), '-', '_');
-            return out;
-        }
-
         void append_registry_entry(
             std::string *out,
             const VerifierRegistryEntry &entry)
@@ -109,7 +97,7 @@ namespace gatzk::protocol
             const model::ModelParameters &model)
         {
             std::ostringstream out;
-            out << "model_layout_v1|arch=" << model.model_arch_id
+            out << "model_layout|arch=" << model.model_arch_id
                 << "|param=" << model.model_param_id
                 << "|input_preprocess=" << model.input_preprocess_id
                 << "|L=" << model.L
@@ -134,7 +122,7 @@ namespace gatzk::protocol
             const VerifierModelShape &model)
         {
             std::ostringstream out;
-            out << "model_layout_v1|arch=" << model.model_arch_id
+            out << "model_layout|arch=" << model.model_arch_id
                 << "|param=" << model.model_param_id
                 << "|input_preprocess=" << model.input_preprocess_id
                 << "|L=" << model.L
@@ -158,7 +146,7 @@ namespace gatzk::protocol
         std::string static_table_serialization(const StaticTables &tables)
         {
             std::ostringstream out;
-            out << "static_tables_v1|range=" << tables.range.size();
+            out << "static_tables|range=" << tables.range.size();
             for (const auto &value : tables.range) out << '|' << value.to_string();
             out << "|lrelu=" << tables.lrelu.size();
             for (const auto &[x, y] : tables.lrelu)
@@ -176,7 +164,7 @@ namespace gatzk::protocol
             std::string *bytes,
             const CanonicalStaticTableShape &shape)
         {
-            append_string(bytes, "canonical_static_table_shape_v1");
+            append_string(bytes, "canonical_static_table_shape");
             append_u64(bytes, shape.range_table_size);
             append_u64(bytes, static_cast<std::uint64_t>(shape.lrelu_min_raw));
             append_u64(bytes, static_cast<std::uint64_t>(shape.lrelu_max_raw));
@@ -198,7 +186,7 @@ namespace gatzk::protocol
             // determine their interpretation; a marker-only certificate is
             // intentionally not sufficient.
             std::string bytes;
-            append_string(&bytes, "static_table_spec_v1");
+            append_string(&bytes, "static_table_spec");
             append_string(&bytes, kStaticTableGeneratorId);
             append_string(&bytes, context.config.static_table_id);
             append_u64(&bytes, context.config.range_bits);
@@ -219,7 +207,7 @@ namespace gatzk::protocol
             const ProtocolContext &context)
         {
             std::string bytes;
-            append_string(&bytes, "range_scale_certificate_v1");
+            append_string(&bytes, "range_scale_certificate");
             append_u64(&bytes, context.config.range_bits);
             append_string(&bytes, context.config.quantization.canonical_serialization());
             append_static_table_shape(
@@ -239,7 +227,7 @@ namespace gatzk::protocol
             const VerifierContext &context)
         {
             std::string bytes;
-            append_string(&bytes, "static_table_spec_v1");
+            append_string(&bytes, "static_table_spec");
             append_string(&bytes, kStaticTableGeneratorId);
             append_string(&bytes, context.config.static_table_id);
             append_u64(&bytes, context.config.range_bits);
@@ -263,7 +251,7 @@ namespace gatzk::protocol
                 throw std::runtime_error(
                     "range/scale certificate requires ProtocolCompilerArtifact");
             std::string bytes;
-            append_string(&bytes, "range_scale_certificate_v1");
+            append_string(&bytes, "range_scale_certificate");
             append_u64(&bytes, context.config.range_bits);
             append_string(&bytes, context.config.quantization.canonical_serialization());
             append_static_table_shape(
@@ -288,7 +276,7 @@ namespace gatzk::protocol
         std::string public_input_serialization(const data::LocalGraph &local)
         {
             std::string bytes;
-            append_string(&bytes, "public_input_v1");
+            append_string(&bytes, "public_input");
             append_string(&bytes, local.name);
             append_string(&bytes, local.input_preprocess_id);
             append_u64(&bytes, local.num_nodes);
@@ -335,7 +323,7 @@ namespace gatzk::protocol
         std::string topology_serialization(const data::LocalGraph &local)
         {
             std::string bytes;
-            append_string(&bytes, "topology_v1");
+            append_string(&bytes, "topology");
             append_u64(&bytes, local.num_nodes);
             append_u64(&bytes, local.num_features);
             append_u64(&bytes, local.num_classes);
@@ -367,8 +355,6 @@ namespace gatzk::protocol
         std::vector<VerifierRegistryEntry> model_registry_entries(
             const ProtocolContext &context)
         {
-            if (!context.model.has_real_multihead)
-                throw std::runtime_error("verifier registry requires the formal multihead model");
             const auto &scales = context.config.quantization;
             const auto degree = context.kzg.manifest.degree_bound;
             if (context.config.range_bits < 1 || context.config.range_bits > 62)
@@ -562,7 +548,6 @@ namespace gatzk::protocol
             registry.srs_degree_bound = context.kzg.manifest.degree_bound;
             registry.srs_g1_generator = context.kzg.vk.g1_generator;
             registry.srs_generator_id = context.kzg.manifest.generator_id;
-            registry.srs_generator_version = context.kzg.manifest.generator_version;
             registry.srs_encoding = context.kzg.manifest.encoding;
             registry.srs_spec_id =
                 context.kzg.manifest.srs_type + ":"
@@ -635,7 +620,6 @@ namespace gatzk::protocol
             out.binding_mode = config.binding_mode;
             out.proof_task = config.proof_task;
             out.security_profile_id = config.security_profile_id;
-            out.hidden_dim = config.hidden_dim;
             out.num_classes = config.num_classes;
             out.range_bits = config.range_bits;
             out.layer_count = config.layer_count;
@@ -649,7 +633,6 @@ namespace gatzk::protocol
         VerifierModelShape public_model_shape(const model::ModelParameters &model)
         {
             VerifierModelShape out;
-            out.has_real_multihead = model.has_real_multihead;
             out.model_arch_id = model.model_arch_id;
             out.model_param_id = model.model_param_id;
             out.input_preprocess_id = model.input_preprocess_id;
@@ -706,7 +689,6 @@ namespace gatzk::protocol
             out.srs_consistency_hash = manifest.srs_consistency_hash;
             out.manifest_hash = manifest.manifest_hash;
             out.generator_id = manifest.generator_id;
-            out.generator_version = manifest.generator_version;
             out.encoding = manifest.encoding;
             out.protocol_schema_id = manifest.protocol_schema_id;
             out.kzg_assumption_profile_id = manifest.kzg_assumption_profile_id;
@@ -734,36 +716,6 @@ namespace gatzk::protocol
             }
         }
 
-        VerifierContext make_context_from_proving_context(
-            const ProtocolContext &prover_context,
-            AuthenticatedVerifierRegistry registry,
-            bool transition)
-        {
-            VerifierContext out;
-            out.config = public_config(prover_context.config);
-            out.dataset = prover_context.dataset;
-            out.local = prover_context.local;
-            out.model = public_model_shape(prover_context.model);
-            out.tables = prover_context.tables;
-            out.domains = prover_context.domains;
-            out.srs = public_srs(prover_context.kzg.manifest);
-            out.kzg_vk = prover_context.kzg.vk;
-            out.public_polynomials = prover_context.public_polynomials;
-            copy_point_map(
-                prover_context.public_commitments,
-                &out.public_commitments,
-                false);
-            copy_point_map(
-                prover_context.static_commitments,
-                &out.static_commitments,
-                false);
-            out.compiler_artifact = prover_context.compiler_artifact;
-            out.registry = std::move(registry);
-            out.authenticated_registry_digest = out.registry.canonical_digest();
-            out.in_process_transition = transition;
-            return out;
-        }
-
         struct RegistryEntrySpec
         {
             std::string label;
@@ -777,8 +729,6 @@ namespace gatzk::protocol
         std::vector<RegistryEntrySpec> verifier_model_entry_specs(
             const VerifierContext &context)
         {
-            if (!context.model.has_real_multihead)
-                throw std::runtime_error("verifier registry requires the formal multihead model");
             std::vector<RegistryEntrySpec> specs;
             for (std::size_t layer = 0; layer < context.model.hidden_layers.size(); ++layer)
             {
@@ -975,7 +925,7 @@ namespace gatzk::protocol
                 srs.domain_sizes.begin(), srs.domain_sizes.end());
             std::sort(ordered.begin(), ordered.end());
             std::ostringstream canonical;
-            canonical << "zkgat:domain-size-catalog:v1";
+            canonical << "zkgat:domain-size-catalog";
             for (const auto &[name, size] : ordered)
                 canonical << '|' << name << '=' << size;
             return sha256_hex(canonical.str());
@@ -988,7 +938,7 @@ namespace gatzk::protocol
                 srs.domain_sizes.begin(), srs.domain_sizes.end());
             std::sort(ordered.begin(), ordered.end());
             std::ostringstream canonical;
-            canonical << "zkgat:domain-generator-catalog:v1"
+            canonical << "zkgat:domain-generator-catalog"
                       << "|root_derivation_id=" << srs.root_derivation_id
                       << "|row_order=" << srs.row_order;
             for (const auto &[name, size] : ordered)
@@ -1003,7 +953,7 @@ namespace gatzk::protocol
 
         std::string verifier_key_bytes(const crypto::KZGVerifierKey &vk)
         {
-            std::string out = "GATZK-VK-v2\n";
+            std::string out = "GATZK-VK\n";
             const auto append_point = [&](const auto &point)
             {
                 const auto bytes = crypto::serialize(point);
@@ -1038,7 +988,7 @@ namespace gatzk::protocol
                 srs.domain_sizes.begin(), srs.domain_sizes.end());
             std::sort(ordered.begin(), ordered.end());
             std::ostringstream canonical;
-            canonical << "zkgat:vanishing-g2-catalog:v1";
+            canonical << "zkgat:vanishing-g2-catalog";
             for (const auto &[name, size] : ordered)
             {
                 const auto it = vk.domain_zero_g2.find(name);
@@ -1129,8 +1079,7 @@ namespace gatzk::protocol
                     && model.hidden_profile.at(index).head_dim
                            == config.hidden_profile.at(index).head_dim;
             }
-            if (!model.has_real_multihead
-                || model.L < 2
+            if (model.L < 2
                 || model.L != config.layer_count
                 || model.input_preprocess_id.empty()
                 || model.input_preprocess_id != config.input_preprocess_id
@@ -1354,17 +1303,16 @@ namespace gatzk::protocol
         bool validate_srs_metadata(const VerifierContext &context)
         {
             const auto &srs = context.srs;
-            if (srs.manifest_format != "zkgat_srs_manifest_v8"
+            if (srs.manifest_format != "zkgat_srs_manifest"
                 || srs.curve_id != "bls12_381"
                 || srs.field_modulus_id != "bls12_381_fr"
                 || srs.srs_type != "trusted_srs"
-                || srs.generator_id != "zkgat_srs_setup_tool_v8"
-                || srs.generator_version != "zkgat_srs_setup_tool_v8"
-                || srs.encoding != "canonical_mcl_bls12_381_fixed_v1"
-                || srs.root_derivation_id != "bls12_381_fr_generator_5_v1"
+                || srs.generator_id != "zkgat_srs_setup_tool"
+                || srs.encoding != "canonical_mcl_bls12_381_fixed"
+                || srs.root_derivation_id != "bls12_381_fr_generator_5"
                 || srs.row_order != "ascending_powers_from_one"
                 || srs.security_level != "120-bit"
-                || srs.kzg_assumption_profile_id != "shifted_kzg_divisibility_v1"
+                || srs.kzg_assumption_profile_id != "shifted_kzg_divisibility"
                 || srs.degree_bound == 0
                 || srs.kzg_assumption_degree_bound != srs.degree_bound
                 || srs.kzg_assumption_security_bits != 128
@@ -1486,7 +1434,7 @@ namespace gatzk::protocol
             // viewer.  Re-resolve the one registered typed scale chain and
             // enforce the privacy/protocol policy at the loader boundary so a
             // self-consistent artifact cannot downgrade model privacy or
-            // switch to a legacy proof mode.
+            // switch away from the formal proof mode.
             if (context.config.srs_type != "trusted_srs"
                 || context.config.privacy_policy != "model_and_trace_hidden"
                 || context.config.input_privacy
@@ -1498,7 +1446,7 @@ namespace gatzk::protocol
                 || context.config.proof_task
                        != "node_classification_full_gat"
                 || context.config.security_profile_id
-                       != "zkgat_secure_profile_v1")
+                       != "zkgat_secure_profile")
                 return false;
             try
             {
@@ -1538,8 +1486,7 @@ namespace gatzk::protocol
                     return false;
             if (context.dataset.name.empty()
                 || context.local.name.empty()
-                || canonical_dataset_name(context.config.dataset)
-                       != canonical_dataset_name(context.dataset.name)
+                || context.config.dataset != context.dataset.name
                 || context.config.input_preprocess_id.empty()
                 || context.config.input_preprocess_id
                        != util::canonical_input_preprocess_id(context.config.dataset)
@@ -1597,7 +1544,7 @@ namespace gatzk::protocol
                 || context.kzg_vk.degree_bound != context.srs.degree_bound
                 || context.kzg_vk.manifest_hash != context.srs.manifest_hash)
                 return false;
-            if (context.registry.format != "zkgat_verifier_registry_v1"
+            if (context.registry.format != "zkgat_verifier_registry"
                 || context.registry.registry_id.empty()
                 || context.registry.registry_id != context.config.model_param_id
                 || context.registry.model_arch_id != context.config.model_arch_id
@@ -1615,8 +1562,6 @@ namespace gatzk::protocol
                 || context.registry.srs_degree_bound != context.srs.degree_bound
                 || context.registry.srs_g1_generator != context.kzg_vk.g1_generator
                 || context.registry.srs_generator_id != context.srs.generator_id
-                || context.registry.srs_generator_version
-                       != context.srs.generator_version
                 || context.registry.srs_encoding != context.srs.encoding
                 || context.registry.srs_spec_id
                        != context.srs.srs_type + ":"
@@ -2273,7 +2218,6 @@ namespace gatzk::protocol
             std::string_view(
                 reinterpret_cast<const char *>(generator.data()), generator.size()));
         append_string(&bytes, srs_generator_id);
-        append_string(&bytes, srs_generator_version);
         append_string(&bytes, srs_encoding);
         append_string(&bytes, srs_spec_id);
         append_string(&bytes, srs_protocol_compiler_artifact_hash);
@@ -2310,33 +2254,6 @@ namespace gatzk::protocol
         return sha256_hex(canonical_serialization());
     }
 
-    VerifierContext make_verifier_context(const ProtocolContext &prover_context)
-    {
-        auto registry = registry_from_context(prover_context);
-        // Constructing the digest here is an explicit transition check.  The
-        // resulting context is not accepted by the formal main verifier until
-        // an authenticated on-disk registry is loaded.
-        if (!lower_hex_256(registry.canonical_digest()))
-            throw std::runtime_error("failed to derive canonical verifier registry digest");
-        return make_context_from_proving_context(prover_context, std::move(registry), true);
-    }
-
-    VerifierContext make_verifier_public_inputs(
-        const ProtocolContext &prover_context)
-    {
-        // This conversion copies only public data and shape.  Static/model
-        // points are deliberately dropped and must be supplied by the
-        // authenticated registry loader below.
-        VerifierContext out = make_context_from_proving_context(
-            prover_context,
-            AuthenticatedVerifierRegistry{},
-            false);
-        out.static_commitments.clear();
-        out.registry = AuthenticatedVerifierRegistry{};
-        out.authenticated_registry_digest.clear();
-        return out;
-    }
-
     VerifierRegistrationArtifact make_verifier_registration_artifact(
         const ProtocolContext &prover_context)
     {
@@ -2349,7 +2266,6 @@ namespace gatzk::protocol
             throw std::runtime_error(
                 "candidate verifier registration requires an authenticated compiler artifact");
         VerifierRegistrationArtifact artifact;
-        artifact.format_version = 1;
         artifact.config = public_config(prover_context.config);
         artifact.dataset = prover_context.dataset;
         // Labels and raw floating-point features are training-side material and
@@ -2441,7 +2357,6 @@ namespace gatzk::protocol
         out.registry = artifact.registry;
         out.authenticated_registry_digest = artifact.canonical_digest();
         out.trusted_registry_digest = trusted_registry_digest;
-        out.in_process_transition = false;
         if (!validate_registry_shape(out))
             throw std::runtime_error(
                 "authenticated verifier registration failed independent context validation");
@@ -2529,7 +2444,6 @@ namespace gatzk::protocol
             out.config.binding_mode = verifier_context.config.binding_mode;
             out.config.proof_task = verifier_context.config.proof_task;
             out.config.security_profile_id = verifier_context.config.security_profile_id;
-            out.config.hidden_dim = verifier_context.config.hidden_dim;
             out.config.num_classes = verifier_context.config.num_classes;
             out.config.range_bits = verifier_context.config.range_bits;
             out.config.layer_count = verifier_context.config.layer_count;
@@ -2543,12 +2457,9 @@ namespace gatzk::protocol
             out.tables = verifier_context.tables;
             out.domains = verifier_context.domains;
 
-            // This is a shape-only compatibility object.  The legacy verifier
-            // helpers still iterate model head containers to derive labels and
-            // schema dimensions, so populate only empty tensor shells; any
-            // accidental parameter read then fails closed instead of observing
-            // a forged zero-valued model.
-            out.model.has_real_multihead = verifier_context.model.has_real_multihead;
+            // This is a shape-only execution object.  Populate only empty
+            // tensor shells; any accidental parameter read fails closed rather
+            // than observing a forged zero-valued model.
             out.model.model_arch_id = verifier_context.model.model_arch_id;
             out.model.model_param_id = verifier_context.model.model_param_id;
             out.model.input_preprocess_id = verifier_context.model.input_preprocess_id;

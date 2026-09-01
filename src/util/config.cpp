@@ -11,29 +11,17 @@
 #include <limits>
 
 // 实现正式配置解析与约束检查
-// 负责拦截过时字段和形状冲突，避免错误配置进入 proving / verifying 主链
+// 负责拦截未声明字段和形状冲突，避免错误配置进入 proving / verifying 主链
 
 namespace gatzk::util
 {
     std::string canonical_input_preprocess_id(std::string_view dataset)
     {
-        const auto normalized = [&]
-        {
-            std::string value(dataset);
-            std::transform(
-                value.begin(), value.end(), value.begin(),
-                [](unsigned char ch)
-                {
-                    return static_cast<char>(std::tolower(ch));
-                });
-            std::replace(value.begin(), value.end(), '-', '_');
-            return value;
-        }();
-        if (normalized == "ogbn_arxiv")
-            return "ogbn_arxiv_raw_float32_v1";
-        if (normalized == "cora" || normalized == "citeseer"
-            || normalized == "pubmed" || normalized == "ppi")
-            return "row_normalize_v1";
+        if (dataset == "ogbn_arxiv")
+            return "ogbn_arxiv_raw_float32";
+        if (dataset == "cora" || dataset == "citeseer"
+            || dataset == "pubmed" || dataset == "ppi")
+            return "row_normalize";
         throw std::runtime_error(
             "unsupported formal dataset for input preprocessing: "
             + std::string(dataset));
@@ -43,7 +31,7 @@ namespace gatzk::util
     {
 
         constexpr std::string_view kCanonicalScaleChainSourceName =
-            "configs/quantization_scale_chain_v1.cfg";
+            "configs/quantization_scale_chain.cfg";
 
         std::string serialize_scale_vector(
             std::string_view name,
@@ -448,14 +436,14 @@ namespace gatzk::util
             {
                 if (entries.contains(key))
                 {
-                    throw std::runtime_error("unsupported legacy config field: " + key);
+                    throw std::runtime_error("unsupported non-canonical config field: " + key);
                 }
             }
         }
 
         void validate_supported_keys(const std::unordered_map<std::string, std::string> &entries)
         {
-            // formal 主线显式列出允许字段，未收敛的历史键直接拒绝进入运行时
+            // formal 主线显式列出允许字段，未知键直接拒绝进入运行时
             static const std::set<std::string> supported_keys = {
                 "L",
                 "K_out",
@@ -473,7 +461,6 @@ namespace gatzk::util
                 "dump_trace",
                 "edge_sort_rule",
                 "export_dir",
-                "hidden_dim",
                 "hidden_profile",
                 "input_preprocess_id",
                 "model_arch_id",
@@ -729,9 +716,8 @@ namespace gatzk::util
             }
 
             // The five registered experiments intentionally share one formal
-            // model family.  Rejecting a legacy shape here keeps an old
-            // checkpoint/config pair out of the proving path even when a
-            // caller supplies a non-canonical config file.
+            // model family.  Rejecting a non-canonical shape keeps an invalid
+            // checkpoint/config pair out of the proving path.
             struct CanonicalShape
             {
                 std::vector<std::size_t> d_in;
@@ -788,7 +774,7 @@ namespace gatzk::util
     std::string QuantizationScaleChain::canonical_serialization() const
     {
         std::ostringstream out;
-        out << "schema=gat_l3_scale_chain_v1"
+        out << "schema=gat_l3_scale_chain"
             << "|S_input=" << s_input
             << "|S_Delta=" << s_delta
             << "|S_exp=" << s_exp
@@ -823,7 +809,7 @@ namespace gatzk::util
         const auto source_id_it = source.find("quant_cfg_id");
         const auto source_schema_it = source.find("schema");
         if (source_id_it == source.end() || source_schema_it == source.end()
-            || source_schema_it->second != "gat_l3_scale_chain_v1"
+            || source_schema_it->second != "gat_l3_scale_chain"
             || source_id_it->second != quant_cfg_id)
         {
             throw std::runtime_error(
@@ -922,7 +908,7 @@ namespace gatzk::util
         }
 
         AppConfig config;
-        fail_if_present(entries, {"hidden_heads", "checkpoint_dir"});
+        fail_if_present(entries, {"checkpoint_dir"});
         validate_supported_keys(entries);
         require_explicit_family_shape_fields(entries);
         const auto absolute = std::filesystem::absolute(path);
@@ -986,8 +972,6 @@ namespace gatzk::util
             config.proof_task = entries["proof_task"];
         if (entries.contains("security_profile_id"))
             config.security_profile_id = entries["security_profile_id"];
-        if (entries.contains("hidden_dim"))
-            config.hidden_dim = std::stoull(entries["hidden_dim"]);
         if (entries.contains("num_classes"))
             config.num_classes = std::stoull(entries["num_classes"]);
         if (entries.contains("range_bits"))

@@ -2627,8 +2627,8 @@ namespace gatzk::crypto
         // Route 2: full-width warm-resident wave.
         //
         // A large same-base batch can exceed the *aggregate* scalar envelope
-        // even though every individual MSM fits comfortably.  The old route
-        // immediately split the scalar dimension into 2^20 chunks, turning,
+        // even though every individual MSM fits comfortably.  Direct scalar
+        // chunking splits the dimension into 2^20 chunks, turning,
         // for example, a 50M x 2 batch into roughly fifty ICICLE launches.
         //
         // When the SRS prefix is already resident, execute the independent

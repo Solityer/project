@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -21,6 +22,7 @@
 #include <stdexcept>
 #include <string_view>
 #include <thread>
+#include <unordered_set>
 #include <unordered_map>
 #include <utility>
 #include <deque>
@@ -32,6 +34,7 @@
 #include "gatzk/algebra/domain_evaluation.hpp"
 #include "gatzk/algebra/field_io.hpp"
 #include "gatzk/algebra/vector_ops.hpp"
+#include "gatzk/crypto/compiler_artifact.hpp"
 #include "gatzk/protocol/schema.hpp"
 #include "gatzk/util/logging.hpp"
 #include "gatzk/util/route2.hpp"
@@ -67,126 +70,545 @@ namespace gatzk::crypto
             return bytes_to_hex(digest, sizeof(digest));
         }
 
-        std::string sha256_bytes_hex(const std::vector<std::uint8_t> &data)
-        {
-            unsigned char digest[SHA256_DIGEST_LENGTH];
-            SHA256(data.data(), data.size(), digest);
-            return bytes_to_hex(digest, sizeof(digest));
-        }
+        constexpr std::array<std::string_view, 41>
+            kCanonicalSrsManifestFields = {
+                "manifest_format",
+                "srs_id",
+                "curve_id",
+                "field_modulus_id",
+                "srs_type",
+                "ceremony_transcript_hash",
+                "setup_transcript_hash",
+                "degree_bound",
+                "domain_sizes",
+                "domain_generators",
+                "root_derivation_id",
+                "row_order",
+                "protocol_compiler_artifact_path",
+                "protocol_compiler_artifact_hash",
+                "protocol_schema_id",
+                "max_instance_envelope_id",
+                "max_instance_envelope_hash",
+                "max_instance_envelope",
+                "proof_schema_template_hash",
+                "observation_ledger_hash",
+                "random_identity_ledger_hash",
+                "security_budget_ledger_hash",
+                "pk_coef_path",
+                "pk_coef_hash",
+                "pk_lagrange_paths",
+                "pk_lagrange_hashes",
+                "vk_path",
+                "vk_hash",
+                "vanishing_g2_hash",
+                "srs_audit_report_path",
+                "srs_audit_report_hash",
+                "srs_consistency_hash",
+                "encoding",
+                "generator_id",
+                "security_level",
+                "kzg_assumption_profile_id",
+                "kzg_assumption_degree_bound",
+                "kzg_assumption_security_bits",
+                "kzg_assumption_domain_catalog_hash",
+                "domain_generator_catalog_hash",
+                "manifest_hash",
+            };
 
-        std::string trim(std::string value)
-        {
-            const auto begin = value.find_first_not_of(" \t\r\n\"");
-            if (begin == std::string::npos)
-            {
-                return {};
-            }
-            const auto end = value.find_last_not_of(" \t\r\n\",");
-            return value.substr(begin, end - begin + 1);
-        }
+        constexpr std::array<std::string_view, 16>
+            kCanonicalSrsEnvelopeFields = {
+                "max_layers",
+                "max_hidden_heads_per_layer",
+                "max_hidden_head_dim",
+                "max_input_dim",
+                "max_output_heads",
+                "max_classes",
+                "max_graphs",
+                "max_nodes",
+                "max_edges",
+                "max_total_nodes",
+                "max_concat_dim",
+                "max_range_bits",
+                "max_coefficient_object_length",
+                "max_object_family_count",
+                "max_coefficient_chunks",
+                "security_target_bits",
+            };
 
-        std::string manifest_scalar(const std::string &text, const std::string &key)
+        enum class SrsJsonKind
         {
-            const auto quoted_key = "\"" + key + "\"";
-            const auto pos = text.find(quoted_key);
-            if (pos == std::string::npos)
-            {
-                return {};
-            }
-            const auto colon = text.find(':', pos + quoted_key.size());
-            if (colon == std::string::npos)
-            {
-                return {};
-            }
-            const auto line_end = text.find_first_of("\r\n", colon + 1);
-            return trim(text.substr(colon + 1, line_end == std::string::npos ? std::string::npos : line_end - colon - 1));
-        }
+            Null,
+            Boolean,
+            Number,
+            String,
+            Array,
+            Object,
+        };
 
-        std::string manifest_object(const std::string &text, const std::string &key)
+        struct SrsJsonValue
         {
-            const auto quoted_key = "\"" + key + "\"";
-            const auto pos = text.find(quoted_key);
-            if (pos == std::string::npos)
+            SrsJsonKind kind = SrsJsonKind::Null;
+            std::string scalar;
+            std::vector<SrsJsonValue> array;
+            std::vector<std::pair<std::string, SrsJsonValue>> object;
+            // The parser records the raw key position so the manifest hash can
+            // retain the writer's exact prefix digest without searching text.
+            std::vector<std::size_t> object_key_positions;
+        };
+
+        class SrsJsonParser
+        {
+        public:
+            explicit SrsJsonParser(const std::string &text) : text_(text) {}
+
+            SrsJsonValue parse()
             {
-                return {};
+                skip_whitespace();
+                SrsJsonValue value = parse_value();
+                skip_whitespace();
+                if (position_ != text_.size())
+                    fail("SRS manifest has trailing data");
+                return value;
             }
-            const auto open = text.find('{', pos + quoted_key.size());
-            if (open == std::string::npos)
+
+        private:
+            [[noreturn]] void fail(const std::string &message) const
             {
-                return {};
+                throw std::runtime_error(
+                    message + " at byte " + std::to_string(position_));
             }
-            std::size_t depth = 0;
-            for (std::size_t i = open; i < text.size(); ++i)
+
+            void skip_whitespace()
             {
-                if (text[i] == '{')
+                while (position_ < text_.size()
+                       && std::isspace(static_cast<unsigned char>(text_[position_])))
+                    ++position_;
+            }
+
+            bool consume(char expected)
+            {
+                skip_whitespace();
+                if (position_ < text_.size() && text_[position_] == expected)
                 {
-                    ++depth;
+                    ++position_;
+                    return true;
                 }
-                else if (text[i] == '}')
+                return false;
+            }
+
+            SrsJsonValue parse_value()
+            {
+                skip_whitespace();
+                if (position_ >= text_.size())
+                    fail("SRS manifest value is missing");
+                switch (text_[position_])
                 {
-                    --depth;
-                    if (depth == 0)
+                case '{':
+                    return parse_object();
+                case '[':
+                    return parse_array();
+                case '"':
+                {
+                    SrsJsonValue value;
+                    value.kind = SrsJsonKind::String;
+                    value.scalar = parse_string();
+                    return value;
+                }
+                case 't':
+                    parse_literal("true");
+                    return SrsJsonValue{.kind = SrsJsonKind::Boolean, .scalar = "true"};
+                case 'f':
+                    parse_literal("false");
+                    return SrsJsonValue{.kind = SrsJsonKind::Boolean, .scalar = "false"};
+                case 'n':
+                    parse_literal("null");
+                    return SrsJsonValue{.kind = SrsJsonKind::Null};
+                default:
+                    if (text_[position_] == '-'
+                        || std::isdigit(static_cast<unsigned char>(text_[position_])))
                     {
-                        return text.substr(open + 1, i - open - 1);
+                        SrsJsonValue value;
+                        value.kind = SrsJsonKind::Number;
+                        value.scalar = parse_number();
+                        return value;
+                    }
+                    fail("malformed SRS manifest value");
+                }
+            }
+
+            void parse_literal(std::string_view literal)
+            {
+                if (text_.compare(position_, literal.size(), literal) != 0)
+                    fail("malformed SRS manifest literal");
+                position_ += literal.size();
+            }
+
+            std::string parse_string()
+            {
+                skip_whitespace();
+                if (position_ >= text_.size() || text_[position_] != '"')
+                    fail("SRS manifest string is missing");
+                ++position_;
+                std::string result;
+                while (position_ < text_.size())
+                {
+                    const unsigned char character =
+                        static_cast<unsigned char>(text_[position_++]);
+                    if (character == '"')
+                        return result;
+                    if (character < 0x20)
+                        fail("SRS manifest string contains a control byte");
+                    if (character != '\\')
+                    {
+                        result.push_back(static_cast<char>(character));
+                        continue;
+                    }
+                    if (position_ >= text_.size())
+                        fail("unterminated SRS manifest string");
+                    const char escaped = text_[position_++];
+                    switch (escaped)
+                    {
+                    case '"': result.push_back('"'); break;
+                    case '\\': result.push_back('\\'); break;
+                    case '/': result.push_back('/'); break;
+                    case 'b': result.push_back('\b'); break;
+                    case 'f': result.push_back('\f'); break;
+                    case 'n': result.push_back('\n'); break;
+                    case 'r': result.push_back('\r'); break;
+                    case 't': result.push_back('\t'); break;
+                    case 'u':
+                    {
+                        if (position_ + 4 > text_.size())
+                            fail("truncated SRS manifest unicode escape");
+                        unsigned value = 0;
+                        for (std::size_t index = 0; index < 4; ++index)
+                        {
+                            const char digit = text_[position_++];
+                            value <<= 4U;
+                            if (digit >= '0' && digit <= '9')
+                                value |= static_cast<unsigned>(digit - '0');
+                            else if (digit >= 'a' && digit <= 'f')
+                                value |= static_cast<unsigned>(digit - 'a' + 10);
+                            else if (digit >= 'A' && digit <= 'F')
+                                value |= static_cast<unsigned>(digit - 'A' + 10);
+                            else
+                                fail("malformed SRS manifest unicode escape");
+                        }
+                        if (value > 0x7f)
+                            fail("SRS manifest must use ASCII canonical strings");
+                        result.push_back(static_cast<char>(value));
+                        break;
+                    }
+                    default:
+                        fail("malformed SRS manifest escape");
                     }
                 }
+                fail("unterminated SRS manifest string");
             }
-            throw std::runtime_error("unterminated SRS manifest object: " + key);
+
+            std::string parse_number()
+            {
+                const std::size_t begin = position_;
+                if (text_[position_] == '-')
+                    ++position_;
+                if (position_ >= text_.size())
+                    fail("malformed SRS manifest number");
+                if (text_[position_] == '0')
+                {
+                    ++position_;
+                    if (position_ < text_.size()
+                        && std::isdigit(static_cast<unsigned char>(text_[position_])))
+                        fail("SRS manifest number has a leading zero");
+                }
+                else if (text_[position_] >= '1' && text_[position_] <= '9')
+                {
+                    while (position_ < text_.size()
+                           && std::isdigit(static_cast<unsigned char>(text_[position_])))
+                        ++position_;
+                }
+                else
+                    fail("malformed SRS manifest number");
+                if (position_ < text_.size() && text_[position_] == '.')
+                {
+                    ++position_;
+                    const auto fraction_begin = position_;
+                    while (position_ < text_.size()
+                           && std::isdigit(static_cast<unsigned char>(text_[position_])))
+                        ++position_;
+                    if (position_ == fraction_begin)
+                        fail("malformed SRS manifest fraction");
+                }
+                if (position_ < text_.size()
+                    && (text_[position_] == 'e' || text_[position_] == 'E'))
+                {
+                    ++position_;
+                    if (position_ < text_.size()
+                        && (text_[position_] == '+' || text_[position_] == '-'))
+                        ++position_;
+                    const auto exponent_begin = position_;
+                    while (position_ < text_.size()
+                           && std::isdigit(static_cast<unsigned char>(text_[position_])))
+                        ++position_;
+                    if (position_ == exponent_begin)
+                        fail("malformed SRS manifest exponent");
+                }
+                return text_.substr(begin, position_ - begin);
+            }
+
+            SrsJsonValue parse_array()
+            {
+                SrsJsonValue result;
+                result.kind = SrsJsonKind::Array;
+                ++position_;
+                skip_whitespace();
+                if (consume(']'))
+                    return result;
+                while (true)
+                {
+                    result.array.push_back(parse_value());
+                    if (consume(']'))
+                        return result;
+                    if (!consume(','))
+                        fail("malformed SRS manifest array");
+                    skip_whitespace();
+                    if (position_ < text_.size() && text_[position_] == ']')
+                        fail("SRS manifest array has a trailing comma");
+                }
+            }
+
+            SrsJsonValue parse_object()
+            {
+                SrsJsonValue result;
+                result.kind = SrsJsonKind::Object;
+                const bool top_level_object = object_depth_ == 0;
+                ++object_depth_;
+                ++position_;
+                skip_whitespace();
+                if (consume('}'))
+                {
+                    --object_depth_;
+                    return result;
+                }
+                std::unordered_set<std::string> seen;
+                while (true)
+                {
+                    skip_whitespace();
+                    const auto key_position = position_;
+                    const auto key = parse_string();
+                    if (!seen.insert(key).second)
+                    {
+                        if (top_level_object)
+                            throw std::runtime_error(
+                                "SRS manifest contains duplicate top-level field: "
+                                + key);
+                        throw std::runtime_error(
+                            "SRS manifest contains duplicate nested field: " + key);
+                    }
+                    if (!consume(':'))
+                        fail("SRS manifest object field lacks a value: " + key);
+                    result.object.emplace_back(key, parse_value());
+                    result.object_key_positions.push_back(key_position);
+                    if (consume('}'))
+                    {
+                        --object_depth_;
+                        return result;
+                    }
+                    if (!consume(','))
+                        fail("malformed SRS manifest object");
+                    skip_whitespace();
+                    if (position_ < text_.size() && text_[position_] == '}')
+                        fail("SRS manifest object has a trailing comma");
+                }
+            }
+
+            const std::string &text_;
+            std::size_t position_ = 0;
+            std::size_t object_depth_ = 0;
+        };
+
+        const SrsJsonValue &require_manifest_field(
+            const SrsJsonValue &root,
+            std::string_view key)
+        {
+            if (root.kind != SrsJsonKind::Object)
+                throw std::runtime_error("SRS manifest must be a JSON object");
+            for (const auto &entry : root.object)
+                if (entry.first == key)
+                    return entry.second;
+            throw std::runtime_error(
+                "SRS manifest is missing canonical field: " + std::string(key));
         }
 
-        std::unordered_map<std::string, std::string> parse_string_map(const std::string &object)
+        void validate_srs_manifest_fields(const SrsJsonValue &root)
         {
+            if (root.kind != SrsJsonKind::Object)
+                throw std::runtime_error("SRS manifest must be a JSON object");
+            std::unordered_set<std::string_view> allowed(
+                kCanonicalSrsManifestFields.begin(),
+                kCanonicalSrsManifestFields.end());
+            std::unordered_set<std::string> fields;
+            fields.reserve(root.object.size());
+            for (const auto &entry : root.object)
+            {
+                if (!allowed.contains(entry.first))
+                    throw std::runtime_error(
+                        "SRS manifest contains unknown/non-canonical manifest field: "
+                        + entry.first);
+                fields.insert(entry.first);
+            }
+            for (const auto field : kCanonicalSrsManifestFields)
+            {
+                if (!fields.contains(std::string(field)))
+                    throw std::runtime_error(
+                        "SRS manifest is missing canonical field: "
+                        + std::string(field));
+            }
+        }
+
+        std::string manifest_string(
+            const SrsJsonValue &value,
+            std::string_view label)
+        {
+            if (value.kind != SrsJsonKind::String)
+                throw std::runtime_error(
+                    "SRS manifest field must be a string: " + std::string(label));
+            return value.scalar;
+        }
+
+        std::size_t manifest_unsigned(
+            const SrsJsonValue &value,
+            std::string_view label)
+        {
+            if (value.kind != SrsJsonKind::Number || value.scalar.empty()
+                || value.scalar.front() == '-'
+                || !std::all_of(
+                    value.scalar.begin(), value.scalar.end(),
+                    [](unsigned char character) {
+                        return character >= '0' && character <= '9';
+                    }))
+                throw std::runtime_error(
+                    "SRS manifest field must be an unsigned integer: "
+                    + std::string(label));
+            try
+            {
+                const auto parsed = std::stoull(value.scalar);
+                if (parsed > std::numeric_limits<std::size_t>::max())
+                    throw std::out_of_range("SRS manifest integer");
+                return static_cast<std::size_t>(parsed);
+            }
+            catch (const std::exception &)
+            {
+                throw std::runtime_error(
+                    "SRS manifest unsigned integer is out of range: "
+                    + std::string(label));
+            }
+        }
+
+        std::unordered_map<std::string, std::string> parse_manifest_string_map(
+            const SrsJsonValue &value,
+            std::string_view label)
+        {
+            if (value.kind != SrsJsonKind::Object)
+                throw std::runtime_error(
+                    "SRS manifest nested field must be an object: "
+                    + std::string(label));
             std::unordered_map<std::string, std::string> out;
-            std::size_t pos = 0;
-            while (true)
+            out.reserve(value.object.size());
+            for (const auto &entry : value.object)
             {
-                const auto key_begin = object.find('"', pos);
-                if (key_begin == std::string::npos)
-                {
-                    break;
-                }
-                const auto key_end = object.find('"', key_begin + 1);
-                const auto value_begin = object.find('"', object.find(':', key_end) + 1);
-                const auto value_end = object.find('"', value_begin + 1);
-                if (key_end == std::string::npos || value_begin == std::string::npos || value_end == std::string::npos)
-                {
-                    throw std::runtime_error("invalid string map in SRS manifest");
-                }
-                out.emplace(object.substr(key_begin + 1, key_end - key_begin - 1),
-                            object.substr(value_begin + 1, value_end - value_begin - 1));
-                pos = value_end + 1;
+                if (entry.second.kind != SrsJsonKind::String)
+                    throw std::runtime_error(
+                        "SRS manifest nested field must contain strings: "
+                        + std::string(label) + "." + entry.first);
+                out.emplace(entry.first, entry.second.scalar);
             }
             return out;
         }
 
-        std::unordered_map<std::string, std::size_t> parse_size_map(const std::string &object)
+        std::unordered_map<std::string, std::size_t> parse_manifest_size_map(
+            const SrsJsonValue &value,
+            std::string_view label)
         {
+            if (value.kind != SrsJsonKind::Object)
+                throw std::runtime_error(
+                    "SRS manifest nested field must be an object: "
+                    + std::string(label));
             std::unordered_map<std::string, std::size_t> out;
-            std::size_t pos = 0;
-            while (true)
-            {
-                const auto key_begin = object.find('"', pos);
-                if (key_begin == std::string::npos)
-                {
-                    break;
-                }
-                const auto key_end = object.find('"', key_begin + 1);
-                const auto colon = object.find(':', key_end);
-                if (key_end == std::string::npos || colon == std::string::npos)
-                {
-                    throw std::runtime_error("invalid size map in SRS manifest");
-                }
-                const auto number_begin = object.find_first_of("0123456789", colon + 1);
-                const auto number_end = object.find_first_not_of("0123456789", number_begin);
-                if (number_begin == std::string::npos)
-                {
-                    throw std::runtime_error("invalid numeric value in SRS manifest");
-                }
-                out.emplace(object.substr(key_begin + 1, key_end - key_begin - 1),
-                            static_cast<std::size_t>(std::stoull(object.substr(number_begin, number_end - number_begin))));
-                pos = number_end;
-            }
+            out.reserve(value.object.size());
+            for (const auto &entry : value.object)
+                out.emplace(
+                    entry.first,
+                    manifest_unsigned(entry.second, std::string(label) + "." + entry.first));
             return out;
+        }
+
+        template <typename Map>
+        void validate_srs_nested_key_set(
+            const Map &actual,
+            const std::vector<std::string_view> &expected,
+            const std::string &label)
+        {
+            std::unordered_set<std::string_view> expected_set(
+                expected.begin(), expected.end());
+            for (const auto &[key, _] : actual)
+            {
+                (void)_;
+                if (!expected_set.contains(key))
+                {
+                    throw std::runtime_error(
+                        "SRS manifest contains unknown/non-canonical nested field in "
+                        + label + ": " + key);
+                }
+            }
+            for (const auto key : expected)
+            {
+                if (!actual.contains(std::string(key)))
+                {
+                    throw std::runtime_error(
+                        "SRS manifest is missing canonical nested field in "
+                        + label + ": " + std::string(key));
+                }
+            }
+        }
+
+        void validate_srs_manifest_nested_schema(const SRSManifest &manifest)
+        {
+            const std::vector<std::string_view> envelope_fields(
+                kCanonicalSrsEnvelopeFields.begin(),
+                kCanonicalSrsEnvelopeFields.end());
+            validate_srs_nested_key_set(
+                manifest.max_instance_envelope,
+                envelope_fields,
+                "max_instance_envelope");
+
+            const auto domain_fields = [&]
+            {
+                std::vector<std::string_view> names;
+                names.reserve(manifest.domain_sizes.size());
+                for (const auto &[name, _] : manifest.domain_sizes)
+                {
+                    (void)_;
+                    names.push_back(name);
+                }
+                return names;
+            }();
+            if (domain_fields.empty())
+            {
+                throw std::runtime_error(
+                    "SRS manifest domain_sizes must not be empty");
+            }
+            validate_srs_nested_key_set(
+                manifest.domain_generators,
+                domain_fields,
+                "domain_generators");
+            validate_srs_nested_key_set(
+                manifest.pk_lagrange_paths,
+                domain_fields,
+                "pk_lagrange_paths");
+            validate_srs_nested_key_set(
+                manifest.pk_lagrange_hashes,
+                domain_fields,
+                "pk_lagrange_hashes");
         }
 
         std::string canonical_domain_catalog_hash(
@@ -196,7 +618,7 @@ namespace gatzk::crypto
                 domains.begin(), domains.end());
             std::sort(ordered.begin(), ordered.end());
             std::ostringstream canonical;
-            canonical << "zkgat:domain-size-catalog:v1";
+            canonical << "zkgat:domain-size-catalog";
             for (const auto &[name, size] : ordered)
             {
                 canonical << '|' << name << '=' << size;
@@ -233,7 +655,7 @@ namespace gatzk::crypto
                 domains.begin(), domains.end());
             std::sort(ordered.begin(), ordered.end());
             std::ostringstream canonical;
-            canonical << "zkgat:domain-generator-catalog:v1"
+            canonical << "zkgat:domain-generator-catalog"
                       << "|root_derivation_id=" << root_derivation_id
                       << "|row_order=" << row_order;
             for (const auto &[name, size] : ordered)
@@ -270,7 +692,7 @@ namespace gatzk::crypto
             const std::unordered_map<std::string, G2Point> &domain_zero_g2)
         {
             std::ostringstream canonical;
-            canonical << "zkgat:vanishing-g2-catalog:v1";
+            canonical << "zkgat:vanishing-g2-catalog";
             for (const auto &name :
                  ordered_domain_names(manifest.domain_sizes))
             {
@@ -291,7 +713,7 @@ namespace gatzk::crypto
             const SRSManifest &manifest)
         {
             std::ostringstream report;
-            report << "GATZK-SRS-CONSISTENCY-AUDIT-v1\n";
+            report << "GATZK-SRS-CONSISTENCY-AUDIT\n";
             report << "status=passed\n";
             report << "sampling=none\n";
             report << "coefficient_relation_method=exact_full_tau_reconstruction\n";
@@ -441,13 +863,12 @@ namespace gatzk::crypto
                 { return lhs.first < rhs.first; });
 
             std::ostringstream canonical;
-            canonical << "zkgat:kzg-key-resource-identity:v1\n"
+            canonical << "zkgat:kzg-key-resource-identity\n"
                       << "manifest_hash=" << manifest.manifest_hash << '\n'
                       << "srs_id=" << manifest.srs_id << '\n'
                       << "srs_type=" << manifest.srs_type << '\n'
                       << "degree_bound=" << manifest.degree_bound << '\n'
                       << "generator_id=" << manifest.generator_id << '\n'
-                      << "generator_version=" << manifest.generator_version << '\n'
                       << "encoding=" << manifest.encoding << '\n'
                       << "protocol_schema_id=" << manifest.protocol_schema_id << '\n'
                       << "protocol_compiler_artifact_hash="
@@ -482,20 +903,6 @@ namespace gatzk::crypto
             return "sha256:" + sha256_hex(canonical.str());
         }
 
-        std::string compiler_artifact_scalar(
-            const std::string &text,
-            const std::string &key)
-        {
-            const auto prefix = key + "=";
-            const auto begin = text.find(prefix);
-            if (begin == std::string::npos || (begin != 0 && text[begin - 1] != '\n'))
-                throw std::runtime_error(
-                    "protocol compiler artifact is missing " + key);
-            const auto value_begin = begin + prefix.size();
-            const auto end = text.find('\n', value_begin);
-            return text.substr(value_begin, end - value_begin);
-        }
-
         std::string decode_canonical_hex(std::string_view value)
         {
             if (value.empty() || (value.size() & 1U) != 0U)
@@ -520,85 +927,104 @@ namespace gatzk::crypto
         {
             const auto manifest_path = std::filesystem::path(srs_path) / "srs_manifest.json";
             const auto text = read_text_file(manifest_path);
+            const auto root = SrsJsonParser(text).parse();
+            validate_srs_manifest_fields(root);
             SRSManifest manifest;
-            manifest.manifest_format = manifest_scalar(text, "manifest_format");
-            manifest.srs_id = manifest_scalar(text, "srs_id");
-            manifest.curve_id = manifest_scalar(text, "curve_id");
-            manifest.field_modulus_id = manifest_scalar(text, "field_modulus_id");
-            manifest.srs_type = manifest_scalar(text, "srs_type");
-            manifest.ceremony_transcript_hash = manifest_scalar(text, "ceremony_transcript_hash");
-            manifest.pk_coef_path = manifest_scalar(text, "pk_coef_path");
-            manifest.pk_coef_hash = manifest_scalar(text, "pk_coef_hash");
-            manifest.pk_lagrange_paths = parse_string_map(manifest_object(text, "pk_lagrange_paths"));
-            manifest.pk_lagrange_hashes = parse_string_map(manifest_object(text, "pk_lagrange_hashes"));
-            manifest.domain_sizes = parse_size_map(manifest_object(text, "domain_sizes"));
-            manifest.domain_generators = parse_string_map(
-                manifest_object(text, "domain_generators"));
-            manifest.root_derivation_id = manifest_scalar(text, "root_derivation_id");
-            manifest.row_order = manifest_scalar(text, "row_order");
+            const auto string_field =
+                [&](std::string_view key) {
+                    return manifest_string(require_manifest_field(root, key), key);
+                };
+            manifest.manifest_format = string_field("manifest_format");
+            manifest.srs_id = string_field("srs_id");
+            manifest.curve_id = string_field("curve_id");
+            manifest.field_modulus_id = string_field("field_modulus_id");
+            manifest.srs_type = string_field("srs_type");
+            manifest.ceremony_transcript_hash =
+                string_field("ceremony_transcript_hash");
+            manifest.setup_transcript_hash = string_field("setup_transcript_hash");
+            manifest.degree_bound = manifest_unsigned(
+                require_manifest_field(root, "degree_bound"), "degree_bound");
+            manifest.domain_sizes = parse_manifest_size_map(
+                require_manifest_field(root, "domain_sizes"), "domain_sizes");
+            manifest.domain_generators = parse_manifest_string_map(
+                require_manifest_field(root, "domain_generators"),
+                "domain_generators");
+            manifest.root_derivation_id = string_field("root_derivation_id");
+            manifest.row_order = string_field("row_order");
             manifest.protocol_compiler_artifact_path =
-                manifest_scalar(text, "protocol_compiler_artifact_path");
+                string_field("protocol_compiler_artifact_path");
             manifest.protocol_compiler_artifact_hash =
-                manifest_scalar(text, "protocol_compiler_artifact_hash");
-            manifest.protocol_schema_id = manifest_scalar(text, "protocol_schema_id");
+                string_field("protocol_compiler_artifact_hash");
+            manifest.protocol_schema_id = string_field("protocol_schema_id");
             manifest.max_instance_envelope_id =
-                manifest_scalar(text, "max_instance_envelope_id");
+                string_field("max_instance_envelope_id");
             manifest.max_instance_envelope_hash =
-                manifest_scalar(text, "max_instance_envelope_hash");
-            manifest.max_instance_envelope = parse_size_map(
-                manifest_object(text, "max_instance_envelope"));
+                string_field("max_instance_envelope_hash");
+            manifest.max_instance_envelope = parse_manifest_size_map(
+                require_manifest_field(root, "max_instance_envelope"),
+                "max_instance_envelope");
             manifest.proof_schema_template_hash =
-                manifest_scalar(text, "proof_schema_template_hash");
+                string_field("proof_schema_template_hash");
             manifest.observation_ledger_hash =
-                manifest_scalar(text, "observation_ledger_hash");
+                string_field("observation_ledger_hash");
             manifest.random_identity_ledger_hash =
-                manifest_scalar(text, "random_identity_ledger_hash");
+                string_field("random_identity_ledger_hash");
             manifest.security_budget_ledger_hash =
-                manifest_scalar(text, "security_budget_ledger_hash");
-            manifest.vk_path = manifest_scalar(text, "vk_path");
-            manifest.vk_hash = manifest_scalar(text, "vk_hash");
-            manifest.vanishing_g2_hash =
-                manifest_scalar(text, "vanishing_g2_hash");
+                string_field("security_budget_ledger_hash");
+            manifest.pk_coef_path = string_field("pk_coef_path");
+            manifest.pk_coef_hash = string_field("pk_coef_hash");
+            manifest.pk_lagrange_paths = parse_manifest_string_map(
+                require_manifest_field(root, "pk_lagrange_paths"),
+                "pk_lagrange_paths");
+            manifest.pk_lagrange_hashes = parse_manifest_string_map(
+                require_manifest_field(root, "pk_lagrange_hashes"),
+                "pk_lagrange_hashes");
+            manifest.vk_path = string_field("vk_path");
+            manifest.vk_hash = string_field("vk_hash");
+            manifest.vanishing_g2_hash = string_field("vanishing_g2_hash");
             manifest.srs_audit_report_path =
-                manifest_scalar(text, "srs_audit_report_path");
+                string_field("srs_audit_report_path");
             manifest.srs_audit_report_hash =
-                manifest_scalar(text, "srs_audit_report_hash");
+                string_field("srs_audit_report_hash");
             manifest.srs_consistency_hash =
-                manifest_scalar(text, "srs_consistency_hash");
-            manifest.encoding = manifest_scalar(text, "encoding");
-            manifest.generator_id = manifest_scalar(text, "generator_id");
-            manifest.generator_version = manifest_scalar(text, "generator_version");
-            manifest.security_level = manifest_scalar(text, "security_level");
-            manifest.kzg_assumption_profile_id = manifest_scalar(text, "kzg_assumption_profile_id");
+                string_field("srs_consistency_hash");
+            manifest.encoding = string_field("encoding");
+            manifest.generator_id = string_field("generator_id");
+            manifest.security_level = string_field("security_level");
+            manifest.kzg_assumption_profile_id =
+                string_field("kzg_assumption_profile_id");
+            manifest.kzg_assumption_degree_bound = manifest_unsigned(
+                require_manifest_field(root, "kzg_assumption_degree_bound"),
+                "kzg_assumption_degree_bound");
+            manifest.kzg_assumption_security_bits = manifest_unsigned(
+                require_manifest_field(root, "kzg_assumption_security_bits"),
+                "kzg_assumption_security_bits");
             manifest.kzg_assumption_domain_catalog_hash =
-                manifest_scalar(text, "kzg_assumption_domain_catalog_hash");
+                string_field("kzg_assumption_domain_catalog_hash");
             manifest.domain_generator_catalog_hash =
-                manifest_scalar(text, "domain_generator_catalog_hash");
-            const auto declared_manifest_hash = manifest_scalar(text, "manifest_hash");
-            const auto manifest_hash_field = text.rfind("  \"manifest_hash\"");
-            if (declared_manifest_hash.empty() || manifest_hash_field == std::string::npos || sha256_hex(text.substr(0, manifest_hash_field)) != declared_manifest_hash)
+                string_field("domain_generator_catalog_hash");
+            const auto declared_manifest_hash = string_field("manifest_hash");
+            std::size_t manifest_hash_key_position = std::string::npos;
+            for (std::size_t index = 0; index < root.object.size(); ++index)
+            {
+                if (root.object[index].first == "manifest_hash")
+                {
+                    manifest_hash_key_position = root.object_key_positions.at(index);
+                    break;
+                }
+            }
+            if (declared_manifest_hash.empty()
+                || manifest_hash_key_position < 2
+                || text[manifest_hash_key_position - 1] != ' '
+                || text[manifest_hash_key_position - 2] != ' '
+                || sha256_hex(text.substr(0, manifest_hash_key_position - 2))
+                       != declared_manifest_hash)
             {
                 throw std::runtime_error("SRS manifest canonical hash mismatch");
             }
             manifest.manifest_hash = sha256_hex(text);
-            const auto degree_bound = manifest_scalar(text, "degree_bound");
-            if (!degree_bound.empty())
-            {
-                manifest.degree_bound = static_cast<std::size_t>(std::stoull(degree_bound));
-            }
-            const auto assumption_degree_bound = manifest_scalar(text, "kzg_assumption_degree_bound");
-            if (!assumption_degree_bound.empty())
-            {
-                manifest.kzg_assumption_degree_bound =
-                    static_cast<std::size_t>(std::stoull(assumption_degree_bound));
-            }
-            const auto assumption_security_bits = manifest_scalar(text, "kzg_assumption_security_bits");
-            if (!assumption_security_bits.empty())
-            {
-                manifest.kzg_assumption_security_bits =
-                    static_cast<std::size_t>(std::stoull(assumption_security_bits));
-            }
-            if (manifest.manifest_format.empty() || manifest.srs_id.empty() || manifest.srs_type.empty() || manifest.degree_bound == 0 || manifest.pk_coef_path.empty() || manifest.pk_lagrange_paths.empty() || manifest.vk_path.empty() || manifest.vanishing_g2_hash.empty() || manifest.srs_audit_report_path.empty() || manifest.srs_audit_report_hash.empty() || manifest.srs_consistency_hash.empty() || manifest.protocol_compiler_artifact_path.empty() || manifest.protocol_compiler_artifact_hash.empty())
+            validate_srs_manifest_nested_schema(manifest);
+            if (manifest.manifest_format.empty() || manifest.srs_id.empty() || manifest.srs_type.empty() || manifest.degree_bound == 0 || manifest.pk_coef_path.empty() || manifest.pk_lagrange_paths.empty() || manifest.vk_path.empty() || manifest.vanishing_g2_hash.empty() || manifest.srs_audit_report_path.empty() || manifest.srs_audit_report_hash.empty() || manifest.srs_consistency_hash.empty() || manifest.protocol_compiler_artifact_path.empty() || manifest.protocol_compiler_artifact_hash.empty() || manifest.ceremony_transcript_hash.empty() || manifest.setup_transcript_hash.empty())
             {
                 throw std::runtime_error("SRS manifest is missing required material fields");
             }
@@ -614,33 +1040,31 @@ namespace gatzk::crypto
             if (sha256_hex(artifact) != manifest.protocol_compiler_artifact_hash)
                 throw std::runtime_error(
                     "protocol compiler artifact material hash mismatch");
-            constexpr std::string_view magic =
-                "GATZK-SRS-COMPILER-ARTIFACT-v3\n";
-            if (!artifact.starts_with(magic))
-                throw std::runtime_error("protocol compiler artifact magic mismatch");
-            const auto hash_field = artifact.rfind("artifact_hash=");
-            if (hash_field == std::string::npos || compiler_artifact_scalar(artifact, "artifact_hash") != sha256_hex(artifact.substr(0, hash_field)))
+            const auto parsed = parse_compiler_artifact(artifact);
+            if (parsed.artifact_hash != sha256_hex(parsed.canonical_prefix))
                 throw std::runtime_error(
                     "protocol compiler artifact canonical hash mismatch");
+            const auto scalar = [&](std::string_view key) -> const std::string &
+            { return parsed.scalar(key); };
             const auto protocol_template_hex =
-                compiler_artifact_scalar(artifact, "protocol_template_hex");
+                scalar("protocol_template_hex");
             const auto proof_schema_template_hex =
-                compiler_artifact_scalar(artifact, "proof_schema_template_hex");
+                scalar("proof_schema_template_hex");
             const auto observation_ledger_template_hex =
-                compiler_artifact_scalar(artifact, "observation_ledger_template_hex");
+                scalar("observation_ledger_template_hex");
             const auto random_identity_ledger_template_hex =
-                compiler_artifact_scalar(artifact, "random_identity_ledger_template_hex");
+                scalar("random_identity_ledger_template_hex");
             const auto security_budget_ledger_template_hex =
-                compiler_artifact_scalar(artifact, "security_budget_ledger_template_hex");
+                scalar("security_budget_ledger_template_hex");
             const auto max_instance_envelope_hex =
-                compiler_artifact_scalar(artifact, "max_instance_envelope_hex");
+                scalar("max_instance_envelope_hex");
             const auto max_instance_envelope_hash =
-                compiler_artifact_scalar(artifact, "max_instance_envelope_hash");
-            if (protocol_template_hex.empty() || proof_schema_template_hex.empty() || observation_ledger_template_hex.empty() || random_identity_ledger_template_hex.empty() || security_budget_ledger_template_hex.empty() || max_instance_envelope_hex.empty() || max_instance_envelope_hash.empty() || compiler_artifact_scalar(artifact, "protocol_schema_id") != manifest.protocol_schema_id || sha256_hex(decode_canonical_hex(protocol_template_hex)) != manifest.protocol_schema_id || compiler_artifact_scalar(artifact, "max_instance_envelope_id") != manifest.max_instance_envelope_id || max_instance_envelope_hash != manifest.max_instance_envelope_hash || max_instance_envelope_hash != sha256_hex(decode_canonical_hex(max_instance_envelope_hex)) || static_cast<std::size_t>(std::stoull(compiler_artifact_scalar(artifact, "degree_bound"))) != manifest.degree_bound || compiler_artifact_scalar(artifact, "domain_size_catalog_hash") != manifest.kzg_assumption_domain_catalog_hash || compiler_artifact_scalar(artifact, "domain_generator_catalog_hash") != manifest.domain_generator_catalog_hash || compiler_artifact_scalar(artifact, "proof_schema_template_hash") != manifest.proof_schema_template_hash || compiler_artifact_scalar(artifact, "observation_ledger_hash") != manifest.observation_ledger_hash || compiler_artifact_scalar(artifact, "random_identity_ledger_hash") != manifest.random_identity_ledger_hash || compiler_artifact_scalar(artifact, "security_budget_ledger_hash") != manifest.security_budget_ledger_hash)
+                scalar("max_instance_envelope_hash");
+            if (protocol_template_hex.empty() || proof_schema_template_hex.empty() || observation_ledger_template_hex.empty() || random_identity_ledger_template_hex.empty() || security_budget_ledger_template_hex.empty() || max_instance_envelope_hex.empty() || max_instance_envelope_hash.empty() || scalar("protocol_schema_id") != manifest.protocol_schema_id || sha256_hex(decode_canonical_hex(protocol_template_hex)) != manifest.protocol_schema_id || scalar("max_instance_envelope_id") != manifest.max_instance_envelope_id || max_instance_envelope_hash != manifest.max_instance_envelope_hash || max_instance_envelope_hash != sha256_hex(decode_canonical_hex(max_instance_envelope_hex)) || static_cast<std::size_t>(std::stoull(scalar("degree_bound"))) != manifest.degree_bound || scalar("domain_size_catalog_hash") != manifest.kzg_assumption_domain_catalog_hash || scalar("domain_generator_catalog_hash") != manifest.domain_generator_catalog_hash || scalar("proof_schema_template_hash") != manifest.proof_schema_template_hash || scalar("observation_ledger_hash") != manifest.observation_ledger_hash || scalar("random_identity_ledger_hash") != manifest.random_identity_ledger_hash || scalar("security_budget_ledger_hash") != manifest.security_budget_ledger_hash)
                 throw std::runtime_error(
                     "protocol compiler artifact registries do not match the SRS manifest");
             const auto envelope = decode_canonical_hex(max_instance_envelope_hex);
-            const std::vector<std::string> envelope_keys = {
+            const std::vector<std::string_view> envelope_keys = {
                 "format", "max_layers", "max_hidden_heads_per_layer",
                 "max_hidden_head_dim", "max_input_dim", "max_output_heads",
                 "max_classes", "max_graphs", "max_nodes", "max_edges",
@@ -649,13 +1073,16 @@ namespace gatzk::crypto
                 "max_coefficient_chunks", "security_target_bits"};
             std::string canonical_envelope;
             std::unordered_map<std::string, std::size_t> envelope_sizes;
-            for (const auto &key : envelope_keys)
+            const auto envelope_values = parse_ordered_key_value_lines(
+                envelope, envelope_keys, "protocol compiler max instance envelope");
+            for (std::size_t index = 0; index < envelope_keys.size(); ++index)
             {
-                const auto value = compiler_artifact_scalar(envelope, key);
-                canonical_envelope += key + "=" + value + "\n";
+                const auto &key = envelope_keys[index];
+                const auto &value = envelope_values[index];
+                canonical_envelope += std::string(key) + "=" + value + "\n";
                 if (key == "format")
                 {
-                    if (value != "zkgat_max_instance_envelope_v2")
+                    if (value != "zkgat_max_instance_envelope")
                         throw std::runtime_error(
                             "protocol compiler max envelope format mismatch");
                     continue;
@@ -663,11 +1090,13 @@ namespace gatzk::crypto
                 if (value.empty() || (value.size() > 1 && value.front() == '0') || !std::all_of(value.begin(), value.end(), [](unsigned char ch)
                                                                                                 { return ch >= '0' && ch <= '9'; }))
                     throw std::runtime_error(
-                        "protocol compiler max envelope integer mismatch: " + key);
+                        "protocol compiler max envelope integer mismatch: "
+                        + std::string(key));
                 const auto parsed = static_cast<std::size_t>(std::stoull(value));
                 if (parsed == 0)
                     throw std::runtime_error(
-                        "protocol compiler max envelope has zero bound: " + key);
+                        "protocol compiler max envelope has zero bound: "
+                        + std::string(key));
                 envelope_sizes.emplace(key, parsed);
             }
             if (canonical_envelope != envelope || envelope_sizes != manifest.max_instance_envelope || envelope_sizes.at("security_target_bits") != 120 || envelope_sizes.at("max_nodes") > manifest.domain_sizes.at("N") || envelope_sizes.at("max_edges") > manifest.domain_sizes.at("edge") || envelope_sizes.at("max_nodes") > std::numeric_limits<std::size_t>::max() / envelope_sizes.at("max_hidden_head_dim") || envelope_sizes.at("max_nodes") * envelope_sizes.at("max_hidden_head_dim") > manifest.domain_sizes.at("edge") || envelope_sizes.at("max_nodes") > std::numeric_limits<std::size_t>::max() / envelope_sizes.at("max_classes") || envelope_sizes.at("max_nodes") * envelope_sizes.at("max_classes") > manifest.domain_sizes.at("edge") || envelope_sizes.at("max_input_dim") > manifest.domain_sizes.at("in") || envelope_sizes.at("max_hidden_head_dim") > manifest.domain_sizes.at("d") || envelope_sizes.at("max_classes") > manifest.domain_sizes.at("C") || envelope_sizes.at("max_concat_dim") > manifest.domain_sizes.at("cat") || envelope_sizes.at("max_graphs") > envelope_sizes.at("max_nodes") || envelope_sizes.at("max_total_nodes") < envelope_sizes.at("max_nodes") || envelope_sizes.at("max_concat_dim") < envelope_sizes.at("max_hidden_head_dim") || envelope_sizes.at("max_range_bits") >= std::numeric_limits<std::size_t>::digits || manifest.domain_sizes.at("edge") < 3 || (std::size_t{1} << envelope_sizes.at("max_range_bits")) > (manifest.domain_sizes.at("edge") - 3) / 2 || envelope_sizes.at("max_coefficient_chunks") > std::numeric_limits<std::size_t>::max() / (manifest.domain_sizes.at("edge") - 1) || envelope_sizes.at("max_coefficient_object_length") > envelope_sizes.at("max_coefficient_chunks") * (manifest.domain_sizes.at("edge") - 1) || envelope_sizes.at("max_nodes") > std::numeric_limits<std::size_t>::max() / envelope_sizes.at("max_input_dim") || envelope_sizes.at("max_nodes") * envelope_sizes.at("max_input_dim") > manifest.domain_sizes.at("FH"))
@@ -709,74 +1138,14 @@ namespace gatzk::crypto
             return out;
         }
 
-        std::uint64_t read_u64_le_bytes(
-            const std::vector<std::uint8_t> &bytes,
-            std::size_t &offset,
-            const std::string &label)
-        {
-            if (offset + 8 > bytes.size())
-            {
-                throw std::runtime_error("truncated SRS file while reading " + label);
-            }
-            std::uint64_t out = 0;
-            for (std::size_t i = 0; i < 8; ++i)
-            {
-                out |= static_cast<std::uint64_t>(bytes[offset + i]) << (8U * i);
-            }
-            offset += 8;
-            return out;
-        }
-
-        std::uint64_t parse_u64_le_bytes(const std::array<std::uint8_t, 8> &bytes)
-        {
-            std::uint64_t out = 0;
-            for (std::size_t i = 0; i < bytes.size(); ++i)
-            {
-                out |= static_cast<std::uint64_t>(bytes[i]) << (8U * i);
-            }
-            return out;
-        }
-
         std::vector<G1Point> load_g1_vector_file(
             const std::filesystem::path &path,
-            std::string *actual_hash,
-            std::size_t max_points);
-
-        void validate_raw_loaded_srs_g1(
-            const G1Point &point,
-            const std::filesystem::path &path,
-            std::size_t index)
-        {
-            // For raw in-memory material there was no canonical mcl
-            // deserialization step. isValid() checks both curve membership
-            // and, because BLS12-381 verifyOrderG1 is enabled, subgroup
-            // membership. Do not repeat the same subgroup predicate.
-            if (point.value.isZero() || !point.value.isValid())
-            {
-                throw std::runtime_error(
-                    "invalid, non-subgroup, or identity SRS G1 point at index " + std::to_string(index) + ": " + path.string());
-            }
-        }
-
-        void validate_deserialized_srs_g1_identity(
-            const G1Point &point,
-            const std::filesystem::path &path,
-            std::size_t index)
-        {
-            // mcl BLS12-381 canonical deserialization already performs the
-            // curve reconstruction and the configured subgroup/order check.
-            // The SRS policy additionally rejects the identity.
-            if (point.value.isZero())
-            {
-                throw std::runtime_error(
-                    "identity SRS G1 point at index " + std::to_string(index) + ": " + path.string());
-            }
-        }
+            std::string *actual_hash = nullptr,
+            std::size_t max_points = 0);
 
         enum class G1LoadWorkerFailure : unsigned
         {
             None = 0,
-            RawValidation,
             CanonicalDeserialize,
             CanonicalIdentity,
             CanonicalSerialize,
@@ -799,11 +1168,6 @@ namespace gatzk::crypto
         {
             switch (failure.kind)
             {
-            case G1LoadWorkerFailure::RawValidation:
-                return "invalid, non-subgroup, or identity "
-                       "SRS G1 point at index " +
-                       std::to_string(failure.index) + ": " + path.string();
-
             case G1LoadWorkerFailure::CanonicalDeserialize:
                 return "failed to deserialize SRS G1 point "
                        "at index " +
@@ -870,9 +1234,9 @@ namespace gatzk::crypto
                 kHashBufferBytes =
                     8ULL << 20;
 
-            // Keep enough reusable canonical buffers to expose the same CPU
-            // parallelism as the former async loader without allowing temporary
-            // payload storage to grow without a deterministic bound.
+            // Keep enough reusable canonical buffers to expose CPU parallelism
+            // without allowing temporary payload storage to grow without a
+            // deterministic bound.
             constexpr std::size_t
                 kPipelineBufferBudgetBytes =
                     256ULL << 20;
@@ -1636,84 +2000,93 @@ namespace gatzk::crypto
             return out;
         }
 
-        std::vector<G1Point> load_fixed_or_raw_g1_vector_file_prefix(
+        std::vector<G1Point> load_g1_vector_file(
             const std::filesystem::path &path,
-            std::streamoff file_size,
-            std::size_t max_points,
             std::string *actual_hash,
-            G1LoadWorkerFailureInfo &worker_failure)
+            std::size_t max_points)
         {
-            worker_failure = {};
-            algebra::ensure_mcl_field_ready();
-            std::ifstream input(path, std::ios::binary);
+            std::ifstream input(path, std::ios::binary | std::ios::ate);
             if (!input)
             {
-                throw std::runtime_error("failed to open SRS G1 material: " + path.string());
-            }
-            SHA256_CTX ctx;
-            SHA256_Init(&ctx);
-            auto read_hashed = [&](char *out, std::size_t size, const std::string &label)
-            {
-                input.read(out, static_cast<std::streamsize>(size));
-                if (input.gcount() != static_cast<std::streamsize>(size))
-                {
-                    throw std::runtime_error("truncated SRS G1 material while reading " + label + ": " + path.string());
-                }
-                SHA256_Update(&ctx, out, size);
-            };
-
-            std::array<char, 8> magic{};
-            read_hashed(magic.data(), magic.size(), "G1 magic");
-            const std::array<char, 8> expected_raw_magic{{'G', 'A', 'T', 'Z', 'K', 'G', '1', 'R'}};
-            const std::array<char, 8> expected_canonical_magic{{'G', 'A', 'T', 'Z', 'K', 'G', '1', 'C'}};
-            if (magic != expected_raw_magic && magic != expected_canonical_magic)
-            {
-                return load_g1_vector_file(path, actual_hash, 0);
-            }
-            std::array<std::uint8_t, 8> count_bytes{};
-            read_hashed(reinterpret_cast<char *>(count_bytes.data()), count_bytes.size(), "G1 point count");
-            const auto count = parse_u64_le_bytes(count_bytes);
-            if (count > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max()))
-            {
-                throw std::runtime_error("SRS G1 material is too large for this platform");
-            }
-            std::array<std::uint8_t, 8> point_size_bytes{};
-            read_hashed(
-                reinterpret_cast<char *>(point_size_bytes.data()),
-                point_size_bytes.size(),
-                "G1 point size");
-            const auto point_size_u64 =
-                parse_u64_le_bytes(point_size_bytes);
-            if (point_size_u64 == 0 || point_size_u64 > static_cast<std::uint64_t>(
-                                                            std::numeric_limits<std::size_t>::max()))
-            {
                 throw std::runtime_error(
-                    "invalid fixed SRS G1 point size");
-            }
-            const auto point_size =
-                static_cast<std::size_t>(point_size_u64);
-            if (magic == expected_raw_magic && point_size != sizeof(mcl::G1))
-                throw std::runtime_error(
-                    "raw SRS G1 material was generated for an incompatible mcl layout");
-
-            const auto point_count = static_cast<std::size_t>(count);
-            const auto header_size = static_cast<std::size_t>(24);
-            if (point_count > (std::numeric_limits<std::size_t>::max() - header_size) / point_size)
-                throw std::runtime_error(
-                    "fixed SRS G1 material size overflows this platform");
-            const auto expected_size =
-                header_size + point_count * point_size;
-
-            if (expected_size != static_cast<std::size_t>(file_size))
-            {
-                throw std::runtime_error(
-                    "fixed SRS G1 material size mismatch: " +
+                    "failed to open canonical SRS G1 material: " +
                     path.string());
             }
 
-            if (magic == expected_canonical_magic)
+            const auto file_size = input.tellg();
+            constexpr std::streamoff kHeaderSize = 24;
+            if (file_size < kHeaderSize ||
+                static_cast<std::uintmax_t>(file_size) >
+                    static_cast<std::uintmax_t>(
+                        std::numeric_limits<std::size_t>::max()))
             {
-                return load_pipelined_canonical_g1_vector_file_prefix(
+                throw std::runtime_error(
+                    "truncated canonical SRS G1 material: " +
+                    path.string());
+            }
+
+            std::array<std::uint8_t, kHeaderSize> header{};
+            input.seekg(0);
+            input.read(
+                reinterpret_cast<char *>(header.data()),
+                static_cast<std::streamsize>(header.size()));
+            if (input.gcount() !=
+                static_cast<std::streamsize>(header.size()))
+            {
+                throw std::runtime_error(
+                    "truncated canonical SRS G1 material header: " +
+                    path.string());
+            }
+
+            const std::array<std::uint8_t, 8> expected_magic{{
+                'G', 'A', 'T', 'Z', 'K', 'G', '1', 'C'}};
+            if (std::memcmp(
+                    header.data(),
+                    expected_magic.data(),
+                    expected_magic.size()) != 0)
+            {
+                throw std::runtime_error(
+                    "canonical SRS G1 header mismatch: " +
+                    path.string());
+            }
+
+            const auto point_count_u64 =
+                load_u64_le_unaligned(header.data() + 8);
+            const auto point_size_u64 =
+                load_u64_le_unaligned(header.data() + 16);
+            if (point_count_u64 >
+                    static_cast<std::uint64_t>(
+                        std::numeric_limits<std::size_t>::max()) ||
+                point_size_u64 == 0 ||
+                point_size_u64 >
+                    static_cast<std::uint64_t>(
+                        std::numeric_limits<std::size_t>::max()))
+            {
+                throw std::runtime_error(
+                    "invalid canonical SRS G1 header: " +
+                    path.string());
+            }
+
+            const auto point_count =
+                static_cast<std::size_t>(point_count_u64);
+            const auto point_size =
+                static_cast<std::size_t>(point_size_u64);
+            if (point_count >
+                    (std::numeric_limits<std::size_t>::max() -
+                     static_cast<std::size_t>(kHeaderSize)) /
+                        point_size ||
+                static_cast<std::size_t>(file_size) !=
+                    static_cast<std::size_t>(kHeaderSize) +
+                        point_count * point_size)
+            {
+                throw std::runtime_error(
+                    "canonical SRS G1 material size mismatch: " +
+                    path.string());
+            }
+
+            G1LoadWorkerFailureInfo worker_failure;
+            auto out =
+                load_pipelined_canonical_g1_vector_file_prefix(
                     path,
                     static_cast<std::size_t>(file_size),
                     point_count,
@@ -1721,565 +2094,13 @@ namespace gatzk::crypto
                     max_points,
                     actual_hash,
                     worker_failure);
-            }
-
-            const auto load_count =
-                max_points == 0
-                    ? point_count
-                    : std::min(point_count, max_points);
-
-            std::vector<G1Point> out(load_count);
-
-            const auto cpu_count =
-                std::max<std::size_t>(
-                    1,
-                    std::thread::hardware_concurrency());
-
-            const bool has_unloaded_suffix =
-                load_count < point_count;
-
-            const auto validation_worker_budget =
-                has_unloaded_suffix && cpu_count > 1
-                    ? cpu_count - 1
-                    : cpu_count;
-
-            // The full-file SHA-256 remains mandatory.  When only a prefix is
-            // materialized, overlap validation/deserialization of that prefix with
-            // sequential hashing of the authenticated suffix.
-            bool suffix_hashed = false;
-
-            auto hash_unloaded_suffix = [&]()
+            if (worker_failure.kind !=
+                G1LoadWorkerFailure::None)
             {
-                if (suffix_hashed)
-                {
-                    return;
-                }
-
-                suffix_hashed = true;
-
-                std::size_t remaining_bytes =
-                    (point_count - load_count) *
-                    point_size;
-
-                if (remaining_bytes == 0)
-                {
-                    return;
-                }
-
-                constexpr std::size_t
-                    kSrsHashBufferSize =
-                        8ULL << 20;
-
-                auto buffer =
-                    std::make_unique<char[]>(
-                        kSrsHashBufferSize);
-
-                while (remaining_bytes != 0)
-                {
-                    const auto chunk =
-                        std::min<std::size_t>(
-                            remaining_bytes,
-                            kSrsHashBufferSize);
-
-                    read_hashed(
-                        buffer.get(),
-                        chunk,
-                        "raw G1 suffix");
-
-                    remaining_bytes -= chunk;
-                }
-            };
-
-            if (load_count != 0)
-            {
-                std::atomic<unsigned>
-                    worker_failure_kind{
-                        static_cast<unsigned>(
-                            G1LoadWorkerFailure::None)};
-
-                std::atomic<std::size_t>
-                    worker_failure_index{
-                        std::numeric_limits<
-                            std::size_t>::max()};
-
-                auto record_worker_failure =
-                    [&](G1LoadWorkerFailure kind,
-                        std::size_t index) noexcept
-                {
-                    auto expected =
-                        static_cast<unsigned>(
-                            G1LoadWorkerFailure::None);
-
-                    if (worker_failure_kind
-                            .compare_exchange_strong(
-                                expected,
-                                static_cast<unsigned>(
-                                    kind),
-                                std::memory_order_acq_rel,
-                                std::memory_order_acquire))
-                    {
-                        worker_failure_index.store(
-                            index,
-                            std::memory_order_release);
-                    }
-                };
-
-                auto worker_failed =
-                    [&]() noexcept
-                {
-                    return worker_failure_kind.load(
-                               std::memory_order_acquire) != static_cast<unsigned>(G1LoadWorkerFailure::
-                                                                                       None);
-                };
-
-                const auto load_bytes =
-                    load_count * point_size;
-
-                if (magic == expected_raw_magic)
-                {
-                    read_hashed(
-                        reinterpret_cast<char *>(
-                            &out.front().value),
-                        load_bytes,
-                        "raw G1 prefix");
-
-                    const auto worker_count =
-                        std::min<std::size_t>(
-                            validation_worker_budget,
-                            load_count);
-
-                    const auto chunk_size =
-                        (load_count + worker_count - 1) / worker_count;
-
-                    std::vector<
-                        std::future<void>>
-                        futures;
-
-                    futures.reserve(worker_count);
-
-                    for (std::size_t worker = 0;
-                         worker < worker_count;
-                         ++worker)
-                    {
-                        const auto begin =
-                            worker * chunk_size;
-
-                        const auto end =
-                            std::min(
-                                load_count,
-                                begin + chunk_size);
-
-                        if (begin >= end)
-                        {
-                            break;
-                        }
-
-                        futures.push_back(
-                            std::async(
-                                std::launch::async,
-                                [&, begin, end]()
-                                {
-                                    try
-                                    {
-                                        for (std::size_t i =
-                                                 begin;
-                                             i < end;
-                                             ++i)
-                                        {
-                                            if (worker_failed())
-                                            {
-                                                return;
-                                            }
-
-                                            validate_raw_loaded_srs_g1(
-                                                out[i],
-                                                path,
-                                                i);
-                                        }
-                                    }
-                                    catch (...)
-                                    {
-                                        record_worker_failure(
-                                            G1LoadWorkerFailure::
-                                                RawValidation,
-                                            begin);
-                                    }
-                                }));
-                    }
-
-                    // Hash the authenticated suffix while prefix validation is still
-                    // executing.  Only this calling thread touches the input stream and
-                    // SHA256_CTX.
-                    hash_unloaded_suffix();
-
-                    // Workers never propagate validation
-                    // exceptions through std::future.
-                    // Their failure state is converted back
-                    // into the canonical loader exception on
-                    // this calling thread below.
-                    for (auto &future : futures)
-                    {
-                        future.wait();
-                    }
-                }
-                else
-                {
-                    constexpr std::size_t
-                        kCanonicalSrsChunkPoints =
-                            1ULL << 16;
-
-                    const auto chunk_count =
-                        (load_count +
-                         kCanonicalSrsChunkPoints - 1) /
-                        kCanonicalSrsChunkPoints;
-
-                    const auto max_inflight =
-                        std::max<std::size_t>(
-                            1,
-                            std::min<std::size_t>(
-                                validation_worker_budget,
-                                chunk_count));
-
-                    std::deque<
-                        std::future<void>>
-                        inflight;
-
-                    auto reap_one =
-                        [&]()
-                    {
-                        inflight.front().wait();
-                        inflight.pop_front();
-                    };
-
-                    for (std::size_t begin = 0;
-                         begin < load_count;
-                         begin +=
-                         kCanonicalSrsChunkPoints)
-                    {
-                        // Keep exactly max_inflight validation tasks active without
-                        // allocating an additional payload while the queue is full.
-                        if (inflight.size() >= max_inflight)
-                        {
-                            reap_one();
-                        }
-
-                        const auto current_count =
-                            std::min<std::size_t>(
-                                kCanonicalSrsChunkPoints,
-                                load_count - begin);
-
-                        const auto current_bytes =
-                            current_count * point_size;
-
-                        auto payload =
-                            std::make_shared<
-                                std::vector<
-                                    std::uint8_t>>(
-                                current_bytes);
-
-                        read_hashed(
-                            reinterpret_cast<char *>(
-                                payload->data()),
-                            payload->size(),
-                            "canonical G1 prefix chunk");
-
-                        inflight.emplace_back(
-                            std::async(
-                                std::launch::async,
-                                [&, payload,
-                                 begin,
-                                 current_count]()
-                                {
-                                    try
-                                    {
-                                        std::vector<
-                                            std::uint8_t>
-                                            canonical_bytes(
-                                                point_size);
-
-                                        for (std::size_t local =
-                                                 0;
-                                             local < current_count;
-                                             ++local)
-                                        {
-                                            if (worker_failed())
-                                            {
-                                                return;
-                                            }
-
-                                            const auto index =
-                                                begin + local;
-
-                                            const auto *
-                                                point_begin =
-                                                    payload->data() +
-                                                    local * point_size;
-
-                                            const auto
-                                                consumed =
-                                                    out[index]
-                                                        .value
-                                                        .deserialize(
-                                                            point_begin,
-                                                            point_size);
-
-                                            if (consumed != point_size)
-                                            {
-                                                record_worker_failure(
-                                                    G1LoadWorkerFailure::
-                                                        CanonicalDeserialize,
-                                                    index);
-                                                return;
-                                            }
-
-                                            if (out[index]
-                                                    .value
-                                                    .isZero())
-                                            {
-                                                record_worker_failure(
-                                                    G1LoadWorkerFailure::
-                                                        CanonicalIdentity,
-                                                    index);
-                                                return;
-                                            }
-
-                                            const auto
-                                                written =
-                                                    out[index]
-                                                        .value
-                                                        .serialize(
-                                                            canonical_bytes
-                                                                .data(),
-                                                            canonical_bytes
-                                                                .size());
-
-                                            if (written == 0)
-                                            {
-                                                record_worker_failure(
-                                                    G1LoadWorkerFailure::
-                                                        CanonicalSerialize,
-                                                    index);
-                                                return;
-                                            }
-
-                                            if (written != point_size ||
-                                                std::memcmp(
-                                                    canonical_bytes.data(),
-                                                    point_begin,
-                                                    point_size) != 0)
-                                            {
-                                                record_worker_failure(
-                                                    G1LoadWorkerFailure::
-                                                        CanonicalEncoding,
-                                                    index);
-                                                return;
-                                            }
-                                        }
-                                    }
-                                    catch (...)
-                                    {
-                                        record_worker_failure(
-                                            G1LoadWorkerFailure::
-                                                UnexpectedCanonical,
-                                            begin);
-                                    }
-                                }));
-                    }
-
-                    // The prefix bytes have now all entered SHA-256 in canonical file
-                    // order.  Scan the remaining authenticated bytes while the last
-                    // decode/validation tasks are still running.
-                    hash_unloaded_suffix();
-
-                    while (!inflight.empty())
-                    {
-                        reap_one();
-                    }
-                }
-
-                const auto recorded_failure =
-                    static_cast<G1LoadWorkerFailure>(
-                        worker_failure_kind.load(
-                            std::memory_order_acquire));
-
-                if (recorded_failure != G1LoadWorkerFailure::None)
-                {
-                    worker_failure.kind =
-                        recorded_failure;
-
-                    worker_failure.index =
-                        worker_failure_index.load(
-                            std::memory_order_acquire);
-                }
-            }
-
-            // Covers load_count == 0 and is a no-op when either execution branch
-            // already scanned the suffix.
-            hash_unloaded_suffix();
-
-            unsigned char digest[SHA256_DIGEST_LENGTH];
-            SHA256_Final(digest, &ctx);
-
-            if (actual_hash != nullptr)
-            {
-                *actual_hash =
-                    bytes_to_hex(
-                        digest,
-                        sizeof(digest));
-            }
-
-            return out;
-        }
-
-        std::vector<G1Point> load_g1_vector_file(
-            const std::filesystem::path &path,
-            std::string *actual_hash = nullptr,
-            std::size_t max_points = 0)
-        {
-            std::ifstream input(path, std::ios::binary | std::ios::ate);
-            if (!input)
-            {
-                throw std::runtime_error("failed to open SRS G1 material: " + path.string());
-            }
-            const auto file_size = input.tellg();
-            if (file_size < static_cast<std::streamoff>(16))
-            {
-                throw std::runtime_error("truncated SRS G1 material: " + path.string());
-            }
-            std::array<char, 8> magic_probe{};
-            input.seekg(0);
-            input.read(magic_probe.data(), static_cast<std::streamsize>(magic_probe.size()));
-            if (input.gcount() != static_cast<std::streamsize>(magic_probe.size()))
-            {
-                throw std::runtime_error("truncated SRS G1 material header: " + path.string());
-            }
-            const std::array<char, 8> expected_raw_magic{{'G', 'A', 'T', 'Z', 'K', 'G', '1', 'R'}};
-            const std::array<char, 8> expected_canonical_magic{{'G', 'A', 'T', 'Z', 'K', 'G', '1', 'C'}};
-            if (max_points != 0 || magic_probe == expected_raw_magic || magic_probe == expected_canonical_magic)
-            {
-                G1LoadWorkerFailureInfo
-                    worker_failure;
-
-                auto points =
-                    load_fixed_or_raw_g1_vector_file_prefix(
-                        path,
-                        file_size,
-                        max_points,
-                        actual_hash,
-                        worker_failure);
-
-                if (worker_failure.kind != G1LoadWorkerFailure::None)
-                {
-                    throw std::runtime_error(
-                        g1_load_worker_failure_message(
-                            worker_failure,
-                            path));
-                }
-
-                return points;
-            }
-            input.seekg(0);
-            std::vector<std::uint8_t> file_bytes(static_cast<std::size_t>(file_size));
-            input.read(reinterpret_cast<char *>(file_bytes.data()), file_size);
-            if (input.gcount() != file_size)
-            {
-                throw std::runtime_error("failed to read SRS G1 material: " + path.string());
-            }
-            if (actual_hash != nullptr)
-            {
-                *actual_hash = sha256_bytes_hex(file_bytes);
-            }
-            const std::array<char, 8> expected_magic{{'G', 'A', 'T', 'Z', 'K', 'G', '1', '\0'}};
-            std::array<char, 8> magic{};
-            std::copy_n(reinterpret_cast<const char *>(file_bytes.data()), magic.size(), magic.data());
-            if (magic != expected_magic && magic != expected_raw_magic)
-            {
-                throw std::runtime_error("invalid SRS G1 material header: " + path.string());
-            }
-            std::size_t offset = 8;
-            const auto count = read_u64_le_bytes(file_bytes, offset, "G1 point count");
-            if (count > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max()))
-            {
-                throw std::runtime_error("SRS G1 material is too large for this platform");
-            }
-            if (magic == expected_raw_magic)
-            {
-                const auto raw_size = read_u64_le_bytes(file_bytes, offset, "raw G1 point size");
-                if (raw_size != sizeof(mcl::G1))
-                {
-                    throw std::runtime_error("raw SRS G1 material was generated for an incompatible mcl layout");
-                }
-                const auto point_count = static_cast<std::size_t>(count);
-                const auto expected_size = offset + point_count * sizeof(mcl::G1);
-                if (expected_size != file_bytes.size())
-                {
-                    throw std::runtime_error("raw SRS G1 material size mismatch: " + path.string());
-                }
-                std::vector<G1Point> out(point_count);
-                if (point_count != 0)
-                {
-                    std::memcpy(
-                        &out.front().value,
-                        file_bytes.data() + offset,
-                        point_count * sizeof(mcl::G1));
-                }
-                for (std::size_t i = 0;
-                     i < out.size();
-                     ++i)
-                {
-                    validate_raw_loaded_srs_g1(
-                        out[i],
-                        path,
-                        i);
-                }
-                return out;
-            }
-            std::vector<std::pair<std::size_t, std::size_t>> payloads;
-            payloads.reserve(static_cast<std::size_t>(count));
-            for (std::uint64_t i = 0; i < count; ++i)
-            {
-                const auto size = read_u64_le_bytes(file_bytes, offset, "G1 point size");
-                if (size > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max()) || offset + static_cast<std::size_t>(size) > file_bytes.size())
-                {
-                    throw std::runtime_error("truncated SRS G1 point payload");
-                }
-                payloads.emplace_back(offset, static_cast<std::size_t>(size));
-                offset += static_cast<std::size_t>(size);
-            }
-
-            std::vector<G1Point> out;
-            out.resize(static_cast<std::size_t>(count));
-            const auto worker_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
-            const auto chunk_size = (out.size() + worker_count - 1) / worker_count;
-            std::vector<std::future<void>> futures;
-            futures.reserve(worker_count);
-            for (std::size_t worker = 0; worker < worker_count; ++worker)
-            {
-                const auto begin = worker * chunk_size;
-                const auto end = std::min(out.size(), begin + chunk_size);
-                if (begin >= end)
-                {
-                    break;
-                }
-                futures.push_back(std::async(std::launch::async, [&file_bytes, &payloads, &out, &path, begin, end]()
-                                             {
-                    for (std::size_t i = begin; i < end; ++i)
-                    {
-                        const auto [payload_offset, payload_size] = payloads[i];
-                        std::vector<std::uint8_t> point_bytes(
-                            file_bytes.begin() + static_cast<std::ptrdiff_t>(payload_offset),
-                            file_bytes.begin() + static_cast<std::ptrdiff_t>(payload_offset + payload_size));
-                        out[i] = deserialize_g1(point_bytes);
-                        if (serialize(out[i]) != point_bytes)
-                            throw std::runtime_error(
-                                "non-canonical SRS G1 encoding at index "
-                                + std::to_string(i));
-                        validate_deserialized_srs_g1_identity(out[i], path, i);
-                    } }));
-            }
-            for (auto &future : futures)
-            {
-                future.get();
+                throw std::runtime_error(
+                    g1_load_worker_failure_message(
+                        worker_failure,
+                        path));
             }
             return out;
         }
@@ -2317,7 +2138,7 @@ namespace gatzk::crypto
             }
             std::string header;
             std::getline(input, header);
-            if (header != "GATZK-VK-v2")
+            if (header != "GATZK-VK")
             {
                 throw std::runtime_error("invalid verifier key header: " + path.string());
             }
@@ -2380,9 +2201,14 @@ namespace gatzk::crypto
             const std::string &expected_srs_type,
             const std::string &expected_srs_id)
         {
-            if (manifest.manifest_format != "zkgat_srs_manifest_v8" || manifest.generator_id != "zkgat_srs_setup_tool_v8" || manifest.generator_version != "zkgat_srs_setup_tool_v8")
+            if (manifest.manifest_format != "zkgat_srs_manifest" || manifest.generator_id != "zkgat_srs_setup_tool")
             {
-                throw std::runtime_error("unsupported or legacy SRS manifest format");
+                throw std::runtime_error("non-canonical SRS manifest format");
+            }
+            if (manifest.setup_transcript_hash != manifest.ceremony_transcript_hash)
+            {
+                throw std::runtime_error(
+                    "SRS setup and ceremony transcript bindings differ");
             }
             if (manifest.curve_id != "bls12_381" || manifest.field_modulus_id != "bls12_381_fr")
             {
@@ -2400,11 +2226,11 @@ namespace gatzk::crypto
             {
                 throw std::runtime_error("SRS id mismatch");
             }
-            if (manifest.kzg_assumption_profile_id != "shifted_kzg_divisibility_v1" || manifest.kzg_assumption_degree_bound != manifest.degree_bound || manifest.kzg_assumption_security_bits != 128 || manifest.kzg_assumption_domain_catalog_hash != canonical_domain_catalog_hash(manifest.domain_sizes))
+            if (manifest.kzg_assumption_profile_id != "shifted_kzg_divisibility" || manifest.kzg_assumption_degree_bound != manifest.degree_bound || manifest.kzg_assumption_security_bits != 128 || manifest.kzg_assumption_domain_catalog_hash != canonical_domain_catalog_hash(manifest.domain_sizes))
             {
                 throw std::runtime_error("SRS shifted-KZG assumption profile is missing or inconsistent");
             }
-            if (manifest.root_derivation_id != "bls12_381_fr_generator_5_v1" || manifest.row_order != "ascending_powers_from_one" || manifest.domain_generators.size() != manifest.domain_sizes.size() || manifest.domain_generator_catalog_hash != canonical_domain_generator_catalog_hash(manifest.domain_sizes, manifest.domain_generators, manifest.root_derivation_id, manifest.row_order))
+            if (manifest.root_derivation_id != "bls12_381_fr_generator_5" || manifest.row_order != "ascending_powers_from_one" || manifest.domain_generators.size() != manifest.domain_sizes.size() || manifest.domain_generator_catalog_hash != canonical_domain_generator_catalog_hash(manifest.domain_sizes, manifest.domain_generators, manifest.root_derivation_id, manifest.row_order))
             {
                 throw std::runtime_error("SRS domain generator catalogue is missing or inconsistent");
             }
@@ -2416,7 +2242,7 @@ namespace gatzk::crypto
             if (manifest.security_level != "120-bit")
                 throw std::runtime_error(
                     "SRS manifest security target does not match compiler target");
-            if (manifest.encoding != "canonical_mcl_bls12_381_fixed_v1" || manifest.srs_audit_report_hash.empty() || manifest.srs_consistency_hash.empty() || manifest.srs_audit_report_hash != manifest.srs_consistency_hash || manifest.vanishing_g2_hash.empty())
+            if (manifest.encoding != "canonical_mcl_bls12_381_fixed" || manifest.srs_audit_report_hash.empty() || manifest.srs_consistency_hash.empty() || manifest.srs_audit_report_hash != manifest.srs_consistency_hash || manifest.vanishing_g2_hash.empty())
             {
                 throw std::runtime_error(
                     "SRS canonical encoding or consistency audit binding is missing");
@@ -4457,8 +4283,8 @@ namespace gatzk::crypto
             //   sum_i a_i (S + Z_D R_i)
             //     = (sum_i a_i) S + Z_D (sum_i a_i R_i).
             //
-            // VerifyAgainstOpeningPolynomials deliberately retains the former
-            // per-polynomial path so focused claim-validation tests remain unchanged.
+            // VerifyAgainstOpeningPolynomials retains the per-polynomial path
+            // required by focused claim-validation tests.
             if (!validate_claims && semantic_source_resolver != nullptr)
             {
                 semantic_folds.reserve(commitments.size());
@@ -5391,9 +5217,9 @@ namespace gatzk::crypto
                     chunk_inverse;
             }
 
-            // Reconstruct omega^row backwards.  This removes the previous
-            // full-size prefixes allocation while retaining exactly the same
-            // one-inversion batch-inversion result.
+            // Reconstruct omega^row backwards without a full-size prefixes
+            // allocation while retaining the one-inversion batch-inversion
+            // result.
             run_chunks(
                 [&](std::size_t task,
                     std::size_t begin,
@@ -6485,7 +6311,7 @@ namespace gatzk::crypto
         }
         std::sort(ceremony_domains.begin(), ceremony_domains.end());
         std::ostringstream public_transcript;
-        public_transcript << "gatzk:trusted-srs-public-transcript:v8|"
+        public_transcript << "gatzk:trusted-srs-public-transcript|"
                           << manifest.srs_id << '|' << manifest.degree_bound << '|'
                           << manifest.pk_coef_hash << '|' << manifest.vk_hash << '|'
                           << canonical_domain_catalog_hash(manifest.domain_sizes) << '|'
@@ -6773,11 +6599,9 @@ namespace gatzk::crypto
         }
 
         // Within one KZG call, several independently blinded objects may share
-        // exactly the same immutable semantic evaluation vector.  The old
-        // concurrent scheduler could let all of them miss the cache at once
-        // and duplicate the same MSM.  Elect one representative before any
-        // worker is launched; aliases are committed only after that
-        // representative has populated the semantic cache.
+        // exactly the same immutable semantic evaluation vector. Elect one
+        // representative before any worker is launched; aliases are committed
+        // only after that representative has populated the semantic cache.
         struct SemanticRepresentative
         {
             const algebra::
@@ -6984,9 +6808,8 @@ namespace gatzk::crypto
                 wave_completed[index];
         }
 
-        // Preserve the previous scheduler for sparse/tail/singleton work.
-        // The explicit CUDA waves have already removed the large dense
-        // same-SRS families from this set.
+        // Handle sparse/tail/singleton work with the fallback scheduler after
+        // the explicit CUDA waves remove the large dense same-SRS families.
         std::vector<std::size_t>
             remaining_indices;
 

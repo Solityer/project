@@ -8,9 +8,19 @@ from typing import Dict, List
 import numpy as np
 
 from .rounding import validate_rounding_mode
+from .quantization import (
+    CANONICAL_QUANT_CFG_ID,
+    canonical_input_preprocess_id,
+    canonical_scale_chain_descriptor,
+    canonical_scale_profile,
+)
 
 
 QUANT_SCALE_PROFILES: Dict[str, Dict[str, int]] = {
+    # The formal comparison profile is the same explicit chain used by the
+    # current main GAT experiment.  Historical aliases below remain available
+    # only for test-only in-memory models; load_model rejects them.
+    CANONICAL_QUANT_CFG_ID: canonical_scale_profile(),
     "exact_integer_gat_v1": {
         "input": 1,
         "hidden_weight": 16,
@@ -104,6 +114,25 @@ class Model:
     # compatible construction; formal loaders always replace it with the
     # explicit config value and validate it.
     rounding_mode: str = "nearest_ties_away"
+    input_preprocess_id: str = ""
+
+
+CANONICAL_CHECKPOINT_SCHEMA = "zkGPT_canonical_no_bias_gat_checkpoint_v1"
+_CANONICAL_MANIFEST_REQUIRED = {
+    "schema", "dataset", "model_arch_id", "model_param_id", "quant_cfg_id",
+    "input_preprocess_id", "rounding_mode", "static_table_id", "quant_scale_chain",
+    "L", "hidden_layers", "hidden_profile", "d_in_profile", "C", "K_out",
+    "hidden_head_specs", "output_head_specs", "output_average_rule",
+    "tensor_count", "tensor_index", "tensor_index_digest", "training_procedure_id",
+    "source_data_digest",
+}
+_CANONICAL_MANIFEST_ALLOWED = _CANONICAL_MANIFEST_REQUIRED | {
+    "family_schema_version", "task_type", "report_unit", "batching_rule",
+    "self_loop_rule", "edge_sort_rule", "chunking_rule", "label_format",
+    "split_format", "subgraph_rule", "loss", "selection_metric", "degree_bound_id",
+    "source_bundle_path", "source_manifest_sha256", "source_tensors_sha256",
+    "conversion_policy", "family_schema_version",
+}
 
 
 def _load_text_tensors(path: pathlib.Path) -> Dict[str, np.ndarray]:
@@ -117,11 +146,15 @@ def _load_text_tensors(path: pathlib.Path) -> Dict[str, np.ndarray]:
         if marker != "TENSOR":
             raise ValueError(f"malformed tensor marker in {path}: {marker}")
         name = next(tokens)
+        if name in out:
+            raise ValueError(f"duplicate tensor name in {path}: {name}")
         rank = int(next(tokens))
         shape = [int(next(tokens)) for _ in range(rank)]
         count = int(next(tokens))
         values = [float(next(tokens)) for _ in range(count)]
         array = np.asarray(values, dtype=np.float64)
+        if not np.all(np.isfinite(array)):
+            raise ValueError(f"non-finite tensor value in {name}")
         if int(np.prod(shape)) != count:
             raise ValueError(f"tensor count mismatch for {name}")
         out[name] = array.reshape(shape)
@@ -170,7 +203,11 @@ def _head_from_spec(spec: Dict, tensors: Dict[str, np.ndarray], scales: Dict[str
         seq_kernel=_quantize(_reshape_seq(tensors[spec["seq_kernel"]]), scales["output_weight"] if output_head else scales["hidden_weight"]),
         attn_dst_kernel=_quantize(_reshape_attn(tensors[spec["attn_dst_kernel"]]), scales["output_attention"] if output_head else scales["hidden_attention"]),
         attn_src_kernel=_quantize(_reshape_attn(tensors[spec["attn_src_kernel"]]), scales["output_attention"] if output_head else scales["hidden_attention"]),
-        output_bias=_quantize(_bias(tensors[spec["output_bias"]]), scales["output_bias"]) if output_head else np.zeros_like(_bias(tensors[spec["output_bias"]]), dtype=np.int64),
+        output_bias=(
+            _quantize(_bias(tensors[spec["output_bias"]]), scales["output_bias"])
+            if output_head
+            else np.zeros(int(_reshape_seq(tensors[spec["seq_kernel"]]).shape[1]), dtype=np.int64)
+        ),
     )
 
 
@@ -191,13 +228,22 @@ def load_model(
     default arguments preserve the historical raw-bundle behavior for tools
     that do not have a formal config.
     """
-    manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
+    manifest_path = bundle / "manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"cannot read canonical checkpoint manifest: {manifest_path}") from exc
+    _validate_canonical_manifest(manifest)
     if manifest.get("output_average_rule") != "per_head_bias_then_arithmetic_mean":
         raise ValueError("output layer must average per-head post-bias values")
-    tensors = _load_text_tensors(bundle / "tensors.txt")
+    tensors_path = bundle / "tensors.txt"
+    tensors = _load_text_tensors(tensors_path)
+    _validate_tensor_index(manifest, tensors)
     resolved_quant_cfg = str(manifest["quant_cfg_id"] if quant_cfg_id is None else quant_cfg_id)
-    if resolved_quant_cfg not in QUANT_SCALE_PROFILES:
-        raise ValueError(f"unsupported authenticated quantization profile: {resolved_quant_cfg}")
+    if resolved_quant_cfg != CANONICAL_QUANT_CFG_ID:
+        raise ValueError("legacy/noncanonical checkpoint quant_cfg_id is rejected")
+    if manifest["quant_cfg_id"] != CANONICAL_QUANT_CFG_ID:
+        raise ValueError("canonical checkpoint manifest quant_cfg_id is invalid")
     quant_scales = dict(QUANT_SCALE_PROFILES[resolved_quant_cfg])
     resolved_rounding_mode = validate_rounding_mode(
         manifest.get("rounding_mode") if rounding_mode is None else rounding_mode
@@ -225,6 +271,12 @@ def load_model(
     output_specs = sorted(manifest["output_head_specs"], key=lambda item: int(item["head_index"]))
     output_heads = [_head_from_spec(spec, tensors, quant_scales, output_head=True) for spec in output_specs]
 
+    if model_arch_id is not None and str(model_arch_id) != str(manifest["model_arch_id"]):
+        raise ValueError("checkpoint model_arch_id does not match formal identity")
+    if model_param_id is not None and str(model_param_id) != str(manifest["model_param_id"]):
+        raise ValueError("checkpoint model_param_id does not match formal identity")
+    if static_table_id is not None and str(static_table_id) != str(manifest["static_table_id"]):
+        raise ValueError("checkpoint static_table_id does not match formal identity")
     model = Model(
         manifest=manifest,
         hidden_layers=hidden_layers,
@@ -238,9 +290,104 @@ def load_model(
         output_average_rule=str(manifest["output_average_rule"]),
         quant_scales=quant_scales,
         rounding_mode=resolved_rounding_mode,
+        input_preprocess_id=str(manifest["input_preprocess_id"]),
     )
     _validate_model(model)
     return model
+
+
+def _validate_canonical_manifest(manifest: Dict) -> None:
+    if not isinstance(manifest, dict) or manifest.get("schema") != CANONICAL_CHECKPOINT_SCHEMA:
+        raise ValueError("checkpoint is not a canonical no-bias zkGPT bundle")
+    missing = sorted(_CANONICAL_MANIFEST_REQUIRED - set(manifest))
+    extra = sorted(set(manifest) - _CANONICAL_MANIFEST_ALLOWED)
+    if missing:
+        raise ValueError(f"canonical checkpoint manifest is missing fields: {missing}")
+    if extra:
+        raise ValueError(f"canonical checkpoint manifest has unsupported fields: {extra}")
+    if manifest.get("quant_cfg_id") != CANONICAL_QUANT_CFG_ID:
+        raise ValueError("checkpoint quantization identity is not the registered scale chain")
+    dataset = str(manifest.get("dataset", ""))
+    expected_preprocess = canonical_input_preprocess_id(dataset)
+    if manifest.get("input_preprocess_id") != expected_preprocess:
+        raise ValueError("checkpoint input_preprocess_id does not match dataset")
+    if validate_rounding_mode(manifest.get("rounding_mode")) != "nearest_ties_away":
+        raise ValueError("canonical checkpoint rounding mode is invalid")
+    if manifest.get("static_table_id") != "tables:lrelu+elu+exp+range":
+        raise ValueError("canonical checkpoint static-table identity is invalid")
+    for provenance_key in ("source_data_digest", "source_manifest_sha256", "source_tensors_sha256"):
+        value = str(manifest.get(provenance_key, ""))
+        if len(value) != 64 or any(char not in "0123456789abcdef" for char in value.lower()):
+            raise ValueError(f"canonical checkpoint {provenance_key} is missing or malformed")
+    if manifest.get("training_procedure_id") != "baseline_local_source_checkpoint_no_bias_projection_v1":
+        raise ValueError("canonical checkpoint training/conversion procedure is not authenticated")
+    if manifest.get("conversion_policy") != "drop_hidden_and_attention_bias_terms; retain_output_bias_only":
+        raise ValueError("canonical checkpoint bias conversion policy is not authenticated")
+    if manifest.get("quant_scale_chain") != canonical_scale_chain_descriptor(
+        hidden_profile=manifest.get("hidden_profile"), k_out=int(manifest.get("K_out", -1))
+    ):
+        raise ValueError("checkpoint quant_scale_chain is not the complete canonical chain")
+    hidden_specs = manifest.get("hidden_head_specs")
+    output_specs = manifest.get("output_head_specs")
+    if not isinstance(hidden_specs, list) or not isinstance(output_specs, list):
+        raise ValueError("checkpoint head specs must be arrays")
+    for spec in hidden_specs:
+        if not isinstance(spec, dict) or any("bias" in str(key).lower() for key in spec):
+            raise ValueError("hidden attention/output bias is forbidden in canonical checkpoint")
+        if set(spec) != {"layer_index", "local_head_index", "seq_kernel", "attn_src_kernel", "attn_dst_kernel"}:
+            raise ValueError("hidden head spec schema is not canonical")
+    for spec in output_specs:
+        if not isinstance(spec, dict):
+            raise ValueError("output head spec must be an object")
+        if any("bias" in str(key).lower() and key != "output_bias" for key in spec):
+            raise ValueError("output attention bias is forbidden in canonical checkpoint")
+        if set(spec) != {"head_index", "seq_kernel", "attn_src_kernel", "attn_dst_kernel", "output_bias"}:
+            raise ValueError("output head spec schema is not canonical")
+    index = manifest.get("tensor_index")
+    if not isinstance(index, dict) or not index:
+        raise ValueError("canonical checkpoint tensor_index is missing")
+    if any("bias" in str(name).lower() and "/output_bias" not in str(name).lower() for name in index):
+        raise ValueError("tensor_index contains a hidden/attention bias")
+    if int(manifest.get("tensor_count", -1)) != len(index):
+        raise ValueError("checkpoint tensor_count does not match tensor_index")
+    if manifest.get("tensor_index_digest") != _digest_json(index):
+        raise ValueError("checkpoint tensor_index_digest is invalid")
+    expected_names = set()
+    for spec in hidden_specs:
+        expected_names.update(spec[key] for key in ("seq_kernel", "attn_src_kernel", "attn_dst_kernel"))
+    for spec in output_specs:
+        expected_names.update(spec[key] for key in ("seq_kernel", "attn_src_kernel", "attn_dst_kernel", "output_bias"))
+    if set(index) != expected_names:
+        raise ValueError("checkpoint tensor_index does not exactly match canonical head specs")
+
+
+def _digest_json(value: object) -> str:
+    import hashlib
+
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    ).hexdigest()
+
+
+def _tensor_digest(array: np.ndarray) -> str:
+    import hashlib
+
+    payload = np.ascontiguousarray(np.asarray(array, dtype=np.float64)).tobytes(order="C")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _validate_tensor_index(manifest: Dict, tensors: Dict[str, np.ndarray]) -> None:
+    index = manifest["tensor_index"]
+    if set(index) != set(tensors):
+        raise ValueError("checkpoint tensor file set differs from authenticated tensor_index")
+    for name, entry in index.items():
+        if not isinstance(entry, dict) or set(entry) != {"dtype", "shape", "count", "sha256"}:
+            raise ValueError(f"tensor_index entry schema is invalid: {name}")
+        array = tensors[name]
+        if entry["dtype"] != "float64" or [int(v) for v in entry["shape"]] != list(array.shape) or int(entry["count"]) != int(array.size):
+            raise ValueError(f"tensor_index shape/dtype mismatch: {name}")
+        if entry["sha256"] != _tensor_digest(array):
+            raise ValueError(f"tensor digest mismatch: {name}")
 
 
 def _validate_model(model: Model) -> None:
@@ -273,6 +420,14 @@ def _validate_model(model: Model) -> None:
         raise ValueError("model manifest d_in_profile does not match hidden input dimensions")
     if int(manifest.get("C", -1)) != model.class_count or int(manifest.get("K_out", -1)) != model.k_out:
         raise ValueError("model manifest output dimensions differ from loaded model")
+    if model.quant_cfg_id != CANONICAL_QUANT_CFG_ID or model.quant_scales != canonical_scale_profile():
+        raise ValueError("loaded model does not use the canonical scale chain")
+    if model.input_preprocess_id != canonical_input_preprocess_id(str(manifest.get("dataset", ""))):
+        raise ValueError("loaded model input preprocessing identity is not canonical")
+    if [(int(item.get("head_count", -1)), int(item.get("head_dim", -1))) for item in manifest_hidden] != [(8, 8), (8, 8)]:
+        raise ValueError("canonical model hidden profile must be [8x8,8x8]")
+    if model.k_out != 2:
+        raise ValueError("canonical model K_out must be 2")
     output_specs = manifest.get("output_head_specs")
     if not isinstance(output_specs, list) or len(output_specs) != model.k_out:
         raise ValueError("model manifest output head cardinality mismatch")
@@ -280,6 +435,13 @@ def _validate_model(model: Model) -> None:
         raise ValueError("model manifest output head indices are not contiguous")
     if model.k_out != len(model.output_heads):
         raise ValueError("K_out conflicts with output_head_specs")
+    hidden_specs = manifest.get("hidden_head_specs", [])
+    if len(hidden_specs) != 16:
+        raise ValueError("canonical model hidden head cardinality must be 16")
+    for layer_index in range(len(model.hidden_layers)):
+        layer_specs = [item for item in hidden_specs if int(item["layer_index"]) == layer_index]
+        if len(layer_specs) != 8 or [int(item["local_head_index"]) for item in layer_specs] != list(range(8)):
+            raise ValueError("canonical model hidden head indices are not contiguous")
     prev_dim = canonical_d_in[0]
     for layer in model.hidden_layers:
         if layer.input_dim != prev_dim:
