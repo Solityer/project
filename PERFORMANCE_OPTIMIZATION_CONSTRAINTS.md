@@ -4,7 +4,7 @@
 
 本文档用于约束 zkGAT 主实验在**多层多头正式实现完成之后的性能优化阶段**。
 
-当前正式模型与证明路径已经完成多层多头迁移，性能优化阶段的目标是：
+当前正式模型采用多层多头 GAT，正式证明路径与该模型结构保持一致，性能优化阶段的目标是：
 
 > **在不修改协议方案、证明语义、安全边界和正式模型语义的前提下，尽可能从执行层、GPU 路径和结构性实现上降低 commitment / prove / verify 的端到端正式耗时。**
 
@@ -25,10 +25,11 @@
 
 ### 2.1 最高权限文档只读约束
 
-以下两份文件属于项目最高权限只读约束文件：
+以下三份文件属于项目只读约束文件：
 
 - `GAT-ZKML-多层多头.md`
 - `PROJECT_CONTEXT_AND_EXECUTION_CONSTRAINTS.md`
+- `PERFORMANCE_OPTIMIZATION_CONSTRAINTS.md`
 
 性能优化阶段不得：
 
@@ -38,7 +39,7 @@
 - 删除；
 - 通过性能优化文档、README、代码注释或当前 prompt 覆盖其约束。
 
-如果当前实现与上述两份文件发生冲突，应修改实现，而不是修改最高权限文档以适配代码。
+如果当前实现与上述三份文件发生冲突，应修改实现，而不是修改只读约束文档以适配代码。
 
 ### 2.2 `comparison/` 完全隔离
 
@@ -168,9 +169,9 @@
 
 - `fast_msm`
 - `parallel_fft`
-- `fft_backend_upgrade`
-- `fft_kernel_upgrade`
-- `trace_layout_upgrade`
+- `packed_fft_backend`
+- `rotated_fft_kernel`
+- `compact_trace_layout`
 - `fast_verify_pairing`
 - CUDA hotspot 路径
 - 已有 multi-graph / large-graph 通用优化
@@ -774,7 +775,7 @@ tests/
 
 > **`comparison/` 完全隔离，不属于本阶段分析、修改、运行和推断范围。**
 
-> **两份最高权限约束文档只读，不得因性能优化而修改。**
+> **三份项目约束文档均只读，不得因性能优化而修改。**
 
 > **轻量测试必须与正式 checkpoint、SRS、cache、proof 和结果目录隔离。**
 

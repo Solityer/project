@@ -3,7 +3,7 @@
 
 > 适用范围：`/home/pzh/project` 中除 `comparison/` 外的主实验。  
 > 最高技术规范：`GAT-ZKML-多层多头.md`。  
-> 本文件用于明确当前主实验的最终目标、开发边界、执行权限、测试要求和工作区治理规则。后续 Codex 任务应先完整阅读本文件和最高技术规范，再直接基于主实验真实代码执行，不需要在每次 Prompt 中重复本文件内容。
+> 本文件用于明确当前主实验的最终目标、开发边界、执行权限、测试要求和工作区治理规则。后续 Codex 任务应先完整阅读 `GAT-ZKML-多层多头.md`、本文件和 `PERFORMANCE_OPTIMIZATION_CONSTRAINTS.md` 三份只读约束文件，再直接基于主实验真实代码执行，不需要在每次 Prompt 中重复本文件内容。
 
 ---
 
@@ -295,9 +295,10 @@ Codex 不得因为这些操作由项目负责人执行，就提前停止其他�
 ```text
 GAT-ZKML-多层多头.md
 PROJECT_CONTEXT_AND_EXECUTION_CONSTRAINTS.md
+PERFORMANCE_OPTIMIZATION_CONSTRAINTS.md
 ```
 
-Codex 不得为了迁就当前代码自行修改这两份文件。
+Codex 不得为了迁就当前代码自行修改这三份文件。
 
 Codex 可以使用 `git status`、`git diff`、`git log`、`git ls-files` 等只读 Git 命令检查当前状态、差异和 tracked/untracked 情况。
 
@@ -389,7 +390,7 @@ results/paper_secure/security_tests_report.md
 
 不得创建或长期保留 `old`、`new`、`backup`、`legacy`、`previous`、`preserved`、`pre_*`、`phase*`、`final/final2`、日期型副本、`multilayer_v2`、`formal_new` 等开发历史式文件或目录。
 
-`v1/v2/vN` 清理规则只针对同一职责并存的开发历史副本，不适用于当前正式代码真实使用的 schema version、file-format version、security-profile version、protocol version、正式 envelope/version ID 或其他具有实际语义的版本标识。不得仅因文件名、字段值或 format ID 中包含 `v1`、`v2` 等字符串就删除或重命名，必须先确认真实引用关系和职责。
+主实验自行控制的 schema、file format、security profile、protocol、envelope、artifact、manifest、registry、report、transcript/domain identity、magic/header 及其他正式内部 identity 均只保留当前唯一 canonical 定义，不得携带 `v1/v2/vN`、`_vN`、`-vN` 或其他体现项目历史版本演进的编号。清理必须依据真实引用关系沿 producer、serialization、hash/digest/transcript、consumer 和 validation 调用链完整传播，不能以删除正式语义、弱化校验或破坏协议绑定为代价。第三方标准、外部 ABI/API、依赖自身版本、数据集官方版本以及算法或密码学参数中的固有版本/数字不属于本规则的清理对象。
 
 同一职责只保留一个 canonical 实现。不得通过复制文件、平行实现、大段注释旧代码、备份目录或历史 artifact 保留修改过程。
 
@@ -431,7 +432,7 @@ Codex 只有在以下条件满足后，才可以认为本轮“工程准备完�
 9. 已根据当前主实验真实的 SRS 生成、加载、manifest/binding 和实际 proof shape，检查当前 dataset-specific canonical SRS 与新的正式多层多头实例是否完整兼容；如果当前正式实现判定需要重新生成，已经按照现有正式 SRS 流程准备好对应生成入口。没有仅依据 nominal capacity 作结论，也没有重新设计 SRS 协议。
 10. 所有 test-only 代码和 test-only 产物均收敛在 `tests/`；正式 checker/validator 是否迁移已依据真实职责和调用关系判断，没有按文件名机械处理。
 11. Codex 已实际完成 CPU/GPU build 及所有合理时间内能够执行的必要短时验证。
-12. 旧 architecture-scaling 草案、真实失效的历史副本和重复实现，在确认没有正式依赖后已经清理；具有实际 schema/format/security/profile/protocol 语义的版本标识没有因 `v1/v2/vN` 字样被误删；现有正式 CPU/GPU 工程优化能力没有被误删。
+12. 旧 architecture-scaling 草案、真实失效的历史副本和重复实现，在确认没有正式依赖后已经清理；主实验自行控制的 schema/format/security/profile/protocol/envelope/artifact/manifest/registry/report/transcript 等正式内部 identity 已统一为当前唯一无历史版本号的 canonical 定义，不存在 `v1/v2/vN`、legacy、compatibility、migration 或旧格式 fallback；现有正式 CPU/GPU 工程优化能力没有被误删或回退。
 13. 没有新建第二套正式 config、checkpoint、SRS、protocol 或 backend 实现。
 14. 没有从 `comparison/` 引入任何主实验不存在的协议关系、代码或测试要求。
 15. 对仍需要项目负责人执行的正式训练、checkpoint 后检查、SRS 生成、长时间测试和最终 CPU/GPU 十组实验，已给出经过检查的完整执行命令和成功判据。
