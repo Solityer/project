@@ -30,6 +30,7 @@ SPEC = importlib.util.spec_from_file_location("aggregate_secure_results", AGGREG
 assert SPEC is not None and SPEC.loader is not None
 AGGREGATOR = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(AGGREGATOR)
+ARTIFACT_EXPORT_PATH = ROOT / "src" / "protocol" / "artifact_export.cpp"
 
 
 class OgbnIdentityTests(unittest.TestCase):
@@ -67,6 +68,18 @@ class OgbnIdentityTests(unittest.TestCase):
                 f"{OGBN_ARXIV_INTERNAL_NAME}=run_manifest.json", "--run"
             ),
             (OGBN_ARXIV_INTERNAL_NAME, "run_manifest.json"),
+        )
+
+    def test_formal_provenance_and_ogbn_srs_domain_are_canonical(self) -> None:
+        artifact_export = ARTIFACT_EXPORT_PATH.read_text(encoding="utf-8")
+        self.assertIn('{"config", metrics.config}', artifact_export)
+        self.assertIn(
+            '{"config_sha256", sha256_file_hex(std::filesystem::path(metrics.config))}',
+            artifact_export,
+        )
+        self.assertEqual(
+            AGGREGATOR.EXPECTED_SRS_DOMAINS[OGBN_ARXIV_INTERNAL_NAME]["edge"],
+            1 << 24,
         )
 
 

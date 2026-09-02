@@ -606,6 +606,8 @@ namespace gatzk::protocol
             {"algebra_backend_name", metrics.algebra_backend_name},
             {"compute_backend_name", metrics.compute_backend_name},
             {"config_id", config_id},
+            {"config", metrics.config},
+            {"config_sha256", sha256_file_hex(std::filesystem::path(metrics.config))},
             {"dataset", metrics.dataset},
             {"input_preprocess_id", context.config.input_preprocess_id},
             {"status", final_accepted ? "VERIFY_OK" : "VERIFY_FAIL"},
