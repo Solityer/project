@@ -7,6 +7,7 @@
 #include <functional>
 #include <limits>
 #include <openssl/sha.h>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string_view>
@@ -73,6 +74,14 @@ namespace gatzk::protocol
         {
             if (value.size() > kMaxStringBytes)
                 throw std::runtime_error("verifier registration string exceeds cap");
+            append_u64(out, value.size());
+            out->insert(out->end(), value.begin(), value.end());
+        }
+
+        void append_blob(
+            std::vector<std::uint8_t> *out,
+            std::string_view value)
+        {
             append_u64(out, value.size());
             out->insert(out->end(), value.begin(), value.end());
         }
@@ -209,6 +218,14 @@ namespace gatzk::protocol
                 const auto length = size(std::string(what) + ".length");
                 if (length > kMaxStringBytes)
                     throw std::runtime_error("verifier registration string exceeds cap: " + std::string(what));
+                const auto bytes = take(length, what);
+                return std::string(
+                    reinterpret_cast<const char *>(bytes.data()), bytes.size());
+            }
+
+            std::string blob(std::string_view what)
+            {
+                const auto length = size(std::string(what) + ".length");
                 const auto bytes = take(length, what);
                 return std::string(
                     reinterpret_cast<const char *>(bytes.data()), bytes.size());
@@ -880,9 +897,6 @@ namespace gatzk::protocol
             append_size(out, domain.size);
             append_field(out, domain.omega);
             append_field(out, domain.inv_size);
-            append_bool(out, domain.points_precomputed);
-            append_field_vector(out, domain.points);
-            append_field_vector(out, domain.points_scaled_by_inv_size);
         }
 
         std::shared_ptr<algebra::RootOfUnityDomain> read_domain(Reader &reader)
@@ -893,30 +907,11 @@ namespace gatzk::protocol
                 throw std::runtime_error("verifier registration domain size is not a power of two");
             const auto omega = read_field(reader, "domain.omega");
             const auto inv_size = read_field(reader, "domain.inv_size");
-            const auto precomputed = reader.u8("domain.points_precomputed");
-            if (precomputed > 1)
-                throw std::runtime_error("non-canonical domain boolean");
-            auto points = read_field_vector(reader);
-            auto scaled = read_field_vector(reader);
-            if (precomputed != 0 && (points.size() != size || scaled.size() != size))
-                throw std::runtime_error("precomputed domain point length mismatch");
-            if (precomputed == 0 && (!points.empty() || !scaled.empty()))
-                throw std::runtime_error("non-precomputed domain contains points");
             auto expected = algebra::RootOfUnityDomain::create(name, size);
             if (expected->omega != omega || expected->inv_size != inv_size
-                || expected->points_precomputed != (precomputed != 0)
-                || expected->points != points
-                || expected->points_scaled_by_inv_size != scaled)
+                || expected->name != name || expected->size != size)
                 throw std::runtime_error("domain data is not canonical");
-            auto out = std::make_shared<algebra::RootOfUnityDomain>();
-            out->name = name;
-            out->size = size;
-            out->omega = omega;
-            out->inv_size = inv_size;
-            out->points_precomputed = precomputed != 0;
-            out->points = std::move(points);
-            out->points_scaled_by_inv_size = std::move(scaled);
-            return out;
+            return expected;
         }
 
         std::shared_ptr<algebra::RootOfUnityDomain> domain_ref(
@@ -936,10 +931,16 @@ namespace gatzk::protocol
             const std::array<const std::shared_ptr<algebra::RootOfUnityDomain> *, 7> top = {
                 &domains.fh, &domains.edge, &domains.in, &domains.d,
                 &domains.cat, &domains.c, &domains.n};
-            for (const auto *domain : top)
+            const std::array<std::string_view, 7> names = {
+                "FH", "edge", "in", "d", "cat", "C", "N"};
+            for (std::size_t index = 0; index < top.size(); ++index)
             {
+                const auto *domain = top[index];
                 if (*domain == nullptr)
                     throw std::runtime_error("verifier registration has a missing work domain");
+                if ((*domain)->name != names[index])
+                    throw std::runtime_error(
+                        "verifier registration has a non-canonical work domain name");
                 append_domain(out, **domain);
             }
             append_vector(out, domains.hidden_layers, [&](const auto &layer)
@@ -965,10 +966,15 @@ namespace gatzk::protocol
         WorkDomains read_domains(Reader &reader)
         {
             std::array<std::shared_ptr<algebra::RootOfUnityDomain>, 7> top;
+            const std::array<std::string_view, 7> names = {
+                "FH", "edge", "in", "d", "cat", "C", "N"};
             std::unordered_map<std::string, std::shared_ptr<algebra::RootOfUnityDomain>> by_name;
             for (std::size_t i = 0; i < top.size(); ++i)
             {
                 top[i] = read_domain(reader);
+                if (top[i]->name != names[i])
+                    throw std::runtime_error(
+                        "verifier registration work-domain order/name mismatch");
                 if (!by_name.emplace(top[i]->name, top[i]).second)
                     throw std::runtime_error("duplicate top-level verifier registration domain");
             }
@@ -1128,39 +1134,63 @@ namespace gatzk::protocol
             vk->g2_tau_prepared = std::make_shared<crypto::PreparedG2>(crypto::prepare_g2(vk->g2_tau));
         }
 
-        std::vector<std::pair<std::string, algebra::Polynomial>> sorted_polynomials(
-            const std::unordered_map<std::string, algebra::Polynomial> &polynomials)
+        std::vector<std::pair<std::string, VerifierPublicPolynomialDescriptor>> sorted_polynomial_descriptors(
+            const std::unordered_map<std::string, VerifierPublicPolynomialDescriptor> &descriptors)
         {
-            std::vector<std::pair<std::string, algebra::Polynomial>> sorted;
-            sorted.reserve(polynomials.size());
-            for (const auto &[key, polynomial] : polynomials)
-                sorted.emplace_back(key, polynomial);
+            std::vector<std::pair<std::string, VerifierPublicPolynomialDescriptor>> sorted;
+            sorted.reserve(descriptors.size());
+            for (const auto &[key, descriptor] : descriptors)
+                sorted.emplace_back(key, descriptor);
             std::sort(sorted.begin(), sorted.end(), [](const auto &lhs, const auto &rhs)
                       { return lhs.first < rhs.first; });
             return sorted;
         }
 
-        void append_polynomials(
+        void append_polynomial_descriptors(
             std::vector<std::uint8_t> *out,
-            const std::unordered_map<std::string, algebra::Polynomial> &polynomials)
+            const std::unordered_map<std::string, VerifierPublicPolynomialDescriptor> &descriptors,
+            const WorkDomains &domains)
         {
-            auto sorted = sorted_polynomials(polynomials);
+            auto sorted = sorted_polynomial_descriptors(descriptors);
             append_size(out, sorted.size());
             std::string previous;
-            for (const auto &[key, polynomial] : sorted)
+            const auto domain_size = [&](const std::string &name)
+                -> std::optional<std::size_t>
             {
-                if (key.empty() || (!previous.empty() && key <= previous) || polynomial.name != key)
-                    throw std::runtime_error("public polynomial map order/name mismatch");
+                for (const auto &domain : {
+                         domains.fh, domains.edge, domains.in, domains.d,
+                         domains.cat, domains.c, domains.n})
+                {
+                    if (domain != nullptr && domain->name == name)
+                        return domain->size;
+                }
+                return std::nullopt;
+            };
+            for (const auto &[key, descriptor] : sorted)
+            {
+                if (key.empty() || (!previous.empty() && key <= previous)
+                    || descriptor.name != key || descriptor.size == 0)
+                    throw std::runtime_error("public polynomial descriptor order/name mismatch");
+                if (descriptor.basis == algebra::PolynomialBasis::Evaluation)
+                {
+                    const auto size = domain_size(descriptor.domain);
+                    if (!size.has_value() || descriptor.size != *size)
+                        throw std::runtime_error(
+                            "public polynomial descriptor has unknown domain or size mismatch");
+                }
+                else if (!descriptor.domain.empty())
+                {
+                    throw std::runtime_error("coefficient descriptor has a domain reference");
+                }
                 previous = key;
                 append_string(out, key);
-                append_u8(out, static_cast<std::uint8_t>(polynomial.basis));
-                append_string(out, polynomial.domain == nullptr ? std::string_view{} : polynomial.domain->name);
-                append_field_vector(out, polynomial.values());
-                append_field_vector(out, polynomial.zero_domain_blinder);
+                append_u8(out, static_cast<std::uint8_t>(descriptor.basis));
+                append_string(out, descriptor.domain);
+                append_size(out, descriptor.size);
             }
         }
 
-        std::unordered_map<std::string, algebra::Polynomial> read_polynomials(
+        std::unordered_map<std::string, VerifierPublicPolynomialDescriptor> read_polynomial_descriptors(
             Reader &reader,
             const WorkDomains &domains)
         {
@@ -1172,7 +1202,7 @@ namespace gatzk::protocol
             const auto count = reader.size("public-polynomials.count");
             if (count > kMaxVectorEntries)
                 throw std::runtime_error("public polynomial count exceeds cap");
-            std::unordered_map<std::string, algebra::Polynomial> out;
+            std::unordered_map<std::string, VerifierPublicPolynomialDescriptor> out;
             out.reserve(count);
             std::string previous;
             for (std::size_t i = 0; i < count; ++i)
@@ -1196,14 +1226,17 @@ namespace gatzk::protocol
                 {
                     throw std::runtime_error("coefficient polynomial has a domain reference");
                 }
-                auto values = read_field_vector(reader);
-                auto blinder = read_field_vector(reader);
-                if (!blinder.empty())
-                    throw std::runtime_error("public polynomial contains private blinding material");
-                algebra::Polynomial polynomial = basis == static_cast<std::uint8_t>(algebra::PolynomialBasis::Evaluation)
-                                                    ? algebra::Polynomial::from_evaluations(key, std::move(values), domain)
-                                                    : algebra::Polynomial::from_coefficients(key, std::move(values));
-                if (!out.emplace(key, std::move(polynomial)).second)
+                const auto size = reader.size("public-polynomial.size");
+                if (size == 0)
+                    throw std::runtime_error("public polynomial descriptor size is zero");
+                if (domain != nullptr && size != domain->size)
+                    throw std::runtime_error("public polynomial descriptor size/domain mismatch");
+                VerifierPublicPolynomialDescriptor descriptor{
+                    .name = key,
+                    .basis = static_cast<algebra::PolynomialBasis>(basis),
+                    .domain = domain_name,
+                    .size = size};
+                if (!out.emplace(key, std::move(descriptor)).second)
                     throw std::runtime_error("duplicate public polynomial");
             }
             return out;
@@ -1420,8 +1453,8 @@ namespace gatzk::protocol
             append_string(out, artifact.kzg_assumption_profile);
             append_string(out, artifact.shift_algorithm_id);
             append_string(out, artifact.shift_algorithm_spec);
-            append_string(out, artifact.protocol_canonical_bytes);
-            append_string(out, artifact.instance_canonical_bytes);
+            append_blob(out, artifact.protocol_canonical_bytes);
+            append_blob(out, artifact.instance_canonical_bytes);
         }
 
         ProtocolCompilerArtifact read_compiler(Reader &reader)
@@ -1466,8 +1499,8 @@ namespace gatzk::protocol
             artifact.kzg_assumption_profile = reader.string("compiler.kzg-profile");
             artifact.shift_algorithm_id = reader.string("compiler.shift-id");
             artifact.shift_algorithm_spec = reader.string("compiler.shift-spec");
-            artifact.protocol_canonical_bytes = reader.string("compiler.protocol-canonical");
-            artifact.instance_canonical_bytes = reader.string("compiler.instance-canonical");
+            artifact.protocol_canonical_bytes = reader.blob("compiler.protocol-canonical");
+            artifact.instance_canonical_bytes = reader.blob("compiler.instance-canonical");
             return artifact;
         }
 
@@ -1651,7 +1684,7 @@ namespace gatzk::protocol
             case Section::StaticTables: artifact->tables = read_tables(section); break;
             case Section::Domains: artifact->domains = read_domains(section); break;
             case Section::SrsAndVk: read_srs(section, &artifact->srs, &artifact->kzg_vk); break;
-            case Section::PublicPolynomials: artifact->public_polynomials = read_polynomials(section, artifact->domains); break;
+            case Section::PublicPolynomials: artifact->public_polynomial_descriptors = read_polynomial_descriptors(section, artifact->domains); break;
             case Section::PublicCommitments: artifact->public_commitments = read_point_map(section); break;
             case Section::StaticCommitments: artifact->static_commitments = read_point_map(section); break;
             case Section::CompilerArtifact: artifact->compiler_artifact = read_compiler(section); break;
@@ -1674,7 +1707,7 @@ namespace gatzk::protocol
             make_section(Section::StaticTables, [&](auto *payload) { append_tables(payload, tables); }),
             make_section(Section::Domains, [&](auto *payload) { append_domains(payload, domains); }),
             make_section(Section::SrsAndVk, [&](auto *payload) { append_srs(payload, srs, kzg_vk); }),
-            make_section(Section::PublicPolynomials, [&](auto *payload) { append_polynomials(payload, public_polynomials); }),
+            make_section(Section::PublicPolynomials, [&](auto *payload) { append_polynomial_descriptors(payload, public_polynomial_descriptors, domains); }),
             make_section(Section::PublicCommitments, [&](auto *payload) { append_point_map(payload, public_commitments); }),
             make_section(Section::StaticCommitments, [&](auto *payload) { append_point_map(payload, static_commitments); }),
             make_section(Section::CompilerArtifact, [&](auto *payload) { append_compiler(payload, compiler_artifact); }),

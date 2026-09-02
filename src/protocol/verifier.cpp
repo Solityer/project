@@ -60,38 +60,23 @@ namespace gatzk::protocol
             return context.config.layer_count != 0 && context.config.layer_count == context.config.hidden_profile.size() + 1 && context.config.d_in_profile.size() == context.config.hidden_profile.size() && formal_hidden_head_count(context) != 0 && context.config.K_out != 0;
         }
 
-        bool public_u64_column_matches(
-            const ProtocolContext &context,
-            const std::string &label,
-            const std::vector<std::size_t> &expected)
-        {
-            const auto it = context.public_polynomials.find(label);
-            if (it == context.public_polynomials.end() || it->second.size() < expected.size())
-            {
-                return false;
-            }
-            const auto &values = it->second.values();
-            for (std::size_t i = 0; i < expected.size(); ++i)
-            {
-                if (!(values[i] == FieldElement(static_cast<std::uint64_t>(expected[i]))))
-                {
-                    return false;
-                }
-            }
-            return true;
-        }
-
         bool public_statement_matches_registered_columns(const ProtocolContext &context)
         {
-            std::vector<std::size_t> src;
-            std::vector<std::size_t> dst;
-            src.reserve(context.local.public_input.src.size());
-            dst.reserve(context.local.public_input.dst.size());
-            for (const auto value : context.local.public_input.src)
-                src.push_back(value);
-            for (const auto value : context.local.public_input.dst)
-                dst.push_back(value);
-            return public_u64_column_matches(context, "P_I", context.local.public_input.I) && public_u64_column_matches(context, "P_src", src) && public_u64_column_matches(context, "P_dst", dst);
+            const auto has_descriptor = [&](std::string_view name,
+                                            std::string_view domain,
+                                            std::size_t size)
+            {
+                const auto it = context.public_polynomial_descriptors.find(
+                    std::string(name));
+                return it != context.public_polynomial_descriptors.end()
+                    && it->second.name == name
+                    && it->second.basis == algebra::PolynomialBasis::Evaluation
+                    && it->second.domain == domain
+                    && it->second.size == size;
+            };
+            return has_descriptor("P_I", "N", context.domains.n->size)
+                && has_descriptor("P_src", "edge", context.domains.edge->size)
+                && has_descriptor("P_dst", "edge", context.domains.edge->size);
         }
 
         double elapsed_ms(const Clock::time_point &start, const Clock::time_point &end)
@@ -115,13 +100,55 @@ namespace gatzk::protocol
             return true;
         }
 
-        bool lazy_large_fh_public_enabled(const ProtocolContext &context)
+        bool complete_public_feature_source(const ProtocolContext &context)
         {
-            constexpr std::size_t kMinLazyLargeFhDomainSize = 1ULL << 24;
-            return context.config.batching_rule == "whole_graph_single" && context.local.num_nodes == context.dataset.num_nodes && context.local.num_features == context.dataset.num_features && context.domains.fh != nullptr && context.domains.fh->size >= kMinLazyLargeFhDomainSize;
+            if (context.dataset.num_nodes == 0
+                || context.dataset.num_features == 0
+                || context.local.num_nodes != context.dataset.num_nodes
+                || context.local.num_features != context.dataset.num_features
+                || context.local.graph_count != context.dataset.graph_count
+                || context.local.absolute_ids.size() != context.dataset.num_nodes
+                || context.local.features.size() != context.dataset.num_nodes)
+                return false;
+            for (std::size_t row = 0; row < context.local.absolute_ids.size(); ++row)
+            {
+                if (context.local.absolute_ids[row] != row
+                    || context.local.features[row].size() != context.local.num_features)
+                    return false;
+            }
+            return context.local.public_input.N_total == context.dataset.num_nodes;
         }
 
-        bool is_lazy_large_fh_public_label(const std::string &name)
+        bool lazy_fh_public_enabled(const ProtocolContext &context)
+        {
+            return complete_public_feature_source(context)
+                && context.domains.fh != nullptr;
+        }
+
+        const std::vector<std::vector<FieldElement>> &public_feature_source(
+            const ProtocolContext &context)
+        {
+            if (!complete_public_feature_source(context))
+                throw std::runtime_error(
+                    "verifier lazy feature evaluator requires complete public feature coverage");
+            if (context.local.num_features == 0)
+                throw std::runtime_error(
+                    "verifier lazy feature evaluator requires non-empty feature columns");
+            if (!context.dataset.features.empty())
+            {
+                if (context.dataset.features.size() != context.dataset.num_nodes)
+                    throw std::runtime_error(
+                        "verifier dataset feature source has an invalid row count");
+                for (const auto &row : context.dataset.features)
+                    if (row.size() != context.dataset.num_features)
+                        throw std::runtime_error(
+                            "verifier dataset feature source has an invalid row width");
+                return context.dataset.features;
+            }
+            return context.local.features;
+        }
+
+        bool is_lazy_fh_public_label(const std::string &name)
         {
             return name == "P_T_H" || name == "P_Row_feat_tbl" || name == "P_Col_feat_tbl" || name == "P_Row_feat_qry" || name == "P_Col_feat_qry" || name == "P_I_feat_qry" || name == "P_Q_tbl_feat" || name == "P_Q_qry_feat";
         }
@@ -193,12 +220,12 @@ namespace gatzk::protocol
             return zero_eval * domain->inv_size * sum;
         }
 
-        FieldElement evaluate_lazy_large_fh_public_poly(
+        FieldElement evaluate_lazy_fh_public_poly(
             const ProtocolContext &context,
             const std::string &name,
             const FieldElement &point)
         {
-            if (!lazy_large_fh_public_enabled(context) || !is_lazy_large_fh_public_label(name))
+            if (!lazy_fh_public_enabled(context) || !is_lazy_fh_public_label(name))
             {
                 throw std::runtime_error("unsupported verifier lazy public polynomial: " + name);
             }
@@ -206,9 +233,14 @@ namespace gatzk::protocol
             const std::size_t dataset_rows = context.dataset.num_nodes;
             const std::size_t local_rows = context.local.num_nodes;
             const std::size_t feature_count = context.local.num_features;
+            if (feature_count == 0)
+                throw std::runtime_error(
+                    "verifier feature table has zero feature columns");
+            if (dataset_rows > std::numeric_limits<std::size_t>::max() / feature_count)
+                throw std::runtime_error("verifier feature table size overflows size_t");
             const std::size_t dataset_valid = dataset_rows * feature_count;
             const std::size_t local_valid = local_rows * feature_count;
-            const auto &feature_matrix = !context.dataset.features.empty() ? context.dataset.features : context.local.features;
+            const auto &feature_matrix = public_feature_source(context);
             if (name == "P_Q_tbl_feat")
             {
                 return evaluate_truncated_domain_polynomial(domain, dataset_valid, point, [](std::size_t)
@@ -241,8 +273,14 @@ namespace gatzk::protocol
             }
             if (name == "P_I_feat_qry")
             {
+                const bool full_feature_identity = full_graph_feature_identity_enabled(context);
                 return evaluate_truncated_domain_polynomial(domain, local_valid, point, [&](std::size_t index)
-                                                            { return FieldElement(context.local.absolute_ids[index / feature_count]); });
+                                                            {
+                                                                const auto row = index / feature_count;
+                                                                return full_feature_identity
+                                                                    ? FieldElement(row)
+                                                                    : FieldElement(context.local.absolute_ids[row]);
+                                                            });
             }
             if (name == "P_T_H")
             {
@@ -253,6 +291,329 @@ namespace gatzk::protocol
             return feature_matrix[row][column]; });
             }
             throw std::runtime_error("unsupported verifier lazy public polynomial label: " + name);
+        }
+
+        std::shared_ptr<algebra::RootOfUnityDomain> public_descriptor_domain(
+            const ProtocolContext &context,
+            const VerifierPublicPolynomialDescriptor &descriptor)
+        {
+            for (const auto &domain : {
+                     context.domains.fh, context.domains.edge,
+                     context.domains.in, context.domains.d,
+                     context.domains.cat, context.domains.c,
+                     context.domains.n})
+            {
+                if (domain != nullptr && domain->name == descriptor.domain)
+                    return domain;
+            }
+            return nullptr;
+        }
+
+        FieldElement evaluate_deterministic_public_polynomial(
+            const ProtocolContext &context,
+            const VerifierPublicPolynomialDescriptor &descriptor,
+            const FieldElement &point)
+        {
+            if (descriptor.basis != algebra::PolynomialBasis::Evaluation)
+                throw std::runtime_error(
+                    "unsupported coefficient public polynomial descriptor: "
+                    + descriptor.name);
+            const auto domain = public_descriptor_domain(context, descriptor);
+            if (domain == nullptr || descriptor.size != domain->size)
+                throw std::runtime_error(
+                    "public polynomial descriptor domain mismatch: "
+                    + descriptor.name);
+            const auto checked_product = [](std::size_t left, std::size_t right,
+                                            std::string_view label)
+            {
+                if (right != 0 && left > std::numeric_limits<std::size_t>::max() / right)
+                    throw std::runtime_error("public polynomial size overflow: " + std::string(label));
+                return left * right;
+            };
+            const auto edge_size = context.domains.edge->size;
+            const auto n_size = context.domains.n->size;
+            const auto c_size = context.domains.c->size;
+            const auto cat_size = context.domains.cat->size;
+            const auto in_size = context.domains.in->size;
+            const auto d_size = context.domains.d->size;
+            const auto edge_count = context.local.edges.size();
+            const auto node_count = context.local.num_nodes;
+            const auto class_count = context.local.num_classes;
+            const auto selector = [&](std::size_t valid_count)
+            {
+                if (valid_count > domain->size)
+                    throw std::runtime_error("public selector exceeds its domain: " + descriptor.name);
+                return evaluate_truncated_domain_polynomial(
+                    domain, valid_count, point,
+                    [](std::size_t)
+                    { return FieldElement::one(); });
+            };
+            const auto edge_value = [&](auto &&value_fn, std::size_t valid_count)
+            {
+                if (valid_count > edge_size || domain->name != "edge")
+                    throw std::runtime_error("public edge polynomial descriptor mismatch: " + descriptor.name);
+                return evaluate_truncated_domain_polynomial(
+                    domain, valid_count, point, std::forward<decltype(value_fn)>(value_fn));
+            };
+            const auto node_value = [&](auto &&value_fn, std::size_t valid_count)
+            {
+                if (valid_count > n_size || domain->name != "N")
+                    throw std::runtime_error("public node polynomial descriptor mismatch: " + descriptor.name);
+                return evaluate_truncated_domain_polynomial(
+                    domain, valid_count, point, std::forward<decltype(value_fn)>(value_fn));
+            };
+            const auto cat_value = [&](auto &&value_fn, std::size_t valid_count)
+            {
+                if (valid_count > cat_size || domain->name != "cat")
+                    throw std::runtime_error("public category polynomial descriptor mismatch: " + descriptor.name);
+                return evaluate_truncated_domain_polynomial(
+                    domain, valid_count, point, std::forward<decltype(value_fn)>(value_fn));
+            };
+            const auto in_value = [&](auto &&value_fn, std::size_t valid_count)
+            {
+                if (valid_count > in_size || domain->name != "in")
+                    throw std::runtime_error("public input polynomial descriptor mismatch: " + descriptor.name);
+                return evaluate_truncated_domain_polynomial(
+                    domain, valid_count, point, std::forward<decltype(value_fn)>(value_fn));
+            };
+            const auto d_value = [&](auto &&value_fn, std::size_t valid_count)
+            {
+                if (valid_count > d_size || domain->name != "d")
+                    throw std::runtime_error("public head polynomial descriptor mismatch: " + descriptor.name);
+                return evaluate_truncated_domain_polynomial(
+                    domain, valid_count, point, std::forward<decltype(value_fn)>(value_fn));
+            };
+            const auto c_value = [&](auto &&value_fn, std::size_t valid_count)
+            {
+                if (valid_count > c_size || domain->name != "C")
+                    throw std::runtime_error("public class polynomial descriptor mismatch: " + descriptor.name);
+                return evaluate_truncated_domain_polynomial(
+                    domain, valid_count, point, std::forward<decltype(value_fn)>(value_fn));
+            };
+
+            if (descriptor.name == "P_I")
+                return node_value(
+                    [&](std::size_t index)
+                    { return FieldElement(context.local.absolute_ids.at(index)); },
+                    node_count);
+            if (descriptor.name == "P_src" || descriptor.name == "P_dst")
+                return edge_value(
+                    [&](std::size_t index)
+                    {
+                        const auto &edge = context.local.edges.at(index);
+                        return FieldElement(descriptor.name == "P_src" ? edge.src : edge.dst);
+                    },
+                    edge_count);
+            if (descriptor.name == "P_edge_gid")
+                return edge_value(
+                    [&](std::size_t index)
+                    { return FieldElement(context.local.edges.at(index).graph_id); },
+                    edge_count);
+            if (descriptor.name == "P_Q_new_edge")
+                return edge_value(
+                    [&](std::size_t index)
+                    { return FieldElement(index == 0 || context.local.edges[index].dst != context.local.edges[index - 1].dst); },
+                    edge_count);
+            if (descriptor.name == "P_Q_end_edge")
+                return edge_value(
+                    [&](std::size_t index)
+                    { return FieldElement(index + 1 == edge_count || context.local.edges[index].dst != context.local.edges[index + 1].dst); },
+                    edge_count);
+            if (descriptor.name == "P_Q_graph_new_edge")
+                return edge_value(
+                    [&](std::size_t index)
+                    { return FieldElement(index == 0 || context.local.edges[index].graph_id != context.local.edges[index - 1].graph_id); },
+                    edge_count);
+            if (descriptor.name == "P_Q_graph_end_edge")
+                return edge_value(
+                    [&](std::size_t index)
+                    { return FieldElement(index + 1 == edge_count || context.local.edges[index].graph_id != context.local.edges[index + 1].graph_id); },
+                    edge_count);
+            if (descriptor.name == "P_Q_grp_new_edge" || descriptor.name == "P_Q_grp_end_edge")
+                return edge_value(
+                    [&](std::size_t index)
+                    {
+                        const bool graph_boundary = descriptor.name == "P_Q_grp_new_edge"
+                            ? index == 0 || context.local.edges[index].graph_id != context.local.edges[index - 1].graph_id
+                            : index + 1 == edge_count || context.local.edges[index].graph_id != context.local.edges[index + 1].graph_id;
+                        const bool destination_boundary = descriptor.name == "P_Q_grp_new_edge"
+                            ? index == 0 || context.local.edges[index].dst != context.local.edges[index - 1].dst
+                            : index + 1 == edge_count || context.local.edges[index].dst != context.local.edges[index + 1].dst;
+                        return FieldElement(graph_boundary || destination_boundary);
+                    },
+                    edge_count);
+            if (descriptor.name == "P_Q_edge_valid" || descriptor.name == "P_Q_qry_src" || descriptor.name == "P_Q_qry_dst")
+                return edge_value([](std::size_t)
+                                  { return FieldElement::one(); },
+                                  edge_count);
+            if (descriptor.name == "P_node_gid")
+                return node_value(
+                    [&](std::size_t index)
+                    {
+                        const auto it = std::upper_bound(
+                            context.local.node_ptr.begin(), context.local.node_ptr.end(), index);
+                        if (it == context.local.node_ptr.begin())
+                            throw std::runtime_error("node gid column has invalid node_ptr");
+                        return FieldElement(static_cast<std::size_t>(
+                            std::distance(context.local.node_ptr.begin(), it) - 1));
+                    },
+                    node_count);
+            if (descriptor.name == "P_Q_N")
+                return selector(node_count);
+            if (descriptor.name == "P_AggBind_index_N")
+                return node_value(
+                    [](std::size_t index)
+                    { return FieldElement(index); },
+                    node_count);
+            if (descriptor.name == "P_AggBind_m_src" || descriptor.name == "P_AggBind_m_dst")
+                return node_value(
+                    [&](std::size_t index)
+                    {
+                        std::size_t count = 0;
+                        for (const auto &edge : context.local.edges)
+                            count += descriptor.name == "P_AggBind_m_src"
+                                ? edge.src == index
+                                : edge.dst == index;
+                        return FieldElement(count);
+                    },
+                    node_count);
+            if (descriptor.name == output_q_cat_selector_label())
+                return selector(context.model.output_layer.input_dim);
+            if (descriptor.name == "P_Q_C_valid")
+                return c_value([](std::size_t)
+                               { return FieldElement::one(); },
+                               class_count);
+            if (descriptor.name == "P_BiasIndex_C")
+                return c_value(
+                    [](std::size_t index)
+                    { return FieldElement(index); },
+                    class_count);
+            if (descriptor.name == "P_BiasMultiplicity_C")
+                return c_value(
+                    [&](std::size_t)
+                    { return FieldElement(node_count); },
+                    class_count);
+            if (descriptor.name == "P_BiasIndex_edge")
+                return edge_value(
+                    [&](std::size_t index)
+                    { return FieldElement(index % class_count); },
+                    checked_product(node_count, class_count, descriptor.name));
+
+            for (std::size_t layer = 0; layer < context.model.hidden_layers.size(); ++layer)
+            {
+                const auto &shape = context.model.hidden_layers.at(layer);
+                if (descriptor.name == hidden_q_in_selector_label(layer))
+                    return in_value([](std::size_t)
+                                    { return FieldElement::one(); },
+                                    shape.input_dim);
+                if (descriptor.name == hidden_q_d_h_selector_label(layer))
+                    return d_value([](std::size_t)
+                                   { return FieldElement::one(); },
+                                   shape.shape.head_dim);
+                if (descriptor.name == hidden_q_cat_selector_label(layer))
+                    return cat_value([](std::size_t)
+                                     { return FieldElement::one(); },
+                                     checked_product(shape.shape.head_count,
+                                                     shape.shape.head_dim,
+                                                     descriptor.name));
+                if (descriptor.name == hidden_q_nd_h_selector_label(layer))
+                    return edge_value([](std::size_t)
+                                      { return FieldElement::one(); },
+                                      checked_product(node_count,
+                                                      shape.shape.head_dim,
+                                                      descriptor.name));
+            }
+            for (std::size_t head = 0; head < context.model.output_layer.heads.size(); ++head)
+            {
+                if (descriptor.name == "P_Q_div_out" + std::to_string(head)
+                    || descriptor.name == "P_Q_div_avg")
+                    return edge_value([](std::size_t)
+                                      { return FieldElement::one(); },
+                                      checked_product(node_count,
+                                                      class_count,
+                                                      descriptor.name));
+                const auto chunks = coefficient_chunk_layout(
+                    class_count + 3, edge_size);
+                for (const auto &chunk : chunks)
+                {
+                    for (const auto region : {"active", "semantic", "gap", "tail"})
+                    {
+                        if (descriptor.name != output_bias_basis_region_selector_label(
+                                head, chunk.chunk_index, region))
+                            continue;
+                        return edge_value(
+                            [&](std::size_t index)
+                            {
+                                const auto global_index = chunk.offset + index;
+                                if (std::string_view(region) == "active")
+                                    return FieldElement::one();
+                                if (std::string_view(region) == "semantic")
+                                    return FieldElement(global_index < class_count);
+                                if (std::string_view(region) == "tail")
+                                    return FieldElement(global_index >= class_count);
+                                return FieldElement::zero();
+                            },
+                            chunk.length);
+                    }
+                }
+            }
+            if (descriptor.name == "P_Q_tbl_L" || descriptor.name == "P_Q_qry_L"
+                || descriptor.name == "P_Q_tbl_R" || descriptor.name == "P_Q_qry_R"
+                || descriptor.name == "P_Q_tbl_exp" || descriptor.name == "P_Q_qry_exp"
+                || descriptor.name == "P_Q_tbl_ELU")
+            {
+                const bool table = descriptor.name.find("tbl") != std::string::npos;
+                std::size_t count = edge_count;
+                if (descriptor.name.ends_with("_L"))
+                    count = table ? context.tables.lrelu.size() : edge_count;
+                else if (descriptor.name.ends_with("_R"))
+                    count = table ? context.tables.range.size() : edge_count;
+                else if (descriptor.name.ends_with("_exp"))
+                    count = table ? context.tables.exp.size() : edge_count;
+                else if (descriptor.name.ends_with("_ELU"))
+                    count = context.tables.elu.size();
+                return edge_value([](std::size_t)
+                                  { return FieldElement::one(); },
+                                  count);
+            }
+            if (descriptor.name == "P_T_L_x" || descriptor.name == "P_T_L_y"
+                || descriptor.name == "P_T_ELU_x" || descriptor.name == "P_T_ELU_y"
+                || descriptor.name == "P_T_exp_x" || descriptor.name == "P_T_exp_y"
+                || descriptor.name == "P_T_range")
+            {
+                std::size_t count = 0;
+                if (descriptor.name == "P_T_L_x" || descriptor.name == "P_T_L_y")
+                    count = context.tables.lrelu.size();
+                else if (descriptor.name == "P_T_ELU_x" || descriptor.name == "P_T_ELU_y")
+                    count = context.tables.elu.size();
+                else if (descriptor.name == "P_T_exp_x" || descriptor.name == "P_T_exp_y")
+                    count = context.tables.exp.size();
+                else
+                    count = context.tables.range.size();
+                return edge_value(
+                    [&](std::size_t index)
+                    {
+                        if (descriptor.name == "P_T_L_x")
+                            return context.tables.lrelu.at(index).first;
+                        if (descriptor.name == "P_T_L_y")
+                            return context.tables.lrelu.at(index).second;
+                        if (descriptor.name == "P_T_ELU_x")
+                            return context.tables.elu.at(index).first;
+                        if (descriptor.name == "P_T_ELU_y")
+                            return context.tables.elu.at(index).second;
+                        if (descriptor.name == "P_T_exp_x")
+                            return context.tables.exp.at(index).first;
+                        if (descriptor.name == "P_T_exp_y")
+                            return context.tables.exp.at(index).second;
+                        return context.tables.range.at(index);
+                    },
+                    count);
+            }
+            if (is_lazy_fh_public_label(descriptor.name))
+                return evaluate_lazy_fh_public_poly(context, descriptor.name, point);
+            throw std::runtime_error(
+                "unsupported deterministic public polynomial descriptor: "
+                + descriptor.name);
         }
 
         class PublicEvaluationBackendRegistry
@@ -405,7 +766,7 @@ namespace gatzk::protocol
                         // leaving every other backend caller on automatic
                         // placement.
                         const bool cpu_large_fh_working_set =
-                            lazy_large_fh_public_enabled(context_) && context_.local.num_nodes >= (1ULL << 16) && domain->size >= (1ULL << 20);
+                            lazy_fh_public_enabled(context_) && context_.local.num_nodes >= (1ULL << 16) && domain->size >= (1ULL << 20);
                         const auto rotated_values = backend->evaluate_with_native_weight_rotations(
                             *labels,
                             weight_entry.native_weights,
@@ -459,18 +820,23 @@ namespace gatzk::protocol
                 }
 
                 FieldElement value = FieldElement::zero();
-                if (const auto it = context_.public_polynomials.find(name); it != context_.public_polynomials.end())
+                if (const auto it = context_.public_polynomial_descriptors.find(name);
+                    it != context_.public_polynomial_descriptors.end())
                 {
-                    value = eval_public_polynomial(it->second, point);
-                }
-                else if (lazy_large_fh_public_enabled(context_) && is_lazy_large_fh_public_label(name))
-                {
-                    batch_evaluate_lazy_fh_labels(point);
-                    if (const auto it2 = value_cache_.find(cache_key); it2 != value_cache_.end())
+                    if (lazy_fh_public_enabled(context_)
+                        && is_lazy_fh_public_label(name))
                     {
-                        return it2->second;
+                        batch_evaluate_lazy_fh_labels(point);
+                        if (const auto it2 = value_cache_.find(cache_key);
+                            it2 != value_cache_.end())
+                            return it2->second;
+                        value = evaluate_lazy_fh_public_poly(context_, name, point);
                     }
-                    value = evaluate_lazy_large_fh_public_poly(context_, name, point);
+                    else
+                    {
+                        value = evaluate_deterministic_public_polynomial(
+                            context_, it->second, point);
+                    }
                 }
                 else if (const auto it = opened_values_.find(name); it != opened_values_.end())
                 {
@@ -508,10 +874,14 @@ namespace gatzk::protocol
                 }
                 const std::size_t dataset_rows = context_.dataset.num_nodes;
                 const std::size_t feature_count = context_.local.num_features;
+                if (feature_count == 0)
+                    throw std::runtime_error(
+                        "verifier feature table has zero feature columns");
+                if (dataset_rows > std::numeric_limits<std::size_t>::max() / feature_count)
+                    throw std::runtime_error("verifier feature table size overflows size_t");
                 const std::size_t dataset_valid = dataset_rows * feature_count;
                 const bool full_feature_identity = full_graph_feature_identity_enabled(context_);
-                const auto &feature_matrix =
-                    !context_.dataset.features.empty() ? context_.dataset.features : context_.local.features;
+                const auto &feature_matrix = public_feature_source(context_);
 
                 if (const auto shift = domain->rotation_shift(FieldElement::one(), point); shift.has_value())
                 {

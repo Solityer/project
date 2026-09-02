@@ -568,13 +568,33 @@ namespace gatzk::protocol
             return true;
         }
 
-        bool lazy_large_fh_public_enabled(const ProtocolContext &context)
+        bool complete_public_feature_source(const ProtocolContext &context)
         {
-            constexpr std::size_t kMinLazyLargeFhDomainSize = 1ULL << 24;
-            return context.config.batching_rule == "whole_graph_single" && context.local.num_nodes == context.dataset.num_nodes && context.local.num_features == context.dataset.num_features && context.domains.fh != nullptr && context.domains.fh->size >= kMinLazyLargeFhDomainSize;
+            if (context.dataset.num_nodes == 0
+                || context.dataset.num_features == 0
+                || context.local.num_nodes != context.dataset.num_nodes
+                || context.local.num_features != context.dataset.num_features
+                || context.local.graph_count != context.dataset.graph_count
+                || context.local.absolute_ids.size() != context.dataset.num_nodes
+                || context.local.features.size() != context.dataset.num_nodes
+                || context.local.public_input.N_total != context.dataset.num_nodes)
+                return false;
+            for (std::size_t row = 0; row < context.dataset.num_nodes; ++row)
+            {
+                if (context.local.absolute_ids[row] != row
+                    || context.local.features[row].size() != context.dataset.num_features)
+                    return false;
+            }
+            return true;
         }
 
-        bool is_lazy_large_fh_public_label(const std::string &name)
+        bool lazy_fh_public_enabled(const ProtocolContext &context)
+        {
+            return complete_public_feature_source(context)
+                && context.domains.fh != nullptr;
+        }
+
+        bool is_lazy_fh_public_label(const std::string &name)
         {
             return name == "P_T_H" || name == "P_Row_feat_tbl" || name == "P_Col_feat_tbl" || name == "P_Row_feat_qry" || name == "P_Col_feat_qry" || name == "P_I_feat_qry" || name == "P_Q_tbl_feat" || name == "P_Q_qry_feat";
         }
@@ -670,12 +690,12 @@ namespace gatzk::protocol
             return zero_eval * domain->inv_size * sum;
         }
 
-        FieldElement evaluate_lazy_large_fh_public_poly(
+        FieldElement evaluate_lazy_fh_public_poly(
             const ProtocolContext &context,
             const std::string &name,
             const FieldElement &point)
         {
-            if (!lazy_large_fh_public_enabled(context) || !is_lazy_large_fh_public_label(name))
+            if (!lazy_fh_public_enabled(context) || !is_lazy_fh_public_label(name))
             {
                 throw std::runtime_error("unsupported lazy public polynomial: " + name);
             }
@@ -713,6 +733,10 @@ namespace gatzk::protocol
             const std::size_t dataset_rows = context.dataset.num_nodes;
             const std::size_t local_rows = context.local.num_nodes;
             const std::size_t feature_count = context.local.num_features;
+            if (feature_count == 0)
+                throw std::runtime_error("feature table has zero feature columns");
+            if (dataset_rows > std::numeric_limits<std::size_t>::max() / feature_count)
+                throw std::runtime_error("feature table size overflows size_t");
             const std::size_t dataset_valid = dataset_rows * feature_count;
             const std::size_t local_valid = local_rows * feature_count;
             const auto &feature_matrix = !context.dataset.features.empty() ? context.dataset.features : context.local.features;
@@ -823,9 +847,9 @@ namespace gatzk::protocol
             {
                 if (full_feature_identity)
                 {
-                    return evaluate_lazy_large_fh_public_poly(context, "P_Q_tbl_feat", point);
+                    return evaluate_lazy_fh_public_poly(context, "P_Q_tbl_feat", point);
                 }
-                return evaluate_lazy_large_fh_public_poly(context, "P_Q_qry_feat", point);
+                return evaluate_lazy_fh_public_poly(context, "P_Q_qry_feat", point);
             }
             if (name == "P_Query_feat" && full_feature_identity)
             {
@@ -835,9 +859,9 @@ namespace gatzk::protocol
             const auto eta_feat = challenges.at("eta_feat");
             const auto row_label = name == "P_Table_feat" ? "P_Row_feat_tbl" : "P_Row_feat_qry";
             const auto col_label = name == "P_Table_feat" ? "P_Col_feat_tbl" : "P_Col_feat_qry";
-            const auto row_eval = evaluate_lazy_large_fh_public_poly(context, row_label, point);
-            const auto col_eval = evaluate_lazy_large_fh_public_poly(context, col_label, point);
-            const auto feat_eval = evaluate_lazy_large_fh_public_poly(context, "P_T_H", point);
+            const auto row_eval = evaluate_lazy_fh_public_poly(context, row_label, point);
+            const auto col_eval = evaluate_lazy_fh_public_poly(context, col_label, point);
+            const auto feat_eval = evaluate_lazy_fh_public_poly(context, "P_T_H", point);
             return row_eval + eta_feat * col_eval + eta_feat.pow(2) * feat_eval;
         }
 
@@ -2333,9 +2357,9 @@ namespace gatzk::protocol
                         point,
                         domain_weights(domain, point));
                 }
-                else if (lazy_large_fh_public_enabled(context_) && is_lazy_large_fh_public_label(name))
+                else if (lazy_fh_public_enabled(context_) && is_lazy_fh_public_label(name))
                 {
-                    value = evaluate_lazy_large_fh_public_poly(context_, name, point);
+                    value = evaluate_lazy_fh_public_poly(context_, name, point);
                 }
                 else if (context_.public_polynomials.contains(name))
                 {
@@ -2492,7 +2516,7 @@ namespace gatzk::protocol
                 return shifts;
             }
 
-            std::vector<FieldElement> evaluate_lazy_large_fh_public_group(
+            std::vector<FieldElement> evaluate_lazy_fh_public_group(
                 const std::vector<std::string> &labels,
                 const FieldElement &point)
             {
@@ -2507,6 +2531,10 @@ namespace gatzk::protocol
                 const std::size_t dataset_rows = context_.dataset.num_nodes;
                 const std::size_t local_rows = context_.local.num_nodes;
                 const std::size_t feature_count = context_.local.num_features;
+                if (feature_count == 0)
+                    throw std::runtime_error("feature table has zero feature columns");
+                if (dataset_rows > std::numeric_limits<std::size_t>::max() / feature_count)
+                    throw std::runtime_error("feature table size overflows size_t");
                 const std::size_t dataset_valid = dataset_rows * feature_count;
                 const std::size_t local_valid = local_rows * feature_count;
                 const bool full_feature_identity = full_graph_feature_identity_enabled(context_);
@@ -2655,7 +2683,7 @@ namespace gatzk::protocol
                 return out;
             }
 
-            std::vector<std::vector<FieldElement>> evaluate_lazy_large_fh_public_group_points(
+            std::vector<std::vector<FieldElement>> evaluate_lazy_fh_public_group_points(
                 const std::vector<std::string> &labels,
                 const std::vector<FieldElement> &points)
             {
@@ -2671,6 +2699,10 @@ namespace gatzk::protocol
                 const std::size_t dataset_rows = context_.dataset.num_nodes;
                 const std::size_t local_rows = context_.local.num_nodes;
                 const std::size_t feature_count = context_.local.num_features;
+                if (feature_count == 0)
+                    throw std::runtime_error("feature table has zero feature columns");
+                if (dataset_rows > std::numeric_limits<std::size_t>::max() / feature_count)
+                    throw std::runtime_error("feature table size overflows size_t");
                 const std::size_t dataset_valid = dataset_rows * feature_count;
                 const std::size_t local_valid = local_rows * feature_count;
                 const bool full_feature_identity = full_graph_feature_identity_enabled(context_);
@@ -3145,7 +3177,7 @@ namespace gatzk::protocol
 
                 if (!missing_public_labels.empty())
                 {
-                    const auto values = evaluate_lazy_large_fh_public_group(missing_public_labels, point);
+                    const auto values = evaluate_lazy_fh_public_group(missing_public_labels, point);
                     for (std::size_t i = 0; i < missing_public_labels.size(); ++i)
                     {
                         value_cache_.emplace(missing_public_labels[i] + cache_suffix, values[i]);
@@ -3286,13 +3318,13 @@ namespace gatzk::protocol
                     }
                 };
 
-                if (lazy_large_fh_public_enabled(context_))
+                if (lazy_fh_public_enabled(context_))
                 {
                     std::vector<std::string> lazy_public_labels;
                     lazy_public_labels.reserve(labels.size());
                     for (const auto &label : labels)
                     {
-                        if (is_lazy_large_fh_public_label(label))
+                        if (is_lazy_fh_public_label(label))
                         {
                             lazy_public_labels.push_back(label);
                         }
@@ -3325,8 +3357,8 @@ namespace gatzk::protocol
                             const auto missing_values =
                                 missing_points.size() == 1
                                     ? std::vector<std::vector<FieldElement>>{
-                                          evaluate_lazy_large_fh_public_group(lazy_public_labels, missing_points.front())}
-                                    : evaluate_lazy_large_fh_public_group_points(lazy_public_labels, missing_points);
+                                          evaluate_lazy_fh_public_group(lazy_public_labels, missing_points.front())}
+                                    : evaluate_lazy_fh_public_group_points(lazy_public_labels, missing_points);
                             for (std::size_t i = 0; i < missing_point_indices.size(); ++i)
                             {
                                 cached_values[missing_point_indices[i]] = shared_public_evaluation_cache()->store(
@@ -3410,7 +3442,7 @@ namespace gatzk::protocol
                         {
                             append_required_public("P_T_H");
                         }
-                        if (!required_public_labels.empty() && !lazy_large_fh_public_enabled(context_))
+                        if (!required_public_labels.empty() && !lazy_fh_public_enabled(context_))
                         {
                             precompute_named(required_public_labels, points);
                             for (const auto &point : points)
@@ -11374,7 +11406,32 @@ namespace gatzk::protocol
         start = Clock::now();
         // 工作域大小一次性按特征表、边域、隐藏维和查表规模展开，后面 trace / quotient / opening 共用这套布局。
         const std::size_t fh_size = algebra::next_power_of_two(
-            std::max(context.dataset.num_nodes * context.dataset.num_features, context.local.num_nodes * context.local.num_features) + 2);
+            [&]()
+            {
+                const auto checked_product = [](std::size_t left,
+                                                std::size_t right,
+                                                std::string_view label)
+                {
+                    if (right != 0
+                        && left > std::numeric_limits<std::size_t>::max() / right)
+                        throw std::runtime_error(
+                            "feature table size overflows size_t: "
+                            + std::string(label));
+                    return left * right;
+                };
+                return std::max(
+                           checked_product(
+                               context.dataset.num_nodes,
+                               context.dataset.num_features,
+                               "dataset"),
+                           checked_product(
+                               context.local.num_nodes,
+                               context.local.num_features,
+                               "local"))
+                    + 2;
+            }());
+        const auto dataset_feature_count = context.dataset.num_nodes
+            * context.dataset.num_features;
         const std::size_t d_h = hidden_head_width(context.model);
         const std::size_t d_cat = concat_width(context.model);
         // The in-domain is a shared power-of-two capacity.  It must not be
@@ -11732,12 +11789,12 @@ namespace gatzk::protocol
                 }
             }
         }
-        if (lazy_large_fh_public_enabled(context))
+        if (lazy_fh_public_enabled(context))
         {
             add_public_poly(
                 context,
                 "P_Q_tbl_feat",
-                make_shared_eval_poly("P_Q_tbl_feat", build_selector(context.dataset.num_nodes * context.dataset.num_features, fh_size), context.domains.fh));
+                make_shared_eval_poly("P_Q_tbl_feat", build_selector(dataset_feature_count, fh_size), context.domains.fh));
             add_public_poly(
                 context,
                 "P_Row_feat_tbl",
@@ -11793,7 +11850,7 @@ namespace gatzk::protocol
             add_public_poly(
                 context,
                 "P_Q_tbl_feat",
-                make_shared_eval_poly("P_Q_tbl_feat", build_selector(context.dataset.num_nodes * context.dataset.num_features, fh_size), context.domains.fh));
+                make_shared_eval_poly("P_Q_tbl_feat", build_selector(dataset_feature_count, fh_size), context.domains.fh));
             add_public_poly(
                 context,
                 "P_Row_feat_tbl",
@@ -11882,7 +11939,7 @@ namespace gatzk::protocol
             make_shared_eval_poly("P_Q_tbl_ELU", build_selector(context.tables.elu.size(), edge_size), context.domains.edge));
         const auto &feature_matrix_for_h =
             !context.dataset.features.empty() ? context.dataset.features : context.local.features;
-        if (lazy_large_fh_public_enabled(context))
+        if (lazy_fh_public_enabled(context))
         {
             add_static_commitment(
                 context,

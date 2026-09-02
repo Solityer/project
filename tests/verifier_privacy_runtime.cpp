@@ -134,11 +134,13 @@ namespace
         artifact.domains.n =
             gatzk::algebra::RootOfUnityDomain::create("N", 1);
 
-        artifact.public_polynomials.emplace(
+        artifact.public_polynomial_descriptors.emplace(
             "runtime_public",
-            gatzk::algebra::Polynomial::from_coefficients(
-                "runtime_public",
-                {gatzk::algebra::FieldElement::one()}));
+            gatzk::protocol::VerifierPublicPolynomialDescriptor{
+                .name = "runtime_public",
+                .basis = gatzk::algebra::PolynomialBasis::Coefficient,
+                .domain = {},
+                .size = 1});
         artifact.public_commitments.emplace(
             "runtime_public",
             gatzk::protocol::VerifierPointCommitment{"runtime_public", g1});

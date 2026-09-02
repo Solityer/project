@@ -59,6 +59,20 @@ namespace gatzk::protocol
         std::optional<AttentionHeadDomains> output_head;
     };
 
+    // Point-only verifier metadata for one public polynomial.  The prover
+    // keeps the concrete evaluation column in ProtocolContext, while the
+    // registration carries only the canonical declaration needed by the
+    // verifier to rebuild values deterministically from authenticated public
+    // inputs and domain metadata.
+    struct VerifierPublicPolynomialDescriptor
+    {
+        std::string name;
+        algebra::PolynomialBasis basis = algebra::PolynomialBasis::Coefficient;
+        std::string domain;
+        std::size_t size = 0;
+        bool operator==(const VerifierPublicPolynomialDescriptor &) const = default;
+    };
+
     // 对外公开且会进入 transcript / manifest / verifier 的元数据契约。
     struct PublicMetadata
     {
@@ -102,6 +116,8 @@ namespace gatzk::protocol
         WorkDomains domains;
         crypto::KZGKeyPair kzg;
         std::unordered_map<std::string, algebra::Polynomial> public_polynomials;
+        std::unordered_map<std::string, VerifierPublicPolynomialDescriptor>
+            public_polynomial_descriptors;
         std::unordered_map<std::string, crypto::Commitment> public_commitments;
         // Prover-side opening material for public FH polynomials. This does not change public
         // polynomial semantics or transcript-visible commitments.
@@ -331,7 +347,8 @@ namespace gatzk::protocol
         WorkDomains domains;
         VerifierSRSMetadata srs;
         crypto::KZGVerifierKey kzg_vk;
-        std::unordered_map<std::string, algebra::Polynomial> public_polynomials;
+        std::unordered_map<std::string, VerifierPublicPolynomialDescriptor>
+            public_polynomial_descriptors;
         std::unordered_map<std::string, VerifierPointCommitment> public_commitments;
         std::unordered_map<std::string, VerifierPointCommitment> static_commitments;
         std::shared_ptr<const ProtocolCompilerArtifact> compiler_artifact;
@@ -346,10 +363,12 @@ namespace gatzk::protocol
     };
 
     // Self-contained, canonical verifier registration artifact.  This is the
-    // only wire object accepted by the formal verifier loader.  It owns every
-    // public value needed to reconstruct VerifierContext (including the full
-    // typed compiler artifact); it deliberately contains no model tensors,
-    // checkpoint paths, proving key, or opening polynomial.
+    // only wire object accepted by the formal verifier loader.  It owns the
+    // complete quantized public feature source, authenticated static tables,
+    // point commitments, and descriptor metadata needed to reconstruct
+    // VerifierContext (including the full typed compiler artifact); it
+    // deliberately contains no model tensors, checkpoint paths, proving key,
+    // or opening polynomial.
     struct VerifierRegistrationArtifact
     {
         VerifierConfig config;
@@ -360,7 +379,8 @@ namespace gatzk::protocol
         WorkDomains domains;
         VerifierSRSMetadata srs;
         crypto::KZGVerifierKey kzg_vk;
-        std::unordered_map<std::string, algebra::Polynomial> public_polynomials;
+        std::unordered_map<std::string, VerifierPublicPolynomialDescriptor>
+            public_polynomial_descriptors;
         std::unordered_map<std::string, VerifierPointCommitment> public_commitments;
         std::unordered_map<std::string, VerifierPointCommitment> static_commitments;
         ProtocolCompilerArtifact compiler_artifact;

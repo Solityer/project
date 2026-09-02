@@ -506,7 +506,7 @@ namespace gatzk::protocol
             return entries;
         }
 
-        algebra::Polynomial clone_public_polynomial(
+        VerifierPublicPolynomialDescriptor describe_public_polynomial(
             const algebra::Polynomial &source,
             const std::string &name)
         {
@@ -519,10 +519,39 @@ namespace gatzk::protocol
                 if (source.domain == nullptr)
                     throw std::runtime_error(
                         "public evaluation polynomial has no domain: " + name);
-                return algebra::Polynomial::from_evaluations(
-                    name, source.values(), source.domain);
+                return VerifierPublicPolynomialDescriptor{
+                    .name = name,
+                    .basis = source.basis,
+                    .domain = source.domain->name,
+                    .size = source.values().size()};
             }
-            return algebra::Polynomial::from_coefficients(name, source.values());
+            return VerifierPublicPolynomialDescriptor{
+                .name = name,
+                .basis = source.basis,
+                .domain = {},
+                .size = source.values().size()};
+        }
+
+        bool has_complete_public_feature_source(
+            const data::GraphDataset &dataset,
+            const data::LocalGraph &local)
+        {
+            if (dataset.num_nodes == 0
+                || dataset.num_features == 0
+                || local.num_nodes != dataset.num_nodes
+                || local.num_features != dataset.num_features
+                || local.graph_count != dataset.graph_count
+                || local.absolute_ids.size() != dataset.num_nodes
+                || local.features.size() != dataset.num_nodes
+                || local.public_input.N_total != dataset.num_nodes)
+                return false;
+            for (std::size_t row = 0; row < dataset.num_nodes; ++row)
+            {
+                if (local.absolute_ids[row] != row
+                    || local.features[row].size() != dataset.num_features)
+                    return false;
+            }
+            return true;
         }
 
         AuthenticatedVerifierRegistry registry_from_context(
@@ -1382,36 +1411,118 @@ namespace gatzk::protocol
             return true;
         }
 
-        bool validate_public_polynomials(const VerifierContext &context)
+        bool validate_public_polynomial_descriptors(const VerifierContext &context)
         {
-            std::unordered_set<std::string> domain_names;
-            const auto add_domain = [&](const std::shared_ptr<algebra::RootOfUnityDomain> &domain)
+            const auto domain_for = [&](const std::string &name)
+                -> std::shared_ptr<algebra::RootOfUnityDomain>
             {
-                if (domain != nullptr)
-                    domain_names.insert(domain->name);
-            };
-            add_domain(context.domains.fh);
-            add_domain(context.domains.edge);
-            add_domain(context.domains.in);
-            add_domain(context.domains.d);
-            add_domain(context.domains.cat);
-            add_domain(context.domains.c);
-            add_domain(context.domains.n);
-            for (const auto &[name, polynomial] : context.public_polynomials)
-            {
-                if (name.empty() || polynomial.name != name
-                    || !polynomial.zero_domain_blinder.empty())
-                    return false;
-                if (polynomial.basis == algebra::PolynomialBasis::Evaluation)
+                for (const auto &domain : {
+                         context.domains.fh, context.domains.edge,
+                         context.domains.in, context.domains.d,
+                         context.domains.cat, context.domains.c,
+                         context.domains.n})
                 {
-                    if (polynomial.domain == nullptr
-                        || !domain_names.contains(polynomial.domain->name)
-                        || polynomial.size() != polynomial.domain->size)
-                        return false;
+                    if (domain != nullptr && domain->name == name)
+                        return domain;
                 }
-                else if (polynomial.domain != nullptr)
+                return nullptr;
+            };
+            std::unordered_map<std::string, VerifierPublicPolynomialDescriptor> expected;
+            const auto add_expected = [&](const std::string &name,
+                                          const std::string &domain_name)
+            {
+                const auto domain = domain_for(domain_name);
+                if (domain == nullptr)
+                    throw std::runtime_error("missing public polynomial descriptor domain");
+                expected.emplace(
+                    name,
+                    VerifierPublicPolynomialDescriptor{
+                        .name = name,
+                        .basis = algebra::PolynomialBasis::Evaluation,
+                        .domain = domain_name,
+                        .size = domain->size});
+            };
+            add_expected("P_I", "N");
+            add_expected("P_src", "edge");
+            add_expected("P_dst", "edge");
+            add_expected("P_Q_new_edge", "edge");
+            add_expected("P_Q_end_edge", "edge");
+            add_expected("P_node_gid", "N");
+            add_expected("P_edge_gid", "edge");
+            add_expected("P_Q_graph_new_edge", "edge");
+            add_expected("P_Q_graph_end_edge", "edge");
+            add_expected("P_Q_grp_new_edge", "edge");
+            add_expected("P_Q_grp_end_edge", "edge");
+            add_expected("P_Q_edge_valid", "edge");
+            for (std::size_t layer = 0; layer < context.model.hidden_layers.size(); ++layer)
+            {
+                add_expected(hidden_q_in_selector_label(layer), "in");
+                add_expected(hidden_q_d_h_selector_label(layer), "d");
+                add_expected(hidden_q_cat_selector_label(layer), "cat");
+                add_expected(hidden_q_nd_h_selector_label(layer), "edge");
+            }
+            for (std::size_t head = 0; head < context.model.output_layer.heads.size(); ++head)
+                add_expected("P_Q_div_out" + std::to_string(head), "edge");
+            add_expected("P_Q_div_avg", "edge");
+            add_expected("P_Q_N", "N");
+            add_expected("P_AggBind_m_src", "N");
+            add_expected("P_AggBind_m_dst", "N");
+            add_expected("P_AggBind_index_N", "N");
+            add_expected(output_q_cat_selector_label(), "cat");
+            add_expected("P_Q_C_valid", "C");
+            add_expected("P_BiasIndex_C", "C");
+            add_expected("P_BiasMultiplicity_C", "C");
+            add_expected("P_BiasIndex_edge", "edge");
+            const auto chunks = coefficient_chunk_layout(
+                context.local.num_classes + 3, context.domains.edge->size);
+            for (std::size_t head = 0; head < context.model.output_layer.heads.size(); ++head)
+                for (const auto &chunk : chunks)
+                    for (const auto region : {"active", "semantic", "gap", "tail"})
+                        add_expected(
+                            output_bias_basis_region_selector_label(
+                                head, chunk.chunk_index, region),
+                            "edge");
+            add_expected("P_Q_tbl_feat", "FH");
+            add_expected("P_Row_feat_tbl", "FH");
+            add_expected("P_Col_feat_tbl", "FH");
+            add_expected("P_Q_qry_feat", "FH");
+            add_expected("P_Row_feat_qry", "FH");
+            add_expected("P_Col_feat_qry", "FH");
+            add_expected("P_I_feat_qry", "FH");
+            add_expected("P_T_H", "FH");
+            add_expected("P_Q_qry_src", "edge");
+            add_expected("P_Q_qry_dst", "edge");
+            add_expected("P_Q_tbl_L", "edge");
+            add_expected("P_Q_qry_L", "edge");
+            add_expected("P_Q_tbl_R", "edge");
+            add_expected("P_Q_qry_R", "edge");
+            add_expected("P_Q_tbl_exp", "edge");
+            add_expected("P_Q_qry_exp", "edge");
+            add_expected("P_Q_tbl_ELU", "edge");
+            add_expected("P_T_L_x", "edge");
+            add_expected("P_T_L_y", "edge");
+            add_expected("P_T_ELU_x", "edge");
+            add_expected("P_T_ELU_y", "edge");
+            add_expected("P_T_exp_x", "edge");
+            add_expected("P_T_exp_y", "edge");
+            add_expected("P_T_range", "edge");
+
+            if (context.public_polynomial_descriptors.size() != expected.size()
+                || context.public_commitments.size() != expected.size())
+                return false;
+            for (const auto &[name, expected_descriptor] : expected)
+            {
+                const auto descriptor = context.public_polynomial_descriptors.find(name);
+                const auto commitment = context.public_commitments.find(name);
+                if (descriptor == context.public_polynomial_descriptors.end()
+                    || descriptor->second != expected_descriptor
+                    || commitment == context.public_commitments.end()
+                    || commitment->second.name != name)
                     return false;
             }
+            for (const auto &[name, _] : context.public_polynomial_descriptors)
+                if (!expected.contains(name))
+                    return false;
             return true;
         }
 
@@ -1464,7 +1575,7 @@ namespace gatzk::protocol
                 return false;
             }
             if (!validate_srs_metadata(context)
-                || !validate_public_polynomials(context)
+                || !validate_public_polynomial_descriptors(context)
                 || !validate_point_map(context.public_commitments)
                 || !validate_point_map(context.static_commitments)
                 || !validate_model_shape(context)
@@ -1480,6 +1591,9 @@ namespace gatzk::protocol
                 || context.local.features.empty()
                 || context.local.features.size() != context.local.num_nodes
                 || context.local.absolute_ids.size() != context.local.num_nodes)
+                return false;
+            if (!has_complete_public_feature_source(
+                    context.dataset, context.local))
                 return false;
             for (const auto &row : context.local.features)
                 if (row.size() != context.local.num_features)
@@ -2265,6 +2379,10 @@ namespace gatzk::protocol
                    != prover_context.compiler_artifact.get())
             throw std::runtime_error(
                 "candidate verifier registration requires an authenticated compiler artifact");
+        if (!has_complete_public_feature_source(
+                prover_context.dataset, prover_context.local))
+            throw std::runtime_error(
+                "candidate verifier registration requires complete public feature coverage");
         VerifierRegistrationArtifact artifact;
         artifact.config = public_config(prover_context.config);
         artifact.dataset = prover_context.dataset;
@@ -2289,8 +2407,8 @@ namespace gatzk::protocol
         artifact.kzg_vk.g2_one_prepared.reset();
         artifact.kzg_vk.g2_tau_prepared.reset();
         for (const auto &[name, polynomial] : prover_context.public_polynomials)
-            artifact.public_polynomials.emplace(
-                name, clone_public_polynomial(polynomial, name));
+            artifact.public_polynomial_descriptors.emplace(
+                name, describe_public_polynomial(polynomial, name));
         copy_point_map(
             prover_context.public_commitments,
             &artifact.public_commitments,
@@ -2347,9 +2465,7 @@ namespace gatzk::protocol
             crypto::prepare_g2(out.kzg_vk.g2_one));
         out.kzg_vk.g2_tau_prepared = std::make_shared<crypto::PreparedG2>(
             crypto::prepare_g2(out.kzg_vk.g2_tau));
-        for (const auto &[name, polynomial] : artifact.public_polynomials)
-            out.public_polynomials.emplace(
-                name, clone_public_polynomial(polynomial, name));
+        out.public_polynomial_descriptors = artifact.public_polynomial_descriptors;
         out.public_commitments = artifact.public_commitments;
         out.static_commitments = artifact.static_commitments;
         out.compiler_artifact = std::make_shared<const ProtocolCompilerArtifact>(
@@ -2502,7 +2618,8 @@ namespace gatzk::protocol
             out.kzg.g2_one_prepared = verifier_context.kzg_vk.g2_one_prepared;
             out.kzg.g2_tau_prepared = verifier_context.kzg_vk.g2_tau_prepared;
 
-            out.public_polynomials = verifier_context.public_polynomials;
+            out.public_polynomial_descriptors =
+                verifier_context.public_polynomial_descriptors;
             auto copy_points = [](const auto &source, auto *target)
             {
                 target->reserve(source.size());

@@ -3387,10 +3387,35 @@ namespace gatzk::protocol
         {
             if (!context.public_polynomials.contains(name))
             {
-                constexpr std::size_t kMinLazyLargeFhDomainSize = 1ULL << 24;
-                const bool lazy_large_feature_selector =
-                    context.config.batching_rule == "whole_graph_single" && context.local.num_nodes == context.dataset.num_nodes && context.local.num_features == context.dataset.num_features && context.domains.fh != nullptr && context.domains.fh->size >= kMinLazyLargeFhDomainSize && (name == "P_Q_tbl_feat" || name == "P_Q_qry_feat");
-                if (lazy_large_feature_selector)
+                bool complete_public_feature_source =
+                    context.dataset.num_nodes != 0
+                    && context.dataset.num_features != 0
+                    && context.local.num_nodes == context.dataset.num_nodes
+                    && context.local.num_features == context.dataset.num_features
+                    && context.local.graph_count == context.dataset.graph_count
+                    && context.local.absolute_ids.size() == context.dataset.num_nodes
+                    && context.local.features.size() == context.dataset.num_nodes
+                    && context.local.public_input.N_total == context.dataset.num_nodes;
+                if (complete_public_feature_source)
+                {
+                    for (std::size_t row = 0;
+                         row < context.dataset.num_nodes;
+                         ++row)
+                    {
+                        if (context.local.absolute_ids[row] != row
+                            || context.local.features[row].size()
+                                   != context.dataset.num_features)
+                        {
+                            complete_public_feature_source = false;
+                            break;
+                        }
+                    }
+                }
+                const bool lazy_feature_selector =
+                    complete_public_feature_source
+                    && context.domains.fh != nullptr
+                    && (name == "P_Q_tbl_feat" || name == "P_Q_qry_feat");
+                if (lazy_feature_selector)
                 {
                     static std::mutex cache_mutex;
                     static std::unordered_map<
@@ -3398,10 +3423,17 @@ namespace gatzk::protocol
                         std::shared_ptr<std::vector<FieldElement>>>
                         cache;
 
+                    const auto feature_count = context.local.num_features;
+                    if (feature_count == 0
+                        || context.dataset.num_nodes
+                               > std::numeric_limits<std::size_t>::max()
+                                     / feature_count)
+                        throw std::runtime_error(
+                            "feature table size overflows size_t");
                     const auto valid_count =
                         name == "P_Q_tbl_feat"
-                            ? context.dataset.num_nodes * context.dataset.num_features
-                            : context.local.num_nodes * context.local.num_features;
+                            ? context.dataset.num_nodes * feature_count
+                            : context.local.num_nodes * feature_count;
                     const auto cache_key =
                         context.config.checkpoint_bundle + ":" + context.config.dataset + ":selector:" + name + ":" + std::to_string(valid_count) + ":" + std::to_string(context.domains.fh->size);
                     {
