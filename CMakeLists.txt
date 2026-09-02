@@ -186,6 +186,8 @@ add_library(gatzkml STATIC ${GATZK_SOURCES})
 target_include_directories(gatzkml PUBLIC
     "${GATZK_GENERATED_INCLUDE_DIR}"
     ${PROJECT_SOURCE_DIR}/include)
+target_include_directories(gatzkml PRIVATE
+    ${PROJECT_SOURCE_DIR}/src)
 target_compile_options(gatzkml PRIVATE -Wall -Wextra -Wpedantic)
 if(GATZK_ENABLE_NATIVE_ARCH AND GATZK_CXX_SUPPORTS_MARCH_NATIVE)
     target_compile_options(
@@ -255,6 +257,15 @@ add_test(NAME layered_schema_runtime COMMAND gatzk_layered_schema_test)
 add_executable(gatzk_verifier_privacy_test tests/verifier_privacy_runtime.cpp)
 target_link_libraries(gatzk_verifier_privacy_test PRIVATE gatzkml)
 add_test(NAME verifier_privacy_runtime COMMAND gatzk_verifier_privacy_test)
+
+# Focused public AggBind reconstruction regression.  The internal header is
+# deliberately outside the installed include tree and is used only to share
+# the production verifier helper with this small synthetic test.
+add_executable(gatzk_agg_bind_multiplicity_test tests/agg_bind_multiplicity_runtime.cpp)
+target_include_directories(gatzk_agg_bind_multiplicity_test PRIVATE
+    "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(gatzk_agg_bind_multiplicity_test PRIVATE gatzkml)
+add_test(NAME agg_bind_multiplicity_runtime COMMAND gatzk_agg_bind_multiplicity_test)
 
 # Short-lived cache identity/TOCTOU regression.  It hashes only small
 # temporary resource fixtures and never loads a real SRS or starts a proof.

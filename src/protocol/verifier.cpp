@@ -24,6 +24,7 @@
 #include "gatzk/protocol/schema.hpp"
 #include "gatzk/util/route2.hpp"
 #include "gatzk/protocol/verifier_context.hpp"
+#include "protocol/internal/verifier_public_polynomial.hpp"
 
 namespace gatzk::protocol
 {
@@ -309,10 +310,12 @@ namespace gatzk::protocol
             return nullptr;
         }
 
-        FieldElement evaluate_deterministic_public_polynomial(
+        FieldElement evaluate_deterministic_public_polynomial_impl(
             const ProtocolContext &context,
             const VerifierPublicPolynomialDescriptor &descriptor,
-            const FieldElement &point)
+            const FieldElement &point,
+            const std::vector<FieldElement> &aggregation_src_multiplicity,
+            const std::vector<FieldElement> &aggregation_dst_multiplicity)
         {
             if (descriptor.basis != algebra::PolynomialBasis::Evaluation)
                 throw std::runtime_error(
@@ -466,17 +469,18 @@ namespace gatzk::protocol
                     { return FieldElement(index); },
                     node_count);
             if (descriptor.name == "P_AggBind_m_src" || descriptor.name == "P_AggBind_m_dst")
+            {
+                const auto &multiplicity = descriptor.name == "P_AggBind_m_src"
+                    ? aggregation_src_multiplicity
+                    : aggregation_dst_multiplicity;
+                if (multiplicity.size() != n_size)
+                    throw std::runtime_error(
+                        "aggregation multiplicity cache has invalid size");
                 return node_value(
                     [&](std::size_t index)
-                    {
-                        std::size_t count = 0;
-                        for (const auto &edge : context.local.edges)
-                            count += descriptor.name == "P_AggBind_m_src"
-                                ? edge.src == index
-                                : edge.dst == index;
-                        return FieldElement(count);
-                    },
+                    { return multiplicity.at(index); },
                     node_count);
+            }
             if (descriptor.name == output_q_cat_selector_label())
                 return selector(context.model.output_layer.input_dim);
             if (descriptor.name == "P_Q_C_valid")
@@ -707,7 +711,15 @@ namespace gatzk::protocol
                 : context_(context),
                   opened_values_(opened_values),
                   backend_registry_(std::move(backend_registry)),
-                  metrics_(metrics) {}
+                  metrics_(metrics)
+            {
+                aggregation_multiplicity_ =
+                    internal::build_aggregation_multiplicity_cache(
+                        context_.local,
+                        context_.domains.n == nullptr
+                            ? 0
+                            : context_.domains.n->size);
+            }
 
             void prefetch_public_domain_points(
                 const std::shared_ptr<algebra::RootOfUnityDomain> &domain,
@@ -834,8 +846,8 @@ namespace gatzk::protocol
                     }
                     else
                     {
-                        value = evaluate_deterministic_public_polynomial(
-                            context_, it->second, point);
+                        value = internal::evaluate_deterministic_public_polynomial(
+                            context_, it->second, point, aggregation_multiplicity_);
                     }
                 }
                 else if (const auto it = opened_values_.find(name); it != opened_values_.end())
@@ -1127,6 +1139,7 @@ namespace gatzk::protocol
             std::unordered_map<std::string, FieldElement> value_cache_;
             std::unordered_set<std::string> precomputed_domain_points_;
             std::unordered_set<std::string> lazy_fh_batch_done_;
+            internal::AggregationMultiplicityCache aggregation_multiplicity_;
             RunMetrics *metrics_ = nullptr;
             bool cpu_large_fh_route_noted_ = false;
         };
@@ -2240,6 +2253,48 @@ namespace gatzk::protocol
             return true;
         }
     } // namespace
+
+    namespace internal
+    {
+        AggregationMultiplicityCache build_aggregation_multiplicity_cache(
+            const data::LocalGraph &local,
+            std::size_t n_domain_size)
+        {
+            if (n_domain_size == 0)
+                throw std::runtime_error(
+                    "aggregation multiplicity cache requires N domain");
+            if (local.num_nodes > n_domain_size)
+                throw std::runtime_error(
+                    "aggregation multiplicity node count exceeds N domain");
+
+            AggregationMultiplicityCache cache;
+            cache.src.assign(n_domain_size, FieldElement::zero());
+            cache.dst.assign(n_domain_size, FieldElement::zero());
+            for (const auto &edge : local.edges)
+            {
+                if (edge.src >= local.num_nodes || edge.dst >= local.num_nodes)
+                    throw std::runtime_error(
+                        "aggregation multiplicity edge escapes local node range");
+                cache.src[edge.src] += FieldElement::one();
+                cache.dst[edge.dst] += FieldElement::one();
+            }
+            return cache;
+        }
+
+        algebra::FieldElement evaluate_deterministic_public_polynomial(
+            const ProtocolContext &context,
+            const VerifierPublicPolynomialDescriptor &descriptor,
+            const algebra::FieldElement &point,
+            const AggregationMultiplicityCache &multiplicity)
+        {
+            return evaluate_deterministic_public_polynomial_impl(
+                context,
+                descriptor,
+                point,
+                multiplicity.src,
+                multiplicity.dst);
+        }
+    } // namespace internal
 
     std::size_t private_plain_value_count_internal(const ProtocolContext &context, const Proof &proof)
     {

@@ -12,6 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 TRACE = (ROOT / "src/protocol/trace.cpp").read_text(encoding="utf-8")
 PROVER = (ROOT / "src/protocol/prover.cpp").read_text(encoding="utf-8")
+ARTIFACT_EXPORT = (ROOT / "src/protocol/artifact_export.cpp").read_text(encoding="utf-8")
 
 
 def section(source: str, start: str, end: str) -> str:
@@ -36,6 +37,15 @@ assert "identity == cache_key" in section(
     "struct HiddenQuantizedWitness",
 )
 assert "payload_digest" in model_key or "payload_digest" in TRACE
+
+
+registry_digest_assignment = section(
+    ARTIFACT_EXPORT,
+    "const auto verifier_registry_digest =",
+    "const auto source_manifest_path =",
+)
+assert "verifier_context.authenticated_registry_digest" in registry_digest_assignment
+assert "registry.canonical_digest()" not in registry_digest_assignment
 
 
 lookup = section(

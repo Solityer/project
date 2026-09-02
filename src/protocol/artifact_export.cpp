@@ -456,7 +456,7 @@ namespace gatzk::protocol
             + context.config.static_table_id + ":"
             + context.config.degree_bound_id;
         const auto verifier_registry_digest =
-            verifier_context.registry.canonical_digest();
+            verifier_context.authenticated_registry_digest;
         const auto source_manifest_path =
             std::filesystem::path(export_root) / "source_manifest.json";
         write_exact_file(
