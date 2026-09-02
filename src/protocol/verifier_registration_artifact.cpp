@@ -298,6 +298,14 @@ namespace gatzk::protocol
             return out;
         }
 
+        bool lower_hex_256(std::string_view value)
+        {
+            return value.size() == SHA256_DIGEST_LENGTH * 2
+                && std::all_of(
+                    value.begin(), value.end(), [](unsigned char ch)
+                    { return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'); });
+        }
+
         std::array<std::uint8_t, SHA256_DIGEST_LENGTH> sha256_raw(
             std::span<const std::uint8_t> bytes)
         {
@@ -850,43 +858,101 @@ namespace gatzk::protocol
             return model;
         }
 
-        void append_tables(
-            std::vector<std::uint8_t> *out,
-            const StaticTables &tables)
+        constexpr std::string_view kCanonicalStaticTableShapeMarker =
+            "canonical_static_table_shape";
+
+        CanonicalStaticTableShapeInputs static_table_shape_inputs(
+            const VerifierConfig &config,
+            const data::GraphDataset &dataset,
+            const data::LocalGraph &local)
         {
-            auto append_pairs = [&](const auto &pairs)
-            {
-                append_vector(out, pairs, [&](const auto &pair)
-                              {
-                                  append_field(out, pair.first);
-                                  append_field(out, pair.second);
-                              });
+            return CanonicalStaticTableShapeInputs{
+                .range_bits = config.range_bits,
+                .quantization = config.quantization,
+                .batching_rule = config.batching_rule,
+                .dataset_num_nodes = dataset.num_nodes,
+                .dataset_num_features = dataset.num_features,
+                .local_num_nodes = local.num_nodes,
+                .local_edge_count = local.edges.size(),
             };
-            append_pairs(tables.lrelu);
-            append_pairs(tables.elu);
-            append_pairs(tables.exp);
-            append_field_vector(out, tables.range);
         }
 
-        StaticTables read_tables(Reader &reader)
+        void append_static_table_shape(
+            std::vector<std::uint8_t> *out,
+            const CanonicalStaticTableShape &shape)
         {
-            auto read_pairs = [&](std::string_view what)
-            {
-                return read_vector<std::pair<algebra::FieldElement, algebra::FieldElement>>(
-                    reader, kMaxVectorEntries,
-                    [&](Reader &inner)
-                    {
-                        return std::make_pair(
-                            read_field(inner, std::string(what) + ".x"),
-                            read_field(inner, std::string(what) + ".y"));
-                    });
-            };
-            StaticTables tables;
-            tables.lrelu = read_pairs("tables.lrelu");
-            tables.elu = read_pairs("tables.elu");
-            tables.exp = read_pairs("tables.exp");
-            tables.range = read_field_vector(reader);
-            return tables;
+            append_string(out, kCanonicalStaticTableShapeMarker);
+            append_size(out, shape.range_table_size);
+            append_u64(out, static_cast<std::uint64_t>(shape.lrelu_min_raw));
+            append_u64(out, static_cast<std::uint64_t>(shape.lrelu_max_raw));
+            append_size(out, shape.lrelu_table_size);
+            append_size(out, shape.elu_bound);
+            append_size(out, shape.elu_table_size);
+            append_u64(out, shape.lrelu_output_bound);
+            append_u64(out, shape.exp_input_bound);
+            append_size(out, shape.exp_table_size);
+            append_size(out, shape.table_edge_domain_size);
+            append_u64(out, shape.large_whole_graph ? 1U : 0U);
+        }
+
+        CanonicalStaticTableShape read_static_table_shape(Reader &reader)
+        {
+            if (reader.string("tables.marker") != kCanonicalStaticTableShapeMarker)
+                throw std::runtime_error(
+                    "unknown verifier registration static-table representation");
+            CanonicalStaticTableShape shape;
+            shape.range_table_size = reader.size("tables.shape.range-size");
+            shape.lrelu_min_raw = static_cast<std::int64_t>(
+                reader.u64("tables.shape.lrelu-min"));
+            shape.lrelu_max_raw = static_cast<std::int64_t>(
+                reader.u64("tables.shape.lrelu-max"));
+            shape.lrelu_table_size = reader.size("tables.shape.lrelu-size");
+            shape.elu_bound = reader.size("tables.shape.elu-bound");
+            shape.elu_table_size = reader.size("tables.shape.elu-size");
+            shape.lrelu_output_bound = reader.u64("tables.shape.lrelu-output-bound");
+            shape.exp_input_bound = reader.u64("tables.shape.exp-input-bound");
+            shape.exp_table_size = reader.size("tables.shape.exp-size");
+            shape.table_edge_domain_size = reader.size("tables.shape.edge-domain-size");
+            const auto large_whole_graph = reader.u64("tables.shape.large-whole-graph");
+            if (large_whole_graph > 1U)
+                throw std::runtime_error(
+                    "non-canonical verifier registration static-table shape flag");
+            shape.large_whole_graph = large_whole_graph != 0U;
+            return shape;
+        }
+
+        void append_tables(
+            std::vector<std::uint8_t> *out,
+            const StaticTables &tables,
+            const CanonicalStaticTableShape &shape)
+        {
+            // The concrete rows remain available in memory for the prover and
+            // verifier execution contexts, but the registration wire carries
+            // only the public shape.  The canonical generator is the sole
+            // source of the rows on the independent parser side.
+            if (tables.range.size() != shape.range_table_size
+                || tables.lrelu.size() != shape.lrelu_table_size
+                || tables.elu.size() != shape.elu_table_size
+                || tables.exp.size() != shape.exp_table_size)
+                throw std::runtime_error(
+                    "verifier registration static-table cardinality is not canonical");
+            append_static_table_shape(out, shape);
+        }
+
+        StaticTables read_tables(
+            Reader &reader,
+            const CanonicalStaticTableShapeInputs &inputs)
+        {
+            const auto encoded_shape = read_static_table_shape(reader);
+            const auto expected_shape = plan_canonical_static_table_shape(inputs);
+            if (encoded_shape != expected_shape)
+                throw std::runtime_error(
+                    "verifier registration static-table shape does not match canonical planner");
+            reader.require_empty("static-table section");
+            // Rebuild the complete in-memory tables from public configuration
+            // and graph metadata.  This intentionally retains StaticTables' full
+            // canonical rows for all downstream digest/commitment/KZG consumers.
+            return build_canonical_static_tables(inputs);
         }
 
         void append_domain(
@@ -1681,7 +1747,12 @@ namespace gatzk::protocol
             case Section::Dataset: artifact->dataset = read_dataset(section); break;
             case Section::LocalGraph: artifact->local = read_local(section); break;
             case Section::ModelShape: artifact->model = read_model_shape(section); break;
-            case Section::StaticTables: artifact->tables = read_tables(section); break;
+            case Section::StaticTables:
+                artifact->tables = read_tables(
+                    section,
+                    static_table_shape_inputs(
+                        artifact->config, artifact->dataset, artifact->local));
+                break;
             case Section::Domains: artifact->domains = read_domains(section); break;
             case Section::SrsAndVk: read_srs(section, &artifact->srs, &artifact->kzg_vk); break;
             case Section::PublicPolynomials: artifact->public_polynomial_descriptors = read_polynomial_descriptors(section, artifact->domains); break;
@@ -1699,12 +1770,14 @@ namespace gatzk::protocol
         std::vector<std::uint8_t> out;
         out.insert(out.end(), kMagic.begin(), kMagic.end());
         append_u32(&out, kSectionCount);
+        const auto static_table_shape = plan_canonical_static_table_shape(
+            static_table_shape_inputs(config, dataset, local));
         const std::array<std::vector<std::uint8_t>, kSectionCount> sections = {
             make_section(Section::Config, [&](auto *payload) { append_config(payload, config); }),
             make_section(Section::Dataset, [&](auto *payload) { append_dataset(payload, dataset); }),
             make_section(Section::LocalGraph, [&](auto *payload) { append_local(payload, local); }),
             make_section(Section::ModelShape, [&](auto *payload) { append_model_shape(payload, model); }),
-            make_section(Section::StaticTables, [&](auto *payload) { append_tables(payload, tables); }),
+            make_section(Section::StaticTables, [&](auto *payload) { append_tables(payload, tables, static_table_shape); }),
             make_section(Section::Domains, [&](auto *payload) { append_domains(payload, domains); }),
             make_section(Section::SrsAndVk, [&](auto *payload) { append_srs(payload, srs, kzg_vk); }),
             make_section(Section::PublicPolynomials, [&](auto *payload) { append_polynomial_descriptors(payload, public_polynomial_descriptors, domains); }),
@@ -1732,6 +1805,24 @@ namespace gatzk::protocol
         const VerifierRegistrationArtifact &artifact)
     {
         return artifact.canonical_bytes();
+    }
+
+    VerifierRegistrationArtifact parse_verifier_registration_artifact(
+        const std::vector<std::uint8_t> &bytes,
+        const std::string &trusted_registry_digest)
+    {
+        // Authenticate the complete wire artifact before constructing a Reader
+        // or materializing any decoded section.  The plain parser below still
+        // verifies the internal trailer and canonical re-encoding, so this
+        // overload adds an out-of-band root check without changing the codec.
+        if (!lower_hex_256(trusted_registry_digest))
+            throw std::runtime_error(
+                "formal verifier registry load requires an out-of-band trusted SHA-256 digest");
+        if (sha256_hex(std::span<const std::uint8_t>(bytes.data(), bytes.size()))
+            != trusted_registry_digest)
+            throw std::runtime_error(
+                "verifier registration artifact digest does not match the trusted registry root");
+        return parse_verifier_registration_artifact(bytes);
     }
 
     VerifierRegistrationArtifact parse_verifier_registration_artifact(

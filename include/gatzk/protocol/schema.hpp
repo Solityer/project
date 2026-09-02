@@ -255,6 +255,8 @@ namespace gatzk::protocol
     // the registered fixed-point scales.  Keeping this producer in the schema
     // module prevents a loader from accepting a table that merely has the
     // right cardinality or monotonicity.
+    StaticTables build_canonical_static_tables(
+        const CanonicalStaticTableShapeInputs &inputs);
     StaticTables build_canonical_static_tables(const ProtocolContext &context);
     bool validate_static_tables(
         const ProtocolContext &context,

@@ -2445,10 +2445,8 @@ namespace gatzk::protocol
         if (input.gcount() != static_cast<std::streamsize>(bytes.size()))
             throw std::runtime_error(
                 "failed to read verifier registration artifact: " + registry_path);
-        const auto artifact = parse_verifier_registration_artifact(bytes);
-        if (artifact.canonical_digest() != trusted_registry_digest)
-            throw std::runtime_error(
-                "verifier registration artifact digest does not match the trusted registry root");
+        const auto artifact = parse_verifier_registration_artifact(
+            bytes, trusted_registry_digest);
         VerifierContext out;
         out.config = artifact.config;
         out.dataset = artifact.dataset;
@@ -2471,7 +2469,7 @@ namespace gatzk::protocol
         out.compiler_artifact = std::make_shared<const ProtocolCompilerArtifact>(
             artifact.compiler_artifact);
         out.registry = artifact.registry;
-        out.authenticated_registry_digest = artifact.canonical_digest();
+        out.authenticated_registry_digest = trusted_registry_digest;
         out.trusted_registry_digest = trusted_registry_digest;
         if (!validate_registry_shape(out))
             throw std::runtime_error(

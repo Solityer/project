@@ -41,6 +41,7 @@ assert "load_verifier_context_from_registry(\n        const ProtocolContext" not
 assert "VerifierRegistrationArtifact" in context_header
 assert "parse_verifier_registration_artifact" in context_source
 assert "trusted_registry_digest" in context_source
+assert "const auto artifact = parse_verifier_registration_artifact(\n            bytes, trusted_registry_digest);" in context_source
 assert "parse_verifier_artifact" not in main
 assert "make_verifier_public_inputs(context)" not in main
 assert "parse_proof(context," not in main

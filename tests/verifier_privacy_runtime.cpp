@@ -4,9 +4,11 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <limits>
 #include <memory>
 #include <openssl/sha.h>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -93,6 +95,62 @@ namespace
         std::copy(digest.begin(), digest.end(), bytes->begin() + body_size);
     }
 
+    std::string canonical_static_table_digest(
+        const gatzk::protocol::StaticTables &tables)
+    {
+        std::ostringstream serialization;
+        serialization << "static_tables|range=" << tables.range.size();
+        for (const auto &value : tables.range)
+            serialization << '|' << value.to_string();
+        serialization << "|lrelu=" << tables.lrelu.size();
+        for (const auto &[x, y] : tables.lrelu)
+            serialization << '|' << x.to_string() << ',' << y.to_string();
+        serialization << "|elu=" << tables.elu.size();
+        for (const auto &[x, y] : tables.elu)
+            serialization << '|' << x.to_string() << ',' << y.to_string();
+        serialization << "|exp=" << tables.exp.size();
+        for (const auto &[x, y] : tables.exp)
+            serialization << '|' << x.to_string() << ',' << y.to_string();
+
+        const auto bytes = serialization.str();
+        std::array<unsigned char, SHA256_DIGEST_LENGTH> digest{};
+        SHA256(
+            reinterpret_cast<const unsigned char *>(bytes.data()),
+            bytes.size(),
+            digest.data());
+        std::ostringstream hex;
+        hex << std::hex << std::setfill('0');
+        for (const auto byte : digest)
+            hex << std::setw(2) << static_cast<unsigned int>(byte);
+        return hex.str();
+    }
+
+    gatzk::protocol::StaticTables expected_small_canonical_static_tables()
+    {
+        using gatzk::algebra::FieldElement;
+        gatzk::protocol::StaticTables expected;
+        expected.range = {FieldElement::zero(), FieldElement::one()};
+        expected.lrelu = {
+            {FieldElement::from_signed(-2), FieldElement::zero()},
+            {FieldElement::from_signed(-1), FieldElement::zero()},
+            {FieldElement::zero(), FieldElement::zero()},
+            {FieldElement::one(), FieldElement::one()},
+            {FieldElement(2), FieldElement(2)}};
+        expected.elu = {
+            {FieldElement::from_signed(-2), FieldElement::from_signed(-1)},
+            {FieldElement::from_signed(-1), FieldElement::from_signed(-1)},
+            {FieldElement::zero(), FieldElement::zero()},
+            {FieldElement::one(), FieldElement::one()},
+            {FieldElement(2), FieldElement(2)}};
+        expected.exp = {
+            {FieldElement::zero(), FieldElement::one()},
+            {FieldElement::one(), FieldElement::one()},
+            {FieldElement(2), FieldElement::one()},
+            {FieldElement(3), FieldElement::one()},
+            {FieldElement(4), FieldElement::one()}};
+        return expected;
+    }
+
     gatzk::protocol::VerifierRegistrationArtifact synthetic_registration_artifact()
     {
         gatzk::protocol::VerifierRegistrationArtifact artifact;
@@ -112,12 +170,36 @@ namespace
         artifact.registry.srs_protocol_compiler_artifact_hash =
             std::string(64, 'a');
         artifact.config.dataset = "cora";
+        artifact.config.batching_rule = "whole_graph_single";
+        artifact.config.range_bits = 1;
+        artifact.config.quantization.s_delta = 1;
+        artifact.config.quantization.s_exp = 1;
+        artifact.config.quantization.s_agg_pre = {1};
+        artifact.config.quantization.s_agg = {1};
         artifact.config.input_preprocess_id = "row_normalize";
         artifact.dataset.name = "cora";
         artifact.dataset.input_preprocess_id = "row_normalize";
+        artifact.dataset.num_nodes = 1;
+        artifact.dataset.num_features = 1;
         artifact.local.name = "cora_normalized";
         artifact.local.input_preprocess_id = "row_normalize";
+        artifact.local.num_nodes = 1;
+        artifact.local.num_features = 1;
         artifact.model.input_preprocess_id = "row_normalize";
+
+        artifact.tables =
+            gatzk::protocol::build_canonical_static_tables(
+                gatzk::protocol::CanonicalStaticTableShapeInputs{
+                    .range_bits = artifact.config.range_bits,
+                    .quantization = artifact.config.quantization,
+                    .batching_rule = artifact.config.batching_rule,
+                    .dataset_num_nodes = artifact.dataset.num_nodes,
+                    .dataset_num_features = artifact.dataset.num_features,
+                    .local_num_nodes = artifact.local.num_nodes,
+                    .local_edge_count = artifact.local.edges.size(),
+                });
+        artifact.registry.static_table_digest =
+            canonical_static_table_digest(artifact.tables);
 
         artifact.domains.fh =
             gatzk::algebra::RootOfUnityDomain::create("FH", 1);
@@ -218,8 +300,38 @@ int main()
         // Exercise the independent registration artifact codec.  A canonical
         // round trip is required before any digest/tamper checks are useful.
         auto registration = synthetic_registration_artifact();
+        const auto expected_tables = expected_small_canonical_static_tables();
+        constexpr const char *kExpectedStaticTableSerializationSha256 =
+            "4a446d4dccda578a0eb28cec1926c66c314f0b162c89a33e0f3587c67373d0b0";
+        expect(registration.tables.range == expected_tables.range
+                   && registration.tables.lrelu == expected_tables.lrelu
+                   && registration.tables.elu == expected_tables.elu
+                   && registration.tables.exp == expected_tables.exp,
+               "small canonical fixture rows differ from the independent expected rows");
+        expect(
+            canonical_static_table_digest(registration.tables)
+                == kExpectedStaticTableSerializationSha256,
+            "small canonical fixture static-table serialization digest changed");
         const auto registration_bytes =
             gatzk::protocol::serialize_verifier_registration_artifact(registration);
+        std::size_t static_cursor = 12;
+        std::size_t static_payload = 0;
+        std::size_t static_length = 0;
+        for (std::uint32_t section = 1; section <= 12; ++section)
+        {
+            expect(read_u32(registration_bytes, static_cursor) == section,
+                   "registration section scan lost canonical order");
+            const auto length = read_u64(registration_bytes, static_cursor + 4);
+            if (section == 5)
+            {
+                static_payload = static_cursor + 12;
+                static_length = static_cast<std::size_t>(length);
+            }
+            static_cursor += 12 + static_cast<std::size_t>(length);
+        }
+        expect(static_payload != 0, "static-table section was not found");
+        expect(static_length < 1024,
+               "compact static-table section unexpectedly contains table rows");
         const auto parsed_registration =
             gatzk::protocol::parse_verifier_registration_artifact(registration_bytes);
         expect(
@@ -236,6 +348,60 @@ int main()
             parsed_registration.public_commitments.size() == 1
                 && parsed_registration.public_commitments.at("runtime_public").point == point,
             "verifier registration codec lost point-only public ownership");
+        expect(parsed_registration.tables.range == registration.tables.range
+                   && parsed_registration.tables.lrelu == registration.tables.lrelu
+                   && parsed_registration.tables.elu == registration.tables.elu
+                   && parsed_registration.tables.exp == registration.tables.exp,
+               "compact static-table reconstruction changed canonical rows");
+        expect(parsed_registration.tables.range == expected_tables.range
+                   && parsed_registration.tables.lrelu == expected_tables.lrelu
+                   && parsed_registration.tables.elu == expected_tables.elu
+                   && parsed_registration.tables.exp == expected_tables.exp,
+               "compact static-table reconstruction differs from independent expected rows");
+        expect(
+            parsed_registration.registry.static_table_digest
+                == canonical_static_table_digest(parsed_registration.tables)
+                && parsed_registration.registry.static_table_digest
+                       == registration.registry.static_table_digest,
+               "static-table digest no longer binds the complete canonical tables");
+        expect(
+            canonical_static_table_digest(parsed_registration.tables)
+                == kExpectedStaticTableSerializationSha256,
+            "reconstructed static-table serialization digest changed");
+        expect(parsed_registration.tables.range.front().value() == 0
+                   && parsed_registration.tables.range.back().value() == 1,
+               "canonical T_range ordering changed");
+        expect(parsed_registration.tables.lrelu.front().first
+                       == gatzk::algebra::FieldElement::from_signed(-2)
+                   && parsed_registration.tables.lrelu.back().first
+                          == gatzk::algebra::FieldElement::from_signed(2),
+               "canonical T_LReLU field encoding/order changed");
+        expect(parsed_registration.tables.elu.front().first
+                       == gatzk::algebra::FieldElement::from_signed(-2)
+                   && parsed_registration.tables.elu.back().first
+                          == gatzk::algebra::FieldElement::from_signed(2),
+               "canonical T_ELU field encoding/order changed");
+        expect(parsed_registration.tables.exp.front().first.value() == 0
+                   && parsed_registration.tables.exp.back().first.value() == 4,
+               "canonical T_exp ordering changed");
+
+        auto marker_tamper = registration_bytes;
+        expect(read_u64(marker_tamper, static_payload) > 0,
+               "static-table marker is missing");
+        marker_tamper[static_payload + 8] ^= 0x01U;
+        refresh_digest(&marker_tamper);
+        expect_rejected(marker_tamper, "unknown static-table marker");
+
+        auto descriptor_tamper = registration_bytes;
+        const auto marker_length = read_u64(descriptor_tamper, static_payload);
+        expect(marker_length < static_length,
+               "static-table descriptor marker exceeds section");
+        write_u64(
+            &descriptor_tamper,
+            static_payload + 8 + static_cast<std::size_t>(marker_length) + 8,
+            0);
+        refresh_digest(&descriptor_tamper);
+        expect_rejected(descriptor_tamper, "static-table descriptor tamper");
 
         auto single_byte_tamper = registration_bytes;
         single_byte_tamper[12] ^= 0x01U;
@@ -296,6 +462,35 @@ int main()
         std::filesystem::remove(registry_path);
         expect(trusted_digest_rejected,
                "registry loader accepted an artifact with an untrusted digest");
+
+        const auto trusted_registry_digest = registration.canonical_digest();
+        const auto trusted_parsed_registration =
+            gatzk::protocol::parse_verifier_registration_artifact(
+                registration_bytes, trusted_registry_digest);
+        expect(
+            trusted_parsed_registration.canonical_digest() == trusted_registry_digest
+                && trusted_parsed_registration.tables.range == expected_tables.range
+                && trusted_parsed_registration.tables.lrelu == expected_tables.lrelu
+                && trusted_parsed_registration.tables.elu == expected_tables.elu
+                && trusted_parsed_registration.tables.exp == expected_tables.exp,
+            "trusted registration parse did not authenticate and rebuild canonical tables");
+
+        bool trusted_parse_rejected = false;
+        try
+        {
+            (void)gatzk::protocol::parse_verifier_registration_artifact(
+                registration_bytes, std::string(64, '0'));
+        }
+        catch (const std::exception &error)
+        {
+            trusted_parse_rejected = true;
+            expect(
+                std::string(error.what()).find("trusted registry root")
+                    != std::string::npos,
+                "trusted parse rejected the wrong digest for the wrong reason");
+        }
+        expect(trusted_parse_rejected,
+               "trusted registration parse accepted a mismatched digest");
 
         auto owned_source = registration;
         auto owned_bytes =

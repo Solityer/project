@@ -1277,22 +1277,13 @@ namespace gatzk::protocol
             });
     }
 
-    StaticTables build_canonical_static_tables(const ProtocolContext &context)
+    StaticTables build_canonical_static_tables(
+        const CanonicalStaticTableShapeInputs &inputs)
     {
-        const auto shape = plan_canonical_static_table_shape(context);
-        if (context.domains.edge != nullptr
-            && shape.table_edge_domain_size > context.domains.edge->size)
-            throw std::runtime_error(
-                "canonical static-table/domain capacity mismatch: derived table edge domain="
-                + std::to_string(shape.table_edge_domain_size)
-                + " exceeds authenticated context edge domain="
-                + std::to_string(context.domains.edge->size)
-                + " (T_exp rows=" + std::to_string(shape.exp_table_size)
-                + ", delta_bound=" + std::to_string(shape.exp_input_bound)
-                + ")");
-        const auto &scales = context.config.quantization;
+        const auto shape = plan_canonical_static_table_shape(inputs);
+        const auto &scales = inputs.quantization;
         StaticTables out;
-        out.range = canonical_range_table(context.config.range_bits);
+        out.range = canonical_range_table(inputs.range_bits);
         out.lrelu = canonical_lrelu_table(
             shape.lrelu_min_raw,
             shape.lrelu_max_raw,
@@ -1324,6 +1315,31 @@ namespace gatzk::protocol
             throw std::runtime_error(
                 "canonical static-table generator planned cardinality mismatch");
         return out;
+    }
+
+    StaticTables build_canonical_static_tables(const ProtocolContext &context)
+    {
+        const CanonicalStaticTableShapeInputs inputs{
+            .range_bits = context.config.range_bits,
+            .quantization = context.config.quantization,
+            .batching_rule = context.config.batching_rule,
+            .dataset_num_nodes = context.dataset.num_nodes,
+            .dataset_num_features = context.dataset.num_features,
+            .local_num_nodes = context.local.num_nodes,
+            .local_edge_count = context.local.edges.size(),
+        };
+        const auto shape = plan_canonical_static_table_shape(inputs);
+        if (context.domains.edge != nullptr
+            && shape.table_edge_domain_size > context.domains.edge->size)
+            throw std::runtime_error(
+                "canonical static-table/domain capacity mismatch: derived table edge domain="
+                + std::to_string(shape.table_edge_domain_size)
+                + " exceeds authenticated context edge domain="
+                + std::to_string(context.domains.edge->size)
+                + " (T_exp rows=" + std::to_string(shape.exp_table_size)
+                + ", delta_bound=" + std::to_string(shape.exp_input_bound)
+                + ")");
+        return build_canonical_static_tables(inputs);
     }
 
     bool validate_static_tables(

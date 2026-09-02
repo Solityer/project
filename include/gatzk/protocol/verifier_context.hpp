@@ -17,6 +17,9 @@ namespace gatzk::protocol
         const VerifierRegistrationArtifact &artifact);
     VerifierRegistrationArtifact parse_verifier_registration_artifact(
         const std::vector<std::uint8_t> &bytes);
+    VerifierRegistrationArtifact parse_verifier_registration_artifact(
+        const std::vector<std::uint8_t> &bytes,
+        const std::string &trusted_registry_digest);
 
     // Formal path: load a candidate VK_model/VK_static registry artifact,
     // validate its canonical digest and exact entry set against an already
