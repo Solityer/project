@@ -318,6 +318,21 @@ def main() -> int:
             raise RuntimeError("registered-model manifest path mismatch")
         if registration_info.get("model_registry_id") is None:
             raise RuntimeError("registered-model manifest lacks registry identity")
+        for key in (
+            "dataset",
+            "input_preprocess_id",
+            "data_identity",
+            "source_input_id",
+            "quant_cfg_id",
+            "checkpoint_manifest_id",
+            "model_shape_id",
+            "model_arch_id",
+            "model_param_id",
+            "graph_features_digest",
+            "topology_digest",
+        ):
+            if registration_info.get(key) != info.get(key):
+                raise RuntimeError(f"registered-model manifest identity mismatch: {key}")
     else:
         model_dir.mkdir(parents=True, exist_ok=True)
         _harden_private_directory(secret_dir, create=True)
@@ -402,13 +417,48 @@ def main() -> int:
         "statement_id",
         "model_registry_id",
         "device",
+        "dataset",
+        "input_preprocess_id",
+        "data_identity",
+        "source_input_id",
+        "quant_cfg_id",
+        "checkpoint_manifest_id",
+        "model_shape_id",
+        "model_arch_id",
+        "model_param_id",
+        "graph_features_digest",
+        "topology_digest",
         "proof_sha256",
         "proof_size_bytes",
+        "commitment_time_ms",
+        "prove_time_ms",
         "model_session_commitments",
         "model_rerandomization_proofs",
     ):
         if proof_info.get(key) != verifier_info.get(key):
             raise RuntimeError(f"prover/verifier manifest mismatch: {key}")
+    for key in (
+        "dataset",
+        "input_preprocess_id",
+        "data_identity",
+        "quant_cfg_id",
+        "checkpoint_manifest_id",
+        "model_shape_id",
+        "model_arch_id",
+        "model_param_id",
+        "graph_features_digest",
+        "topology_digest",
+    ):
+        if proof_info.get(key) != info.get(key) or verifier_info.get(key) != info.get(key):
+            raise RuntimeError(f"proof identity mismatch: {key}")
+    if not isinstance(proof_info.get("source_input_id"), str) or proof_info.get("source_input_id") != verifier_info.get("source_input_id"):
+        raise RuntimeError("proof source-input identity is missing or mismatched")
+    for key in ("commitment_time_ms", "prove_time_ms"):
+        try:
+            if float(proof_info.get(key, -1.0)) < 0.0:
+                raise ValueError
+        except (TypeError, ValueError):
+            raise RuntimeError(f"proof timing is malformed: {key}")
     for key, expected in pp_binding.items():
         if proof_info.get(key) != expected:
             raise RuntimeError(f"prover manifest PP binding mismatch: {key}")
@@ -464,6 +514,10 @@ def main() -> int:
         "cpu_build_identity": cpu_build["build_identity"],
         "prover_build_identity": prover_build["build_identity"],
         "source_identity": source_id,
+        "input_preprocess_id": info["input_preprocess_id"],
+        "data_identity": info["data_identity"],
+        "quant_cfg_id": info["quant_cfg_id"],
+        "source_input_id": proof_info.get("source_input_id"),
         "registry_sha256": registry_sha256,
         "registry_size_bytes": registry_size_bytes,
         **pp_binding,
@@ -484,6 +538,10 @@ def main() -> int:
         "config_sha256": config_digest(config),
         "protocol_sha256": protocol_digest(),
         "integer_bound_ledger_id": info["ledger"]["integer_bound_ledger_id"],
+        "input_preprocess_id": info["input_preprocess_id"],
+        "data_identity": info["data_identity"],
+        "quant_cfg_id": info["quant_cfg_id"],
+        "source_input_id": proof_info.get("source_input_id"),
         "L": info["L"],
         "hidden_profile": info["hidden_profile"],
         "d_in_profile": info["d_in_profile"],
@@ -513,6 +571,7 @@ def main() -> int:
         "adapter_time_ms": adapter_time_ms,
         "compile_time_ms": compile_time_ms,
         "prove_time_ms": proof_info["prove_time_ms"],
+        "commitment_time_ms": proof_info["commitment_time_ms"],
         "verify_time_ms": verifier_info["verify_time_ms"],
         "gpu_telemetry": proof_info.get("gpu_telemetry"),
         "proof_format": proof_info["proof_format"],
@@ -545,6 +604,10 @@ def main() -> int:
         "registry_size_bytes": result_payload["registry_size_bytes"],
         "source_identity": result_payload["source_identity"],
         "build_identity": result_payload["build_identity"],
+        "input_preprocess_id": result_payload["input_preprocess_id"],
+        "quant_cfg_id": result_payload["quant_cfg_id"],
+        "data_identity": result_payload["data_identity"],
+        "source_input_id": result_payload["source_input_id"],
         "config_sha256": result_payload["config_sha256"],
         "protocol_sha256": result_payload["protocol_sha256"],
         "resource_manifest_id": result_payload["resource_manifest_id"],
@@ -569,6 +632,8 @@ def main() -> int:
         "static_table_rows_id": result_payload["static_table_rows_id"],
         "model_arch_id": result_payload["model_arch_id"],
         "model_param_id": result_payload["model_param_id"],
+        "commitment_time_ms": result_payload["commitment_time_ms"],
+        "prove_time_ms": result_payload["prove_time_ms"],
         "gpu_telemetry": result_payload["gpu_telemetry"],
         "provenance": result_payload["provenance"],
         "files": before_success,

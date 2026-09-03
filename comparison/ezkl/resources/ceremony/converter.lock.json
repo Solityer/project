@@ -1,0 +1,33 @@
+{
+  "audit": {
+    "params_k": 28,
+    "path": "resources/ceremony/source.srs",
+    "ratio_verified": true,
+    "source_srs_k": 28,
+    "transcript_verified": true
+  },
+  "build": {
+    "cargo": "cargo 1.93.0-nightly (2a7c49606 2025-11-25)",
+    "profile": "release",
+    "rustc": "rustc 1.93.0-nightly (b84478a1c 2025-11-30)",
+    "sha256": "sha256:4088ac01ad19adc1d522b5a2c7cf8b74e0a965a26057505be515cf2501fedac3",
+    "target": "aarch64-unknown-linux-gnu",
+    "toolchain": "nightly-2025-12-01-aarch64-unknown-linux-gnu"
+  },
+  "command": [
+    "resources/ceremony/halo2-kzg-srs-converter",
+    "{input}",
+    "{output_prefix}",
+    "28"
+  ],
+  "converter": "resources/ceremony/halo2-kzg-srs-converter",
+  "converter_sha256": "sha256:4088ac01ad19adc1d522b5a2c7cf8b74e0a965a26057505be515cf2501fedac3",
+  "schema": "ezkl_pinned_halo2_kzg_srs_converter_v1",
+  "source": {
+    "commit": "d6929c74916f6be90751405a18df875ffcc0c241",
+    "git_tree": "77ab460f023c204ba0578484c2d9c45227859d54",
+    "path": "vendor/halo2-kzg-srs",
+    "repository": "https://github.com/han0110/halo2-kzg-srs.git",
+    "source_tree_sha256": "sha256:71f2a38421565c1951e9750b2ac92663a02eda57741375842dc8c40db2a12174"
+  }
+}

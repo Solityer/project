@@ -399,16 +399,19 @@ Matrix forward_head(
         if (denominator[node] <= 0) throw std::runtime_error("nonpositive Softmax denominator");
         for (std::size_t column = 0; column < width; ++column) {
             const auto recovered = hidden
-                ? signed_round_div(numerator[node][column], __int128{16} * denominator[node])
+                ? signed_round_div(__int128{16} * numerator[node][column],
+                                   __int128{64} * denominator[node])
                 : signed_round_div(__int128{16} * numerator[node][column],
-                                   __int128{256} * denominator[node]);
+                                   __int128{64} * denominator[node]);
             output[node][column] = hidden ? elu(recovered) : recovered;
             recovery_a = std::max<__int128>(recovery_a, hidden
-                ? signed_abs(numerator[node][column], "hidden recovery numerator")
+                ? signed_mul(16, signed_abs(numerator[node][column], "hidden recovery numerator"),
+                             "hidden recovery numerator")
                 : signed_mul(16, signed_abs(numerator[node][column], "output recovery numerator"),
                              "output recovery numerator"));
-            const auto actual_d = hidden ? signed_mul(16, denominator[node], "hidden recovery denominator")
-                                         : signed_mul(256, denominator[node], "output recovery denominator");
+            const auto actual_d = signed_mul(64, denominator[node],
+                                             hidden ? "hidden recovery denominator"
+                                                    : "output recovery denominator");
             recovery_d_min = std::min(recovery_d_min, actual_d);
             recovery_d = std::max(recovery_d, actual_d);
             certificate->output_bound = std::max<__int128>(certificate->output_bound,
@@ -461,7 +464,8 @@ FormalProfileIds write_formal_gat_artifacts(
     Integer feature_bound = 0;
     for (std::size_t node = 0; node < graph.node_count; ++node)
         for (std::size_t column = 0; column < graph.feature_dim; ++column) {
-            features[node][column] = round_nearest_away(graph.features_fp[node][column]);
+            features[node][column] = round_nearest_away(
+                graph.features_fp[node][column] * 16.0);
             feature_bound = std::max(feature_bound, static_cast<Integer>(std::llabs(features[node][column])));
         }
     write_i64_payload(output_dir / "node_features.i64.bin", features);
@@ -481,7 +485,7 @@ FormalProfileIds write_formal_gat_artifacts(
     Integer weight_bound = 0, hidden_attention_bound = 0, output_attention_bound = 0, bias_bound = 0;
     for (const auto& head : hidden_specs) {
         for (const auto& name : {head.seq_kernel, head.attn_src_kernel, head.attn_dst_kernel}) {
-            const auto values = quantized_tensor(checkpoint, name, 16);
+            const auto values = quantized_tensor(checkpoint, name, 4);
             write_tensor(model, name, tensor(checkpoint, name), values);
             canonical.emplace(name, values);
         }
@@ -490,9 +494,9 @@ FormalProfileIds write_formal_gat_artifacts(
             abs_max(canonical.at(head.attn_src_kernel)), abs_max(canonical.at(head.attn_dst_kernel))});
     }
     for (const auto& head : output_specs) {
-        const auto weights = quantized_tensor(checkpoint, head.seq_kernel, 16);
-        const auto a_src = quantized_tensor(checkpoint, head.attn_src_kernel, 1);
-        const auto a_dst = quantized_tensor(checkpoint, head.attn_dst_kernel, 1);
+        const auto weights = quantized_tensor(checkpoint, head.seq_kernel, 4);
+        const auto a_src = quantized_tensor(checkpoint, head.attn_src_kernel, 4);
+        const auto a_dst = quantized_tensor(checkpoint, head.attn_dst_kernel, 4);
         const auto bias = quantized_tensor(checkpoint, head.output_bias, 16);
         for (const auto& pair : {std::pair<std::string, std::vector<Integer>>(head.seq_kernel, weights),
                                  {head.attn_src_kernel, a_src}, {head.attn_dst_kernel, a_dst},
@@ -566,12 +570,13 @@ FormalProfileIds write_formal_gat_artifacts(
     // the actual scale semantics and exact integer rows used by this backend.
     std::ostringstream quant_core;
     quant_core << "{\"rounding_mode\":\"nearest_ties_away\",\"limb_bits\":" << config.range_bits
-          << ",\"feature_scale\":1,\"hidden_weight_scale\":16,\"hidden_attention_scale\":16"
-          << ",\"hidden_projection_scale\":16,\"delta_scale\":256,\"exp_scale\":16"
-          << ",\"hidden_recovery_num_scale\":1,\"hidden_recovery_den_scale\":16"
+          << ",\"input_preprocess_id\":\"" << json_escape(config.input_preprocess_id) << "\""
+          << ",\"feature_scale\":16,\"hidden_weight_scale\":4,\"hidden_attention_scale\":4"
+          << ",\"hidden_projection_scale\":64,\"delta_scale\":256,\"exp_scale\":16"
+          << ",\"hidden_recovery_num_scale\":16,\"hidden_recovery_den_scale\":64"
           << ",\"elu_input_scale\":16,\"elu_output_scale\":16"
-          << ",\"agg_scale\":16,\"output_weight_scale\":16"
-          << ",\"output_attention_scale\":1,\"output_projection_scale\":256"
+          << ",\"agg_scale\":16,\"output_weight_scale\":4"
+          << ",\"output_attention_scale\":4,\"output_projection_scale\":64"
           << ",\"output_pre_scale\":16,\"output_head_scale\":16,\"output_bias_scale\":16"
           << ",\"output_scale\":16}";
     const auto quant_id = formal_sha256_text(
@@ -628,7 +633,9 @@ FormalProfileIds write_formal_gat_artifacts(
             family.sum = scalar_sum;
             family.aggregate_mul = wide_mul(16, family.projection, "scalar aggregate term");
             family.aggregate_acc = family.aggregate_num = scalar_num;
-            family.recovery = round_certificate(scalar_num, 256, wide_mul(16, scalar_sum, "scalar recovery d"));
+            family.recovery = round_certificate(
+                wide_mul(16, scalar_num, "scalar hidden recovery a"), 1024,
+                wide_mul(64, scalar_sum, "scalar hidden recovery d"));
             family.has_alignment = false;
             family.bias = 0;
             family.output_bound = std::max<__int128>(family.recovery.q, 16);
@@ -669,8 +676,8 @@ FormalProfileIds write_formal_gat_artifacts(
         family.aggregate_mul = wide_mul(16, family.projection, "scalar aggregate term");
         family.aggregate_acc = family.aggregate_num = scalar_num;
         family.recovery = round_certificate(
-            wide_mul(16, scalar_num, "scalar output recovery a"), 4096,
-            wide_mul(256, scalar_sum, "scalar output recovery d"));
+            wide_mul(16, scalar_num, "scalar output recovery a"), 1024,
+            wide_mul(64, scalar_sum, "scalar output recovery d"));
         family.has_alignment = true;
         family.alignment = round_certificate(wide_mul(16, family.recovery.q, "scalar alignment a"), 16, 16);
         family.output_bound = wide_add(family.alignment.q, family.bias, "scalar output+bias");
@@ -815,6 +822,8 @@ FormalProfileIds write_formal_gat_artifacts(
     std::ostringstream forward;
     forward << "{\"forward_kind\":\"canonical_integer_full_gat_v1\",\"complete\":true"
             << ",\"attention_bias_used\":false,\"rounding_mode\":\"nearest_ties_away\""
+            << ",\"input_preprocess_id\":\"" << json_escape(config.input_preprocess_id) << "\""
+            << ",\"quant_cfg_id\":\"" << json_escape(config.quant_cfg_id) << "\""
             << ",\"logits\":[";
     for (std::size_t index = 0; index < final_logits.size(); ++index) {
         if (index) forward << ",";

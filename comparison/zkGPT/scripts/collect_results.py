@@ -171,12 +171,16 @@ def _validate_single_session_privacy(manifest_path: pathlib.Path) -> dict[str, A
     }
 
 
-def _collect(results_dir: pathlib.Path) -> tuple[list[dict[str, Any]], list[str]]:
+def _collect(
+    results_dir: pathlib.Path,
+    datasets: tuple[str, ...] = DATASET_ORDER,
+    backends: tuple[str, ...] = ("cpu", "gpu"),
+) -> tuple[list[dict[str, Any]], list[str]]:
     results_dir = resolve_results_dir(ROOT, results_dir)
     rows: list[dict[str, Any]] = []
     errors: list[str] = []
-    for backend in ("cpu", "gpu"):
-        for dataset in DATASET_ORDER:
+    for backend in backends:
+        for dataset in datasets:
             manifest_path = canonical_manifest_path(ROOT, backend, dataset)
             if not manifest_path.is_file():
                 rows.append({
@@ -211,11 +215,19 @@ def _collect(results_dir: pathlib.Path) -> tuple[list[dict[str, Any]], list[str]
     return rows, errors
 
 
-def _write_outputs(results_dir: pathlib.Path, rows: list[dict[str, Any]], errors: list[str]) -> bool:
+def _write_outputs(
+    results_dir: pathlib.Path,
+    rows: list[dict[str, Any]],
+    errors: list[str],
+    expected_pairs: set[tuple[str, str]] | None = None,
+) -> bool:
     results_dir = resolve_results_dir(ROOT, results_dir)
     eligible = not errors
     try:
-        validate_matrix_rows(rows)
+        validate_matrix_rows(
+            rows,
+            expected_pairs=expected_pairs or {(backend, dataset) for backend in ("cpu", "gpu") for dataset in DATASET_ORDER},
+        )
     except ResultValidationError as exc:
         eligible = False
         errors.append(str(exc))
@@ -263,14 +275,20 @@ def _write_outputs(results_dir: pathlib.Path, rows: list[dict[str, Any]], errors
 def main() -> int:
     parser = argparse.ArgumentParser(description="Collect verifier-backed zkGPT artifacts")
     parser.add_argument("--results-dir", type=pathlib.Path, default=ROOT / "results")
+    parser.add_argument("--datasets", default="all")
+    parser.add_argument("--backends", default="all")
     args = parser.parse_args()
     try:
         results_dir = resolve_results_dir(ROOT, args.results_dir)
     except ResultValidationError as exc:
         raise SystemExit(str(exc)) from exc
     ensure_dir(results_dir, root=ROOT, label="results root")
-    rows, errors = _collect(results_dir)
-    return 0 if _write_outputs(results_dir, rows, errors) else 1
+    datasets = tuple(DATASET_ORDER if args.datasets == "all" else [item.strip() for item in args.datasets.split(",") if item.strip()])
+    backends = tuple(("cpu", "gpu") if args.backends == "all" else [item.strip() for item in args.backends.split(",") if item.strip()])
+    if not set(datasets).issubset(set(DATASET_ORDER)) or not set(backends).issubset({"cpu", "gpu"}) or not datasets or not backends:
+        raise SystemExit("invalid --datasets/--backends selection")
+    rows, errors = _collect(results_dir, datasets, backends)
+    return 0 if _write_outputs(results_dir, rows, errors, {(backend, dataset) for backend in backends for dataset in datasets}) else 1
 
 
 if __name__ == "__main__":

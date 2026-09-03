@@ -371,6 +371,17 @@ fn main() -> Result<()> {
                         "registry_object_id": r.registry_object_id.clone(),
                         "statement_id": s.statement_id.clone(),
                         "model_registry_id": r.registry_object_id.clone(),
+                        "dataset": s.dataset,
+                        "input_preprocess_id": s.input_preprocess_id,
+                        "data_identity": s.data_identity,
+                        "source_input_id": s.source_input_id,
+                        "quant_cfg_id": s.quant_cfg_id,
+                        "checkpoint_manifest_id": s.checkpoint_manifest_id,
+                        "model_shape_id": s.model_shape_id,
+                        "model_arch_id": s.model_arch_id,
+                        "model_param_id": s.model_param_id,
+                        "graph_features_digest": s.graph_features_digest,
+                        "topology_digest": s.topology_digest,
                     }),
                     &pp,
                     &ppv,
@@ -405,16 +416,13 @@ fn main() -> Result<()> {
             let ppv: CommitmentParameters = read_bin(&pp)?;
             let s: PublicStatement = read_bin(&statement)?;
             let m = read_bin(&model_registry)?;
-            let prove_result = (|| -> Result<(ProofEnvelope, f64)> {
+            let prove_result = (|| -> Result<ProofEnvelope> {
                 let secret = read_bin(&model_secret)?;
                 let w = read_bin(&witness)?;
-                let start = Instant::now();
-                let p = prove(&ppv, &s, &m, &secret, &w, &device)?;
-                let elapsed = start.elapsed().as_secs_f64() * 1000.0;
-                Ok((p, elapsed))
+                prove(&ppv, &s, &m, &secret, &w, &device)
             })();
             let cleanup_result = cleanup_private_file(&witness);
-            let (p, elapsed) = match (prove_result, cleanup_result) {
+            let p = match (prove_result, cleanup_result) {
                 (Ok(value), Ok(())) => value,
                 (Err(error), Ok(())) => return Err(error),
                 (Ok(_), Err(error)) => return Err(error),
@@ -423,7 +431,7 @@ fn main() -> Result<()> {
             write_bin(&proof, &p, false)?;
             let size = fs::metadata(&proof)?.len();
             let proof_manifest = merge_pp_fields(
-                serde_json::json!({"protocol_id":"GAT-ZKML-zkDL","proof_format":p.format,"proof_generated":true,"verified":false,"statement_id":p.statement_id,"model_registry_id":p.model_registry_id,"device":p.device,"gpu_telemetry":p.gpu_telemetry,"proof_path":canonical_path_string(&proof)?,"proof_sha256":sha_file(&proof)?,"proof_size_bytes":size,"prove_time_ms":elapsed,"fresh_dynamic_commitments":p.dynamic_commitments.len(),"fresh_sumcheck_masks":p.operations.len(),"model_session_commitments":p.model_session_commitments.len(),"model_rerandomization_proofs":p.model_rerandomization.len(),"model_session_rerandomization":"pedersen_blinder_schnorr_v1"}),
+                serde_json::json!({"protocol_id":"GAT-ZKML-zkDL","proof_format":p.format,"proof_generated":true,"verified":false,"statement_id":p.statement_id,"model_registry_id":p.model_registry_id,"dataset":s.dataset,"input_preprocess_id":s.input_preprocess_id,"data_identity":s.data_identity,"source_input_id":s.source_input_id,"quant_cfg_id":s.quant_cfg_id,"checkpoint_manifest_id":s.checkpoint_manifest_id,"model_shape_id":s.model_shape_id,"model_arch_id":s.model_arch_id,"model_param_id":s.model_param_id,"graph_features_digest":s.graph_features_digest,"topology_digest":s.topology_digest,"device":p.device,"gpu_telemetry":p.gpu_telemetry,"proof_path":canonical_path_string(&proof)?,"proof_sha256":sha_file(&proof)?,"proof_size_bytes":size,"commitment_time_ms":p.commitment_time_ms,"prove_time_ms":p.prove_time_ms,"fresh_dynamic_commitments":p.dynamic_commitments.len(),"fresh_sumcheck_masks":p.operations.len(),"model_session_commitments":p.model_session_commitments.len(),"model_rerandomization_proofs":p.model_rerandomization.len(),"model_session_rerandomization":"pedersen_blinder_schnorr_v1"}),
                 &pp,
                 &ppv,
             )?;
@@ -431,7 +439,7 @@ fn main() -> Result<()> {
                 &manifest,
                 seal_manifest(proof_manifest, "zkDL_gat_proof_manifest_v1")?,
             )?;
-            println!("PROOF_OK bytes={} prove_ms={:.3}", size, elapsed);
+            println!("PROOF_OK bytes={} commitment_ms={:.3} prove_ms={:.3}", size, p.commitment_time_ms, p.prove_time_ms);
         }
         Command::Verify {
             pp,
@@ -454,7 +462,7 @@ fn main() -> Result<()> {
             verify(&ppv, &s, &m, &p, device.as_deref())?;
             let elapsed = start.elapsed().as_secs_f64() * 1000.0;
             let verifier_manifest = merge_pp_fields(
-                serde_json::json!({"protocol_id":"GAT-ZKML-zkDL","proof_format":p.format,"verified":true,"independent_verifier":true,"verifier_reads_witness":false,"statement_id":p.statement_id,"model_registry_id":p.model_registry_id,"device":p.device,"gpu_telemetry_validated":p.gpu_telemetry.is_some() || p.device == "cpu","gpu_telemetry":p.gpu_telemetry,"model_session_commitments":p.model_session_commitments.len(),"model_rerandomization_proofs":p.model_rerandomization.len(),"model_rerandomization_verified":true,"model_session_rerandomization":"pedersen_blinder_schnorr_v1","proof_path":canonical_path_string(&proof)?,"proof_sha256":sha_file(&proof)?,"proof_size_bytes":fs::metadata(&proof)?.len(),"verify_time_ms":elapsed}),
+                serde_json::json!({"protocol_id":"GAT-ZKML-zkDL","proof_format":p.format,"verified":true,"independent_verifier":true,"verifier_reads_witness":false,"statement_id":p.statement_id,"model_registry_id":p.model_registry_id,"dataset":s.dataset,"input_preprocess_id":s.input_preprocess_id,"data_identity":s.data_identity,"source_input_id":s.source_input_id,"quant_cfg_id":s.quant_cfg_id,"checkpoint_manifest_id":s.checkpoint_manifest_id,"model_shape_id":s.model_shape_id,"model_arch_id":s.model_arch_id,"model_param_id":s.model_param_id,"graph_features_digest":s.graph_features_digest,"topology_digest":s.topology_digest,"device":p.device,"gpu_telemetry_validated":p.gpu_telemetry.is_some() || p.device == "cpu","gpu_telemetry":p.gpu_telemetry,"commitment_time_ms":p.commitment_time_ms,"prove_time_ms":p.prove_time_ms,"model_session_commitments":p.model_session_commitments.len(),"model_rerandomization_proofs":p.model_rerandomization.len(),"model_rerandomization_verified":true,"model_session_rerandomization":"pedersen_blinder_schnorr_v1","proof_path":canonical_path_string(&proof)?,"proof_sha256":sha_file(&proof)?,"proof_size_bytes":fs::metadata(&proof)?.len(),"verify_time_ms":elapsed}),
                 &pp,
                 &ppv,
             )?;

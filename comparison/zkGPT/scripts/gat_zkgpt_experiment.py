@@ -3,15 +3,85 @@
 from __future__ import annotations
 
 import argparse
+import os
 import pathlib
 import subprocess
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+
+
+def _bootstrap_local_python() -> None:
+    """Ensure formal execution imports only the baseline-local environment."""
+    helper = ROOT / "scripts" / "ensure_environment.py"
+    completed = subprocess.run(
+        [sys.executable, str(helper), "--print-python"],
+        cwd=ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=None,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise SystemExit(completed.returncode)
+    local = pathlib.Path(os.path.abspath(completed.stdout.strip()))
+    expected_root = ROOT.resolve()
+    if local.parent.parent != ROOT / ".venv" or local != ROOT / ".venv" / "bin" / "python":
+        raise SystemExit("ensure_environment returned a non-baseline-local interpreter")
+    current = pathlib.Path(os.path.abspath(sys.executable))
+    if current != local:
+        os.execv(str(local), [str(local), str(pathlib.Path(__file__).resolve()), *sys.argv[1:]])
+
+
+_bootstrap_local_python()
 sys.path.insert(0, str(ROOT / "src"))
 
 from zkgpt_gat.runner import run_many, selected_backends, selected_datasets  # noqa: E402
 from zkgpt_gat.result_validation import ResultValidationError, resolve_results_dir  # noqa: E402
+
+
+def _run_step(label: str, command: list[str]) -> None:
+    print(f"[zkGPT] {label}", flush=True)
+    completed = subprocess.run(command, cwd=ROOT, check=False)
+    if completed.returncode != 0:
+        raise SystemExit(completed.returncode)
+
+
+def _prepare_formal_chain(datasets: list[str], backends: list[str], *, setup_only: bool) -> None:
+    """Run the one authenticated build/setup/resource chain before proving."""
+    python = str(pathlib.Path(sys.executable))
+    selected = ",".join(datasets)
+    # Build is first so a stale/failed native implementation cannot publish
+    # model/Y/registry resources that would later be used by a run.
+    for backend in backends:
+        _run_step(
+            f"build {backend}",
+            [str(ROOT / "scripts" / "build.sh"), f"--{backend}"],
+        )
+    _run_step(
+        "prepare baseline-local resource layout",
+        [python, str(ROOT / "scripts" / "prepare_resources.py"), "--datasets", selected],
+    )
+    _run_step(
+        "convert canonical no-bias checkpoints",
+        [python, str(ROOT / "scripts" / "prepare_canonical_checkpoint.py"), "--datasets", selected],
+    )
+    if not setup_only:
+        _run_step(
+            "generate canonical public Y with independent reference",
+            [python, str(ROOT / "scripts" / "generate_public_y.py"), "--datasets", selected],
+        )
+    for dataset in datasets:
+        _run_step(
+            f"register canonical model {dataset}",
+            [
+                python,
+                str(ROOT / "scripts" / "register_model.py"),
+                "--dataset", dataset,
+                "--project-root", str(ROOT),
+                "--zk-root", str(ROOT),
+            ],
+        )
 
 
 def main() -> int:
@@ -30,14 +100,10 @@ def main() -> int:
     except ResultValidationError as exc:
         parser.error(str(exc))
     datasets = selected_datasets(args.datasets)
-    if args.setup_only:
-        for dataset in datasets:
-            command = [sys.executable, str(ROOT / "scripts" / "register_model.py"), "--dataset", dataset, "--project-root", str(ROOT), "--zk-root", str(ROOT)]
-            completed = subprocess.run(command, cwd=ROOT, check=False)
-            if completed.returncode != 0:
-                return completed.returncode
-        return 0
     backends = selected_backends(args.backends)
+    _prepare_formal_chain(datasets, backends, setup_only=args.setup_only)
+    if args.setup_only:
+        return 0
     run_many(
         datasets,
         backends,
@@ -45,6 +111,29 @@ def main() -> int:
         ROOT,
         results_dir,
         args.force,
+    )
+    selection = ",".join(datasets)
+    backend_selection = ",".join(backends)
+    python = str(pathlib.Path(sys.executable))
+    _run_step(
+        "collect verifier-backed results",
+        [
+            python,
+            str(ROOT / "scripts" / "collect_results.py"),
+            "--results-dir", str(results_dir),
+            "--datasets", selection,
+            "--backends", backend_selection,
+        ],
+    )
+    _run_step(
+        "validate collected results",
+        [
+            python,
+            str(ROOT / "scripts" / "validate_final_results.py"),
+            "--results-dir", str(results_dir),
+            "--datasets", selection,
+            "--backends", backend_selection,
+        ],
     )
     return 0
 

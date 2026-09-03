@@ -7,6 +7,7 @@
       "checkpoint_bundle": "artifacts/checkpoints/citeseer_gat_canonical",
       "checkpoint_required_files": [
         "manifest.json",
+        "tensors.npz",
         "tensors.txt"
       ],
       "public_y": "resources/public_y/canonical/citeseer.json",
@@ -23,6 +24,7 @@
       "checkpoint_bundle": "artifacts/checkpoints/cora_gat_canonical",
       "checkpoint_required_files": [
         "manifest.json",
+        "tensors.npz",
         "tensors.txt"
       ],
       "public_y": "resources/public_y/canonical/cora.json",
@@ -39,6 +41,7 @@
       "checkpoint_bundle": "artifacts/checkpoints/ogbn_arxiv_gat_canonical",
       "checkpoint_required_files": [
         "manifest.json",
+        "tensors.npz",
         "tensors.txt"
       ],
       "public_y": "resources/public_y/canonical/ogbn_arxiv.json",
@@ -55,6 +58,7 @@
       "checkpoint_bundle": "artifacts/checkpoints/ppi_gat_canonical",
       "checkpoint_required_files": [
         "manifest.json",
+        "tensors.npz",
         "tensors.txt"
       ],
       "public_y": "resources/public_y/canonical/ppi.json",
@@ -62,7 +66,6 @@
         "meta.cfg",
         "edges.txt",
         "features.txt or features.npy",
-        "labels.txt",
         "node_ptr.txt",
         "labels_multi.npy or labels_multi.txt",
         "train_mask.npy",
@@ -76,6 +79,7 @@
       "checkpoint_bundle": "artifacts/checkpoints/pubmed_gat_canonical",
       "checkpoint_required_files": [
         "manifest.json",
+        "tensors.npz",
         "tensors.txt"
       ],
       "public_y": "resources/public_y/canonical/pubmed.json",
@@ -98,11 +102,11 @@
   "root_policy": "all_project_resources_must_be_baseline_local",
   "schema": "zkGPT_baseline_resource_manifest_v1",
   "static_table": {
-    "content_digest": "027f1b529c64638b13888c919b4f4ebc07234da4898e245c14511367b77bbd97",
-    "descriptor_digest": "970ea53b3e05c229cf87c5c424462230b7b13b6c3f8583a87d920110e21d0a79",
+    "content_digest": "c2f1d44badb6610621f0679ba02a9b9dee5b74f1489a9ff923e0df184632dabe",
+    "descriptor_digest": "ef010d0d451d5bb4bbaddb50c74cbf60d6c77bb6c181299c4298883025d7c13e",
     "id": "tables:lrelu+elu+exp+range",
-    "path": "resources/static_tables/exact_integer_gat_v1.json",
-    "quant_cfg_id": "gat_l3_scale_chain_v1",
+    "path": "resources/static_tables/exact_integer_gat.json",
+    "quant_cfg_id": "gat_l3_scale_chain",
     "schema": "zkGPT_static_tables_descriptor_v1"
   }
 }

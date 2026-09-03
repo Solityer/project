@@ -12,6 +12,7 @@ used by this baseline.  They are not generated replacements or mocks.
 | `poseidon` | `https://github.com/privacy-scaling-explorations/poseidon` | `807f8f555313f726ca03bdf941f798098f488ba4` | `bb7dcb779c64f878dcf3ac2eabc8264ef4082ce3` | `poseidon/LICENSE-MIT`, `poseidon/LICENSE-APACHE` |
 | `snark-verifier/snark-verifier` | `https://github.com/privacy-scaling-explorations/snark-verifier` | `508d96b20874d575bb489cb5f92f8bb116e9d44a` | `not available in the cached checkout` | `snark-verifier/LICENSE-MIT`, `snark-verifier/LICENSE-APACHE` |
 | `taskflow` | `https://github.com/taskflow/taskflow` | `d8c49c64b4ee5015a3f1c0a42748fa7a2bf5529` (v3.8.0) | `not available in the cached checkout` | `taskflow/LICENSE` |
+| `halo2-kzg-srs` (converter) | `https://github.com/han0110/halo2-kzg-srs.git` | `d6929c74916f6be90751405a18df875ffcc0c241` | `77ab460f023c204ba0578484c2d9c45227859d54` | upstream Cargo package; converter binary lock is `resources/ceremony/converter.lock.json` |
 
 The `halo2curves` and `poseidon` entries above are ordinary files in this
 baseline, not Git submodules.  Their recorded upstream commit and tree are

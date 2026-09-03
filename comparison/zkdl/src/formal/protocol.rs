@@ -13,6 +13,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 
 static ATOMIC_WRITE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -55,6 +56,8 @@ pub struct PublicStatement {
     pub output_mode: String,
     pub rounding_mode: String,
     pub dataset: String,
+    pub input_preprocess_id: String,
+    pub data_identity: String,
     pub pp_id: String,
     pub registry: RelationRegistry,
     pub node_count: usize,
@@ -83,6 +86,7 @@ pub struct PublicStatement {
     pub public_logits: Vec<i64>,
     pub resource_manifest_id: String,
     pub config_sha256: String,
+    pub source_input_id: String,
     pub statement_id: String,
 }
 impl PublicStatement {
@@ -126,15 +130,31 @@ impl PublicStatement {
             "statement rounding mode is unsupported or was silently substituted"
         );
         ensure!(
-            !self.dataset.is_empty() && !self.pp_id.is_empty(),
-            "dataset/PP identity missing"
+            !self.dataset.is_empty()
+                && !self.pp_id.is_empty()
+                && ((self.dataset == "cora"
+                    || self.dataset == "citeseer"
+                    || self.dataset == "pubmed"
+                    || self.dataset == "ppi")
+                    && self.input_preprocess_id == "row_normalize"
+                    || self.dataset == "ogbn-arxiv"
+                        && self.input_preprocess_id == "ogbn_arxiv_raw_float32"),
+            "dataset/PP/input preprocessing identity missing or non-canonical"
+        );
+        ensure!(
+            self.quant_cfg_id == "gat_l3_scale_chain",
+            "statement quantization identity is not the canonical scale chain"
+        );
+        ensure!(
+            canonical_sha256_id(&self.data_identity)
+                && canonical_sha256_id(&self.source_input_id),
+            "statement source/data identity is malformed"
         );
         for (label, value) in [
             ("checkpoint manifest", &self.checkpoint_manifest_id),
             ("model shape", &self.model_shape_id),
             ("commitment set", &self.commitment_set_id),
             ("static table rows", &self.static_table_rows_id),
-            ("quantization", &self.quant_cfg_id),
             ("static tables", &self.static_tables_id),
             ("integer bounds", &self.integer_bound_ledger_id),
             ("resource manifest", &self.resource_manifest_id),
@@ -452,8 +472,8 @@ fn expected_table(
     ensure!(max >= min, "static table domain is inverted");
     let raw_len = (max as i128 - min as i128 + 1) as usize;
     ensure!(
-        raw_len > 0 && raw_len <= (1usize << 26),
-        "static table domain is too large"
+        raw_len > 0 && raw_len <= (1usize << 27),
+        "static table domain is too large for the native full public MLE vector"
     );
     let padded_len = raw_len.max(2).next_power_of_two();
     let mut values = Vec::with_capacity(padded_len);
@@ -846,6 +866,14 @@ fn validate_ledger_statement_binding(statement: &PublicStatement) -> Result<()> 
         ledger_string(object, "dataset")? == statement.dataset,
         "integer ledger dataset identity mismatch"
     );
+    ensure!(
+        ledger_string(object, "input_preprocess_id")? == statement.input_preprocess_id,
+        "integer ledger input preprocessing identity mismatch"
+    );
+    ensure!(
+        ledger_string(object, "quant_cfg_id")? == statement.quant_cfg_id,
+        "integer ledger quantization identity mismatch"
+    );
     for (key, expected) in [
         ("node_count", statement.node_count),
         ("edge_count", statement.edge_count),
@@ -876,6 +904,7 @@ fn validate_ledger_statement_binding(statement: &PublicStatement) -> Result<()> 
         ),
         ("model_arch_id", statement.model_arch_id.as_str()),
         ("model_param_id", statement.model_param_id.as_str()),
+        ("data_identity", statement.data_identity.as_str()),
     ] {
         ensure!(
             ledger_string(object, key)? == expected,
@@ -894,8 +923,11 @@ fn validate_ledger_statement_binding(statement: &PublicStatement) -> Result<()> 
     h.update(scale_bytes);
     let computed = format!("sha256:{}", hex::encode(h.finalize()));
     ensure!(
-        computed == statement.quant_cfg_id,
-        "integer ledger quantization scale identity mismatch"
+        object
+            .get("quantization_scales_digest")
+            .and_then(serde_json::Value::as_str)
+            == Some(computed.as_str()),
+        "integer ledger quantization scale digest mismatch"
     );
     Ok(())
 }
@@ -1278,6 +1310,9 @@ pub struct ModelRegistry {
     pub registry_id: String,
     pub model_arch_id: String,
     pub model_param_id: String,
+    pub input_preprocess_id: String,
+    pub data_identity: String,
+    pub source_input_id: String,
     pub checkpoint_manifest_id: String,
     pub model_shape_id: String,
     pub quant_cfg_id: String,
@@ -1327,6 +1362,12 @@ impl ModelRegistry {
         ensure!(
             self.model_arch_id == s.model_arch_id && self.model_param_id == s.model_param_id,
             "model identity mismatch"
+        );
+        ensure!(
+            self.input_preprocess_id == s.input_preprocess_id
+                && self.data_identity == s.data_identity
+                && self.source_input_id == s.source_input_id,
+            "registered model source/data identity mismatch"
         );
         ensure!(
             self.checkpoint_manifest_id == s.checkpoint_manifest_id
@@ -1455,6 +1496,8 @@ pub struct ProofEnvelope {
     pub dynamic_commitments: BTreeMap<String, VectorCommitment>,
     pub operations: Vec<OperationProof>,
     pub gpu_telemetry: Option<GpuTelemetry>,
+    pub commitment_time_ms: f64,
+    pub prove_time_ms: f64,
     pub transcript_digest: [u8; 32],
 }
 
@@ -1705,6 +1748,9 @@ pub fn register_model(
         registry_id: s.registry.registry_id.clone(),
         model_arch_id: s.model_arch_id.clone(),
         model_param_id: s.model_param_id.clone(),
+        input_preprocess_id: s.input_preprocess_id.clone(),
+        data_identity: s.data_identity.clone(),
+        source_input_id: s.source_input_id.clone(),
         checkpoint_manifest_id: s.checkpoint_manifest_id.clone(),
         model_shape_id: s.model_shape_id.clone(),
         quant_cfg_id: s.quant_cfg_id.clone(),
@@ -1783,6 +1829,7 @@ pub fn prove(
     let mut dynamic = BTreeMap::new();
     let mut model_sessions = BTreeMap::new();
     let mut model_deltas = BTreeMap::new();
+    let commitment_start = Instant::now();
     for family in &s.registry.tensor_families {
         match family.visibility {
             Visibility::Public => {}
@@ -1834,6 +1881,8 @@ pub fn prove(
             }
         }
     }
+    let commitment_time_ms = commitment_start.elapsed().as_secs_f64() * 1000.0;
+    let prove_start = Instant::now();
     let nonce = loop {
         let mut candidate = [0u8; 32];
         getrandom::getrandom(&mut candidate)
@@ -1884,6 +1933,7 @@ pub fn prove(
     validate_gpu_telemetry(device, &gpu_telemetry)?;
     absorb_gpu_telemetry(&mut transcript, device, &gpu_telemetry)?;
     let transcript_digest = transcript.digest();
+    let prove_time_ms = prove_start.elapsed().as_secs_f64() * 1000.0;
     Ok(ProofEnvelope {
         format: PROOF_FORMAT.into(),
         statement_id: s.statement_id.clone(),
@@ -1895,6 +1945,8 @@ pub fn prove(
         dynamic_commitments: dynamic,
         operations,
         gpu_telemetry,
+        commitment_time_ms,
+        prove_time_ms,
         transcript_digest,
     })
 }
@@ -1925,6 +1977,13 @@ pub fn verify(
     ensure!(
         p.device == "cpu" || p.device == "gpu",
         "invalid proof device"
+    );
+    ensure!(
+        p.commitment_time_ms.is_finite()
+            && p.commitment_time_ms >= 0.0
+            && p.prove_time_ms.is_finite()
+            && p.prove_time_ms >= 0.0,
+        "proof timing fields are malformed"
     );
     validate_gpu_telemetry(&p.device, &p.gpu_telemetry)?;
     let registered_count = s

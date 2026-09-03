@@ -35,7 +35,7 @@ class RegistrationPreflightTests(unittest.TestCase):
                 "model_param_id": "tests-registration-model-v1",
                 "static_table_id": "tables:lrelu+elu+exp+range",
                 "static_tables_id": "tables:lrelu+elu+exp+range",
-                "quant_cfg_id": "exact_integer_gat_v1",
+                "quant_cfg_id": "exact_integer_gat",
                 "resource_manifest": "resources/resource_manifest.json",
             },
             rounding_mode="nearest_ties_away",
@@ -46,7 +46,7 @@ class RegistrationPreflightTests(unittest.TestCase):
             cache_root=root / "data" / "cache",
             cache_dir=root / "data" / "cache" / "cora",
             checkpoint_bundle=root / "artifacts" / "checkpoints" / "cora_gat",
-            static_table_path=root / "resources" / "static_tables" / "exact_integer_gat_v1.json",
+            static_table_path=root / "resources" / "static_tables" / "exact_integer_gat.json",
             public_y_path=root / "resources" / "public_y" / "cora.json",
         )
 
@@ -93,7 +93,7 @@ class RegistrationPreflightTests(unittest.TestCase):
         config = self._config()
         descriptor = {
             "static_tables_id": "tables:lrelu+elu+exp+range",
-            "quant_cfg_id": "exact_integer_gat_v1",
+            "quant_cfg_id": "exact_integer_gat",
         }
         manifest = {
             "model_arch_id": config.entries["model_arch_id"],
@@ -117,7 +117,7 @@ class RegistrationPreflightTests(unittest.TestCase):
         metadata = {
             "model_arch_id": "tests-registration-arch-v1",
             "model_param_id": "tests-registration-model-v1",
-            "quant_cfg_id": "exact_integer_gat_v1",
+            "quant_cfg_id": "exact_integer_gat",
             "static_table_id": "tables:lrelu+elu+exp+range",
             "rounding_mode": "nearest_ties_away",
             "private_input_layout": "X_pub|W|Aux|L_qry",

@@ -64,6 +64,7 @@ namespace gat_ezkl
             << config.self_loop_rule << '\n'
             << config.edge_sort_rule << '\n'
             << config.chunking_rule << '\n'
+            << config.input_preprocess_id << '\n'
             << config.layer_count << '\n'
             << config.K_out << '\n'
             << config.num_classes << '\n'

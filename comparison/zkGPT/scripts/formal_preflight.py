@@ -68,7 +68,7 @@ def main() -> int:
         "native_python_modules": all(module_checks.values()),
         "cuda_backend_source": (ROOT / "backend" / "cuda" / "zkgpt_cuda_proof_hot_path.cu").is_file(),
         "cuda_build_entrypoint": (ROOT / "scripts" / "build_cuda_backend.sh").is_file(),
-        "static_table_descriptor": (ROOT / "resources" / "static_tables" / "exact_integer_gat_v1.json").is_file(),
+        "static_table_descriptor": (ROOT / "resources" / "static_tables" / "exact_integer_gat.json").is_file(),
     }
     config_errors: list[str] = []
     for config_path in sorted((ROOT / "configs" / "formal").glob("*.cfg")) + sorted((ROOT / "configs" / "generated").glob("*/*.cfg")):

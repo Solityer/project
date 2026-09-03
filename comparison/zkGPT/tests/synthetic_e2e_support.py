@@ -25,7 +25,7 @@ import numpy as np
 from zkgpt_gat.config import AppConfig
 from zkgpt_gat.data import GraphDataset, LocalGraph
 from zkgpt_gat.forward import forward_full
-from zkgpt_gat.model import AttentionHead, HiddenLayer, Model, QUANT_SCALE_PROFILES
+from zkgpt_gat.model import AttentionHead, HiddenLayer, Model
 from zkgpt_gat.proof import build_proof
 from zkgpt_gat.util import digest_json, write_json
 
@@ -60,7 +60,26 @@ SYNTHETIC_DATASET = "synthetic-e2e"
 MODEL_ARCH_ID = "zkgpt-test-gat-n1-h1-c1-v1"
 MODEL_PARAM_ID = "zkgpt-test-model-zero-small-v1"
 STATIC_TABLE_ID = "tables:lrelu+elu+exp+range"
-QUANT_CFG_ID = "exact_integer_gat_v1"
+QUANT_CFG_ID = "exact_integer_gat"
+# Test-only synthetic scale profile.  Production QUANT_SCALE_PROFILES contains
+# only the canonical formal identity; keeping this fixture value here avoids
+# reintroducing a production alias/fallback.
+TEST_QUANT_SCALE_PROFILE = {
+    "input": 1,
+    "hidden_weight": 16,
+    "hidden_attention": 16,
+    "output_weight": 16,
+    "output_attention": 1,
+    "output_bias": 16,
+    "lrelu_input": 256,
+    "lrelu_output": 256,
+    "exp_input": 256,
+    "exp_output": 16,
+    "elu_input": 16,
+    "elu_output": 16,
+    "aggregate_output": 16,
+    "output_head": 16,
+}
 
 
 def _read_json(path: pathlib.Path) -> Dict[str, Any]:
@@ -351,7 +370,7 @@ class SyntheticBundleVerificationError(ValueError):
 
 def make_static_descriptor(root: pathlib.Path) -> pathlib.Path:
     """Create an authenticated test-only copy with a four-bit range table."""
-    source = _read_json(ROOT / "resources" / "static_tables" / "exact_integer_gat_v1.json")
+    source = _read_json(ROOT / "resources" / "static_tables" / "exact_integer_gat.json")
     descriptor = copy.deepcopy(source)
     descriptor["content"]["range_table"]["range_bits"] = SYNTHETIC_RANGE_BITS
     descriptor["content_digest"] = digest_json(descriptor["content"])
@@ -453,7 +472,7 @@ def synthetic_model() -> Model:
         quant_cfg_id=QUANT_CFG_ID,
         static_table_id=STATIC_TABLE_ID,
         output_average_rule="per_head_bias_then_arithmetic_mean",
-        quant_scales=dict(QUANT_SCALE_PROFILES[QUANT_CFG_ID]),
+        quant_scales=dict(TEST_QUANT_SCALE_PROFILE),
     )
 
 
@@ -847,6 +866,7 @@ __all__ = [
     "MODEL_ARCH_ID",
     "MODEL_PARAM_ID",
     "QUANT_CFG_ID",
+    "TEST_QUANT_SCALE_PROFILE",
     "ROOT",
     "STATIC_TABLE_ID",
     "SYNTHETIC_RANGE_BITS",

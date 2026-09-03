@@ -126,7 +126,7 @@ class SyntheticAdapterRoundingModeTests(unittest.TestCase):
     @staticmethod
     def _inputs() -> tuple[dict[str, object], dict[str, object], dict[str, object], dict[str, object]]:
         config = {
-            "quant_cfg_id": "exact_integer_gat_v1",
+            "quant_cfg_id": "exact_integer_gat",
             "static_table_id": "tables:lrelu+elu+exp+range",
             "rounding_mode": "nearest_ties_away",
         }
@@ -192,7 +192,7 @@ class SyntheticAdapterRangeBitsTests(unittest.TestCase):
             graph,
             manifest,
             bounds,
-            "exact_integer_gat_v1",
+            "exact_integer_gat",
             "nearest_ties_away",
             range_bits=4,
         )
@@ -210,7 +210,7 @@ class SyntheticAdapterRangeBitsTests(unittest.TestCase):
             graph,
             manifest,
             bounds,
-            "exact_integer_gat_v1",
+            "exact_integer_gat",
             "nearest_ties_away",
         )
         self.assertEqual(default_ledger["range_bits"], 12)
@@ -223,7 +223,7 @@ class SyntheticAdapterRangeBitsTests(unittest.TestCase):
             graph,
             manifest,
             bounds,
-            "exact_integer_gat_v1",
+            "exact_integer_gat",
             "nearest_ties_away",
             range_bits=4,
         )

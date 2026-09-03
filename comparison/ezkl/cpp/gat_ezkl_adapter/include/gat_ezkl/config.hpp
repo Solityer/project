@@ -31,6 +31,10 @@ namespace gat_ezkl
         std::string self_loop_rule = "per_node";
         std::string edge_sort_rule = "edge_gid_then_dst_stable";
         std::string chunking_rule = "none";
+        // Canonical feature preprocessing is part of the authenticated input
+        // identity.  It is intentionally explicit: the loader must never
+        // infer a legacy normalization rule from a dataset name.
+        std::string input_preprocess_id;
         std::string quant_cfg_id;
         std::string model_arch_id;
         std::string model_param_id;

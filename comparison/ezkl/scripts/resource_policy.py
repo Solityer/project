@@ -60,7 +60,34 @@ DATASET_SLUG = {
     "ogbn_arxiv_full": "ogbn_arxiv",
 }
 DATASET_FILES = ("meta.cfg", "edges.txt")
-CHECKPOINT_FILES = ("manifest.json", "tensors.txt")
+CHECKPOINT_FILES = ("manifest.json", "tensors.npz", "tensors.txt")
+CHECKPOINT_DIGESTS = {
+    "cora_full": {
+        "manifest.json": "sha256:9f50ee692b7d855f1f3135da806ef869bcdf44d6e80ef573600f4f00d907d061",
+        "tensors.npz": "sha256:b7f03945404ff7dfd2130fabd3151d8ce099036e01e8ee1e4b3ac7297f6c5795",
+        "tensors.txt": "sha256:d5b80dd9185779a23cd4d804e54745c8a892624d59e967039cd267d61558bb5c",
+    },
+    "citeseer_full": {
+        "manifest.json": "sha256:fe83fcfcb181ea4d48b1890838e714e9d500f342c9638b1adb4d027472e47e17",
+        "tensors.npz": "sha256:ac6bcc3852a8c0bfd1290ff810be313f3b605247429accc1bad6c4e9f1208368",
+        "tensors.txt": "sha256:f791ba59f08a174af76934e87b02ea08c0d568ae359527788936770cf3e5b63c",
+    },
+    "pubmed_full": {
+        "manifest.json": "sha256:9e2f00943037873cfdcd30c55a49891ff8fce4d363e5dfe9d75b3effabced642",
+        "tensors.npz": "sha256:ff021e11e4b4925cc9e6ced8c0b358f83c52e72e4c1212b4c469717ca48f0848",
+        "tensors.txt": "sha256:6cea141c83435cbcdded3e29c9ad082c85d25d9dfc214840c58d3cecb29de234",
+    },
+    "ppi_full_formal": {
+        "manifest.json": "sha256:997bd39f599b770c6fbbcd309f271891185fb738ef7cdffda707864d7e1ce702",
+        "tensors.npz": "sha256:0703e22022e3f3767a59b6d7c57887bda638ed8014fd5d17eb4b1903fbb0b861",
+        "tensors.txt": "sha256:46363f4de6abc30de73203022b1be8c71d30a00277cded64fc145a715450330d",
+    },
+    "ogbn_arxiv_full": {
+        "manifest.json": "sha256:72d3169de77412480d266289e4d503efe63a07b059e51d72656645e756a453bd",
+        "tensors.npz": "sha256:2a662530aae44e5e640c114b44cf3ae1cde8d237e1d2f1e127b7c54ad45dab9f",
+        "tensors.txt": "sha256:4112f0df883e46ae2a8234263173b5e66763c8b5a6a237c5004d9cfed973d04f",
+    },
+}
 STATIC_DESCRIPTOR = Path("configs") / "formal_operation_registry.json"
 
 # The adapter and ezkl commands must leave exactly this top-level file set in
@@ -177,9 +204,11 @@ def manifest_payload(root: Path | str = ROOT) -> dict[str, Any]:
             "config": str(paths["config"].relative_to(root_path)),
             "dataset_root": str(paths["dataset_root"].relative_to(root_path)),
             "checkpoint": str(paths["checkpoint"].relative_to(root_path)),
+            "public_y": str((paths["public_root"] / f"{dataset}.json").relative_to(root_path)),
             "required_dataset_files": list(DATASET_FILES)
             + (["node_ptr.txt"] if dataset == "ppi_full_formal" else []),
             "required_checkpoint_files": list(CHECKPOINT_FILES),
+            "checkpoint_digests": dict(CHECKPOINT_DIGESTS[dataset]),
             "status": "awaiting_user_staged_resources",
         }
     return {
@@ -285,6 +314,14 @@ def check_resource_layout(
             path = paths["checkpoint"] / name
             if not _is_private_regular_file(path):
                 missing.append(str(path))
+            elif require_staged:
+                expected_digest = manifest["datasets"][dataset]["checkpoint_digests"][name]
+                actual_digest = _sha256(path)
+                if actual_digest != expected_digest:
+                    raise ValueError(
+                        f"checkpoint digest mismatch for {dataset}/{name}: "
+                        f"expected {expected_digest}, got {actual_digest}"
+                    )
     if require_staged:
         ceremony_srs = resolve_local(root_path, CEREMONY_SRS, "ceremony SRS")
         ceremony_descriptor = resolve_local(

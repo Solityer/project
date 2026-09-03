@@ -12,10 +12,10 @@ from typing import Mapping, Sequence
 import numpy as np
 
 
-CANONICAL_QUANT_CFG_ID = "gat_l3_scale_chain_v1"
-CANONICAL_CHAIN_SCHEMA = "gat_l3_scale_chain_v1"
-ROW_NORMALIZE_INPUT_PREPROCESS_ID = "row_normalize_v1"
-OGBN_ARXIV_RAW_INPUT_PREPROCESS_ID = "ogbn_arxiv_raw_float32_v1"
+CANONICAL_QUANT_CFG_ID = "gat_l3_scale_chain"
+CANONICAL_CHAIN_SCHEMA = "gat_l3_scale_chain"
+ROW_NORMALIZE_INPUT_PREPROCESS_ID = "row_normalize"
+OGBN_ARXIV_RAW_INPUT_PREPROCESS_ID = "ogbn_arxiv_raw_float32"
 
 
 def canonical_input_preprocess_id(dataset: str) -> str:

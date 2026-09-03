@@ -217,12 +217,13 @@ int main(int argc, char** argv) {
         } else {
             require_regular_file(dataset_root / "features.npy", "dataset features.npy");
         }
-        for (const auto& optional : {std::string("labels.txt"), std::string("node_ptr.txt")}) {
+        for (const auto& optional : {std::string("labels.txt"), std::string("labels_multi.txt"), std::string("node_ptr.txt")}) {
             if (std::filesystem::exists(dataset_root / optional)) {
                 require_regular_file(dataset_root / optional, "dataset " + optional);
             }
         }
         require_regular_file(checkpoint_root / "manifest.json", "checkpoint manifest.json");
+        require_regular_file(checkpoint_root / "tensors.npz", "checkpoint tensors.npz");
         require_regular_file(checkpoint_root / "tensors.txt", "checkpoint tensors.txt");
         if (std::filesystem::exists(output_dir)) require_directory(output_dir, "output-dir");
         std::filesystem::create_directories(output_dir);
@@ -254,11 +255,16 @@ int main(int argc, char** argv) {
 
         const auto graph_hash = gat_ezkl::formal_hash_graph(graph);
         const auto checkpoint_hash = gat_ezkl::formal_hash_checkpoint(
-            checkpoint_root / "manifest.json", checkpoint_root / "tensors.txt");
+            checkpoint_root / "manifest.json", checkpoint_root / "tensors.txt",
+            checkpoint_root / "tensors.npz");
         const auto shape_hash = gat_ezkl::formal_hash_shape(graph, checkpoint);
         std::ostringstream metadata;
         metadata << "{\"kind\":\"ezkl_formal_gat_adapter_v1\",\"dataset\":\""
                  << gat_ezkl::json_escape(dataset_id) << "\",\"route_id\":\"" << route
+                 << "\",\"input_preprocess_id\":\""
+                 << gat_ezkl::json_escape(config.input_preprocess_id)
+                 << "\",\"quant_cfg_id\":\""
+                 << gat_ezkl::json_escape(config.quant_cfg_id)
                  << "\",\"full_dataset\":true,\"canonical_integer_semantics\":true}\n";
         const auto metadata_text = metadata.str();
         const auto metadata_hash = gat_ezkl::formal_hash_metadata(metadata_text);
@@ -296,6 +302,8 @@ int main(int argc, char** argv) {
                  << "  \"status\": \"canonical_artifacts_ready\",\n"
                  << "  \"dataset\": \"" << gat_ezkl::json_escape(dataset_id) << "\",\n"
                  << "  \"route_id\": \"" << route << "\",\n"
+                 << "  \"input_preprocess_id\": \""
+                 << gat_ezkl::json_escape(config.input_preprocess_id) << "\",\n"
                  << "  \"full_dataset\": true,\n"
                  << "  \"public_inputs\": [\"node_features.i64.bin\",\"csr_segment_layout.bin\"],\n"
                  << "  \"private_inputs\": [\"model_parameters.i64.txt\"],\n"

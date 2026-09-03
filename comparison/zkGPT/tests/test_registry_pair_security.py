@@ -22,7 +22,7 @@ class RegistryPairSecurityTests(unittest.TestCase):
         return {
             "model_arch_id": "tests-registry-pair-arch-v1",
             "model_param_id": "tests-registry-pair-model-v1",
-            "quant_cfg_id": "exact_integer_gat_v1",
+            "quant_cfg_id": "exact_integer_gat",
             "static_table_id": "tables:test-v1",
             "rounding_mode": "nearest_ties_away",
             "private_input_layout": "X_pub|W|Aux|L_qry",

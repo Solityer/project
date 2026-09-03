@@ -26,6 +26,7 @@ from resource_policy import (  # noqa: E402
 )
 from build_identity_contract import identity_digest, validate_build_identity  # noqa: E402
 from formal_source_manifest import formal_source_id  # noqa: E402
+from collect_results import _validate_public_y  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 FORMAL_ROUTE_ID = "ezkl_gat_native_compressed_csr_attention_full"
@@ -543,6 +544,26 @@ def main() -> int:
         failures.extend(validate_shape_artifacts(
             run_dir, spec, compiled, settings, circuit, registration, statement, verify, manifest
         ))
+        try:
+            _validate_public_y(run_dir, manifest)
+        except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            failures.append(f"{manifest_path}: independent public-Y validation failed: {exc}")
+        for field in (
+            "public_y_sha256", "public_y_reference_source_digest",
+            "public_y_dataset_files_digest", "public_y_checkpoint_bundle_digest",
+        ):
+            if verify.get(field) != statement.get(field) or manifest.get(field) != statement.get(field):
+                failures.append(f"{manifest_path}: {field} is not consistently bound")
+        if verify.get("external_public_y_verified") is not True:
+            failures.append(f"{manifest_path}: verifier did not attest external public-Y validation")
+        timings = manifest.get("timings_ms")
+        if (
+            not isinstance(timings, dict)
+            or manifest.get("commitment_time_ms") != timings.get("commitment")
+            or manifest.get("prove_time_ms") != timings.get("prove")
+            or manifest.get("verify_time_ms") != timings.get("verify")
+        ):
+            failures.append(f"{manifest_path}: strict commitment/prove/verify timing schema mismatch")
         ceremony_profile_fields = {
             "ceremony_descriptor_kind": ceremony["descriptor_kind"],
             "ceremony_id": ceremony["ceremony_id"],
@@ -628,9 +649,19 @@ def main() -> int:
             failures.append(f"{manifest_path}: proving SRS digest mismatch")
         if circuit.get("verification_srs_sha256") != "sha256:" + digest(run_dir / "vk.srs"):
             failures.append(f"{manifest_path}: verification SRS digest mismatch")
-        if (Path(str(circuit.get("proving_srs_path", ""))).resolve() != (run_dir / "pk.srs").resolve()
-                or Path(str(circuit.get("verification_srs_path", ""))).resolve()
-                != (run_dir / "vk.srs").resolve()):
+        try:
+            proving_srs_path = resolve_local(
+                ROOT, circuit.get("proving_srs_path"), "circuit proving SRS"
+            )
+            verification_srs_path = resolve_local(
+                ROOT, circuit.get("verification_srs_path"), "circuit verification SRS"
+            )
+        except (OSError, TypeError, ValueError):
+            proving_srs_path = verification_srs_path = None
+        if (proving_srs_path is None
+                or verification_srs_path is None
+                or proving_srs_path != (run_dir / "pk.srs").resolve()
+                or verification_srs_path != (run_dir / "vk.srs").resolve()):
             failures.append(f"{manifest_path}: downsized SRS path binding mismatch")
         if not str(circuit.get("source_srs_sha256", "")).startswith("sha256:"):
             failures.append(f"{manifest_path}: source SRS provenance absent")

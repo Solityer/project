@@ -2808,7 +2808,6 @@ def build_proof(
     paths: Dict[str, pathlib.Path],
 ) -> ProofArtifacts:
     require_formal_experiment()
-    started = time.perf_counter()
     artifact_dir = paths["artifact_dir"]
     zk_root = paths.get("zk_root", artifact_dir.parents[1])
     ensure_dir(artifact_dir, root=zk_root, label="proof artifact directory")
@@ -2837,6 +2836,11 @@ def build_proof(
         commitments, openings, _segment_state, commitment_ms = _commit_segments(
             metadata, segments, padded_segments, zk_root, proof_work_dir, model_registry
         )
+        # Commitment materialization is an independently reported setup
+        # boundary.  Prove time starts only after all formal segment
+        # commitments have completed and ends before serialized artifacts or
+        # protocol verification are written/run.
+        prove_started = time.perf_counter()
         execution = ProofExecution(backend, zk_root, str(metadata["session_nonce"]))
         execution_token = activate_proof_execution(execution)
         try:
@@ -2887,6 +2891,8 @@ def build_proof(
             deactivate_proof_execution(execution_token)
     finally:
         _cleanup_proof_work_dir(proof_work_dir, zk_root)
+
+    proof_elapsed_ms = (time.perf_counter() - prove_started) * 1000.0
 
     write_json(artifact_dir / "lookup_proof.json", lasso, root=zk_root)
     write_json(artifact_dir / "fixed_lookup_tables.json", metadata["static_table_registry"], root=zk_root)
@@ -2953,7 +2959,6 @@ def build_proof(
     if gpu_claim is not None:
         proof_payload["GPU_proof_contribution"] = gpu_claim
     proof_size = len(canonical_json(proof_payload).encode("utf-8"))
-    proof_elapsed_ms = (time.perf_counter() - started) * 1000.0
     benchmark = {
         "dataset": metadata["dataset_display_name"],
         "backend": backend,

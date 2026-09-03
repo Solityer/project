@@ -1,7 +1,7 @@
 {
   "schema": "zkGPT_static_tables_descriptor_v1",
   "static_tables_id": "tables:lrelu+elu+exp+range",
-  "quant_cfg_id": "gat_l3_scale_chain_v1",
+  "quant_cfg_id": "gat_l3_scale_chain",
   "families": [
     "T_LReLU",
     "T_ELU",
@@ -45,9 +45,15 @@
       "table_id": "T_range",
       "table_kind": "materialized_fixed_range_table",
       "entry_policy": "all limbs in [0,2^range_bits-1]",
-      "range_bits": 12
+      "range_bits_by_dataset": {
+        "cora": 12,
+        "citeseer": 12,
+        "pubmed": 12,
+        "ppi": 14,
+        "ogbn-arxiv": 21
+      }
     }
   },
-  "content_digest": "027f1b529c64638b13888c919b4f4ebc07234da4898e245c14511367b77bbd97",
-  "descriptor_digest": "970ea53b3e05c229cf87c5c424462230b7b13b6c3f8583a87d920110e21d0a79"
+  "content_digest": "c2f1d44badb6610621f0679ba02a9b9dee5b74f1489a9ff923e0df184632dabe",
+  "descriptor_digest": "ef010d0d451d5bb4bbaddb50c74cbf60d6c77bb6c181299c4298883025d7c13e"
 }

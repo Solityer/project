@@ -113,6 +113,7 @@ namespace gat_ezkl
                 "export_dir",
                 "hidden_dim",
                 "hidden_profile",
+                "input_preprocess_id",
                 "model_arch_id",
                 "model_param_id",
                 "num_classes",
@@ -245,6 +246,7 @@ namespace gat_ezkl
         if (entries.count("self_loop_rule")) config.self_loop_rule = entries.at("self_loop_rule");
         if (entries.count("edge_sort_rule")) config.edge_sort_rule = entries.at("edge_sort_rule");
         if (entries.count("chunking_rule")) config.chunking_rule = entries.at("chunking_rule");
+        if (entries.count("input_preprocess_id")) config.input_preprocess_id = entries.at("input_preprocess_id");
         if (entries.count("quant_cfg_id")) config.quant_cfg_id = entries.at("quant_cfg_id");
         if (entries.count("model_arch_id")) config.model_arch_id = entries.at("model_arch_id");
         if (entries.count("model_param_id")) config.model_param_id = entries.at("model_param_id");
@@ -319,9 +321,12 @@ namespace gat_ezkl
         if (config.allow_synthetic_model) {
             throw std::runtime_error("formal ezkl baseline cannot use synthetic model parameters");
         }
-        if (config.quant_cfg_id != "fp32_torch_checkpoint"
+        const auto expected_preprocess = config.dataset == "ogbn_arxiv"
+            ? "ogbn_arxiv_raw_float32" : "row_normalize";
+        if (config.input_preprocess_id != expected_preprocess
+            || config.quant_cfg_id != "gat_l3_scale_chain"
             || config.static_table_id != "tables:lrelu+elu+exp+range") {
-            throw std::runtime_error("config quantization/table profile is not canonical");
+            throw std::runtime_error("config preprocessing/quantization/table profile is not canonical");
         }
         static const std::unordered_map<std::string, std::string> canonical_model_params = {
             {"cora", "cora_planetoid_seed11"},

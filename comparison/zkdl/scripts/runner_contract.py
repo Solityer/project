@@ -41,9 +41,9 @@ PP_CANONICAL_RELATIVE = "artifacts/setup/pp.bin"
 PP_DEFAULT_MAX_VECTOR_LEN = 1 << 28
 # Must stay in lockstep with ``expected_table`` in src/formal/protocol.rs:
 # native relation validation materializes a full public vector and accepts at
-# most 2^26 raw rows.  Python callers fail closed before attempting the same
+# most 2^27 raw rows.  Python callers fail closed before attempting the same
 # materialization, rather than changing the relation to a compact encoding.
-STATIC_TABLE_ROW_CAP = 1 << 26
+STATIC_TABLE_ROW_CAP = 1 << 27
 PP_SETUP_ID = "zkDL-GAT-transparent-PP-v1"
 PP_SECURITY_ID = "zkdl_gat_bls12_381_multi_session_v2"
 PP_PROTOCOL = "zkDL-hiding-Hyrax-IPA-BLS12-381-v1"
@@ -71,8 +71,26 @@ BUILD_MANIFEST_SCHEMA = "zkDL_gat_build_manifest_v1"
 CANONICAL_MODEL_L = 3
 CANONICAL_HIDDEN_PROFILE = ((8, 8), (8, 8))
 CANONICAL_MODEL_K_OUT = 2
+CANONICAL_QUANT_CFG_ID = "gat_l3_scale_chain"
+CANONICAL_INPUT_PREPROCESS_IDS = {
+    "cora": "row_normalize",
+    "citeseer": "row_normalize",
+    "pubmed": "row_normalize",
+    "ppi": "row_normalize",
+    "ogbn-arxiv": "ogbn_arxiv_raw_float32",
+}
+
+
+def canonical_input_preprocess_id(dataset: str) -> str:
+    """Return the one preprocessing identity authorized for *dataset*."""
+    try:
+        return CANONICAL_INPUT_PREPROCESS_IDS[dataset]
+    except KeyError as error:
+        raise ValueError(f"unknown dataset: {dataset}") from error
 CANONICAL_SCALE_VALUES = {
-    "feature_scale": 1,
+    # ``feature_scale`` is the native integer input boundary and is therefore
+    # the canonical scale-chain S_input, not a cache encoding hint.
+    "feature_scale": 16,
     "hidden_weight_scale": 16,
     "hidden_attention_scale": 16,
     "hidden_projection_scale": 16,
@@ -224,6 +242,33 @@ def canonical_json(value: Any) -> bytes:
     )
 
 
+def canonical_data_identity(
+    *,
+    dataset: str,
+    input_preprocess_id: str,
+    node_count: int,
+    edge_count: int,
+    graph_count: int,
+    feature_dim: int,
+    graph_features_digest: str,
+    topology_digest: str,
+) -> str:
+    """Return the explicit public data identity bound into every artifact."""
+    if input_preprocess_id != canonical_input_preprocess_id(dataset):
+        raise ValueError("data identity input preprocessing is not canonical")
+    material = {
+        "dataset": dataset,
+        "input_preprocess_id": input_preprocess_id,
+        "node_count": int(node_count),
+        "edge_count": int(edge_count),
+        "graph_count": int(graph_count),
+        "feature_dim": int(feature_dim),
+        "graph_features_digest": graph_features_digest,
+        "topology_digest": topology_digest,
+    }
+    return f"sha256:{sha256_bytes(canonical_json(material))}"
+
+
 def atomic_write_bytes(path: Path, payload: bytes, *, mode: int = 0o644) -> None:
     path = ensure_contained(path, label="output")
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -361,6 +406,24 @@ def validate_quantization_config(config: dict[str, str]) -> dict[str, int]:
         if actual != expected:
             raise ValueError(f"zkDL scale {key}={actual} is not canonical ({expected})")
         values[key] = actual
+    if config.get("quant_cfg_id") != CANONICAL_QUANT_CFG_ID:
+        raise ValueError(
+            "zkDL config quant_cfg_id must be the unversioned canonical scale chain"
+        )
+    dataset = config.get("dataset")
+    expected_preprocess = CANONICAL_INPUT_PREPROCESS_IDS.get(dataset)
+    if expected_preprocess is None:
+        raise ValueError(f"unsupported formal dataset for input preprocessing: {dataset!r}")
+    if config.get("input_preprocess_id") != expected_preprocess:
+        raise ValueError(
+            f"zkDL config input_preprocess_id must be {expected_preprocess} for {dataset}"
+        )
+    try:
+        configured_input_scale = int(config["s_input"])
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError("zkDL config s_input is missing or malformed") from error
+    if configured_input_scale != values["feature_scale"]:
+        raise ValueError("zkDL config s_input and feature_scale disagree")
     return values
 
 
@@ -418,6 +481,11 @@ def validate_checkpoint_structure(
         raise ValueError("checkpoint/config model_arch_id mismatch")
     if manifest.get("model_param_id") != config["model_param_id"]:
         raise ValueError("checkpoint/config model_param_id mismatch")
+    if manifest.get("quant_cfg_id") != CANONICAL_QUANT_CFG_ID:
+        raise ValueError("checkpoint manifest quant_cfg_id is not canonical")
+    expected_preprocess = CANONICAL_INPUT_PREPROCESS_IDS.get(dataset)
+    if manifest.get("input_preprocess_id") != expected_preprocess:
+        raise ValueError("checkpoint manifest input_preprocess_id is not canonical")
     actual_profile = parse_hidden_profile(
         manifest.get("hidden_profile"), label="checkpoint hidden_profile"
     )
@@ -573,7 +641,7 @@ def static_table_row_cap_blocker(tables: Any) -> dict[str, Any] | None:
     """Return a structured blocker before native full-table materialization.
 
     Rust ``expected_table`` checks the raw (unpadded) domain length against
-    ``1 << 26``.  Keep that exact policy here; do not truncate or replace the
+    ``1 << 27``.  Keep that exact policy here; do not truncate or replace the
     authenticated full-vector table.  ``None`` means every profile entry is
     safe to hand to the native relation builder.
     """
@@ -584,7 +652,7 @@ def static_table_row_cap_blocker(tables: Any) -> dict[str, Any] | None:
             "code": "static_table_profile_malformed",
             "message": "static table profile must be an object",
             "native_row_cap": STATIC_TABLE_ROW_CAP,
-            "native_row_cap_expression": "1 << 26",
+            "native_row_cap_expression": "1 << 27",
         }
     for kind in ("lrelu", "elu", "exp"):
         entry = tables.get(kind)
@@ -615,7 +683,7 @@ def static_table_row_cap_blocker(tables: Any) -> dict[str, Any] | None:
             "code": "static_table_profile_malformed",
             "message": "static table domain bounds and row counts are inconsistent",
             "native_row_cap": STATIC_TABLE_ROW_CAP,
-            "native_row_cap_expression": "1 << 26",
+            "native_row_cap_expression": "1 << 27",
             "tables": entries,
             "malformed_tables": sorted(set(malformed)),
         }
@@ -626,10 +694,10 @@ def static_table_row_cap_blocker(tables: Any) -> dict[str, Any] | None:
         "code": "static_table_domain_exceeds_native_cap",
         "message": (
             "native expected_table materializes a full public vector and "
-            "accepts raw rows <= 2^26; relation construction is blocked"
+            "accepts raw rows <= 2^27; relation construction is blocked"
         ),
         "native_row_cap": STATIC_TABLE_ROW_CAP,
-        "native_row_cap_expression": "1 << 26",
+        "native_row_cap_expression": "1 << 27",
         "tables": entries,
         "offending_tables": offenders,
     }
@@ -1107,6 +1175,27 @@ def validate_staged_dataset_resources(dataset: str, manifest: dict[str, Any]) ->
     )
     ensure_regular_file(cache / "meta.cfg", label=f"{dataset} cache metadata")
     ensure_regular_file(cache / "edges.txt", label=f"{dataset} edges")
+    metadata: dict[str, str] = {}
+    for line_number, raw_line in enumerate(
+        (cache / "meta.cfg").read_text(encoding="utf-8").splitlines(), start=1
+    ):
+        line = raw_line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        if "=" not in line:
+            raise ValueError(f"{dataset} cache metadata line {line_number} is malformed")
+        key, value = (part.strip() for part in line.split("=", 1))
+        if not key or key in metadata:
+            raise ValueError(f"{dataset} cache metadata has duplicate/empty key")
+        metadata[key] = value
+    if metadata.get("name") != dataset:
+        raise ValueError(f"{dataset} cache metadata name is not canonical")
+    expected_preprocess = CANONICAL_INPUT_PREPROCESS_IDS.get(dataset)
+    if metadata.get("input_preprocess_id") != expected_preprocess:
+        raise ValueError(f"{dataset} cache input_preprocess_id is not canonical")
+    if dataset == "ogbn-arxiv":
+        if not (cache / "features.npy").is_file() or (cache / "features.txt").exists():
+            raise ValueError("ogbn-arxiv raw_float32 cache must use only features.npy")
     feature_files = [cache / "features.txt", cache / "features.npy"]
     for feature_file in feature_files:
         if feature_file.exists() or feature_file.is_symlink():

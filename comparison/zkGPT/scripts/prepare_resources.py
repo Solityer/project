@@ -56,7 +56,7 @@ def main() -> int:
     if unknown:
         raise SystemExit(f"unsupported dataset(s): {unknown}")
     resource_dir = ensure_dir(root / "resources", root=root, label="resource root")
-    descriptor_path = root / "resources" / "static_tables" / "exact_integer_gat_v1.json"
+    descriptor_path = root / "resources" / "static_tables" / "exact_integer_gat.json"
     _require_stable_resource_file(descriptor_path, "static-table descriptor")
     manifest_path = resource_dir / "resource_manifest.json"
     # Re-emit the canonical registration manifest on every layout operation.
@@ -85,6 +85,7 @@ def main() -> int:
             ensure_dir(paths["cache_dir"], root=root, label=f"{dataset} cache")
             ensure_dir(paths["checkpoint_bundle"], root=root, label=f"{dataset} checkpoint bundle")
         ensure_dir(root / "resources" / "public_y", root=root, label="public output root")
+        ensure_dir(root / "resources" / "public_y" / "canonical", root=root, label="canonical public output root")
         ensure_dir(root / "resources" / "static_tables", root=root, label="static table root")
         print(f"baseline-local resource layout prepared at {root}; authenticated files remain required")
     return 0

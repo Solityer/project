@@ -378,7 +378,8 @@ def verify_artifact_directory(artifact_dir: pathlib.Path, context: VerifierConte
     result["context_digest"] = context.context_digest
     checks = dict(result.get("checks", {}))
     checks["external_context"] = True
-    checks["external_public_y"] = True
+    checks["external_public_y"] = external_payload.get("status") == "VERIFY_OK" and context.public_y_provenance.get("status") == "VERIFY_OK"
+    checks["independent_reference_forward"] = context.public_y_provenance.get("checks", {}).get("independent_reference_forward") is True
     checks["external_families"] = True
     checks["fixed_lookup_table_closure"] = static_table_ok
     checks["gpu_evidence_closure"] = gpu_closure_ok
@@ -423,7 +424,15 @@ def verify_artifact_directory(artifact_dir: pathlib.Path, context: VerifierConte
     proof_schema_scan = payload_keys_ok and not raw_private_payload
     checks["proof_payload_schema"] = proof_schema_scan
     result["checks"] = checks
-    if result.get("status") != "VERIFY_OK" or not static_table_ok or not gpu_closure_ok or privacy_errors or not proof_schema_scan:
+    if (
+        result.get("status") != "VERIFY_OK"
+        or not static_table_ok
+        or not gpu_closure_ok
+        or privacy_errors
+        or not proof_schema_scan
+        or checks.get("external_public_y") is not True
+        or checks.get("independent_reference_forward") is not True
+    ):
         result["status"] = "VERIFY_FAILED"
     verifier_input_files = {
         "metadata.json", "commitments.json", "transcript.json", "lookup_proof.json",
@@ -450,9 +459,9 @@ def verify_artifact_directory(artifact_dir: pathlib.Path, context: VerifierConte
         "gkr": checks.get("gkr") is True,
         "combine": checks.get("combine") is True,
         "terminal_openings": checks.get("hyrax_openings") is True,
-        "public_output": checks.get("external_public_y") is True and bool(metadata.get("public_output_digest")),
+        "public_output": checks.get("external_public_y") is True and checks.get("independent_reference_forward") is True and bool(metadata.get("public_output_digest")),
     }
-    full_gat = result.get("status") == "VERIFY_OK" and all(contribution.values()) and checks.get("external_context") is True and proof_schema_scan
+    full_gat = result.get("status") == "VERIFY_OK" and all(contribution.values()) and checks.get("external_context") is True and checks.get("independent_reference_forward") is True and proof_schema_scan
     witness_included = raw_private_payload
     privacy_profile = str(metadata.get("privacy_profile_status", ""))
     privacy_id = str(metadata.get("privacy_extension_profile_id", ""))
@@ -489,6 +498,8 @@ def verify_artifact_directory(artifact_dir: pathlib.Path, context: VerifierConte
         "gpu_hot_path": backend == "gpu" and checks.get("gpu_hot_path") is True,
         "proof_schema_scan": proof_schema_scan,
         "privacy_masking_verified": masking_ok,
+        "independent_reference_forward": checks.get("independent_reference_forward") is True,
+        "independent_reference_provenance": context.public_y_provenance,
         "verifier_input_boundary": verifier_input_boundary,
         "task_type": metadata.get("task_type", ""),
         "public_input_layout": metadata.get("public_input_layout", ""),

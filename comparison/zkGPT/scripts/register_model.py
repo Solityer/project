@@ -68,16 +68,6 @@ def _validate_registration_identity(config, checkpoint_manifest: dict, static_de
         raise ValueError("formal registration requires the authenticated nearest_ties_away mode")
     for key, wanted in expected.items():
         actual = checkpoint_manifest.get(key)
-        # The shared checkpoint exporter does not serialize the formal
-        # SignedRoundDiv mode; the zkGPT config is the authenticated owner of
-        # that choice.  All formal configs use the descriptor's explicit
-        # nearest-ties-away mode, so absence is accepted only for this source
-        # manifest field.  The source quantization identity is likewise
-        # mapped to the baseline's exact-integer scale profile below.
-        if key == "rounding_mode" and actual is None and str(wanted) == "nearest_ties_away":
-            continue
-        if key == "quant_cfg_id" and str(actual) == "fp32_torch_checkpoint" and str(wanted) == "exact_integer_gat_v1":
-            continue
         if actual is None or str(actual) != str(wanted):
             raise ValueError(f"checkpoint manifest {key} does not match formal config")
     d_in_profile = checkpoint_manifest.get("d_in_profile")

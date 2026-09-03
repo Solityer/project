@@ -251,6 +251,8 @@ def current_source_identities(
         "model_shape_id": _json_id(shape_payload),
         "model_arch_id": checkpoint_manifest["model_arch_id"],
         "model_param_id": checkpoint_manifest["model_param_id"],
+        "input_preprocess_id": config["input_preprocess_id"],
+        "quant_cfg_id": config["quant_cfg_id"],
         "L": binding["L"],
         "hidden_profile": binding["hidden_profile"],
         "d_in_profile": binding["d_in_profile"],
@@ -393,6 +395,20 @@ def check_cell(
         require(proof.get(key) == verifier.get(key), f"proof_verifier_{key}")
     for key in ("statement_id", "model_registry_id", "device", "proof_sha256", "proof_size_bytes", "proof_format"):
         require(proof.get(key) == result.get(key), f"result_{key}")
+    for key in (
+        "dataset", "input_preprocess_id", "quant_cfg_id", "data_identity",
+        "source_input_id", "checkpoint_manifest_id", "model_shape_id",
+        "model_arch_id", "model_param_id", "graph_features_digest", "topology_digest",
+        "commitment_time_ms", "prove_time_ms",
+    ):
+        require(proof.get(key) == verifier.get(key), f"proof_verifier_{key}")
+        require(proof.get(key) == result.get(key), f"proof_result_{key}")
+        require(proof.get(key) == success.get(key), f"proof_success_{key}")
+    for key in ("commitment_time_ms", "prove_time_ms"):
+        try:
+            require(float(proof.get(key, -1.0)) >= 0.0, f"{key}_nonnegative")
+        except (TypeError, ValueError):
+            require(False, f"{key}_malformed")
     proof_file = run / "formal_artifacts" / "proof.bin"
     require(proof_file.is_file(), "proof_file_present")
     if proof_file.is_file():
@@ -483,6 +499,13 @@ def check_cell(
         _check_current_bindings(label, errors, relation, current_identity, "relation", required=False)
         _check_current_bindings(label, errors, result, current_identity, "result")
         _check_current_bindings(label, errors, success, current_identity, "success")
+        for key in ("input_preprocess_id", "quant_cfg_id"):
+            for manifest_name, manifest in (
+                ("preflight", preflight), ("relation", relation),
+                ("proof", proof), ("verifier", verifier), ("result", result),
+                ("success", success),
+            ):
+                require(manifest.get(key) == current_identity.get(key), f"{manifest_name}_{key}")
         for manifest_name, manifest in (
             ("proof", proof),
             ("verifier", verifier),
@@ -513,6 +536,13 @@ def check_cell(
             require(ledger is not None and ledger.get(key) == current_identity.get(key), f"ledger_{key}")
             require(result.get(key) == current_identity.get(key), f"result_{key}")
             require(success.get(key) == current_identity.get(key), f"success_{key}")
+        require(relation.get("data_identity") == preflight.get("data_identity"), "relation_data_identity")
+        for key in ("data_identity", "source_input_id"):
+            require(isinstance(relation.get(key), str) and relation.get(key).startswith("sha256:"), f"relation_{key}")
+            require(result.get(key) == relation.get(key), f"result_{key}")
+            require(success.get(key) == relation.get(key), f"success_{key}")
+            require(proof.get(key) == relation.get(key), f"proof_{key}")
+            require(verifier.get(key) == relation.get(key), f"verifier_{key}")
         if ledger is not None:
             for key in ("config_sha256", "resource_manifest_id", "checkpoint_manifest_id"):
                 require(ledger.get(key) == current_identity.get(key), f"ledger_{key}")

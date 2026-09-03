@@ -12,6 +12,7 @@ from .resources import (
     read_resource_manifest,
     resolve_local,
     required_resource_paths,
+    canonical_range_bits,
     validate_static_table_descriptor,
 )
 from .quantization import canonical_input_preprocess_id
@@ -71,7 +72,12 @@ class AppConfig:
 
     @property
     def range_bits(self) -> int:
-        return int(self.entries.get("range_bits", "12"))
+        value = int(self.entries.get("range_bits", "-1"))
+        if value != canonical_range_bits(self.dataset):
+            raise ValueError(
+                f"formal config range_bits mismatch: {value} != {canonical_range_bits(self.dataset)}"
+            )
+        return value
 
     @property
     def batch_graphs(self) -> int:
@@ -286,6 +292,7 @@ def generated_config(dataset: str, backend: str, project_root: pathlib.Path, zk_
     entries["reference_output_dir"] = str((zk_root / "runs" / f"{dataset}_full" / "reference").relative_to(zk_root))
     entries["resource_manifest"] = "resources/resource_manifest.json"
     entries["input_preprocess_id"] = canonical_input_preprocess_id(entries["dataset"])
+    entries["range_bits"] = str(canonical_range_bits(entries["dataset"]))
     entries["static_tables_id"] = entries.get("static_table_id", "tables:lrelu+elu+exp+range")
     # The immutable formal template must carry an explicit mode.  Do not
     # infer a mode from backend or from a proof artifact.
@@ -360,4 +367,5 @@ def load_app_config(path: pathlib.Path, project_root: pathlib.Path) -> AppConfig
     _ = AppConfig(entries=entries, path=config_path, project_root=root).layer_count
     _ = AppConfig(entries=entries, path=config_path, project_root=root).k_out
     _ = AppConfig(entries=entries, path=config_path, project_root=root).num_classes
+    _ = AppConfig(entries=entries, path=config_path, project_root=root).range_bits
     return AppConfig(entries=entries, path=config_path, project_root=root)

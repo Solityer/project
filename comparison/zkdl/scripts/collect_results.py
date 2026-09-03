@@ -44,6 +44,10 @@ IDENTITY_FIELDS = (
     "resource_manifest_id",
     "resource_inventory_digest",
     "integer_bound_ledger_id",
+    "input_preprocess_id",
+    "quant_cfg_id",
+    "data_identity",
+    "source_input_id",
     "graph_features_digest",
     "topology_digest",
     "public_instance",
@@ -59,6 +63,8 @@ IDENTITY_FIELDS = (
     "K_out",
     "checkpoint_binding",
     "provenance",
+    "commitment_time_ms",
+    "prove_time_ms",
 )
 
 def _current_execution_identity(
@@ -252,6 +258,10 @@ def inspect_cell(
         "protocol_id", "statement_id", "model_registry_id", "device",
         "proof_sha256", "proof_size_bytes", "proof_format",
         "model_session_commitments", "model_rerandomization_proofs",
+        "commitment_time_ms", "prove_time_ms",
+        "dataset", "input_preprocess_id", "quant_cfg_id", "data_identity",
+        "source_input_id", "checkpoint_manifest_id", "model_shape_id",
+        "model_arch_id", "model_param_id", "graph_features_digest", "topology_digest",
     ):
         _require_equal(errors, f"proof_verifier_{field}", proof.get(field), verifier.get(field))
         _require_equal(errors, f"proof_result_{field}", proof.get(field), result.get(field))
@@ -303,6 +313,7 @@ def inspect_cell(
             "resource_inventory_digest", "checkpoint_manifest_id", "model_shape_id",
             "model_arch_id", "model_param_id", "source_identity",
             "L", "hidden_profile", "d_in_profile", "K_out",
+            "input_preprocess_id", "quant_cfg_id",
         ):
             for manifest_name, manifest in (("result", result), ("success", success)):
                 _require_equal(errors, f"{manifest_name}_current_{key}", manifest.get(key), current_identity.get(key))
@@ -319,6 +330,7 @@ def inspect_cell(
                 "cpu_binary_size_bytes", "prover_binary_size_bytes",
                 "cpu_build_identity", "prover_build_identity",
                 *PP_FIELDS,
+                "input_preprocess_id", "quant_cfg_id",
             ):
                 _require_equal(errors, f"provenance_current_{key}", provenance.get(key), current_identity.get(key))
         for key in PP_FIELDS:
@@ -418,6 +430,7 @@ def main() -> int:
         "artifact_inventory_valid",
         "adapter_time_ms",
         "compile_time_ms",
+        "commitment_time_ms",
         "prove_time_ms",
         "verify_time_ms",
         "proof_size_bytes",
@@ -432,6 +445,10 @@ def main() -> int:
         "resource_manifest_id",
         "resource_inventory_digest",
         "integer_bound_ledger_id",
+        "input_preprocess_id",
+        "quant_cfg_id",
+        "data_identity",
+        "source_input_id",
         "graph_features_digest",
         "topology_digest",
         "checkpoint_manifest_id",

@@ -35,7 +35,7 @@ from zkgpt_gat.constants import (  # noqa: E402
 )
 from zkgpt_gat.data import load_dataset, normalize_graph  # noqa: E402
 from zkgpt_gat.forward import forward_public_y  # noqa: E402
-from zkgpt_gat.reference_forward import reference_forward  # noqa: E402
+from zkgpt_gat.reference_forward import REFERENCE_FORWARD_ENGINE, reference_forward, reference_forward_source_sha256  # noqa: E402
 from zkgpt_gat.model import load_model  # noqa: E402
 from zkgpt_gat.resources import (  # noqa: E402
     canonical_dataset_name,
@@ -192,9 +192,11 @@ def generate_one(dataset_name: str) -> dict[str, Any]:
     paths = required_resource_paths(ROOT, canonical)
     cache_digest = _tree_digest(paths["cache_dir"], f"{canonical} cache")
     manifest_path = _owned_regular(paths["checkpoint_bundle"] / "manifest.json", "checkpoint manifest")
+    npz_path = _owned_regular(paths["checkpoint_bundle"] / "tensors.npz", "checkpoint tensors.npz")
     tensors_path = _owned_regular(paths["checkpoint_bundle"] / "tensors.txt", "checkpoint tensors")
     raw_manifest = _checkpoint_manifest(paths["checkpoint_bundle"])
     checkpoint_manifest_digest = digest_file(manifest_path)
+    checkpoint_npz_digest = digest_file(npz_path)
     checkpoint_tensors_digest = digest_file(tensors_path)
 
     dataset = load_dataset(config)
@@ -231,14 +233,16 @@ def generate_one(dataset_name: str) -> dict[str, Any]:
         "cache_tree_sha256": cache_digest,
         "checkpoint_bundle": str(paths["checkpoint_bundle"].relative_to(ROOT)),
         "checkpoint_manifest_sha256": checkpoint_manifest_digest,
+        "checkpoint_npz_sha256": checkpoint_npz_digest,
         "checkpoint_tensors_sha256": checkpoint_tensors_digest,
         "graph_count": int(graph.graph_count),
         "edge_count": int(graph.src.size),
         "input_feature_rounding": "nearest_ties_away",
         "forward_engine": "zkgpt_gat.forward.forward_public_y",
-        "reference_forward_engine": "zkgpt_gat.reference_forward.reference_forward",
+        "reference_forward_engine": REFERENCE_FORWARD_ENGINE,
+        "reference_forward_source_sha256": reference_forward_source_sha256(),
         "reference_y_digest": _array_digest(reference_values),
-        "independent_reference_forward": True,
+        "independent_reference_forward": bool(np.array_equal(values, reference_values)),
         "y_digest": _array_digest(values),
         "values": [int(value) for value in values.ravel().tolist()],
     }
@@ -255,6 +259,7 @@ def generate_one(dataset_name: str) -> dict[str, Any]:
         "descriptor_digest": payload["descriptor_digest"],
         "cache_tree_sha256": cache_digest,
         "checkpoint_manifest_sha256": checkpoint_manifest_digest,
+        "checkpoint_npz_sha256": checkpoint_npz_digest,
         "checkpoint_tensors_sha256": checkpoint_tensors_digest,
         "elapsed_forward_ms": elapsed_ms,
     }

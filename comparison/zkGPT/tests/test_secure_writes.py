@@ -81,7 +81,7 @@ class SecureWriteTests(unittest.TestCase):
     def test_prepare_resources_rejects_preseeded_aliases_without_external_write(self) -> None:
         script = ROOT / "scripts" / "prepare_resources.py"
         module = _load_script("zkgpt_prepare_resources_security", script)
-        descriptor = ROOT / "resources" / "static_tables" / "exact_integer_gat_v1.json"
+        descriptor = ROOT / "resources" / "static_tables" / "exact_integer_gat.json"
         for kind in ("directory", "manifest"):
             with self.subTest(kind=kind), tempfile.TemporaryDirectory(prefix="zkgpt-prepare-safe-") as name:
                 root = pathlib.Path(name)
@@ -118,8 +118,8 @@ class SecureWriteTests(unittest.TestCase):
             static_dir = root / "resources" / "static_tables"
             static_dir.mkdir(parents=True)
             shutil.copyfile(
-                ROOT / "resources" / "static_tables" / "exact_integer_gat_v1.json",
-                static_dir / "exact_integer_gat_v1.json",
+                ROOT / "resources" / "static_tables" / "exact_integer_gat.json",
+                static_dir / "exact_integer_gat.json",
             )
             outside = root.parent / f"{root.name}-outside"
             outside.mkdir()

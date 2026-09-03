@@ -316,9 +316,9 @@ namespace gat_ezkl
                 require_zero_tensor(bundle, head.attn_src_bias, "hidden head");
                 require_zero_tensor(bundle, head.attn_dst_bias, "hidden head");
                 require_zero_tensor(bundle, head.output_bias, "hidden head");
-                require_quantizable(bundle, head.seq_kernel, 16.0);
-                require_quantizable(bundle, head.attn_src_kernel, 16.0);
-                require_quantizable(bundle, head.attn_dst_kernel, 16.0);
+                require_quantizable(bundle, head.seq_kernel, 4.0);
+                require_quantizable(bundle, head.attn_src_kernel, 4.0);
+                require_quantizable(bundle, head.attn_dst_kernel, 4.0);
             }
             std::size_t output_input_dim = 0;
             const auto& last = config.hidden_profile.back();
@@ -335,9 +335,9 @@ namespace gat_ezkl
                 require_shape(bundle, head.output_bias, {config.num_classes});
                 require_zero_tensor(bundle, head.attn_src_bias, "output head");
                 require_zero_tensor(bundle, head.attn_dst_bias, "output head");
-                require_quantizable(bundle, head.seq_kernel, 16.0);
-                require_quantizable(bundle, head.attn_src_kernel, 1.0);
-                require_quantizable(bundle, head.attn_dst_kernel, 1.0);
+                require_quantizable(bundle, head.seq_kernel, 4.0);
+                require_quantizable(bundle, head.attn_src_kernel, 4.0);
+                require_quantizable(bundle, head.attn_dst_kernel, 4.0);
                 require_quantizable(bundle, head.output_bias, 16.0);
             }
         }
@@ -352,8 +352,19 @@ namespace gat_ezkl
             throw std::runtime_error("checkpoint bundle path does not exist: " + bundle_root.string());
         }
         const auto manifest = read_file(bundle_root / "manifest.json");
+        // A canonical baseline-local bundle has no source-project pointer.
+        // Rejecting this legacy field prevents a main-experiment checkpoint
+        // from being treated as an ezkl-owned resource by path coincidence.
+        if (manifest.find("\"checkpoint_prefix\"") != std::string::npos
+            || manifest.find("/home/pzh/project/") != std::string::npos) {
+            throw std::runtime_error(
+                "checkpoint manifest contains an external/main-project path");
+        }
         CheckpointBundle bundle;
         bundle.root = bundle_root;
+        bundle.dataset_id = parse_string(manifest, "dataset");
+        bundle.input_preprocess_id = parse_string(manifest, "input_preprocess_id");
+        bundle.tensors_npz_sha256 = parse_string(manifest, "tensors_npz_sha256");
         bundle.family_schema_version = parse_string(manifest, "family_schema_version");
         bundle.output_average_rule = parse_string(manifest, "output_average_rule");
         bundle.model_arch_id = parse_string(manifest, "model_arch_id");
@@ -467,6 +478,12 @@ namespace gat_ezkl
         };
         require_equal(config->model_arch_id, bundle.model_arch_id, "model_arch_id");
         require_equal(config->model_param_id, bundle.model_param_id, "model_param_id");
+        require_equal(config->dataset, bundle.dataset_id, "dataset");
+        require_equal(config->input_preprocess_id, bundle.input_preprocess_id, "input_preprocess_id");
+        if (bundle.tensors_npz_sha256.size() != std::string("sha256:").size() + 64
+            || bundle.tensors_npz_sha256.rfind("sha256:", 0) != 0) {
+            throw std::runtime_error("checkpoint tensors.npz SHA-256 provenance is malformed");
+        }
         require_equal(config->quant_cfg_id, bundle.quant_cfg_id, "quant_cfg_id");
         require_equal(config->static_table_id, bundle.static_table_id, "static_table_id");
         require_equal(config->degree_bound_id, bundle.degree_bound_id, "degree_bound_id");

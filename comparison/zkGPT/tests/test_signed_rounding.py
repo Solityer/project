@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import unittest
+from dataclasses import replace
 
 import numpy as np
 
@@ -16,6 +17,7 @@ from zkgpt_gat.rounding import (
     ROUNDING_MODE_TOWARD_ZERO,
     division_bound_record,
 )
+from zkgpt_gat.quantization import CANONICAL_QUANT_CFG_ID, canonical_scale_profile
 from zkgpt_gat.verifier_context import _native_division_records
 
 from synthetic_e2e_support import synthetic_graph, synthetic_model
@@ -98,6 +100,14 @@ class SignedRoundDivTests(unittest.TestCase):
 
     def test_v2_ledger_covers_scale_alignment_and_rejects_tampering(self) -> None:
         model = synthetic_model()
+        # The synthetic model keeps its legacy fixture identity isolated in
+        # tests.  Ledger authentication itself must exercise only the formal
+        # production identity now that production aliases are removed.
+        model = replace(
+            model,
+            quant_cfg_id=CANONICAL_QUANT_CFG_ID,
+            quant_scales=canonical_scale_profile(),
+        )
         graph = synthetic_graph()[1]
         metadata = {
             "rounding_mode": ROUNDING_MODE_NEAREST,

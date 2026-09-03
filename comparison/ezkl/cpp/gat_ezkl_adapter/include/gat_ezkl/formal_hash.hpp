@@ -29,7 +29,8 @@ std::string formal_sha256_file(const std::string& domain, const std::string& rol
                                const std::filesystem::path& path);
 std::string formal_hash_checkpoint(
     const std::filesystem::path& manifest,
-    const std::filesystem::path& tensors);
+    const std::filesystem::path& tensors,
+    const std::filesystem::path& tensors_npz);
 std::string formal_hash_graph(const NormalizedGraph& graph);
 std::string formal_hash_shape(const NormalizedGraph& graph, const CheckpointBundle& bundle);
 std::string formal_hash_metadata(const std::string& metadata_json);

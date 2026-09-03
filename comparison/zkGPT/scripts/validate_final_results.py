@@ -113,7 +113,14 @@ def _load_privacy_session(artifact_dir: pathlib.Path) -> tuple[str, dict[str, An
 def main() -> int:
     parser = argparse.ArgumentParser(description="Validate the complete zkGPT 5x2 result matrix")
     parser.add_argument("--results-dir", type=pathlib.Path, default=ROOT / "results")
+    parser.add_argument("--datasets", default="all")
+    parser.add_argument("--backends", default="all")
     args = parser.parse_args()
+    datasets = tuple(DATASET_ORDER if args.datasets == "all" else [item.strip() for item in args.datasets.split(",") if item.strip()])
+    backends = tuple(("cpu", "gpu") if args.backends == "all" else [item.strip() for item in args.backends.split(",") if item.strip()])
+    if not set(datasets).issubset(set(DATASET_ORDER)) or not set(backends).issubset({"cpu", "gpu"}) or not datasets or not backends:
+        raise SystemExit("invalid --datasets/--backends selection")
+    expected_pairs = {(backend, dataset) for backend in backends for dataset in datasets}
     try:
         results_dir = resolve_results_dir(ROOT, args.results_dir)
     except ResultValidationError as exc:
@@ -134,12 +141,12 @@ def main() -> int:
             if result.get("status") != "complete" or result.get("formal_experiment_eligible") is not True:
                 errors.append("result_matrix_not_complete")
             rows = result.get("rows", []) if isinstance(result, dict) else []
-            validate_matrix_rows(rows)
+            validate_matrix_rows(rows, expected_pairs=expected_pairs)
         except (OSError, json.JSONDecodeError, TypeError, ValueError, ResultValidationError) as exc:
             errors.append(f"result_matrix_invalid:{exc}")
     row_map = {(str(row.get("backend")), str(row.get("dataset"))): row for row in rows}
-    for backend in ("cpu", "gpu"):
-        for dataset in DATASET_ORDER:
+    for backend in backends:
+        for dataset in datasets:
             key = (backend, dataset)
             manifest_path = canonical_manifest_path(ROOT, backend, dataset)
             if key not in row_map:

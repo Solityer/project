@@ -8,6 +8,8 @@ resource-generation and verification boundaries.
 from __future__ import annotations
 
 from decimal import Decimal, ROUND_HALF_UP, localcontext
+import hashlib
+import pathlib
 from typing import Iterable
 
 import numpy as np
@@ -16,6 +18,15 @@ from .data import LocalGraph
 from .model import Model
 from .rounding import signed_round_div, validate_rounding_mode
 from .quantization import quantize_ties_away
+
+
+REFERENCE_FORWARD_ENGINE = "zkgpt_gat.reference_forward.reference_forward"
+
+
+def reference_forward_source_sha256() -> str:
+    """Return the digest of this independent scalar implementation itself."""
+    path = pathlib.Path(__file__).resolve()
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _exp(value: Decimal) -> Decimal:
@@ -148,4 +159,4 @@ def reference_forward(graph: LocalGraph, model: Model, rounding_mode: str | None
     return output
 
 
-__all__ = ["reference_forward"]
+__all__ = ["REFERENCE_FORWARD_ENGINE", "reference_forward", "reference_forward_source_sha256"]

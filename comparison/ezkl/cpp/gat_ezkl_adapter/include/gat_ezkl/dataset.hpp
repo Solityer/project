@@ -20,22 +20,26 @@ namespace gat_ezkl
     struct GraphDataset
     {
         std::string name;
+        std::string input_preprocess_id;
         std::size_t num_nodes = 0;
         std::size_t num_features = 0;
         std::size_t num_classes = 0;
         std::vector<std::vector<double>> features_fp; // 浮点特征矩阵 [node][feature]
         std::vector<int> labels;
+        std::vector<std::vector<int>> labels_multi;
         std::vector<Edge> edges;
         std::size_t graph_count = 1;       // 子图数量（单图为1）
         std::vector<std::size_t> node_ptr; // CSR 格式：每个子图的节点起始偏移
         std::vector<std::size_t> edge_ptr; // CSR 格式：每个子图的边起始偏移
         std::string task_type = "transductive_node_classification";
         std::string report_unit = "node";
+        std::string label_format = "single_class";
     };
 
     struct NormalizedGraph
     {
         std::string name;
+        std::string input_preprocess_id;
         std::size_t n_total = 0; // 所有子图节点总数（等于node_count，保留兼容）
         std::size_t node_count = 0;
         std::size_t edge_count = 0;

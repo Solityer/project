@@ -247,6 +247,11 @@ def checked_tree_files(
             child_metadata = _checked_lstat(child, label)
             assert child_metadata is not None
             if stat.S_ISDIR(child_metadata.st_mode):
+                # A vendored checkout may retain VCS metadata for provenance;
+                # it is not a production dependency and must not enter the
+                # authenticated source inventory.
+                if child.name == ".git":
+                    continue
                 if source_root is not None and _is_generated_source_name(child.name):
                     continue
                 visit(child)

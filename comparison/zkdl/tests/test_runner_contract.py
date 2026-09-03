@@ -61,6 +61,7 @@ class RunnerContractTests(unittest.TestCase):
                     validate_preflight_metadata(tampered, expected)
 
     def test_native_static_table_row_cap_boundary(self) -> None:
+        self.assertGreaterEqual(STATIC_TABLE_ROW_CAP, 1 << 27)
         profile = {
             "lrelu": {"min": 0, "max": STATIC_TABLE_ROW_CAP - 1, "rows": STATIC_TABLE_ROW_CAP},
             "elu": {"min": 0, "max": 0, "rows": 1},
@@ -75,6 +76,16 @@ class RunnerContractTests(unittest.TestCase):
         self.assertEqual(blocker["code"], "static_table_domain_exceeds_native_cap")
         self.assertEqual(blocker["native_row_cap"], STATIC_TABLE_ROW_CAP)
         self.assertEqual(blocker["offending_tables"][0]["rows"], STATIC_TABLE_ROW_CAP + 1)
+
+    def test_native_cap_accepts_exact_ogbn_table_extent(self) -> None:
+        exact_rows = 77665281
+        half = (exact_rows - 1) // 2
+        profile = {
+            "lrelu": {"min": -half, "max": half, "rows": exact_rows},
+            "elu": {"min": 0, "max": 0, "rows": 1},
+            "exp": {"min": 0, "max": exact_rows - 1, "rows": exact_rows},
+        }
+        self.assertIsNone(static_table_row_cap_blocker(profile))
 
     def test_preflight_cap_skips_full_table_generator(self) -> None:
         original = preflight_module.static_table_profile
@@ -196,6 +207,8 @@ class RunnerContractTests(unittest.TestCase):
         self.assertEqual(structure["K_out"], 2)
         manifest = {
             "dataset": None,
+            "quant_cfg_id": "gat_l3_scale_chain",
+            "input_preprocess_id": "row_normalize",
             "L": 3,
             "K_out": 2,
             "C": 7,

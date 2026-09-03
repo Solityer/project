@@ -149,6 +149,7 @@ void write_formal_csr_graph_artifacts(
     spec << "{\n"
          << "  \"route_id\": \"" << json_escape(route_id) << "\",\n"
          << "  \"dataset\": \"" << json_escape(config.dataset) << "\",\n"
+         << "  \"input_preprocess_id\": \"" << json_escape(config.input_preprocess_id) << "\",\n"
          << "  \"batching_rule\": \"" << json_escape(config.batching_rule) << "\",\n"
          << "  \"node_count\": " << graph.node_count << ",\n"
          << "  \"edge_count\": " << graph.edge_count << ",\n"

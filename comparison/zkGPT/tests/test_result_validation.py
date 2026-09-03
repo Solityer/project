@@ -22,6 +22,7 @@ from zkgpt_gat.constants import (
     PROTOCOL_ID,
 )
 from zkgpt_gat.formal_gate import formal_gate_status, load_capabilities, validate_capabilities
+from zkgpt_gat.reference_forward import REFERENCE_FORWARD_ENGINE, reference_forward_source_sha256
 from zkgpt_gat.resources import check_resource_layout, read_resource_manifest
 from zkgpt_gat.result_validation import (
     ResultValidationError,
@@ -163,12 +164,23 @@ class ResultValidationTests(unittest.TestCase):
             "verifier_input_boundary": {"private_input_files_read": []},
             "model_arch_id": "test-model-arch",
             "model_param_id": "test-model-param",
-            "quant_cfg_id": "exact_integer_gat_v1",
+            "quant_cfg_id": "gat_l3_scale_chain",
+            "input_preprocess_id": "row_normalize",
             "L": 3,
             "hidden_profile": hidden_profile,
             "d_in_profile": [1433, 64],
             "K_out": 2,
             "C": 7,
+            "independent_reference_forward": True,
+            "independent_reference_provenance": {
+                "status": "VERIFY_OK",
+                "checks": {"independent_reference_forward": True},
+                "forward_engine": REFERENCE_FORWARD_ENGINE,
+                "reference_forward_source_sha256": reference_forward_source_sha256(),
+                "dataset": "cora",
+                "quant_cfg_id": "gat_l3_scale_chain",
+                "input_preprocess_id": "row_normalize",
+            },
         }
         report: dict[str, object] = {
             "schema": "zkGPT_independent_verification_v4",
@@ -203,6 +215,7 @@ class ResultValidationTests(unittest.TestCase):
             "verifier_reads_witness", "witness_included_in_proof",
             "public_output_digest", "proof_contribution", "gpu_hot_path",
             "proof_schema_scan", "privacy_masking_verified", "verifier_input_boundary",
+            "independent_reference_forward",
         ):
             manifest[key] = fields[key]
         manifest["full_dataset"] = fields["full_dataset"]
@@ -230,7 +243,8 @@ class ResultValidationTests(unittest.TestCase):
                 "proof_backend_id": PROOF_BACKEND_ID,
                 "model_arch_id": "test-model-arch",
                 "model_param_id": "test-model-param",
-                "quant_cfg_id": "exact_integer_gat_v1",
+                "quant_cfg_id": "gat_l3_scale_chain",
+                "input_preprocess_id": "row_normalize",
                 "dim_cfg": {
                     "L": 3,
                     "hidden_profile": [

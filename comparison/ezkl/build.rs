@@ -244,6 +244,11 @@ fn collect_files(root: &Path, current: &Path, out: &mut Vec<PathBuf>) {
     for entry in entries {
         let entry = entry.expect("cannot inspect vendor directory entry");
         let path = entry.path();
+        if path.file_name().and_then(|name| name.to_str()) == Some(".git") {
+            // A vendored checkout may retain VCS metadata for provenance;
+            // those administrative files are not production dependencies.
+            continue;
+        }
         let metadata = checked_metadata(&path, "formal source tree entry");
         if metadata.is_dir() {
             collect_files(root, &path, out);

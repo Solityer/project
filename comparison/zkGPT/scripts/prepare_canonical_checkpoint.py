@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import os
 import pathlib
@@ -31,7 +32,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from zkgpt_gat.config import generated_config, load_app_config  # noqa: E402
 from zkgpt_gat.constants import DATASET_ORDER, FORMAL_GAT_CLASS_COUNTS, FORMAL_GAT_MODEL_ARCH_IDS  # noqa: E402
-from zkgpt_gat.model import CANONICAL_CHECKPOINT_SCHEMA, _load_text_tensors, _tensor_digest, _validate_canonical_manifest  # noqa: E402
+from zkgpt_gat.model import CANONICAL_CHECKPOINT_SCHEMA, _load_npz_tensors, _load_text_tensors, _tensor_digest, _validate_canonical_manifest, _validate_tensor_index  # noqa: E402
 from zkgpt_gat.quantization import (  # noqa: E402
     CANONICAL_QUANT_CFG_ID,
     canonical_input_preprocess_id,
@@ -39,7 +40,7 @@ from zkgpt_gat.quantization import (  # noqa: E402
 )
 from zkgpt_gat.resources import canonical_dataset_name, required_resource_paths  # noqa: E402
 from zkgpt_gat.rounding import validate_rounding_mode  # noqa: E402
-from zkgpt_gat.util import digest_file, digest_json, ensure_dir, write_json, write_text_atomic  # noqa: E402
+from zkgpt_gat.util import digest_file, digest_json, ensure_dir, write_bytes_atomic, write_json, write_text_atomic  # noqa: E402
 
 
 def _owned_regular(path: pathlib.Path, label: str) -> pathlib.Path:
@@ -135,8 +136,15 @@ def _safe_existing_bundle(bundle: pathlib.Path) -> None:
         info = child.lstat()
         if child.is_symlink() or stat.S_ISDIR(info.st_mode) or not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
             raise RuntimeError(f"canonical checkpoint contains an unsafe entry: {child}")
-        if child.name not in {"manifest.json", "tensors.txt"}:
+        if child.name not in {"manifest.json", "tensors.npz", "tensors.txt"}:
             raise RuntimeError(f"canonical checkpoint contains an unsupported entry: {child}")
+
+
+def _tensor_npz(tensors: list[tuple[str, np.ndarray]]) -> bytes:
+    buffer = io.BytesIO()
+    arrays = {name.replace("/", "__").replace(":", "__"): np.ascontiguousarray(array, dtype=np.float32) for name, array in tensors}
+    np.savez_compressed(buffer, **arrays)
+    return buffer.getvalue()
 
 
 def generate_one(dataset_name: str) -> dict[str, Any]:
@@ -158,11 +166,12 @@ def generate_one(dataset_name: str) -> dict[str, Any]:
     # in the canonical relation.
     selected: list[tuple[str, np.ndarray]] = []
     for name in names:
-        selected.append((name, np.asarray(source_tensors[name], dtype=np.float64)))
+        selected.append((name, np.asarray(source_tensors[name], dtype=np.float32)))
     index: dict[str, Any] = {}
     for name, array in selected:
         index[name] = {
-            "dtype": "float64",
+            "archive_key": name.replace("/", "__").replace(":", "__"),
+            "dtype": "float32",
             "shape": [int(value) for value in array.shape],
             "count": int(array.size),
             "sha256": _tensor_digest(array),
@@ -217,9 +226,11 @@ def generate_one(dataset_name: str) -> dict[str, Any]:
     _safe_existing_bundle(output_bundle)
     ensure_dir(output_bundle, root=ROOT, label=f"{dataset} canonical checkpoint")
     existing_manifest = output_bundle / "manifest.json"
+    existing_npz = output_bundle / "tensors.npz"
     existing_tensors = output_bundle / "tensors.txt"
-    if existing_manifest.exists() or existing_tensors.exists():
-        if not existing_manifest.is_file() or not existing_tensors.is_file():
+    npz_payload = _tensor_npz(selected)
+    if existing_manifest.exists() or existing_npz.exists() or existing_tensors.exists():
+        if not existing_manifest.is_file() or not existing_npz.is_file() or not existing_tensors.is_file():
             raise RuntimeError(f"canonical checkpoint cache is partial: {output_bundle}")
         try:
             old = json.loads(existing_manifest.read_text(encoding="utf-8"))
@@ -227,10 +238,20 @@ def generate_one(dataset_name: str) -> dict[str, Any]:
             raise RuntimeError(f"canonical checkpoint cache manifest is invalid: {output_bundle}") from exc
         if old != manifest or existing_tensors.read_text(encoding="utf-8") != text:
             raise RuntimeError(f"canonical checkpoint cache identity differs from current source: {output_bundle}")
+        try:
+            existing_text_tensors = _load_text_tensors(existing_tensors)
+            _validate_tensor_index(old, existing_text_tensors)
+            npz_tensors = _load_npz_tensors(existing_npz, old)
+        except (OSError, ValueError) as exc:
+            raise RuntimeError(f"canonical checkpoint cache tensors are invalid: {output_bundle}") from exc
+        for name, array in existing_text_tensors.items():
+            if npz_tensors[name].tobytes(order="C") != np.asarray(array, dtype=np.float32).tobytes(order="C"):
+                raise RuntimeError(f"canonical checkpoint cache NPZ/TXT mismatch: {name}")
     else:
         write_text_atomic(existing_tensors, text, root=ROOT, label=f"{dataset} canonical checkpoint tensors")
+        write_bytes_atomic(existing_npz, npz_payload, root=ROOT, label=f"{dataset} canonical checkpoint tensors.npz")
         write_json(existing_manifest, manifest, root=ROOT, label=f"{dataset} canonical checkpoint manifest")
-    return {"dataset": dataset, "bundle": str(output_bundle.relative_to(ROOT)), "tensor_count": len(index), "manifest_digest": digest_file(existing_manifest), "tensor_digest": digest_file(existing_tensors)}
+    return {"dataset": dataset, "bundle": str(output_bundle.relative_to(ROOT)), "tensor_count": len(index), "manifest_digest": digest_file(existing_manifest), "tensor_digest": digest_file(existing_tensors), "npz_digest": digest_file(existing_npz)}
 
 
 def main() -> int:

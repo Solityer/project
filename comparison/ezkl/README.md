@@ -207,32 +207,18 @@ python3 scripts/collect_results.py
 python3 scripts/validate_final_results.py
 ```
 
-`run_all.sh` 默认运行 CPU/CUDA 全矩阵；可用 `EZKL_DEVICES=cpu` 或
-`EZKL_DEVICES=cuda` 选择一个正式 backend，也可用逗号分隔的
-`EZKL_DATASETS=cora_full,pubmed_full` 选择部分矩阵。单 backend 或部分矩阵运行只生成
-`results/formal_results.{json,csv}` 的不完整报告，不会强制调用严格 5×2 validator。只有
-native verifier 写出 `verify_passed=true` 的 run 才会进入该矩阵 summary；未验证、失败或
-中断的 manifest 会被明确排除。每个正式 cell 只会在真实 proof 与独立 native verify
+`run_all.sh` 是唯一正式入口，并且只运行完整 CPU/CUDA 5×2 矩阵；它不接受 backend 或数据集
+子集选择环境变量。只有 native verifier 写出 `verify_passed=true` 的 run 才会进入矩阵
+summary；未验证、失败或中断的 manifest 会被明确排除。每个正式 cell 只会在真实 proof 与独立 native verify
 成功且通过精确 artifact inventory 后，原子提交到
 `results/runs/<backend>/<dataset>/`。临时 setup/prove 工作区在
 `results/runs_tmp/`，日志在 `results/logs/`，都不会进入 cell。
 runner 不再写 `results/<dataset>.<device>.json` 扁平副产物；正式结果只保留 canonical
 cell 和 `results/formal_results.{json,csv}` 矩阵 summary。
 
-`scripts/run_until_complete.sh` 默认重试缺失的正式矩阵 cell，不改变 relation、backend 或
-输入；全量完成后按 `collect_results.py` → `validate_final_results.py` 顺序生成和验收矩阵。
-部分恢复示例：
-
-```bash
-EZKL_DEVICES=cpu scripts/run_all.sh
-python3 scripts/run_until_complete.py --datasets cora_full pubmed_full \
-  --devices cpu
-```
-
 当所有十个 cell 已由真实 proof 与独立 native verify 成功后，默认全矩阵入口会执行严格
-validator。也可显式使用 `--finalize`（或 `EZKL_FINALIZE=1 scripts/run_all.sh`）要求
-collector 和 validator 检查完整 5×2 矩阵；显式 finalize 在缺 cell 时 fail closed。单个
-cell 的成功仍只由该 cell 的真实 proof + fresh independent verify 判定，不依赖矩阵 validator。
+validator；缺少任一 cell 时 fail closed。单个 cell 的成功仍只由该 cell 的真实 proof +
+fresh independent verify 判定，不依赖矩阵 validator。
 
 CUDA run 还要求独立 GPU build 成功选择 ICICLE CUDA device，并在真实 prove scope 内
 取得 CUPTI kernel activity（`gpu_backend_execution=cuda_icicle_prove_only`、
@@ -240,8 +226,7 @@ CUDA run 还要求独立 GPU build 成功选择 ICICLE CUDA device，并在真�
 `prover_backend=cuda_icicle`、`verifier_backend=cpu_independent`。CUDA 请求在设备初始化
 或 CUPTI 记录失败时立即终止，绝不回退到 CPU，也不声称 GPU verify。
 
-validator 默认要求配置中全部 dataset × `{cpu,cuda}` cells；collector 需要报告选定的
-partial matrix 时使用 `--datasets ... --devices ... --allow-incomplete`。只检查已经存在的
+validator 默认要求配置中全部 dataset × `{cpu,cuda}` cells；只检查已经存在的
 工件时需显式使用 `python3 scripts/validate_final_results.py --allow-incomplete`。每个正式 run 还会
 绑定并重算 source SRS、downsized `pk.srs`/`vk.srs` 的 SHA-256 与原始/目标 `k`。
 prove/verify 会各自从 profile 固定的 source SRS 重新执行 deterministic downsize，并将

@@ -48,6 +48,9 @@ namespace gat_ezkl
     struct CheckpointBundle
     {
         std::filesystem::path root;
+        std::string dataset_id;
+        std::string input_preprocess_id;
+        std::string tensors_npz_sha256;
         std::string family_schema_version;
         std::string output_average_rule;
         std::string model_arch_id;

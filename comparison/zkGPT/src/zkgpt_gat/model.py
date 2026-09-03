@@ -18,65 +18,9 @@ from .quantization import (
 
 QUANT_SCALE_PROFILES: Dict[str, Dict[str, int]] = {
     # The formal comparison profile is the same explicit chain used by the
-    # current main GAT experiment.  Historical aliases below remain available
-    # only for test-only in-memory models; load_model rejects them.
+    # current main GAT experiment.  Source checkpoint formats are handled by
+    # the conversion entry point and are never accepted by the formal loader.
     CANONICAL_QUANT_CFG_ID: canonical_scale_profile(),
-    "exact_integer_gat_v1": {
-        "input": 1,
-        "hidden_weight": 16,
-        "hidden_attention": 16,
-        "output_weight": 16,
-        "output_attention": 1,
-        "output_bias": 16,
-        "lrelu_input": 256,
-        "lrelu_output": 256,
-        "exp_input": 256,
-        "exp_output": 16,
-        "elu_input": 16,
-        "elu_output": 16,
-        "aggregate_output": 16,
-        "output_head": 16,
-    },
-    # Raw checkpoint manifests use this source-format name.  Formal configs
-    # authenticate the exact-integer profile above; both names intentionally
-    # resolve to the same explicit scale chain.
-    "fp32_bundle_export": {
-        "input": 1,
-        "hidden_weight": 16,
-        "hidden_attention": 16,
-        "output_weight": 16,
-        "output_attention": 1,
-        "output_bias": 16,
-        "lrelu_input": 256,
-        "lrelu_output": 256,
-        "exp_input": 256,
-        "exp_output": 16,
-        "elu_input": 16,
-        "elu_output": 16,
-        "aggregate_output": 16,
-        "output_head": 16,
-    },
-    # The canonical main-experiment checkpoint manifests retain this source
-    # format identity.  zkGPT formal configs authenticate the independent
-    # exact-integer profile above, but accepting the source alias here keeps
-    # manifest-only inspection and conversion tools honest without changing
-    # the registered scale chain.
-    "fp32_torch_checkpoint": {
-        "input": 1,
-        "hidden_weight": 16,
-        "hidden_attention": 16,
-        "output_weight": 16,
-        "output_attention": 1,
-        "output_bias": 16,
-        "lrelu_input": 256,
-        "lrelu_output": 256,
-        "exp_input": 256,
-        "exp_output": 16,
-        "elu_input": 16,
-        "elu_output": 16,
-        "aggregate_output": 16,
-        "output_head": 16,
-    },
 }
 
 
@@ -196,9 +140,9 @@ def _quantize(values: np.ndarray, scale: int) -> np.ndarray:
 
 
 def _head_from_spec(spec: Dict, tensors: Dict[str, np.ndarray], scales: Dict[str, int], output_head: bool = False) -> AttentionHead:
-    # These scales are the public fp32_bundle_export quant_cfg used by the
-    # formal GAT relation.  Once converted, every forward tensor is an exact
-    # integer and no floating-point operation is part of the proof witness.
+    # These scales are the canonical baseline-local formal GAT relation.  Once
+    # converted, every forward tensor is an exact integer and no
+    # floating-point operation is part of the proof witness.
     return AttentionHead(
         seq_kernel=_quantize(_reshape_seq(tensors[spec["seq_kernel"]]), scales["output_weight"] if output_head else scales["hidden_weight"]),
         attn_dst_kernel=_quantize(_reshape_attn(tensors[spec["attn_dst_kernel"]]), scales["output_attention"] if output_head else scales["hidden_attention"]),
@@ -239,6 +183,12 @@ def load_model(
     tensors_path = bundle / "tensors.txt"
     tensors = _load_text_tensors(tensors_path)
     _validate_tensor_index(manifest, tensors)
+    npz_tensors = _load_npz_tensors(bundle / "tensors.npz", manifest)
+    for name, text_tensor in tensors.items():
+        text_float32 = np.ascontiguousarray(np.asarray(text_tensor, dtype=np.float32))
+        npz_tensor = npz_tensors[name]
+        if npz_tensor.tobytes(order="C") != text_float32.tobytes(order="C"):
+            raise ValueError(f"checkpoint tensors.npz/tensors.txt value mismatch: {name}")
     resolved_quant_cfg = str(manifest["quant_cfg_id"] if quant_cfg_id is None else quant_cfg_id)
     if resolved_quant_cfg != CANONICAL_QUANT_CFG_ID:
         raise ValueError("legacy/noncanonical checkpoint quant_cfg_id is rejected")
@@ -359,6 +309,21 @@ def _validate_canonical_manifest(manifest: Dict) -> None:
         expected_names.update(spec[key] for key in ("seq_kernel", "attn_src_kernel", "attn_dst_kernel", "output_bias"))
     if set(index) != expected_names:
         raise ValueError("checkpoint tensor_index does not exactly match canonical head specs")
+    for name, entry in index.items():
+        if not isinstance(entry, dict) or set(entry) != {"archive_key", "dtype", "shape", "count", "sha256"}:
+            raise ValueError(f"canonical checkpoint tensor index entry is invalid: {name}")
+        if entry.get("archive_key") != _archive_key(name) or entry.get("dtype") != "float32":
+            raise ValueError(f"canonical checkpoint tensor encoding is invalid: {name}")
+        shape = entry.get("shape")
+        if not isinstance(shape, list) or not shape or any(type(value) is not int or value <= 0 for value in shape):
+            raise ValueError(f"canonical checkpoint tensor shape is invalid: {name}")
+        if type(entry.get("count")) is not int or int(entry["count"]) <= 0:
+            raise ValueError(f"canonical checkpoint tensor count is invalid: {name}")
+        if int(entry["count"]) != int(np.prod(shape, dtype=np.int64)):
+            raise ValueError(f"canonical checkpoint tensor count/shape mismatch: {name}")
+        digest = str(entry.get("sha256", ""))
+        if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest.lower()):
+            raise ValueError(f"canonical checkpoint tensor digest is invalid: {name}")
 
 
 def _digest_json(value: object) -> str:
@@ -369,10 +334,14 @@ def _digest_json(value: object) -> str:
     ).hexdigest()
 
 
+def _archive_key(name: str) -> str:
+    return str(name).replace("/", "__").replace(":", "__")
+
+
 def _tensor_digest(array: np.ndarray) -> str:
     import hashlib
 
-    payload = np.ascontiguousarray(np.asarray(array, dtype=np.float64)).tobytes(order="C")
+    payload = np.ascontiguousarray(np.asarray(array, dtype=np.float32)).tobytes(order="C")
     return hashlib.sha256(payload).hexdigest()
 
 
@@ -381,13 +350,43 @@ def _validate_tensor_index(manifest: Dict, tensors: Dict[str, np.ndarray]) -> No
     if set(index) != set(tensors):
         raise ValueError("checkpoint tensor file set differs from authenticated tensor_index")
     for name, entry in index.items():
-        if not isinstance(entry, dict) or set(entry) != {"dtype", "shape", "count", "sha256"}:
+        if not isinstance(entry, dict) or set(entry) != {"archive_key", "dtype", "shape", "count", "sha256"}:
             raise ValueError(f"tensor_index entry schema is invalid: {name}")
         array = tensors[name]
-        if entry["dtype"] != "float64" or [int(v) for v in entry["shape"]] != list(array.shape) or int(entry["count"]) != int(array.size):
+        if entry["archive_key"] != _archive_key(name) or entry["dtype"] != "float32" or [int(v) for v in entry["shape"]] != list(array.shape) or int(entry["count"]) != int(array.size):
             raise ValueError(f"tensor_index shape/dtype mismatch: {name}")
-        if entry["sha256"] != _tensor_digest(array):
+        canonical = np.asarray(array, dtype=np.float32)
+        if not np.all(np.isfinite(canonical)):
+            raise ValueError(f"tensor contains a non-finite float32 value: {name}")
+        if np.asarray(canonical, dtype=np.float64).tobytes(order="C") != np.asarray(array, dtype=np.float64).tobytes(order="C"):
+            raise ValueError(f"tensor text is not an exact float32 encoding: {name}")
+        if entry["sha256"] != _tensor_digest(canonical):
             raise ValueError(f"tensor digest mismatch: {name}")
+
+
+def _load_npz_tensors(path: pathlib.Path, manifest: Dict) -> Dict[str, np.ndarray]:
+    index = manifest.get("tensor_index")
+    if not isinstance(index, dict):
+        raise ValueError("canonical checkpoint tensor_index is missing")
+    expected = {str(entry["archive_key"]) for entry in index.values()}
+    try:
+        with np.load(path, allow_pickle=False) as archive:
+            names = list(archive.files)
+            if len(names) != len(set(names)) or set(names) != expected:
+                raise ValueError("checkpoint tensors.npz keys do not match canonical tensor_index")
+            out: Dict[str, np.ndarray] = {}
+            for logical_name, entry in index.items():
+                array = np.asarray(archive[str(entry["archive_key"])])
+                if array.dtype != np.dtype("float32") or list(array.shape) != [int(v) for v in entry["shape"]]:
+                    raise ValueError(f"checkpoint tensors.npz dtype/shape mismatch: {logical_name}")
+                if not np.all(np.isfinite(array)):
+                    raise ValueError(f"checkpoint tensors.npz contains a non-finite tensor: {logical_name}")
+                out[logical_name] = np.ascontiguousarray(array).copy()
+            return out
+    except (OSError, ValueError, EOFError, zipfile.BadZipFile) as exc:
+        if isinstance(exc, ValueError):
+            raise
+        raise ValueError(f"unable to load canonical checkpoint tensors.npz: {path}") from exc
 
 
 def _validate_model(model: Model) -> None:

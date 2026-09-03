@@ -133,11 +133,12 @@ fn run(command: &str, options: &BTreeMap<String, String>) -> Result<String, Stri
             .map_err(|error| error.to_string())?)
         }
         "graph-gat-gen-witness" => {
-            ensure_options(options, &["compiled-circuit", "output", "public-statement"])?;
+            ensure_options(options, &["compiled-circuit", "output", "public-statement", "public-y"])?;
             Ok(graph_gat_gen_witness(
                 required(options, "compiled-circuit"),
                 required(options, "output"),
                 required(options, "public-statement"),
+                required(options, "public-y"),
             )
             .map_err(|error| error.to_string())?)
         }
@@ -148,6 +149,7 @@ fn run(command: &str, options: &BTreeMap<String, String>) -> Result<String, Stri
                     "compiled-circuit",
                     "witness",
                     "public-statement",
+                    "public-y",
                     "pk-path",
                     "proof-path",
                     "device",
@@ -160,6 +162,7 @@ fn run(command: &str, options: &BTreeMap<String, String>) -> Result<String, Stri
                 required(options, "pk-path"),
                 required(options, "proof-path"),
                 required_string(options, "device"),
+                required(options, "public-y"),
             )
             .map_err(|error| error.to_string())?)
         }
@@ -170,6 +173,7 @@ fn run(command: &str, options: &BTreeMap<String, String>) -> Result<String, Stri
                     "compiled-circuit",
                     "proof-path",
                     "public-statement",
+                    "public-y",
                     "settings-path",
                     "vk-path",
                     "output",
@@ -184,6 +188,7 @@ fn run(command: &str, options: &BTreeMap<String, String>) -> Result<String, Stri
                 required(options, "vk-path"),
                 required(options, "output"),
                 required_string(options, "device"),
+                required(options, "public-y"),
             )
             .map_err(|error| error.to_string())?)
         }

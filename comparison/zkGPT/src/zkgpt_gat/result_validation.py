@@ -678,6 +678,7 @@ def _verified_fields(report: Mapping[str, Any]) -> Dict[str, Any]:
         "privacy_masking_verified", "verifier_input_boundary",
         "model_arch_id", "model_param_id", "quant_cfg_id", "input_preprocess_id",
         "L", "hidden_profile", "d_in_profile", "K_out", "C",
+        "independent_reference_forward",
     )
     missing = [key for key in required if key not in fields]
     if missing:
@@ -704,7 +705,7 @@ def _verified_fields(report: Mapping[str, Any]) -> Dict[str, Any]:
         raise ResultValidationError("independent verifier numerical/preprocessing identity mismatch")
     for key in ("full_dataset", "full_gat_forward_proved", "final_logits_bound", "verifier_reads_witness", "witness_included_in_proof", "gpu_hot_path"):
         _require_bool(fields, key, "verified_fields")
-    for key in ("proof_schema_scan", "privacy_masking_verified"):
+    for key in ("proof_schema_scan", "privacy_masking_verified", "independent_reference_forward"):
         _require_bool(fields, key, "verified_fields")
     boundary = fields.get("verifier_input_boundary")
     if not isinstance(boundary, dict) or boundary.get("private_input_files_read") != []:
@@ -788,6 +789,7 @@ def validate_artifact(
         "verifier_reads_witness", "witness_included_in_proof",
         "public_output_digest", "proof_contribution", "gpu_hot_path",
         "proof_schema_scan", "privacy_masking_verified", "verifier_input_boundary",
+        "independent_reference_forward",
     ):
         if manifest.get(key) != fields.get(key):
             raise ResultValidationError(f"manifest {key} does not match independent verifier report")
@@ -907,7 +909,7 @@ def validate_artifact(
         if not path.exists():
             raise ResultValidationError(f"identity resource path is missing: {path}")
     resource_manifest = resolve_inside(root, _config_value(config_path, "resource_manifest", "resources/resource_manifest.json"), "resource_manifest")
-    static_table = resolve_inside(root, _config_value(config_path, "static_table_path", "resources/static_tables/exact_integer_gat_v1.json"), "static_table_path")
+    static_table = resolve_inside(root, _config_value(config_path, "static_table_path", "resources/static_tables/exact_integer_gat.json"), "static_table_path")
     if not resource_manifest.is_file() or not static_table.is_file():
         raise ResultValidationError("baseline-local resource manifest/static table is missing")
     try:
@@ -1048,7 +1050,12 @@ def _validate_gpu_artifact_closure(
     return errors
 
 
-def validate_matrix_rows(rows: Iterable[Mapping[str, Any]], *, allow_test_fixture: bool = False) -> None:
+def validate_matrix_rows(
+    rows: Iterable[Mapping[str, Any]],
+    *,
+    allow_test_fixture: bool = False,
+    expected_pairs: set[tuple[str, str]] | None = None,
+) -> None:
     values = list(rows)
     if any(
         row.get("status") == "FAILED_DIAGNOSTIC"
@@ -1064,10 +1071,10 @@ def validate_matrix_rows(rows: Iterable[Mapping[str, Any]], *, allow_test_fixtur
         if pairs != expected:
             raise ResultValidationError("test fixture matrix coverage mismatch")
         return
-    if len(values) != 10:
-        raise ResultValidationError("formal matrix must contain exactly ten rows")
+    expected = expected_pairs or {(backend, dataset) for backend in ("cpu", "gpu") for dataset in DATASET_ORDER}
+    if len(values) != len(expected):
+        raise ResultValidationError("formal result set has an unexpected row count")
     pairs = {(row.get("backend"), row.get("dataset")) for row in values}
-    expected = {(backend, dataset) for backend in ("cpu", "gpu") for dataset in DATASET_ORDER}
     if pairs != expected:
         raise ResultValidationError("formal matrix dataset/backend coverage mismatch")
     for row in values:

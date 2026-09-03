@@ -23,6 +23,8 @@ from runner_contract import (
     validate_checkpoint_tensor_shapes,
     validate_config_resources,
     validate_quantization_config,
+    canonical_input_preprocess_id,
+    canonical_data_identity,
 )
 
 ROOT=Path(__file__).resolve().parents[1]
@@ -35,6 +37,18 @@ ADAPTER_SCHEMA='zkDL_gat_canonical_adapter_v2'
 ADAPTER_VERSION=2
 PROTOCOL_PATH=ROOT/'GAT-ZKML-zkDL.md'
 CANONICAL_RELATION_SCHEMA='zkDL_gat_canonical_relation_schema_v1'
+CANONICAL_RELATION_KEYS=(
+ 'schema','adapter_schema','adapter_version','protocol_sha256','rounding_mode',
+ 'canonical_relation_digest','canonical_schema','dataset','input_preprocess_id',
+ 'data_identity','pp_id','node_count','edge_count','graph_count','feature_dim',
+ 'class_count','public_features','node_ptr','edge_ptr','src','dst',
+ 'graph_features_digest','topology_digest','checkpoint_manifest_id',
+ 'canonical_tensor_digest','model_shape_id','commitment_set_id','quant_cfg_id',
+ 'static_tables_id','static_table_rows_id','static_table_profile',
+ 'integer_bound_ledger_id','integer_bound_ledger','model_arch_id','model_param_id',
+ 'public_logits','tensor_families','operation_families','tensors',
+ 'resource_manifest_id','config_sha256','source_input_id',
+)
 CANONICAL_SCHEMA_KEYS=('schema','version','architecture','tensor_family_order','tensor_families','operation_family_order','operation_families','fac_plan','terminal_plan')
 CANONICAL_ARCHITECTURE_KEYS=('L','hidden_profile','d_in_profile','K_out','model_arch_id','model_param_id','node_count','edge_count','graph_count','feature_dim','class_count','output_head_count','bit_width','lookup_bits','hidden_layers','hidden_head_specs','output_head_specs')
 
@@ -109,23 +123,39 @@ def canonical_tensor_digest(spec,tensors):
    h.update((raw%FR).to_bytes(32,'big'))
  return 'sha256:'+h.hexdigest()
 
-def load_features(cache,n,d,scale):
+def _canonical_feature_row(values,dataset,input_preprocess_id):
+ expected=canonical_input_preprocess_id(dataset)
+ if input_preprocess_id != expected: raise ValueError('input preprocessing identity mismatch')
+ if dataset == 'ogbn-arxiv': return [float(value) for value in values]
+ total=0.0
+ for value in values: total += float(value)
+ if total == 0.0: return [float(value) for value in values]
+ return [float(value)/total for value in values]
+def load_features(cache,n,d,scale,dataset,input_preprocess_id):
+ if scale <= 0: raise ValueError('input feature scale must be positive')
  p=cache/'features.txt'
  if p.exists():
+  if dataset == 'ogbn-arxiv': raise ValueError('ogbn-arxiv raw_float32 forbids features.txt')
   out=np.zeros((n,d),dtype=np.int64)
   with p.open() as f:
    if tuple(map(int,f.readline().split()))!=(n,d):raise ValueError('feature header mismatch')
    for row,line in enumerate(f):
-    seen=set()
+    seen=set();raw_row=[0.0]*d
     for item in line.split():
      col,val=item.split(':',1);col=int(col)
      if not 0<=col<d or col in seen:raise ValueError('features.txt column malformed')
-     seen.add(col);out[row,col]=q(float(val),scale)
+     seen.add(col);raw_row[col]=float(val)
+    normalized=_canonical_feature_row(raw_row,dataset,input_preprocess_id)
+    out[row,:]=[q(value,scale) for value in normalized]
   if row+1!=n:raise ValueError('feature row count mismatch')
   return out,p
  raw=np.load(cache/'features.npy',mmap_mode='r')
  if raw.shape!=(n,d):raise ValueError('feature shape mismatch')
- scaled=raw*scale;out=np.where(scaled>=0,np.floor(scaled+.5),np.ceil(scaled-.5)).astype(np.int64)
+ out=np.zeros((n,d),dtype=np.int64)
+ for row in range(n):
+  source=np.asarray(raw[row],dtype=np.float32 if dataset == 'ogbn-arxiv' else np.float64).tolist()
+  normalized=_canonical_feature_row(source,dataset,input_preprocess_id)
+  out[row,:]=[q(value,scale) for value in normalized]
  return out,cache/'features.npy'
 def load_edges(cache,n):
  raw=[]
@@ -408,7 +438,7 @@ def main():
  report=json.loads(preflight_path.read_text());
  if report['status']!='accepted':raise SystemExit('canonical adapter refuses a preflight-rejected formal instance')
  if report.get('resource_manifest_id') != resource_manifest_id:raise ValueError('preflight/resource manifest mismatch')
- cache=root/c['cache'];cp=root/c['checkpoint_bundle'];manifest=json.loads((cp/'manifest.json').read_text());raw=load_tensors(cp/'tensors.txt');validate_checkpoint_tensor_shapes(manifest,{name:shape for name,(shape,_) in raw.items()});n=int((cache/'meta.cfg').read_text().split('num_nodes = ')[1].splitlines()[0]);d=int((cache/'meta.cfg').read_text().split('num_features = ')[1].splitlines()[0]);H,feature_path=load_features(cache,n,d,int(c['feature_scale']));src,dst,start,end,node_ptr,edge_ptr=load_edges(cache,n);checkpoint_binding=validate_checkpoint_structure(c,manifest,graph_count=len(node_ptr)-1,feature_dim=d);tables=report['static_tables']
+ cache=root/c['cache'];cp=root/c['checkpoint_bundle'];manifest=json.loads((cp/'manifest.json').read_text());raw=load_tensors(cp/'tensors.txt');validate_checkpoint_tensor_shapes(manifest,{name:shape for name,(shape,_) in raw.items()});n=int((cache/'meta.cfg').read_text().split('num_nodes = ')[1].splitlines()[0]);d=int((cache/'meta.cfg').read_text().split('num_features = ')[1].splitlines()[0]);H,feature_path=load_features(cache,n,d,int(c['s_input']),c['dataset'],c['input_preprocess_id']);src,dst,start,end,node_ptr,edge_ptr=load_edges(cache,n);checkpoint_binding=validate_checkpoint_structure(c,manifest,graph_count=len(node_ptr)-1,feature_dim=d);tables=report['static_tables']
  capacity_blocker=static_table_row_cap_blocker(tables)
  if capacity_blocker:
   raise SystemExit('canonical adapter blocked: '+json.dumps({'status':'blocked_static_table_rows','dataset':c['dataset'],'blocker':capacity_blocker},sort_keys=True,separators=(',',':')))
@@ -439,18 +469,19 @@ def main():
  shape_payload=model_shape_payload(manifest,feature_dim=d)
  model_shape_id='sha256:'+hashlib.sha256(json.dumps(shape_payload,sort_keys=True,separators=(',',':')).encode()).hexdigest()
  checkpoint_manifest_id='sha256:'+digest(cp/'manifest.json');static_rows_id=static_table_rows_digest(b.ops);commitment_set_id=registered_family_set_digest(b.spec);config_id='sha256:'+hashlib.sha256(config_path.read_bytes()).hexdigest()
- metadata_checks=dict([('L',checkpoint_binding['L']),('hidden_profile',checkpoint_binding['hidden_profile']),('d_in_profile',checkpoint_binding['d_in_profile']),('K_out',checkpoint_binding['K_out']),('node_count',n),('edge_count',len(src)),('graph_count',len(node_ptr)-1),('feature_dim',d),('class_count',int(manifest['C'])),('checkpoint_manifest_id',checkpoint_manifest_id),('model_shape_id',model_shape_id),('static_tables_id',report['static_tables_id']),('static_table_rows_id',static_rows_id),('model_arch_id',manifest['model_arch_id']),('model_param_id',manifest['model_param_id']),('config_sha256',config_id)])
+ data_id=canonical_data_identity(dataset=c['dataset'],input_preprocess_id=c['input_preprocess_id'],node_count=n,edge_count=len(src),graph_count=len(node_ptr)-1,feature_dim=d,graph_features_digest=report['graph_features_digest'],topology_digest=report['topology_digest'])
+ metadata_checks=dict([('L',checkpoint_binding['L']),('hidden_profile',checkpoint_binding['hidden_profile']),('d_in_profile',checkpoint_binding['d_in_profile']),('K_out',checkpoint_binding['K_out']),('node_count',n),('edge_count',len(src)),('graph_count',len(node_ptr)-1),('feature_dim',d),('class_count',int(manifest['C'])),('input_preprocess_id',c['input_preprocess_id']),('quant_cfg_id',c['quant_cfg_id']),('data_identity',data_id),('checkpoint_manifest_id',checkpoint_manifest_id),('model_shape_id',model_shape_id),('static_tables_id',report['static_tables_id']),('static_table_rows_id',static_rows_id),('model_arch_id',manifest['model_arch_id']),('model_param_id',manifest['model_param_id']),('config_sha256',config_id)])
  validate_preflight_metadata(report,metadata_checks)
  if report.get('checkpoint_binding') != checkpoint_binding:raise ValueError('canonical/preflight checkpoint binding mismatch')
  if report.get('static_table_rows_id') != static_rows_id:raise ValueError('canonical/preflight static table row digest mismatch')
- for key in ('graph_count','feature_dim','class_count','resource_manifest_id','config_sha256','checkpoint_manifest_id','model_shape_id','static_tables_id','static_table_rows_id','model_arch_id','model_param_id'):
+ for key in ('graph_count','feature_dim','class_count','resource_manifest_id','config_sha256','checkpoint_manifest_id','model_shape_id','static_tables_id','static_table_rows_id','model_arch_id','model_param_id','input_preprocess_id','quant_cfg_id','data_identity'):
   if report['ledger'].get(key) != report[key]:raise ValueError('preflight ledger metadata mismatch: '+key)
  lookup_bits={name:max(1,npow(int(tables[name]['rows'])).bit_length()-1) for name in ('lrelu','elu','exp')}
  architecture={'L':checkpoint_binding['L'],'hidden_profile':[{'head_count':heads,'head_dim':dim} for heads,dim in checkpoint_binding['hidden_profile']],'d_in_profile':checkpoint_binding['d_in_profile'],'K_out':checkpoint_binding['K_out'],'model_arch_id':manifest['model_arch_id'],'model_param_id':manifest['model_param_id'],'node_count':n,'edge_count':len(src),'graph_count':len(node_ptr)-1,'feature_dim':d,'class_count':int(manifest['C']),'output_head_count':len(manifest['output_head_specs']),'bit_width':width,'lookup_bits':lookup_bits,'hidden_layers':manifest['hidden_layers'],'hidden_head_specs':hidden_specs,'output_head_specs':manifest['output_head_specs']}
  canonical_schema={'schema':CANONICAL_RELATION_SCHEMA,'version':1,'architecture':architecture,'tensor_family_order':[x['family_id'] for x in b.spec],'tensor_families':b.spec,'operation_family_order':[x['family_id'] for x in b.ops],'operation_families':b.ops,'fac_plan':canonical_fac_plan(b.ops,b.spec),'terminal_plan':{'public_logits_operation':'output.public_logits','public_logits_family':'public.logits','target':'verifier_local_public_y'}}
  validate_canonical_schema(canonical_schema,b.spec,b.ops,architecture)
- obj={'schema':ADAPTER_SCHEMA,'adapter_schema':ADAPTER_SCHEMA,'adapter_version':ADAPTER_VERSION,'protocol_sha256':protocol_digest(),'rounding_mode':c['rounding_mode'],'canonical_relation_digest':'','canonical_schema':canonical_schema,'dataset':c['dataset'],'pp_id':a.pp_id,'node_count':n,'edge_count':len(src),'graph_count':len(node_ptr)-1,'feature_dim':d,'class_count':int(manifest['C']),'public_features':[int(x) for x in H.reshape(-1)],'node_ptr':[int(x) for x in node_ptr],'edge_ptr':[int(x) for x in edge_ptr],'src':[int(x) for x in src],'dst':[int(x) for x in dst],'graph_features_digest':report['graph_features_digest'],'topology_digest':report['topology_digest'],'checkpoint_manifest_id':checkpoint_manifest_id,'canonical_tensor_digest':tensor_digest,'model_shape_id':model_shape_id,'commitment_set_id':commitment_set_id,'quant_cfg_id':report['quant_cfg_id'],'static_tables_id':report['static_tables_id'],'static_table_rows_id':static_rows_id,'static_table_profile':tables,'integer_bound_ledger_id':report['ledger']['integer_bound_ledger_id'],'integer_bound_ledger':report['ledger'],'model_arch_id':manifest['model_arch_id'],'model_param_id':manifest['model_param_id'],'public_logits':[int(x) for x in final.reshape(-1)],'tensor_families':b.spec,'operation_families':b.ops,'tensors':dict(sorted(b.tensors.items())),'resource_manifest_id':resource_manifest_id,'config_sha256':config_id,'source_input_id':''}
- obj['source_input_id']=source_input_digest(obj);obj['canonical_relation_digest']=relation_digest(obj);output=ensure_contained(a.output,label='canonical relation output');
+ obj={'schema':ADAPTER_SCHEMA,'adapter_schema':ADAPTER_SCHEMA,'adapter_version':ADAPTER_VERSION,'protocol_sha256':protocol_digest(),'rounding_mode':c['rounding_mode'],'canonical_relation_digest':'','canonical_schema':canonical_schema,'dataset':c['dataset'],'input_preprocess_id':c['input_preprocess_id'],'data_identity':data_id,'pp_id':a.pp_id,'node_count':n,'edge_count':len(src),'graph_count':len(node_ptr)-1,'feature_dim':d,'class_count':int(manifest['C']),'public_features':[int(x) for x in H.reshape(-1)],'node_ptr':[int(x) for x in node_ptr],'edge_ptr':[int(x) for x in edge_ptr],'src':[int(x) for x in src],'dst':[int(x) for x in dst],'graph_features_digest':report['graph_features_digest'],'topology_digest':report['topology_digest'],'checkpoint_manifest_id':checkpoint_manifest_id,'canonical_tensor_digest':tensor_digest,'model_shape_id':model_shape_id,'commitment_set_id':commitment_set_id,'quant_cfg_id':c['quant_cfg_id'],'static_tables_id':report['static_tables_id'],'static_table_rows_id':static_rows_id,'static_table_profile':tables,'integer_bound_ledger_id':report['ledger']['integer_bound_ledger_id'],'integer_bound_ledger':report['ledger'],'model_arch_id':manifest['model_arch_id'],'model_param_id':manifest['model_param_id'],'public_logits':[int(x) for x in final.reshape(-1)],'tensor_families':b.spec,'operation_families':b.ops,'tensors':dict(sorted(b.tensors.items())),'resource_manifest_id':resource_manifest_id,'config_sha256':config_id,'source_input_id':''}
+ obj['source_input_id']=source_input_digest(obj);obj['canonical_relation_digest']=relation_digest(obj);exact_keys(obj,CANONICAL_RELATION_KEYS,'canonical relation');output=ensure_contained(a.output,label='canonical relation output');
  if output.relative_to(ROOT).parts[:1] != ('runs',):raise SystemExit('canonical relation output must be written below baseline runs/')
  atomic_write_bytes(output,(json.dumps(obj,separators=(',',':'),ensure_ascii=False)+'\n').encode(),mode=0o600);print('CANONICAL_ADAPTER_OK',obj['source_input_id'],'max_tensor_len',max(x['logical_len'] for x in b.spec))
 if __name__=='__main__':main()

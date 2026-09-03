@@ -137,6 +137,8 @@ pub struct RelationCompilerInput {
     pub rounding_mode: String,
     pub canonical_relation_digest: String,
     pub dataset: String,
+    pub input_preprocess_id: String,
+    pub data_identity: String,
     pub pp_id: String,
     pub node_count: usize,
     pub edge_count: usize,
@@ -204,6 +206,22 @@ pub fn compile(input: RelationCompilerInput) -> Result<(PublicStatement, Witness
     ensure!(
         input.rounding_mode == SUPPORTED_ROUNDING_MODE,
         "unsupported or silently substituted rounding mode"
+    );
+    ensure!(
+        input.quant_cfg_id == "gat_l3_scale_chain",
+        "canonical adapter quantization identity mismatch"
+    );
+    ensure!(
+        (matches!(input.dataset.as_str(), "cora" | "citeseer" | "pubmed" | "ppi")
+            && input.input_preprocess_id == "row_normalize")
+            || (input.dataset == "ogbn-arxiv"
+                && input.input_preprocess_id == "ogbn_arxiv_raw_float32"),
+        "canonical adapter input preprocessing identity mismatch"
+    );
+    ensure!(
+        input.data_identity.starts_with("sha256:")
+            && input.data_identity.len() == 71,
+        "canonical adapter data identity is malformed"
     );
     ensure!(
         input.source_input_id == source_digest(&input)?,
@@ -393,6 +411,8 @@ pub fn compile(input: RelationCompilerInput) -> Result<(PublicStatement, Witness
         input_privacy: "public_graph_public_features".into(),
         output_mode: "public_logits".into(),
         dataset: input.dataset,
+        input_preprocess_id: input.input_preprocess_id,
+        data_identity: input.data_identity,
         pp_id: input.pp_id,
         node_count: input.node_count,
         edge_count: input.edge_count,
@@ -422,6 +442,7 @@ pub fn compile(input: RelationCompilerInput) -> Result<(PublicStatement, Witness
         public_logits: input.public_logits,
         resource_manifest_id: input.resource_manifest_id,
         config_sha256: input.config_sha256,
+        source_input_id: input.source_input_id,
         statement_id: String::new(),
     }
     .seal()?;

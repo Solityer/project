@@ -72,6 +72,33 @@ def load_datasets() -> dict[str, dict[str, Any]]:
     return {entry["run_id"]: entry for entry in payload["datasets"]}
 
 
+def ensure_public_y_resource(
+    dataset: str, config: Path, dataset_root: Path, checkpoint: Path
+) -> Path:
+    """Generate one canonical external public-Y resource during setup."""
+
+    public_root = resolve_local(ROOT, Path("resources/public_y"), "public-Y root")
+    safe_mkdir(ROOT, public_root, "public-Y root")
+    output = checked_path(
+        ROOT, public_root / f"{dataset}.json", "public-Y resource", allow_missing=True
+    )
+    if output.exists() or output.is_symlink():
+        metadata = output.lstat()
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+            raise RuntimeError(f"public-Y resource is not a private regular file: {output}")
+        return output
+    command = [
+        sys.executable, str(ROOT / "scripts" / "generate_public_y.py"),
+        "--dataset", dataset, "--config", str(config),
+        "--dataset-root", str(dataset_root), "--checkpoint", str(checkpoint),
+        "--output", str(output),
+    ]
+    run_stage(command, ROOT)
+    if not output.is_file() or output.is_symlink():
+        raise RuntimeError("public-Y generator did not produce a regular resource")
+    return output
+
+
 def resolve(root: Path, value: str) -> Path:
     return resolve_local(root, value, "formal input path")
 
@@ -394,6 +421,7 @@ def build_independent_verify_command(
     settings: Path,
     vk: Path,
     output: Path,
+    public_y: Path,
 ) -> list[str]:
     """Build the fresh CPU verifier argv without accepting private witness input."""
 
@@ -401,7 +429,7 @@ def build_independent_verify_command(
         str(verifier_binary), "graph-gat-verify", "--compiled-circuit", str(compiled),
         "--proof-path", str(proof), "--public-statement", str(statement),
         "--settings-path", str(settings), "--vk-path", str(vk), "--output",
-        str(output), "--device", "cpu",
+        str(output), "--device", "cpu", "--public-y", str(public_y),
     ]
 
 
@@ -451,6 +479,63 @@ def _rewrite_stage_paths(value: Any, stage_root: Path, final_dir: Path) -> Any:
     return value
 
 
+def _relativize_baseline_paths(value: Any) -> Any:
+    """Keep committed path provenance portable and baseline-local."""
+
+    root_text = str(ROOT)
+    if isinstance(value, str):
+        if value == root_text:
+            return "."
+        prefix = root_text + os.sep
+        if value.startswith(prefix):
+            return Path(value).relative_to(ROOT).as_posix()
+        return value
+    if isinstance(value, list):
+        return [_relativize_baseline_paths(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _relativize_baseline_paths(item) for key, item in value.items()}
+    return value
+
+
+def _finalize_srs_path_bindings(
+    circuit_manifest: dict[str, Any], stage_cell: Path, final_cell: Path
+) -> dict[str, Any]:
+    """Authenticate temporary PK/VK SRS files before publishing a cell.
+
+    Native setup writes canonical absolute paths while the temporary cell is
+    live.  Once the cell is moved, those paths would become stale.  Require
+    the exact temporary ``pk.srs``/``vk.srs`` files, then rewrite only these
+    two manifest fields to baseline-relative final-cell paths.
+    """
+
+    if not isinstance(circuit_manifest, dict):
+        raise RuntimeError("circuit manifest must be an object before cell publication")
+    updated = dict(circuit_manifest)
+    for field, filename in (("proving_srs_path", "pk.srs"), ("verification_srs_path", "vk.srs")):
+        raw = circuit_manifest.get(field)
+        if not isinstance(raw, str) or not raw:
+            raise RuntimeError(f"circuit manifest is missing {field}")
+        try:
+            resolved = checked_path(ROOT, raw, field)
+        except (FileNotFoundError, ValueError) as exc:
+            raise RuntimeError(f"circuit manifest {field} is not a safe temporary path: {exc}") from exc
+        expected = (stage_cell / filename).resolve()
+        if resolved != expected:
+            raise RuntimeError(f"circuit manifest {field} does not point to the temporary cell {filename}")
+        try:
+            metadata = resolved.lstat()
+        except OSError as exc:
+            raise RuntimeError(f"cannot inspect temporary {filename}: {exc}") from exc
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+            raise RuntimeError(f"temporary {filename} is not an owned regular file")
+        try:
+            relative = (final_cell / filename).relative_to(ROOT).as_posix()
+        except ValueError as exc:
+            raise RuntimeError("final cell escaped the baseline root") from exc
+        updated[field] = relative
+    return updated
+
+
 def main() -> int:
     args = parse_args()
     if args.max_logrows != FORMAL_SOURCE_SRS_MAX_K:
@@ -496,6 +581,8 @@ def main() -> int:
     check_resource_layout(
         ROOT, [args.dataset], require_staged=True, backend=args.device
     )
+    public_y_path = ensure_public_y_resource(args.dataset, config, dataset_root, checkpoint)
+    public_y_sha256 = sha256(public_y_path)
     cuda_backend_material = (
         validate_cuda_backend_material(ROOT) if args.device == "cuda" else None
     )
@@ -586,6 +673,9 @@ def main() -> int:
         "config": str(config),
         "dataset_root": str(dataset_root),
         "checkpoint": str(checkpoint),
+        "input_preprocess_id": None,
+        "public_y_path": str(public_y_path),
+        "public_y_sha256": public_y_sha256,
         "security_profile": str(final_run_dir / "security_profile.json"),
         "resolved_security_profile_stage": str(resolved_security_profile),
         "ceremony_descriptor": str(ceremony_descriptor),
@@ -599,7 +689,15 @@ def main() -> int:
         "verifier_backend": "cpu_independent",
         "status": "preparing",
         "verify_passed": False,
-        "timings_ms": {"security_profile_materialization": materialize_ms},
+        "timings_ms": {
+            "security_profile_materialization": materialize_ms,
+            "setup": materialize_ms,
+        },
+        "timing_contract": {
+            "commitment": "adapter model registration and canonical artifact emission",
+            "prove": "native Halo2 create_proof return, excluding collection and acceptance audits",
+            "verify": "native Halo2 verify return, excluding collection and acceptance audits",
+        },
         "commands": [materialize_command],
         "security_profile_materialization_stdout": materialize_stdout[-4000:],
         "security_profile_materialization_stderr": materialize_stderr[-4000:],
@@ -660,10 +758,15 @@ def main() -> int:
     spec_identity = json.loads((run_dir / "graph_attention_spec.json").read_text(encoding="utf-8"))
     validate_canonical_shape_spec(spec_identity, args.dataset)
     manifest["quant_cfg_id"] = spec_identity["quant_cfg_id"]
+    manifest["input_preprocess_id"] = spec_identity["input_preprocess_id"]
+    if spec_identity.get("source_quant_cfg_id") != "gat_l3_scale_chain":
+        raise RuntimeError("adapter source quantization identity is not canonical gat_l3_scale_chain")
     manifest["static_tables_id"] = spec_identity["static_tables_id"]
     manifest["backend_aux_tables_id"] = spec_identity["backend_aux_tables_id"]
     manifest["ezkl_security_profile_id"] = spec_identity["security_profile_id"]
     manifest["shape_hash"] = spec_identity["shape_hash"]
+    manifest["timings_ms"]["commitment"] = manifest["timings_ms"].get("adapter", 0.0)
+    manifest["commitment_time_ms"] = manifest["timings_ms"]["commitment"]
     write_json(manifest_path, manifest)
     if not args.run:
         cleanup_stage()
@@ -723,7 +826,7 @@ def main() -> int:
             [
                 str(prover_binary), "graph-gat-gen-witness", "--compiled-circuit",
                 str(paths["compiled"]), "--output", str(paths["witness"]),
-                "--public-statement", str(paths["statement"]),
+                "--public-statement", str(paths["statement"]), "--public-y", str(public_y_path),
             ],
         ),
         (
@@ -733,6 +836,7 @@ def main() -> int:
                 "--witness", str(paths["witness"]), "--public-statement",
                 str(paths["statement"]), "--pk-path", str(paths["pk"]),
                 "--proof-path", str(paths["proof"]), "--device", args.device,
+                "--public-y", str(public_y_path),
             ],
         ),
         (
@@ -745,6 +849,7 @@ def main() -> int:
                 settings=paths["settings"],
                 vk=paths["vk"],
                 output=paths["verify"],
+                public_y=public_y_path,
             ),
         ),
     ]
@@ -774,6 +879,9 @@ def main() -> int:
         stage_outputs[stage] = (stdout, stderr)
         atomic_write_text(logs / f"{stage}.stdout.log", stdout)
         atomic_write_text(logs / f"{stage}.stderr.log", stderr)
+
+    manifest["prove_time_ms"] = manifest["timings_ms"]["prove"]
+    manifest["verify_time_ms"] = manifest["timings_ms"]["verify"]
 
     _harden_private_stage_file(paths["witness"], stage_root, "formal witness")
     verify = json.loads(paths["verify"].read_text(encoding="utf-8"))
@@ -817,6 +925,11 @@ def main() -> int:
         "verification_device_runtime_marker": expected_verifier_marker,
         "full_gat_forward_in_ezkl_proof": True,
         "strict_public_input_equivalent": True,
+        "external_public_y_verified": True,
+            "public_y_sha256": manifest["public_y_sha256"],
+        "public_y_reference_source_digest": verify.get("public_y_reference_source_digest"),
+        "public_y_dataset_files_digest": verify.get("public_y_dataset_files_digest"),
+        "public_y_checkpoint_bundle_digest": verify.get("public_y_checkpoint_bundle_digest"),
     }
     mismatched = {
         key: {"expected": expected, "actual": verify.get(key)}
@@ -859,8 +972,18 @@ def main() -> int:
             "cuda_backend_provenance": cuda_backend_material or {"status": "not_applicable"},
             "prove_metadata": prove_metadata,
             "verify_metadata": verify_metadata,
+            "public_y_reference_source_digest": verify.get("public_y_reference_source_digest"),
+            "public_y_dataset_files_digest": verify.get("public_y_dataset_files_digest"),
+            "public_y_checkpoint_bundle_digest": verify.get("public_y_checkpoint_bundle_digest"),
         }
     )
+    # Setup emits absolute temporary SRS paths.  Authenticate their ownership
+    # before publication, then make both circuit and run manifests resolve to
+    # the final baseline-local cell after the atomic rename.
+    circuit_manifest = _finalize_srs_path_bindings(circuit_manifest, run_dir, final_run_dir)
+    write_json(run_dir / "circuit_manifest.json", circuit_manifest)
+    manifest["proving_srs_path"] = circuit_manifest["proving_srs_path"]
+    manifest["verification_srs_path"] = circuit_manifest["verification_srs_path"]
     # Private model parameters and the full witness are consumed only by the
     # prover.  Remove them before the public cell inventory is checked and
     # before the cell can be atomically moved into results/runs.
@@ -877,8 +1000,9 @@ def main() -> int:
         manifest, {str(model_path), str(paths["witness"])}
     )
     manifest = _rewrite_stage_paths(manifest, stage_root, final_run_dir)
+    manifest = _relativize_baseline_paths(manifest)
     manifest.pop("resolved_security_profile_stage", None)
-    manifest["run_dir"] = str(final_run_dir)
+    manifest["run_dir"] = str(final_run_dir.relative_to(ROOT))
     manifest["manifest_path"] = str((final_run_dir / "run_manifest.json").relative_to(ROOT))
     manifest["artifact_inventory"] = sorted(CELL_ARTIFACTS)
     manifest["command_logs"] = str(logs.relative_to(ROOT))

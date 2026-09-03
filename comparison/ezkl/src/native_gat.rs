@@ -93,6 +93,7 @@ struct HeadSpec {
 struct GraphSpec {
     route_id: String,
     dataset: String,
+    input_preprocess_id: String,
     batching_rule: String,
     node_count: usize,
     edge_count: usize,
@@ -152,6 +153,7 @@ struct CsrLayoutManifest {
 struct QuantConfig {
     rounding_mode: String,
     limb_bits: u32,
+    input_preprocess_id: String,
     feature_scale: i128,
     hidden_weight_scale: i128,
     hidden_attention_scale: i128,
@@ -179,20 +181,21 @@ impl Default for QuantConfig {
         Self {
             rounding_mode: "nearest_ties_away".to_owned(),
             limb_bits: 12,
-            feature_scale: 1,
-            hidden_weight_scale: 16,
-            hidden_attention_scale: 16,
-            hidden_projection_scale: 16,
+            input_preprocess_id: String::new(),
+            feature_scale: 16,
+            hidden_weight_scale: 4,
+            hidden_attention_scale: 4,
+            hidden_projection_scale: 64,
             delta_scale: 256,
             exp_scale: 16,
-            hidden_recovery_num_scale: 1,
-            hidden_recovery_den_scale: 16,
+            hidden_recovery_num_scale: 16,
+            hidden_recovery_den_scale: 64,
             elu_input_scale: 16,
             elu_output_scale: 16,
             agg_scale: 16,
-            output_weight_scale: 16,
-            output_attention_scale: 1,
-            output_projection_scale: 256,
+            output_weight_scale: 4,
+            output_attention_scale: 4,
+            output_projection_scale: 64,
             output_pre_scale: 16,
             output_head_scale: 16,
             output_bias_scale: 16,
@@ -359,6 +362,7 @@ struct FormalPlan {
     program_lanes: usize,
     route_id: String,
     dataset: String,
+    input_preprocess_id: String,
     node_count: usize,
     edge_count: usize,
     graph_count: usize,
@@ -411,6 +415,7 @@ struct FormalSettings {
     relation: String,
     route_id: String,
     dataset: String,
+    input_preprocess_id: String,
     shape_hash: String,
     logrows: u32,
     quant_cfg_id: String,
@@ -448,6 +453,7 @@ struct CircuitManifest {
     manifest_kind: String,
     compiled_circuit_id: String,
     settings_id: String,
+    input_preprocess_id: String,
     shape_hash: String,
     vk_id: String,
     pk_id: String,
@@ -470,6 +476,7 @@ struct CircuitManifest {
 struct PublicStatement {
     kind: String,
     dataset: String,
+    input_preprocess_id: String,
     model_arch_id: String,
     quant_cfg_id: String,
     static_tables_id: String,
@@ -493,6 +500,36 @@ struct PublicStatement {
     edge_ptr: Vec<usize>,
     logits: Vec<i128>,
     model_hash: String,
+    public_y_sha256: String,
+    public_y_reference_source_digest: String,
+    public_y_dataset_files_digest: String,
+    public_y_checkpoint_bundle_digest: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PublicYResource {
+    kind: String,
+    route_id: String,
+    dataset: String,
+    run_id: String,
+    model_arch_id: String,
+    model_param_id: String,
+    input_preprocess_id: String,
+    quant_cfg_id: String,
+    source_quant_cfg_id: String,
+    rounding_mode: String,
+    node_count: usize,
+    feature_dim: usize,
+    class_count: usize,
+    graph_count: usize,
+    edge_count: usize,
+    graph_hash: String,
+    checkpoint_hash: String,
+    dataset_files_digest: String,
+    checkpoint_bundle_digest: String,
+    reference_source_digest: String,
+    logits: Vec<i128>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1204,10 +1241,71 @@ fn public_graph_hash(statement: &PublicStatement) -> Result<String, EZKLError> {
     )
 }
 
+fn load_public_y_resource(
+    plan: &FormalPlan,
+    public_y_path: &Path,
+) -> Result<(PublicYResource, String), EZKLError> {
+    let resource_path = fs::canonicalize(public_y_path)
+        .map_err(|_| "external public-Y resource is not a readable regular file")?;
+    if !resource_path.is_file() {
+        return Err("external public-Y resource is not a regular file".into());
+    }
+    let mut root = resource_path.parent().ok_or("public-Y resource has no parent")?.to_path_buf();
+    let source_path = loop {
+        let candidate = root.join("scripts/generate_public_y.py");
+        if candidate.is_file() {
+            break candidate;
+        }
+        if !root.pop() {
+            return Err("public-Y resource is not inside this baseline's source tree".into());
+        }
+    };
+    if resource_path.strip_prefix(&root).is_err() {
+        return Err("public-Y resource escapes the baseline root".into());
+    }
+    let bytes = fs::read(&resource_path)?;
+    let resource: PublicYResource = serde_json::from_slice(&bytes)?;
+    let expected_source = format!("sha256:{}", sha256_file(&source_path)?);
+    for value in [
+        resource.graph_hash.as_str(),
+        resource.checkpoint_hash.as_str(),
+        resource.dataset_files_digest.as_str(),
+        resource.checkpoint_bundle_digest.as_str(),
+        resource.reference_source_digest.as_str(),
+    ] {
+        if !is_tagged_sha256(value) {
+            return Err("public-Y provenance contains an invalid digest".into());
+        }
+    }
+    if resource.kind != "ezkl_independent_public_y_v1"
+        || resource.route_id != plan.route_id
+        || resource.dataset != plan.dataset
+        || resource.run_id != plan.dataset
+        || resource.model_arch_id != plan.model_arch_id
+        || resource.model_param_id != plan.model_param_id
+        || resource.input_preprocess_id != plan.input_preprocess_id
+        || resource.quant_cfg_id != plan.quant_cfg_id
+        || resource.source_quant_cfg_id != plan.quant.source_quant_cfg_id
+        || resource.rounding_mode != plan.quant.rounding_mode
+        || resource.graph_hash != plan.graph_hash
+        || resource.checkpoint_hash != plan.checkpoint_hash
+        || resource.reference_source_digest != expected_source
+        || (resource.node_count, resource.feature_dim, resource.class_count,
+            resource.graph_count, resource.edge_count)
+            != (plan.node_count, plan.feature_dim, plan.class_count,
+                plan.graph_count, plan.edge_count)
+        || resource.logits.len() != plan.node_count * plan.class_count
+    {
+        return Err("external public-Y provenance does not match the compiled canonical plan".into());
+    }
+    Ok((resource, format!("sha256:{}", sha256_bytes(&bytes))))
+}
+
 #[derive(Serialize)]
 struct QuantCore<'a> {
     rounding_mode: &'a str,
     limb_bits: u32,
+    input_preprocess_id: &'a str,
     feature_scale: i128,
     hidden_weight_scale: i128,
     hidden_attention_scale: i128,
@@ -1232,6 +1330,7 @@ fn quant_profile_id(quant: &QuantConfig) -> Result<String, EZKLError> {
     let core = QuantCore {
         rounding_mode: &quant.rounding_mode,
         limb_bits: quant.limb_bits,
+        input_preprocess_id: &quant.input_preprocess_id,
         feature_scale: quant.feature_scale,
         hidden_weight_scale: quant.hidden_weight_scale,
         hidden_attention_scale: quant.hidden_attention_scale,
@@ -1298,27 +1397,28 @@ fn load_security_profile(base: &Path) -> Result<(SecurityProfile, String), EZKLE
 fn validate_quant(quant: &QuantConfig) -> Result<(), EZKLError> {
     if quant.canonical_digest != quant_profile_id(quant)?
         || quant.rounding_mode != "nearest_ties_away"
+        || quant.input_preprocess_id.is_empty()
         || (
             quant.feature_scale,
             quant.hidden_weight_scale,
             quant.hidden_attention_scale,
-        ) != (1, 16, 16)
+        ) != (16, 4, 4)
         || (
             quant.hidden_projection_scale,
             quant.delta_scale,
             quant.exp_scale,
-        ) != (16, 256, 16)
+        ) != (64, 256, 16)
         || (
             quant.hidden_recovery_num_scale,
             quant.hidden_recovery_den_scale,
-        ) != (1, 16)
+        ) != (16, 64)
         || (
             quant.elu_input_scale,
             quant.elu_output_scale,
             quant.agg_scale,
         ) != (16, 16, 16)
-        || (quant.output_weight_scale, quant.output_attention_scale) != (16, 1)
-        || (quant.output_projection_scale, quant.output_pre_scale) != (256, 16)
+        || (quant.output_weight_scale, quant.output_attention_scale) != (4, 4)
+        || (quant.output_projection_scale, quant.output_pre_scale) != (64, 16)
         || (
             quant.output_head_scale,
             quant.output_bias_scale,
@@ -1328,6 +1428,21 @@ fn validate_quant(quant: &QuantConfig) -> Result<(), EZKLError> {
         return Err(
             "formal quantization profile is not the frozen main-experiment scale chain".into(),
         );
+    }
+    Ok(())
+}
+
+fn expected_input_preprocess_id(dataset: &str) -> Option<&'static str> {
+    match dataset {
+        "cora" | "citeseer" | "pubmed" | "ppi" => Some("row_normalize"),
+        "ogbn_arxiv" => Some("ogbn_arxiv_raw_float32"),
+        _ => None,
+    }
+}
+
+fn validate_input_preprocess_id(dataset: &str, preprocess: &str) -> Result<(), EZKLError> {
+    if expected_input_preprocess_id(dataset) != Some(preprocess) {
+        return Err("formal input preprocessing identity is not canonical for the dataset".into());
     }
     Ok(())
 }
@@ -1608,6 +1723,8 @@ fn validate_settings(
         return Err("settings identity mismatch".into());
     }
     if settings.security_profile_id != security_profile_id
+        || expected_input_preprocess_id(&settings.dataset)
+            != Some(settings.input_preprocess_id.as_str())
         || !is_tagged_sha256(&settings.shape_hash)
         || settings.program_version != PLAN_KIND
         || settings.program_lanes != PROGRAM_LANES
@@ -2945,6 +3062,7 @@ fn validate_plan(plan: &FormalPlan) -> Result<(), EZKLError> {
     if plan.route_id != FORMAL_ROUTE_ID {
         return Err("formal circuit route is not the registered full GAT route".into());
     }
+    validate_input_preprocess_id(&plan.dataset, &plan.input_preprocess_id)?;
     if [
         &plan.graph_hash,
         &plan.checkpoint_hash,
@@ -2991,6 +3109,7 @@ fn validate_plan(plan: &FormalPlan) -> Result<(), EZKLError> {
     }
     validate_quant(&plan.quant)?;
     if plan.quant_cfg_id != plan.quant.canonical_digest
+        || plan.input_preprocess_id != plan.quant.input_preprocess_id
         || plan.static_tables_id != plan.tables.canonical_digest
         || plan.backend_aux_tables_id != plan.aux_tables.canonical_digest
     {
@@ -3149,11 +3268,15 @@ fn validate_plan(plan: &FormalPlan) -> Result<(), EZKLError> {
                     .ok_or("scalar LReLU bound overflow")?,
             );
             let scalar_delta = bound_mul(2, scalar_z, &label)?;
-            let scalar_sum = bound_mul(plan.ledger.max_in_degree as i128, 16, &label)?;
+            let scalar_sum = bound_mul(
+                plan.ledger.max_in_degree as i128,
+                plan.quant.exp_scale,
+                &label,
+            )?;
             let scalar_projection_mul = bound_mul(scalar_hidden_h, family.w, &label)?;
             let scalar_attention_mul = bound_mul(scalar_projection, family.a_src, &label)?
                 .max(bound_mul(scalar_projection, family.a_dst, &label)?);
-            let scalar_aggregate_mul = bound_mul(16, scalar_projection, &label)?;
+            let scalar_aggregate_mul = bound_mul(plan.quant.agg_scale, scalar_projection, &label)?;
             let scalar_aggregate = bound_mul(scalar_sum, scalar_projection, &label)?;
             if family.scalar_h != scalar_hidden_h
                 || family.scalar_projection != scalar_projection
@@ -3186,7 +3309,7 @@ fn validate_plan(plan: &FormalPlan) -> Result<(), EZKLError> {
                 || family.m != scalar_z
                 || family.delta_raw != scalar_delta
                 || family.delta != scalar_delta
-                || family.exp != 16
+                || family.exp != plan.quant.exp_scale
                 || family.sum != scalar_sum
                 || family.aggregate_mul != scalar_aggregate_mul
                 || family.aggregate_acc != scalar_aggregate
@@ -3221,13 +3344,17 @@ fn validate_plan(plan: &FormalPlan) -> Result<(), EZKLError> {
             validate_round_div_exact(
                 &family.recovery,
                 recovery_a,
-                256,
+                bound_mul(
+                    plan.quant.hidden_recovery_den_scale,
+                    plan.quant.exp_scale,
+                    &label,
+                )?,
                 recovery_d,
                 &format!("{label}.recovery"),
             )?;
             if family.alignment.is_some()
                 || family.bias != 0
-                || family.output_bound != family.recovery.q.max(16)
+                || family.output_bound != family.recovery.q.max(plan.quant.elu_output_scale)
                 || plan.tables.elu_min > -family.recovery.q
                 || plan.tables.elu_max < family.recovery.q
             {
@@ -3301,11 +3428,15 @@ fn validate_plan(plan: &FormalPlan) -> Result<(), EZKLError> {
                 .ok_or("scalar LReLU bound overflow")?,
         );
         let scalar_delta = bound_mul(2, scalar_z, &label)?;
-        let scalar_sum = bound_mul(plan.ledger.max_in_degree as i128, 16, &label)?;
+        let scalar_sum = bound_mul(
+            plan.ledger.max_in_degree as i128,
+            plan.quant.exp_scale,
+            &label,
+        )?;
         let scalar_projection_mul = bound_mul(scalar_hidden_h, family.w, &label)?;
         let scalar_attention_mul = bound_mul(scalar_projection, family.a_src, &label)?
             .max(bound_mul(scalar_projection, family.a_dst, &label)?);
-        let scalar_aggregate_mul = bound_mul(16, scalar_projection, &label)?;
+        let scalar_aggregate_mul = bound_mul(plan.quant.agg_scale, scalar_projection, &label)?;
         let scalar_aggregate = bound_mul(scalar_sum, scalar_projection, &label)?;
         if family.scalar_h != scalar_hidden_h
             || family.scalar_projection != scalar_projection
@@ -3336,7 +3467,7 @@ fn validate_plan(plan: &FormalPlan) -> Result<(), EZKLError> {
             || family.m != scalar_z
             || family.delta_raw != scalar_delta
             || family.delta != scalar_delta
-            || family.exp != 16
+            || family.exp != plan.quant.exp_scale
             || family.sum != scalar_sum
             || family.aggregate_mul != scalar_aggregate_mul
             || family.aggregate_acc != scalar_aggregate
@@ -3367,7 +3498,11 @@ fn validate_plan(plan: &FormalPlan) -> Result<(), EZKLError> {
         validate_round_div_exact(
             &family.recovery,
             recovery_a,
-            4096,
+            bound_mul(
+                plan.quant.output_projection_scale,
+                plan.quant.exp_scale,
+                &label,
+            )?,
             recovery_d,
             &format!("{label}.recovery"),
         )?;
@@ -3827,6 +3962,7 @@ pub fn graph_gat_gen_settings(
     if spec.quant_cfg_id != quant.canonical_digest
         || spec.static_tables_id != tables.canonical_digest
         || spec.backend_aux_tables_id != aux_tables.canonical_digest
+        || spec.input_preprocess_id != quant.input_preprocess_id
         || spec.source_quant_cfg_id != quant.source_quant_cfg_id
         || spec.source_static_table_id != tables.source_static_table_id
         || spec.security_profile_id != security_profile_id
@@ -3847,6 +3983,7 @@ pub fn graph_gat_gen_settings(
         relation: "R_GAT-ezkl".to_owned(),
         route_id: spec.route_id,
         dataset: spec.dataset,
+        input_preprocess_id: spec.input_preprocess_id,
         shape_hash: spec.shape_hash,
         logrows,
         quant_cfg_id: spec.quant_cfg_id,
@@ -3918,6 +4055,7 @@ pub fn graph_gat_compile(
         || settings.relation != "R_GAT-ezkl"
         || settings.route_id != spec.route_id
         || settings.dataset != spec.dataset
+        || settings.input_preprocess_id != spec.input_preprocess_id
         || settings.shape_hash != spec.shape_hash
         || settings.quant_cfg_id != quant.canonical_digest
         || settings.static_tables_id != tables.canonical_digest
@@ -3928,6 +4066,7 @@ pub fn graph_gat_compile(
         || spec.quant_cfg_id != quant.canonical_digest
         || spec.static_tables_id != tables.canonical_digest
         || spec.backend_aux_tables_id != aux_tables.canonical_digest
+        || spec.input_preprocess_id != quant.input_preprocess_id
         || spec.source_quant_cfg_id != quant.source_quant_cfg_id
         || spec.source_static_table_id != tables.source_static_table_id
         || spec.security_profile_id != security_profile_id
@@ -4094,6 +4233,7 @@ pub fn graph_gat_compile(
         program_lanes: PROGRAM_LANES,
         route_id: spec.route_id,
         dataset: spec.dataset,
+        input_preprocess_id: spec.input_preprocess_id,
         node_count: spec.node_count,
         edge_count: spec.edge_count,
         graph_count: spec.graph_count,
@@ -4290,6 +4430,7 @@ pub fn graph_gat_setup(
         manifest_kind: "ezkl_formal_gat_circuit_manifest_v1".to_owned(),
         compiled_circuit_id: plan.compiled_circuit_id.clone(),
         settings_id: plan.settings_id.clone(),
+        input_preprocess_id: plan.input_preprocess_id.clone(),
         shape_hash: plan.shape_hash.clone(),
         vk_id: formal_file_id("halo2_verification_key", &vk_path)?,
         pk_id: formal_file_id("halo2_proving_key", &pk_path)?,
@@ -4347,6 +4488,7 @@ fn statement_instances(
 fn validate_statement(plan: &FormalPlan, statement: &PublicStatement) -> Result<(), EZKLError> {
     if statement.kind != STATEMENT_KIND
         || statement.dataset != plan.dataset
+        || statement.input_preprocess_id != plan.input_preprocess_id
         || statement.model_arch_id != plan.model_arch_id
         || statement.quant_cfg_id != plan.quant_cfg_id
         || statement.static_tables_id != plan.static_tables_id
@@ -4402,6 +4544,14 @@ fn validate_statement(plan: &FormalPlan, statement: &PublicStatement) -> Result<
     if statement.model_hash != plan.registered_model_hash {
         return Err("public model hash does not match registered circuit model".into());
     }
+    if statement.public_y_sha256.len() != 71
+        || !is_tagged_sha256(&statement.public_y_sha256)
+        || !is_tagged_sha256(&statement.public_y_reference_source_digest)
+        || !is_tagged_sha256(&statement.public_y_dataset_files_digest)
+        || !is_tagged_sha256(&statement.public_y_checkpoint_bundle_digest)
+    {
+        return Err("public-Y provenance digest is missing or malformed".into());
+    }
     let public_bound = plan
         .model_parameter_bounds
         .get("feature")
@@ -4424,6 +4574,7 @@ pub fn graph_gat_gen_witness(
     compiled_circuit_path: PathBuf,
     output_path: PathBuf,
     public_statement_path: PathBuf,
+    public_y_path: PathBuf,
 ) -> Result<String, EZKLError> {
     let plan: FormalPlan = read_json(&compiled_circuit_path)?;
     validate_plan(&plan)?;
@@ -4431,6 +4582,7 @@ pub fn graph_gat_gen_witness(
     let manifest: CircuitManifest = read_json(&run_dir.join("circuit_manifest.json"))?;
     if manifest.compiled_circuit_id != plan.compiled_circuit_id
         || manifest.settings_id != plan.settings_id
+        || manifest.input_preprocess_id != plan.input_preprocess_id
         || manifest.shape_hash != plan.shape_hash
     {
         return Err("circuit manifest does not match compiled circuit".into());
@@ -4443,9 +4595,14 @@ pub fn graph_gat_gen_witness(
         .iter()
         .map(|var| program.integer_values[*var].ok_or("final logit is not a canonical integer"))
         .collect::<Result<Vec<_>, _>>()?;
+    let (public_y, public_y_sha256) = load_public_y_resource(&plan, &public_y_path)?;
+    if logits != public_y.logits {
+        return Err("independent public-Y does not match the canonical native forward".into());
+    }
     let statement = PublicStatement {
         kind: STATEMENT_KIND.to_owned(),
         dataset: plan.dataset.clone(),
+        input_preprocess_id: plan.input_preprocess_id.clone(),
         model_arch_id: plan.model_arch_id.clone(),
         quant_cfg_id: plan.quant_cfg_id.clone(),
         static_tables_id: plan.static_tables_id.clone(),
@@ -4467,8 +4624,12 @@ pub fn graph_gat_gen_witness(
         dst: plan.dst.clone(),
         node_ptr: plan.node_ptr.clone(),
         edge_ptr: plan.edge_ptr.clone(),
-        logits,
+        logits: public_y.logits.clone(),
         model_hash: plan.registered_model_hash.clone(),
+        public_y_sha256,
+        public_y_reference_source_digest: public_y.reference_source_digest.clone(),
+        public_y_dataset_files_digest: public_y.dataset_files_digest.clone(),
+        public_y_checkpoint_bundle_digest: public_y.checkpoint_bundle_digest.clone(),
     };
     validate_statement(&plan, &statement)?;
     let expected = statement_instances(&plan, &statement)?;
@@ -4541,6 +4702,7 @@ pub fn graph_gat_prove(
     pk_path: PathBuf,
     proof_path: PathBuf,
     device: String,
+    public_y_path: PathBuf,
 ) -> Result<String, EZKLError> {
     let device_marker = configure_device(&device)?;
     let plan: FormalPlan = read_json(&compiled_circuit_path)?;
@@ -4550,6 +4712,7 @@ pub fn graph_gat_prove(
     validate_resolved_srs_files(&plan, &circuit_manifest)?;
     if circuit_manifest.manifest_kind != "ezkl_formal_gat_circuit_manifest_v1"
         || circuit_manifest.compiled_circuit_id != plan.compiled_circuit_id
+        || circuit_manifest.input_preprocess_id != plan.input_preprocess_id
         || circuit_manifest.shape_hash != plan.shape_hash
         || circuit_manifest.security_profile_id != plan.security_profile_id
         || circuit_manifest.quant_cfg_id != plan.quant_cfg_id
@@ -4564,6 +4727,15 @@ pub fn graph_gat_prove(
     }
     let witness: FormalWitness = read_json(&witness_path)?;
     let statement: PublicStatement = read_json(&public_statement_path)?;
+    let (public_y, public_y_sha256) = load_public_y_resource(&plan, &public_y_path)?;
+    if statement.public_y_sha256 != public_y_sha256
+        || statement.logits != public_y.logits
+        || statement.public_y_reference_source_digest != public_y.reference_source_digest
+        || statement.public_y_dataset_files_digest != public_y.dataset_files_digest
+        || statement.public_y_checkpoint_bundle_digest != public_y.checkpoint_bundle_digest
+    {
+        return Err("proving statement is not bound to the external public-Y resource".into());
+    }
     let program = program_with_serialized_witness(&plan, &witness)?;
     let public = program_instances(&program)?;
     if public != statement_instances(&plan, &statement)? {
@@ -4625,6 +4797,7 @@ pub fn graph_gat_prove(
         "source_tree_digest": FORMAL_SOURCE_ID,
         "vendor_tree_digest": FORMAL_VENDOR_TREE_ID,
         "compiled_circuit_id": plan.compiled_circuit_id,
+        "input_preprocess_id": plan.input_preprocess_id,
         "shape_hash": plan.shape_hash,
         "public_statement_path": public_statement_path,
         "device_requested": device, "device_runtime_marker": device_marker,
@@ -4646,6 +4819,7 @@ pub fn graph_gat_verify(
     vk_path: PathBuf,
     output_path: PathBuf,
     device: String,
+    public_y_path: PathBuf,
 ) -> Result<String, EZKLError> {
     // Verification is deliberately a fresh CPU process, including for a
     // CUDA proving cell.  The GPU binary is never allowed to claim or route
@@ -4660,6 +4834,15 @@ pub fn graph_gat_verify(
     let (_, security_profile_id) = load_security_profile(&plan_dir(&compiled_circuit_path))?;
     validate_settings(&settings, &security_profile_id)?;
     let statement: PublicStatement = read_json(&public_statement_path)?;
+    let (public_y, public_y_sha256) = load_public_y_resource(&plan, &public_y_path)?;
+    if statement.public_y_sha256 != public_y_sha256
+        || statement.logits != public_y.logits
+        || statement.public_y_reference_source_digest != public_y.reference_source_digest
+        || statement.public_y_dataset_files_digest != public_y.dataset_files_digest
+        || statement.public_y_checkpoint_bundle_digest != public_y.checkpoint_bundle_digest
+    {
+        return Err("verifier statement is not bound to the external public-Y resource".into());
+    }
     let run_dir = plan_dir(&compiled_circuit_path);
     let circuit_manifest: CircuitManifest = read_json(&run_dir.join("circuit_manifest.json"))?;
     validate_resolved_srs_files(&plan, &circuit_manifest)?;
@@ -4673,6 +4856,7 @@ pub fn graph_gat_verify(
         || settings.relation != "R_GAT-ezkl"
         || settings.route_id != plan.route_id
         || settings.dataset != plan.dataset
+        || settings.input_preprocess_id != plan.input_preprocess_id
         || settings.quant_cfg_id != plan.quant_cfg_id
         || settings.static_tables_id != plan.static_tables_id
         || settings.backend_aux_tables_id != plan.backend_aux_tables_id
@@ -4680,6 +4864,7 @@ pub fn graph_gat_verify(
         || settings.security_profile_id != plan.security_profile_id
         || circuit_manifest.compiled_circuit_id != plan.compiled_circuit_id
         || circuit_manifest.settings_id != plan.settings_id
+        || circuit_manifest.input_preprocess_id != plan.input_preprocess_id
         || circuit_manifest.shape_hash != plan.shape_hash
         || circuit_manifest.vk_id != formal_file_id("halo2_verification_key", &vk_path)?
         || Path::new(&circuit_manifest.verification_srs_path)
@@ -4749,6 +4934,7 @@ pub fn graph_gat_verify(
         "independent_public_statement_reconstruction": true,
         "proof_instances_trusted": false,
         "compiled_circuit_id": plan.compiled_circuit_id,
+        "input_preprocess_id": plan.input_preprocess_id,
         "settings_id": plan.settings_id,
         "shape_hash": plan.shape_hash,
         "vk_id": circuit_manifest.vk_id,
@@ -4756,6 +4942,11 @@ pub fn graph_gat_verify(
         "backend_aux_tables_id": plan.backend_aux_tables_id,
         "integer_bound_ledger_digest": plan.ledger.model_bounds_digest,
         "model_hash": statement.model_hash,
+        "public_y_sha256": statement.public_y_sha256,
+        "public_y_reference_source_digest": statement.public_y_reference_source_digest,
+        "public_y_dataset_files_digest": statement.public_y_dataset_files_digest,
+        "public_y_checkpoint_bundle_digest": statement.public_y_checkpoint_bundle_digest,
+        "external_public_y_verified": true,
         "prover_device_build": circuit_manifest.device_build,
         "prover_backend": prover_backend,
         "verifier_backend": "cpu_independent",

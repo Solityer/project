@@ -49,6 +49,67 @@ def sha256(path: Path) -> str:
     return "sha256:" + value.hexdigest()
 
 
+def _bundle_digest(root: Path, names: list[str]) -> str:
+    value = hashlib.sha256()
+    for name in names:
+        payload = (root / name).read_bytes()
+        encoded = name.encode("utf-8")
+        value.update(len(encoded).to_bytes(8, "little"))
+        value.update(encoded)
+        value.update(len(payload).to_bytes(8, "little"))
+        value.update(payload)
+    return "sha256:" + value.hexdigest()
+
+
+def _validate_public_y(cell: Path, payload: dict[str, object]) -> None:
+    dataset = payload.get("dataset")
+    mapping = {
+        "cora_full": "cora", "citeseer_full": "citeseer", "pubmed_full": "pubmed",
+        "ppi_full_formal": "ppi", "ogbn_arxiv_full": "ogbn_arxiv",
+    }
+    if dataset not in mapping:
+        raise ValueError("public-Y dataset identity is unsupported")
+    expected_path = ROOT / "resources" / "public_y" / f"{dataset}.json"
+    actual_path = resolve_local(ROOT, payload.get("public_y_path"), "public-Y resource")
+    if actual_path != expected_path or not actual_path.is_file() or actual_path.is_symlink():
+        raise ValueError("public-Y path is not the canonical baseline-local resource")
+    resource = json.loads(actual_path.read_text(encoding="utf-8"))
+    if not isinstance(resource, dict) or resource.get("kind") != "ezkl_independent_public_y_v1":
+        raise ValueError("public-Y resource schema mismatch")
+    statement = json.loads((cell / "public_statement.json").read_text(encoding="utf-8"))
+    spec = json.loads((cell / "graph_attention_spec.json").read_text(encoding="utf-8"))
+    for field in (
+        "route_id", "dataset", "model_arch_id", "model_param_id", "input_preprocess_id",
+        "quant_cfg_id", "graph_hash", "checkpoint_hash", "logits",
+    ):
+        expected_value = statement.get(field, spec.get(field))
+        if resource.get(field) != expected_value:
+            raise ValueError(f"public-Y {field} does not match public statement")
+    if resource.get("run_id") != dataset or resource.get("source_quant_cfg_id") != "gat_l3_scale_chain":
+        raise ValueError("public-Y canonical source identity mismatch")
+    for field in ("dataset_files_digest", "checkpoint_bundle_digest", "reference_source_digest"):
+        value = resource.get(field)
+        if not isinstance(value, str) or len(value) != 71 or not value.startswith("sha256:"):
+            raise ValueError(f"public-Y {field} is malformed")
+    dataset_root = ROOT / "data" / "cache" / mapping[dataset]
+    names = ["meta.cfg", "edges.txt"]
+    names.extend(name for name in (
+        "node_ptr.txt", "features.txt", "features.npy", "labels.txt", "labels_multi.txt",
+        "train_mask.txt", "val_mask.txt", "test_mask.txt",
+    ) if (dataset_root / name).is_file())
+    checkpoint = ROOT / "artifacts" / "checkpoints" / f"{mapping[dataset]}_gat"
+    if resource.get("dataset_files_digest") != _bundle_digest(dataset_root, names):
+        raise ValueError("public-Y dataset provenance digest mismatch")
+    if resource.get("checkpoint_bundle_digest") != _bundle_digest(
+        checkpoint, ["manifest.json", "tensors.npz", "tensors.txt"]
+    ):
+        raise ValueError("public-Y checkpoint provenance digest mismatch")
+    if payload.get("public_y_sha256") != sha256(actual_path):
+        raise ValueError("run manifest public-Y digest mismatch")
+    if payload.get("input_preprocess_id") != resource.get("input_preprocess_id"):
+        raise ValueError("run manifest preprocessing/public-Y mismatch")
+
+
 def _validate_shape_bindings(cell: Path, payload: dict[str, object]) -> str:
     """Require every public artifact to carry the current circuit shape id."""
 
@@ -97,6 +158,14 @@ def _manifest(
         raise ValueError(f"prover backend identity mismatch: {path}")
     if payload.get("verifier_backend") != "cpu_independent":
         raise ValueError(f"verifier backend is not independent CPU: {path}")
+    timings = payload.get("timings_ms")
+    if (
+        not isinstance(timings, dict)
+        or payload.get("commitment_time_ms") != timings.get("commitment")
+        or payload.get("prove_time_ms") != timings.get("prove")
+        or payload.get("verify_time_ms") != timings.get("verify")
+    ):
+        raise ValueError(f"strict commitment/prove/verify timing schema mismatch: {path}")
     expected_paths = {
         "config": resolve_local(ROOT, Path("configs") / f"{payload.get('dataset', '')}.cfg", "config")
         if payload.get("dataset") not in DATASET_ORDER
@@ -216,6 +285,7 @@ def _manifest(
         if payload.get(field) != sha256(cell / name):
             raise ValueError(f"{field} mismatch: {path}")
     _validate_shape_bindings(cell, payload)
+    _validate_public_y(cell, payload)
     return payload
 
 
@@ -275,6 +345,7 @@ def _collect(
                         "verified": True,
                         "formal_experiment_eligible": True,
                         "setup_ms": timings.get("setup"),
+                        "commitment_ms": timings.get("commitment"),
                         "gen_witness_ms": timings.get("gen_witness"),
                         "prove_ms": timings.get("prove"),
                         "verify_ms": timings.get("verify"),

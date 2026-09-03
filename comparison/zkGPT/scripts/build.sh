@@ -4,12 +4,12 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON_BIN="${ZKGPT_PYTHON_BIN:-}"
 if [[ -z "${PYTHON_BIN}" ]]; then
-  if [[ -x "${ROOT}/../../.venv/bin/python" ]]; then
-    PYTHON_BIN="${ROOT}/../../.venv/bin/python"
-  else
-    PYTHON_BIN="$(command -v python3)"
-  fi
+  PYTHON_BIN="$(python3 "${ROOT}/scripts/ensure_environment.py" --print-python)"
 fi
+case "${PYTHON_BIN}" in
+  "${ROOT}/".venv/bin/python) ;;
+  *) echo "zkGPT build requires baseline-local interpreter: ${ROOT}/.venv/bin/python" >&2; exit 1 ;;
+esac
 MODE="${1:---all}"
 case "${MODE}" in
   --cpu)

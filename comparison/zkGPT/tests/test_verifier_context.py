@@ -13,7 +13,7 @@ import numpy as np
 
 from zkgpt_gat.bound_ledger import build_integer_bound_ledger
 from zkgpt_gat.data import LocalGraph
-from zkgpt_gat.model import QUANT_SCALE_PROFILES
+from synthetic_e2e_support import TEST_QUANT_SCALE_PROFILE
 from zkgpt_gat.rounding import ROUNDING_MODE_NEAREST
 from zkgpt_gat.verifier_context import (
     VerifierContext,
@@ -99,8 +99,8 @@ def _ledger(graph: LocalGraph) -> dict[str, object]:
     }
     return build_integer_bound_ledger(
         mode=ROUNDING_MODE_NEAREST,
-        quant_cfg_id="exact_integer_gat_v1",
-        authenticated_quant_scales=dict(QUANT_SCALE_PROFILES["exact_integer_gat_v1"]),
+        quant_cfg_id="exact_integer_gat",
+        authenticated_quant_scales=dict(TEST_QUANT_SCALE_PROFILE),
         registered_model_bounds=bounds,
         hidden_profile=[{"layer_index": 0, "head_count": 1, "head_dim": 2}],
         d_in=[2, 2],

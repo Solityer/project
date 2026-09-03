@@ -23,6 +23,7 @@ from resource_policy import (  # noqa: E402
     ICICLE_SOURCE_COMMIT,
     atomic_write_json,
     safe_mkdir,
+    resolve_local,
     manifest_payload,
     validate_cuda_backend_material,
     validate_ceremony_material,
@@ -60,6 +61,7 @@ from run_gat_ezkl_baseline import (  # noqa: E402
     _redact_private_stage_paths,
     _remove_private_stage_artifacts,
     build_independent_verify_command,
+    _finalize_srs_path_bindings,
     validate_canonical_shape_spec,
 )
 
@@ -690,6 +692,7 @@ class ResultContractTests(unittest.TestCase):
             settings=Path("/baseline/results/runs/cpu/cora_full/settings.json"),
             vk=Path("/baseline/results/runs/cpu/cora_full/vk.key"),
             output=Path("/baseline/results/runs/cpu/cora_full/verify.json"),
+            public_y=Path("/baseline/resources/public_y/cora_full.json"),
         )
         rendered = "\x00".join(command).lower()
         self.assertNotIn("witness", rendered)
@@ -699,6 +702,43 @@ class ResultContractTests(unittest.TestCase):
         self.assertEqual(
             set(command) & {"--witness", "--model", "--checkpoint"}, set()
         )
+        self.assertIn("--public-y", command)
+
+    def test_srs_paths_survive_tmp_to_final_rename_and_tamper_is_rejected(self) -> None:
+        baseline = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory(dir=baseline / "tests") as temporary:
+            root = Path(temporary)
+            stage = root / "tmp-cell"
+            final = root / "final-cell"
+            stage.mkdir()
+            (stage / "pk.srs").write_bytes(b"pk-srs")
+            (stage / "vk.srs").write_bytes(b"vk-srs")
+            manifest = _finalize_srs_path_bindings(
+                {
+                    "proving_srs_path": str(stage / "pk.srs"),
+                    "verification_srs_path": str(stage / "vk.srs"),
+                },
+                stage,
+                final,
+            )
+            stage.rename(final)
+            self.assertEqual(
+                resolve_local(baseline, manifest["proving_srs_path"], "proving SRS"),
+                (final / "pk.srs").resolve(),
+            )
+            self.assertEqual(
+                resolve_local(baseline, manifest["verification_srs_path"], "verification SRS"),
+                (final / "vk.srs").resolve(),
+            )
+            with self.assertRaises(RuntimeError):
+                _finalize_srs_path_bindings(
+                    {
+                        "proving_srs_path": str(stage / "pk.srs"),
+                        "verification_srs_path": str(final / "vk.srs"),
+                    },
+                    stage,
+                    final,
+                )
 
     def test_manifest_redacts_private_stage_paths_recursively(self) -> None:
         stage = "/baseline/results/runs_tmp/private-session"

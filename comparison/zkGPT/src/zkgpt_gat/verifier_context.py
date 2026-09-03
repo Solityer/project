@@ -11,6 +11,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 import pathlib
 from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Sequence, Tuple
@@ -44,9 +45,10 @@ from .field import BN254_FR_MODULUS, next_power_of_two, to_field_int
 from .forward import _exp_map_fixed, _elu_table_value
 from .native_gkr import LinearGateSpec, LinearTerm, OracleRef, ProductGateSpec, identity_oracle
 from .model import QUANT_SCALE_PROFILES, _validate_canonical_manifest
-from .quantization import canonical_input_preprocess_id, quantize_ties_away
+from .quantization import CANONICAL_QUANT_CFG_ID, canonical_input_preprocess_id, quantize_ties_away
+from .reference_forward import REFERENCE_FORWARD_ENGINE, reference_forward_source_sha256
 from .registry import canonical_registry_public_path, require_registry_transaction_id
-from .resources import STATIC_TABLE_DESCRIPTOR_RELATIVE_PATH, validate_static_table_descriptor
+from .resources import STATIC_TABLE_DESCRIPTOR_RELATIVE_PATH, canonical_dataset_name, required_resource_paths, validate_static_table_descriptor
 from .rounding import (
     validate_rounding_mode,
 )
@@ -55,6 +57,7 @@ from .util import digest_json
 
 _FIELD_HALF = (BN254_FR_MODULUS - 1) // 2
 _HYRAX_BACKEND = COMMITMENT_BACKEND_ID
+PUBLIC_Y_SCHEMA = "zkGPT_public_y_v1"
 
 class ContextError(ValueError):
     """The external statement or a trust-boundary path is invalid."""
@@ -384,6 +387,121 @@ def load_public_y(path: pathlib.Path) -> np.ndarray:
     try: values = [int(item) for item in path.read_text(encoding="utf-8").split()]
     except (OSError, ValueError) as exc: raise ContextError(f"public Y text is not an integer vector: {path}") from exc
     return _integer_array(values, "public Y")
+
+
+def _file_sha256(path: pathlib.Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _cache_tree_sha256(root: pathlib.Path) -> str:
+    if root.is_symlink() or not root.is_dir():
+        raise ContextError(f"public-Y cache root is not a real directory: {root}")
+    files: list[pathlib.Path] = []
+    for current, directories, names in os.walk(root, followlinks=False):
+        current_path = pathlib.Path(current)
+        if any((current_path / name).is_symlink() for name in directories):
+            raise ContextError("public-Y cache contains a symlink directory")
+        files.extend(current_path / name for name in names)
+    files.sort(key=lambda path: path.relative_to(root).as_posix())
+    digest = hashlib.sha256()
+    for path in files:
+        _owned_file(path, "public-Y cache file")
+        digest.update(path.relative_to(root).as_posix().encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(str(path.stat().st_size).encode("ascii"))
+        digest.update(b"\0")
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
+def _public_y_provenance(
+    root: pathlib.Path,
+    config: AppConfig,
+    graph: LocalGraph,
+    manifest: Mapping[str, Any],
+    public_y_path: pathlib.Path,
+    output: np.ndarray,
+    y_digest: str,
+) -> Dict[str, Any]:
+    """Authenticate the descriptor/provenance of the external public Y.
+
+    The verifier never loads private tensor values or replays the producer
+    forward.  It does authenticate the independently generated descriptor,
+    its exact Y digest, source implementation digest, checkpoint/cache
+    identities, and all numerical/model fields that bind the statement.
+    """
+    try:
+        payload = _json(_owned_file(public_y_path, "public Y descriptor"), "public Y descriptor")
+    except ContextError:
+        raise
+    if payload.get("schema") != PUBLIC_Y_SCHEMA:
+        raise ContextError("public Y descriptor schema is not canonical")
+    descriptor = dict(payload)
+    descriptor_digest = descriptor.pop("descriptor_digest", None)
+    if not isinstance(descriptor_digest, str) or descriptor_digest != digest_json(descriptor):
+        raise ContextError("public Y descriptor digest is invalid")
+    canonical = canonical_dataset_name(config.dataset)
+    paths = required_resource_paths(root, canonical)
+    checkpoint_manifest = paths["checkpoint_bundle"] / "manifest.json"
+    checkpoint_npz = paths["checkpoint_bundle"] / "tensors.npz"
+    checkpoint_tensors = paths["checkpoint_bundle"] / "tensors.txt"
+    expected_scale_chain = {key: int(value) for key, value in QUANT_SCALE_PROFILES[CANONICAL_QUANT_CFG_ID].items()}
+    expected = {
+        "dataset": canonical,
+        "config_dataset": config.dataset,
+        "model_arch_id": config.entries.get("model_arch_id"),
+        "model_param_id": config.entries.get("model_param_id"),
+        "quant_cfg_id": CANONICAL_QUANT_CFG_ID,
+        "source_quant_cfg_id": manifest.get("quant_cfg_id"),
+        "rounding_mode": config.rounding_mode,
+        "L": int(manifest.get("L", -1)),
+        "hidden_profile": manifest.get("hidden_profile"),
+        "d_in_profile": manifest.get("d_in_profile"),
+        "K_out": int(manifest.get("K_out", -1)),
+        "C": int(manifest.get("C", -1)),
+        "shape": [int(graph.num_nodes), int(manifest.get("C", -1))],
+        "quant_scale_chain": expected_scale_chain,
+        "input_preprocess_id": config.input_preprocess_id,
+        "canonical_scale_chain": manifest.get("quant_scale_chain"),
+        "output_average_rule": manifest.get("output_average_rule"),
+        "cache_dir": str(paths["cache_dir"].relative_to(root)),
+        "checkpoint_bundle": str(paths["checkpoint_bundle"].relative_to(root)),
+        "graph_count": int(graph.graph_count),
+        "edge_count": int(graph.src.size),
+        "input_feature_rounding": "nearest_ties_away",
+        "forward_engine": "zkgpt_gat.forward.forward_public_y",
+        "reference_forward_engine": REFERENCE_FORWARD_ENGINE,
+        "reference_forward_source_sha256": reference_forward_source_sha256(),
+        "checkpoint_manifest_sha256": _file_sha256(checkpoint_manifest),
+        "checkpoint_npz_sha256": _file_sha256(checkpoint_npz),
+        "checkpoint_tensors_sha256": _file_sha256(checkpoint_tensors),
+        "cache_tree_sha256": _cache_tree_sha256(paths["cache_dir"]),
+    }
+    checks: Dict[str, bool] = {}
+    for key, value in expected.items():
+        checks[key] = payload.get(key) == value
+    checks["y_digest"] = payload.get("y_digest") == y_digest
+    checks["reference_y_digest"] = payload.get("reference_y_digest") == y_digest
+    checks["independent_reference_forward"] = payload.get("independent_reference_forward") is True
+    checks["descriptor_digest"] = True
+    if payload.get("values") is None or not np.array_equal(load_public_y(public_y_path), output):
+        checks["values"] = False
+    else:
+        checks["values"] = True
+    return {
+        "status": "VERIFY_OK" if all(checks.values()) else "VERIFY_FAILED",
+        "checks": checks,
+        "descriptor_digest": descriptor_digest,
+        "reference_forward_source_sha256": expected["reference_forward_source_sha256"],
+        "public_y_path": str(public_y_path.relative_to(root)),
+    }
 
 
 def _manifest(bundle: pathlib.Path) -> Dict[str, Any]:
@@ -1183,7 +1301,7 @@ def _dims(config: AppConfig, dataset: GraphDataset, graph: LocalGraph, manifest:
 
 @dataclass(frozen=True)
 class VerifierContext:
-    project_root: pathlib.Path; config_path: pathlib.Path; artifact_dir: pathlib.Path; registry_public_path: pathlib.Path; public_y_path: pathlib.Path; config: AppConfig; dataset: GraphDataset; graph: LocalGraph; model_manifest: Dict[str, Any]; registry_public: Dict[str, Any]; public_y_shape: Tuple[int, ...]; public_y_digest: str; expected_metadata: Dict[str, Any]; expected_model_arrays: Tuple[Dict[str, Any], ...]; expected_lasso_families: Tuple[Dict[str, Any], ...]; expected_matrix_families: Tuple[Dict[str, Any], ...]; expected_gkr_families: Tuple[Dict[str, Any], ...]; public_statement: Dict[str, Any]; context_digest: str
+    project_root: pathlib.Path; config_path: pathlib.Path; artifact_dir: pathlib.Path; registry_public_path: pathlib.Path; public_y_path: pathlib.Path; config: AppConfig; dataset: GraphDataset; graph: LocalGraph; model_manifest: Dict[str, Any]; registry_public: Dict[str, Any]; public_y_shape: Tuple[int, ...]; public_y_digest: str; expected_metadata: Dict[str, Any]; expected_model_arrays: Tuple[Dict[str, Any], ...]; expected_lasso_families: Tuple[Dict[str, Any], ...]; expected_matrix_families: Tuple[Dict[str, Any], ...]; expected_gkr_families: Tuple[Dict[str, Any], ...]; public_statement: Dict[str, Any]; context_digest: str; public_y_provenance: Dict[str, Any]
 
     def proof_context(self) -> Dict[str, Any]:
         """Return only externally reconstructed public verifier material.
@@ -1244,6 +1362,7 @@ class VerifierContext:
         errors = []
         if metadata.get("public_output_digest") != self.public_y_digest or proof_payload.get("Y_digest") != self.public_y_digest: errors.append("public Y digest does not match independent Y")
         if proof_payload.get("M_pub_digest") != digest_json(dict(metadata)): errors.append("proof M_pub digest does not match metadata")
+        if self.public_y_provenance.get("status") != "VERIFY_OK": errors.append("public Y independent-reference provenance is invalid")
         return {"status": "VERIFY_OK" if not errors else "VERIFY_FAILED", "errors": errors, "context_digest": self.context_digest}
 
     def validate_subproof_families(self, lasso: Mapping[str, Any] | None, matrix: Mapping[str, Any] | None, gkr: Mapping[str, Any] | None) -> Dict[str, Any]:
@@ -1307,7 +1426,7 @@ def build_verifier_context(project_root: pathlib.Path, config_path: pathlib.Path
         if not value:
             raise ContextError(f"formal config is missing {key}")
         identities[key] = value
-    if identities["quant_cfg_id"] != "gat_l3_scale_chain_v1":
+    if identities["quant_cfg_id"] != "gat_l3_scale_chain":
         raise ContextError("formal verifier requires the registered GAT scale chain")
     if config.input_preprocess_id != canonical_input_preprocess_id(str(raw_manifest.get("dataset", ""))):
         raise ContextError("formal config/checkpoint input_preprocess_id mismatch")
@@ -1327,9 +1446,17 @@ def build_verifier_context(project_root: pathlib.Path, config_path: pathlib.Path
     if _inside(y_path, artifact): raise ContextError("public Y must be outside proof artifact")
     if not _inside(y_path, root):
         raise ContextError("public Y must be inside baseline project-root")
+    expected_y_path = required_resource_paths(root, canonical_dataset_name(config.dataset))["public_y_path"].resolve()
+    if y_path != expected_y_path:
+        raise ContextError("public Y must use the canonical baseline-local resource path")
     output = load_public_y(y_path); hidden, classes, k_out, layers = _dimensions(manifest); expected_shape = (graph.num_nodes, classes)
     if tuple(output.shape) != expected_shape: raise ContextError(f"public Y shape {tuple(output.shape)} != expected {expected_shape}")
-    y_digest = _array_digest("Y", output); binding = registry["registration_binding"]; bounds = binding.get("registered_model_bounds", {}); rounding_mode = config.rounding_mode; ledger = _ledger(graph, manifest, bounds, identities["quant_cfg_id"], rounding_mode, config.range_bits)
+    y_digest = _array_digest("Y", output)
+    public_y_provenance = _public_y_provenance(root, config, graph, raw_manifest, y_path, output, y_digest)
+    if public_y_provenance.get("status") != "VERIFY_OK":
+        failed = sorted(key for key, value in public_y_provenance.get("checks", {}).items() if value is not True)
+        raise ContextError("public Y independent-reference provenance is invalid: " + ",".join(failed))
+    binding = registry["registration_binding"]; bounds = binding.get("registered_model_bounds", {}); rounding_mode = config.rounding_mode; ledger = _ledger(graph, manifest, bounds, identities["quant_cfg_id"], rounding_mode, config.range_bits)
     if binding.get("integer_bound_ledger_digest") != digest_json(ledger): raise ContextError("trusted registry bound ledger does not match external graph/model context")
     n_in, layout_digest = int(binding.get("N_in", 0)), str(binding.get("Layout_in_digest", ""))
     if n_in <= 0 or n_in & (n_in - 1) or len(layout_digest) != 64: raise ContextError("trusted registry has invalid Layout_in identity")
@@ -1382,7 +1509,7 @@ def build_verifier_context(project_root: pathlib.Path, config_path: pathlib.Path
         "setup_context": setup,
     }
     context_digest = digest_json(context_payload)
-    return VerifierContext(root, config_path, artifact, registry_path, y_path, config, dataset, graph, dict(manifest), registry, expected_shape, y_digest, expected, tuple(model_arrays), tuple(lasso), tuple(matrix), tuple(gkr), statement, context_digest)
+    return VerifierContext(root, config_path, artifact, registry_path, y_path, config, dataset, graph, dict(manifest), registry, expected_shape, y_digest, expected, tuple(model_arrays), tuple(lasso), tuple(matrix), tuple(gkr), statement, context_digest, public_y_provenance)
 
 
 # Compatibility helpers retained for code that imported the earlier context

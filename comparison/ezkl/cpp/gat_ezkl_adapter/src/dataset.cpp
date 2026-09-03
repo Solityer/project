@@ -53,6 +53,7 @@ namespace gat_ezkl
         struct NpyArray {
             std::vector<std::size_t> shape;
             std::vector<double> values;
+            bool source_float32 = false;
         };
 
         NpyArray load_npy_double(const std::filesystem::path& path) {
@@ -104,6 +105,7 @@ namespace gat_ezkl
                 throw std::runtime_error("missing npy shape: " + path.string());
             }
             NpyArray out;
+            out.source_float32 = is_float32;
             std::stringstream shape_stream(header.substr(shape_pos + 1, shape_end - shape_pos - 1));
             std::string token;
             while (std::getline(shape_stream, token, ',')) {
@@ -166,7 +168,12 @@ namespace gat_ezkl
         std::vector<std::vector<double>> load_features_matrix(
             const std::filesystem::path& root,
             std::size_t rows,
-            std::size_t cols) {
+            std::size_t cols,
+            bool* source_float32) {
+            if (source_float32 == nullptr) {
+                throw std::runtime_error("feature source dtype output is null");
+            }
+            *source_float32 = false;
             if (std::filesystem::exists(root / "features.txt")) {
                 std::vector<std::vector<double>> raw(rows, std::vector<double>(cols, 0.0));
                 std::ifstream input(root / "features.txt");
@@ -211,6 +218,7 @@ namespace gat_ezkl
                 return raw;
             }
             const auto npy = load_npy_double(root / "features.npy");
+            *source_float32 = npy.source_float32;
             if (npy.shape.size() != 2 || npy.shape[0] != rows || npy.shape[1] != cols) {
                 throw std::runtime_error("features.npy shape mismatch");
             }
@@ -223,13 +231,13 @@ namespace gat_ezkl
             return out;
         }
 
-        // 加载标签，不存在则全零
+        // Load single-label datasets.  Formal runs do not permit a missing
+        // label file to silently become an all-zero task.
         std::vector<int> load_labels(const std::filesystem::path& root, std::size_t rows) {
             std::vector<int> labels;
             std::ifstream input(root / "labels.txt");
             if (!input) {
-                labels.assign(rows, 0);
-                return labels;
+                throw std::runtime_error("formal dataset is missing labels.txt");
             }
             int label = 0;
             while (input >> label) {
@@ -240,6 +248,33 @@ namespace gat_ezkl
             }
             if (labels.size() != rows) {
                 throw std::runtime_error("label count mismatch");
+            }
+            return labels;
+        }
+
+        std::vector<std::vector<int>> load_multi_labels(
+            const std::filesystem::path& root, std::size_t rows, std::size_t cols) {
+            std::ifstream input(root / "labels_multi.txt");
+            if (!input) {
+                throw std::runtime_error("formal multi-label dataset is missing labels_multi.txt");
+            }
+            std::size_t file_rows = 0;
+            std::size_t file_cols = 0;
+            if (!(input >> file_rows >> file_cols) || file_rows != rows || file_cols != cols) {
+                throw std::runtime_error("labels_multi.txt shape mismatch");
+            }
+            std::vector<std::vector<int>> labels(rows, std::vector<int>(cols, 0));
+            for (std::size_t row = 0; row < rows; ++row) {
+                for (std::size_t col = 0; col < cols; ++col) {
+                    if (!(input >> labels[row][col])
+                        || (labels[row][col] != 0 && labels[row][col] != 1)) {
+                        throw std::runtime_error("labels_multi.txt contains a non-binary entry");
+                    }
+                }
+            }
+            std::string extra;
+            if (input >> extra) {
+                throw std::runtime_error("labels_multi.txt contains trailing entries");
             }
             return labels;
         }
@@ -275,7 +310,14 @@ namespace gat_ezkl
         const auto meta = read_meta(cache_root / "meta.cfg");
 
         GraphDataset dataset;
-        dataset.name = meta.at("name");
+        const auto metadata_name = meta.at("name");
+        const auto expected_display_name = config.dataset == "ogbn_arxiv"
+            ? "ogbn-arxiv" : config.dataset;
+        if (metadata_name != config.dataset && metadata_name != expected_display_name) {
+            throw std::runtime_error("dataset meta name does not match canonical dataset identity");
+        }
+        dataset.name = config.dataset;
+        dataset.input_preprocess_id = config.input_preprocess_id;
         dataset.num_nodes = static_cast<std::size_t>(std::stoull(meta.at("num_nodes")));
         dataset.num_features = static_cast<std::size_t>(std::stoull(meta.at("num_features")));
         dataset.num_classes = static_cast<std::size_t>(std::stoull(meta.at("num_classes")));
@@ -289,8 +331,31 @@ namespace gat_ezkl
         if (meta.count("report_unit")) {
             dataset.report_unit = meta.at("report_unit");
         }
-        dataset.features_fp = row_normalize(load_features_matrix(cache_root, dataset.num_nodes, dataset.num_features));
-        dataset.labels = load_labels(cache_root, dataset.num_nodes);
+        if (meta.count("label_format")) {
+            dataset.label_format = meta.at("label_format");
+        }
+        bool source_float32 = false;
+        auto features = load_features_matrix(
+            cache_root, dataset.num_nodes, dataset.num_features, &source_float32);
+        if (config.dataset == "ogbn_arxiv") {
+            if (config.input_preprocess_id != "ogbn_arxiv_raw_float32" || !source_float32) {
+                throw std::runtime_error(
+                    "OGBN-Arxiv formal input must use the original float32 feature payload");
+            }
+            dataset.features_fp = std::move(features);
+        } else {
+            if (config.input_preprocess_id != "row_normalize") {
+                throw std::runtime_error("non-OGBN formal input requires row_normalize");
+            }
+            dataset.features_fp = row_normalize(std::move(features));
+        }
+        if (dataset.label_format == "multi_hot") {
+            dataset.labels_multi = load_multi_labels(
+                cache_root, dataset.num_nodes, dataset.num_classes);
+            dataset.labels.assign(dataset.num_nodes, 0);
+        } else {
+            dataset.labels = load_labels(cache_root, dataset.num_nodes);
+        }
 
         if (std::filesystem::exists(cache_root / "node_ptr.txt")) {
             dataset.node_ptr = load_size_vector(cache_root / "node_ptr.txt");
@@ -383,6 +448,15 @@ namespace gat_ezkl
         if (dataset.num_nodes == 0) {
             throw std::runtime_error("cannot normalize empty dataset");
         }
+        if (dataset.input_preprocess_id != config.input_preprocess_id) {
+            throw std::runtime_error("dataset preprocessing identity disagrees with config");
+        }
+        if (config.dataset == "ppi" && dataset.label_format != "multi_hot") {
+            throw std::runtime_error("PPI formal task requires its canonical multi-hot labels");
+        }
+        if (config.dataset != "ppi" && dataset.label_format == "multi_hot") {
+            throw std::runtime_error("multi-hot labels are only valid for the canonical PPI task");
+        }
         if (dataset.graph_count == 0 || dataset.node_ptr.size() != dataset.graph_count + 1
             || dataset.node_ptr.front() != 0 || dataset.node_ptr.back() != dataset.num_nodes
             || std::adjacent_find(dataset.node_ptr.begin(), dataset.node_ptr.end(),
@@ -390,7 +464,9 @@ namespace gat_ezkl
             throw std::runtime_error("dataset node_ptr is not a strict canonical partition");
         }
         if (dataset.features_fp.size() != dataset.num_nodes
-            || dataset.labels.size() != dataset.num_nodes) {
+            || (dataset.label_format == "multi_hot"
+                ? dataset.labels_multi.size() != dataset.num_nodes
+                : dataset.labels.size() != dataset.num_nodes)) {
             throw std::runtime_error("dataset feature/label rows do not match num_nodes");
         }
         for (const auto& row : dataset.features_fp) {
@@ -399,9 +475,20 @@ namespace gat_ezkl
                 throw std::runtime_error("dataset feature shape or finiteness mismatch");
             }
         }
-        for (const auto label : dataset.labels) {
-            if (label < 0 || static_cast<std::size_t>(label) >= dataset.num_classes) {
-                throw std::runtime_error("dataset label is outside the configured class range");
+        if (dataset.label_format == "multi_hot") {
+            for (const auto& row : dataset.labels_multi) {
+                if (row.size() != dataset.num_classes
+                    || std::any_of(row.begin(), row.end(), [](int label) {
+                        return label != 0 && label != 1;
+                    })) {
+                    throw std::runtime_error("dataset multi-label shape/value mismatch");
+                }
+            }
+        } else {
+            for (const auto label : dataset.labels) {
+                if (label < 0 || static_cast<std::size_t>(label) >= dataset.num_classes) {
+                    throw std::runtime_error("dataset label is outside the configured class range");
+                }
             }
         }
         if (config.batching_rule == "multi_graph_batch") {
@@ -431,6 +518,8 @@ namespace gat_ezkl
 
         NormalizedGraph local;
         local.name = dataset.name + "_full_normalized";
+        local.input_preprocess_id = dataset.input_preprocess_id;
+        local.input_preprocess_id = dataset.input_preprocess_id;
         local.n_total = dataset.num_nodes;
         local.feature_dim = dataset.num_features;
         local.class_count = dataset.num_classes;

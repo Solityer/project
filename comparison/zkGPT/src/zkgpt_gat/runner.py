@@ -19,7 +19,7 @@ from .forward import forward_full
 from .formal_gate import require_formal_experiment
 from .model import load_model
 from .proof import artifact_ids, build_proof
-from .resources import check_resource_layout, resolve_local
+from .resources import check_resource_layout, required_resource_paths, resolve_local
 from .registry import (
     canonical_registry_public_path,
     canonical_registry_secret_path,
@@ -127,19 +127,27 @@ def _prepare_artifact_directory(
 def _resolve_public_y(config: Any, baseline_root: pathlib.Path, dataset: str) -> pathlib.Path:
     """Resolve the single canonical baseline-local public-Y source.
 
-    The generated config is the sole source of the filename.  Only the
-    baseline's canonical ``resources/public_y`` directory is accepted; the
-    proof artifact and reference/run directories are never searched.
+    The resource contract is the sole source of the canonical path.  The
+    configured path must match it exactly; the proof artifact and
+    reference/run directories are never searched.
     """
     baseline_root = pathlib.Path(baseline_root).expanduser().resolve()
+    expected = required_resource_paths(baseline_root, dataset)["public_y_path"]
     configured = resolve_local(baseline_root, config.entries.get("public_y_path", ""), "public_y_path")
-    canonical_root = resolve_local(baseline_root, "resources/public_y", "canonical public-Y directory")
-    if configured.parent != canonical_root:
-        raise ValueError(f"config public_y_path must be under canonical directory: {canonical_root}")
-    if configured.name != f"{dataset.replace('-', '_')}.json":
-        raise ValueError(f"config public_y_path is not canonical for {dataset}: {configured}")
-    if not configured.is_file():
-        raise FileNotFoundError(f"canonical baseline-local public Y is missing: {configured}")
+    if configured != expected:
+        raise ValueError(f"config public_y_path must equal canonical resource path: {expected}")
+    if configured.name != expected.name:
+        raise ValueError(f"config public_y_path has non-canonical filename: {configured}")
+    try:
+        info = configured.lstat()
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(f"canonical baseline-local public Y is missing: {configured}") from exc
+    except OSError as exc:
+        raise OSError(f"cannot inspect canonical baseline-local public Y: {configured}") from exc
+    if stat.S_ISLNK(info.st_mode):
+        raise ValueError(f"canonical baseline-local public Y must not be a symlink: {configured}")
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+        raise ValueError(f"canonical baseline-local public Y must be an owned regular file: {configured}")
     return configured
 
 
@@ -395,6 +403,7 @@ def run_one(
         "gpu_hot_path": verified_fields["gpu_hot_path"],
         "proof_schema_scan": verified_fields["proof_schema_scan"],
         "privacy_masking_verified": verified_fields["privacy_masking_verified"],
+        "independent_reference_forward": verified_fields["independent_reference_forward"],
         "verifier_input_boundary": verified_fields["verifier_input_boundary"],
         "artifact_digests": artifact_digest_map(artifact_dir, backend),
     }

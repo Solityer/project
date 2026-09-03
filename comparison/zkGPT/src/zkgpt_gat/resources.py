@@ -20,6 +20,13 @@ RESOURCE_MANIFEST_SCHEMA = "zkGPT_baseline_resource_manifest_v1"
 MODEL_REGISTRY_ROOT_RELATIVE_PATH = "results/model_registry"
 PRIVATE_MODEL_SETUP_ROOT_RELATIVE_PATH = "artifacts/private_setup/model_registry"
 DATASET_NAMES = ("cora", "citeseer", "pubmed", "ppi", "ogbn-arxiv")
+CANONICAL_RANGE_BITS = {
+    "cora": 12,
+    "citeseer": 12,
+    "pubmed": 12,
+    "ppi": 14,
+    "ogbn-arxiv": 21,
+}
 DATASET_ALIASES = {"ogbn_arxiv": "ogbn-arxiv"}
 RESOURCE_BASENAME = {
     "cora": "cora",
@@ -32,7 +39,7 @@ RESOURCE_BASENAME = {
 }
 STATIC_TABLE_DESCRIPTOR_SCHEMA = "zkGPT_static_tables_descriptor_v1"
 STATIC_TABLE_FAMILIES = ("T_LReLU", "T_ELU", "T_exp", "T_range")
-STATIC_TABLE_DESCRIPTOR_RELATIVE_PATH = "resources/static_tables/exact_integer_gat_v1.json"
+STATIC_TABLE_DESCRIPTOR_RELATIVE_PATH = "resources/static_tables/exact_integer_gat.json"
 
 # This is the small, baseline-local protocol descriptor for the fixed tables.
 # It deliberately contains no table rows, dataset values, checkpoint material,
@@ -76,7 +83,16 @@ STATIC_TABLE_CONTENT: Dict[str, Any] = {
         "table_id": "T_range",
         "table_kind": "materialized_fixed_range_table",
         "entry_policy": "all limbs in [0,2^range_bits-1]",
-        "range_bits": 12,
+        # Range width is a dataset-bound protocol input.  OGBN-Arxiv uses
+        # 21 bits; retaining the complete map in the authenticated descriptor
+        # prevents a stale global 12-bit default from being accepted.
+        "range_bits_by_dataset": {
+            "cora": 12,
+            "citeseer": 12,
+            "pubmed": 12,
+            "ppi": 14,
+            "ogbn-arxiv": 21,
+        },
     },
 }
 
@@ -99,6 +115,10 @@ def canonical_dataset_name(dataset: str) -> str:
     if value not in DATASET_NAMES:
         raise ValueError(f"unsupported formal dataset: {dataset}")
     return value
+
+
+def canonical_range_bits(dataset: str) -> int:
+    return int(CANONICAL_RANGE_BITS[canonical_dataset_name(dataset)])
 
 
 def resolve_local(root: pathlib.Path, raw: str | pathlib.Path, label: str) -> pathlib.Path:
@@ -161,14 +181,23 @@ def resource_manifest_payload(root: pathlib.Path) -> Dict[str, Any]:
         paths = required_resource_paths(root, dataset)
         datasets[dataset] = {
             "cache_dir": str(paths["cache_dir"].relative_to(root)),
-            "required_files": [
+            "required_files": ([
+                "meta.cfg",
+                "edges.txt",
+                "features.txt or features.npy",
+                "node_ptr.txt",
+                "labels_multi.npy or labels_multi.txt",
+                "train_mask.npy",
+                "val_mask.npy",
+                "test_mask.npy",
+            ] if dataset == "ppi" else [
                 "meta.cfg",
                 "edges.txt",
                 "features.txt or features.npy",
                 "labels.txt",
-            ] + (["node_ptr.txt", "labels_multi.npy or labels_multi.txt", "train_mask.npy", "val_mask.npy", "test_mask.npy"] if dataset == "ppi" else []),
+            ]),
             "checkpoint_bundle": str(paths["checkpoint_bundle"].relative_to(root)),
-            "checkpoint_required_files": ["manifest.json", "tensors.txt"],
+            "checkpoint_required_files": ["manifest.json", "tensors.npz", "tensors.txt"],
             "public_y": str(paths["public_y_path"].relative_to(root)),
             "status": "runtime_generated_from_baseline_local_inputs",
         }
@@ -242,15 +271,24 @@ def read_resource_manifest(root: pathlib.Path) -> Dict[str, Any]:
         }
         if not isinstance(entry, dict) or any(entry.get(key) != value for key, value in expected.items()):
             raise ValueError(f"baseline resource manifest path mismatch: {dataset}")
-        expected_required_files = [
+        expected_required_files = ([
+            "meta.cfg",
+            "edges.txt",
+            "features.txt or features.npy",
+            "node_ptr.txt",
+            "labels_multi.npy or labels_multi.txt",
+            "train_mask.npy",
+            "val_mask.npy",
+            "test_mask.npy",
+        ] if dataset == "ppi" else [
             "meta.cfg",
             "edges.txt",
             "features.txt or features.npy",
             "labels.txt",
-        ] + (["node_ptr.txt", "labels_multi.npy or labels_multi.txt", "train_mask.npy", "val_mask.npy", "test_mask.npy"] if dataset == "ppi" else [])
+        ])
         if entry.get("required_files") != expected_required_files:
             raise ValueError(f"baseline resource manifest file requirements mismatch: {dataset}")
-        if entry.get("checkpoint_required_files") != ["manifest.json", "tensors.txt"]:
+        if entry.get("checkpoint_required_files") != ["manifest.json", "tensors.npz", "tensors.txt"]:
             raise ValueError(f"baseline resource manifest checkpoint requirements mismatch: {dataset}")
     return payload
 
@@ -345,9 +383,9 @@ def check_resource_layout(
                         _owned_regular(cache / name, f"dataset {dataset} {name}")
                     except (FileNotFoundError, OSError, ValueError):
                         missing.append(str(cache / name))
-                if not ((cache / "labels_multi.npy").is_file() or (cache / "labels_multi.txt").is_file()):
-                    missing.append(f"{cache}/labels_multi.npy or labels_multi.txt")
-            for name in ("manifest.json", "tensors.txt"):
+            if not ((cache / "labels_multi.npy").is_file() or (cache / "labels_multi.txt").is_file()):
+                missing.append(f"{cache}/labels_multi.npy or labels_multi.txt")
+            for name in ("manifest.json", "tensors.npz", "tensors.txt"):
                 try:
                     _owned_regular(paths["checkpoint_bundle"] / name, f"checkpoint {name}")
                 except (FileNotFoundError, OSError, ValueError):

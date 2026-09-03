@@ -131,8 +131,13 @@ std::string formal_sha256_file(const std::string& domain, const std::string& rol
     return formal_sha256_bytes(domain, {{role, file_bytes(path)}});
 }
 std::string formal_hash_checkpoint(const std::filesystem::path& manifest,
-                                   const std::filesystem::path& tensors) {
-    return formal_sha256_bytes("checkpoint_bundle", {{"manifest",file_bytes(manifest)}, {"tensors",file_bytes(tensors)}});
+                                   const std::filesystem::path& tensors,
+                                   const std::filesystem::path& tensors_npz) {
+    return formal_sha256_bytes("checkpoint_bundle", {
+        {"manifest", file_bytes(manifest)},
+        {"tensors", file_bytes(tensors)},
+        {"tensors_npz", file_bytes(tensors_npz)},
+    });
 }
 std::string formal_hash_graph(const NormalizedGraph& graph) {
     std::vector<std::uint8_t> dimensions;

@@ -45,7 +45,7 @@ from zkgpt_gat.constants import (  # noqa: E402
 )
 from zkgpt_gat.data import LocalGraph  # noqa: E402
 from zkgpt_gat.field import next_power_of_two  # noqa: E402
-from zkgpt_gat.model import QUANT_SCALE_PROFILES  # noqa: E402
+from synthetic_e2e_support import TEST_QUANT_SCALE_PROFILE  # noqa: E402
 from zkgpt_gat.privacy import PROFILE_ID, PROFILE_STATUS, transcript_domain  # noqa: E402
 from zkgpt_gat.registry import canonical_registry_public_path  # noqa: E402
 from zkgpt_gat.rounding import validate_rounding_mode  # noqa: E402
@@ -403,7 +403,7 @@ def _manifest_and_model(payload: Mapping[str, Any]) -> Dict[str, Any]:
         if str(payload[key]) != str(manifest.get(key, payload[key])) and key == "model_arch_id":
             raise SyntheticVerificationError(f"synthetic public model {key} mismatch")
     quant_id = str(payload["quant_cfg_id"])
-    if quant_id not in QUANT_SCALE_PROFILES or payload["quant_scales"] != QUANT_SCALE_PROFILES[quant_id]:
+    if quant_id != "exact_integer_gat" or payload["quant_scales"] != TEST_QUANT_SCALE_PROFILE:
         raise SyntheticVerificationError("synthetic public model quantization profile mismatch")
     if [
         {
