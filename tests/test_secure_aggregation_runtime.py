@@ -48,6 +48,31 @@ class SecureAggregationRuntimeTests(unittest.TestCase):
         self.assertEqual(envelope["max_input_dim"], "64")
         self.assertEqual(envelope["max_concat_dim"], "64")
 
+    def test_ogbn_srs_domains_match_canonical_planner(self):
+        self.assertEqual(
+            AGGREGATOR.EXPECTED_SRS_DOMAINS["ogbn_arxiv"],
+            {
+                "C": 1 << 6,
+                "FH": 1 << 25,
+                "N": 1 << 18,
+                "cat": 1 << 7,
+                "d": 1 << 4,
+                "edge": 1 << 24,
+                "in": 1 << 8,
+            },
+        )
+
+        envelope = {}
+        for line in (ROOT / "configs" / "srs_ogbn_arxiv_max_envelope.cfg").read_text(
+            encoding="utf-8"
+        ).splitlines():
+            if "=" not in line:
+                continue
+            key, value = (part.strip() for part in line.split("=", 1))
+            envelope[key] = value
+        self.assertEqual(envelope["max_input_dim"], "128")
+        self.assertEqual(envelope["max_concat_dim"], "64")
+
     def tamper_map(self):
         names = (
             "codec_tag", "codec_length", "codec_trailing", "public_output",

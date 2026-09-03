@@ -431,6 +431,120 @@ int main()
         expect(rejected_unknown_scale_id,
                "unknown quantization scale-chain ID must fail closed");
 
+        // SignedRoundDiv output bounds use the same nearest-integer rounding
+        // rule as trace.cpp after cancelling the common aggregate sum.  Keep
+        // the helper's arithmetic guarded even though the formal datasets use
+        // much smaller certified values.
+        expect(
+            gatzk::protocol::canonical_signed_round_div_bound(
+                16 * 800, 64, "synthetic SignedRoundDiv")
+                == 200,
+            "canonical SignedRoundDiv quotient bound mismatch");
+        expect(
+            gatzk::protocol::canonical_signed_round_div_bound(
+                32, 64, "synthetic SignedRoundDiv even half case")
+                == 1,
+            "canonical SignedRoundDiv even half rounding mismatch");
+        expect(
+            gatzk::protocol::canonical_signed_round_div_bound(
+                31, 64, "synthetic SignedRoundDiv below half case")
+                == 0,
+            "canonical SignedRoundDiv below-half rounding mismatch");
+        expect(
+            gatzk::protocol::canonical_signed_round_div_bound(
+                33, 64, "synthetic SignedRoundDiv above half case")
+                == 1,
+            "canonical SignedRoundDiv above-half rounding mismatch");
+        expect(
+            gatzk::protocol::canonical_signed_round_div_bound(
+                1, 3, "synthetic SignedRoundDiv odd lower case")
+                == 0,
+            "canonical SignedRoundDiv odd-denominator lower rounding mismatch");
+        expect(
+            gatzk::protocol::canonical_signed_round_div_bound(
+                2, 3, "synthetic SignedRoundDiv odd upper case")
+                == 1,
+            "canonical SignedRoundDiv odd-denominator upper rounding mismatch");
+        expect(
+            std::max<std::uint64_t>(
+                1,
+                gatzk::protocol::canonical_signed_round_div_bound(
+                    0, 64, "synthetic SignedRoundDiv zero compatibility floor"))
+                == 1,
+            "zero SignedRoundDiv certificate must retain the positive compatibility floor");
+        bool rejected_zero_signed_divisor = false;
+        try
+        {
+            (void)gatzk::protocol::canonical_signed_round_div_bound(
+                1, 0, "synthetic zero divisor");
+        }
+        catch (const std::exception &error)
+        {
+            rejected_zero_signed_divisor =
+                std::string(error.what()).find("not positive")
+                != std::string::npos;
+        }
+        expect(
+            rejected_zero_signed_divisor,
+            "canonical SignedRoundDiv zero divisor must fail closed");
+        bool rejected_signed_division_overflow = false;
+        try
+        {
+            (void)gatzk::protocol::canonical_signed_round_div_bound(
+                std::numeric_limits<std::uint64_t>::max(),
+                3,
+                "synthetic rounding overflow");
+        }
+        catch (const std::exception &error)
+        {
+            rejected_signed_division_overflow =
+                std::string(error.what()).find("addition overflow")
+                != std::string::npos;
+        }
+        expect(
+            rejected_signed_division_overflow,
+            "canonical SignedRoundDiv rounding overflow must fail closed");
+
+        // PPI's range_bits=14 shape is intentionally small in this test.  It
+        // exercises the same canonical static-table intervals without
+        // materializing the production tables.
+        gatzk::protocol::ProtocolContext ppi_shape_context;
+        ppi_shape_context.config.batching_rule = "multi_graph_batch";
+        ppi_shape_context.config.range_bits = 14;
+        ppi_shape_context.config.quantization.s_delta = 256;
+        ppi_shape_context.config.quantization.s_exp = 16;
+        ppi_shape_context.dataset.num_nodes = 56944;
+        ppi_shape_context.dataset.num_features = 50;
+        ppi_shape_context.local.num_nodes = 56944;
+        const auto ppi_table_shape =
+            gatzk::protocol::plan_canonical_static_table_shape(
+                ppi_shape_context);
+        expect(
+            !ppi_table_shape.large_whole_graph,
+            "PPI multi-graph shape must not use the large whole-graph interval");
+        expect(
+            ppi_table_shape.lrelu_min_raw == -(1LL << 14)
+                && ppi_table_shape.lrelu_max_raw == (1LL << 14),
+            "PPI LReLU interval does not follow range_bits=14");
+        expect(
+            ppi_table_shape.lrelu_table_size == (1ULL << 15) + 1U
+                && ppi_table_shape.elu_bound == (1ULL << 14)
+                && ppi_table_shape.elu_table_size == (1ULL << 15) + 1U,
+            "PPI LReLU/ELU table cardinality mismatch");
+        expect(
+            ppi_table_shape.lrelu_output_bound == (1ULL << 14)
+                && ppi_table_shape.exp_input_bound == (1ULL << 15)
+                && ppi_table_shape.exp_table_size == (1ULL << 15) + 1U,
+            "PPI LReLU/ExpMap bound coverage mismatch");
+        expect(
+            ppi_table_shape.table_edge_domain_size == (1ULL << 16),
+            "PPI static-table edge domain must be the next power of two");
+        expect(
+            gatzk::protocol::canonical_signed_round_div_bound(
+                16 * 800, 64, "PPI ELU coverage")
+                <= ppi_table_shape.elu_bound,
+            "PPI ELU table interval does not cover canonical division bound");
+
         // The large whole-graph table planner is intentionally exercised with
         // dimensions only; it must not load OGBN data or allocate the 15M-row
         // ExpMap table.  Its derived delta bound is the authenticated LReLU
@@ -464,6 +578,11 @@ int main()
                 ogbn_table_shape.exp_input_bound)
                 == ogbn_table_shape.exp_table_size,
             "ExpMap row planner and shape planner disagree");
+        expect(
+            gatzk::protocol::canonical_signed_round_div_bound(
+                16 * 800, 64, "OGBN ELU coverage")
+                <= (1ULL << 20),
+            "OGBN ELU table interval does not cover canonical division bound");
         bool rejected_exp_row_overflow = false;
         try
         {

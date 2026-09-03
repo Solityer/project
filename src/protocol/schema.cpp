@@ -706,6 +706,28 @@ namespace gatzk::protocol
         }
     }
 
+    std::uint64_t canonical_signed_round_div_bound(
+        std::uint64_t numerator_bound,
+        std::uint64_t positive_denominator,
+        std::string_view label)
+    {
+        if (positive_denominator == 0)
+            throw std::runtime_error(
+                "IntegerBoundLedger SignedRoundDiv denominator is not positive: "
+                + std::string(label));
+        const auto rounding_offset = positive_denominator / 2U;
+        if (numerator_bound
+            > std::numeric_limits<std::uint64_t>::max() - rounding_offset)
+            throw std::runtime_error(
+                "IntegerBoundLedger SignedRoundDiv rounding addition overflow: "
+                + std::string(label));
+        // This is exactly the magnitude bound of trace.cpp's canonical
+        // SignedRoundDiv: (abs(n) + d/2) / d.  The quotient is monotone in
+        // abs(n), so evaluating it at the registered numerator bound is tight
+        // for this certified interval without changing the relation itself.
+        return (numerator_bound + rounding_offset) / positive_denominator;
+    }
+
     // block 顺序是 proof serializer / parser 与 verifier 共享的固定契约。
     std::string integer_bound_ledger_canonical_bytes(
         const std::vector<IntegerBoundLedgerEntry> &ledger)
@@ -3052,11 +3074,25 @@ namespace gatzk::protocol
                     scales.s_h_prime.at(layer_index).at(head_index),
                     sum_bound,
                     prefix + ".Sum_scaled");
+                const auto elu_input_numerator_bound = checked_bound_mul(
+                    scales.s_agg_pre.at(layer_index),
+                    h_prime_bound,
+                    prefix + ".ELU_input:numerator");
+                // Keep the historical positive A+1 certificate floor for a
+                // zero quotient.  It is a sound conservative bound and keeps
+                // already authenticated degenerate registries byte-for-byte
+                // compatible, while nonzero instances use the exact
+                // SignedRoundDiv magnitude bound.
+                const auto elu_input_div_bound = std::max<std::uint64_t>(
+                    1,
+                    canonical_signed_round_div_bound(
+                        elu_input_numerator_bound,
+                        scales.s_h_prime.at(layer_index).at(head_index),
+                        prefix + ".ELU_input"));
                 require_table_cover(score_bound, lrelu_input_bound, "LReLU");
                 require_table_cover(delta_bound, exp_input_bound, "ExpMap");
                 require_table_cover(
-                    checked_bound_add(scaled_numerator_bound, 1,
-                                      prefix + ".ELU_input"),
+                    elu_input_div_bound,
                     elu_input_bound,
                     "ELU");
                 add_integer_bound(prefix + ".H_prime", "projection",
@@ -3089,8 +3125,7 @@ namespace gatzk::protocol
                     scaled_denominator_bound);
                 add_integer_bound(prefix + ".ELU_input", "activation",
                                   "SignedRoundDiv output <= A+1",
-                                  checked_bound_add(scaled_numerator_bound, 1,
-                                                    prefix + ".ELU_input"));
+                                  elu_input_div_bound);
                 add_integer_bound(prefix + ".ELU_output", "activation",
                                   "max_abs(T_ELU[:,1])", elu_output_bound);
                 concat_bound = std::max(concat_bound, elu_output_bound);
@@ -3163,6 +3198,19 @@ namespace gatzk::protocol
             const auto scaled_denominator_bound = checked_bound_mul(
                 scales.s_y_prime.at(head_index), sum_bound,
                 prefix + ".Sum_scaled");
+            const auto pre_bias_numerator_bound = checked_bound_mul(
+                scales.s_out_pre,
+                y_prime_bound,
+                prefix + ".pre_bias:numerator");
+            const auto pre_bias_divisor = scales.s_y_prime.at(head_index);
+            // See the hidden-layer certificate above: preserve the
+            // authenticated positive floor for degenerate zero projections.
+            const auto pre_bias_bound = std::max<std::uint64_t>(
+                1,
+                canonical_signed_round_div_bound(
+                    pre_bias_numerator_bound,
+                    pre_bias_divisor,
+                    prefix + ".pre_bias"));
             require_table_cover(score_bound, lrelu_input_bound, "LReLU");
             require_table_cover(delta_bound, exp_input_bound, "ExpMap");
             add_integer_bound(prefix + ".Y_prime", "projection",
@@ -3193,12 +3241,11 @@ namespace gatzk::protocol
                 prefix + ".SignedRoundDiv",
                 scaled_numerator_bound,
                 scaled_denominator_bound);
-            const auto pre_bias_bound = checked_bound_add(
-                scaled_numerator_bound, 1, prefix + ".pre_bias");
             const auto post_bias_bound = checked_bound_add(
                 pre_bias_bound, bias_bound, prefix + ".post_bias");
             add_integer_bound(prefix + ".pre_bias", "output_bias",
-                              "SignedRoundDiv output <= A+1", pre_bias_bound);
+                              "SignedRoundDiv output <= A+1",
+                              pre_bias_bound);
             add_integer_bound(prefix + ".post_bias", "output_bias",
                               "B_pre_bias+B_bias", post_bias_bound);
             add_integer_bound(prefix + ".concat", "output",

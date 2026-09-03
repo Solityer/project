@@ -425,6 +425,17 @@ namespace gatzk::protocol
         std::string_view division_prefix,
         std::string_view value_name,
         std::size_t limb_index);
+    // Conservative quotient bound for the canonical signed nearest-integer
+    // division used by the fixed-point trace:
+    // q = (abs(numerator) + denominator / 2) / denominator.
+    // The numerator argument is an absolute-magnitude bound and the
+    // denominator is the positive, common factor after any sound cancellation
+    // from the aggregate relation.  Overflow and a non-positive denominator
+    // fail closed so producer and verifier cannot diverge silently.
+    std::uint64_t canonical_signed_round_div_bound(
+        std::uint64_t numerator_bound,
+        std::uint64_t positive_denominator,
+        std::string_view label);
     std::string output_external_eval_name(std::string_view base, std::size_t head_index);
     std::string hidden_concat_xi_name(std::size_t layer_index);
     std::string hidden_concat_y_name(std::size_t layer_index);

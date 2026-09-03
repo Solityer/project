@@ -2150,10 +2150,25 @@ namespace gatzk::protocol
                     context.config.quantization.s_h_prime
                         .at(layer_index).at(head_index),
                     sum, prefix + ".Sum_scaled");
+                const auto elu_input_numerator = checked_mul(
+                    context.config.quantization.s_agg_pre.at(layer_index),
+                    h_prime,
+                    prefix + ".ELU_input:numerator");
+                // Match the producer's historical positive A+1 certificate
+                // floor for a zero quotient.  The floor is conservative and
+                // preserves already authenticated degenerate registries;
+                // nonzero instances retain the exact canonical bound.
+                const auto elu_input_div_bound = std::max<std::uint64_t>(
+                    1,
+                    canonical_signed_round_div_bound(
+                        elu_input_numerator,
+                        context.config.quantization.s_h_prime
+                            .at(layer_index).at(head_index),
+                        prefix + ".ELU_input"));
                 require_table_cover(score, lrelu_input_bound, "LReLU");
                 require_table_cover(delta, exp_input_bound, "ExpMap");
                 require_table_cover(
-                    checked_add(scaled_numerator, 1, prefix + ".ELU_input"),
+                    elu_input_div_bound,
                     elu_input_bound, "ELU");
                 add(prefix + ".H_prime", "projection",
                     "d_in*B_H_in*B_W", h_prime);
@@ -2182,8 +2197,7 @@ namespace gatzk::protocol
                                     scaled_numerator, scaled_denominator);
                 add(prefix + ".ELU_input", "activation",
                     "SignedRoundDiv output <= A+1",
-                    checked_add(scaled_numerator, 1,
-                                prefix + ".ELU_input"));
+                    elu_input_div_bound);
                 add(prefix + ".ELU_output", "activation",
                     "max_abs(T_ELU[:,1])", elu_output_bound);
                 concat_bound = std::max(concat_bound, elu_output_bound);
@@ -2253,6 +2267,20 @@ namespace gatzk::protocol
             const auto scaled_denominator = checked_mul(
                 context.config.quantization.s_y_prime.at(head_index), sum,
                 prefix + ".Sum_scaled");
+            const auto pre_bias_numerator = checked_mul(
+                context.config.quantization.s_out_pre,
+                y_prime,
+                prefix + ".pre_bias:numerator");
+            const auto pre_bias_divisor =
+                context.config.quantization.s_y_prime.at(head_index);
+            // Keep the same conservative floor as the producer for
+            // degenerate zero projections and old authenticated registries.
+            const auto pre_bias_bound = std::max<std::uint64_t>(
+                1,
+                canonical_signed_round_div_bound(
+                    pre_bias_numerator,
+                    pre_bias_divisor,
+                    prefix + ".pre_bias"));
             require_table_cover(score, lrelu_input_bound, "LReLU");
             require_table_cover(delta, exp_input_bound, "ExpMap");
             add(prefix + ".Y_prime", "projection",
@@ -2280,12 +2308,10 @@ namespace gatzk::protocol
                 "S_Y_prime*B_Sum", scaled_denominator);
             add_division_bounds(prefix + ".SignedRoundDiv",
                                 scaled_numerator, scaled_denominator);
-            const auto pre_bias = checked_add(
-                scaled_numerator, 1, prefix + ".pre_bias");
             const auto post_bias = checked_add(
-                pre_bias, bias_bound, prefix + ".post_bias");
+                pre_bias_bound, bias_bound, prefix + ".post_bias");
             add(prefix + ".pre_bias", "output_bias",
-                "SignedRoundDiv output <= A+1", pre_bias);
+                "SignedRoundDiv output <= A+1", pre_bias_bound);
             add(prefix + ".post_bias", "output_bias",
                 "B_pre_bias+B_bias", post_bias);
             add(prefix + ".concat", "output",

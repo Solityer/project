@@ -343,6 +343,49 @@ class LayeredSchemaRegression(unittest.TestCase):
         self.assertIn("output_pre_scale * y_agg_num_flat", quotients)
         self.assertIn("output_y_prime_scale * sum_flat", quotients)
 
+    def test_integer_bound_signed_round_div_uses_canonical_cancelled_bound(self) -> None:
+        schema = read("src/protocol/schema.cpp")
+        verifier = read("src/protocol/verifier_context.cpp")
+        for source in (schema, verifier):
+            self.assertIn("canonical_signed_round_div_bound(", source)
+            self.assertIn("ELU_input:numerator", source)
+            self.assertIn(".H_num_scaled", source)
+            self.assertIn(".Sum_scaled", source)
+        self.assertIn(
+            "const auto elu_input_div_bound = std::max<std::uint64_t>(",
+            schema,
+        )
+        self.assertIn(
+            "const auto elu_input_div_bound = std::max<std::uint64_t>(",
+            verifier,
+        )
+        self.assertIn(
+            "const auto pre_bias_bound = std::max<std::uint64_t>(",
+            schema,
+        )
+        self.assertIn(
+            "const auto pre_bias_bound = std::max<std::uint64_t>(",
+            verifier,
+        )
+        self.assertEqual(
+            len(re.findall(r"std::max<std::uint64_t>\(\s*1,", schema)),
+            2,
+        )
+        self.assertEqual(
+            len(re.findall(r"std::max<std::uint64_t>\(\s*1,", verifier)),
+            2,
+        )
+        self.assertEqual(
+            schema.count("SignedRoundDiv output <= A+1"),
+            3,
+        )
+        self.assertEqual(
+            verifier.count("SignedRoundDiv output <= A+1"),
+            3,
+        )
+        self.assertNotIn("scaled_numerator_bound, 1", schema)
+        self.assertNotIn("scaled_numerator, 1", verifier)
+
     def test_quantized_reference_is_independent_and_reported_from_real_match(self) -> None:
         trace = read("src/protocol/trace.cpp")
         reference = region(
