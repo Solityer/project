@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import pathlib
+import stat
 from dataclasses import dataclass
 from typing import Dict, List
 
@@ -18,8 +20,8 @@ from .quantization import (
 
 QUANT_SCALE_PROFILES: Dict[str, Dict[str, int]] = {
     # The formal comparison profile is the same explicit chain used by the
-    # current main GAT experiment.  Source checkpoint formats are handled by
-    # the conversion entry point and are never accepted by the formal loader.
+    # current main GAT experiment. Only the installed baseline-local snapshot
+    # is accepted by the formal loader.
     CANONICAL_QUANT_CFG_ID: canonical_scale_profile(),
 }
 
@@ -67,16 +69,44 @@ _CANONICAL_MANIFEST_REQUIRED = {
     "input_preprocess_id", "rounding_mode", "static_table_id", "quant_scale_chain",
     "L", "hidden_layers", "hidden_profile", "d_in_profile", "C", "K_out",
     "hidden_head_specs", "output_head_specs", "output_average_rule",
-    "tensor_count", "tensor_index", "tensor_index_digest", "training_procedure_id",
-    "source_data_digest",
+    "tensor_count", "tensor_index", "tensor_index_digest", "logical_payload_sha256",
+    "training_procedure_id", "payload_origin", "origin_manifest_sha256",
+    "tensors_txt_sha256", "tensors_npz_sha256",
 }
 _CANONICAL_MANIFEST_ALLOWED = _CANONICAL_MANIFEST_REQUIRED | {
     "family_schema_version", "task_type", "report_unit", "batching_rule",
     "self_loop_rule", "edge_sort_rule", "chunking_rule", "label_format",
     "split_format", "subgraph_rule", "loss", "selection_metric", "degree_bound_id",
-    "source_bundle_path", "source_manifest_sha256", "source_tensors_sha256",
-    "conversion_policy", "family_schema_version",
+    "family_schema_version",
 }
+
+CANONICAL_PAYLOAD_ORIGIN = "current_main_canonical_float32_snapshot"
+
+
+def _owned_bundle_files(bundle: pathlib.Path) -> dict[str, pathlib.Path]:
+    try:
+        bundle_info = bundle.lstat()
+    except OSError as exc:
+        raise ValueError(f"cannot inspect canonical checkpoint bundle: {bundle}") from exc
+    if stat.S_ISLNK(bundle_info.st_mode) or not stat.S_ISDIR(bundle_info.st_mode):
+        raise ValueError(f"canonical checkpoint bundle must be a real directory: {bundle}")
+    expected = {"manifest.json", "tensors.txt", "tensors.npz"}
+    entries = {item.name: item for item in bundle.iterdir()}
+    if set(entries) != expected:
+        raise ValueError("canonical checkpoint bundle has missing or extra files")
+    for name, path in entries.items():
+        info = path.lstat()
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise ValueError(f"canonical checkpoint {name} must be an owned regular file")
+    return entries
+
+
+def _file_sha256(path: pathlib.Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _load_text_tensors(path: pathlib.Path) -> Dict[str, np.ndarray]:
@@ -164,15 +194,9 @@ def load_model(
     static_table_id: str | None = None,
     rounding_mode: str | None = None,
 ) -> Model:
-    """Load and validate the raw checkpoint, with optional formal identities.
-
-    The manifest remains the authenticated checkpoint source.  Formal runs
-    may bind baseline-local parameter/quantization/table identities from their
-    immutable config while retaining the raw manifest IDs in ``manifest``;
-    default arguments preserve the historical raw-bundle behavior for tools
-    that do not have a formal config.
-    """
-    manifest_path = bundle / "manifest.json"
+    """Load the strict baseline-local canonical float32 checkpoint snapshot."""
+    bundle_files = _owned_bundle_files(bundle)
+    manifest_path = bundle_files["manifest.json"]
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -180,10 +204,14 @@ def load_model(
     _validate_canonical_manifest(manifest)
     if manifest.get("output_average_rule") != "per_head_bias_then_arithmetic_mean":
         raise ValueError("output layer must average per-head post-bias values")
-    tensors_path = bundle / "tensors.txt"
+    tensors_path = bundle_files["tensors.txt"]
+    if _file_sha256(tensors_path) != manifest["tensors_txt_sha256"]:
+        raise ValueError("canonical checkpoint tensors.txt digest mismatch")
+    if _file_sha256(bundle_files["tensors.npz"]) != manifest["tensors_npz_sha256"]:
+        raise ValueError("canonical checkpoint tensors.npz digest mismatch")
     tensors = _load_text_tensors(tensors_path)
     _validate_tensor_index(manifest, tensors)
-    npz_tensors = _load_npz_tensors(bundle / "tensors.npz", manifest)
+    npz_tensors = _load_npz_tensors(bundle_files["tensors.npz"], manifest)
     for name, text_tensor in tensors.items():
         text_float32 = np.ascontiguousarray(np.asarray(text_tensor, dtype=np.float32))
         npz_tensor = npz_tensors[name]
@@ -265,14 +293,17 @@ def _validate_canonical_manifest(manifest: Dict) -> None:
         raise ValueError("canonical checkpoint rounding mode is invalid")
     if manifest.get("static_table_id") != "tables:lrelu+elu+exp+range":
         raise ValueError("canonical checkpoint static-table identity is invalid")
-    for provenance_key in ("source_data_digest", "source_manifest_sha256", "source_tensors_sha256"):
+    for provenance_key in (
+        "origin_manifest_sha256", "tensors_txt_sha256", "tensors_npz_sha256",
+        "logical_payload_sha256",
+    ):
         value = str(manifest.get(provenance_key, ""))
         if len(value) != 64 or any(char not in "0123456789abcdef" for char in value.lower()):
             raise ValueError(f"canonical checkpoint {provenance_key} is missing or malformed")
-    if manifest.get("training_procedure_id") != "baseline_local_source_checkpoint_no_bias_projection_v1":
-        raise ValueError("canonical checkpoint training/conversion procedure is not authenticated")
-    if manifest.get("conversion_policy") != "drop_hidden_and_attention_bias_terms; retain_output_bias_only":
-        raise ValueError("canonical checkpoint bias conversion policy is not authenticated")
+    if manifest.get("payload_origin") != CANONICAL_PAYLOAD_ORIGIN:
+        raise ValueError("canonical checkpoint payload origin is not authenticated")
+    if manifest.get("training_procedure_id") != CANONICAL_PAYLOAD_ORIGIN:
+        raise ValueError("canonical checkpoint training provenance is not authenticated")
     if manifest.get("quant_scale_chain") != canonical_scale_chain_descriptor(
         hidden_profile=manifest.get("hidden_profile"), k_out=int(manifest.get("K_out", -1))
     ):
@@ -302,6 +333,8 @@ def _validate_canonical_manifest(manifest: Dict) -> None:
         raise ValueError("checkpoint tensor_count does not match tensor_index")
     if manifest.get("tensor_index_digest") != _digest_json(index):
         raise ValueError("checkpoint tensor_index_digest is invalid")
+    if manifest.get("logical_payload_sha256") != manifest.get("tensor_index_digest"):
+        raise ValueError("checkpoint logical payload digest differs from tensor index")
     expected_names = set()
     for spec in hidden_specs:
         expected_names.update(spec[key] for key in ("seq_kernel", "attn_src_kernel", "attn_dst_kernel"))

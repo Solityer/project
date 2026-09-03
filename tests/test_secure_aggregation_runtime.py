@@ -23,6 +23,31 @@ class SecureAggregationRuntimeTests(unittest.TestCase):
     def digest(self, label):
         return hashlib.sha256(label.encode("utf-8")).hexdigest()
 
+    def test_ppi_srs_domains_match_canonical_planner(self):
+        self.assertEqual(
+            AGGREGATOR.EXPECTED_SRS_DOMAINS["ppi"],
+            {
+                "C": 1 << 7,
+                "FH": 1 << 22,
+                "N": 1 << 16,
+                "cat": 1 << 7,
+                "d": 1 << 4,
+                "edge": 1 << 23,
+                "in": 1 << 7,
+            },
+        )
+
+        envelope = {}
+        for line in (ROOT / "configs" / "srs_ppi_max_envelope.cfg").read_text(
+            encoding="utf-8"
+        ).splitlines():
+            if "=" not in line:
+                continue
+            key, value = (part.strip() for part in line.split("=", 1))
+            envelope[key] = value
+        self.assertEqual(envelope["max_input_dim"], "64")
+        self.assertEqual(envelope["max_concat_dim"], "64")
+
     def tamper_map(self):
         names = (
             "codec_tag", "codec_length", "codec_trailing", "public_output",

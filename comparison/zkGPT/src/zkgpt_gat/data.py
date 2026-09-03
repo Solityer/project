@@ -197,9 +197,57 @@ def _load_edges(path: pathlib.Path) -> Tuple[np.ndarray, np.ndarray, np.ndarray]
     return src.astype(np.int64), dst.astype(np.int64), graph.astype(np.int64)
 
 
+def _validate_dataset_meta(config: AppConfig, meta: Dict[str, str]) -> None:
+    """Reject stale dataset identities before opening any tensor payload."""
+
+    dataset = config.dataset
+    if meta.get("name") != dataset:
+        raise ValueError(
+            f"dataset meta name mismatch: {meta.get('name')!r} != {dataset!r}"
+        )
+    if dataset == "ppi":
+        required = {
+            "num_classes": "121",
+            "graph_count": "295",
+            "task_type": "inductive_multi_graph_node_classification",
+            "report_unit": "graph",
+            "label_format": "multi_hot",
+            "split_format": "node_masks",
+        }
+        mismatched = {
+            key: (meta.get(key), expected)
+            for key, expected in required.items()
+            if meta.get(key) != expected
+        }
+        if mismatched:
+            raise ValueError(f"PPI metadata identity mismatch: {mismatched}")
+        if config.entries.get("batching_rule") != "multi_graph_batch":
+            raise ValueError("PPI formal config must use multi_graph_batch")
+        if config.entries.get("task_type") != required["task_type"]:
+            raise ValueError("PPI formal config task_type differs from dataset metadata")
+        if config.entries.get("report_unit") != required["report_unit"]:
+            raise ValueError("PPI formal config report_unit differs from dataset metadata")
+    elif dataset == "ogbn_arxiv":
+        required = {
+            "name": "ogbn_arxiv",
+            "num_classes": "40",
+            "graph_count": "1",
+            "task_type": "transductive_node_classification",
+            "report_unit": "node",
+        }
+        mismatched = {
+            key: (meta.get(key), expected)
+            for key, expected in required.items()
+            if meta.get(key) != expected
+        }
+        if mismatched:
+            raise ValueError(f"OGBN-Arxiv metadata identity mismatch: {mismatched}")
+
+
 def load_dataset(config: AppConfig) -> GraphDataset:
     root = config.cache_dir
     meta = _read_meta(root / "meta.cfg")
+    _validate_dataset_meta(config, meta)
     num_nodes = int(meta["num_nodes"])
     num_features = int(meta["num_features"])
     num_classes = int(meta["num_classes"])
@@ -234,7 +282,10 @@ def load_dataset(config: AppConfig) -> GraphDataset:
             raise ValueError("PPI train/val/test masks overlap")
         if not np.all(train_mask | val_mask | test_mask):
             raise ValueError("PPI train/val/test masks do not cover every node")
-        labels = np.argmax(labels_multi, axis=1).astype(np.int64)
+        # PPI is genuinely multi-label.  Retain the complete multi-hot matrix
+        # on both generic and task-specific label fields so no downstream
+        # consumer can silently collapse it to one class with argmax.
+        labels = labels_multi
     else:
         labels = _load_labels(root / "labels.txt", num_nodes)
     return GraphDataset(

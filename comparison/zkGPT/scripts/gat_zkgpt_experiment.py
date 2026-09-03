@@ -63,8 +63,8 @@ def _prepare_formal_chain(datasets: list[str], backends: list[str], *, setup_onl
         [python, str(ROOT / "scripts" / "prepare_resources.py"), "--datasets", selected],
     )
     _run_step(
-        "convert canonical no-bias checkpoints",
-        [python, str(ROOT / "scripts" / "prepare_canonical_checkpoint.py"), "--datasets", selected],
+        "validate installed canonical checkpoints",
+        [python, str(ROOT / "scripts" / "validate_canonical_checkpoints.py"), "--datasets", selected],
     )
     if not setup_only:
         _run_step(

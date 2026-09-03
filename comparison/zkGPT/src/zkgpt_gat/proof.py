@@ -68,7 +68,7 @@ from .privacy import (
     verify_privacy_profile,
 )
 from .registry import ensure_model_registry
-from .resources import validate_static_table_descriptor
+from .resources import canonical_dataset_name, validate_static_table_descriptor
 from .rounding import validate_rounding_mode
 from .bound_ledger import build_integer_bound_ledger
 from .transcript import Transcript
@@ -2993,14 +2993,47 @@ def build_proof(
 
 def artifact_ids(config: AppConfig, dataset: GraphDataset) -> Dict[str, Any]:
     cache_dir = config.cache_dir
-    files = ["meta.cfg", "edges.txt", "labels.txt"]
+    canonical = canonical_dataset_name(config.dataset)
+    files = ["meta.cfg", "edges.txt"]
     if (cache_dir / "features.txt").exists():
         files.append("features.txt")
     if (cache_dir / "features.npy").exists():
         files.append("features.npy")
-    if (cache_dir / "node_ptr.txt").exists():
-        files.append("node_ptr.txt")
-    data = {"cache_dir": str(cache_dir), "files": {name: file_id(cache_dir / name) for name in files}}
+    if canonical == "ppi":
+        label_candidates = ("labels_multi.npy", "labels_multi.txt")
+        label_name = next(
+            (
+                name
+                for name in label_candidates
+                if (cache_dir / name).is_file()
+                and not (cache_dir / name).is_symlink()
+                and (cache_dir / name).stat().st_nlink == 1
+            ),
+            None,
+        )
+        if label_name is None:
+            raise FileNotFoundError(f"PPI multi-hot labels are missing under {cache_dir}")
+        files.append(label_name)
+        files.extend(["node_ptr.txt", "train_mask.npy", "val_mask.npy", "test_mask.npy"])
+    else:
+        files.append("labels.txt")
+        # Non-PPI datasets normally use an implicit [0,N] node range, but
+        # preserve any explicitly staged topology/split artifacts in the
+        # identity instead of silently dropping them.
+        for optional in ("node_ptr.txt", "train_mask.npy", "val_mask.npy", "test_mask.npy"):
+            if (cache_dir / optional).is_file():
+                files.append(optional)
+    missing = [name for name in files if not (cache_dir / name).is_file()]
+    if missing:
+        raise FileNotFoundError(
+            f"canonical dataset artifacts are missing under {cache_dir}: {', '.join(missing)}"
+        )
+    data = {
+        "dataset": canonical,
+        "input_preprocess_id": config.input_preprocess_id,
+        "cache_dir": str(cache_dir),
+        "files": {name: file_id(cache_dir / name) for name in files},
+    }
     data["id"] = digest_json(data)
     model = {
         "checkpoint_bundle": str(config.checkpoint_bundle),

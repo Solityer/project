@@ -383,8 +383,21 @@ def check_resource_layout(
                         _owned_regular(cache / name, f"dataset {dataset} {name}")
                     except (FileNotFoundError, OSError, ValueError):
                         missing.append(str(cache / name))
-            if not ((cache / "labels_multi.npy").is_file() or (cache / "labels_multi.txt").is_file()):
-                missing.append(f"{cache}/labels_multi.npy or labels_multi.txt")
+                label_present = False
+                for name in ("labels_multi.npy", "labels_multi.txt"):
+                    try:
+                        _owned_regular(cache / name, f"dataset {dataset} {name}")
+                    except (FileNotFoundError, OSError, ValueError):
+                        continue
+                    label_present = True
+                    break
+                if not label_present:
+                    missing.append(f"{cache}/labels_multi.npy or labels_multi.txt")
+            else:
+                try:
+                    _owned_regular(cache / "labels.txt", f"dataset {dataset} labels.txt")
+                except (FileNotFoundError, OSError, ValueError):
+                    missing.append(str(cache / "labels.txt"))
             for name in ("manifest.json", "tensors.npz", "tensors.txt"):
                 try:
                     _owned_regular(paths["checkpoint_bundle"] / name, f"checkpoint {name}")

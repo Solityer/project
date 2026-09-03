@@ -408,10 +408,16 @@ def forward_full(
     # The model loader has already converted every private parameter to its
     # authenticated integer scale, so all following operations use the exact
     # branch above.
-    layer_input = canonical_input_integers(graph, model)
+    # Keep the authenticated S_input tensor immutable for the whole trace.
+    # Every hidden layer advances through ``layer_input`` separately; returning
+    # the final hidden activation here would make the public-input segment
+    # depend on the number of hidden layers and desynchronise the prover from
+    # the verifier's X_pub reconstruction.
+    input_features = canonical_input_integers(graph, model)
+    layer_input = np.array(input_features, copy=True)
     scales = model.quant_scales
     layer_input_scale = int(scales["input"])
-    update_digest_np(base_hash, "H.input_features", layer_input)
+    update_digest_np(base_hash, "H.input_features", input_features)
 
     for layer in model.hidden_layers:
         heads: List[HeadTrace] = []
@@ -495,7 +501,7 @@ def forward_full(
     update_digest_np(base_hash, "output.Y_pre_bias_average", y_pre)
     update_digest_np(base_hash, "output.Y", y)
     return ForwardTrace(
-        input_features=layer_input,
+        input_features=input_features,
         hidden_layers=hidden_layers,
         output_heads=output_heads,
         output_head_values=output_values,
