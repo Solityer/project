@@ -21,9 +21,9 @@ namespace gatzk::algebra
     {
         // 用于并行计算时拆分区间 [begin, end)
         FieldElement barycentric_sum_range(
-            const std::vector<FieldElement>& values,
-            const std::vector<FieldElement>& domain_points,
-            const FieldElement& x,
+            const std::vector<FieldElement> &values,
+            const std::vector<FieldElement> &domain_points,
+            const FieldElement &x,
             std::size_t begin,
             std::size_t end)
         {
@@ -39,7 +39,7 @@ namespace gatzk::algebra
     }
 
     // 创建或从缓存中获取指定名称和大小的单位根域
-    std::shared_ptr<RootOfUnityDomain> RootOfUnityDomain::create(const std::string& name, std::size_t size)
+    std::shared_ptr<RootOfUnityDomain> RootOfUnityDomain::create(const std::string &name, std::size_t size)
     {
         // 检查size是否为非零且为2的幂
         if (size == 0 || (size & (size - 1U)) != 0U)
@@ -56,7 +56,7 @@ namespace gatzk::algebra
             std::lock_guard<std::mutex> lock(cache_mutex);
             if (const auto it = cache.find(cache_key); it != cache.end())
             {
-                return it->second;  // 命中缓存直接返回
+                return it->second; // 命中缓存直接返回
             }
         }
 
@@ -68,7 +68,7 @@ namespace gatzk::algebra
         domain->inv_size = FieldElement(static_cast<std::uint64_t>(size)).inv();
 
         // 如果size小于 2^24，预计算所有点及其缩放版本
-        domain->points_precomputed = size < (1ULL << 24);
+        domain->points_precomputed = size < (1ULL << 20);
         if (domain->points_precomputed)
         {
             domain->points.resize(size);
@@ -118,13 +118,13 @@ namespace gatzk::algebra
     }
 
     // 计算零点多项式 Z(x)=x^size-1 在x处的值
-    FieldElement RootOfUnityDomain::zero_polynomial_eval(const FieldElement& x) const
+    FieldElement RootOfUnityDomain::zero_polynomial_eval(const FieldElement &x) const
     {
         return x.pow(size) - FieldElement::one();
     }
 
     // 计算第index个拉格朗日基函数在x处的值
-    FieldElement RootOfUnityDomain::lagrange_basis_eval(std::size_t index, const FieldElement& x) const
+    FieldElement RootOfUnityDomain::lagrange_basis_eval(std::size_t index, const FieldElement &x) const
     {
         if (index >= size)
         {
@@ -135,8 +135,8 @@ namespace gatzk::algebra
             point_index.has_value())
         {
             return *point_index == index
-                ? FieldElement::one()
-                : FieldElement::zero();
+                       ? FieldElement::one()
+                       : FieldElement::zero();
         }
         const FieldElement xi = point_at(index);
         const FieldElement numerator = zero_polynomial_eval(x) * xi;
@@ -146,26 +146,26 @@ namespace gatzk::algebra
     // 计算重心插值所需的权重（前缀积 + 后缀积）
     // 对于大域（size >= 2^20），使用并行分段批量求逆算法以避免串行瓶颈。
     // 当 CUDA field hotspots 可用且域足够大时，使用 GPU 加速。
-    std::vector<mcl::Fr> RootOfUnityDomain::barycentric_weights_native(const FieldElement& x) const
+    std::vector<mcl::Fr> RootOfUnityDomain::barycentric_weights_native(const FieldElement &x) const
     {
-        const auto& route2 = util::route2_options();
+        const auto &route2 = util::route2_options();
 
         const bool try_gpu = should_use_cuda_barycentric_weights(size, points_precomputed);
         if (try_gpu)
         {
             const auto zero_eval = zero_polynomial_eval(x);
             std::vector<mcl::Fr> weights(size);
-            const auto* ou = omega.native().getUnit();
-            const auto* xu = x.native().getUnit();
-            const auto* zu = zero_eval.native().getUnit();
-            const auto* nu = inv_size.native().getUnit();
+            const auto *ou = omega.native().getUnit();
+            const auto *xu = x.native().getUnit();
+            const auto *zu = zero_eval.native().getUnit();
+            const auto *nu = inv_size.native().getUnit();
             uint64_t omega_limbs[4] = {ou[0], ou[1], ou[2], ou[3]};
             uint64_t x_limbs[4] = {xu[0], xu[1], xu[2], xu[3]};
             uint64_t zero_eval_limbs[4] = {zu[0], zu[1], zu[2], zu[3]};
             uint64_t inv_n_limbs[4] = {nu[0], nu[1], nu[2], nu[3]};
             const bool gpu_ok = barycentric_weights_gpu(
                 omega_limbs, x_limbs, zero_eval_limbs, inv_n_limbs,
-                reinterpret_cast<uint64_t*>(weights.data()),
+                reinterpret_cast<uint64_t *>(weights.data()),
                 size);
             if (gpu_ok)
             {
@@ -228,7 +228,7 @@ namespace gatzk::algebra
         const std::size_t chunk_size = (size + task_count - 1) / task_count;
 
         std::vector<mcl::Fr> denominators(size);
-        std::vector<mcl::Fr> prefix_within(size);   // 段内前缀积（不含 i 自身）
+        std::vector<mcl::Fr> prefix_within(size); // 段内前缀积（不含 i 自身）
         std::vector<mcl::Fr> chunk_products(task_count);
         std::vector<mcl::Fr> weights(size);
         const auto zero_eval = zero_polynomial_eval(x).native();
@@ -249,8 +249,8 @@ namespace gatzk::algebra
                         const std::size_t begin = task * chunk_size;
                         const std::size_t end = std::min(size, begin + chunk_size);
                         FieldElement omega_power = points_precomputed
-                            ? FieldElement::zero()
-                            : omega.pow(static_cast<std::uint64_t>(begin));
+                                                       ? FieldElement::zero()
+                                                       : omega.pow(static_cast<std::uint64_t>(begin));
 
                         mcl::Fr acc;
                         acc = mcl::Fr(1);
@@ -269,7 +269,7 @@ namespace gatzk::algebra
                         chunk_products[task] = acc;
                     }));
             }
-            for (auto& f : futures)
+            for (auto &f : futures)
             {
                 f.get();
             }
@@ -284,7 +284,7 @@ namespace gatzk::algebra
             mcl::Fr::mul(cross_prefix[c + 1], cross_prefix[c], chunk_products[c]);
         }
         mcl::Fr global_inv;
-        mcl::Fr::inv(global_inv, cross_prefix[task_count]);  // 唯一一次全局求逆
+        mcl::Fr::inv(global_inv, cross_prefix[task_count]); // 唯一一次全局求逆
 
         std::vector<mcl::Fr> chunk_outer_inv(task_count);
         {
@@ -319,11 +319,11 @@ namespace gatzk::algebra
                         }
                         // 非预计算域需要从段末尾开始倒推 `omega^i`。
                         FieldElement omega_power = points_precomputed
-                            ? FieldElement::zero()
-                            : omega.pow(static_cast<std::uint64_t>(end - 1));
+                                                       ? FieldElement::zero()
+                                                       : omega.pow(static_cast<std::uint64_t>(end - 1));
 
                         mcl::Fr running_suffix;
-                        running_suffix = mcl::Fr(1);  // 表示段内后缀积 `∏_{j=i+1}^{end-1} d[j]`
+                        running_suffix = mcl::Fr(1); // 表示段内后缀积 `∏_{j=i+1}^{end-1} d[j]`
 
                         for (std::size_t i = end; i-- > begin;)
                         {
@@ -334,8 +334,8 @@ namespace gatzk::algebra
 
                             // 写出与 formal 主线一致的 barycentric 权重。
                             const auto scaled_pt = points_precomputed
-                                ? points_scaled_by_inv_size[i].native()
-                                : (omega_power * inv_size).native();
+                                                       ? points_scaled_by_inv_size[i].native()
+                                                       : (omega_power * inv_size).native();
                             mcl::Fr::mul(weights[i], zero_eval, scaled_pt);
                             mcl::Fr::mul(weights[i], weights[i], inv_d);
 
@@ -348,7 +348,7 @@ namespace gatzk::algebra
                         }
                     }));
             }
-            for (auto& f : futures)
+            for (auto &f : futures)
             {
                 f.get();
             }
@@ -357,7 +357,7 @@ namespace gatzk::algebra
         return weights;
     }
 
-    std::vector<FieldElement> RootOfUnityDomain::barycentric_weights(const FieldElement& x) const
+    std::vector<FieldElement> RootOfUnityDomain::barycentric_weights(const FieldElement &x) const
     {
         const auto native_weights = barycentric_weights_native(x);
         std::vector<FieldElement> weights(size, FieldElement::zero());
@@ -367,11 +367,11 @@ namespace gatzk::algebra
         }
         return weights;
     }
-    
+
     // 给定域中两点from和to，返回满足 to = from * omega^shift 的shift值
     std::optional<std::size_t> RootOfUnityDomain::rotation_shift(
-        const FieldElement& from,
-        const FieldElement& to) const
+        const FieldElement &from,
+        const FieldElement &to) const
     {
         if (from.is_zero() || to.is_zero())
         {
@@ -402,7 +402,7 @@ namespace gatzk::algebra
     }
 
     // 从系数列表创建多项式（基为系数形式）
-    Polynomial Polynomial::from_coefficients(const std::string& name, std::vector<FieldElement> coefficients)
+    Polynomial Polynomial::from_coefficients(const std::string &name, std::vector<FieldElement> coefficients)
     {
         Polynomial out;
         out.name = name;
@@ -413,9 +413,9 @@ namespace gatzk::algebra
 
     // 从求值列表创建多项式（基为求值形式），必须提供匹配的单位根域
     Polynomial Polynomial::from_evaluations(
-        const std::string& name,
+        const std::string &name,
         std::vector<FieldElement> evaluations,
-        const std::shared_ptr<RootOfUnityDomain>& domain)
+        const std::shared_ptr<RootOfUnityDomain> &domain)
     {
         if (domain == nullptr || evaluations.size() > domain->size)
         {
@@ -430,9 +430,9 @@ namespace gatzk::algebra
     }
 
     Polynomial Polynomial::from_shared_evaluations(
-        const std::string& name,
+        const std::string &name,
         std::shared_ptr<const std::vector<FieldElement>> evaluations,
-        const std::shared_ptr<RootOfUnityDomain>& domain)
+        const std::shared_ptr<RootOfUnityDomain> &domain)
     {
         if (domain == nullptr || evaluations == nullptr || evaluations->size() > domain->size)
         {
@@ -446,7 +446,7 @@ namespace gatzk::algebra
         return out;
     }
 
-    const std::vector<FieldElement>& Polynomial::values() const
+    const std::vector<FieldElement> &Polynomial::values() const
     {
         return shared_data != nullptr ? *shared_data : data;
     }
@@ -456,14 +456,14 @@ namespace gatzk::algebra
         return shared_data != nullptr ? shared_data->size() : data.size();
     }
 
-    const FieldElement& Polynomial::value_at(std::size_t index) const
+    const FieldElement &Polynomial::value_at(std::size_t index) const
     {
         return shared_data != nullptr ? shared_data->at(index) : data.at(index);
     }
 
     // 计算多项式在 x 处的值
     // 根据基选择不同算法：系数形式用霍纳法；求值形式用重心插值
-    FieldElement Polynomial::semantic_evaluate(const FieldElement& x) const
+    FieldElement Polynomial::semantic_evaluate(const FieldElement &x) const
     {
         // 系数形式：直接霍纳法
         if (basis == PolynomialBasis::Coefficient)
@@ -477,7 +477,7 @@ namespace gatzk::algebra
             throw std::runtime_error("evaluation polynomial is missing its domain");
         }
 
-        const auto& values_ref = values();
+        const auto &values_ref = values();
 
         // 如果 x 恰好是域上的一个已知点，直接返回对应值
         if (const auto shift = domain->rotation_shift(
@@ -490,8 +490,8 @@ namespace gatzk::algebra
             }
         }
 
-         // 一般情况：使用重心插值公式
-        const auto& route2 = util::route2_options();
+        // 一般情况：使用重心插值公式
+        const auto &route2 = util::route2_options();
 
         const FieldElement zero_eval = domain->zero_polynomial_eval(x);
         FieldElement sum = FieldElement::zero();
@@ -514,11 +514,12 @@ namespace gatzk::algebra
                     }
                     futures.push_back(std::async(
                         std::launch::async,
-                        [&, begin, end]() {
+                        [&, begin, end]()
+                        {
                             return barycentric_sum_range(values_ref, domain->points, x, begin, end);
                         }));
                 }
-                for (auto& future : futures)
+                for (auto &future : futures)
                 {
                     sum += future.get();
                 }
@@ -556,7 +557,7 @@ namespace gatzk::algebra
         return !zero_domain_blinder.empty();
     }
 
-    FieldElement Polynomial::evaluate(const FieldElement& x) const
+    FieldElement Polynomial::evaluate(const FieldElement &x) const
     {
         const auto semantic = semantic_evaluate(x);
         if (!is_zero_domain_blinded())
@@ -567,7 +568,7 @@ namespace gatzk::algebra
     }
 
     // 霍纳方法求多项式值：系数从高次到低次存储
-    FieldElement horner(const std::vector<FieldElement>& coefficients, const FieldElement& x)
+    FieldElement horner(const std::vector<FieldElement> &coefficients, const FieldElement &x)
     {
         FieldElement out = FieldElement::zero();
         for (auto it = coefficients.rbegin(); it != coefficients.rend(); ++it)
@@ -580,9 +581,9 @@ namespace gatzk::algebra
 
     // 拉格朗日插值：给定点集points和对应函数值values，计算在x处的插值结果
     FieldElement interpolate_at(
-        const std::vector<FieldElement>& points,
-        const std::vector<FieldElement>& values,
-        const FieldElement& x)
+        const std::vector<FieldElement> &points,
+        const std::vector<FieldElement> &values,
+        const FieldElement &x)
     {
         if (points.size() != values.size())
         {
@@ -614,7 +615,7 @@ namespace gatzk::algebra
     }
 
     std::vector<FieldElement> materialize_blinded_coefficients(
-        const Polynomial& polynomial,
+        const Polynomial &polynomial,
         std::size_t configured_degree)
     {
         if (configured_degree == std::numeric_limits<std::size_t>::max())
@@ -634,19 +635,16 @@ namespace gatzk::algebra
             if (!polynomial.zero_domain_blinder.empty())
             {
                 throw std::runtime_error(
-                    "coefficient polynomial cannot carry a domain-vanishing blinder: "
-                    + polynomial.name);
+                    "coefficient polynomial cannot carry a domain-vanishing blinder: " + polynomial.name);
             }
             return out;
         }
         if (polynomial.domain == nullptr)
         {
             throw std::runtime_error(
-                "evaluation polynomial is missing its domain during coefficient materialization: "
-                + polynomial.name);
+                "evaluation polynomial is missing its domain during coefficient materialization: " + polynomial.name);
         }
-        if (polynomial.values().size() > polynomial.domain->size
-            || polynomial.domain->size > configured_length)
+        if (polynomial.values().size() > polynomial.domain->size || polynomial.domain->size > configured_length)
         {
             throw std::runtime_error(
                 "evaluation polynomial exceeds configured shift degree: " + polynomial.name);
@@ -654,16 +652,14 @@ namespace gatzk::algebra
 
         std::vector<FieldElement> semantic(polynomial.domain->size, FieldElement::zero());
         std::copy(polynomial.values().begin(), polynomial.values().end(), semantic.begin());
-        ntt_plan(semantic.size())->intt(
-            FieldElement::mutable_native_array_data(semantic.data()));
+        ntt_plan(semantic.size())->intt(FieldElement::mutable_native_array_data(semantic.data()));
         std::copy(semantic.begin(), semantic.end(), out.begin());
 
         const auto n = polynomial.domain->size;
         if (n + polynomial.zero_domain_blinder.size() > configured_length)
         {
             throw std::runtime_error(
-                "domain-vanishing blinder exceeds configured shift degree: "
-                + polynomial.name);
+                "domain-vanishing blinder exceeds configured shift degree: " + polynomial.name);
         }
         // Z_D(X)R(X)=(X^n-1)R(X). The blinder must be added explicitly;
         // domain evaluations alone do not contain this material.
@@ -690,15 +686,15 @@ namespace gatzk::algebra
         std::shared_ptr<const TaylorShiftPrecompute>
         cached_taylor_shift_precompute(
             std::size_t configured_degree,
-            const FieldElement& delta)
+            const FieldElement &delta)
         {
             static std::mutex cache_mutex;
             static std::unordered_map<
                 std::string,
-                std::shared_ptr<const TaylorShiftPrecompute>> cache;
+                std::shared_ptr<const TaylorShiftPrecompute>>
+                cache;
             const auto cache_key =
-                std::to_string(configured_degree)
-                + ":" + delta.to_string();
+                std::to_string(configured_degree) + ":" + delta.to_string();
             {
                 std::lock_guard<std::mutex> lock(cache_mutex);
                 if (const auto it = cache.find(cache_key);
@@ -715,8 +711,8 @@ namespace gatzk::algebra
                 next_power_of_two(configured_length);
             const auto wrapped_tail_length =
                 full_convolution_length > cyclic_domain_size
-                ? full_convolution_length - cyclic_domain_size
-                : 0;
+                    ? full_convolution_length - cyclic_domain_size
+                    : 0;
             constexpr std::size_t max_exact_wrapped_tail = 256;
             auto prepared = std::make_shared<TaylorShiftPrecompute>();
             if (wrapped_tail_length <= max_exact_wrapped_tail)
@@ -740,8 +736,7 @@ namespace gatzk::algebra
             for (std::size_t i = 1; i < configured_length; ++i)
             {
                 prepared->factorial[i] =
-                    prepared->factorial[i - 1]
-                    * FieldElement(static_cast<std::uint64_t>(i));
+                    prepared->factorial[i - 1] * FieldElement(static_cast<std::uint64_t>(i));
             }
             prepared->inverse_factorial.assign(
                 configured_length, FieldElement::one());
@@ -750,8 +745,7 @@ namespace gatzk::algebra
             for (std::size_t i = configured_degree; i > 0; --i)
             {
                 prepared->inverse_factorial[i - 1] =
-                    prepared->inverse_factorial[i]
-                    * FieldElement(static_cast<std::uint64_t>(i));
+                    prepared->inverse_factorial[i] * FieldElement(static_cast<std::uint64_t>(i));
             }
 
             prepared->shifted_inverse_factorial.assign(
@@ -771,9 +765,7 @@ namespace gatzk::algebra
                 prepared->shifted_inverse_factorial.begin(),
                 prepared->shifted_inverse_factorial.end(),
                 prepared->shifted_inverse_factorial_ntt.begin());
-            ntt_plan(prepared->convolution_domain_size)->ntt(
-                FieldElement::mutable_native_array_data(
-                    prepared->shifted_inverse_factorial_ntt.data()));
+            ntt_plan(prepared->convolution_domain_size)->ntt(FieldElement::mutable_native_array_data(prepared->shifted_inverse_factorial_ntt.data()));
 
             std::lock_guard<std::mutex> lock(cache_mutex);
             const auto [it, _] =
@@ -783,9 +775,9 @@ namespace gatzk::algebra
     }
 
     std::vector<FieldElement> coefficient_taylor_shift(
-        const std::vector<FieldElement>& coefficients,
+        const std::vector<FieldElement> &coefficients,
         std::size_t configured_degree,
-        const FieldElement& delta)
+        const FieldElement &delta)
     {
         if (configured_degree == std::numeric_limits<std::size_t>::max())
         {
@@ -811,8 +803,7 @@ namespace gatzk::algebra
         {
             const auto source_index = configured_degree - i;
             a_rev[i] =
-                coefficients[source_index]
-                * prepared->factorial[source_index];
+                coefficients[source_index] * prepared->factorial[source_index];
         }
 
         const auto plan =
@@ -847,10 +838,7 @@ namespace gatzk::algebra
                 const auto source_coefficient =
                     configured_degree - source;
                 wrapped +=
-                    coefficients[source_coefficient]
-                    * prepared->factorial[source_coefficient]
-                    * prepared->shifted_inverse_factorial[
-                        linear_index - source];
+                    coefficients[source_coefficient] * prepared->factorial[source_coefficient] * prepared->shifted_inverse_factorial[linear_index - source];
             }
             a_rev[wrapped_index] -= wrapped;
         }
@@ -859,17 +847,16 @@ namespace gatzk::algebra
         for (std::size_t k = 0; k < configured_length; ++k)
         {
             shifted[k] =
-                a_rev[configured_degree - k]
-                * prepared->inverse_factorial[k];
+                a_rev[configured_degree - k] * prepared->inverse_factorial[k];
         }
         return shifted;
     }
 
     // 将矩阵（二维向量）按行展平为一维向量
-    std::vector<FieldElement> flatten_matrix_coefficients(const std::vector<std::vector<FieldElement>>& matrix)
+    std::vector<FieldElement> flatten_matrix_coefficients(const std::vector<std::vector<FieldElement>> &matrix)
     {
         std::vector<FieldElement> out;
-        for (const auto& row : matrix)
+        for (const auto &row : matrix)
         {
             out.insert(out.end(), row.begin(), row.end());
         }

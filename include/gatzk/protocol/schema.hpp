@@ -180,6 +180,55 @@ namespace gatzk::protocol
         std::vector<CoefficientChunkLayoutEntry> chunks;
         bool operator==(const CoefficientRegionLayout &) const = default;
     };
+    struct MatrixFoldBindingSpec
+    {
+        std::string relation_id;
+        std::string owner_relation_id;
+        std::string source_matrix_object;
+        std::string fold_object;
+        std::string source_fold_object;
+        std::string source_accumulator_object;
+        std::string fold_accumulator_object;
+        std::string source_point_challenge;
+        std::string lambda_challenge;
+        std::string fold_domain;
+        std::string fold_selector_label;
+        std::size_t source_rows = 0;
+        std::size_t width = 0;
+        bool public_source = false;
+        bool operator==(const MatrixFoldBindingSpec &) const = default;
+    };
+
+    struct FlatMatrixBindingSpec
+    {
+        std::string relation_id;
+        std::string owner_relation_id;
+        std::string matrix_object;
+        std::string flat_object;
+        std::string row_fold_object;
+        std::string row_accumulator_object;
+        std::string flat_accumulator_object;
+        std::string lambda_challenge;
+        std::string flat_selector_label;
+        std::size_t rows = 0;
+        std::size_t columns = 0;
+        bool operator==(const FlatMatrixBindingSpec &) const = default;
+    };
+
+    struct BroadcastFlatBindingSpec
+    {
+        std::string relation_id;
+        std::string owner_relation_id;
+        std::string node_object;
+        std::string flat_object;
+        std::string node_accumulator_object;
+        std::string flat_accumulator_object;
+        std::string lambda_challenge;
+        std::string flat_selector_label;
+        std::size_t rows = 0;
+        std::size_t width = 0;
+        bool operator==(const BroadcastFlatBindingSpec &) const = default;
+    };
 
     struct ProtocolCompilerArtifact
     {
@@ -268,7 +317,455 @@ namespace gatzk::protocol
         const ProtocolCompilerArtifact &artifact);
     ProofSchema build_proof_schema(const ProtocolContext &context);
     ProtocolCompilerArtifact build_protocol_compiler_artifact(const ProtocolContext &context);
+
+    std::vector<MatrixFoldBindingSpec> matrix_fold_binding_specs(
+        const ProtocolContext &context)
+    {
+        std::vector<MatrixFoldBindingSpec> out;
+
+        for (std::size_t layer = 0;
+             layer < context.model.hidden_layers.size();
+             ++layer)
+        {
+            const auto &hidden_layer =
+                context.model.hidden_layers.at(layer);
+
+            for (std::size_t head = 0;
+                 head < hidden_layer.heads.size();
+                 ++head)
+            {
+                const auto prefix =
+                    hidden_head_prefix(layer, head);
+
+                const auto owner =
+                    "bind:hidden:" +
+                    std::to_string(layer + 1) +
+                    ":" +
+                    std::to_string(head);
+
+                const auto base =
+                    "P_SB_h_l" +
+                    std::to_string(layer) +
+                    "_h" +
+                    std::to_string(head);
+
+                out.push_back(MatrixFoldBindingSpec{
+                    .relation_id = base + "_proj",
+                    .owner_relation_id = owner,
+                    .source_matrix_object =
+                        layer == 0
+                            ? std::string{}
+                            : hidden_layer_concat_label(layer - 1),
+                    .fold_object = prefix + "_a_proj",
+                    .source_fold_object = base + "_proj_SrcFold",
+                    .source_accumulator_object = base + "_proj_SrcAcc",
+                    .fold_accumulator_object = base + "_proj_FoldAcc",
+                    .source_point_challenge =
+                        hidden_challenge_name(
+                            "rho_proj_h",
+                            layer,
+                            head),
+                    .lambda_challenge =
+                        "lambda_sb:" +
+                        base +
+                        ":proj",
+                    .fold_domain = context.domains.in->name,
+                    .fold_selector_label =
+                        hidden_q_in_selector_label(layer),
+                    .source_rows = context.local.num_nodes,
+                    .width = hidden_layer.input_dim,
+                    .public_source = layer == 0,
+                });
+
+                for (const auto *kind : {"src", "dst"})
+                {
+                    out.push_back(MatrixFoldBindingSpec{
+                        .relation_id =
+                            base + "_" + kind,
+                        .owner_relation_id = owner,
+                        .source_matrix_object =
+                            prefix + "_H_prime",
+                        .fold_object =
+                            prefix + "_a_" + kind,
+                        .source_fold_object =
+                            base + "_" + kind + "_SrcFold",
+                        .source_accumulator_object =
+                            base + "_" + kind + "_SrcAcc",
+                        .fold_accumulator_object =
+                            base + "_" + kind + "_FoldAcc",
+                        .source_point_challenge =
+                            hidden_challenge_name(
+                                std::string("y_") +
+                                    kind +
+                                    "_h",
+                                layer,
+                                head),
+                        .lambda_challenge =
+                            "lambda_sb:" +
+                            base +
+                            ":" +
+                            kind,
+                        .fold_domain = context.domains.d->name,
+                        .fold_selector_label =
+                            hidden_q_d_h_selector_label(layer),
+                        .source_rows =
+                            context.local.num_nodes,
+                        .width =
+                            hidden_layer.shape.head_dim,
+                        .public_source = false,
+                    });
+                }
+            }
+        }
+
+        if (context.model.hidden_layers.empty())
+        {
+            throw std::runtime_error(
+                "soundness binding requires at least one hidden layer");
+        }
+
+        const auto output_input =
+            hidden_layer_concat_label(
+                context.model.hidden_layers.size() - 1);
+
+        for (std::size_t head = 0;
+             head < context.model.output_layer.heads.size();
+             ++head)
+        {
+            const auto prefix =
+                output_head_prefix(head);
+
+            const auto owner =
+                "bind:output:" +
+                std::to_string(head);
+
+            const auto base =
+                "P_SB_out" +
+                std::to_string(head);
+
+            out.push_back(MatrixFoldBindingSpec{
+                .relation_id = base + "_proj",
+                .owner_relation_id = owner,
+                .source_matrix_object = output_input,
+                .fold_object = prefix + "_a_proj",
+                .source_fold_object =
+                    base + "_proj_SrcFold",
+                .source_accumulator_object =
+                    base + "_proj_SrcAcc",
+                .fold_accumulator_object =
+                    base + "_proj_FoldAcc",
+                .source_point_challenge =
+                    output_challenge_name(
+                        "rho_proj_out",
+                        head),
+                .lambda_challenge =
+                    "lambda_sb:" +
+                    base +
+                    ":proj",
+                .fold_domain = context.domains.cat->name,
+                .fold_selector_label =
+                    output_q_cat_selector_label(),
+                .source_rows =
+                    context.local.num_nodes,
+                .width =
+                    context.model.output_layer.input_dim,
+                .public_source = false,
+            });
+
+            for (const auto *kind : {"src", "dst"})
+            {
+                out.push_back(MatrixFoldBindingSpec{
+                    .relation_id =
+                        base + "_" + kind,
+                    .owner_relation_id = owner,
+                    .source_matrix_object =
+                        prefix + "_Y_prime",
+                    .fold_object =
+                        prefix + "_a_" + kind,
+                    .source_fold_object =
+                        base + "_" + kind + "_SrcFold",
+                    .source_accumulator_object =
+                        base + "_" + kind + "_SrcAcc",
+                    .fold_accumulator_object =
+                        base + "_" + kind + "_FoldAcc",
+                    .source_point_challenge =
+                        output_challenge_name(
+                            std::string("y_") +
+                                kind +
+                                "_out",
+                            head),
+                    .lambda_challenge =
+                        "lambda_sb:" +
+                        base +
+                        ":" +
+                        kind,
+                    .fold_domain = context.domains.c->name,
+                    .fold_selector_label =
+                        "P_Q_C_valid",
+                    .source_rows =
+                        context.local.num_nodes,
+                    .width =
+                        context.local.num_classes,
+                    .public_source = false,
+                });
+            }
+        }
+
+        return out;
+    }
+
+    std::vector<FlatMatrixBindingSpec> flat_matrix_binding_specs(
+        const ProtocolContext &context)
+    {
+        std::vector<FlatMatrixBindingSpec> out;
+
+        for (std::size_t layer = 0;
+             layer < context.model.hidden_layers.size();
+             ++layer)
+        {
+            for (std::size_t head = 0;
+                 head <
+                 context.model.hidden_layers[layer]
+                     .heads.size();
+                 ++head)
+            {
+                const auto prefix =
+                    hidden_head_prefix(layer, head);
+
+                const auto owner =
+                    "bind:hidden:" +
+                    std::to_string(layer + 1) +
+                    ":" +
+                    std::to_string(head);
+
+                const auto base =
+                    "P_SB_h_l" +
+                    std::to_string(layer) +
+                    "_h" +
+                    std::to_string(head);
+
+                const auto width =
+                    context.model.hidden_layers[layer]
+                        .shape.head_dim;
+
+                for (const auto &[kind, matrix, flat] :
+                     std::vector<
+                         std::tuple<
+                             std::string,
+                             std::string,
+                             std::string>>{
+                         {
+                             "aggpre",
+                             prefix + "_H_agg_pre",
+                             prefix + "_H_agg_pre_flat",
+                         },
+                         {
+                             "agg",
+                             prefix + "_H_agg",
+                             prefix + "_H_agg_flat",
+                         },
+                     })
+                {
+                    out.push_back(FlatMatrixBindingSpec{
+                        .relation_id =
+                            base + "_flat_" + kind,
+                        .owner_relation_id = owner,
+                        .matrix_object = matrix,
+                        .flat_object = flat,
+                        .row_fold_object =
+                            base + "_flat_" +
+                            kind + "_RowFold",
+                        .row_accumulator_object =
+                            base + "_flat_" +
+                            kind + "_RowAcc",
+                        .flat_accumulator_object =
+                            base + "_flat_" +
+                            kind + "_FlatAcc",
+                        .lambda_challenge =
+                            "lambda_flat:" +
+                            base +
+                            ":" +
+                            kind,
+                        .flat_selector_label =
+                            hidden_q_nd_h_selector_label(
+                                layer),
+                        .rows =
+                            context.local.num_nodes,
+                        .columns = width,
+                    });
+                }
+            }
+        }
+
+        for (std::size_t head = 0;
+             head < context.model.output_layer.heads.size();
+             ++head)
+        {
+            const auto prefix =
+                output_head_prefix(head);
+
+            const auto owner =
+                "bind:output:" +
+                std::to_string(head);
+
+            const auto base =
+                "P_SB_out" +
+                std::to_string(head);
+
+            for (const auto &[kind, matrix, flat] :
+                 std::vector<
+                     std::tuple<
+                         std::string,
+                         std::string,
+                         std::string>>{
+                     {
+                         "ylin",
+                         output_y_lin_label(head),
+                         prefix + "_Y_pre_field_flat",
+                     },
+                     {
+                         "y",
+                         output_y_label(head),
+                         prefix + "_Y_flat",
+                     },
+                 })
+            {
+                out.push_back(FlatMatrixBindingSpec{
+                    .relation_id =
+                        base + "_flat_" + kind,
+                    .owner_relation_id = owner,
+                    .matrix_object = matrix,
+                    .flat_object = flat,
+                    .row_fold_object =
+                        base + "_flat_" +
+                        kind + "_RowFold",
+                    .row_accumulator_object =
+                        base + "_flat_" +
+                        kind + "_RowAcc",
+                    .flat_accumulator_object =
+                        base + "_flat_" +
+                        kind + "_FlatAcc",
+                    .lambda_challenge =
+                        "lambda_flat:" +
+                        base +
+                        ":" +
+                        kind,
+                    .flat_selector_label =
+                        "P_Q_div_out" +
+                        std::to_string(head),
+                    .rows =
+                        context.local.num_nodes,
+                    .columns =
+                        context.local.num_classes,
+                });
+            }
+        }
+
+        return out;
+    }
+
+    std::vector<BroadcastFlatBindingSpec>
+    broadcast_flat_binding_specs(
+        const ProtocolContext &context)
+    {
+        std::vector<BroadcastFlatBindingSpec> out;
+
+        for (std::size_t layer = 0;
+             layer < context.model.hidden_layers.size();
+             ++layer)
+        {
+            for (std::size_t head = 0;
+                 head <
+                 context.model.hidden_layers[layer]
+                     .heads.size();
+                 ++head)
+            {
+                const auto prefix =
+                    hidden_head_prefix(layer, head);
+
+                const auto base =
+                    "P_SB_h_l" +
+                    std::to_string(layer) +
+                    "_h" +
+                    std::to_string(head) +
+                    "_sum";
+
+                out.push_back(BroadcastFlatBindingSpec{
+                    .relation_id = base,
+                    .owner_relation_id =
+                        "bind:hidden:" +
+                        std::to_string(layer + 1) +
+                        ":" +
+                        std::to_string(head),
+                    .node_object = prefix + "_Sum",
+                    .flat_object = prefix + "_Sum_flat",
+                    .node_accumulator_object =
+                        base + "_NodeAcc",
+                    .flat_accumulator_object =
+                        base + "_FlatAcc",
+                    .lambda_challenge =
+                        "lambda_broadcast:" +
+                        base,
+                    .flat_selector_label =
+                        hidden_q_nd_h_selector_label(
+                            layer),
+                    .rows =
+                        context.local.num_nodes,
+                    .width =
+                        context.model.hidden_layers[layer]
+                            .shape.head_dim,
+                });
+            }
+        }
+
+        for (std::size_t head = 0;
+             head < context.model.output_layer.heads.size();
+             ++head)
+        {
+            const auto prefix =
+                output_head_prefix(head);
+
+            const auto base =
+                "P_SB_out" +
+                std::to_string(head) +
+                "_sum";
+
+            out.push_back(BroadcastFlatBindingSpec{
+                .relation_id = base,
+                .owner_relation_id =
+                    "bind:output:" +
+                    std::to_string(head),
+                .node_object = prefix + "_Sum",
+                .flat_object = prefix + "_Sum_flat",
+                .node_accumulator_object =
+                    base + "_NodeAcc",
+                .flat_accumulator_object =
+                    base + "_FlatAcc",
+                .lambda_challenge =
+                    "lambda_broadcast:" +
+                    base,
+                .flat_selector_label =
+                    "P_Q_div_out" +
+                    std::to_string(head),
+                .rows =
+                    context.local.num_nodes,
+                .width =
+                    context.local.num_classes,
+            });
+        }
+
+        return out;
+    }
+
     std::vector<BindingRelationMeta> build_binding_relation_metadata(const ProtocolContext &context);
+    std::vector<MatrixFoldBindingSpec> matrix_fold_binding_specs(
+        const ProtocolContext &context);
+
+    std::vector<FlatMatrixBindingSpec> flat_matrix_binding_specs(
+        const ProtocolContext &context);
+
+    std::vector<BroadcastFlatBindingSpec> broadcast_flat_binding_specs(
+        const ProtocolContext &context);
     // Canonical S_route payload.  Every entry is a reference to the unique
     // standard point-group owner in Open_dom/W_ext; no route terminal value is
     // ever materialized in the proof object.

@@ -243,6 +243,55 @@ namespace gatzk::protocol
 
         std::optional<std::string> dynamic_label_domain_name(const ProtocolContext &context, const std::string &label)
         {
+            for (const auto &spec :
+                 matrix_fold_binding_specs(context))
+            {
+                if (label == spec.source_fold_object ||
+                    label ==
+                        spec.source_accumulator_object)
+                {
+                    return std::string("N");
+                }
+
+                if (label ==
+                    spec.fold_accumulator_object)
+                {
+                    return spec.fold_domain;
+                }
+            }
+
+            for (const auto &spec :
+                 flat_matrix_binding_specs(context))
+            {
+                if (label == spec.row_fold_object ||
+                    label ==
+                        spec.row_accumulator_object)
+                {
+                    return std::string("N");
+                }
+
+                if (label ==
+                    spec.flat_accumulator_object)
+                {
+                    return std::string("edge");
+                }
+            }
+
+            for (const auto &spec :
+                 broadcast_flat_binding_specs(context))
+            {
+                if (label ==
+                    spec.node_accumulator_object)
+                {
+                    return std::string("N");
+                }
+
+                if (label ==
+                    spec.flat_accumulator_object)
+                {
+                    return std::string("edge");
+                }
+            }
             if (label == "P_H" || label == "P_Table_feat" || label == "P_Query_feat" || label == "P_m_feat" || label == "P_J_tbl_feat" || label == "P_J_qry_feat" || label == "P_R_feat")
             {
                 return std::string("FH");
@@ -1330,46 +1379,46 @@ namespace gatzk::protocol
                  local_head_index < layer.heads.size();
                  ++local_head_index)
             {
-            HiddenHeadEvaluationConstants constants;
-            constants.layer_index = layer_index;
-            constants.local_head_index = local_head_index;
-            const auto challenge = [&](std::string_view base)
-            {
-                return hidden_challenge_name(base, layer_index, local_head_index);
-            };
-            constants.prefix = hidden_head_prefix(layer_index, local_head_index) + "_";
-            constants.division_prefix = constants.prefix + "Div_";
-            constants.division_selector = hidden_q_nd_h_selector_label(layer_index);
+                HiddenHeadEvaluationConstants constants;
+                constants.layer_index = layer_index;
+                constants.local_head_index = local_head_index;
+                const auto challenge = [&](std::string_view base)
+                {
+                    return hidden_challenge_name(base, layer_index, local_head_index);
+                };
+                constants.prefix = hidden_head_prefix(layer_index, local_head_index) + "_";
+                constants.division_prefix = constants.prefix + "Div_";
+                constants.division_selector = hidden_q_nd_h_selector_label(layer_index);
 
-            constants.division =
-                bind_signed_division_challenges(
-                    constants.division_prefix,
-                    context.config.range_bits,
-                    challenges);
+                constants.division =
+                    bind_signed_division_challenges(
+                        constants.division_prefix,
+                        context.config.range_bits,
+                        challenges);
 
-            // Q_Nd_h is the sole layer-scoped edge selector for hidden
-            // aggregation/ELU queries, including layers whose width happens
-            // to equal the configured maximum.
-            constants.elu_query_selector = constants.division_selector;
-            constants.beta_src = challenges.at(challenge("beta_src_h"));
-            constants.beta_dst = challenges.at(challenge("beta_dst_h"));
-            constants.eta_src = challenges.at(challenge("eta_src_h"));
-            constants.eta_src_sq = constants.eta_src * constants.eta_src;
-            constants.eta_dst = challenges.at(challenge("eta_dst_h"));
-            constants.eta_dst_sq = constants.eta_dst * constants.eta_dst;
-            constants.eta_dst_cu = constants.eta_dst_sq * constants.eta_dst;
-            constants.eta_dst_4 = constants.eta_dst_cu * constants.eta_dst;
-            constants.eta_dst_5 = constants.eta_dst_4 * constants.eta_dst;
-            constants.beta_l = challenges.at(challenge("beta_L_h"));
-            constants.eta_l = challenges.at(challenge("eta_L_h"));
-            constants.beta_r = challenges.at(challenge("beta_R_h"));
-            constants.beta_exp = challenges.at(challenge("beta_exp_h"));
-            constants.eta_exp = challenges.at(challenge("eta_exp_h"));
-            constants.beta_elu = challenges.at(challenge("beta_ELU_h"));
-            constants.eta_elu = challenges.at(challenge("eta_ELU_h"));
-            constants.beta_t = challenges.at(challenge("beta_t_h"));
-            constants.eta_t = challenges.at(challenge("eta_t_h"));
-            layer_constants.push_back(std::move(constants));
+                // Q_Nd_h is the sole layer-scoped edge selector for hidden
+                // aggregation/ELU queries, including layers whose width happens
+                // to equal the configured maximum.
+                constants.elu_query_selector = constants.division_selector;
+                constants.beta_src = challenges.at(challenge("beta_src_h"));
+                constants.beta_dst = challenges.at(challenge("beta_dst_h"));
+                constants.eta_src = challenges.at(challenge("eta_src_h"));
+                constants.eta_src_sq = constants.eta_src * constants.eta_src;
+                constants.eta_dst = challenges.at(challenge("eta_dst_h"));
+                constants.eta_dst_sq = constants.eta_dst * constants.eta_dst;
+                constants.eta_dst_cu = constants.eta_dst_sq * constants.eta_dst;
+                constants.eta_dst_4 = constants.eta_dst_cu * constants.eta_dst;
+                constants.eta_dst_5 = constants.eta_dst_4 * constants.eta_dst;
+                constants.beta_l = challenges.at(challenge("beta_L_h"));
+                constants.eta_l = challenges.at(challenge("eta_L_h"));
+                constants.beta_r = challenges.at(challenge("beta_R_h"));
+                constants.beta_exp = challenges.at(challenge("beta_exp_h"));
+                constants.eta_exp = challenges.at(challenge("eta_exp_h"));
+                constants.beta_elu = challenges.at(challenge("beta_ELU_h"));
+                constants.eta_elu = challenges.at(challenge("eta_ELU_h"));
+                constants.beta_t = challenges.at(challenge("beta_t_h"));
+                constants.eta_t = challenges.at(challenge("eta_t_h"));
+                layer_constants.push_back(std::move(constants));
             }
         }
         plan->output_heads.reserve(context.model.output_layer.heads.size());
@@ -1480,6 +1529,58 @@ namespace gatzk::protocol
         if (label.ends_with("_ExternalMask"))
             return std::string("N");
         return dynamic_label_domain_name(context, label);
+    }
+
+    FieldElement evaluate_barycentric_weight_column(
+        const algebra::RootOfUnityDomain &domain,
+        const FieldElement &row_point,
+        const FieldElement &point)
+    {
+        if (domain.size == 0)
+        {
+            throw std::runtime_error(
+                "empty barycentric-weight domain");
+        }
+
+        if (domain.size == 1)
+        {
+            return FieldElement::one();
+        }
+
+        auto accumulator = row_point;
+        auto row_power = row_point;
+
+        for (std::size_t exponent = 2;
+             exponent <= domain.size - 1;
+             ++exponent)
+        {
+            accumulator *= point;
+            row_power *= row_point;
+            accumulator += row_power;
+        }
+
+        accumulator *= point;
+        accumulator += FieldElement::one();
+
+        return accumulator * domain.inv_size;
+    }
+
+    FieldElement geometric_sum(
+        const FieldElement &base,
+        std::size_t count)
+    {
+        auto out = FieldElement::zero();
+        auto power = FieldElement::one();
+
+        for (std::size_t index = 0;
+             index < count;
+             ++index)
+        {
+            out += power;
+            power *= base;
+        }
+
+        return out;
     }
 
     FieldElement evaluate_geometric_power_column(
@@ -1767,236 +1868,236 @@ namespace gatzk::protocol
             nullptr)
     {
         // edge 域承载大部分“边上对象”约束：softmax 链、lookup、route 和 PSQ 都在这里闭合。
-            const auto omega_z = z * context.domains.edge->omega;
-            const auto boundary = boundary_values != nullptr
-                                      ? *boundary_values
-                                      : boundary_lagrange_values(*context.domains.edge, z);
-            const Scalar first =
-                symbolic_first != nullptr
-                    ? *symbolic_first
-                    : Scalar(
-                          boundary.first);
+        const auto omega_z = z * context.domains.edge->omega;
+        const auto boundary = boundary_values != nullptr
+                                  ? *boundary_values
+                                  : boundary_lagrange_values(*context.domains.edge, z);
+        const Scalar first =
+            symbolic_first != nullptr
+                ? *symbolic_first
+                : Scalar(
+                      boundary.first);
 
-            const Scalar last =
-                symbolic_last != nullptr
-                    ? *symbolic_last
-                    : Scalar(
-                          boundary.last);
+        const Scalar last =
+            symbolic_last != nullptr
+                ? *symbolic_last
+                : Scalar(
+                      boundary.last);
 
-            const Scalar one =
-                FieldElement::one();
+        const Scalar one =
+            FieldElement::one();
 
-            const Scalar two =
-                FieldElement(2);
+        const Scalar two =
+            FieldElement(2);
 
-            const auto not_last =
-                one - last;
+        const auto not_last =
+            one - last;
 
-            const auto zero_eval =
-                boundary.zero;
-            const auto alpha_quot =
-                evaluation_plan != nullptr
-                    ? evaluation_plan->alpha_quot
-                    : challenges.at("alpha_quot");
+        const auto zero_eval =
+            boundary.zero;
+        const auto alpha_quot =
+            evaluation_plan != nullptr
+                ? evaluation_plan->alpha_quot
+                : challenges.at("alpha_quot");
 
-            const auto y_out =
-                evaluation_plan != nullptr
-                    ? evaluation_plan->y_out
-                    : challenges.at("y_out");
-            (void)signed_division_limb_count(context.config.range_bits);
-            const auto signed_division_limb_base =
-                FieldElement(std::uint64_t{1} << context.config.range_bits);
-            auto eval_z = [&](const std::string &label)
+        const auto y_out =
+            evaluation_plan != nullptr
+                ? evaluation_plan->y_out
+                : challenges.at("y_out");
+        (void)signed_division_limb_count(context.config.range_bits);
+        const auto signed_division_limb_base =
+            FieldElement(std::uint64_t{1} << context.config.range_bits);
+        auto eval_z = [&](const std::string &label)
+        {
+            return eval(label, z);
+        };
+        auto eval_omega = [&](const std::string &label)
+        {
+            return eval(label, omega_z);
+        };
+
+        const auto q_edge = eval_z("P_Q_edge_valid");
+        const auto q_edge_next = eval_omega("P_Q_edge_valid");
+        const auto q_new_next = eval_omega("P_Q_grp_new_edge");
+        const auto q_end = eval_z("P_Q_grp_end_edge");
+        const auto src_z = eval_z("P_src");
+        const auto dst_z = eval_z("P_dst");
+        const auto q_tbl_l_z = eval_z("P_Q_tbl_L");
+        const auto q_qry_l_z = eval_z("P_Q_qry_L");
+        const auto q_tbl_r_z = eval_z("P_Q_tbl_R");
+        const auto q_qry_r_z = eval_z("P_Q_qry_R");
+        const auto q_tbl_exp_z = eval_z("P_Q_tbl_exp");
+        const auto q_qry_exp_z = eval_z("P_Q_qry_exp");
+        const auto q_tbl_elu_z = eval_z("P_Q_tbl_ELU");
+        const auto t_l_x_z = eval_z("P_T_L_x");
+        const auto t_l_y_z = eval_z("P_T_L_y");
+        const auto t_range_z = eval_z("P_T_range");
+        const auto t_exp_x_z = eval_z("P_T_exp_x");
+        const auto t_exp_y_z = eval_z("P_T_exp_y");
+        const auto t_elu_x_z = eval_z("P_T_ELU_x");
+        const auto t_elu_y_z = eval_z("P_T_ELU_y");
+        using ActiveAccumulator =
+            std::conditional_t<
+                std::is_same_v<
+                    Scalar,
+                    FieldElement>,
+                BasicQuotientAccumulator<
+                    UsePrecomputedAlphaPowers>,
+                TEdgeProgramQuotientAccumulator>;
+
+        ActiveAccumulator acc(
+            alpha_quot,
+            return_numerator,
+            precomputed_alpha_powers);
+        auto add_signed_division_constraints = [&](
+                                                   const std::string &prefix,
+                                                   const std::string &public_selector_label,
+                                                   const SignedDivisionEvaluationConstants
+                                                       *planned_constants)
+        {
+            const auto selector = eval_z(public_selector_label);
+            const auto &labels = signed_division_label_plan(
+                prefix, context.config.range_bits);
+            const auto active = eval_z(labels.values[0]);
+            const auto x = eval_z(labels.values[1]);
+            const auto d = eval_z(labels.values[2]);
+            const auto y = eval_z(labels.values[3]);
+            const auto sigma = eval_z(labels.values[4]);
+            const auto zero = eval_z(labels.values[5]);
+            const auto a = eval_z(labels.values[6]);
+            const auto a_inv = eval_z(labels.values[7]);
+            const auto d_inv = eval_z(labels.values[8]);
+            const auto q = eval_z(labels.values[9]);
+            const auto r = eval_z(labels.values[10]);
+            const auto delta = eval_z(labels.values[11]);
+            const auto sign = one - two * sigma;
+
+            acc.add(active - selector);
+            acc.add(selector * sigma * (sigma - one));
+            acc.add(selector * (x - sign * a));
+            acc.add(selector * zero * (zero - one));
+            acc.add(selector * zero * a);
+            acc.add(selector * (a * a_inv - (one - zero)));
+            acc.add(selector * zero * sigma);
+            acc.add(selector * zero * a_inv);
+            acc.add(selector * (d * d_inv - one));
+            acc.add(selector * (y - sign * q));
+            acc.add(selector * (two * a + d - two * d * q - r));
+            acc.add(selector * (r + delta - two * d + one));
+
+            // Canonical padding is part of the public column-padding
+            // registry: no auxiliary value may survive outside Q_div.
+            for (const auto &item : {x, d, y, sigma, zero, a, a_inv, d_inv, q, r, delta})
             {
-                return eval(label, z);
-            };
-            auto eval_omega = [&](const std::string &label)
+                acc.add((one - selector) * item);
+            }
+
+            for (std::size_t value_index = 0;
+                 value_index < labels.decompositions.size(); ++value_index)
             {
-                return eval(label, omega_z);
-            };
-
-            const auto q_edge = eval_z("P_Q_edge_valid");
-            const auto q_edge_next = eval_omega("P_Q_edge_valid");
-            const auto q_new_next = eval_omega("P_Q_grp_new_edge");
-            const auto q_end = eval_z("P_Q_grp_end_edge");
-            const auto src_z = eval_z("P_src");
-            const auto dst_z = eval_z("P_dst");
-            const auto q_tbl_l_z = eval_z("P_Q_tbl_L");
-            const auto q_qry_l_z = eval_z("P_Q_qry_L");
-            const auto q_tbl_r_z = eval_z("P_Q_tbl_R");
-            const auto q_qry_r_z = eval_z("P_Q_qry_R");
-            const auto q_tbl_exp_z = eval_z("P_Q_tbl_exp");
-            const auto q_qry_exp_z = eval_z("P_Q_qry_exp");
-            const auto q_tbl_elu_z = eval_z("P_Q_tbl_ELU");
-            const auto t_l_x_z = eval_z("P_T_L_x");
-            const auto t_l_y_z = eval_z("P_T_L_y");
-            const auto t_range_z = eval_z("P_T_range");
-            const auto t_exp_x_z = eval_z("P_T_exp_x");
-            const auto t_exp_y_z = eval_z("P_T_exp_y");
-            const auto t_elu_x_z = eval_z("P_T_ELU_x");
-            const auto t_elu_y_z = eval_z("P_T_ELU_y");
-            using ActiveAccumulator =
-                std::conditional_t<
-                    std::is_same_v<
-                        Scalar,
-                        FieldElement>,
-                    BasicQuotientAccumulator<
-                        UsePrecomputedAlphaPowers>,
-                    TEdgeProgramQuotientAccumulator>;
-
-            ActiveAccumulator acc(
-                alpha_quot,
-                return_numerator,
-                precomputed_alpha_powers);
-            auto add_signed_division_constraints = [&](
-                                                       const std::string &prefix,
-                                                       const std::string &public_selector_label,
-                                                       const SignedDivisionEvaluationConstants
-                                                           *planned_constants)
-            {
-                const auto selector = eval_z(public_selector_label);
-                const auto &labels = signed_division_label_plan(
-                    prefix, context.config.range_bits);
-                const auto active = eval_z(labels.values[0]);
-                const auto x = eval_z(labels.values[1]);
-                const auto d = eval_z(labels.values[2]);
-                const auto y = eval_z(labels.values[3]);
-                const auto sigma = eval_z(labels.values[4]);
-                const auto zero = eval_z(labels.values[5]);
-                const auto a = eval_z(labels.values[6]);
-                const auto a_inv = eval_z(labels.values[7]);
-                const auto d_inv = eval_z(labels.values[8]);
-                const auto q = eval_z(labels.values[9]);
-                const auto r = eval_z(labels.values[10]);
-                const auto delta = eval_z(labels.values[11]);
-                const auto sign = one - two * sigma;
-
-                acc.add(active - selector);
-                acc.add(selector * sigma * (sigma - one));
-                acc.add(selector * (x - sign * a));
-                acc.add(selector * zero * (zero - one));
-                acc.add(selector * zero * a);
-                acc.add(selector * (a * a_inv - (one - zero)));
-                acc.add(selector * zero * sigma);
-                acc.add(selector * zero * a_inv);
-                acc.add(selector * (d * d_inv - one));
-                acc.add(selector * (y - sign * q));
-                acc.add(selector * (two * a + d - two * d * q - r));
-                acc.add(selector * (r + delta - two * d + one));
-
-                // Canonical padding is part of the public column-padding
-                // registry: no auxiliary value may survive outside Q_div.
-                for (const auto &item : {x, d, y, sigma, zero, a, a_inv, d_inv, q, r, delta})
+                const auto source =
+                    value_index == 0   ? a
+                    : value_index == 1 ? d - one
+                    : value_index == 2 ? q
+                    : value_index == 3 ? r
+                                       : delta;
+                Scalar reconstructed =
+                    FieldElement::zero();
+                auto place = FieldElement::one();
+                for (std::size_t limb_index = 0;
+                     limb_index < labels.decompositions[value_index].size();
+                     ++limb_index)
                 {
-                    acc.add((one - selector) * item);
+                    const auto &limb_labels =
+                        labels.decompositions[value_index][limb_index];
+                    const auto limb_value = eval_z(limb_labels.limb);
+                    reconstructed += place * limb_value;
+                    place *= signed_division_limb_base;
+
+                    const auto table = eval_z(limb_labels.range[0]);
+                    const auto query = eval_z(limb_labels.range[1]);
+                    const auto multiplicity = eval_z(limb_labels.range[2]);
+                    const auto j_table = eval_z(limb_labels.range[3]);
+                    const auto j_query = eval_z(limb_labels.range[4]);
+                    const auto accumulator = eval_z(limb_labels.range[5]);
+                    const auto accumulator_next = eval_omega(limb_labels.range[5]);
+                    const auto beta =
+                        planned_constants != nullptr
+                            ? planned_constants
+                                  ->betas[value_index][limb_index]
+                            : challenges.at(limb_labels.beta);
+                    acc.add(first * accumulator);
+                    acc.add(not_last * (accumulator_next - accumulator - q_tbl_r_z * multiplicity * j_table + selector * j_query));
+                    acc.add(last * accumulator);
+                    acc.add(q_tbl_r_z * ((table + beta) * j_table - one));
+                    acc.add((one - q_tbl_r_z) * j_table);
+                    acc.add(selector * ((query + beta) * j_query - one));
+                    acc.add((one - selector) * j_query);
+                    acc.add(table - t_range_z);
+                    acc.add(query - limb_value);
+                    acc.add((one - q_tbl_r_z) * table);
+                    acc.add((one - q_tbl_r_z) * multiplicity);
+                    acc.add((one - selector) * query);
+                    acc.add((one - selector) * limb_value);
                 }
+                acc.add(selector * (source - reconstructed));
+            }
+        };
+        auto add_logup_constraints = [&](
+                                         const std::string &prefix,
+                                         const std::string &suffix,
+                                         const Scalar &q_table,
+                                         const Scalar &q_query,
+                                         const FieldElement &beta)
+        {
+            const auto table = eval_z(prefix + "Table_" + suffix);
+            const auto query = eval_z(prefix + "Query_" + suffix);
+            const auto multiplicity = eval_z(prefix + "m_" + suffix);
+            const auto j_table = eval_z(prefix + "J_tbl_" + suffix);
+            const auto j_query = eval_z(prefix + "J_qry_" + suffix);
+            const auto accumulator = eval_z(prefix + "R_" + suffix);
+            const auto accumulator_next = eval_omega(prefix + "R_" + suffix);
+            acc.add(first * accumulator);
+            acc.add(not_last * (accumulator_next - accumulator - q_table * multiplicity * j_table + q_query * j_query));
+            acc.add(last * accumulator);
+            acc.add(q_table * ((table + beta) * j_table - one));
+            acc.add((one - q_table) * j_table);
+            acc.add(q_query * ((query + beta) * j_query - one));
+            acc.add((one - q_query) * j_query);
+        };
+        auto add_coefficient_basis_binding = [&](
+                                                 const std::string &prefix,
+                                                 const std::string &public_selector_label,
+                                                 const std::string &source_label,
+                                                 const FieldElement &target)
+        {
+            const auto selector = eval_z(public_selector_label);
+            const auto selector_next = eval_omega(public_selector_label);
+            const auto a = eval_z(prefix + "a");
+            const auto b = eval_z(prefix + "b");
+            const auto b_next = eval_omega(prefix + "b");
+            const auto current = eval_z(prefix + "Acc");
+            const auto next = eval_omega(prefix + "Acc");
+            const auto source = eval_z(source_label);
+            acc.add(first * current);
+            acc.add(first * (b - one));
+            acc.add(not_last * selector_next * (b_next - y_out * b));
+            acc.add(not_last * selector * (next - current - a * b));
+            acc.add(not_last * (one - selector) * (next - current));
+            acc.add(selector * (a - source));
+            acc.add((one - selector) * a);
+            acc.add((one - selector) * b);
+            acc.add(last * (current - target));
+        };
 
-                for (std::size_t value_index = 0;
-                     value_index < labels.decompositions.size(); ++value_index)
-                {
-                    const auto source =
-                        value_index == 0   ? a
-                        : value_index == 1 ? d - one
-                        : value_index == 2 ? q
-                        : value_index == 3 ? r
-                                           : delta;
-                    Scalar reconstructed =
-                        FieldElement::zero();
-                    auto place = FieldElement::one();
-                    for (std::size_t limb_index = 0;
-                         limb_index < labels.decompositions[value_index].size();
-                         ++limb_index)
-                    {
-                        const auto &limb_labels =
-                            labels.decompositions[value_index][limb_index];
-                        const auto limb_value = eval_z(limb_labels.limb);
-                        reconstructed += place * limb_value;
-                        place *= signed_division_limb_base;
-
-                        const auto table = eval_z(limb_labels.range[0]);
-                        const auto query = eval_z(limb_labels.range[1]);
-                        const auto multiplicity = eval_z(limb_labels.range[2]);
-                        const auto j_table = eval_z(limb_labels.range[3]);
-                        const auto j_query = eval_z(limb_labels.range[4]);
-                        const auto accumulator = eval_z(limb_labels.range[5]);
-                        const auto accumulator_next = eval_omega(limb_labels.range[5]);
-                        const auto beta =
-                            planned_constants != nullptr
-                                ? planned_constants
-                                      ->betas[value_index][limb_index]
-                                : challenges.at(limb_labels.beta);
-                        acc.add(first * accumulator);
-                        acc.add(not_last * (accumulator_next - accumulator - q_tbl_r_z * multiplicity * j_table + selector * j_query));
-                        acc.add(last * accumulator);
-                        acc.add(q_tbl_r_z * ((table + beta) * j_table - one));
-                        acc.add((one - q_tbl_r_z) * j_table);
-                        acc.add(selector * ((query + beta) * j_query - one));
-                        acc.add((one - selector) * j_query);
-                        acc.add(table - t_range_z);
-                        acc.add(query - limb_value);
-                        acc.add((one - q_tbl_r_z) * table);
-                        acc.add((one - q_tbl_r_z) * multiplicity);
-                        acc.add((one - selector) * query);
-                        acc.add((one - selector) * limb_value);
-                    }
-                    acc.add(selector * (source - reconstructed));
-                }
-            };
-            auto add_logup_constraints = [&](
-                                             const std::string &prefix,
-                                             const std::string &suffix,
-                                             const Scalar &q_table,
-                                             const Scalar &q_query,
-                                             const FieldElement &beta)
+        for (std::size_t layer_index = 0;
+             layer_index < context.model.hidden_layers.size();
+             ++layer_index)
+        {
+            for (std::size_t local_head_index = 0;
+                 local_head_index < context.model.hidden_layers[layer_index].heads.size();
+                 ++local_head_index)
             {
-                const auto table = eval_z(prefix + "Table_" + suffix);
-                const auto query = eval_z(prefix + "Query_" + suffix);
-                const auto multiplicity = eval_z(prefix + "m_" + suffix);
-                const auto j_table = eval_z(prefix + "J_tbl_" + suffix);
-                const auto j_query = eval_z(prefix + "J_qry_" + suffix);
-                const auto accumulator = eval_z(prefix + "R_" + suffix);
-                const auto accumulator_next = eval_omega(prefix + "R_" + suffix);
-                acc.add(first * accumulator);
-                acc.add(not_last * (accumulator_next - accumulator - q_table * multiplicity * j_table + q_query * j_query));
-                acc.add(last * accumulator);
-                acc.add(q_table * ((table + beta) * j_table - one));
-                acc.add((one - q_table) * j_table);
-                acc.add(q_query * ((query + beta) * j_query - one));
-                acc.add((one - q_query) * j_query);
-            };
-            auto add_coefficient_basis_binding = [&](
-                                                     const std::string &prefix,
-                                                     const std::string &public_selector_label,
-                                                     const std::string &source_label,
-                                                     const FieldElement &target)
-            {
-                const auto selector = eval_z(public_selector_label);
-                const auto selector_next = eval_omega(public_selector_label);
-                const auto a = eval_z(prefix + "a");
-                const auto b = eval_z(prefix + "b");
-                const auto b_next = eval_omega(prefix + "b");
-                const auto current = eval_z(prefix + "Acc");
-                const auto next = eval_omega(prefix + "Acc");
-                const auto source = eval_z(source_label);
-                acc.add(first * current);
-                acc.add(first * (b - one));
-                acc.add(not_last * selector_next * (b_next - y_out * b));
-                acc.add(not_last * selector * (next - current - a * b));
-                acc.add(not_last * (one - selector) * (next - current));
-                acc.add(selector * (a - source));
-                acc.add((one - selector) * a);
-                acc.add((one - selector) * b);
-                acc.add(last * (current - target));
-            };
-
-            for (std::size_t layer_index = 0;
-                 layer_index < context.model.hidden_layers.size();
-                 ++layer_index)
-            {
-                for (std::size_t local_head_index = 0;
-                     local_head_index < context.model.hidden_layers[layer_index].heads.size();
-                     ++local_head_index)
-                {
                 const auto *planned = evaluation_plan != nullptr
                                           ? &evaluation_plan->hidden_head_constants
                                                  .at(layer_index)
@@ -2214,461 +2315,461 @@ namespace gatzk::protocol
                 {
                     acc.add((one - q_div) * padding_value);
                 }
+            }
+        }
+
+        for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
+        {
+            const auto *planned = evaluation_plan != nullptr
+                                      ? &evaluation_plan->output_heads.at(head_index)
+                                      : nullptr;
+            const auto fallback_prefix = planned == nullptr
+                                             ? output_head_prefix(head_index) + "_"
+                                             : std::string{};
+            const std::string &prefix = planned != nullptr
+                                            ? planned->prefix
+                                            : fallback_prefix;
+            const auto beta_src_out = planned != nullptr
+                                          ? planned->beta_src
+                                          : challenges.at(output_challenge_name(
+                                                "beta_src_out", head_index));
+            const auto beta_dst_out = planned != nullptr
+                                          ? planned->beta_dst
+                                          : challenges.at(output_challenge_name(
+                                                "beta_dst_out", head_index));
+            const auto eta_src_out = planned != nullptr
+                                         ? planned->eta_src
+                                         : challenges.at(output_challenge_name(
+                                               "eta_src_out", head_index));
+            const auto eta_dst_out = planned != nullptr
+                                         ? planned->eta_dst
+                                         : challenges.at(output_challenge_name(
+                                               "eta_dst_out", head_index));
+            const auto eta_dst_out_sq = planned != nullptr
+                                            ? planned->eta_dst_sq
+                                            : eta_dst_out * eta_dst_out;
+            const auto eta_dst_out_cu = planned != nullptr
+                                            ? planned->eta_dst_cu
+                                            : eta_dst_out_sq * eta_dst_out;
+            const auto eta_dst_out_4 = planned != nullptr
+                                           ? planned->eta_dst_4
+                                           : eta_dst_out_cu * eta_dst_out;
+            const auto eta_dst_out_5 = planned != nullptr
+                                           ? planned->eta_dst_5
+                                           : eta_dst_out_4 * eta_dst_out;
+            const auto beta_l_out = planned != nullptr
+                                        ? planned->beta_l
+                                        : challenges.at(output_challenge_name(
+                                              "beta_L_out", head_index));
+            const auto eta_l_out = planned != nullptr
+                                       ? planned->eta_l
+                                       : challenges.at(output_challenge_name(
+                                             "eta_L_out", head_index));
+            const auto beta_r_out = planned != nullptr
+                                        ? planned->beta_r
+                                        : challenges.at(output_challenge_name(
+                                              "beta_R_out", head_index));
+            const auto beta_exp_out = planned != nullptr
+                                          ? planned->beta_exp
+                                          : challenges.at(output_challenge_name(
+                                                "beta_exp_out", head_index));
+            const auto eta_exp_out = planned != nullptr
+                                         ? planned->eta_exp
+                                         : challenges.at(output_challenge_name(
+                                               "eta_exp_out", head_index));
+            const auto beta_t_out = planned != nullptr
+                                        ? planned->beta_t
+                                        : challenges.at(output_challenge_name(
+                                              "beta_t_out", head_index));
+            const auto eta_t_out = planned != nullptr
+                                       ? planned->eta_t
+                                       : challenges.at(output_challenge_name(
+                                             "eta_t_out", head_index));
+
+            auto z_out = [&](std::string_view suffix)
+            {
+                return eval_z(prefix + std::string(suffix));
+            };
+            auto omega_out = [&](std::string_view suffix)
+            {
+                return eval_omega(prefix + std::string(suffix));
+            };
+
+            const auto r_src_z = z_out("R_src");
+            const auto r_src_omega = omega_out("R_src");
+            const auto query_src_z = z_out("Query_src");
+            const auto e_src_edge_z = z_out("E_src_edge");
+            const auto e_dst_edge_z = z_out("E_dst_edge");
+            const auto s_z = z_out("S");
+            const auto table_l_z = z_out("Table_L");
+            const auto query_l_z = z_out("Query_L");
+            const auto m_l_z = z_out("m_L");
+            const auto z_z = z_out("Z");
+            const auto delta_z = z_out("Delta");
+            const auto m_edge_z = z_out("M_edge");
+            const auto s_max_z = z_out("s_max");
+            const auto s_max_omega = omega_out("s_max");
+            const auto c_max_z = z_out("C_max");
+            const auto c_max_omega = omega_out("C_max");
+            const auto table_r_z = z_out("Table_R");
+            const auto query_r_z = z_out("Query_R");
+            const auto m_r_z = z_out("m_R");
+            const auto alpha_z = z_out("alpha");
+            const auto u_z = z_out("U");
+            const auto inv_edge_z = z_out("inv_edge");
+            const auto table_exp_z = z_out("Table_exp");
+            const auto query_exp_z = z_out("Query_exp");
+            const auto m_exp_z = z_out("m_exp");
+            const auto psq_z = z_out("PSQ");
+            const auto psq_omega = omega_out("PSQ");
+            const auto w_z = z_out("w");
+            const auto w_omega = omega_out("w");
+            const auto t_edge_z = z_out("T_edge");
+            const auto r_t_z = z_out("R_t");
+            const auto r_t_omega = omega_out("R_t");
+            const auto query_t_z = z_out("Query_t");
+            const auto r_dst_z = z_out("R_dst");
+            const auto r_dst_omega = omega_out("R_dst");
+            const auto query_dst_z = z_out("Query_dst");
+            const auto sum_edge_z = z_out("Sum_edge");
+            const auto y_star_edge_z = z_out("Y_star_edge");
+
+            acc.add(first * r_src_z);
+            acc.add(q_edge * ((query_src_z + beta_src_out) * z_out("J_src_edge") - one));
+            acc.add(not_last * route_edge_step(r_src_omega, r_src_z, query_src_z, beta_src_out, q_edge));
+            acc.add(query_src_z - (src_z + eta_src_out * e_src_edge_z));
+            acc.add(zero_on_unselected(q_edge, query_src_z));
+
+            acc.add(q_edge * (s_z - e_src_edge_z - e_dst_edge_z));
+            add_logup_constraints(prefix, "L", q_tbl_l_z, q_qry_l_z, beta_l_out);
+            acc.add(table_l_z - (t_l_x_z + eta_l_out * t_l_y_z));
+            acc.add(query_l_z - (s_z + eta_l_out * z_z));
+            acc.add(zero_on_unselected(q_tbl_l_z, table_l_z));
+            acc.add(zero_on_unselected(q_tbl_l_z, m_l_z));
+            acc.add(zero_on_unselected(q_qry_l_z, query_l_z));
+
+            acc.add(q_edge * (delta_z - m_edge_z + z_z));
+            acc.add(s_max_z * (s_max_z - one));
+            acc.add(s_max_z * delta_z);
+            acc.add(zero_on_unselected(q_edge, s_max_z));
+            acc.add(first * (c_max_z - s_max_z));
+            acc.add(
+                q_edge_next * (c_max_omega - q_new_next * s_max_omega - (one - q_new_next) * (c_max_z + s_max_omega)) + (one - q_edge_next) * (c_max_omega - c_max_z));
+            acc.add(q_end * (c_max_z - one));
+
+            add_logup_constraints(prefix, "R", q_tbl_r_z, q_qry_r_z, beta_r_out);
+            acc.add(table_r_z - t_range_z);
+            acc.add(query_r_z - delta_z);
+            acc.add(zero_on_unselected(q_tbl_r_z, table_r_z));
+            acc.add(zero_on_unselected(q_tbl_r_z, m_r_z));
+            acc.add(zero_on_unselected(q_qry_r_z, query_r_z));
+
+            acc.add(q_edge * (alpha_z - u_z * inv_edge_z));
+            add_logup_constraints(prefix, "exp", q_tbl_exp_z, q_qry_exp_z, beta_exp_out);
+            acc.add(table_exp_z - (t_exp_x_z + eta_exp_out * t_exp_y_z));
+            acc.add(query_exp_z - (delta_z + eta_exp_out * u_z));
+            acc.add(zero_on_unselected(q_tbl_exp_z, table_exp_z));
+            acc.add(zero_on_unselected(q_tbl_exp_z, m_exp_z));
+            acc.add(zero_on_unselected(q_qry_exp_z, query_exp_z));
+
+            acc.add(first * (psq_z - q_edge * w_z));
+            acc.add(psq_step(psq_omega, psq_z, w_omega, q_edge_next, q_new_next));
+            acc.add(q_end * (psq_z - t_edge_z));
+            acc.add(first * r_t_z);
+            acc.add(q_edge * ((query_t_z + beta_t_out) * z_out("J_t_edge") - one));
+            acc.add(not_last * route_edge_step(r_t_omega, r_t_z, query_t_z, beta_t_out, q_edge));
+            acc.add(query_t_z - (dst_z + eta_t_out * t_edge_z));
+            acc.add(zero_on_unselected(q_edge, query_t_z));
+
+            acc.add(first * r_dst_z);
+            acc.add(q_edge * ((query_dst_z + beta_dst_out) * z_out("J_dst_edge") - one));
+            acc.add(not_last * route_edge_step(r_dst_omega, r_dst_z, query_dst_z, beta_dst_out, q_edge));
+            acc.add(query_dst_z - (dst_z + eta_dst_out * e_dst_edge_z + eta_dst_out_sq * m_edge_z + eta_dst_out_cu * sum_edge_z + eta_dst_out_4 * inv_edge_z + eta_dst_out_5 * y_star_edge_z));
+            acc.add(zero_on_unselected(q_edge, query_dst_z));
+            add_signed_division_constraints(
+                planned != nullptr
+                    ? planned->division_prefix
+                    : prefix + "Div_",
+                planned != nullptr
+                    ? planned->division_selector
+                    : "P_Q_div_out" + std::to_string(head_index),
+                planned != nullptr
+                    ? &planned->division
+                    : nullptr);
+            const auto q_div = eval_z(
+                planned != nullptr
+                    ? planned->division_selector
+                    : "P_Q_div_out" + std::to_string(head_index));
+            const auto y_pre_flat = z_out("Y_pre_flat");
+            const auto sum_flat = z_out("Sum_flat");
+            const auto y_pre_field_flat = z_out("Y_pre_field_flat");
+            const auto y_agg_num_flat = z_out("Y_agg_num_flat");
+            const auto bias_flat = z_out("Bias_flat");
+            const auto y_flat = z_out("Y_flat");
+            const auto &scales = context.config.quantization;
+            const auto output_pre_scale = FieldElement(scales.s_out_pre);
+            const auto output_y_prime_scale =
+                FieldElement(scales.s_y_prime.at(head_index));
+            acc.add(q_div * (y_agg_num_flat - sum_flat * y_pre_field_flat));
+            acc.add(q_div * (z_out("Div_X") - output_pre_scale * y_agg_num_flat));
+            acc.add(q_div * (z_out("Div_D") - output_y_prime_scale * sum_flat));
+            acc.add(q_div * (y_pre_flat - z_out("Div_Y")));
+            acc.add(q_div * (y_flat - y_pre_flat - bias_flat));
+            acc.add((one - q_div) * sum_flat);
+            acc.add((one - q_div) * y_pre_field_flat);
+            acc.add((one - q_div) * y_agg_num_flat);
+            acc.add((one - q_div) * y_pre_flat);
+            acc.add((one - q_div) * bias_flat);
+            acc.add((one - q_div) * y_flat);
+            add_coefficient_basis_binding(
+                planned != nullptr
+                    ? planned->binding_prefix
+                    : prefix + "Bind_",
+                planned != nullptr
+                    ? planned->division_selector
+                    : "P_Q_div_out" + std::to_string(head_index),
+                planned != nullptr
+                    ? planned->y_flat_label
+                    : prefix + "Y_flat",
+                external_evaluations.at(
+                    planned != nullptr
+                        ? planned->external_y_name
+                        : output_external_eval_name("y", head_index)));
+            const auto fallback_view_prefix = planned == nullptr
+                                                  ? output_bias_view_prefix(head_index)
+                                                  : std::string{};
+            const std::string &view_prefix = planned != nullptr
+                                                 ? planned->view_prefix
+                                                 : fallback_view_prefix;
+            const auto q_view = q_div;
+            const auto query_view = eval_z(view_prefix + "Query");
+            const auto j_view = eval_z(view_prefix + "J_qry");
+            const auto r_view = eval_z(view_prefix + "R_qry");
+            const auto r_view_next = eval_omega(view_prefix + "R_qry");
+            const auto beta_view = planned != nullptr
+                                       ? planned->beta_view
+                                       : challenges.at(output_bias_view_beta_label(head_index));
+            const auto eta_view = planned != nullptr
+                                      ? planned->eta_view
+                                      : challenges.at(output_bias_view_eta_label(head_index));
+            acc.add(first * r_view);
+            acc.add(not_last * (r_view_next - r_view - q_view * j_view));
+            acc.add(q_view * ((query_view + beta_view) * j_view - one));
+            acc.add((one - q_view) * j_view);
+            acc.add(query_view - q_view * (eval_z("P_BiasIndex_edge") + eta_view * bias_flat));
+
+            std::vector<CoefficientChunkLayoutEntry> fallback_basis_chunks;
+            if (planned == nullptr)
+            {
+                fallback_basis_chunks = coefficient_chunk_layout(
+                    context.local.num_classes + registered_blinder_coefficient_count(
+                                                    context,
+                                                    output_bias_basis_label(head_index, "Coeff")),
+                    context.domains.edge->size);
+            }
+            const auto gamma = planned != nullptr
+                                   ? planned->gamma
+                                   : challenges.at(output_bias_basis_gamma_label(head_index));
+            const auto fallback_power_label = planned == nullptr
+                                                  ? output_bias_basis_label(head_index, "Powers")
+                                                  : std::string{};
+            const std::string &power_label = planned != nullptr
+                                                 ? planned->power_label
+                                                 : fallback_power_label;
+            const auto power = eval_z(power_label);
+            const auto power_next = eval_omega(power_label);
+            acc.add(first * (power - one));
+            acc.add(not_last * (power_next - gamma * power));
+            const auto chunk_count = planned != nullptr
+                                         ? planned->basis_chunks.size()
+                                         : fallback_basis_chunks.size();
+            for (std::size_t chunk_index = 0;
+                 chunk_index < chunk_count; ++chunk_index)
+            {
+                const auto fallback_chunk = planned == nullptr
+                                                ? fallback_basis_chunks[chunk_index].chunk_index
+                                                : std::size_t{0};
+                const auto fallback_value_label = planned == nullptr
+                                                      ? output_bias_basis_chunk_label(
+                                                            head_index, fallback_chunk)
+                                                      : std::string{};
+                const auto fallback_active_selector = planned == nullptr
+                                                          ? output_bias_basis_region_selector_label(
+                                                                head_index, fallback_chunk, "active")
+                                                          : std::string{};
+                const auto fallback_semantic_selector = planned == nullptr
+                                                            ? output_bias_basis_region_selector_label(
+                                                                  head_index, fallback_chunk, "semantic")
+                                                            : std::string{};
+                const auto fallback_gap_selector = planned == nullptr
+                                                       ? output_bias_basis_region_selector_label(
+                                                             head_index, fallback_chunk, "gap")
+                                                       : std::string{};
+                const auto fallback_tail_selector = planned == nullptr
+                                                        ? output_bias_basis_region_selector_label(
+                                                              head_index, fallback_chunk, "tail")
+                                                        : std::string{};
+                const auto fallback_accumulator_label = planned == nullptr
+                                                            ? output_bias_basis_chunk_accumulator_label(
+                                                                  head_index, fallback_chunk)
+                                                            : std::string{};
+                const auto *planned_chunk = planned != nullptr
+                                                ? &planned->basis_chunks[chunk_index]
+                                                : nullptr;
+                const auto &value_label = planned != nullptr
+                                              ? planned_chunk->value
+                                              : fallback_value_label;
+                const auto &active_selector = planned != nullptr
+                                                  ? planned_chunk->active_selector
+                                                  : fallback_active_selector;
+                const auto &semantic_selector = planned != nullptr
+                                                    ? planned_chunk->semantic_selector
+                                                    : fallback_semantic_selector;
+                const auto &gap_selector = planned != nullptr
+                                               ? planned_chunk->gap_selector
+                                               : fallback_gap_selector;
+                const auto &tail_selector = planned != nullptr
+                                                ? planned_chunk->tail_selector
+                                                : fallback_tail_selector;
+                const auto &accumulator_label = planned != nullptr
+                                                    ? planned_chunk->accumulator
+                                                    : fallback_accumulator_label;
+                const auto chunk_value = eval_z(value_label);
+                const auto q_active = eval_z(active_selector);
+                const auto q_semantic = eval_z(semantic_selector);
+                const auto q_gap = eval_z(gap_selector);
+                const auto q_tail = eval_z(tail_selector);
+                acc.add(q_semantic + q_gap + q_tail - q_active);
+                acc.add((one - q_active) * chunk_value);
+                acc.add(q_gap * chunk_value);
+                acc.add(q_semantic * (chunk_value - bias_flat));
+                const auto basis_accumulator = eval_z(accumulator_label);
+                const auto basis_accumulator_next =
+                    eval_omega(accumulator_label);
+                acc.add(first * basis_accumulator);
+                acc.add(not_last * (basis_accumulator_next - basis_accumulator - q_active * power * chunk_value));
+            }
+        }
+
+        std::vector<BindingRelationMeta> local_binding_metadata;
+        const std::vector<BindingRelationMeta> *binding_metadata =
+            evaluation_plan != nullptr
+                ? &evaluation_plan->binding_metadata
+                : nullptr;
+        if (binding_metadata == nullptr)
+        {
+            local_binding_metadata = build_binding_relation_metadata(context);
+            binding_metadata = &local_binding_metadata;
+        }
+        for (const auto &binding : *binding_metadata)
+        {
+            for (const auto &relation : binding.aggregation_relations)
+            {
+                const auto source_edge = eval_z(
+                    relation.source_edge_object);
+                const auto target_edge = eval_z(
+                    relation.target_edge_object);
+                const auto product = eval_z(relation.product_object);
+                const auto product_next = eval_omega(
+                    relation.product_object);
+                const auto psq = eval_z(relation.psq_object);
+                const auto psq_next = eval_omega(relation.psq_object);
+                acc.add(q_edge * (product - eval_z(relation.alpha_object) * source_edge));
+                acc.add(first * (psq - q_edge * product));
+                acc.add(not_last * psq_step(
+                                       psq_next, psq, product_next,
+                                       q_edge_next, q_new_next));
+                acc.add(q_end * (psq - target_edge));
+                acc.add(zero_on_unselected(q_edge, source_edge));
+                acc.add(zero_on_unselected(q_edge, target_edge));
+                acc.add(zero_on_unselected(q_edge, product));
+                for (const auto *route : {
+                         &relation.source_route,
+                         &relation.target_route})
+                {
+                    const auto beta = challenges.at(
+                        route->beta_challenge_label);
+                    const auto eta = challenges.at(
+                        route->eta_challenge_label);
+                    const auto accumulator = eval_z(
+                        route->edge_accumulator_object);
+                    const auto accumulator_next = eval_omega(
+                        route->edge_accumulator_object);
+                    const auto query = eval_z(route->query_object);
+                    const auto inverse = eval_z(
+                        route->edge_inverse_object);
+                    acc.add(first * accumulator);
+                    acc.add(q_edge * ((query + beta) * inverse - one));
+                    acc.add((one - q_edge) * inverse);
+                    acc.add(not_last * route_edge_step(
+                                           accumulator_next, accumulator, query, beta,
+                                           q_edge));
+                    acc.add(query - (eval_z(route->index_object) + eta * eval_z(route->edge_value_object)));
+                    acc.add(zero_on_unselected(q_edge, query));
                 }
             }
+        }
 
+        add_signed_division_constraints(
+            "P_avg_Div_",
+            "P_Q_div_avg",
+            evaluation_plan != nullptr
+                ? &evaluation_plan->average_division
+                : nullptr);
+        {
+            const auto q_avg = eval_z("P_Q_div_avg");
+            Scalar summed_heads =
+                FieldElement::zero();
             for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
             {
-                const auto *planned = evaluation_plan != nullptr
-                                          ? &evaluation_plan->output_heads.at(head_index)
-                                          : nullptr;
-                const auto fallback_prefix = planned == nullptr
-                                                 ? output_head_prefix(head_index) + "_"
-                                                 : std::string{};
-                const std::string &prefix = planned != nullptr
-                                                ? planned->prefix
-                                                : fallback_prefix;
-                const auto beta_src_out = planned != nullptr
-                                              ? planned->beta_src
-                                              : challenges.at(output_challenge_name(
-                                                    "beta_src_out", head_index));
-                const auto beta_dst_out = planned != nullptr
-                                              ? planned->beta_dst
-                                              : challenges.at(output_challenge_name(
-                                                    "beta_dst_out", head_index));
-                const auto eta_src_out = planned != nullptr
-                                             ? planned->eta_src
-                                             : challenges.at(output_challenge_name(
-                                                   "eta_src_out", head_index));
-                const auto eta_dst_out = planned != nullptr
-                                             ? planned->eta_dst
-                                             : challenges.at(output_challenge_name(
-                                                   "eta_dst_out", head_index));
-                const auto eta_dst_out_sq = planned != nullptr
-                                                ? planned->eta_dst_sq
-                                                : eta_dst_out * eta_dst_out;
-                const auto eta_dst_out_cu = planned != nullptr
-                                                ? planned->eta_dst_cu
-                                                : eta_dst_out_sq * eta_dst_out;
-                const auto eta_dst_out_4 = planned != nullptr
-                                               ? planned->eta_dst_4
-                                               : eta_dst_out_cu * eta_dst_out;
-                const auto eta_dst_out_5 = planned != nullptr
-                                               ? planned->eta_dst_5
-                                               : eta_dst_out_4 * eta_dst_out;
-                const auto beta_l_out = planned != nullptr
-                                            ? planned->beta_l
-                                            : challenges.at(output_challenge_name(
-                                                  "beta_L_out", head_index));
-                const auto eta_l_out = planned != nullptr
-                                           ? planned->eta_l
-                                           : challenges.at(output_challenge_name(
-                                                 "eta_L_out", head_index));
-                const auto beta_r_out = planned != nullptr
-                                            ? planned->beta_r
-                                            : challenges.at(output_challenge_name(
-                                                  "beta_R_out", head_index));
-                const auto beta_exp_out = planned != nullptr
-                                              ? planned->beta_exp
-                                              : challenges.at(output_challenge_name(
-                                                    "beta_exp_out", head_index));
-                const auto eta_exp_out = planned != nullptr
-                                             ? planned->eta_exp
-                                             : challenges.at(output_challenge_name(
-                                                   "eta_exp_out", head_index));
-                const auto beta_t_out = planned != nullptr
-                                            ? planned->beta_t
-                                            : challenges.at(output_challenge_name(
-                                                  "beta_t_out", head_index));
-                const auto eta_t_out = planned != nullptr
-                                           ? planned->eta_t
-                                           : challenges.at(output_challenge_name(
-                                                 "eta_t_out", head_index));
-
-                auto z_out = [&](std::string_view suffix)
-                {
-                    return eval_z(prefix + std::string(suffix));
-                };
-                auto omega_out = [&](std::string_view suffix)
-                {
-                    return eval_omega(prefix + std::string(suffix));
-                };
-
-                const auto r_src_z = z_out("R_src");
-                const auto r_src_omega = omega_out("R_src");
-                const auto query_src_z = z_out("Query_src");
-                const auto e_src_edge_z = z_out("E_src_edge");
-                const auto e_dst_edge_z = z_out("E_dst_edge");
-                const auto s_z = z_out("S");
-                const auto table_l_z = z_out("Table_L");
-                const auto query_l_z = z_out("Query_L");
-                const auto m_l_z = z_out("m_L");
-                const auto z_z = z_out("Z");
-                const auto delta_z = z_out("Delta");
-                const auto m_edge_z = z_out("M_edge");
-                const auto s_max_z = z_out("s_max");
-                const auto s_max_omega = omega_out("s_max");
-                const auto c_max_z = z_out("C_max");
-                const auto c_max_omega = omega_out("C_max");
-                const auto table_r_z = z_out("Table_R");
-                const auto query_r_z = z_out("Query_R");
-                const auto m_r_z = z_out("m_R");
-                const auto alpha_z = z_out("alpha");
-                const auto u_z = z_out("U");
-                const auto inv_edge_z = z_out("inv_edge");
-                const auto table_exp_z = z_out("Table_exp");
-                const auto query_exp_z = z_out("Query_exp");
-                const auto m_exp_z = z_out("m_exp");
-                const auto psq_z = z_out("PSQ");
-                const auto psq_omega = omega_out("PSQ");
-                const auto w_z = z_out("w");
-                const auto w_omega = omega_out("w");
-                const auto t_edge_z = z_out("T_edge");
-                const auto r_t_z = z_out("R_t");
-                const auto r_t_omega = omega_out("R_t");
-                const auto query_t_z = z_out("Query_t");
-                const auto r_dst_z = z_out("R_dst");
-                const auto r_dst_omega = omega_out("R_dst");
-                const auto query_dst_z = z_out("Query_dst");
-                const auto sum_edge_z = z_out("Sum_edge");
-                const auto y_star_edge_z = z_out("Y_star_edge");
-
-                acc.add(first * r_src_z);
-                acc.add(q_edge * ((query_src_z + beta_src_out) * z_out("J_src_edge") - one));
-                acc.add(not_last * route_edge_step(r_src_omega, r_src_z, query_src_z, beta_src_out, q_edge));
-                acc.add(query_src_z - (src_z + eta_src_out * e_src_edge_z));
-                acc.add(zero_on_unselected(q_edge, query_src_z));
-
-                acc.add(q_edge * (s_z - e_src_edge_z - e_dst_edge_z));
-                add_logup_constraints(prefix, "L", q_tbl_l_z, q_qry_l_z, beta_l_out);
-                acc.add(table_l_z - (t_l_x_z + eta_l_out * t_l_y_z));
-                acc.add(query_l_z - (s_z + eta_l_out * z_z));
-                acc.add(zero_on_unselected(q_tbl_l_z, table_l_z));
-                acc.add(zero_on_unselected(q_tbl_l_z, m_l_z));
-                acc.add(zero_on_unselected(q_qry_l_z, query_l_z));
-
-                acc.add(q_edge * (delta_z - m_edge_z + z_z));
-                acc.add(s_max_z * (s_max_z - one));
-                acc.add(s_max_z * delta_z);
-                acc.add(zero_on_unselected(q_edge, s_max_z));
-                acc.add(first * (c_max_z - s_max_z));
-                acc.add(
-                    q_edge_next * (c_max_omega - q_new_next * s_max_omega - (one - q_new_next) * (c_max_z + s_max_omega)) + (one - q_edge_next) * (c_max_omega - c_max_z));
-                acc.add(q_end * (c_max_z - one));
-
-                add_logup_constraints(prefix, "R", q_tbl_r_z, q_qry_r_z, beta_r_out);
-                acc.add(table_r_z - t_range_z);
-                acc.add(query_r_z - delta_z);
-                acc.add(zero_on_unselected(q_tbl_r_z, table_r_z));
-                acc.add(zero_on_unselected(q_tbl_r_z, m_r_z));
-                acc.add(zero_on_unselected(q_qry_r_z, query_r_z));
-
-                acc.add(q_edge * (alpha_z - u_z * inv_edge_z));
-                add_logup_constraints(prefix, "exp", q_tbl_exp_z, q_qry_exp_z, beta_exp_out);
-                acc.add(table_exp_z - (t_exp_x_z + eta_exp_out * t_exp_y_z));
-                acc.add(query_exp_z - (delta_z + eta_exp_out * u_z));
-                acc.add(zero_on_unselected(q_tbl_exp_z, table_exp_z));
-                acc.add(zero_on_unselected(q_tbl_exp_z, m_exp_z));
-                acc.add(zero_on_unselected(q_qry_exp_z, query_exp_z));
-
-                acc.add(first * (psq_z - q_edge * w_z));
-                acc.add(psq_step(psq_omega, psq_z, w_omega, q_edge_next, q_new_next));
-                acc.add(q_end * (psq_z - t_edge_z));
-                acc.add(first * r_t_z);
-                acc.add(q_edge * ((query_t_z + beta_t_out) * z_out("J_t_edge") - one));
-                acc.add(not_last * route_edge_step(r_t_omega, r_t_z, query_t_z, beta_t_out, q_edge));
-                acc.add(query_t_z - (dst_z + eta_t_out * t_edge_z));
-                acc.add(zero_on_unselected(q_edge, query_t_z));
-
-                acc.add(first * r_dst_z);
-                acc.add(q_edge * ((query_dst_z + beta_dst_out) * z_out("J_dst_edge") - one));
-                acc.add(not_last * route_edge_step(r_dst_omega, r_dst_z, query_dst_z, beta_dst_out, q_edge));
-                acc.add(query_dst_z - (dst_z + eta_dst_out * e_dst_edge_z + eta_dst_out_sq * m_edge_z + eta_dst_out_cu * sum_edge_z + eta_dst_out_4 * inv_edge_z + eta_dst_out_5 * y_star_edge_z));
-                acc.add(zero_on_unselected(q_edge, query_dst_z));
-                add_signed_division_constraints(
-                    planned != nullptr
-                        ? planned->division_prefix
-                        : prefix + "Div_",
-                    planned != nullptr
-                        ? planned->division_selector
-                        : "P_Q_div_out" + std::to_string(head_index),
-                    planned != nullptr
-                        ? &planned->division
-                        : nullptr);
-                const auto q_div = eval_z(
-                    planned != nullptr
-                        ? planned->division_selector
-                        : "P_Q_div_out" + std::to_string(head_index));
-                const auto y_pre_flat = z_out("Y_pre_flat");
-                const auto sum_flat = z_out("Sum_flat");
-                const auto y_pre_field_flat = z_out("Y_pre_field_flat");
-                const auto y_agg_num_flat = z_out("Y_agg_num_flat");
-                const auto bias_flat = z_out("Bias_flat");
-                const auto y_flat = z_out("Y_flat");
-                const auto &scales = context.config.quantization;
-                const auto output_pre_scale = FieldElement(scales.s_out_pre);
-                const auto output_y_prime_scale =
-                    FieldElement(scales.s_y_prime.at(head_index));
-                acc.add(q_div * (y_agg_num_flat - sum_flat * y_pre_field_flat));
-                acc.add(q_div * (z_out("Div_X") - output_pre_scale * y_agg_num_flat));
-                acc.add(q_div * (z_out("Div_D") - output_y_prime_scale * sum_flat));
-                acc.add(q_div * (y_pre_flat - z_out("Div_Y")));
-                acc.add(q_div * (y_flat - y_pre_flat - bias_flat));
-                acc.add((one - q_div) * sum_flat);
-                acc.add((one - q_div) * y_pre_field_flat);
-                acc.add((one - q_div) * y_agg_num_flat);
-                acc.add((one - q_div) * y_pre_flat);
-                acc.add((one - q_div) * bias_flat);
-                acc.add((one - q_div) * y_flat);
-                add_coefficient_basis_binding(
-                    planned != nullptr
-                        ? planned->binding_prefix
-                        : prefix + "Bind_",
-                    planned != nullptr
-                        ? planned->division_selector
-                        : "P_Q_div_out" + std::to_string(head_index),
-                    planned != nullptr
-                        ? planned->y_flat_label
-                        : prefix + "Y_flat",
-                    external_evaluations.at(
-                        planned != nullptr
-                            ? planned->external_y_name
-                            : output_external_eval_name("y", head_index)));
-                const auto fallback_view_prefix = planned == nullptr
-                                                      ? output_bias_view_prefix(head_index)
-                                                      : std::string{};
-                const std::string &view_prefix = planned != nullptr
-                                                     ? planned->view_prefix
-                                                     : fallback_view_prefix;
-                const auto q_view = q_div;
-                const auto query_view = eval_z(view_prefix + "Query");
-                const auto j_view = eval_z(view_prefix + "J_qry");
-                const auto r_view = eval_z(view_prefix + "R_qry");
-                const auto r_view_next = eval_omega(view_prefix + "R_qry");
-                const auto beta_view = planned != nullptr
-                                           ? planned->beta_view
-                                           : challenges.at(output_bias_view_beta_label(head_index));
-                const auto eta_view = planned != nullptr
-                                          ? planned->eta_view
-                                          : challenges.at(output_bias_view_eta_label(head_index));
-                acc.add(first * r_view);
-                acc.add(not_last * (r_view_next - r_view - q_view * j_view));
-                acc.add(q_view * ((query_view + beta_view) * j_view - one));
-                acc.add((one - q_view) * j_view);
-                acc.add(query_view - q_view * (eval_z("P_BiasIndex_edge") + eta_view * bias_flat));
-
-                std::vector<CoefficientChunkLayoutEntry> fallback_basis_chunks;
-                if (planned == nullptr)
-                {
-                    fallback_basis_chunks = coefficient_chunk_layout(
-                        context.local.num_classes + registered_blinder_coefficient_count(
-                                                        context,
-                                                        output_bias_basis_label(head_index, "Coeff")),
-                        context.domains.edge->size);
-                }
-                const auto gamma = planned != nullptr
-                                       ? planned->gamma
-                                       : challenges.at(output_bias_basis_gamma_label(head_index));
-                const auto fallback_power_label = planned == nullptr
-                                                      ? output_bias_basis_label(head_index, "Powers")
-                                                      : std::string{};
-                const std::string &power_label = planned != nullptr
-                                                     ? planned->power_label
-                                                     : fallback_power_label;
-                const auto power = eval_z(power_label);
-                const auto power_next = eval_omega(power_label);
-                acc.add(first * (power - one));
-                acc.add(not_last * (power_next - gamma * power));
-                const auto chunk_count = planned != nullptr
-                                             ? planned->basis_chunks.size()
-                                             : fallback_basis_chunks.size();
-                for (std::size_t chunk_index = 0;
-                     chunk_index < chunk_count; ++chunk_index)
-                {
-                    const auto fallback_chunk = planned == nullptr
-                                                    ? fallback_basis_chunks[chunk_index].chunk_index
-                                                    : std::size_t{0};
-                    const auto fallback_value_label = planned == nullptr
-                                                          ? output_bias_basis_chunk_label(
-                                                                head_index, fallback_chunk)
-                                                          : std::string{};
-                    const auto fallback_active_selector = planned == nullptr
-                                                              ? output_bias_basis_region_selector_label(
-                                                                    head_index, fallback_chunk, "active")
-                                                              : std::string{};
-                    const auto fallback_semantic_selector = planned == nullptr
-                                                                ? output_bias_basis_region_selector_label(
-                                                                      head_index, fallback_chunk, "semantic")
-                                                                : std::string{};
-                    const auto fallback_gap_selector = planned == nullptr
-                                                           ? output_bias_basis_region_selector_label(
-                                                                 head_index, fallback_chunk, "gap")
-                                                           : std::string{};
-                    const auto fallback_tail_selector = planned == nullptr
-                                                            ? output_bias_basis_region_selector_label(
-                                                                  head_index, fallback_chunk, "tail")
-                                                            : std::string{};
-                    const auto fallback_accumulator_label = planned == nullptr
-                                                                ? output_bias_basis_chunk_accumulator_label(
-                                                                      head_index, fallback_chunk)
-                                                                : std::string{};
-                    const auto *planned_chunk = planned != nullptr
-                                                    ? &planned->basis_chunks[chunk_index]
-                                                    : nullptr;
-                    const auto &value_label = planned != nullptr
-                                                  ? planned_chunk->value
-                                                  : fallback_value_label;
-                    const auto &active_selector = planned != nullptr
-                                                      ? planned_chunk->active_selector
-                                                      : fallback_active_selector;
-                    const auto &semantic_selector = planned != nullptr
-                                                        ? planned_chunk->semantic_selector
-                                                        : fallback_semantic_selector;
-                    const auto &gap_selector = planned != nullptr
-                                                   ? planned_chunk->gap_selector
-                                                   : fallback_gap_selector;
-                    const auto &tail_selector = planned != nullptr
-                                                    ? planned_chunk->tail_selector
-                                                    : fallback_tail_selector;
-                    const auto &accumulator_label = planned != nullptr
-                                                        ? planned_chunk->accumulator
-                                                        : fallback_accumulator_label;
-                    const auto chunk_value = eval_z(value_label);
-                    const auto q_active = eval_z(active_selector);
-                    const auto q_semantic = eval_z(semantic_selector);
-                    const auto q_gap = eval_z(gap_selector);
-                    const auto q_tail = eval_z(tail_selector);
-                    acc.add(q_semantic + q_gap + q_tail - q_active);
-                    acc.add((one - q_active) * chunk_value);
-                    acc.add(q_gap * chunk_value);
-                    acc.add(q_semantic * (chunk_value - bias_flat));
-                    const auto basis_accumulator = eval_z(accumulator_label);
-                    const auto basis_accumulator_next =
-                        eval_omega(accumulator_label);
-                    acc.add(first * basis_accumulator);
-                    acc.add(not_last * (basis_accumulator_next - basis_accumulator - q_active * power * chunk_value));
-                }
+                summed_heads += eval_z(
+                    output_head_prefix(head_index) + "_Y_flat");
             }
-
-            std::vector<BindingRelationMeta> local_binding_metadata;
-            const std::vector<BindingRelationMeta> *binding_metadata =
-                evaluation_plan != nullptr
-                    ? &evaluation_plan->binding_metadata
-                    : nullptr;
-            if (binding_metadata == nullptr)
-            {
-                local_binding_metadata = build_binding_relation_metadata(context);
-                binding_metadata = &local_binding_metadata;
-            }
-            for (const auto &binding : *binding_metadata)
-            {
-                for (const auto &relation : binding.aggregation_relations)
-                {
-                    const auto source_edge = eval_z(
-                        relation.source_edge_object);
-                    const auto target_edge = eval_z(
-                        relation.target_edge_object);
-                    const auto product = eval_z(relation.product_object);
-                    const auto product_next = eval_omega(
-                        relation.product_object);
-                    const auto psq = eval_z(relation.psq_object);
-                    const auto psq_next = eval_omega(relation.psq_object);
-                    acc.add(q_edge * (product - eval_z(relation.alpha_object) * source_edge));
-                    acc.add(first * (psq - q_edge * product));
-                    acc.add(not_last * psq_step(
-                                           psq_next, psq, product_next,
-                                           q_edge_next, q_new_next));
-                    acc.add(q_end * (psq - target_edge));
-                    acc.add(zero_on_unselected(q_edge, source_edge));
-                    acc.add(zero_on_unselected(q_edge, target_edge));
-                    acc.add(zero_on_unselected(q_edge, product));
-                    for (const auto *route : {
-                             &relation.source_route,
-                             &relation.target_route})
-                    {
-                        const auto beta = challenges.at(
-                            route->beta_challenge_label);
-                        const auto eta = challenges.at(
-                            route->eta_challenge_label);
-                        const auto accumulator = eval_z(
-                            route->edge_accumulator_object);
-                        const auto accumulator_next = eval_omega(
-                            route->edge_accumulator_object);
-                        const auto query = eval_z(route->query_object);
-                        const auto inverse = eval_z(
-                            route->edge_inverse_object);
-                        acc.add(first * accumulator);
-                        acc.add(q_edge * ((query + beta) * inverse - one));
-                        acc.add((one - q_edge) * inverse);
-                        acc.add(not_last * route_edge_step(
-                                               accumulator_next, accumulator, query, beta,
-                                               q_edge));
-                        acc.add(query - (eval_z(route->index_object) + eta * eval_z(route->edge_value_object)));
-                        acc.add(zero_on_unselected(q_edge, query));
-                    }
-                }
-            }
-
-            add_signed_division_constraints(
-                "P_avg_Div_",
+            acc.add(q_avg * (eval_z("P_avg_Div_X") - summed_heads));
+            acc.add(q_avg * (eval_z("P_avg_Div_D") - FieldElement(context.model.output_layer.heads.size())));
+            add_coefficient_basis_binding(
+                "P_avg_Bind_",
                 "P_Q_div_avg",
-                evaluation_plan != nullptr
-                    ? &evaluation_plan->average_division
-                    : nullptr);
-            {
-                const auto q_avg = eval_z("P_Q_div_avg");
-                Scalar summed_heads =
-                    FieldElement::zero();
-                for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
-                {
-                    summed_heads += eval_z(
-                        output_head_prefix(head_index) + "_Y_flat");
-                }
-                acc.add(q_avg * (eval_z("P_avg_Div_X") - summed_heads));
-                acc.add(q_avg * (eval_z("P_avg_Div_D") - FieldElement(context.model.output_layer.heads.size())));
-                add_coefficient_basis_binding(
-                    "P_avg_Bind_",
-                    "P_Q_div_avg",
-                    "P_avg_Div_Y",
-                    external_evaluations.at("mu_out"));
-            }
+                "P_avg_Div_Y",
+                external_evaluations.at("mu_out"));
+        }
 
-            if (return_numerator && acc.first_nonzero_term().has_value())
-            {
-                if (first_nonzero_term != nullptr)
-                    *first_nonzero_term = *acc.first_nonzero_term();
-                if (first_nonzero_value != nullptr)
-                    *first_nonzero_value = acc.first_nonzero_value();
-            }
-            const auto numerator =
-                acc.value();
+        if (return_numerator && acc.first_nonzero_term().has_value())
+        {
+            if (first_nonzero_term != nullptr)
+                *first_nonzero_term = *acc.first_nonzero_term();
+            if (first_nonzero_value != nullptr)
+                *first_nonzero_value = acc.first_nonzero_value();
+        }
+        const auto numerator =
+            acc.value();
 
-            if (return_numerator)
-            {
-                return numerator;
-            }
+        if (return_numerator)
+        {
+            return numerator;
+        }
 
-            if constexpr (
-                std::is_same_v<
-                    Scalar,
-                    FieldElement>)
-            {
-                return boundary
-                               .zero_inverse
-                               .has_value()
-                           ? numerator *
-                                 *boundary
-                                      .zero_inverse
-                           : numerator /
-                                 zero_eval;
-            }
-            else
-            {
-                throw std::runtime_error(
-                    "symbolic t_edge "
-                    "evaluation requested "
-                    "quotient division");
-            }
+        if constexpr (
+            std::is_same_v<
+                Scalar,
+                FieldElement>)
+        {
+            return boundary
+                           .zero_inverse
+                           .has_value()
+                       ? numerator *
+                             *boundary
+                                  .zero_inverse
+                       : numerator /
+                             zero_eval;
+        }
+        else
+        {
+            throw std::runtime_error(
+                "symbolic t_edge "
+                "evaluation requested "
+                "quotient division");
+        }
     }
     TEdgeBoundProgram
     build_t_edge_bound_program(
@@ -2813,23 +2914,23 @@ namespace gatzk::protocol
         const FieldElement &z)
     {
         // N 域负责把边上广播的量重新收回到目标点，并补上分母倒数、PSQ 目标表和 route 节点侧约束。
-            const auto omega_z = z * context.domains.n->omega;
-            const auto boundary = boundary_lagrange_values(*context.domains.n, z);
-            const auto first = boundary.first;
-            const auto last = boundary.last;
-            const auto not_last = FieldElement::one() - last;
-            const auto zero_eval = boundary.zero;
-            const auto q_n = eval("P_Q_N", z);
-            QuotientAccumulator acc(challenges.at("alpha_quot"));
+        const auto omega_z = z * context.domains.n->omega;
+        const auto boundary = boundary_lagrange_values(*context.domains.n, z);
+        const auto first = boundary.first;
+        const auto last = boundary.last;
+        const auto not_last = FieldElement::one() - last;
+        const auto zero_eval = boundary.zero;
+        const auto q_n = eval("P_Q_N", z);
+        QuotientAccumulator acc(challenges.at("alpha_quot"));
 
-            for (std::size_t layer_index = 0;
-                 layer_index < context.model.hidden_layers.size();
-                 ++layer_index)
+        for (std::size_t layer_index = 0;
+             layer_index < context.model.hidden_layers.size();
+             ++layer_index)
+        {
+            for (std::size_t local_head_index = 0;
+                 local_head_index < context.model.hidden_layers[layer_index].heads.size();
+                 ++local_head_index)
             {
-                for (std::size_t local_head_index = 0;
-                     local_head_index < context.model.hidden_layers[layer_index].heads.size();
-                     ++local_head_index)
-                {
                 const auto prefix = hidden_head_prefix(layer_index, local_head_index) + "_";
                 const auto challenge = [&](std::string_view base)
                 {
@@ -2872,138 +2973,285 @@ namespace gatzk::protocol
                 acc.add(zero_on_unselected(q_n, eval(prefix + "T_psq", z)));
                 acc.add(zero_on_unselected(q_n, eval(prefix + "Table_t", z)));
                 acc.add(zero_on_unselected(q_n, eval(prefix + "m_t", z)));
-                }
             }
+        }
 
-            for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
+        for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
+        {
+            const auto prefix = output_head_prefix(head_index) + "_";
+            const auto beta_src_out = challenges.at(output_challenge_name("beta_src_out", head_index));
+            const auto beta_dst_out = challenges.at(output_challenge_name("beta_dst_out", head_index));
+            const auto eta_src_out = challenges.at(output_challenge_name("eta_src_out", head_index));
+            const auto eta_dst_out = challenges.at(output_challenge_name("eta_dst_out", head_index));
+            const auto beta_t_out = challenges.at(output_challenge_name("beta_t_out", head_index));
+            const auto eta_t_out = challenges.at(output_challenge_name("eta_t_out", head_index));
+            const auto lambda_out = challenges.at(output_challenge_name("lambda_out", head_index));
+
+            acc.add(first * eval(prefix + "R_src_node", z));
+            acc.add(q_n * ((eval(prefix + "Table_src", z) + beta_src_out) * eval(prefix + "J_src_node", z) - FieldElement::one()));
+            acc.add(not_last * route_node_step(eval(prefix + "R_src_node", omega_z), eval(prefix + "R_src_node", z), eval(prefix + "Table_src", z), beta_src_out, q_n, eval(prefix + "m_src", z)));
+            acc.add(first * eval(prefix + "R_dst_node", z));
+            acc.add(q_n * ((eval(prefix + "Table_dst", z) + beta_dst_out) * eval(prefix + "J_dst_node", z) - FieldElement::one()));
+            acc.add(not_last * route_node_step(eval(prefix + "R_dst_node", omega_z), eval(prefix + "R_dst_node", z), eval(prefix + "Table_dst", z), beta_dst_out, q_n, eval(prefix + "m_dst", z)));
+            acc.add(first * eval(prefix + "R_t_node", z));
+            acc.add(q_n * ((eval(prefix + "Table_t", z) + beta_t_out) * eval(prefix + "J_t_node", z) - FieldElement::one()));
+            acc.add(not_last * route_node_step(eval(prefix + "R_t_node", omega_z), eval(prefix + "R_t_node", z), eval(prefix + "Table_t", z), beta_t_out, q_n, eval(prefix + "m_t", z)));
+            acc.add(q_n * (eval(prefix + "Sum", z) * eval(prefix + "inv", z) - FieldElement::one()));
+            acc.add(q_n * (eval(prefix + "T", z) - eval(prefix + "Sum", z) - lambda_out * eval(prefix + "Y_star", z)));
+            acc.add(eval(prefix + "Table_src", z) - (eval("P_I", z) + eta_src_out * eval(prefix + "E_src", z)));
+            acc.add(eval(prefix + "Table_dst", z) - (eval("P_I", z) + eta_dst_out * eval(prefix + "E_dst", z) + eta_dst_out.pow(2) * eval(prefix + "M", z) + eta_dst_out.pow(3) * eval(prefix + "Sum", z) + eta_dst_out.pow(4) * eval(prefix + "inv", z) + eta_dst_out.pow(5) * eval(prefix + "Y_star", z)));
+            acc.add(eval(prefix + "Table_t", z) - (eval("P_I", z) + eta_t_out * eval(prefix + "T", z)));
+            acc.add(zero_on_unselected(q_n, eval(prefix + "E_src", z)));
+            acc.add(zero_on_unselected(q_n, eval(prefix + "E_dst", z)));
+            acc.add(zero_on_unselected(q_n, eval(prefix + "M", z)));
+            acc.add(zero_on_unselected(q_n, eval(prefix + "Sum", z)));
+            acc.add(zero_on_unselected(q_n, eval(prefix + "inv", z)));
+            acc.add(zero_on_unselected(q_n, eval(prefix + "Y_prime_star", z)));
+            acc.add(zero_on_unselected(q_n, eval(prefix + "Y_star", z)));
+            acc.add(zero_on_unselected(q_n, eval(prefix + "T", z)));
+            acc.add(zero_on_unselected(q_n, eval(prefix + "Table_src", z)));
+            acc.add(zero_on_unselected(q_n, eval(prefix + "m_src", z)));
+            acc.add(zero_on_unselected(q_n, eval(prefix + "Table_dst", z)));
+            acc.add(zero_on_unselected(q_n, eval(prefix + "m_dst", z)));
+            acc.add(zero_on_unselected(q_n, eval(prefix + "Table_t", z)));
+            acc.add(zero_on_unselected(q_n, eval(prefix + "m_t", z)));
+        }
+
+        for (const auto &binding :
+             build_binding_relation_metadata(context))
+        {
+            for (const auto &matrix : binding.canonical_matrices)
             {
-                const auto prefix = output_head_prefix(head_index) + "_";
-                const auto beta_src_out = challenges.at(output_challenge_name("beta_src_out", head_index));
-                const auto beta_dst_out = challenges.at(output_challenge_name("beta_dst_out", head_index));
-                const auto eta_src_out = challenges.at(output_challenge_name("eta_src_out", head_index));
-                const auto eta_dst_out = challenges.at(output_challenge_name("eta_dst_out", head_index));
-                const auto beta_t_out = challenges.at(output_challenge_name("beta_t_out", head_index));
-                const auto eta_t_out = challenges.at(output_challenge_name("eta_t_out", head_index));
-                const auto lambda_out = challenges.at(output_challenge_name("lambda_out", head_index));
-
-                acc.add(first * eval(prefix + "R_src_node", z));
-                acc.add(q_n * ((eval(prefix + "Table_src", z) + beta_src_out) * eval(prefix + "J_src_node", z) - FieldElement::one()));
-                acc.add(not_last * route_node_step(eval(prefix + "R_src_node", omega_z), eval(prefix + "R_src_node", z), eval(prefix + "Table_src", z), beta_src_out, q_n, eval(prefix + "m_src", z)));
-                acc.add(first * eval(prefix + "R_dst_node", z));
-                acc.add(q_n * ((eval(prefix + "Table_dst", z) + beta_dst_out) * eval(prefix + "J_dst_node", z) - FieldElement::one()));
-                acc.add(not_last * route_node_step(eval(prefix + "R_dst_node", omega_z), eval(prefix + "R_dst_node", z), eval(prefix + "Table_dst", z), beta_dst_out, q_n, eval(prefix + "m_dst", z)));
-                acc.add(first * eval(prefix + "R_t_node", z));
-                acc.add(q_n * ((eval(prefix + "Table_t", z) + beta_t_out) * eval(prefix + "J_t_node", z) - FieldElement::one()));
-                acc.add(not_last * route_node_step(eval(prefix + "R_t_node", omega_z), eval(prefix + "R_t_node", z), eval(prefix + "Table_t", z), beta_t_out, q_n, eval(prefix + "m_t", z)));
-                acc.add(q_n * (eval(prefix + "Sum", z) * eval(prefix + "inv", z) - FieldElement::one()));
-                acc.add(q_n * (eval(prefix + "T", z) - eval(prefix + "Sum", z) - lambda_out * eval(prefix + "Y_star", z)));
-                acc.add(eval(prefix + "Table_src", z) - (eval("P_I", z) + eta_src_out * eval(prefix + "E_src", z)));
-                acc.add(eval(prefix + "Table_dst", z) - (eval("P_I", z) + eta_dst_out * eval(prefix + "E_dst", z) + eta_dst_out.pow(2) * eval(prefix + "M", z) + eta_dst_out.pow(3) * eval(prefix + "Sum", z) + eta_dst_out.pow(4) * eval(prefix + "inv", z) + eta_dst_out.pow(5) * eval(prefix + "Y_star", z)));
-                acc.add(eval(prefix + "Table_t", z) - (eval("P_I", z) + eta_t_out * eval(prefix + "T", z)));
-                acc.add(zero_on_unselected(q_n, eval(prefix + "E_src", z)));
-                acc.add(zero_on_unselected(q_n, eval(prefix + "E_dst", z)));
-                acc.add(zero_on_unselected(q_n, eval(prefix + "M", z)));
-                acc.add(zero_on_unselected(q_n, eval(prefix + "Sum", z)));
-                acc.add(zero_on_unselected(q_n, eval(prefix + "inv", z)));
-                acc.add(zero_on_unselected(q_n, eval(prefix + "Y_prime_star", z)));
-                acc.add(zero_on_unselected(q_n, eval(prefix + "Y_star", z)));
-                acc.add(zero_on_unselected(q_n, eval(prefix + "T", z)));
-                acc.add(zero_on_unselected(q_n, eval(prefix + "Table_src", z)));
-                acc.add(zero_on_unselected(q_n, eval(prefix + "m_src", z)));
-                acc.add(zero_on_unselected(q_n, eval(prefix + "Table_dst", z)));
-                acc.add(zero_on_unselected(q_n, eval(prefix + "m_dst", z)));
-                acc.add(zero_on_unselected(q_n, eval(prefix + "Table_t", z)));
-                acc.add(zero_on_unselected(q_n, eval(prefix + "m_t", z)));
-            }
-
-            for (const auto &binding :
-                 build_binding_relation_metadata(context))
-            {
-                for (const auto &matrix : binding.canonical_matrices)
+                if (matrix.canonical_domain != context.domains.n->name || matrix.column_objects.size() != matrix.column_count || matrix.row_count != context.local.num_nodes)
+                    throw std::runtime_error(
+                        "invalid canonical matrix quotient registry: " + matrix.relation_id);
+                const auto compression = challenges.at(
+                    matrix.compression_challenge_label);
+                auto expected = FieldElement::zero();
+                auto power = FieldElement::one();
+                for (const auto &column : matrix.column_objects)
                 {
-                    if (matrix.canonical_domain != context.domains.n->name || matrix.column_objects.size() != matrix.column_count || matrix.row_count != context.local.num_nodes)
+                    expected += power * eval(column, z);
+                    power *= compression;
+                    acc.add(zero_on_unselected(
+                        q_n, eval(column, z)));
+                }
+                acc.add(q_n * (eval(matrix.compressed_object, z) - expected));
+            }
+            for (const auto &relation : binding.aggregation_relations)
+            {
+                const auto find_matrix = [&](const std::string &object)
+                    -> const CanonicalMatrixRelationMeta &
+                {
+                    const auto it = std::find_if(
+                        binding.canonical_matrices.begin(),
+                        binding.canonical_matrices.end(),
+                        [&](const auto &matrix)
+                        { return matrix.matrix_object == object; });
+                    if (it == binding.canonical_matrices.end())
                         throw std::runtime_error(
-                            "invalid canonical matrix quotient registry: " + matrix.relation_id);
-                    const auto compression = challenges.at(
-                        matrix.compression_challenge_label);
-                    auto expected = FieldElement::zero();
+                            "aggregation quotient canonical matrix missing: " + object);
+                    return *it;
+                };
+                const auto compression = challenges.at(
+                    relation.compression_challenge_label);
+                const auto compressed_columns = [&](
+                                                    const CanonicalMatrixRelationMeta &matrix)
+                {
+                    auto value = FieldElement::zero();
                     auto power = FieldElement::one();
                     for (const auto &column : matrix.column_objects)
                     {
-                        expected += power * eval(column, z);
+                        value += power * eval(column, z);
                         power *= compression;
-                        acc.add(zero_on_unselected(
-                            q_n, eval(column, z)));
                     }
-                    acc.add(q_n * (eval(matrix.compressed_object, z) - expected));
-                }
-                for (const auto &relation : binding.aggregation_relations)
+                    return value;
+                };
+                acc.add(q_n * (eval(relation.source_node_object, z) - compressed_columns(find_matrix(
+                                                                          relation.source_matrix_object))));
+                acc.add(q_n * (eval(relation.target_node_object, z) - compressed_columns(find_matrix(
+                                                                          relation.target_matrix_object))));
+                acc.add(zero_on_unselected(
+                    q_n, eval(relation.source_node_object, z)));
+                acc.add(zero_on_unselected(
+                    q_n, eval(relation.target_node_object, z)));
+                for (const auto *route : {
+                         &relation.source_route,
+                         &relation.target_route})
                 {
-                    const auto find_matrix = [&](const std::string &object)
-                        -> const CanonicalMatrixRelationMeta &
-                    {
-                        const auto it = std::find_if(
-                            binding.canonical_matrices.begin(),
-                            binding.canonical_matrices.end(),
-                            [&](const auto &matrix)
-                            { return matrix.matrix_object == object; });
-                        if (it == binding.canonical_matrices.end())
-                            throw std::runtime_error(
-                                "aggregation quotient canonical matrix missing: " + object);
-                        return *it;
-                    };
-                    const auto compression = challenges.at(
-                        relation.compression_challenge_label);
-                    const auto compressed_columns = [&](
-                                                        const CanonicalMatrixRelationMeta &matrix)
-                    {
-                        auto value = FieldElement::zero();
-                        auto power = FieldElement::one();
-                        for (const auto &column : matrix.column_objects)
-                        {
-                            value += power * eval(column, z);
-                            power *= compression;
-                        }
-                        return value;
-                    };
-                    acc.add(q_n * (eval(relation.source_node_object, z) - compressed_columns(find_matrix(
-                                                                              relation.source_matrix_object))));
-                    acc.add(q_n * (eval(relation.target_node_object, z) - compressed_columns(find_matrix(
-                                                                              relation.target_matrix_object))));
-                    acc.add(zero_on_unselected(
-                        q_n, eval(relation.source_node_object, z)));
-                    acc.add(zero_on_unselected(
-                        q_n, eval(relation.target_node_object, z)));
-                    for (const auto *route : {
-                             &relation.source_route,
-                             &relation.target_route})
-                    {
-                        const auto beta = challenges.at(
-                            route->beta_challenge_label);
-                        const auto eta = challenges.at(
-                            route->eta_challenge_label);
-                        const auto accumulator = eval(
-                            route->node_accumulator_object, z);
-                        const auto accumulator_next = eval(
-                            route->node_accumulator_object, omega_z);
-                        const auto table = eval(route->table_object, z);
-                        const auto inverse = eval(
-                            route->node_inverse_object, z);
-                        const auto multiplicity = eval(
-                            route->multiplicity_object, z);
-                        acc.add(first * accumulator);
-                        acc.add(q_n * ((table + beta) * inverse - FieldElement::one()));
-                        acc.add((FieldElement::one() - q_n) * inverse);
-                        acc.add(not_last * route_node_step(
-                                               accumulator_next, accumulator, table, beta,
-                                               q_n, multiplicity));
-                        acc.add(table - (eval("P_AggBind_index_N", z) + eta * eval(route->node_value_object, z)));
-                        acc.add(zero_on_unselected(q_n, table));
-                    }
+                    const auto beta = challenges.at(
+                        route->beta_challenge_label);
+                    const auto eta = challenges.at(
+                        route->eta_challenge_label);
+                    const auto accumulator = eval(
+                        route->node_accumulator_object, z);
+                    const auto accumulator_next = eval(
+                        route->node_accumulator_object, omega_z);
+                    const auto table = eval(route->table_object, z);
+                    const auto inverse = eval(
+                        route->node_inverse_object, z);
+                    const auto multiplicity = eval(
+                        route->multiplicity_object, z);
+                    acc.add(first * accumulator);
+                    acc.add(q_n * ((table + beta) * inverse - FieldElement::one()));
+                    acc.add((FieldElement::one() - q_n) * inverse);
+                    acc.add(not_last * route_node_step(
+                                           accumulator_next, accumulator, table, beta,
+                                           q_n, multiplicity));
+                    acc.add(table - (eval("P_AggBind_index_N", z) + eta * eval(route->node_value_object, z)));
+                    acc.add(zero_on_unselected(q_n, table));
                 }
             }
+        }
 
-            return acc.value() / zero_eval;
+        const auto add_canonical_compression =
+            [&](const std::string &matrix_object,
+                const std::string &target_object,
+                const FieldElement &compression,
+                std::size_t width)
+        {
+            auto expected =
+                FieldElement::zero();
+
+            auto power =
+                FieldElement::one();
+
+            for (std::size_t column = 0;
+                 column < width;
+                 ++column)
+            {
+                expected +=
+                    power *
+                    eval(
+                        canonical_matrix_column_label(
+                            matrix_object,
+                            column),
+                        z);
+
+                power *= compression;
+            }
+
+            acc.add(
+                q_n *
+                (eval(target_object, z) -
+                 expected));
+        };
+
+        for (std::size_t layer = 0;
+             layer <
+             context.model.hidden_layers.size();
+             ++layer)
+        {
+            const auto &hidden_layer =
+                context.model.hidden_layers[layer];
+
+            for (std::size_t head = 0;
+                 head < hidden_layer.heads.size();
+                 ++head)
+            {
+                const auto prefix =
+                    hidden_head_prefix(
+                        layer,
+                        head);
+
+                const auto xi =
+                    challenges.at(
+                        hidden_challenge_name(
+                            "xi_h",
+                            layer,
+                            head));
+
+                const auto width =
+                    hidden_layer.shape.head_dim;
+
+                add_canonical_compression(
+                    prefix + "_H_prime",
+                    prefix + "_H_star",
+                    xi,
+                    width);
+
+                add_canonical_compression(
+                    prefix + "_H_agg_pre",
+                    prefix + "_H_agg_pre_star",
+                    xi,
+                    width);
+
+                add_canonical_compression(
+                    prefix + "_H_agg",
+                    prefix + "_H_agg_star",
+                    xi,
+                    width);
+            }
+
+            const auto concat_width =
+                hidden_layer.shape.head_count *
+                hidden_layer.shape.head_dim;
+
+            const auto concat_object =
+                hidden_layer_concat_label(layer);
+
+            for (std::size_t column = 0;
+                 column < concat_width;
+                 ++column)
+            {
+                const auto head =
+                    column /
+                    hidden_layer.shape.head_dim;
+
+                const auto local_column =
+                    column %
+                    hidden_layer.shape.head_dim;
+
+                acc.add(
+                    q_n *
+                    (eval(
+                         canonical_matrix_column_label(
+                             concat_object,
+                             column),
+                         z) -
+                     eval(
+                         canonical_matrix_column_label(
+                             hidden_head_prefix(
+                                 layer,
+                                 head) +
+                                 "_H_agg",
+                             local_column),
+                         z)));
+            }
+
+            add_canonical_compression(
+                concat_object,
+                hidden_layer_concat_star_label(
+                    layer),
+                challenges.at(
+                    hidden_concat_xi_name(layer)),
+                concat_width);
+        }
+
+        for (std::size_t head = 0;
+             head <
+             context.model.output_layer.heads.size();
+             ++head)
+        {
+            const auto prefix =
+                output_head_prefix(head);
+
+            const auto xi =
+                challenges.at("xi_out");
+
+            add_canonical_compression(
+                prefix + "_Y_prime",
+                prefix + "_Y_prime_star",
+                xi,
+                context.local.num_classes);
+
+            add_canonical_compression(
+                output_y_lin_label(head),
+                prefix + "_Y_star",
+                xi,
+                context.local.num_classes);
+        }
+        return acc.value() / zero_eval;
     }
 
     FieldElement evaluate_t_in(
@@ -3017,44 +3265,58 @@ namespace gatzk::protocol
         FieldElement *first_nonzero_value)
     {
         const auto omega_z = z * context.domains.in->omega;
-            const auto boundary = boundary_lagrange_values(*context.domains.in, z);
-            const auto first = boundary.first;
-            const auto last = boundary.last;
-            const auto not_last = FieldElement::one() - last;
-            const auto zero_eval = boundary.zero;
-            QuotientAccumulator acc(
-                challenges.at("alpha_quot"), return_numerator);
-            for (std::size_t layer_index = 0;
-                 layer_index < context.model.hidden_layers.size();
-                 ++layer_index)
+        const auto boundary = boundary_lagrange_values(*context.domains.in, z);
+        const auto first = boundary.first;
+        const auto last = boundary.last;
+        const auto not_last = FieldElement::one() - last;
+        const auto zero_eval = boundary.zero;
+        QuotientAccumulator acc(
+            challenges.at("alpha_quot"), return_numerator);
+        for (std::size_t layer_index = 0;
+             layer_index < context.model.hidden_layers.size();
+             ++layer_index)
+        {
+            const auto q_valid = eval(
+                hidden_q_in_selector_label(layer_index), z);
+            const auto q_invalid = FieldElement::one() - q_valid;
+            for (std::size_t local_head_index = 0;
+                 local_head_index < context.model.hidden_layers[layer_index].heads.size();
+                 ++local_head_index)
             {
-                const auto q_valid = eval(
-                    hidden_q_in_selector_label(layer_index), z);
-                const auto q_invalid = FieldElement::one() - q_valid;
-                for (std::size_t local_head_index = 0;
-                     local_head_index < context.model.hidden_layers[layer_index].heads.size();
-                     ++local_head_index)
-                {
                 const auto prefix = hidden_head_prefix(layer_index, local_head_index) + "_";
                 const auto mu_name =
-                    "mu_l" + std::to_string(layer_index) + "_h"
-                    + std::to_string(local_head_index) + "_proj";
+                    "mu_l" + std::to_string(layer_index) + "_h" + std::to_string(local_head_index) + "_proj";
+                const auto projection_semantic_eval =
+                    external_evaluations.at(mu_name) -
+                    context.domains.n
+                            ->zero_polynomial_eval(
+                                challenges.at(
+                                    hidden_challenge_name(
+                                        "rho_proj_h",
+                                        layer_index,
+                                        local_head_index))) *
+                        external_evaluations.at(
+                            external_mask_eval_name(
+                                mu_name));
                 acc.add(first * eval(prefix + "Acc_proj", z));
                 acc.add(q_valid * acc_step(eval(prefix + "Acc_proj", omega_z), eval(prefix + "Acc_proj", z), eval(prefix + "a_proj", z), eval(prefix + "b_proj", z)));
                 acc.add(not_last * q_invalid * (eval(prefix + "Acc_proj", omega_z) - eval(prefix + "Acc_proj", z)));
                 acc.add(zero_on_unselected(q_valid, eval(prefix + "a_proj", z)));
                 acc.add(zero_on_unselected(q_valid, eval(prefix + "b_proj", z)));
-                acc.add(last * (eval(prefix + "Acc_proj", z) - external_evaluations.at(mu_name)));
-                }
+                acc.add(
+                    last *
+                    (eval(prefix + "Acc_proj", z) -
+                     projection_semantic_eval));
             }
-            if (return_numerator && acc.first_nonzero_term().has_value())
-            {
-                if (first_nonzero_term != nullptr)
-                    *first_nonzero_term = *acc.first_nonzero_term();
-                if (first_nonzero_value != nullptr)
-                    *first_nonzero_value = acc.first_nonzero_value();
-            }
-            return return_numerator ? acc.value() : acc.value() / zero_eval;
+        }
+        if (return_numerator && acc.first_nonzero_term().has_value())
+        {
+            if (first_nonzero_term != nullptr)
+                *first_nonzero_term = *acc.first_nonzero_term();
+            if (first_nonzero_value != nullptr)
+                *first_nonzero_value = acc.first_nonzero_value();
+        }
+        return return_numerator ? acc.value() : acc.value() / zero_eval;
     }
 
     FieldElement evaluate_t_d(
@@ -3068,42 +3330,41 @@ namespace gatzk::protocol
         FieldElement *first_nonzero_value)
     {
         const auto omega_z = z * context.domains.d->omega;
-            const auto boundary = boundary_lagrange_values(*context.domains.d, z);
-            const auto first = boundary.first;
-            const auto last = boundary.last;
-            const auto not_last = FieldElement::one() - last;
-            const auto zero_eval = boundary.zero;
-            QuotientAccumulator acc(
-                challenges.at("alpha_quot"), return_numerator);
-            const auto semantic_external =
-                [&](const std::string &eval_name,
-                    const std::string &challenge_name)
-            {
-                return external_evaluations.at(eval_name) - context.domains.n->zero_polynomial_eval(
-                                                                challenges.at(challenge_name)) *
-                                                                external_evaluations.at(
-                                                                    external_mask_eval_name(eval_name));
-            };
+        const auto boundary = boundary_lagrange_values(*context.domains.d, z);
+        const auto first = boundary.first;
+        const auto last = boundary.last;
+        const auto not_last = FieldElement::one() - last;
+        const auto zero_eval = boundary.zero;
+        QuotientAccumulator acc(
+            challenges.at("alpha_quot"), return_numerator);
+        const auto semantic_external =
+            [&](const std::string &eval_name,
+                const std::string &challenge_name)
+        {
+            return external_evaluations.at(eval_name) - context.domains.n->zero_polynomial_eval(
+                                                            challenges.at(challenge_name)) *
+                                                            external_evaluations.at(
+                                                                external_mask_eval_name(eval_name));
+        };
 
-            for (std::size_t layer_index = 0;
-                 layer_index < context.model.hidden_layers.size();
-                 ++layer_index)
+        for (std::size_t layer_index = 0;
+             layer_index < context.model.hidden_layers.size();
+             ++layer_index)
+        {
+            const auto q_valid = eval(
+                hidden_q_d_h_selector_label(layer_index), z);
+            const auto q_invalid = FieldElement::one() - q_valid;
+            for (std::size_t local_head_index = 0;
+                 local_head_index < context.model.hidden_layers[layer_index].heads.size();
+                 ++local_head_index)
             {
-                const auto q_valid = eval(
-                    hidden_q_d_h_selector_label(layer_index), z);
-                const auto q_invalid = FieldElement::one() - q_valid;
-                for (std::size_t local_head_index = 0;
-                     local_head_index < context.model.hidden_layers[layer_index].heads.size();
-                     ++local_head_index)
-                {
                 const auto prefix = hidden_head_prefix(layer_index, local_head_index) + "_";
                 const auto challenge = [&](std::string_view base)
                 {
                     return hidden_challenge_name(base, layer_index, local_head_index);
                 };
                 const auto suffix =
-                    "l" + std::to_string(layer_index) + "_h"
-                    + std::to_string(local_head_index);
+                    "l" + std::to_string(layer_index) + "_h" + std::to_string(local_head_index);
                 const auto src_semantic_eval =
                     external_evaluations.at(
                         "mu_" + suffix + "_src") -
@@ -3158,17 +3419,17 @@ namespace gatzk::protocol
                 acc.add(last * (eval(prefix + "Acc_agg", z) - semantic_external(
                                                                   "mu_" + suffix + "_agg",
                                                                   challenge("y_agg_h"))));
-                }
             }
+        }
 
-            if (return_numerator && acc.first_nonzero_term().has_value())
-            {
-                if (first_nonzero_term != nullptr)
-                    *first_nonzero_term = *acc.first_nonzero_term();
-                if (first_nonzero_value != nullptr)
-                    *first_nonzero_value = acc.first_nonzero_value();
-            }
-            return return_numerator ? acc.value() : acc.value() / zero_eval;
+        if (return_numerator && acc.first_nonzero_term().has_value())
+        {
+            if (first_nonzero_term != nullptr)
+                *first_nonzero_term = *acc.first_nonzero_term();
+            if (first_nonzero_value != nullptr)
+                *first_nonzero_value = acc.first_nonzero_value();
+        }
+        return return_numerator ? acc.value() : acc.value() / zero_eval;
     }
 
     FieldElement evaluate_t_cat(
@@ -3212,13 +3473,26 @@ namespace gatzk::protocol
             const auto q_valid = eval(output_q_cat_selector_label(), z);
             const auto q_invalid = FieldElement::one() - q_valid;
             const auto prefix = output_head_prefix(head_index) + "_";
-            const auto mu_name = output_external_eval_name("proj", head_index);
+            const auto projection_semantic_eval =
+                external_evaluations.at(mu_name) -
+                context.domains.n
+                        ->zero_polynomial_eval(
+                            challenges.at(
+                                output_challenge_name(
+                                    "rho_proj_out",
+                                    head_index))) *
+                    external_evaluations.at(
+                        external_mask_eval_name(
+                            mu_name));
             acc.add(first * eval(prefix + "Acc_proj", z));
             acc.add(q_valid * acc_step(eval(prefix + "Acc_proj", omega_z), eval(prefix + "Acc_proj", z), eval(prefix + "a_proj", z), eval(prefix + "b_proj", z)));
             acc.add(not_last * q_invalid * (eval(prefix + "Acc_proj", omega_z) - eval(prefix + "Acc_proj", z)));
             acc.add(zero_on_unselected(q_valid, eval(prefix + "a_proj", z)));
             acc.add(zero_on_unselected(q_valid, eval(prefix + "b_proj", z)));
-            acc.add(last * (eval(prefix + "Acc_proj", z) - external_evaluations.at(mu_name)));
+            acc.add(
+                last *
+                (eval(prefix + "Acc_proj", z) -
+                 projection_semantic_eval));
         }
 
         return acc.value() / zero_eval;

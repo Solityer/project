@@ -69,15 +69,9 @@ namespace gatzk::protocol
             {
                 const auto it = context.public_polynomial_descriptors.find(
                     std::string(name));
-                return it != context.public_polynomial_descriptors.end()
-                    && it->second.name == name
-                    && it->second.basis == algebra::PolynomialBasis::Evaluation
-                    && it->second.domain == domain
-                    && it->second.size == size;
+                return it != context.public_polynomial_descriptors.end() && it->second.name == name && it->second.basis == algebra::PolynomialBasis::Evaluation && it->second.domain == domain && it->second.size == size;
             };
-            return has_descriptor("P_I", "N", context.domains.n->size)
-                && has_descriptor("P_src", "edge", context.domains.edge->size)
-                && has_descriptor("P_dst", "edge", context.domains.edge->size);
+            return has_descriptor("P_I", "N", context.domains.n->size) && has_descriptor("P_src", "edge", context.domains.edge->size) && has_descriptor("P_dst", "edge", context.domains.edge->size);
         }
 
         double elapsed_ms(const Clock::time_point &start, const Clock::time_point &end)
@@ -103,18 +97,11 @@ namespace gatzk::protocol
 
         bool complete_public_feature_source(const ProtocolContext &context)
         {
-            if (context.dataset.num_nodes == 0
-                || context.dataset.num_features == 0
-                || context.local.num_nodes != context.dataset.num_nodes
-                || context.local.num_features != context.dataset.num_features
-                || context.local.graph_count != context.dataset.graph_count
-                || context.local.absolute_ids.size() != context.dataset.num_nodes
-                || context.local.features.size() != context.dataset.num_nodes)
+            if (context.dataset.num_nodes == 0 || context.dataset.num_features == 0 || context.local.num_nodes != context.dataset.num_nodes || context.local.num_features != context.dataset.num_features || context.local.graph_count != context.dataset.graph_count || context.local.absolute_ids.size() != context.dataset.num_nodes || context.local.features.size() != context.dataset.num_nodes)
                 return false;
             for (std::size_t row = 0; row < context.local.absolute_ids.size(); ++row)
             {
-                if (context.local.absolute_ids[row] != row
-                    || context.local.features[row].size() != context.local.num_features)
+                if (context.local.absolute_ids[row] != row || context.local.features[row].size() != context.local.num_features)
                     return false;
             }
             return context.local.public_input.N_total == context.dataset.num_nodes;
@@ -122,8 +109,7 @@ namespace gatzk::protocol
 
         bool lazy_fh_public_enabled(const ProtocolContext &context)
         {
-            return complete_public_feature_source(context)
-                && context.domains.fh != nullptr;
+            return complete_public_feature_source(context) && context.domains.fh != nullptr;
         }
 
         const std::vector<std::vector<FieldElement>> &public_feature_source(
@@ -280,8 +266,7 @@ namespace gatzk::protocol
                                                                 const auto row = index / feature_count;
                                                                 return full_feature_identity
                                                                     ? FieldElement(row)
-                                                                    : FieldElement(context.local.absolute_ids[row]);
-                                                            });
+                                                                    : FieldElement(context.local.absolute_ids[row]); });
             }
             if (name == "P_T_H")
             {
@@ -319,13 +304,11 @@ namespace gatzk::protocol
         {
             if (descriptor.basis != algebra::PolynomialBasis::Evaluation)
                 throw std::runtime_error(
-                    "unsupported coefficient public polynomial descriptor: "
-                    + descriptor.name);
+                    "unsupported coefficient public polynomial descriptor: " + descriptor.name);
             const auto domain = public_descriptor_domain(context, descriptor);
             if (domain == nullptr || descriptor.size != domain->size)
                 throw std::runtime_error(
-                    "public polynomial descriptor domain mismatch: "
-                    + descriptor.name);
+                    "public polynomial descriptor domain mismatch: " + descriptor.name);
             const auto checked_product = [](std::size_t left, std::size_t right,
                                             std::string_view label)
             {
@@ -437,11 +420,11 @@ namespace gatzk::protocol
                     [&](std::size_t index)
                     {
                         const bool graph_boundary = descriptor.name == "P_Q_grp_new_edge"
-                            ? index == 0 || context.local.edges[index].graph_id != context.local.edges[index - 1].graph_id
-                            : index + 1 == edge_count || context.local.edges[index].graph_id != context.local.edges[index + 1].graph_id;
+                                                        ? index == 0 || context.local.edges[index].graph_id != context.local.edges[index - 1].graph_id
+                                                        : index + 1 == edge_count || context.local.edges[index].graph_id != context.local.edges[index + 1].graph_id;
                         const bool destination_boundary = descriptor.name == "P_Q_grp_new_edge"
-                            ? index == 0 || context.local.edges[index].dst != context.local.edges[index - 1].dst
-                            : index + 1 == edge_count || context.local.edges[index].dst != context.local.edges[index + 1].dst;
+                                                              ? index == 0 || context.local.edges[index].dst != context.local.edges[index - 1].dst
+                                                              : index + 1 == edge_count || context.local.edges[index].dst != context.local.edges[index + 1].dst;
                         return FieldElement(graph_boundary || destination_boundary);
                     },
                     edge_count);
@@ -471,8 +454,8 @@ namespace gatzk::protocol
             if (descriptor.name == "P_AggBind_m_src" || descriptor.name == "P_AggBind_m_dst")
             {
                 const auto &multiplicity = descriptor.name == "P_AggBind_m_src"
-                    ? aggregation_src_multiplicity
-                    : aggregation_dst_multiplicity;
+                                               ? aggregation_src_multiplicity
+                                               : aggregation_dst_multiplicity;
                 if (multiplicity.size() != n_size)
                     throw std::runtime_error(
                         "aggregation multiplicity cache has invalid size");
@@ -529,8 +512,7 @@ namespace gatzk::protocol
             }
             for (std::size_t head = 0; head < context.model.output_layer.heads.size(); ++head)
             {
-                if (descriptor.name == "P_Q_div_out" + std::to_string(head)
-                    || descriptor.name == "P_Q_div_avg")
+                if (descriptor.name == "P_Q_div_out" + std::to_string(head) || descriptor.name == "P_Q_div_avg")
                     return edge_value([](std::size_t)
                                       { return FieldElement::one(); },
                                       checked_product(node_count,
@@ -543,7 +525,7 @@ namespace gatzk::protocol
                     for (const auto region : {"active", "semantic", "gap", "tail"})
                     {
                         if (descriptor.name != output_bias_basis_region_selector_label(
-                                head, chunk.chunk_index, region))
+                                                   head, chunk.chunk_index, region))
                             continue;
                         return edge_value(
                             [&](std::size_t index)
@@ -561,10 +543,7 @@ namespace gatzk::protocol
                     }
                 }
             }
-            if (descriptor.name == "P_Q_tbl_L" || descriptor.name == "P_Q_qry_L"
-                || descriptor.name == "P_Q_tbl_R" || descriptor.name == "P_Q_qry_R"
-                || descriptor.name == "P_Q_tbl_exp" || descriptor.name == "P_Q_qry_exp"
-                || descriptor.name == "P_Q_tbl_ELU")
+            if (descriptor.name == "P_Q_tbl_L" || descriptor.name == "P_Q_qry_L" || descriptor.name == "P_Q_tbl_R" || descriptor.name == "P_Q_qry_R" || descriptor.name == "P_Q_tbl_exp" || descriptor.name == "P_Q_qry_exp" || descriptor.name == "P_Q_tbl_ELU")
             {
                 const bool table = descriptor.name.find("tbl") != std::string::npos;
                 std::size_t count = edge_count;
@@ -580,10 +559,7 @@ namespace gatzk::protocol
                                   { return FieldElement::one(); },
                                   count);
             }
-            if (descriptor.name == "P_T_L_x" || descriptor.name == "P_T_L_y"
-                || descriptor.name == "P_T_ELU_x" || descriptor.name == "P_T_ELU_y"
-                || descriptor.name == "P_T_exp_x" || descriptor.name == "P_T_exp_y"
-                || descriptor.name == "P_T_range")
+            if (descriptor.name == "P_T_L_x" || descriptor.name == "P_T_L_y" || descriptor.name == "P_T_ELU_x" || descriptor.name == "P_T_ELU_y" || descriptor.name == "P_T_exp_x" || descriptor.name == "P_T_exp_y" || descriptor.name == "P_T_range")
             {
                 std::size_t count = 0;
                 if (descriptor.name == "P_T_L_x" || descriptor.name == "P_T_L_y")
@@ -616,8 +592,7 @@ namespace gatzk::protocol
             if (is_lazy_fh_public_label(descriptor.name))
                 return evaluate_lazy_fh_public_poly(context, descriptor.name, point);
             throw std::runtime_error(
-                "unsupported deterministic public polynomial descriptor: "
-                + descriptor.name);
+                "unsupported deterministic public polynomial descriptor: " + descriptor.name);
         }
 
         class PublicEvaluationBackendRegistry
@@ -835,8 +810,7 @@ namespace gatzk::protocol
                 if (const auto it = context_.public_polynomial_descriptors.find(name);
                     it != context_.public_polynomial_descriptors.end())
                 {
-                    if (lazy_fh_public_enabled(context_)
-                        && is_lazy_fh_public_label(name))
+                    if (lazy_fh_public_enabled(context_) && is_lazy_fh_public_label(name))
                     {
                         batch_evaluate_lazy_fh_labels(point);
                         if (const auto it2 = value_cache_.find(cache_key);
@@ -1843,33 +1817,32 @@ namespace gatzk::protocol
 
             for (std::size_t layer = 0;
                  layer < context.model.hidden_layers.size(); ++layer)
-            for (std::size_t head = 0;
-                 head < context.model.hidden_layers[layer].heads.size(); ++head)
-            {
-                std::vector<std::string> weight_columns;
-                for (std::size_t column = 0;; ++column)
+                for (std::size_t head = 0;
+                     head < context.model.hidden_layers[layer].heads.size(); ++head)
                 {
-                    const auto label = hidden_weight_column_label(layer, head, column);
-                    if (!context.static_commitments.contains(label))
-                        break;
-                    weight_columns.push_back(label);
+                    std::vector<std::string> weight_columns;
+                    for (std::size_t column = 0;; ++column)
+                    {
+                        const auto label = hidden_weight_column_label(layer, head, column);
+                        if (!context.static_commitments.contains(label))
+                            break;
+                        weight_columns.push_back(label);
+                    }
+                    const auto challenge_it = challenges.find(
+                        hidden_challenge_name("xi_h", layer, head));
+                    if (weight_columns.empty() || challenge_it == challenges.end())
+                        return false;
+                    const auto anchor = folded_anchor(
+                        "folded_hidden_weight_proof_l" + std::to_string(layer) + "_h" + std::to_string(head),
+                        weight_columns, challenge_it->second);
+                    const auto src_anchor = required_dynamic(
+                        model_proof_local_label(hidden_src_label(layer, head)));
+                    const auto dst_anchor = required_dynamic(
+                        model_proof_local_label(hidden_dst_label(layer, head)));
+                    const auto prefix = hidden_head_prefix(layer, head) + "_";
+                    if (!anchor.has_value() || src_anchor == nullptr || dst_anchor == nullptr || !append_relation(prefix + "b_proj", *anchor, hidden_model_binding_blinder_label(layer, head, "proj"), context.domains.in->name) || !append_relation(prefix + "b_src", *src_anchor, hidden_model_binding_blinder_label(layer, head, "src"), context.domains.d->name) || !append_relation(prefix + "b_dst", *dst_anchor, hidden_model_binding_blinder_label(layer, head, "dst"), context.domains.d->name))
+                        return false;
                 }
-                const auto challenge_it = challenges.find(
-                    hidden_challenge_name("y_proj_h", layer, head));
-                if (weight_columns.empty() || challenge_it == challenges.end())
-                    return false;
-                const auto anchor = folded_anchor(
-                    "folded_hidden_weight_proof_l" + std::to_string(layer)
-                        + "_h" + std::to_string(head),
-                    weight_columns, challenge_it->second);
-                const auto src_anchor = required_dynamic(
-                    model_proof_local_label(hidden_src_label(layer, head)));
-                const auto dst_anchor = required_dynamic(
-                    model_proof_local_label(hidden_dst_label(layer, head)));
-                const auto prefix = hidden_head_prefix(layer, head) + "_";
-                if (!anchor.has_value() || src_anchor == nullptr || dst_anchor == nullptr || !append_relation(prefix + "b_proj", *anchor, hidden_model_binding_blinder_label(layer, head, "proj"), context.domains.in->name) || !append_relation(prefix + "b_src", *src_anchor, hidden_model_binding_blinder_label(layer, head, "src"), context.domains.d->name) || !append_relation(prefix + "b_dst", *dst_anchor, hidden_model_binding_blinder_label(layer, head, "dst"), context.domains.d->name))
-                    return false;
-            }
             for (std::size_t head = 0; head < context.config.K_out; ++head)
             {
                 std::vector<std::string> weight_columns;
@@ -1878,8 +1851,8 @@ namespace gatzk::protocol
                 {
                     weight_columns.push_back(output_weight_column_label(head, column));
                 }
-                const auto challenge_it = challenges.find(
-                    output_challenge_name("y_proj_out", head));
+                const auto challenge_it =
+                    challenges.find("xi_out");
                 if (challenge_it == challenges.end())
                     return false;
                 const auto anchor = folded_anchor(
@@ -1971,39 +1944,50 @@ namespace gatzk::protocol
             for (std::size_t layer_index = 0;
                  layer_index < context.model.hidden_layers.size();
                  ++layer_index)
-            for (std::size_t head_index = 0;
-                 head_index < context.model.hidden_layers[layer_index].heads.size();
-                 ++head_index)
-            {
-                const auto suffix = "l" + std::to_string(layer_index)
-                    + "_h" + std::to_string(head_index);
-                const auto prefix = hidden_head_prefix(layer_index, head_index) + "_";
-                const auto challenge = [&](std::string_view base)
+                for (std::size_t head_index = 0;
+                     head_index < context.model.hidden_layers[layer_index].heads.size();
+                     ++head_index)
                 {
-                    return hidden_challenge_name(base, layer_index, head_index);
-                };
-                specs.push_back({"mu_" + suffix + "_proj", prefix + "H_prime", challenge("y_proj_h")});
-                specs.push_back({"mu_" + suffix + "_src", prefix + "E_src", challenge("y_src_h")});
-                specs.push_back({hidden_score_mask_eval_name(layer_index, head_index, "src"),
-                                 hidden_score_mask_label(layer_index, head_index, "src"),
-                                 challenge("y_src_h")});
-                specs.push_back({"mu_" + suffix + "_dst", prefix + "E_dst", challenge("y_dst_h")});
-                specs.push_back({hidden_score_mask_eval_name(layer_index, head_index, "dst"),
-                                 hidden_score_mask_label(layer_index, head_index, "dst"),
-                                 challenge("y_dst_h")});
-                specs.push_back({"mu_" + suffix + "_star", prefix + "H_star", challenge("y_star_h")});
-                specs.push_back({external_mask_eval_name("mu_" + suffix + "_star"),
-                                 external_mask_label(prefix + "H_star"),
-                                 challenge("y_star_h")});
-                specs.push_back({"mu_" + suffix + "_agg_pre", prefix + "H_agg_pre_star", challenge("y_agg_pre_h")});
-                specs.push_back({external_mask_eval_name("mu_" + suffix + "_agg_pre"),
-                                 external_mask_label(prefix + "H_agg_pre_star"),
-                                 challenge("y_agg_pre_h")});
-                specs.push_back({"mu_" + suffix + "_agg", prefix + "H_agg_star", challenge("y_agg_h")});
-                specs.push_back({external_mask_eval_name("mu_" + suffix + "_agg"),
-                                 external_mask_label(prefix + "H_agg_star"),
-                                 challenge("y_agg_h")});
-            }
+                    const auto suffix = "l" + std::to_string(layer_index) + "_h" + std::to_string(head_index);
+                    const auto prefix = hidden_head_prefix(layer_index, head_index) + "_";
+                    const auto challenge = [&](std::string_view base)
+                    {
+                        return hidden_challenge_name(base, layer_index, head_index);
+                    };
+                    specs.push_back({
+                        "mu_" + suffix + "_proj",
+                        prefix + "H_star",
+                        challenge("rho_proj_h"),
+                    });
+
+                    specs.push_back({
+                        external_mask_eval_name(
+                            "mu_" + suffix + "_proj"),
+                        external_mask_label(
+                            prefix + "H_star"),
+                        challenge("rho_proj_h"),
+                    });
+                    specs.push_back({"mu_" + suffix + "_src", prefix + "E_src", challenge("y_src_h")});
+                    specs.push_back({hidden_score_mask_eval_name(layer_index, head_index, "src"),
+                                     hidden_score_mask_label(layer_index, head_index, "src"),
+                                     challenge("y_src_h")});
+                    specs.push_back({"mu_" + suffix + "_dst", prefix + "E_dst", challenge("y_dst_h")});
+                    specs.push_back({hidden_score_mask_eval_name(layer_index, head_index, "dst"),
+                                     hidden_score_mask_label(layer_index, head_index, "dst"),
+                                     challenge("y_dst_h")});
+                    specs.push_back({"mu_" + suffix + "_star", prefix + "H_star", challenge("y_star_h")});
+                    specs.push_back({external_mask_eval_name("mu_" + suffix + "_star"),
+                                     external_mask_label(prefix + "H_star"),
+                                     challenge("y_star_h")});
+                    specs.push_back({"mu_" + suffix + "_agg_pre", prefix + "H_agg_pre_star", challenge("y_agg_pre_h")});
+                    specs.push_back({external_mask_eval_name("mu_" + suffix + "_agg_pre"),
+                                     external_mask_label(prefix + "H_agg_pre_star"),
+                                     challenge("y_agg_pre_h")});
+                    specs.push_back({"mu_" + suffix + "_agg", prefix + "H_agg_star", challenge("y_agg_h")});
+                    specs.push_back({external_mask_eval_name("mu_" + suffix + "_agg"),
+                                     external_mask_label(prefix + "H_agg_star"),
+                                     challenge("y_agg_h")});
+                }
             for (std::size_t layer_index = 0;
                  layer_index < context.config.hidden_profile.size(); ++layer_index)
             {
@@ -2025,9 +2009,24 @@ namespace gatzk::protocol
             {
                 const auto prefix = output_head_prefix(head_index);
                 specs.push_back({
-                    output_external_eval_name("proj", head_index),
-                    prefix + "_Y_prime",
-                    output_challenge_name("y_proj_out", head_index),
+                    output_external_eval_name(
+                        "proj",
+                        head_index),
+                    prefix + "_Y_prime_star",
+                    output_challenge_name(
+                        "rho_proj_out",
+                        head_index),
+                });
+                specs.push_back({
+                    external_mask_eval_name(
+                        output_external_eval_name(
+                            "proj",
+                            head_index)),
+                    external_mask_label(
+                        prefix + "_Y_prime_star"),
+                    output_challenge_name(
+                        "rho_proj_out",
+                        head_index),
                 });
                 specs.push_back({
                     output_external_eval_name("src", head_index),
@@ -3243,18 +3242,19 @@ namespace gatzk::protocol
             for (const auto &[name, commitment] : proof.dynamic_commitments)
             {
                 (void)name;
-                if (has_material(commitment)) return true;
+                if (has_material(commitment))
+                    return true;
             }
             for (const auto &[name, commitment] : proof.quotient_commitments)
             {
                 (void)name;
-                if (has_material(commitment)) return true;
+                if (has_material(commitment))
+                    return true;
             }
             for (const auto &subproof : proof.pi_bind.subproofs)
             {
                 for (const auto &reblind : subproof.model_reblinds)
-                    if (has_material(reblind.proof_local_commitment)
-                        || has_material(reblind.blinder_commitment))
+                    if (has_material(reblind.proof_local_commitment) || has_material(reblind.blinder_commitment))
                         return true;
                 for (const auto *group : {
                          &subproof.view_commitments,
@@ -3266,7 +3266,8 @@ namespace gatzk::protocol
                     for (const auto &[name, commitment] : *group)
                     {
                         (void)name;
-                        if (has_material(commitment)) return true;
+                        if (has_material(commitment))
+                            return true;
                     }
             }
             return false;
@@ -3277,9 +3278,7 @@ namespace gatzk::protocol
         const VerifierContext &context,
         const Proof &proof)
     {
-        if (proof_contains_prover_material(proof)
-            || context.compiler_artifact == nullptr
-            || !validate_verifier_context(context))
+        if (proof_contains_prover_material(proof) || context.compiler_artifact == nullptr || !validate_verifier_context(context))
             return std::numeric_limits<std::size_t>::max();
         try
         {
@@ -3303,9 +3302,7 @@ namespace gatzk::protocol
         RunMetrics *metrics)
     {
         // Only an authenticated registry context can enter formal verification.
-        if (context.compiler_artifact == nullptr
-            || !validate_verifier_context(context)
-            || proof_contains_prover_material(proof))
+        if (context.compiler_artifact == nullptr || !validate_verifier_context(context) || proof_contains_prover_material(proof))
             return false;
         try
         {

@@ -256,11 +256,8 @@ namespace gatzk::protocol
 
         bool canonical_decimal(std::string_view value)
         {
-            return !value.empty()
-                && !(value.size() > 1 && value.front() == '0')
-                && std::all_of(
-                    value.begin(), value.end(),
-                    [](unsigned char ch) { return ch >= '0' && ch <= '9'; });
+            return !value.empty() && !(value.size() > 1 && value.front() == '0') && std::all_of(value.begin(), value.end(), [](unsigned char ch)
+                                                                                                { return ch >= '0' && ch <= '9'; });
         }
 
         ExactRational parse_exact_rational(
@@ -268,12 +265,9 @@ namespace gatzk::protocol
             std::string_view label)
         {
             const auto slash = value.find('/');
-            if (slash == std::string_view::npos
-                || !canonical_decimal(value.substr(0, slash))
-                || !canonical_decimal(value.substr(slash + 1)))
+            if (slash == std::string_view::npos || !canonical_decimal(value.substr(0, slash)) || !canonical_decimal(value.substr(slash + 1)))
                 throw std::runtime_error(
-                    "SecurityBudgetLedger malformed rational: "
-                    + std::string(label));
+                    "SecurityBudgetLedger malformed rational: " + std::string(label));
             ExactRational out{
                 ExactInteger(std::string(value.substr(0, slash))),
                 ExactInteger(std::string(value.substr(slash + 1)))};
@@ -289,8 +283,7 @@ namespace gatzk::protocol
             const auto begin = expression.find(marker);
             if (begin == std::string_view::npos)
                 throw std::runtime_error(
-                    "SecurityBudgetLedger summary is missing "
-                    + std::string(key));
+                    "SecurityBudgetLedger summary is missing " + std::string(key));
             const auto value_begin = begin + marker.size();
             const auto value_end = expression.find('|', value_begin);
             return std::string(expression.substr(
@@ -365,12 +358,10 @@ namespace gatzk::protocol
         {
             if (range_bits == 0 || range_bits >= 63 || limb_count == 0)
                 throw std::runtime_error(
-                    "IntegerBoundLedger limb representation parameters are invalid: "
-                    + std::string(label));
+                    "IntegerBoundLedger limb representation parameters are invalid: " + std::string(label));
             if (limb_count > std::numeric_limits<std::size_t>::max() / range_bits)
                 throw std::runtime_error(
-                    "IntegerBoundLedger limb bit-width multiplication overflow: "
-                    + std::string(label));
+                    "IntegerBoundLedger limb bit-width multiplication overflow: " + std::string(label));
             const auto bit_count = limb_count * range_bits;
             const auto representation_max =
                 (ExactInteger(1) << bit_count) - ExactInteger(1);
@@ -380,12 +371,10 @@ namespace gatzk::protocol
             // observed bound, must fit below the signed field decoding range.
             if (representation_max.compare(signed_capacity) >= 0)
                 throw std::runtime_error(
-                    "IntegerBoundLedger limb representation exceeds field signed capacity: "
-                    + std::string(label));
+                    "IntegerBoundLedger limb representation exceeds field signed capacity: " + std::string(label));
             if (ExactInteger(bound).compare(representation_max) > 0)
                 throw std::runtime_error(
-                    "IntegerBoundLedger bound exceeds registered limb representation: "
-                    + std::string(label));
+                    "IntegerBoundLedger bound exceeds registered limb representation: " + std::string(label));
         }
 
         void require_field_signed_capacity(
@@ -403,11 +392,7 @@ namespace gatzk::protocol
         std::string integer_bound_entry_string(
             const IntegerBoundLedgerEntry &entry)
         {
-            return "id=" + entry.id
-                + "|stage=" + entry.stage
-                + "|source=" + entry.source
-                + "|absolute_bound=" + std::to_string(entry.absolute_bound)
-                + "|limb_count=" + std::to_string(entry.limb_count);
+            return "id=" + entry.id + "|stage=" + entry.stage + "|source=" + entry.source + "|absolute_bound=" + std::to_string(entry.absolute_bound) + "|limb_count=" + std::to_string(entry.limb_count);
         }
 
         bool canonical_field_less(
@@ -698,7 +683,7 @@ namespace gatzk::protocol
                 if (max_rows != 0 && !max_prefix_is_minimal && !random_only_minimum)
                     continue;
                 return "formal-full-row-rank|specialization=" + trapdoor.to_string() + "," + z1.to_string() + "," + z2.to_string() + "," + y.to_string() + "|A_blind_field_minor=" + field_minor.to_string() + "|A_blind_group_minor=" + group_minor.to_string() + "|A_sec_field_minor=" + field_secret_minor.to_string() + "|A_sec_group_minor=" + group_secret_minor.to_string() + "|coverage=full-row-A_blind-implies-Im(A_sec)-subset" + "|field_qminus1_fails=" + std::to_string(field_prefix_minimal) + "|group_qminus1_fails=" + std::to_string(group_prefix_minimal) + "|minimality=" + (random_only_minimum ? std::string("nonzero-S_model-randomness") : std::string("rank([A_blind_prefix|A_sec])"
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  ">rank(A_blind_prefix)")) +
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               ">rank(A_blind_prefix)")) +
                        "|certificate=nonzero-specialization-implies-formal-nonidentity";
             }
             throw std::runtime_error(
@@ -713,14 +698,11 @@ namespace gatzk::protocol
     {
         if (positive_denominator == 0)
             throw std::runtime_error(
-                "IntegerBoundLedger SignedRoundDiv denominator is not positive: "
-                + std::string(label));
+                "IntegerBoundLedger SignedRoundDiv denominator is not positive: " + std::string(label));
         const auto rounding_offset = positive_denominator / 2U;
-        if (numerator_bound
-            > std::numeric_limits<std::uint64_t>::max() - rounding_offset)
+        if (numerator_bound > std::numeric_limits<std::uint64_t>::max() - rounding_offset)
             throw std::runtime_error(
-                "IntegerBoundLedger SignedRoundDiv rounding addition overflow: "
-                + std::string(label));
+                "IntegerBoundLedger SignedRoundDiv rounding addition overflow: " + std::string(label));
         // This is exactly the magnitude bound of trace.cpp's canonical
         // SignedRoundDiv: (abs(n) + d/2) / d.  The quotient is monotone in
         // abs(n), so evaluating it at the registered numerator bound is tight
@@ -807,13 +789,7 @@ namespace gatzk::protocol
                 artifact.security_budget_ledger.end(),
                 [](const CompilerLedgerEntry &entry)
                 { return entry.id == "budget:summary"; });
-            if (summary_it == artifact.security_budget_ledger.end()
-                || summary_it != std::prev(artifact.security_budget_ledger.end())
-                || summary_it->object_or_challenge != "epsilon_total"
-                || summary_it->domain != "exact-rational"
-                || summary_it->degree_bound != 1
-                || summary_it->query_bound != kQFsMax
-                || summary_it->multiplicity != 1)
+            if (summary_it == artifact.security_budget_ledger.end() || summary_it != std::prev(artifact.security_budget_ledger.end()) || summary_it->object_or_challenge != "epsilon_total" || summary_it->domain != "exact-rational" || summary_it->degree_bound != 1 || summary_it->query_bound != kQFsMax || summary_it->multiplicity != 1)
                 return result;
 
             ExactRational epsilon_alg;
@@ -821,31 +797,18 @@ namespace gatzk::protocol
             {
                 if (&entry == &*summary_it)
                     continue;
-                if (entry.id.empty() || !entry.id.starts_with("budget:")
-                    || entry.object_or_challenge.empty()
-                    || entry.domain != "Fr"
-                    || entry.degree_bound == 0
-                    || entry.query_bound != kQFsMax
-                    || entry.multiplicity == 0)
+                if (entry.id.empty() || !entry.id.starts_with("budget:") || entry.object_or_challenge.empty() || entry.domain != "Fr" || entry.degree_bound == 0 || entry.query_bound != kQFsMax || entry.multiplicity == 0)
                     return result;
                 const auto denominator =
-                    bls12_381_scalar_modulus()
-                    - exact_integer(entry.exclusion_degree);
+                    bls12_381_scalar_modulus() - exact_integer(entry.exclusion_degree);
                 if (!denominator.is_positive())
                     return result;
                 ExactRational term{
-                    exact_integer(kQFsMax)
-                        * exact_integer(entry.multiplicity)
-                        * exact_integer(entry.degree_bound),
+                    exact_integer(kQFsMax) * exact_integer(entry.multiplicity) * exact_integer(entry.degree_bound),
                     denominator};
                 term.normalize();
                 const auto expected =
-                    std::string("exact-rational:Q_FS_max*multiplicity*d_max/(p-B)")
-                    + "|value=" + term.canonical()
-                    + "|Q_FS_max=" + std::to_string(kQFsMax)
-                    + "|d_max=" + std::to_string(entry.degree_bound)
-                    + "|B=" + std::to_string(entry.exclusion_degree)
-                    + "|multiplicity=" + std::to_string(entry.multiplicity);
+                    std::string("exact-rational:Q_FS_max*multiplicity*d_max/(p-B)") + "|value=" + term.canonical() + "|Q_FS_max=" + std::to_string(kQFsMax) + "|d_max=" + std::to_string(entry.degree_bound) + "|B=" + std::to_string(entry.exclusion_degree) + "|multiplicity=" + std::to_string(entry.multiplicity);
                 if (entry.expression_or_certificate != expected)
                     return result;
                 epsilon_alg = exact_add(std::move(epsilon_alg), term);
@@ -854,8 +817,7 @@ namespace gatzk::protocol
             ExactInteger epsilon_abort_numerator(0);
             for (const auto &entry : artifact.random_identity_ledger)
             {
-                if (entry.id.find(":logup-cleared-endpoint")
-                    == std::string::npos)
+                if (entry.id.find(":logup-cleared-endpoint") == std::string::npos)
                     continue;
                 constexpr std::string_view marker =
                     "|active-denominator-count=";
@@ -871,37 +833,32 @@ namespace gatzk::protocol
                     number_end == std::string::npos
                         ? entry.expression_or_certificate.size() - number_begin
                         : number_end - number_begin);
-                if (!canonical_decimal(encoded_count)
-                    || encoded_count == "0")
+                if (!canonical_decimal(encoded_count) || encoded_count == "0")
                     return result;
-                epsilon_abort_numerator = epsilon_abort_numerator
-                    + ExactInteger(encoded_count);
+                epsilon_abort_numerator = epsilon_abort_numerator + ExactInteger(encoded_count);
             }
             ExactRational epsilon_abort{
                 epsilon_abort_numerator,
                 bls12_381_scalar_modulus()};
             epsilon_abort.normalize();
 
-            const auto max_domain_size = std::max({
-                context.domains.fh == nullptr ? std::size_t{0} : context.domains.fh->size,
-                context.domains.edge == nullptr ? std::size_t{0} : context.domains.edge->size,
-                context.domains.in == nullptr ? std::size_t{0} : context.domains.in->size,
-                context.domains.d == nullptr ? std::size_t{0} : context.domains.d->size,
-                context.domains.cat == nullptr ? std::size_t{0} : context.domains.cat->size,
-                context.domains.c == nullptr ? std::size_t{0} : context.domains.c->size,
-                context.domains.n == nullptr ? std::size_t{0} : context.domains.n->size});
+            const auto max_domain_size = std::max({context.domains.fh == nullptr ? std::size_t{0} : context.domains.fh->size,
+                                                   context.domains.edge == nullptr ? std::size_t{0} : context.domains.edge->size,
+                                                   context.domains.in == nullptr ? std::size_t{0} : context.domains.in->size,
+                                                   context.domains.d == nullptr ? std::size_t{0} : context.domains.d->size,
+                                                   context.domains.cat == nullptr ? std::size_t{0} : context.domains.cat->size,
+                                                   context.domains.c == nullptr ? std::size_t{0} : context.domains.c->size,
+                                                   context.domains.n == nullptr ? std::size_t{0} : context.domains.n->size});
             if (max_domain_size == 0)
                 return result;
-            const auto n_tau = bls12_381_scalar_modulus()
-                - exact_integer(1) - exact_integer(max_domain_size);
+            const auto n_tau = bls12_381_scalar_modulus() - exact_integer(1) - exact_integer(max_domain_size);
             if (!n_tau.is_positive())
                 return result;
             ExactInteger epsilon_crs_numerator(0);
             for (const auto &entry : artifact.observation_ledger)
             {
                 if (entry.exclusion_degree != 0)
-                    epsilon_crs_numerator = epsilon_crs_numerator
-                        + exact_integer(entry.exclusion_degree);
+                    epsilon_crs_numerator = epsilon_crs_numerator + exact_integer(entry.exclusion_degree);
             }
             ExactRational epsilon_crs{
                 epsilon_crs_numerator,
@@ -924,19 +881,8 @@ namespace gatzk::protocol
                     "exact-rational:lambda_target="))
                 return result;
             const auto expected_prefix =
-                std::string("exact-rational:lambda_target=")
-                + std::to_string(kLambdaTarget)
-                + "|Q_FS_max=" + std::to_string(kQFsMax)
-                + "|lambda_KZG=" + std::to_string(kLambdaKzg)
-                + "|lambda_register=" + std::to_string(kLambdaRegister)
-                + "|lambda_RO=" + std::to_string(kLambdaRandomOracle)
-                + "|epsilon_alg=" + epsilon_alg.canonical()
-                + "|epsilon_abort=" + epsilon_abort.canonical()
-                + "|epsilon_crs=" + epsilon_crs.canonical()
-                + "|epsilon_total=" + epsilon_total.canonical()
-                + "|gate=epsilon_total<=2^-120";
-            if (expression != expected_prefix
-                || !exact_at_most_power_of_two(epsilon_total, kLambdaTarget))
+                std::string("exact-rational:lambda_target=") + std::to_string(kLambdaTarget) + "|Q_FS_max=" + std::to_string(kQFsMax) + "|lambda_KZG=" + std::to_string(kLambdaKzg) + "|lambda_register=" + std::to_string(kLambdaRegister) + "|lambda_RO=" + std::to_string(kLambdaRandomOracle) + "|epsilon_alg=" + epsilon_alg.canonical() + "|epsilon_abort=" + epsilon_abort.canonical() + "|epsilon_crs=" + epsilon_crs.canonical() + "|epsilon_total=" + epsilon_total.canonical() + "|gate=epsilon_total<=2^-120";
+            if (expression != expected_prefix || !exact_at_most_power_of_two(epsilon_total, kLambdaTarget))
                 return result;
             result.passed = true;
             result.exact_budget = epsilon_total.canonical();
@@ -973,10 +919,8 @@ namespace gatzk::protocol
                 throw std::runtime_error(
                     "canonical static-table generator signed interval is invalid");
             const auto span =
-                static_cast<std::uint64_t>(max_raw)
-                - static_cast<std::uint64_t>(min_raw) + 1U;
-            if (span == 0 || span > kMaxCanonicalStaticTableRows
-                || span > std::numeric_limits<std::size_t>::max())
+                static_cast<std::uint64_t>(max_raw) - static_cast<std::uint64_t>(min_raw) + 1U;
+            if (span == 0 || span > kMaxCanonicalStaticTableRows || span > std::numeric_limits<std::size_t>::max())
                 throw std::runtime_error(
                     "canonical static-table generator interval is too large");
             return static_cast<std::size_t>(span);
@@ -988,8 +932,7 @@ namespace gatzk::protocol
         {
             if (rows == 0 || rows > kMaxCanonicalStaticTableRows)
                 throw std::runtime_error(
-                    "canonical static-table generator row cap exceeded: "
-                    + std::string(label));
+                    "canonical static-table generator row cap exceeded: " + std::string(label));
         }
 
         std::vector<algebra::FieldElement> canonical_range_table(
@@ -1023,9 +966,8 @@ namespace gatzk::protocol
                 const auto output = input >= 0.0 ? input : 0.2 * input;
                 const auto output_raw =
                     canonical_quantize_signed(output, output_scale);
-                out.push_back({
-                    algebra::FieldElement::from_signed(raw),
-                    algebra::FieldElement::from_signed(output_raw)});
+                out.push_back({algebra::FieldElement::from_signed(raw),
+                               algebra::FieldElement::from_signed(output_raw)});
                 if (raw == max_raw)
                     break;
             }
@@ -1056,10 +998,9 @@ namespace gatzk::protocol
                 const auto central = input >= 0.0
                                          ? input
                                          : std::exp(input) - 1.0;
-                out.push_back({
-                    algebra::FieldElement::from_signed(raw),
-                    algebra::FieldElement::from_signed(
-                        canonical_quantize_signed(central, output_scale))});
+                out.push_back({algebra::FieldElement::from_signed(raw),
+                               algebra::FieldElement::from_signed(
+                                   canonical_quantize_signed(central, output_scale))});
                 if (raw == signed_bound)
                     break;
             }
@@ -1082,16 +1023,14 @@ namespace gatzk::protocol
                     throw std::runtime_error(
                         "canonical static-table generator ExpMap index exceeds signed range");
                 const auto central = canonical_quantize_signed(
-                    std::exp(-static_cast<double>(index)
-                             / static_cast<double>(input_scale)),
+                    std::exp(-static_cast<double>(index) / static_cast<double>(input_scale)),
                     output_scale);
                 const auto candidate = std::max<std::int64_t>(1, central);
                 if (candidate > previous)
                     throw std::runtime_error(
                         "canonical static-table generator ExpMap is not non-increasing");
-                out.push_back({
-                    algebra::FieldElement(static_cast<std::uint64_t>(index)),
-                    algebra::FieldElement::from_signed(candidate)});
+                out.push_back({algebra::FieldElement(static_cast<std::uint64_t>(index)),
+                               algebra::FieldElement::from_signed(candidate)});
                 previous = candidate;
             }
             return out;
@@ -1110,8 +1049,7 @@ namespace gatzk::protocol
             const auto endpoint_bound = [&](std::int64_t raw)
                 -> std::uint64_t
             {
-                const auto input = static_cast<double>(raw)
-                    / static_cast<double>(input_scale);
+                const auto input = static_cast<double>(raw) / static_cast<double>(input_scale);
                 const auto output = input >= 0.0 ? input : 0.2 * input;
                 const auto quantized = canonical_quantize_signed(
                     output, output_scale);
@@ -1132,8 +1070,7 @@ namespace gatzk::protocol
         {
             if (lhs != 0 && rhs > std::numeric_limits<std::size_t>::max() / lhs)
                 throw std::runtime_error(
-                    "canonical static-table generator size overflow: "
-                    + std::string(label));
+                    "canonical static-table generator size overflow: " + std::string(label));
             return lhs * rhs;
         }
     }
@@ -1143,17 +1080,11 @@ namespace gatzk::protocol
     {
         if (delta_bound == std::numeric_limits<std::uint64_t>::max())
             throw std::runtime_error(
-                "canonical static-table generator ExpMap row-count overflow for delta bound "
-                + std::to_string(delta_bound));
+                "canonical static-table generator ExpMap row-count overflow for delta bound " + std::to_string(delta_bound));
         const auto rows = delta_bound + 1U;
-        if (rows > std::numeric_limits<std::size_t>::max()
-            || rows == 0
-            || rows > kMaxCanonicalStaticTableRows)
+        if (rows > std::numeric_limits<std::size_t>::max() || rows == 0 || rows > kMaxCanonicalStaticTableRows)
             throw std::runtime_error(
-                "canonical static-table generator ExpMap interval is too large for delta bound "
-                + std::to_string(delta_bound) + " (required rows="
-                + std::to_string(rows) + ", row cap="
-                + std::to_string(kMaxCanonicalStaticTableRows) + ")");
+                "canonical static-table generator ExpMap interval is too large for delta bound " + std::to_string(delta_bound) + " (required rows=" + std::to_string(rows) + ", row cap=" + std::to_string(kMaxCanonicalStaticTableRows) + ")");
         return static_cast<std::size_t>(rows);
     }
 
@@ -1167,31 +1098,21 @@ namespace gatzk::protocol
         const auto configured_range_size = std::size_t{1} << range_bits;
         if (configured_range_size > kMaxCanonicalStaticTableRows)
             throw std::runtime_error(
-                "canonical static-table generator T_range interval is too large: required rows="
-                + std::to_string(configured_range_size) + ", row cap="
-                + std::to_string(kMaxCanonicalStaticTableRows));
+                "canonical static-table generator T_range interval is too large: required rows=" + std::to_string(configured_range_size) + ", row cap=" + std::to_string(kMaxCanonicalStaticTableRows));
 
         std::size_t feature_cardinality = 0;
-        if (inputs.dataset_num_features != 0
-            && inputs.dataset_num_nodes
-                   > std::numeric_limits<std::size_t>::max()
-                       / inputs.dataset_num_features)
+        if (inputs.dataset_num_features != 0 && inputs.dataset_num_nodes > std::numeric_limits<std::size_t>::max() / inputs.dataset_num_features)
             throw std::runtime_error(
                 "canonical static-table generator dataset feature cardinality overflow");
-        feature_cardinality = inputs.dataset_num_nodes
-            * inputs.dataset_num_features;
+        feature_cardinality = inputs.dataset_num_nodes * inputs.dataset_num_features;
         const bool large_whole_graph_gat =
-            inputs.batching_rule == "whole_graph_single"
-            && inputs.local_num_nodes == inputs.dataset_num_nodes
-            && (inputs.local_edge_count >= (1ULL << 18)
-                || feature_cardinality >= (1ULL << 24));
+            inputs.batching_rule == "whole_graph_single" && inputs.local_num_nodes == inputs.dataset_num_nodes && (inputs.local_edge_count >= (1ULL << 18) || feature_cardinality >= (1ULL << 24));
 
         const auto lrelu_interval_bound = std::max<std::size_t>(
             large_whole_graph_gat ? (1ULL << 20)
-                                   : configured_range_size,
+                                  : configured_range_size,
             configured_range_size);
-        if (lrelu_interval_bound
-            > static_cast<std::size_t>(std::numeric_limits<std::int64_t>::max()))
+        if (lrelu_interval_bound > static_cast<std::size_t>(std::numeric_limits<std::int64_t>::max()))
             throw std::runtime_error(
                 "canonical static-table generator LReLU interval exceeds signed range");
         std::int64_t lrelu_min_raw = -static_cast<std::int64_t>(
@@ -1234,7 +1155,7 @@ namespace gatzk::protocol
 
         const auto elu_bound = std::max<std::size_t>(
             large_whole_graph_gat ? (1ULL << 20)
-                                   : configured_range_size,
+                                  : configured_range_size,
             configured_range_size);
         if (elu_bound > (kMaxCanonicalStaticTableRows - 1U) / 2U)
             throw std::runtime_error(
@@ -1244,11 +1165,10 @@ namespace gatzk::protocol
             throw std::runtime_error(
                 "canonical static-table generator ELU interval is too large");
 
-        const auto max_table_rows = std::max({
-            configured_range_size,
-            lrelu_table_size,
-            elu_table_size,
-            exp_table_size});
+        const auto max_table_rows = std::max({configured_range_size,
+                                              lrelu_table_size,
+                                              elu_table_size,
+                                              exp_table_size});
         if (max_table_rows > std::numeric_limits<std::size_t>::max() - 2U)
             throw std::runtime_error(
                 "canonical static-table generator table-domain size overflow");
@@ -1315,8 +1235,7 @@ namespace gatzk::protocol
                 shape.lrelu_min_raw,
                 shape.lrelu_max_raw,
                 scales.s_delta,
-                scales.s_delta)
-            != shape.lrelu_output_bound)
+                scales.s_delta) != shape.lrelu_output_bound)
             throw std::runtime_error(
                 "canonical static-table generator LReLU bound planner mismatch");
         out.exp = canonical_exp_table(
@@ -1330,10 +1249,7 @@ namespace gatzk::protocol
             shape.elu_bound,
             scales.s_agg_pre.front(),
             scales.s_agg.front());
-        if (out.range.size() != shape.range_table_size
-            || out.lrelu.size() != shape.lrelu_table_size
-            || out.elu.size() != shape.elu_table_size
-            || out.exp.size() != shape.exp_table_size)
+        if (out.range.size() != shape.range_table_size || out.lrelu.size() != shape.lrelu_table_size || out.elu.size() != shape.elu_table_size || out.exp.size() != shape.exp_table_size)
             throw std::runtime_error(
                 "canonical static-table generator planned cardinality mismatch");
         return out;
@@ -1351,16 +1267,9 @@ namespace gatzk::protocol
             .local_edge_count = context.local.edges.size(),
         };
         const auto shape = plan_canonical_static_table_shape(inputs);
-        if (context.domains.edge != nullptr
-            && shape.table_edge_domain_size > context.domains.edge->size)
+        if (context.domains.edge != nullptr && shape.table_edge_domain_size > context.domains.edge->size)
             throw std::runtime_error(
-                "canonical static-table/domain capacity mismatch: derived table edge domain="
-                + std::to_string(shape.table_edge_domain_size)
-                + " exceeds authenticated context edge domain="
-                + std::to_string(context.domains.edge->size)
-                + " (T_exp rows=" + std::to_string(shape.exp_table_size)
-                + ", delta_bound=" + std::to_string(shape.exp_input_bound)
-                + ")");
+                "canonical static-table/domain capacity mismatch: derived table edge domain=" + std::to_string(shape.table_edge_domain_size) + " exceeds authenticated context edge domain=" + std::to_string(context.domains.edge->size) + " (T_exp rows=" + std::to_string(shape.exp_table_size) + ", delta_bound=" + std::to_string(shape.exp_input_bound) + ")");
         return build_canonical_static_tables(inputs);
     }
 
@@ -1388,8 +1297,7 @@ namespace gatzk::protocol
                 {
                     if (actual[index] != canonical[index])
                         return fail(
-                            std::string(label) + " row " + std::to_string(index)
-                            + " differs from canonical generator");
+                            std::string(label) + " row " + std::to_string(index) + " differs from canonical generator");
                 }
                 return true;
             };
@@ -1398,11 +1306,8 @@ namespace gatzk::protocol
             for (std::size_t index = 0; index < expected.range.size(); ++index)
                 if (context.tables.range[index] != expected.range[index])
                     return fail(
-                        "T_range row " + std::to_string(index)
-                        + " differs from canonical generator");
-            if (!compare_pairs(context.tables.lrelu, expected.lrelu, "T_LReLU")
-                || !compare_pairs(context.tables.elu, expected.elu, "T_ELU")
-                || !compare_pairs(context.tables.exp, expected.exp, "T_exp"))
+                        "T_range row " + std::to_string(index) + " differs from canonical generator");
+            if (!compare_pairs(context.tables.lrelu, expected.lrelu, "T_LReLU") || !compare_pairs(context.tables.elu, expected.elu, "T_ELU") || !compare_pairs(context.tables.exp, expected.exp, "T_exp"))
                 return false;
             if (reason != nullptr)
                 reason->clear();
@@ -1438,12 +1343,11 @@ namespace gatzk::protocol
                 return fail("T_range cardinality is not exactly 2^B");
             for (std::size_t index = 0; index < tables.range.size(); ++index)
                 if (tables.range[index].value() != index)
-                    return fail("T_range is not canonical at row "
-                        + std::to_string(index));
+                    return fail("T_range is not canonical at row " + std::to_string(index));
 
             const auto validate_pairs = [&](
-                const auto &table,
-                std::string_view name)
+                                            const auto &table,
+                                            std::string_view name)
             {
                 if (table.empty())
                     return fail(std::string(name) + " table is empty");
@@ -1451,21 +1355,17 @@ namespace gatzk::protocol
                 for (const auto &[input, output] : table)
                 {
                     if (!inputs.insert(input.to_string()).second)
-                        return fail(std::string(name)
-                            + " table contains duplicate input rows");
+                        return fail(std::string(name) + " table contains duplicate input rows");
                     (void)output;
                 }
                 return true;
             };
-            if (!validate_pairs(tables.lrelu, "LReLU")
-                || !validate_pairs(tables.elu, "ELU")
-                || !validate_pairs(tables.exp, "ExpMap"))
+            if (!validate_pairs(tables.lrelu, "LReLU") || !validate_pairs(tables.elu, "ELU") || !validate_pairs(tables.exp, "ExpMap"))
                 return false;
             std::uint64_t previous = std::numeric_limits<std::uint64_t>::max();
             for (std::size_t index = 0; index < tables.exp.size(); ++index)
             {
-                if (tables.exp[index].first
-                    != algebra::FieldElement(static_cast<std::uint64_t>(index)))
+                if (tables.exp[index].first != algebra::FieldElement(static_cast<std::uint64_t>(index)))
                     return fail("ExpMap input sequence is not canonical");
                 const auto output = tables.exp[index].second.value();
                 if (output == 0 || (index != 0 && output > previous))
@@ -1683,28 +1583,23 @@ namespace gatzk::protocol
                 const auto width =
                     context.model.hidden_layers[layer].shape.head_dim;
                 meta.canonical_matrices.push_back(canonical_matrix(
-                    "canonical:hidden:H_prime:l" + std::to_string(layer)
-                        + ":h" + std::to_string(head),
+                    "canonical:hidden:H_prime:l" + std::to_string(layer) + ":h" + std::to_string(head),
                     prefix + "_H_prime", context.local.num_nodes, width));
                 meta.canonical_matrices.push_back(canonical_matrix(
-                    "canonical:hidden:H_agg_pre:l" + std::to_string(layer)
-                        + ":h" + std::to_string(head),
+                    "canonical:hidden:H_agg_pre:l" + std::to_string(layer) + ":h" + std::to_string(head),
                     prefix + "_H_agg_pre", context.local.num_nodes, width));
                 meta.canonical_matrices.push_back(canonical_matrix(
-                    "canonical:hidden:H_agg:l" + std::to_string(layer)
-                        + ":h" + std::to_string(head),
+                    "canonical:hidden:H_agg:l" + std::to_string(layer) + ":h" + std::to_string(head),
                     prefix + "_H_agg", context.local.num_nodes, width));
                 meta.aggregation_relations.push_back(aggregation_relation(
-                    "aggregation:hidden:l" + std::to_string(layer)
-                        + ":h" + std::to_string(head),
+                    "aggregation:hidden:l" + std::to_string(layer) + ":h" + std::to_string(head),
                     hidden_aggregation_binding_label(layer, head, ""),
                     prefix + "_H_prime", prefix + "_H_agg_pre",
                     prefix + "_alpha", width));
                 for (const auto *role : {"src", "dst", "t"})
                     meta.route_terminal_relations.push_back(
                         route_terminal_relation(
-                            "route-terminal:hidden:l" + std::to_string(layer)
-                                + ":h" + std::to_string(head) + ":" + role,
+                            "route-terminal:hidden:l" + std::to_string(layer) + ":h" + std::to_string(head) + ":" + role,
                             prefix + "_R_" + role + "_node",
                             prefix + "_R_" + role));
                 out.push_back(std::move(meta));
@@ -1949,6 +1844,152 @@ namespace gatzk::protocol
             "canonical:output:Y_average", "P_Y",
             context.local.num_nodes, context.local.num_classes));
         out.push_back(std::move(average_meta));
+
+        const auto domain_by_name =
+            [&](const std::string &name)
+            -> std::shared_ptr<algebra::RootOfUnityDomain>
+        {
+            for (const auto &domain : {
+                     context.domains.fh,
+                     context.domains.edge,
+                     context.domains.in,
+                     context.domains.d,
+                     context.domains.cat,
+                     context.domains.c,
+                     context.domains.n})
+            {
+                if (domain != nullptr &&
+                    domain->name == name)
+                {
+                    return domain;
+                }
+            }
+
+            throw std::runtime_error(
+                "unknown soundness-binding domain: " +
+                name);
+        };
+
+        const auto append_terminal_relation =
+            [&](const std::string &owner_relation_id,
+                const std::string &relation_id,
+                const std::string &left_accumulator,
+                const std::string &left_domain_name,
+                const std::string &right_accumulator,
+                const std::string &right_domain_name)
+        {
+            auto owner = std::find_if(
+                out.begin(),
+                out.end(),
+                [&](const BindingRelationMeta &candidate)
+                {
+                    return candidate.relation_id ==
+                           owner_relation_id;
+                });
+
+            if (owner == out.end())
+            {
+                throw std::runtime_error(
+                    "soundness-binding owner is missing: " +
+                    owner_relation_id);
+            }
+
+            const auto left_domain =
+                domain_by_name(left_domain_name);
+            const auto right_domain =
+                domain_by_name(right_domain_name);
+
+            RouteTerminalRelationMeta relation{
+                .relation_id = relation_id,
+                .node_accumulator_object =
+                    left_accumulator,
+                .edge_accumulator_object =
+                    right_accumulator,
+                .node_domain =
+                    left_domain->name,
+                .edge_domain =
+                    right_domain->name,
+                .node_terminal_point =
+                    left_domain->point_at(
+                        left_domain->size - 1),
+                .edge_terminal_point =
+                    right_domain->point_at(
+                        right_domain->size - 1),
+            };
+
+            relation.shifted_accumulator_object =
+                right_accumulator +
+                "_RouteShifted";
+
+            relation.relation_virtual_object =
+                left_accumulator +
+                "_RouteTerminalVirtual";
+
+            relation.challenge_label =
+                "y_route_terminal:" +
+                relation_id;
+
+            relation.terminal_delta =
+                relation.edge_terminal_point -
+                relation.node_terminal_point;
+
+            relation.configured_shift_degree =
+                right_domain->size +
+                registered_blinder_coefficient_count(
+                    context,
+                    right_accumulator) -
+                1;
+
+            relation.shift_domain_size =
+                next_power_of_two_checked(
+                    2 *
+                        relation
+                            .configured_shift_degree +
+                    1);
+
+            owner->route_terminal_relations.push_back(
+                std::move(relation));
+        };
+
+        for (const auto &spec :
+             matrix_fold_binding_specs(context))
+        {
+            append_terminal_relation(
+                spec.owner_relation_id,
+                "soundness-terminal:" +
+                    spec.relation_id,
+                spec.source_accumulator_object,
+                context.domains.n->name,
+                spec.fold_accumulator_object,
+                spec.fold_domain);
+        }
+
+        for (const auto &spec :
+             flat_matrix_binding_specs(context))
+        {
+            append_terminal_relation(
+                spec.owner_relation_id,
+                "soundness-terminal:" +
+                    spec.relation_id,
+                spec.row_accumulator_object,
+                context.domains.n->name,
+                spec.flat_accumulator_object,
+                context.domains.edge->name);
+        }
+
+        for (const auto &spec :
+             broadcast_flat_binding_specs(context))
+        {
+            append_terminal_relation(
+                spec.owner_relation_id,
+                "soundness-terminal:" +
+                    spec.relation_id,
+                spec.node_accumulator_object,
+                context.domains.n->name,
+                spec.flat_accumulator_object,
+                context.domains.edge->name);
+        }
+
         return out;
     }
 
@@ -3012,8 +3053,7 @@ namespace gatzk::protocol
                  head_index < layer.heads.size(); ++head_index)
             {
                 const auto &head = layer.heads.at(head_index);
-                const auto prefix = "hidden:l" + std::to_string(layer_index)
-                    + ":h" + std::to_string(head_index);
+                const auto prefix = "hidden:l" + std::to_string(layer_index) + ":h" + std::to_string(head_index);
                 const auto w_bound = max_quantized_model_matrix(
                     head.seq_kernel_fp,
                     scales.s_w_hidden.at(layer_index).at(head_index),
@@ -3302,23 +3342,18 @@ namespace gatzk::protocol
                         break;
                     projection_dependencies.push_back(model_proof_local_label(anchor));
                 }
-                derived_model_binding_dependencies.push_back({
-                    hidden_model_binding_blinder_label(layer, head, "proj"),
-                    std::move(projection_dependencies)});
-                derived_model_binding_dependencies.push_back({
-                    hidden_model_binding_blinder_label(layer, head, "src"),
-                    {prefix + "_b_src",
-                     model_proof_local_label(hidden_src_label(layer, head))}});
-                derived_model_binding_dependencies.push_back({
-                    hidden_model_binding_blinder_label(layer, head, "dst"),
-                    {prefix + "_b_dst",
-                     model_proof_local_label(hidden_dst_label(layer, head))}});
-                derived_score_mask_dependencies.push_back({
-                    hidden_score_mask_label(layer, head, "src"),
-                    {prefix + "_E_src"}});
-                derived_score_mask_dependencies.push_back({
-                    hidden_score_mask_label(layer, head, "dst"),
-                    {prefix + "_E_dst"}});
+                derived_model_binding_dependencies.push_back({hidden_model_binding_blinder_label(layer, head, "proj"),
+                                                              std::move(projection_dependencies)});
+                derived_model_binding_dependencies.push_back({hidden_model_binding_blinder_label(layer, head, "src"),
+                                                              {prefix + "_b_src",
+                                                               model_proof_local_label(hidden_src_label(layer, head))}});
+                derived_model_binding_dependencies.push_back({hidden_model_binding_blinder_label(layer, head, "dst"),
+                                                              {prefix + "_b_dst",
+                                                               model_proof_local_label(hidden_dst_label(layer, head))}});
+                derived_score_mask_dependencies.push_back({hidden_score_mask_label(layer, head, "src"),
+                                                           {prefix + "_E_src"}});
+                derived_score_mask_dependencies.push_back({hidden_score_mask_label(layer, head, "dst"),
+                                                           {prefix + "_E_dst"}});
                 for (const auto *suffix : {
                          "_H_star", "_H_agg_pre_star", "_H_agg_star"})
                 {
@@ -3573,8 +3608,8 @@ namespace gatzk::protocol
                 auto shift_delta = algebra::FieldElement::zero();
                 std::string certificate =
                     "canonical-rref-prefix:commitment" + std::string(entry.enters_opening
-                                                                            ? "+domain-eval(z,z_omega)+point-group-witness(z,z_omega)"
-                                                                            : "");
+                                                                         ? "+domain-eval(z,z_omega)+point-group-witness(z,z_omega)"
+                                                                         : "");
                 for (const auto &[derived, dependencies] :
                      derived_model_binding_dependencies)
                 {
@@ -3707,9 +3742,7 @@ namespace gatzk::protocol
                 for (const auto *role : {"proj", "src", "dst"})
                 {
                     artifact.constraint_registry.push_back(
-                        "shifted-divisibility:hidden:l"
-                        + std::to_string(layer) + ":h"
-                        + std::to_string(head) + ":" + role);
+                        "shifted-divisibility:hidden:l" + std::to_string(layer) + ":h" + std::to_string(head) + ":" + role);
                 }
         for (std::size_t head = 0; head < context.model.output_layer.heads.size(); ++head)
         {
@@ -3970,8 +4003,7 @@ namespace gatzk::protocol
                  local_head < layer.shape.head_count; ++local_head)
             {
                 const auto layer_index = layer.layer_index;
-                const auto suffix = "l" + std::to_string(layer_index)
-                    + ":h" + std::to_string(local_head);
+                const auto suffix = "l" + std::to_string(layer_index) + ":h" + std::to_string(local_head);
                 const auto prefix = hidden_head_prefix(layer_index, local_head);
                 const auto stage = "hidden-head:" + suffix;
                 const auto head_dim = layer.shape.head_dim;
@@ -3992,9 +4024,9 @@ namespace gatzk::protocol
                     const auto challenge = hidden_challenge_name(
                         std::string(role) == "agg_pre"
                             ? "y_agg_pre_h"
-                            : std::string(role) == "agg"
-                                  ? "y_agg_h"
-                                  : "y_" + std::string(role) + "_h",
+                        : std::string(role) == "agg"
+                            ? "y_agg_h"
+                            : "y_" + std::string(role) + "_h",
                         layer_index, local_head);
                     add_random_point_identity(
                         "hidden:" + suffix + ":" + role,
@@ -4735,8 +4767,7 @@ namespace gatzk::protocol
         std::string static_table_reason;
         if (!validate_static_tables(context, &static_table_reason))
             return fail("static table registry validation failed: " + static_table_reason);
-        if (artifact.instance_canonical_bytes
-            != protocol_instance_canonical_bytes(artifact))
+        if (artifact.instance_canonical_bytes != protocol_instance_canonical_bytes(artifact))
             return fail("compiler artifact instance canonical bytes mismatch");
         if (context.verifier_shape_only)
         {
