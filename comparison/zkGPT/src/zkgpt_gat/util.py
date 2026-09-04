@@ -20,6 +20,11 @@ def canonical_json(data: Any) -> str:
     return json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
 
 
+def canonical_json_file_bytes(data: Any) -> bytes:
+    """Return the one canonical on-disk JSON wire encoding."""
+    return (json.dumps(data, indent=2, sort_keys=True, ensure_ascii=True) + "\n").encode("utf-8")
+
+
 def digest_json(data: Any) -> str:
     return hashlib.sha256(canonical_json(data).encode("utf-8")).hexdigest()
 
@@ -159,7 +164,7 @@ def write_json(
     itself rather than following it; refusing pre-existing symlinks, hardlinks,
     FIFOs, and other special files keeps the write path fail-closed.
     """
-    payload = (json.dumps(data, indent=2, sort_keys=True, ensure_ascii=True) + "\n").encode("utf-8")
+    payload = canonical_json_file_bytes(data)
     write_bytes_atomic(path, payload, label=label, root=root)
 
 

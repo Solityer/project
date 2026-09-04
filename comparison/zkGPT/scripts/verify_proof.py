@@ -12,6 +12,7 @@ import json
 import os
 import pathlib
 import sys
+import time
 from typing import Any, Dict
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -22,7 +23,7 @@ sys.path.insert(0, str(ROOT / "src"))
 # checkpoint tensor/value files are never verifier inputs.
 PUBLIC_CONTEXT_FILES = ["config", "model_manifest", "trusted_registry_public", "public_y"]
 
-from zkgpt_gat.proof import _verify_formal  # noqa: E402
+from zkgpt_gat.proof import _verify_formal, parse_proof_payload  # noqa: E402
 from zkgpt_gat.config import load_app_config  # noqa: E402
 from zkgpt_gat.gpu_execution import validate_gpu_execution_evidence  # noqa: E402
 from zkgpt_gat.formal_gate import require_formal_experiment  # noqa: E402
@@ -136,28 +137,18 @@ def _validate_static_table_closure(
 
 
 def _validate_gpu_artifact_closure(
-    artifact_dir: pathlib.Path,
     metadata: Dict[str, Any],
     transcript: Dict[str, Any],
     proof_payload: Dict[str, Any],
 ) -> tuple[bool, list[str]]:
-    """Require all three public GPU records to be byte-equivalent claims."""
+    """Validate the payload-carried CUDA proof contribution."""
     errors: list[str] = []
-    try:
-        hot_path = _read(artifact_dir, "gpu_proof_hot_path.json")
-        backend = _read(artifact_dir, "gpu_backend.json")
-    except (OSError, ValueError) as exc:
-        return False, [f"gpu_evidence_missing:{exc}"]
     contribution = proof_payload.get("GPU_proof_contribution")
     if not isinstance(contribution, dict):
         errors.append("proof_payload_gpu_contribution_missing")
-    else:
-        if contribution != hot_path:
-            errors.append("proof_payload_gpu_contribution_mismatch")
-        if contribution != backend:
-            errors.append("gpu_backend_mismatch")
+        return False, errors
     valid, validation_errors = validate_gpu_execution_evidence(
-        hot_path,
+        contribution,
         session_nonce=str(metadata.get("session_nonce", "")),
         final_transcript_digest=str(transcript.get("final_digest", "")),
     )
@@ -269,16 +260,6 @@ def _invoke_formal_verifier(
 
 def verify_artifact_directory(artifact_dir: pathlib.Path, context: VerifierContext) -> Dict[str, Any]:
     metadata = _read(artifact_dir, "metadata.json")
-    commitments = _read(artifact_dir, "commitments.json")
-    transcript = _read(artifact_dir, "transcript.json")
-    lasso = _read(artifact_dir, "lookup_proof.json")
-    matrix = _read(artifact_dir, "matrix_sumcheck_proof.json")
-    gkr = _read(artifact_dir, "gkr_proof.json")
-    combine = _read(artifact_dir, "combine_proof.json")
-    openings = _read(artifact_dir, "hyrax_mle_openings.json")
-    privacy_profile = _read_canonical_object(artifact_dir, "privacy_profile.json")
-    proof_payload = _read_canonical_object(artifact_dir, "proof_payload.json")
-    fixed_lookup_tables = _read(artifact_dir, "fixed_lookup_tables.json")
     backend = str(metadata.get("backend", ""))
     if backend not in {"cpu", "gpu"}:
         raise ValueError(f"invalid proof backend: {backend!r}")
@@ -291,6 +272,22 @@ def verify_artifact_directory(artifact_dir: pathlib.Path, context: VerifierConte
             "checks": {"external_context": False},
             "external_context": external_metadata,
         }
+    # Startup/context reconstruction is complete.  Canonical verification
+    # begins at the first proof-byte parse and stops immediately when the
+    # independent protocol verifier returns.
+    proof_bytes = required_artifact_file(artifact_dir, "proof_payload.json").read_bytes()
+    protocol_verify_started = time.perf_counter()
+    proof_payload = parse_proof_payload(proof_bytes)
+    commitments = proof_payload["Commitments"]
+    transcript = proof_payload["Transcript"]
+    lasso = proof_payload["Pi_Lasso"]
+    matrix = proof_payload["Pi_MatMul"]
+    gkr = proof_payload["Pi_GKR"]
+    combine = proof_payload["Pi_combine"]
+    openings = proof_payload["Open_in"]
+    privacy_profile = proof_payload["PrivacyProfile"]
+    fixed_lookup_tables = proof_payload["FixedLookupTables"]
+    gpu_claim = proof_payload.get("GPU_proof_contribution")
     external_payload = context.validate_proof_payload(metadata, proof_payload)
     external_families = context.validate_subproof_families(lasso, matrix, gkr)
     if external_payload["status"] != "VERIFY_OK" or external_families["status"] != "VERIFY_OK":
@@ -309,9 +306,8 @@ def verify_artifact_directory(artifact_dir: pathlib.Path, context: VerifierConte
     gpu_closure_ok, gpu_closure_errors = (True, [])
     if backend == "gpu":
         gpu_closure_ok, gpu_closure_errors = _validate_gpu_artifact_closure(
-            artifact_dir, metadata, transcript, proof_payload,
+            metadata, transcript, proof_payload,
         )
-    gpu_claim = _read(artifact_dir, "gpu_proof_hot_path.json") if backend == "gpu" else None
     privacy_errors: list[str] = []
     payload_profile = proof_payload.get("PrivacyProfile")
     if payload_profile != privacy_profile:
@@ -372,6 +368,7 @@ def verify_artifact_directory(artifact_dir: pathlib.Path, context: VerifierConte
             backend=backend,
             context=context,
         )
+    protocol_verify_elapsed_ms = (time.perf_counter() - protocol_verify_started) * 1000.0
     result["external_context"] = external_metadata
     result["external_public_y"] = external_payload
     result["external_families"] = external_families
@@ -394,7 +391,8 @@ def verify_artifact_directory(artifact_dir: pathlib.Path, context: VerifierConte
     required_payload_keys = {
         "proof_type", "M_pub_digest", "Y_digest", "Com_in", "Pi_Lasso",
         "FixedLookupTables", "Pi_MatMul", "Pi_GKR", "Pi_combine",
-        "Open_in", "PrivacyProfile", "privacy_profile_digest", "component_artifacts", "transcript_digest",
+        "Open_in", "PrivacyProfile", "privacy_profile_digest", "component_digests", "transcript_digest",
+        "schema", "Commitments", "Transcript",
     }
     allowed_payload_keys = required_payload_keys | {"GPU_proof_contribution"}
     payload_keys_ok = set(proof_payload) == allowed_payload_keys or (
@@ -434,11 +432,7 @@ def verify_artifact_directory(artifact_dir: pathlib.Path, context: VerifierConte
         or checks.get("independent_reference_forward") is not True
     ):
         result["status"] = "VERIFY_FAILED"
-    verifier_input_files = {
-        "metadata.json", "commitments.json", "transcript.json", "lookup_proof.json",
-        "matrix_sumcheck_proof.json", "gkr_proof.json", "combine_proof.json",
-        "hyrax_mle_openings.json", "proof_payload.json",
-    }
+    verifier_input_files = {"metadata.json", "proof_payload.json"}
     private_input_files = [name for name in verifier_input_files if any(token in name.lower() for token in ("witness", "trace", "private"))]
     verifier_input_boundary = {
         "proof_artifact_files": sorted(verifier_input_files),
@@ -505,6 +499,7 @@ def verify_artifact_directory(artifact_dir: pathlib.Path, context: VerifierConte
         "public_input_layout": metadata.get("public_input_layout", ""),
         "model_registry_digest": metadata.get("model_registry_digest", ""),
     }
+    result["_protocol_verify_time_ms"] = protocol_verify_elapsed_ms
     return result
 
 
@@ -563,6 +558,7 @@ def main(argv: list[str] | None = None) -> int:
         result = verify_artifact_directory(artifact_dir, context)
     except (OSError, ValueError, KeyError, TypeError, RuntimeError, ContextError, ResultValidationError) as exc:
         result = {"status": "VERIFY_FAILED", "reason": str(exc), "checks": {"external_context": False}}
+    protocol_verify_time_ms = result.pop("_protocol_verify_time_ms", None)
     if artifact_dir is not None and artifact_dir.is_dir():
         output = artifact_dir / "independent_verification.json"
         write_json(output, result)
@@ -583,7 +579,11 @@ def main(argv: list[str] | None = None) -> int:
             }
             write_json(output, result)
     shown_artifact = artifact_dir if artifact_dir is not None else args.artifact_dir.expanduser()
-    print(f"zkgpt_proof_replay={result.get('status', 'VERIFY_FAILED')} artifact={shown_artifact} context={result.get('context_digest', 'unavailable')}")
+    timing_suffix = (
+        f" verify_time_ms={float(protocol_verify_time_ms):.9f}"
+        if isinstance(protocol_verify_time_ms, (int, float)) else ""
+    )
+    print(f"zkgpt_proof_replay={result.get('status', 'VERIFY_FAILED')} artifact={shown_artifact} context={result.get('context_digest', 'unavailable')}{timing_suffix}")
     return 0 if result.get("status") == "VERIFY_OK" else 1
 
 

@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import pathlib
 import shutil
 import tempfile
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Mapping, Sequence, Tuple
+from contextlib import contextmanager
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Mapping, Sequence, Tuple
 
 import numpy as np
 
@@ -79,11 +81,108 @@ from .value_commitment import (
     verify_multiplication,
 )
 from .zk_sumcheck import prove_committed_sumcheck, verify_committed_sumcheck
-from .util import canonical_json, digest_file, digest_json, ensure_dir, file_id, write_json
+from .util import canonical_json, canonical_json_file_bytes, digest_file, digest_json, ensure_dir, file_id, write_json
 from .verifier_context import make_external_context, validate_external_context
 
 
 FUNCTION_LOOKUP_DOMAIN_BITS = 63
+CANONICAL_PROOF_PAYLOAD_SCHEMA = "zkGPT_canonical_proof_payload"
+
+
+class ExclusiveProofTimer:
+    """Non-overlapping prove/commitment wall clocks with nested commitments."""
+
+    def __init__(self, clock: Callable[[], float] = time.perf_counter) -> None:
+        self._clock = clock
+        self._prove_started = False
+        self._prove_finished = False
+        self._prove_running = False
+        self._segment_started = 0.0
+        self._commitment_started = 0.0
+        self._commitment_depth = 0
+        self.prove_ms = 0.0
+        self.commitment_ms = 0.0
+
+    def start(self) -> None:
+        if self._prove_started or self._prove_finished or self._commitment_depth:
+            raise RuntimeError("invalid prove timer start")
+        self._prove_started = self._prove_running = True
+        self._segment_started = self._clock()
+
+    @contextmanager
+    def commitment(self) -> Iterator[None]:
+        if not self._prove_started or self._prove_finished:
+            raise RuntimeError("commitment outside active prove timer")
+        if self._commitment_depth == 0:
+            now = self._clock()
+            if self._prove_running:
+                self.prove_ms += (now - self._segment_started) * 1000.0
+                self._prove_running = False
+            self._commitment_started = now
+        self._commitment_depth += 1
+        try:
+            yield
+        finally:
+            self._commitment_depth -= 1
+            if self._commitment_depth == 0:
+                now = self._clock()
+                self.commitment_ms += (now - self._commitment_started) * 1000.0
+                self._segment_started = now
+                self._prove_running = True
+
+    def finish(self) -> None:
+        if not self._prove_started or self._prove_finished or not self._prove_running or self._commitment_depth:
+            raise RuntimeError("invalid prove timer finish")
+        self.prove_ms += (self._clock() - self._segment_started) * 1000.0
+        self._prove_started = self._prove_running = False
+        self._prove_finished = True
+
+
+def serialize_proof_payload(proof_payload: Mapping[str, Any]) -> bytes:
+    return canonical_json_file_bytes(dict(proof_payload))
+
+
+def parse_proof_payload(raw: bytes) -> Dict[str, Any]:
+    """Strictly parse the sole verifier-facing proof-message payload."""
+    try:
+        text = raw.decode("utf-8")
+        def no_duplicates(pairs: list[tuple[str, Any]]) -> Dict[str, Any]:
+            value: Dict[str, Any] = {}
+            for key, child in pairs:
+                if key in value:
+                    raise ValueError(f"duplicate proof payload field: {key}")
+                value[key] = child
+            return value
+        payload = json.loads(
+            text,
+            object_pairs_hook=no_duplicates,
+            parse_constant=lambda token: (_ for _ in ()).throw(ValueError(token)),
+        )
+    except (UnicodeDecodeError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError("proof payload is not strict canonical JSON") from exc
+    if not isinstance(payload, dict) or serialize_proof_payload(payload) != raw:
+        raise ValueError("proof payload is not canonically serialized")
+    required = {
+        "schema", "proof_type", "M_pub_digest", "Y_digest", "Commitments",
+        "Transcript", "Com_in", "Pi_Lasso", "FixedLookupTables", "Pi_MatMul",
+        "Pi_GKR", "Pi_combine", "Open_in", "PrivacyProfile",
+        "privacy_profile_digest", "component_digests", "transcript_digest",
+    }
+    allowed = required | {"GPU_proof_contribution"}
+    if set(payload) not in (required, allowed):
+        raise ValueError("proof payload has missing or unknown top-level fields")
+    if payload.get("schema") != CANONICAL_PROOF_PAYLOAD_SCHEMA:
+        raise ValueError("proof payload schema mismatch")
+    component_names = sorted(
+        key for key in payload
+        if key in {"Commitments", "Transcript", "Com_in", "Pi_Lasso", "FixedLookupTables", "Pi_MatMul", "Pi_GKR", "Pi_combine", "Open_in", "PrivacyProfile", "GPU_proof_contribution"}
+    )
+    digests = payload.get("component_digests")
+    if not isinstance(digests, dict) or set(digests) != set(component_names):
+        raise ValueError("proof component digest inventory mismatch")
+    if any(digests[name] != digest_json(payload[name]) for name in component_names):
+        raise ValueError("proof component digest mismatch")
+    return payload
 
 
 @dataclass
@@ -709,8 +808,7 @@ def _commit_segments(
     zk_root: pathlib.Path,
     work_root: pathlib.Path,
     model_registry: Dict[str, Any] | None = None,
-) -> Tuple[Dict[str, Any], Dict[str, Any], SegmentCommitmentState, float]:
-    started = time.perf_counter()
+) -> Tuple[Dict[str, Any], Dict[str, Any], SegmentCommitmentState]:
     hyrax = NativeHyrax(zk_root)
     work_dir = work_root / "hyrax_work"
     items: Dict[str, Any] = {}
@@ -789,8 +887,7 @@ def _commit_segments(
         "items": items,
     }
 
-    elapsed_ms = (time.perf_counter() - started) * 1000.0
-    return commitments, {}, SegmentCommitmentState(hyrax, vectors, registrations), elapsed_ms
+    return commitments, {}, SegmentCommitmentState(hyrax, vectors, registrations)
 
 
 def _open_terminal_segments(
@@ -2832,15 +2929,16 @@ def build_proof(
     }
     metadata["model_registry_digest"] = digest_json(metadata["model_registry"])
     proof_work_dir = _proof_work_dir(zk_root)
+    timing = ExclusiveProofTimer()
+    timing.start()
     try:
-        commitments, openings, _segment_state, commitment_ms = _commit_segments(
-            metadata, segments, padded_segments, zk_root, proof_work_dir, model_registry
-        )
-        # Commitment materialization is an independently reported setup
-        # boundary.  Prove time starts only after all formal segment
-        # commitments have completed and ends before serialized artifacts or
-        # protocol verification are written/run.
-        prove_started = time.perf_counter()
+        # The prove clock begins immediately before the first proof commitment.
+        # Outermost commitment scopes pause it; nested scopes count one wall
+        # interval, matching the canonical main implementation.
+        with timing.commitment():
+            commitments, openings, _segment_state = _commit_segments(
+                metadata, segments, padded_segments, zk_root, proof_work_dir, model_registry
+            )
         execution = ProofExecution(backend, zk_root, str(metadata["session_nonce"]))
         execution_token = activate_proof_execution(execution)
         try:
@@ -2889,11 +2987,62 @@ def build_proof(
             gpu_claim = execution.evidence(formal_transcript.digest.hex())
         finally:
             deactivate_proof_execution(execution_token)
+        proof_payload = {
+            "schema": CANONICAL_PROOF_PAYLOAD_SCHEMA,
+            "proof_type": "pi_GAT_zkGPT",
+            "M_pub_digest": digest_json(metadata),
+            "Y_digest": _array_digest("Y", trace.y),
+            "Commitments": commitments,
+            "Transcript": transcript,
+            "Com_in": [commitments["items"][name] for name in COMMITMENT_ORDER],
+            "Pi_Lasso": lasso,
+            "FixedLookupTables": metadata["static_table_registry"],
+            "Pi_MatMul": matrix,
+            "Pi_GKR": gkr,
+            "Pi_combine": dict(combine),
+            "Open_in": openings,
+            "PrivacyProfile": privacy_profile,
+            "privacy_profile_digest": privacy_profile["profile_digest"],
+            "transcript_digest": digest_json(transcript),
+        }
+        if gpu_claim is not None:
+            proof_payload["GPU_proof_contribution"] = gpu_claim
+        component_names = (
+            "Commitments", "Transcript", "Com_in", "Pi_Lasso", "FixedLookupTables",
+            "Pi_MatMul", "Pi_GKR", "Pi_combine", "Open_in", "PrivacyProfile",
+        ) + (("GPU_proof_contribution",) if gpu_claim is not None else ())
+        proof_payload["component_digests"] = {
+            name: digest_json(proof_payload[name]) for name in component_names
+        }
+        proof_bytes = serialize_proof_payload(proof_payload)
+        timing.finish()
     finally:
         _cleanup_proof_work_dir(proof_work_dir, zk_root)
 
-    proof_elapsed_ms = (time.perf_counter() - prove_started) * 1000.0
-
+    # Producer-side verification is a post-serialization audit.  Formal
+    # result timing is supplied only by the fresh independent verifier.
+    parsed_payload = parse_proof_payload(proof_bytes)
+    external_context = make_external_context(
+        graph, trace, metadata, metadata["model_registry"]["public_descriptor"],
+    )
+    verification = _verify_formal(
+        metadata=metadata,
+        commitments=parsed_payload["Commitments"],
+        transcript=parsed_payload["Transcript"],
+        lasso=parsed_payload["Pi_Lasso"],
+        matrix=parsed_payload["Pi_MatMul"],
+        gkr=parsed_payload["Pi_GKR"],
+        combine=parsed_payload["Pi_combine"],
+        openings=parsed_payload["Open_in"],
+        privacy_profile=parsed_payload["PrivacyProfile"],
+        gpu_claim=parsed_payload.get("GPU_proof_contribution"),
+        backend=backend,
+        external_context=external_context,
+        public_graph=graph,
+    )
+    # These duplicated component files are post-proof audit outputs only.
+    # The independent verifier consumes proof messages exclusively from the
+    # canonical payload bytes and never opens these sidecars.
     write_json(artifact_dir / "lookup_proof.json", lasso, root=zk_root)
     write_json(artifact_dir / "fixed_lookup_tables.json", metadata["static_table_registry"], root=zk_root)
     write_json(artifact_dir / "matrix_sumcheck_proof.json", matrix, root=zk_root)
@@ -2903,69 +3052,14 @@ def build_proof(
     write_json(artifact_dir / "privacy_profile.json", privacy_profile, root=zk_root)
     if gpu_claim is not None:
         write_json(artifact_dir / "gpu_proof_hot_path.json", gpu_claim, root=zk_root)
-
-    verify_started = time.perf_counter()
-    external_context = make_external_context(
-        graph,
-        trace,
-        metadata,
-        metadata["model_registry"]["public_descriptor"],
-    )
-    verification = _verify_formal(
-        metadata=metadata,
-        commitments=commitments,
-        transcript=transcript,
-        lasso=lasso,
-        matrix=matrix,
-        gkr=gkr,
-        combine=combine,
-        openings=openings,
-        privacy_profile=privacy_profile,
-        gpu_claim=gpu_claim,
-        backend=backend,
-        external_context=external_context,
-        public_graph=graph,
-    )
-    verify_elapsed_ms = (time.perf_counter() - verify_started) * 1000.0
-    component_refs = {
-        "FixedLookupTables": _artifact_ref(artifact_dir / "fixed_lookup_tables.json", "fixed lookup table commitments"),
-        "Pi_Lasso": _artifact_ref(artifact_dir / "lookup_proof.json", "lookup proof"),
-        "Pi_MatMul": _artifact_ref(artifact_dir / "matrix_sumcheck_proof.json", "matrix sumcheck proof"),
-        "Pi_GKR": _artifact_ref(artifact_dir / "gkr_proof.json", "ML-friendly GKR proof"),
-        "Pi_combine": _artifact_ref(artifact_dir / "combine_proof.json", "combine masked-opening proof"),
-        "Open_in": _artifact_ref(artifact_dir / "hyrax_mle_openings.json", "Hyrax/MLE masked openings"),
-        "PrivacyProfile": _artifact_ref(artifact_dir / "privacy_profile.json", "canonical proof privacy profile"),
-    }
-    if gpu_claim is not None:
-        component_refs["GPU_hot_path"] = _artifact_ref(artifact_dir / "gpu_proof_hot_path.json", "CUDA proof hot-path contribution")
-    proof_payload = {
-        "proof_type": "pi_GAT_zkGPT",
-        "M_pub_digest": digest_json(metadata),
-        "Y_digest": _array_digest("Y", trace.y),
-        "Com_in": [commitments["items"][name] for name in COMMITMENT_ORDER],
-        "Pi_Lasso": lasso,
-        "FixedLookupTables": metadata["static_table_registry"],
-        "Pi_MatMul": matrix,
-        "Pi_GKR": gkr,
-        "Pi_combine": {
-            **combine,
-        },
-        "Open_in": openings,
-        "PrivacyProfile": privacy_profile,
-        "privacy_profile_digest": privacy_profile["profile_digest"],
-        "component_artifacts": component_refs,
-        "transcript_digest": digest_json(transcript),
-    }
-    if gpu_claim is not None:
-        proof_payload["GPU_proof_contribution"] = gpu_claim
-    proof_size = len(canonical_json(proof_payload).encode("utf-8"))
+    proof_size = len(proof_bytes)
     benchmark = {
         "dataset": metadata["dataset_display_name"],
         "backend": backend,
         "status": verification["status"],
-        "commitment_time_ms": commitment_ms,
-        "prove_time_ms": proof_elapsed_ms,
-        "verify_time_ms": verify_elapsed_ms,
+        "commitment_time_ms": timing.commitment_ms,
+        "prove_time_ms": timing.prove_ms,
+        "verify_time_ms": 0.0,
         "proof_size_bytes": proof_size,
         "forward_time_ms": sum(trace.metrics.values()),
         "artifact_path": str(artifact_dir),

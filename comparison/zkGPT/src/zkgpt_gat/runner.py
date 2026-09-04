@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import io
+import math
 import os
 import pathlib
 import stat
@@ -304,6 +305,17 @@ def run_one(
     verified_fields = independent_verification.get("verified_fields")
     if independent_verification.get("status") != "VERIFY_OK" or not isinstance(verified_fields, dict):
         raise RuntimeError(f"{dataset_name}/{backend} independent verifier did not produce verified fields")
+    timing_tokens = [token for token in replay.stdout.split() if token.startswith("verify_time_ms=")]
+    if len(timing_tokens) != 1:
+        raise RuntimeError("independent verifier did not report one canonical verify_time_ms")
+    try:
+        independent_verify_ms = float(timing_tokens[0].split("=", 1)[1])
+    except ValueError as exc:
+        raise RuntimeError("independent verifier reported malformed verify_time_ms") from exc
+    if not math.isfinite(independent_verify_ms) or independent_verify_ms < 0:
+        raise RuntimeError("independent verifier reported invalid verify_time_ms")
+    benchmark["verify_time_ms"] = independent_verify_ms
+    write_json(artifact_dir / "benchmark_summary.json", benchmark, root=baseline)
     required_verified_true = (
         "full_dataset",
         "full_gat_forward_proved",
@@ -387,7 +399,7 @@ def run_one(
             "status": verified_fields["status"],
             "gpu_hot_path": verified_fields["gpu_hot_path"],
         },
-        "proof_size_bytes_accounting": "len(canonical_json(proof_payload)); witness materialization and audit JSON are excluded",
+        "proof_size_bytes_accounting": "exact canonical proof_payload.json byte length; public statement/setup and audit JSON are excluded",
         "proof_digest": digest_file(artifact_dir / "proof_payload.json"),
         "proof_size_bytes": benchmark["proof_size_bytes"],
         "timings_ms": {key: benchmark[key] for key in ("commitment_time_ms", "prove_time_ms", "verify_time_ms")},

@@ -1472,15 +1472,11 @@ def build_verifier_context(project_root: pathlib.Path, config_path: pathlib.Path
     registry_metadata = {"protocol": registry["protocol"], "registry_digest": registry["registry_digest"], "registration_binding_digest": registry["registration_binding_digest"], "public_path": public_path, "commitment_backend": registry["commitment_backend"], "public_descriptor": copy.deepcopy(registry)}
     expected = {"protocol_id": PROTOCOL_ID, "proof_backend_id": PROOF_BACKEND_ID, "commitment_backend_id": COMMITMENT_BACKEND_ID, **identities, "input_preprocess_id": config.input_preprocess_id, "quant_scale_chain": raw_manifest["quant_scale_chain"], "static_table_descriptor_schema": static_descriptor["schema"], "static_table_content_digest": static_descriptor["content_digest"], "static_table_descriptor_digest": static_descriptor["descriptor_digest"], "static_table_descriptor_path": STATIC_TABLE_DESCRIPTOR_RELATIVE_PATH, "domain_cfg": domain, "dim_cfg": dims, "encoding_id": ENCODING_ID, "padding_rule_id": PADDING_RULE_ID, "circuit_layout_id": CIRCUIT_LAYOUT_ID, "lasso_cfg_id": LASSO_CFG_ID, "matrix_proof_cfg_id": MATRIX_PROOF_CFG_ID, "dataset": config.entries.get("dataset"), "dataset_display_name": dataset.name, "task_type": graph.task_type, "report_unit": graph.report_unit, "batching_rule": graph.batching_rule, "self_loop_rule": graph.self_loop_rule, "edge_sort_rule": graph.edge_sort_rule, "chunking_rule": graph.chunking_rule, "full_dataset": graph.num_nodes == dataset.num_nodes, "X_pub_digest": _x_digest(graph, layers, classes, k_out, QUANT_SCALE_PROFILES[identities["quant_cfg_id"]]["input"]), "public_input_layout": "X_pub=features+topology+selectors; X_pub is verifier-reconstructed and uncommitted", "public_output_policy": "Y is a public statement output claim and is not part of X_pub or any private commitment", "private_input_layout": "X_pub|W|Aux|L_qry", "segment_order": ["X_pub", "W", "Aux", "L_qry"], "privacy_extension_profile_id": "masked_full_multi_session_v1", "privacy_profile_status": "supported_multi_session_masked_full", "registered_model_commitment_scope": "canonical_integer_GAT_model_weights_with_layout_and_bound_ledger", "Layout_in_digest": layout_digest, "integer_bound_ledger": ledger, "integer_bound_ledger_digest": digest_json(ledger), "public_output_digest": y_digest, "model_registry": registry_metadata, "model_registry_digest": digest_json(registry_metadata), "identities": identities}
     expected["rounding_mode"] = rounding_mode
+    # Static tables are verifier setup reconstructed from authenticated
+    # baseline resources, never a proof-selected artifact sidecar.
     canonical_tables = _canonical_static_table_registry(expected)
-    artifact_tables = _json(
-        _owned_file(artifact / "fixed_lookup_tables.json", "authenticated static-table registry"),
-        "authenticated static-table registry",
-    )
-    if artifact_tables != canonical_tables:
-        raise ContextError("artifact static-table registry differs from authenticated canonical registry")
-    expected["static_table_registry"] = copy.deepcopy(artifact_tables)
-    expected["static_table_registry_digest"] = digest_json(artifact_tables)
+    expected["static_table_registry"] = copy.deepcopy(canonical_tables)
+    expected["static_table_registry_digest"] = digest_json(canonical_tables)
     features = np.asarray([_round_feature(value) for value in np.ravel(graph.features)], dtype=np.int64).reshape(graph.features.shape)
     # Use the same canonical statement constructor as the producer path.  The
     # richer context material remains authenticated in model_registry,

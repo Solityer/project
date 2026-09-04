@@ -853,12 +853,35 @@ def validate_artifact(
         raise ResultValidationError("proof output digest is not bound to verifier report")
     if proof_payload.get("M_pub_digest") != digest_json(metadata):
         raise ResultValidationError("proof public metadata digest mismatch")
-    for key in ("Pi_Lasso", "Pi_MatMul", "Pi_GKR", "Pi_combine", "Open_in", "PrivacyProfile", "privacy_profile_digest", "component_artifacts", "transcript_digest"):
+    for key in ("schema", "Commitments", "Transcript", "Pi_Lasso", "Pi_MatMul", "Pi_GKR", "Pi_combine", "Open_in", "PrivacyProfile", "privacy_profile_digest", "component_digests", "transcript_digest"):
         if key not in proof_payload:
             raise ResultValidationError(f"proof contribution is missing: {key}")
+    proof_sidecars = {
+        "Commitments": read_object(required_artifact_file(artifact_dir, "commitments.json"), "commitments"),
+        "Transcript": transcript,
+        "Pi_Lasso": lasso,
+        "FixedLookupTables": fixed_lookup_tables,
+        "Pi_MatMul": read_object(required_artifact_file(artifact_dir, "matrix_sumcheck_proof.json"), "matrix proof"),
+        "Pi_GKR": read_object(required_artifact_file(artifact_dir, "gkr_proof.json"), "GKR proof"),
+        "Pi_combine": read_object(required_artifact_file(artifact_dir, "combine_proof.json"), "combine proof"),
+        "Open_in": read_object(required_artifact_file(artifact_dir, "hyrax_mle_openings.json"), "Hyrax openings"),
+        "PrivacyProfile": read_object(required_artifact_file(artifact_dir, "privacy_profile.json"), "privacy profile"),
+    }
+    if backend == "gpu":
+        proof_sidecars["GPU_proof_contribution"] = read_object(
+            required_artifact_file(artifact_dir, "gpu_proof_hot_path.json"), "GPU proof contribution"
+        )
+    if any(proof_payload.get(name) != value for name, value in proof_sidecars.items()):
+        raise ResultValidationError("post-proof audit sidecar differs from canonical proof payload")
+    component_digests = proof_payload.get("component_digests")
+    component_names = set(proof_sidecars) | {"Com_in"}
+    if not isinstance(component_digests, dict) or set(component_digests) != component_names:
+        raise ResultValidationError("proof component digest inventory mismatch")
+    if any(component_digests[name] != digest_json(proof_payload.get(name)) for name in component_names):
+        raise ResultValidationError("proof component digest mismatch")
     privacy_check = verify_privacy_profile(
         metadata,
-        read_object(required_artifact_file(artifact_dir, "commitments.json"), "commitments"),
+        proof_payload["Commitments"],
         proof_payload,
         pre_profile_transcript_digest=str(transcript.get("pre_profile_transcript_digest", "")),
     )
@@ -866,21 +889,6 @@ def validate_artifact(
         raise ResultValidationError(f"privacy profile evidence validation failed: {privacy_check.get('reason', 'unknown')}")
     if transcript.get("privacy_profile_digest") != proof_payload.get("privacy_profile_digest"):
         raise ResultValidationError("transcript privacy profile digest mismatch")
-    refs = proof_payload.get("component_artifacts")
-    if not isinstance(refs, dict) or not refs:
-        raise ResultValidationError("proof component artifact references are missing")
-    for label, ref in refs.items():
-        if not isinstance(ref, dict):
-            raise ResultValidationError(f"proof component reference is malformed: {label}")
-        ref_path = resolve_inside(root, ref.get("path", ""), f"proof component {label}")
-        try:
-            ref_path = required_artifact_file(artifact_dir, ref_path.name)
-        except ResultValidationError as exc:
-            raise ResultValidationError(f"proof component {label} is not a canonical artifact file") from exc
-        if ref_path.parent != artifact_dir:
-            raise ResultValidationError(f"proof component {label} escapes artifact directory")
-        if ref.get("sha256") != sha256_file(ref_path) or int(ref.get("size_bytes", -1)) != ref_path.stat().st_size:
-            raise ResultValidationError(f"proof component digest mismatch: {label}")
 
     config_path = resolve_inside(root, manifest.get("config", ""), "config")
     config_id_path = resolve_inside(root, read_object(required_artifact_file(artifact_dir, "config_id.json"), "config identity").get("path", ""), "config identity path")
@@ -938,7 +946,7 @@ def validate_artifact(
         value = benchmark.get(key)
         if not isinstance(value, (int, float)) or not math.isfinite(float(value)) or float(value) < 0:
             raise ResultValidationError(f"benchmark field is invalid: {key}")
-    proof_size = len(canonical_json(proof_payload).encode("utf-8"))
+    proof_size = required_artifact_file(artifact_dir, "proof_payload.json").stat().st_size
     if int(benchmark.get("proof_size_bytes", -1)) != proof_size or int(manifest.get("proof_size_bytes", -1)) != proof_size:
         raise ResultValidationError("proof size accounting mismatch")
     if manifest.get("timings_ms") != {key: benchmark[key] for key in ("commitment_time_ms", "prove_time_ms", "verify_time_ms")}:
