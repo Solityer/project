@@ -3934,6 +3934,70 @@ namespace gatzk::protocol
                 expression + "|malicious-committed-input-degree=global-D_max",
                 d_max, 0, multiplicity);
         };
+        for (const auto &spec :
+             matrix_fold_binding_specs(context))
+        {
+            add_random_identity(
+                spec.relation_id +
+                    ":lambda",
+                spec.lambda_challenge,
+                "soundness_binding:matrix_fold",
+                "random-Horner-vector-equality"
+                "|collision-degree=width-1",
+                spec.width > 1
+                    ? spec.width - 1
+                    : 1,
+                0,
+                1);
+        }
+
+        for (const auto &spec :
+             flat_matrix_binding_specs(context))
+        {
+            const auto element_count =
+                checked_mul(
+                    spec.rows,
+                    spec.columns,
+                    spec.relation_id +
+                        ":flat-elements");
+
+            add_random_identity(
+                spec.relation_id +
+                    ":lambda",
+                spec.lambda_challenge,
+                "soundness_binding:flat_matrix",
+                "row-major-Horner-equality"
+                "|collision-degree=elements-1",
+                element_count > 1
+                    ? element_count - 1
+                    : 1,
+                0,
+                1);
+        }
+
+        for (const auto &spec :
+             broadcast_flat_binding_specs(context))
+        {
+            const auto element_count =
+                checked_mul(
+                    spec.rows,
+                    spec.width,
+                    spec.relation_id +
+                        ":broadcast-elements");
+
+            add_random_identity(
+                spec.relation_id +
+                    ":lambda",
+                spec.lambda_challenge,
+                "soundness_binding:broadcast_flat",
+                "broadcast-Horner-equality"
+                "|collision-degree=elements-1",
+                element_count > 1
+                    ? element_count - 1
+                    : 1,
+                0,
+                1);
+        }
         const auto route_denominators = checked_add(
             context.local.num_nodes, context.local.edges.size(),
             "route-active-denominators");
@@ -4010,9 +4074,12 @@ namespace gatzk::protocol
                 const auto point_multiplicity = std::max<std::size_t>(1, head_dim);
                 add_random_point_identity(
                     "hidden:" + suffix + ":projection",
-                    hidden_challenge_name("y_proj_h", layer_index, local_head),
+                    hidden_challenge_name(
+                        "rho_proj_h",
+                        layer_index,
+                        local_head),
                     stage,
-                    "row-major-projection-fold(Y)-committed-H_prime(Y)");
+                    "canonical-projection-fold(Y)-compressed-H_prime(Y)");
                 add_tuple_compression(
                     "hidden:" + suffix + ":column-fold",
                     hidden_challenge_name("xi_h", layer_index, local_head),
@@ -4113,11 +4180,21 @@ namespace gatzk::protocol
             const auto stage = "output-head:" + suffix;
             auto out_challenge = [&](std::string_view base)
             { return output_challenge_name(base, head); };
-            for (const auto *role : {"proj", "src", "dst", "out_star"})
+            for (const auto *role :
+                 {"proj", "src", "dst", "out_star"})
             {
-                const auto challenge = std::string(role) == "out_star"
-                                           ? out_challenge("y_out_star")
-                                           : out_challenge("y_" + std::string(role) + "_out");
+                const auto challenge =
+                    std::string(role) == "proj"
+                        ? out_challenge(
+                              "rho_proj_out")
+                    : std::string(role) ==
+                            "out_star"
+                        ? out_challenge(
+                              "y_out_star")
+                        : out_challenge(
+                              "y_" +
+                              std::string(role) +
+                              "_out");
                 add_random_point_identity(
                     "output:" + suffix + ":" + role, challenge, stage,
                     "output-folded-column-or-model-inner-product-identity(Y)",
@@ -4204,14 +4281,32 @@ namespace gatzk::protocol
                         d_max, context.domains.edge->size, 1);
                 }
             }
-            for (const auto &relation : meta.route_terminal_relations)
+            for (const auto &relation :
+                 meta.route_terminal_relations)
+            {
+                const auto relation_domain_size =
+                    registered_domain_size(
+                        relation_context,
+                        relation.edge_domain);
+
+                if (!relation_domain_size.has_value())
+                {
+                    throw std::runtime_error(
+                        "route terminal security domain missing: " +
+                        relation.relation_id);
+                }
+
                 add_random_identity(
-                    relation.relation_id + ":terminal-shift",
+                    relation.relation_id +
+                        ":terminal-shift",
                     relation.challenge_label,
                     "route_terminal:y_rel",
                     "TaylorShift(R_edge,Delta)(Y)-R_edge(Y+Delta)"
                     "|malicious-degree=global-D_max",
-                    d_max, context.domains.edge->size, 1);
+                    d_max,
+                    *relation_domain_size,
+                    1);
+            }
             if (meta.object_kind != "output")
                 continue;
             const auto &view = meta.indexed_views.at(0);

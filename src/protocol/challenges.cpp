@@ -1034,6 +1034,9 @@ namespace gatzk::protocol
             labels.push_back(
                 spec.source_fold_object);
             labels.push_back(
+                spec.source_accumulator_object +
+                "_Weight");
+            labels.push_back(
                 spec.source_accumulator_object);
             labels.push_back(
                 spec.fold_accumulator_object);
@@ -1736,6 +1739,12 @@ namespace gatzk::protocol
 
             absorb(
                 transcript,
+                spec.source_accumulator_object +
+                    "_Weight",
+                dynamic_commitments);
+
+            absorb(
+                transcript,
                 spec.source_accumulator_object,
                 dynamic_commitments);
 
@@ -1824,14 +1833,46 @@ namespace gatzk::protocol
                     transcript,
                     relation.shifted_accumulator_object,
                     dynamic_commitments);
+
+                std::shared_ptr<
+                    algebra::RootOfUnityDomain>
+                    relation_edge_domain;
+
+                for (const auto &domain : {
+                         context.domains.fh,
+                         context.domains.edge,
+                         context.domains.in,
+                         context.domains.d,
+                         context.domains.cat,
+                         context.domains.c,
+                         context.domains.n})
+                {
+                    if (domain != nullptr &&
+                        domain->name ==
+                            relation.edge_domain)
+                    {
+                        relation_edge_domain =
+                            domain;
+                        break;
+                    }
+                }
+
+                if (relation_edge_domain == nullptr)
+                {
+                    throw std::runtime_error(
+                        "route terminal replay domain missing: " +
+                        relation.relation_id);
+                }
+
                 out[relation.challenge_label] =
                     transcript.challenge_excluding(
                         relation.challenge_label,
                         [&](const algebra::FieldElement &candidate)
                         {
-                            return context.domains.edge
+                            return relation_edge_domain
                                 ->zero_polynomial_eval(
-                                    candidate + relation.terminal_delta)
+                                    candidate +
+                                    relation.terminal_delta)
                                 .is_zero();
                         });
             }

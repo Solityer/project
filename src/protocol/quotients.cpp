@@ -248,7 +248,10 @@ namespace gatzk::protocol
             {
                 if (label == spec.source_fold_object ||
                     label ==
-                        spec.source_accumulator_object)
+                        spec.source_accumulator_object ||
+                    label ==
+                        spec.source_accumulator_object +
+                            "_Weight")
                 {
                     return std::string("N");
                 }
@@ -2710,6 +2713,78 @@ namespace gatzk::protocol
             }
         }
 
+        for (const auto &spec :
+             flat_matrix_binding_specs(context))
+        {
+            const auto selector =
+                eval_z(
+                    spec.flat_selector_label);
+
+            const auto current =
+                eval_z(
+                    spec.flat_accumulator_object);
+
+            const auto next =
+                eval_omega(
+                    spec.flat_accumulator_object);
+
+            const auto lambda =
+                challenges.at(
+                    spec.lambda_challenge);
+
+            acc.add(
+                first * current);
+
+            acc.add(
+                not_last *
+                selector *
+                (next -
+                 lambda * current -
+                 eval_z(
+                     spec.flat_object)));
+
+            acc.add(
+                not_last *
+                (one - selector) *
+                (next - current));
+        }
+
+        for (const auto &spec :
+             broadcast_flat_binding_specs(context))
+        {
+            const auto selector =
+                eval_z(
+                    spec.flat_selector_label);
+
+            const auto current =
+                eval_z(
+                    spec.flat_accumulator_object);
+
+            const auto next =
+                eval_omega(
+                    spec.flat_accumulator_object);
+
+            const auto lambda =
+                challenges.at(
+                    spec.lambda_challenge);
+
+            acc.add(
+                first * current);
+
+            acc.add(
+                not_last *
+                selector *
+                (next -
+                 lambda * current -
+                 eval_z(
+                     spec.flat_object)));
+
+            acc.add(
+                not_last *
+                (one - selector) *
+                (next - current));
+        }
+
         add_signed_division_constraints(
             "P_avg_Div_",
             "P_Q_div_avg",
@@ -3251,6 +3326,233 @@ namespace gatzk::protocol
                 xi,
                 context.local.num_classes);
         }
+
+        for (const auto &spec :
+             matrix_fold_binding_specs(context))
+        {
+            const auto lambda =
+                challenges.at(
+                    spec.lambda_challenge);
+
+            auto expected_source_fold =
+                FieldElement::zero();
+
+            if (spec.public_source)
+            {
+                const auto public_weights =
+                    context.domains.n
+                        ->barycentric_weights(z);
+
+                for (std::size_t row = 0;
+                     row < spec.source_rows;
+                     ++row)
+                {
+                    auto row_fold =
+                        FieldElement::zero();
+
+                    for (std::size_t column = 0;
+                         column < spec.width;
+                         ++column)
+                    {
+                        row_fold =
+                            row_fold * lambda +
+                            context.local.features
+                                .at(row)
+                                .at(column);
+                    }
+
+                    expected_source_fold +=
+                        public_weights[row] *
+                        row_fold;
+                }
+            }
+            else
+            {
+                for (std::size_t column = 0;
+                     column < spec.width;
+                     ++column)
+                {
+                    expected_source_fold =
+                        expected_source_fold *
+                            lambda +
+                        eval(
+                            canonical_matrix_column_label(
+                                spec.source_matrix_object,
+                                column),
+                            z);
+                }
+            }
+
+            acc.add(
+                q_n *
+                (eval(
+                     spec.source_fold_object,
+                     z) -
+                 expected_source_fold));
+
+            const auto rho =
+                challenges.at(
+                    spec.source_point_challenge);
+
+            const auto source_weight_label =
+                spec.source_accumulator_object +
+                "_Weight";
+
+            const auto barycentric_scale =
+                context.domains.n
+                    ->zero_polynomial_eval(rho) *
+                context.domains.n->inv_size;
+
+            acc.add(
+                q_n *
+                (eval(
+                     source_weight_label,
+                     z) *
+                     (rho - z) -
+                 barycentric_scale * z));
+
+            const auto source_current =
+                eval(
+                    spec.source_accumulator_object,
+                    z);
+
+            const auto source_next =
+                eval(
+                    spec.source_accumulator_object,
+                    omega_z);
+
+            acc.add(
+                first *
+                source_current);
+
+            acc.add(
+                not_last *
+                q_n *
+                (source_next -
+                 source_current -
+                 eval(
+                     spec.source_fold_object,
+                     z) *
+                     eval(
+                         source_weight_label,
+                         z)));
+
+            acc.add(
+                not_last *
+                (FieldElement::one() - q_n) *
+                (source_next -
+                 source_current));
+        }
+
+        for (const auto &spec :
+             flat_matrix_binding_specs(context))
+        {
+            const auto lambda =
+                challenges.at(
+                    spec.lambda_challenge);
+
+            auto expected =
+                FieldElement::zero();
+
+            for (std::size_t column = 0;
+                 column < spec.columns;
+                 ++column)
+            {
+                expected =
+                    expected * lambda +
+                    eval(
+                        canonical_matrix_column_label(
+                            spec.matrix_object,
+                            column),
+                        z);
+            }
+
+            acc.add(
+                q_n *
+                (eval(
+                     spec.row_fold_object,
+                     z) -
+                 expected));
+
+            const auto current =
+                eval(
+                    spec.row_accumulator_object,
+                    z);
+
+            const auto next =
+                eval(
+                    spec.row_accumulator_object,
+                    omega_z);
+
+            const auto row_base =
+                lambda.pow(
+                    spec.columns);
+
+            acc.add(
+                first *
+                current);
+
+            acc.add(
+                not_last *
+                q_n *
+                (next -
+                 row_base * current -
+                 eval(
+                     spec.row_fold_object,
+                     z)));
+
+            acc.add(
+                not_last *
+                (FieldElement::one() - q_n) *
+                (next - current));
+        }
+
+        for (const auto &spec :
+             broadcast_flat_binding_specs(context))
+        {
+            const auto lambda =
+                challenges.at(
+                    spec.lambda_challenge);
+
+            const auto current =
+                eval(
+                    spec.node_accumulator_object,
+                    z);
+
+            const auto next =
+                eval(
+                    spec.node_accumulator_object,
+                    omega_z);
+
+            const auto row_base =
+                lambda.pow(
+                    spec.width);
+
+            const auto class_sum =
+                geometric_sum(
+                    lambda,
+                    spec.width);
+
+            acc.add(
+                first *
+                current);
+
+            acc.add(
+                not_last *
+                q_n *
+                (next -
+                 row_base * current -
+                 eval(
+                     spec.node_object,
+                     z) *
+                     class_sum));
+
+            acc.add(
+                not_last *
+                (FieldElement::one() - q_n) *
+                (next - current));
+        }
+
         return acc.value() / zero_eval;
     }
 
@@ -3472,7 +3774,14 @@ namespace gatzk::protocol
         {
             const auto q_valid = eval(output_q_cat_selector_label(), z);
             const auto q_invalid = FieldElement::one() - q_valid;
-            const auto prefix = output_head_prefix(head_index) + "_";
+            const auto prefix =
+                output_head_prefix(head_index) + "_";
+
+            const auto mu_name =
+                output_external_eval_name(
+                    "proj",
+                    head_index);
+
             const auto projection_semantic_eval =
                 external_evaluations.at(mu_name) -
                 context.domains.n
@@ -3495,6 +3804,51 @@ namespace gatzk::protocol
                  projection_semantic_eval));
         }
 
+        for (const auto &spec :
+             matrix_fold_binding_specs(context))
+        {
+            if (spec.fold_domain !=
+                context.domains.cat->name)
+            {
+                continue;
+            }
+
+            const auto selector =
+                eval(
+                    spec.fold_selector_label,
+                    z);
+
+            const auto current =
+                eval(
+                    spec.fold_accumulator_object,
+                    z);
+
+            const auto next =
+                eval(
+                    spec.fold_accumulator_object,
+                    omega_z);
+
+            const auto lambda =
+                challenges.at(
+                    spec.lambda_challenge);
+
+            acc.add(
+                first * current);
+
+            acc.add(
+                not_last *
+                selector *
+                (next -
+                 lambda * current -
+                 eval(
+                     spec.fold_object,
+                     z)));
+
+            acc.add(
+                not_last *
+                (FieldElement::one() - selector) *
+                (next - current));
+        }
         return acc.value() / zero_eval;
     }
 

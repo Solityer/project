@@ -769,6 +769,7 @@ namespace gatzk::protocol
     // Canonical S_route payload.  Every entry is a reference to the unique
     // standard point-group owner in Open_dom/W_ext; no route terminal value is
     // ever materialized in the proof object.
+    
     std::vector<MetadataReference> route_opening_references(
         const ProtocolContext &context,
         const std::map<std::string, algebra::FieldElement> &challenges);
