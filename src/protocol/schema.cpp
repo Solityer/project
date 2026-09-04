@@ -2409,10 +2409,10 @@ namespace gatzk::protocol
                 spec.owner_relation_id,
                 "soundness-terminal:" +
                     spec.relation_id,
-                spec.row_accumulator_object,
-                context.domains.n->name,
                 spec.flat_accumulator_object,
-                context.domains.edge->name);
+                context.domains.edge->name,
+                spec.row_accumulator_object,
+                context.domains.n->name);
         }
 
         for (const auto &spec :
@@ -2422,10 +2422,10 @@ namespace gatzk::protocol
                 spec.owner_relation_id,
                 "soundness-terminal:" +
                     spec.relation_id,
-                spec.node_accumulator_object,
-                context.domains.n->name,
                 spec.flat_accumulator_object,
-                context.domains.edge->name);
+                context.domains.edge->name,
+                spec.node_accumulator_object,
+                context.domains.n->name);
         }
 
         return out;

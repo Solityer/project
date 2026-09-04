@@ -11552,10 +11552,19 @@ namespace gatzk::protocol
                         spec.flat_object,
                         domains.edge);
 
-                const auto class_sum =
-                    geometric_sum(
-                        lambda,
-                        spec.width);
+                auto class_sum =
+                    FieldElement::zero();
+
+                auto class_power =
+                    FieldElement::one();
+
+                for (std::size_t column = 0;
+                     column < spec.width;
+                     ++column)
+                {
+                    class_sum += class_power;
+                    class_power *= lambda;
+                }
 
                 std::vector<FieldElement> node_hash_values(
                     spec.rows,
