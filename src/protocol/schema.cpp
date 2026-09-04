@@ -1747,6 +1747,99 @@ namespace gatzk::protocol
 
         return out;
     }
+    std::vector<BroadcastFlatBindingSpec>
+    broadcast_flat_binding_specs(
+        const ProtocolContext &context)
+    {
+        std::vector<BroadcastFlatBindingSpec> out;
+
+        for (std::size_t layer = 0;
+             layer < context.model.hidden_layers.size();
+             ++layer)
+        {
+            for (std::size_t head = 0;
+                 head <
+                 context.model.hidden_layers[layer]
+                     .heads.size();
+                 ++head)
+            {
+                const auto prefix =
+                    hidden_head_prefix(layer, head);
+
+                const auto base =
+                    "P_SB_h_l" +
+                    std::to_string(layer) +
+                    "_h" +
+                    std::to_string(head) +
+                    "_sum";
+
+                out.push_back(BroadcastFlatBindingSpec{
+                    .relation_id = base,
+                    .owner_relation_id =
+                        "bind:hidden:" +
+                        std::to_string(layer + 1) +
+                        ":" +
+                        std::to_string(head),
+                    .node_object = prefix + "_Sum",
+                    .flat_object = prefix + "_Sum_flat",
+                    .node_accumulator_object =
+                        base + "_NodeAcc",
+                    .flat_accumulator_object =
+                        base + "_FlatAcc",
+                    .lambda_challenge =
+                        "lambda_broadcast:" +
+                        base,
+                    .flat_selector_label =
+                        hidden_q_nd_h_selector_label(
+                            layer),
+                    .rows =
+                        context.local.num_nodes,
+                    .width =
+                        context.model.hidden_layers[layer]
+                            .shape.head_dim,
+                });
+            }
+        }
+
+        for (std::size_t head = 0;
+             head < context.model.output_layer.heads.size();
+             ++head)
+        {
+            const auto prefix =
+                output_head_prefix(head);
+
+            const auto base =
+                "P_SB_out" +
+                std::to_string(head) +
+                "_sum";
+
+            out.push_back(BroadcastFlatBindingSpec{
+                .relation_id = base,
+                .owner_relation_id =
+                    "bind:output:" +
+                    std::to_string(head),
+                .node_object = prefix + "_Sum",
+                .flat_object = prefix + "_Sum_flat",
+                .node_accumulator_object =
+                    base + "_NodeAcc",
+                .flat_accumulator_object =
+                    base + "_FlatAcc",
+                .lambda_challenge =
+                    "lambda_broadcast:" +
+                    base,
+                .flat_selector_label =
+                    "P_Q_div_out" +
+                    std::to_string(head),
+                .rows =
+                    context.local.num_nodes,
+                .width =
+                    context.local.num_classes,
+            });
+        }
+
+        return out;
+    }
+
     std::vector<BindingRelationMeta> build_binding_relation_metadata(
         const ProtocolContext &context)
     {
@@ -4081,18 +4174,44 @@ namespace gatzk::protocol
             }
         }
         for (std::size_t layer = 0;
-             layer < context.model.hidden_layers.size(); ++layer)
+             layer < context.model.hidden_layers.size();
+             ++layer)
+        {
             for (std::size_t head = 0;
-                 head < context.model.output_layer.heads.size();
+                 head <
+                 context.model.hidden_layers[layer]
+                     .heads.size();
                  ++head)
             {
-                for (const auto *role : {"proj", "src", "dst"})
+                for (const auto *role :
+                     {"proj", "src", "dst"})
                 {
                     artifact.constraint_registry.push_back(
-                        "shifted-divisibility:output:" +
-                        std::to_string(head) + ":" + role);
+                        "shifted-divisibility:hidden:l" +
+                        std::to_string(layer) +
+                        ":h" +
+                        std::to_string(head) +
+                        ":" +
+                        role);
                 }
             }
+        }
+
+        for (std::size_t head = 0;
+             head <
+             context.model.output_layer.heads.size();
+             ++head)
+        {
+            for (const auto *role :
+                 {"proj", "src", "dst"})
+            {
+                artifact.constraint_registry.push_back(
+                    "shifted-divisibility:output:" +
+                    std::to_string(head) +
+                    ":" +
+                    role);
+            }
+        }
 
         for (const auto &spec :
              matrix_fold_binding_specs(context))
