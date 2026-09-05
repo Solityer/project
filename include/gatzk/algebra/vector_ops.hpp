@@ -17,34 +17,39 @@ namespace gatzk::algebra
     {
         Cpu,
         Cuda,
-        void release_cuda_ntt_workspace();
-        void release_cuda_scaled_accumulate_workspace();
+    };
 
-        // 返回当前构建与运行环境解析出的代数后端信息。
-        AlgebraBackend configured_algebra_backend();
-        std::string configured_algebra_backend_name();
-        bool cuda_backend_build_enabled();
-        bool cuda_backend_available();
-        // True only when the active CUDA device has UVA and may coherently read
-        // pageable host buffers without explicit registration.
-        bool cuda_backend_unified_addressing_available();
-        std::string cuda_device_summary();
-        std::size_t cuda_kernel_invocation_count();
-        void record_cuda_kernel_invocations(std::size_t count);
-        struct CudaExecutionStats{
-            std::uint64_t h2d_bytes = 0;
-            std::uint64_t d2h_bytes = 0;
-            std::uint64_t h2d_operations = 0;
-            std::uint64_t d2h_operations = 0;
-            std::uint64_t stream_synchronizations = 0;
-            std::uint64_t ntt_calls = 0;
-            std::uint64_t intt_calls = 0;
-            std::uint64_t quotient_calls = 0;
-            std::uint64_t opening_fold_calls = 0;
-            std::uint64_t msm_single_calls = 0;
-            std::uint64_t msm_batch_calls = 0;
-            std::uint64_t resident_hits = 0;
-            std::uint64_t resident_misses = 0;};
+    void release_cuda_ntt_workspace();
+    void release_cuda_scaled_accumulate_workspace();
+
+    // 返回当前构建与运行环境解析出的代数后端信息。
+    AlgebraBackend configured_algebra_backend();
+    std::string configured_algebra_backend_name();
+    bool cuda_backend_build_enabled();
+    bool cuda_backend_available();
+    // True only when the active CUDA device has UVA and may coherently read
+    // pageable host buffers without explicit registration.
+    bool cuda_backend_unified_addressing_available();
+    std::string cuda_device_summary();
+    std::size_t cuda_kernel_invocation_count();
+    void record_cuda_kernel_invocations(std::size_t count);
+
+    struct CudaExecutionStats
+    {
+        std::uint64_t h2d_bytes = 0;
+        std::uint64_t d2h_bytes = 0;
+        std::uint64_t h2d_operations = 0;
+        std::uint64_t d2h_operations = 0;
+        std::uint64_t stream_synchronizations = 0;
+        std::uint64_t ntt_calls = 0;
+        std::uint64_t intt_calls = 0;
+        std::uint64_t quotient_calls = 0;
+        std::uint64_t opening_fold_calls = 0;
+        std::uint64_t msm_single_calls = 0;
+        std::uint64_t msm_batch_calls = 0;
+        std::uint64_t resident_hits = 0;
+        std::uint64_t resident_misses = 0;
+    };
 
     CudaExecutionStats cuda_execution_stats_snapshot();
 

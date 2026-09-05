@@ -1383,29 +1383,6 @@ namespace gatzk::algebra
 
 #endif
 
-    void release_cuda_ntt_workspace()
-#if !GATZK_ENABLE_CUDA_BACKEND
-
-        void release_cuda_ntt_workspace()
-    {
-    }
-
-    std::unique_ptr<CudaWeightedDotSession>
-    create_cuda_weighted_dot_session(
-        const std::vector<
-            const mcl::Fr *> &,
-        std::size_t,
-        std::size_t)
-    {
-        return nullptr;
-    }
-
-    void release_cuda_weighted_dot_cache()
-    {
-    }
-
-#endif
-
     bool cuda_backend_build_enabled()
     {
 #if GATZK_ENABLE_CUDA_BACKEND
