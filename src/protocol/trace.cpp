@@ -5468,7 +5468,99 @@ namespace gatzk::protocol
             }
             return out;
         }
+        BindingTrace build_binding_trace_from_row_major_matrix(
+            const Matrix &matrix,
+            const std::vector<FieldElement> &parameter_values,
+            const std::shared_ptr<algebra::RootOfUnityDomain> &dim_domain,
+            std::size_t real_dim_count,
+            const std::optional<FieldElement> &target_mu = std::nullopt)
+        {
+            if (dim_domain == nullptr)
+            {
+                throw std::runtime_error(
+                    "row-major binding trace is missing dimension domain");
+            }
 
+            std::size_t element_count = 0;
+            for (const auto &row : matrix)
+            {
+                if (row.size() >
+                    std::numeric_limits<std::size_t>::max() -
+                        element_count)
+                {
+                    throw std::runtime_error(
+                        "row-major binding matrix size overflow");
+                }
+
+                element_count += row.size();
+            }
+
+            if (element_count != real_dim_count ||
+                real_dim_count > dim_domain->size ||
+                real_dim_count > parameter_values.size())
+            {
+                throw std::runtime_error(
+                    "row-major binding trace dimension mismatch");
+            }
+
+            BindingTrace out;
+
+            out.a.assign(
+                dim_domain->size,
+                FieldElement::zero());
+
+            out.b.assign(
+                dim_domain->size,
+                FieldElement::zero());
+
+            out.acc.assign(
+                dim_domain->size,
+                FieldElement::zero());
+
+            std::size_t index = 0;
+
+            for (const auto &row : matrix)
+            {
+                for (const auto &value : row)
+                {
+                    out.a[index] = value;
+                    out.b[index] =
+                        parameter_values[index];
+
+                    out.mu +=
+                        out.a[index] *
+                        out.b[index];
+
+                    if (index + 1 <
+                        dim_domain->size)
+                    {
+                        out.acc[index + 1] =
+                            out.mu;
+                    }
+
+                    ++index;
+                }
+            }
+
+            if (target_mu.has_value() &&
+                out.mu != *target_mu)
+            {
+                throw std::runtime_error(
+                    "row-major binding trace target differs "
+                    "from its canonical inner product");
+            }
+
+            for (std::size_t i =
+                     real_dim_count + 1;
+                 i < dim_domain->size;
+                 ++i)
+            {
+                out.acc[i] =
+                    out.mu;
+            }
+
+            return out;
+        }
         std::string trace_cache_prefix(const ProtocolContext &context)
         {
             // This identity is deliberately independent of filesystem paths
@@ -10486,9 +10578,6 @@ namespace gatzk::protocol
                 auto output_weight_power =
                     FieldElement::one();
 
-                const auto xi_out =
-                    trace.challenges.at("xi_out");
-
                 for (std::size_t column = 0;
                      column < n_classes;
                      ++column)
@@ -12537,11 +12626,9 @@ namespace gatzk::protocol
                     y_average,
                     y_out_challenge);
 
-            auto average_binding =
-                build_binding_trace_from_folded_columns(
-                    forward_artifacts
-                        ->output_average_div
-                        .y,
+            aauto average_binding =
+                build_binding_trace_from_row_major_matrix(
+                    y_average,
                     output_powers,
                     domains.edge,
                     output_flat_count,
