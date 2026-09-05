@@ -3827,6 +3827,10 @@ namespace gatzk::protocol
                                                        {output_head_prefix(head) + "_E_src"}});
             derived_score_mask_dependencies.push_back({output_score_mask_label(head, "dst"),
                                                        {output_head_prefix(head) + "_E_dst"}});
+            const auto output_prime_star =
+                output_head_prefix(head) + "_Y_prime_star";
+            derived_score_mask_dependencies.push_back(
+                {external_mask_label(output_prime_star), {output_prime_star}});
             const auto output_star =
                 output_head_prefix(head) + "_Y_star";
             derived_score_mask_dependencies.push_back({external_mask_label(output_star), {output_star}});
