@@ -75,6 +75,7 @@ namespace gatzk::algebra
             std::atomic<std::uint64_t> ntt_calls{0};
             std::atomic<std::uint64_t> intt_calls{0};
             std::atomic<std::uint64_t> quotient_calls{0};
+            std::atomic<std::uint64_t> t_edge_calls{0};
             std::atomic<std::uint64_t> opening_fold_calls{0};
             std::atomic<std::uint64_t> msm_single_calls{0};
             std::atomic<std::uint64_t> msm_batch_calls{0};
@@ -1195,6 +1196,9 @@ namespace gatzk::algebra
             .quotient_calls =
                 counters.quotient_calls.load(
                     std::memory_order_relaxed),
+            .t_edge_calls =
+                counters.t_edge_calls.load(
+                    std::memory_order_relaxed),
             .opening_fold_calls =
                 counters.opening_fold_calls.load(
                     std::memory_order_relaxed),
@@ -1279,6 +1283,15 @@ namespace gatzk::algebra
                 std::memory_order_relaxed);
     }
 
+    void record_cuda_t_edge_call()
+    {
+        cuda_execution_counters()
+            .t_edge_calls
+            .fetch_add(
+                1,
+                std::memory_order_relaxed);
+    }
+
     void record_cuda_opening_fold_call()
     {
         cuda_execution_counters()
@@ -1287,7 +1300,6 @@ namespace gatzk::algebra
                 1,
                 std::memory_order_relaxed);
     }
-
     void record_cuda_msm_single_call()
     {
         cuda_execution_counters()

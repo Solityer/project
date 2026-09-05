@@ -44,6 +44,7 @@ namespace gatzk::algebra
         std::uint64_t ntt_calls = 0;
         std::uint64_t intt_calls = 0;
         std::uint64_t quotient_calls = 0;
+        std::uint64_t t_edge_calls = 0;
         std::uint64_t opening_fold_calls = 0;
         std::uint64_t msm_single_calls = 0;
         std::uint64_t msm_batch_calls = 0;
@@ -59,6 +60,7 @@ namespace gatzk::algebra
     void record_cuda_ntt_call();
     void record_cuda_intt_call();
     void record_cuda_quotient_call();
+    void record_cuda_t_edge_call();
     void record_cuda_opening_fold_call();
     void record_cuda_msm_single_call();
     void record_cuda_msm_batch_call();

@@ -7390,6 +7390,9 @@ namespace gatzk::protocol
 
                     algebra::
                         record_cuda_quotient_call();
+
+                    algebra::
+                        record_cuda_t_edge_call();
                 }
                 else if (
                     target_size_ >= 2 &&

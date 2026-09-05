@@ -1307,6 +1307,10 @@ int main(int argc, char **argv)
                 cuda_stats_at_end.quotient_calls -
                 cuda_stats_at_start.quotient_calls;
 
+            metrics.gpu_t_edge_calls =
+                cuda_stats_at_end.t_edge_calls -
+                cuda_stats_at_start.t_edge_calls;
+
             metrics.gpu_opening_fold_calls =
                 cuda_stats_at_end.opening_fold_calls -
                 cuda_stats_at_start.opening_fold_calls;
@@ -1326,6 +1330,14 @@ int main(int argc, char **argv)
             metrics.gpu_resident_misses =
                 cuda_stats_at_end.resident_misses -
                 cuda_stats_at_start.resident_misses;
+
+            if (metrics.gpu_t_edge_calls >
+                metrics.gpu_quotient_calls)
+            {
+                throw std::runtime_error(
+                    "CUDA t_edge execution accounting exceeds total "
+                    "CUDA quotient execution accounting");
+            }
 
             if (metrics.compute_backend_name == "cuda_hotspots")
             {
@@ -1348,6 +1360,9 @@ int main(int argc, char **argv)
                         ";quotient_calls=" +
                         std::to_string(
                             metrics.gpu_quotient_calls) +
+                        ";t_edge_calls=" +
+                        std::to_string(
+                            metrics.gpu_t_edge_calls) +
                         ";opening_fold_calls=" +
                         std::to_string(
                             metrics.gpu_opening_fold_calls) +
