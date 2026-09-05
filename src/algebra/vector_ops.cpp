@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <bit>
 #include <cstdlib>
 #include <future>
 #include <limits>
@@ -890,18 +891,8 @@ namespace gatzk::algebra
                 "INTT requires a non-null power-of-two field vector");
         }
 
-        constexpr std::size_t
-            kCudaInttMinimumSize =
-                std::size_t{1} << 23;
-
-        constexpr std::size_t
-            kCudaInttMaximumSize =
-                std::size_t{1} << 24;
-
-        if (util::route2_options()
-                .cuda_field_hotspots &&
-            size >= kCudaInttMinimumSize &&
-            size <= kCudaInttMaximumSize)
+        if (should_use_cuda_ntt_pair(
+                size))
         {
             if (!try_cuda_intt_in_place(
                     values,
@@ -1329,15 +1320,10 @@ namespace gatzk::algebra
     bool should_use_cuda_ntt_pair(
         std::size_t size)
     {
-        constexpr std::size_t kCudaPairMinimumSize =
-            std::size_t{1} << 23;
-
-        constexpr std::size_t kCudaPairMaximumSize =
-            std::size_t{1} << 24;
-
         if (!util::route2_options().cuda_field_hotspots ||
-            size < kCudaPairMinimumSize ||
-            size > kCudaPairMaximumSize)
+            size == 0 ||
+            (size & (size - 1U)) != 0U ||
+            size > (std::size_t{1} << 24))
         {
             return false;
         }
@@ -1345,16 +1331,57 @@ namespace gatzk::algebra
 #if GATZK_ENABLE_CUDA_BACKEND
         if (!cuda_field_hotspots_available())
         {
-            throw std::runtime_error(
-                "CUDA production paired NTT route was requested "
-                "but CUDA field hotspots are unavailable");
+            return false;
         }
 
-        return true;
+        const auto element_count =
+            static_cast<double>(size) * 2.0;
+
+        const auto log_size =
+            static_cast<double>(
+                std::bit_width(size) - 1U);
+
+        const auto cpu_work =
+            element_count * log_size;
+
+        const auto gpu_work =
+            element_count * log_size;
+
+        constexpr double kCpuWorkUnitsPerMs =
+            5.0e6;
+
+        constexpr double kGpuWorkUnitsPerMs =
+            5.0e7;
+
+        constexpr double kHostDeviceBytesPerMs =
+            12.0e6;
+
+        constexpr double kSynchronizationMs =
+            0.08;
+
+        const auto transfer_bytes =
+            element_count *
+            static_cast<double>(
+                sizeof(mcl::Fr));
+
+        const auto estimated_cpu_ms =
+            cpu_work /
+            kCpuWorkUnitsPerMs;
+
+        const auto estimated_gpu_ms =
+            gpu_work /
+                kGpuWorkUnitsPerMs +
+            2.0 *
+                transfer_bytes /
+                kHostDeviceBytesPerMs +
+            kSynchronizationMs;
+
+        return size >=
+                   (std::size_t{1} << 15) &&
+               estimated_gpu_ms <
+                   estimated_cpu_ms * 0.95;
 #else
-        throw std::runtime_error(
-            "CUDA production paired NTT route was requested "
-            "in a non-CUDA build");
+        return false;
 #endif
     }
 
@@ -1369,7 +1396,8 @@ namespace gatzk::algebra
         // the existing CPU path so kernel launch and page-fault costs cannot
         // dominate the opening fold.
         constexpr std::size_t kMinCudaElements = 1ULL << 20;
-        if (element_count < kMinCudaElements || !cuda_field_route_enabled() || !cuda_backend_unified_addressing_available())
+        if (element_count < kMinCudaElements ||
+            !cuda_field_route_enabled())
         {
             return false;
         }
@@ -1407,8 +1435,7 @@ namespace gatzk::algebra
             1ULL << 20;
 
         if (element_count < kMinCudaElements ||
-            !cuda_field_route_enabled() ||
-            !cuda_backend_unified_addressing_available())
+            !cuda_field_route_enabled())
         {
             return false;
         }

@@ -115,16 +115,65 @@ namespace gatzk::algebra
         gpu::GpuFr scale{};
         std::memcpy(scale.d, scale_limbs, sizeof(scale.d));
 
+        class ScaledAccumulateCudaWorkspace
+        {
+        public:
+            cudaStream_t stream()
+            {
+                if (stream_ == nullptr)
+                {
+                    const auto status =
+                        cudaStreamCreateWithFlags(
+                            &stream_,
+                            cudaStreamNonBlocking);
+
+                    if (status != cudaSuccess)
+                    {
+                        stream_ = nullptr;
+
+                        throw_scaled_accumulate_cuda_error(
+                            "stream creation",
+                            status);
+                    }
+                }
+
+                return stream_;
+            }
+
+            ~ScaledAccumulateCudaWorkspace()
+            {
+                if (stream_ != nullptr)
+                {
+                    (void)cudaStreamSynchronize(
+                        stream_);
+
+                    (void)cudaStreamDestroy(
+                        stream_);
+                }
+            }
+
+        private:
+            cudaStream_t stream_ = nullptr;
+        };
+
+        ScaledAccumulateCudaWorkspace &
+        scaled_accumulate_workspace()
+        {
+            thread_local ScaledAccumulateCudaWorkspace
+                workspace;
+
+            return workspace;
+        }
+
         // A private non-blocking stream makes independent opening groups safe
         // to invoke concurrently when their target buffers differ.  The
         // source remains read-only and the call synchronizes before returning.
-        cudaStream_t stream = nullptr;
-        auto status = cudaStreamCreateWithFlags(
-            &stream, cudaStreamNonBlocking);
-        if (status != cudaSuccess)
-        {
-            throw_scaled_accumulate_cuda_error("stream creation", status);
-        }
+        auto stream =
+            scaled_accumulate_workspace()
+                .stream();
+
+        auto status =
+            cudaSuccess;
 
         constexpr unsigned kBlockSize = 256;
         const auto block_count_size =
@@ -154,11 +203,6 @@ namespace gatzk::algebra
             (void)cudaStreamDestroy(stream);
             throw_scaled_accumulate_cuda_error(
                 "kernel synchronization", status);
-        }
-        status = cudaStreamDestroy(stream);
-        if (status != cudaSuccess)
-        {
-            throw_scaled_accumulate_cuda_error("stream destruction", status);
         }
         record_cuda_kernel_invocations(1);
     }
@@ -211,19 +255,12 @@ namespace gatzk::algebra
             second_scale_limbs,
             sizeof(second_scale.d));
 
-        cudaStream_t stream = nullptr;
+        auto stream =
+            scaled_accumulate_workspace()
+                .stream();
 
         auto status =
-            cudaStreamCreateWithFlags(
-                &stream,
-                cudaStreamNonBlocking);
-
-        if (status != cudaSuccess)
-        {
-            throw_scaled_accumulate_cuda_error(
-                "paired stream creation",
-                status);
-        }
+            cudaSuccess;
 
         constexpr unsigned kBlockSize = 256;
 
@@ -279,16 +316,6 @@ namespace gatzk::algebra
 
             throw_scaled_accumulate_cuda_error(
                 "paired kernel synchronization",
-                status);
-        }
-
-        status =
-            cudaStreamDestroy(stream);
-
-        if (status != cudaSuccess)
-        {
-            throw_scaled_accumulate_cuda_error(
-                "paired stream destruction",
                 status);
         }
 

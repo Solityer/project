@@ -570,19 +570,11 @@ namespace gatzk::protocol
 
         bool complete_public_feature_source(const ProtocolContext &context)
         {
-            if (context.dataset.num_nodes == 0
-                || context.dataset.num_features == 0
-                || context.local.num_nodes != context.dataset.num_nodes
-                || context.local.num_features != context.dataset.num_features
-                || context.local.graph_count != context.dataset.graph_count
-                || context.local.absolute_ids.size() != context.dataset.num_nodes
-                || context.local.features.size() != context.dataset.num_nodes
-                || context.local.public_input.N_total != context.dataset.num_nodes)
+            if (context.dataset.num_nodes == 0 || context.dataset.num_features == 0 || context.local.num_nodes != context.dataset.num_nodes || context.local.num_features != context.dataset.num_features || context.local.graph_count != context.dataset.graph_count || context.local.absolute_ids.size() != context.dataset.num_nodes || context.local.features.size() != context.dataset.num_nodes || context.local.public_input.N_total != context.dataset.num_nodes)
                 return false;
             for (std::size_t row = 0; row < context.dataset.num_nodes; ++row)
             {
-                if (context.local.absolute_ids[row] != row
-                    || context.local.features[row].size() != context.dataset.num_features)
+                if (context.local.absolute_ids[row] != row || context.local.features[row].size() != context.dataset.num_features)
                     return false;
             }
             return true;
@@ -590,8 +582,7 @@ namespace gatzk::protocol
 
         bool lazy_fh_public_enabled(const ProtocolContext &context)
         {
-            return complete_public_feature_source(context)
-                && context.domains.fh != nullptr;
+            return complete_public_feature_source(context) && context.domains.fh != nullptr;
         }
 
         bool is_lazy_fh_public_label(const std::string &name)
@@ -1327,7 +1318,7 @@ namespace gatzk::protocol
                 return "missing:" + root.lexically_normal().generic_string();
             if (std::filesystem::is_regular_file(root))
                 return "file:" + root.lexically_normal().generic_string() +
-                    ":" + cache_file_sha256(root);
+                       ":" + cache_file_sha256(root);
             if (!std::filesystem::is_directory(root))
                 throw std::runtime_error(
                     "static context cache identity root is not a file or directory: " +
@@ -1359,7 +1350,7 @@ namespace gatzk::protocol
                 [&](const auto &lhs, const auto &rhs)
                 {
                     return std::filesystem::relative(lhs, root).generic_string() <
-                        std::filesystem::relative(rhs, root).generic_string();
+                           std::filesystem::relative(rhs, root).generic_string();
                 });
             std::string canonical;
             append_cache_length_delimited(
@@ -1528,8 +1519,7 @@ namespace gatzk::protocol
                      head_index < context.model.hidden_layers[layer_index].heads.size();
                      ++head_index)
                 {
-                    const auto suffix = "l" + std::to_string(layer_index)
-                        + "_h" + std::to_string(head_index);
+                    const auto suffix = "l" + std::to_string(layer_index) + "_h" + std::to_string(head_index);
                     const auto prefix = hidden_head_prefix(layer_index, head_index) + "_";
                     const auto challenge = [&](std::string_view base)
                     {
@@ -5808,14 +5798,9 @@ namespace gatzk::protocol
             bool should_use_cuda_t_edge_engine()
                 const
             {
-                const bool route_requested =
-                    target_size_ >=
-                        (std::size_t{1} << 25) &&
-                    util::route2_options()
-                        .cuda_field_hotspots;
-
                 if (label_ != "t_edge" ||
-                    !route_requested ||
+                    !util::route2_options()
+                         .cuda_field_hotspots ||
                     !algebra::
                         cuda_field_hotspots_available() ||
                     !cuda_t_edge_executor_available())
@@ -5843,9 +5828,15 @@ namespace gatzk::protocol
                     cuda_t_edge_leaf_cache_slot_count(
                         program);
 
-                return cuda_t_edge_executor_can_admit(
-                    target_size_,
-                    cache_slot_count);
+                if (!cuda_t_edge_executor_can_admit(
+                        target_size_,
+                        cache_slot_count))
+                {
+                    return false;
+                }
+
+                return target_size_ >=
+                       (std::size_t{1} << 25);
             }
 
             void reset_cuda_t_edge_transient_leaf_state()
@@ -8003,17 +7994,17 @@ namespace gatzk::protocol
                 for (std::size_t layer_index = 0;
                      layer_index < context_.model.hidden_layers.size();
                      ++layer_index)
-                for (std::size_t local_head_index = 0;
-                     local_head_index < context_.model.hidden_layers[layer_index].heads.size();
-                     ++local_head_index)
-                {
-                    const auto prefix = hidden_head_prefix(layer_index, local_head_index) + "_";
-                    if (name.rfind(prefix, 0) == 0)
+                    for (std::size_t local_head_index = 0;
+                         local_head_index < context_.model.hidden_layers[layer_index].heads.size();
+                         ++local_head_index)
                     {
-                        const auto suffix = std::string_view(name).substr(prefix.size());
-                        return suffix == "w_psq" || suffix == "T_psq_edge";
+                        const auto prefix = hidden_head_prefix(layer_index, local_head_index) + "_";
+                        if (name.rfind(prefix, 0) == 0)
+                        {
+                            const auto suffix = std::string_view(name).substr(prefix.size());
+                            return suffix == "w_psq" || suffix == "T_psq_edge";
+                        }
                     }
-                }
                 for (std::size_t head_index = 0; head_index < context_.model.output_layer.heads.size(); ++head_index)
                 {
                     const auto prefix = output_head_prefix(head_index) + "_";
@@ -8044,39 +8035,39 @@ namespace gatzk::protocol
                 for (std::size_t layer_index = 0;
                      layer_index < context_.model.hidden_layers.size();
                      ++layer_index)
-                for (std::size_t local_head_index = 0;
-                     local_head_index < context_.model.hidden_layers[layer_index].heads.size();
-                     ++local_head_index)
-                {
-                    const auto prefix = hidden_head_prefix(layer_index, local_head_index) + "_";
-                    if (name.rfind(prefix, 0) != 0)
+                    for (std::size_t local_head_index = 0;
+                         local_head_index < context_.model.hidden_layers[layer_index].heads.size();
+                         ++local_head_index)
                     {
-                        continue;
+                        const auto prefix = hidden_head_prefix(layer_index, local_head_index) + "_";
+                        if (name.rfind(prefix, 0) != 0)
+                        {
+                            continue;
+                        }
+                        const auto suffix = std::string_view(name).substr(prefix.size());
+                        if (suffix == "w_psq")
+                        {
+                            labels->push_back(prefix + "U");
+                            labels->push_back(prefix + "widehat_v_pre_star");
+                            return true;
+                        }
+                        if (suffix == "T_psq_edge")
+                        {
+                            labels->push_back(prefix + "Sum_edge");
+                            labels->push_back(prefix + "H_agg_pre_star_edge");
+                            return true;
+                        }
+                        if (suffix == "Query_ELU")
+                        {
+                            labels->push_back(name);
+                            return true;
+                        }
+                        if (suffix == "H_agg_pre_flat" || suffix == "H_agg_flat")
+                        {
+                            return true;
+                        }
+                        return is_edge_derived_coset_request(name);
                     }
-                    const auto suffix = std::string_view(name).substr(prefix.size());
-                    if (suffix == "w_psq")
-                    {
-                        labels->push_back(prefix + "U");
-                        labels->push_back(prefix + "widehat_v_pre_star");
-                        return true;
-                    }
-                    if (suffix == "T_psq_edge")
-                    {
-                        labels->push_back(prefix + "Sum_edge");
-                        labels->push_back(prefix + "H_agg_pre_star_edge");
-                        return true;
-                    }
-                    if (suffix == "Query_ELU")
-                    {
-                        labels->push_back(name);
-                        return true;
-                    }
-                    if (suffix == "H_agg_pre_flat" || suffix == "H_agg_flat")
-                    {
-                        return true;
-                    }
-                    return is_edge_derived_coset_request(name);
-                }
 
                 for (std::size_t head_index = 0; head_index < context_.model.output_layer.heads.size(); ++head_index)
                 {
@@ -8134,115 +8125,115 @@ namespace gatzk::protocol
                 for (std::size_t layer_index = 0;
                      layer_index < context_.model.hidden_layers.size();
                      ++layer_index)
-                for (std::size_t local_head_index = 0;
-                     local_head_index < context_.model.hidden_layers[layer_index].heads.size();
-                     ++local_head_index)
-                {
-                    const auto prefix = hidden_head_prefix(layer_index, local_head_index) + "_";
-                    if (name.rfind(prefix, 0) != 0)
+                    for (std::size_t local_head_index = 0;
+                         local_head_index < context_.model.hidden_layers[layer_index].heads.size();
+                         ++local_head_index)
                     {
-                        continue;
-                    }
-                    const auto suffix = std::string_view(name).substr(prefix.size());
-                    const auto value = [&](const std::string &label)
-                    {
-                        return coset_value_at(label, index);
-                    };
-                    const auto head_value = [&](std::string_view inner_suffix)
-                    {
-                        return value(prefix + std::string(inner_suffix));
-                    };
-                    if (suffix == "S")
-                    {
-                        return head_value("E_src_edge") + head_value("E_dst_edge");
-                    }
-                    if (suffix == "Delta")
-                    {
-                        return head_value("M_edge") - head_value("Z");
-                    }
-                    const auto eta_l = challenges_.at(
-                        hidden_challenge_name("eta_L_h", layer_index, local_head_index));
-                    if (suffix == "Table_L")
-                    {
-                        return value("P_T_L_x") + eta_l * value("P_T_L_y");
-                    }
-                    if (suffix == "Query_L")
-                    {
-                        return head_value("S") + eta_l * head_value("Z");
-                    }
-                    if (suffix == "Table_R")
-                    {
-                        return value("P_T_range");
-                    }
-                    if (suffix == "Query_R")
-                    {
-                        return head_value("Delta");
-                    }
-                    const auto eta_exp = challenges_.at(
-                        hidden_challenge_name("eta_exp_h", layer_index, local_head_index));
-                    if (suffix == "Table_exp")
-                    {
-                        return value("P_T_exp_x") + eta_exp * value("P_T_exp_y");
-                    }
-                    if (suffix == "Query_exp")
-                    {
-                        return head_value("Delta") + eta_exp * head_value("U");
-                    }
-                    const auto eta_elu = challenges_.at(
-                        hidden_challenge_name("eta_ELU_h", layer_index, local_head_index));
-                    if (suffix == "Table_ELU")
-                    {
-                        return value("P_T_ELU_x") + eta_elu * value("P_T_ELU_y");
-                    }
-                    if (suffix == "Query_ELU")
-                    {
-                        return head_value("H_ELU_in_flat") + eta_elu * head_value("H_agg_flat");
-                    }
-                    const auto eta_src = challenges_.at(
-                        hidden_challenge_name("eta_src_h", layer_index, local_head_index));
-                    if (suffix == "Query_src")
-                    {
-                        const auto eta_src_sq = eta_src * eta_src;
-                        return value("P_src") + eta_src * head_value("E_src_edge") + eta_src_sq * head_value("H_src_star_edge");
-                    }
-                    if (suffix == "w_psq")
-                    {
-                        if (lookup_polynomial(name) != nullptr || trace_.spilled_polynomials.contains(name))
+                        const auto prefix = hidden_head_prefix(layer_index, local_head_index) + "_";
+                        if (name.rfind(prefix, 0) != 0)
                         {
-                            return std::nullopt;
+                            continue;
                         }
-                        const auto lambda_psq = challenges_.at(
-                            hidden_challenge_name("lambda_psq_h", layer_index, local_head_index));
-                        return head_value("U") + lambda_psq * head_value("widehat_v_pre_star");
-                    }
-                    if (suffix == "T_psq_edge")
-                    {
-                        if (lookup_polynomial(name) != nullptr || trace_.spilled_polynomials.contains(name))
+                        const auto suffix = std::string_view(name).substr(prefix.size());
+                        const auto value = [&](const std::string &label)
                         {
-                            return std::nullopt;
+                            return coset_value_at(label, index);
+                        };
+                        const auto head_value = [&](std::string_view inner_suffix)
+                        {
+                            return value(prefix + std::string(inner_suffix));
+                        };
+                        if (suffix == "S")
+                        {
+                            return head_value("E_src_edge") + head_value("E_dst_edge");
                         }
-                        const auto lambda_psq = challenges_.at(
-                            hidden_challenge_name("lambda_psq_h", layer_index, local_head_index));
-                        return head_value("Sum_edge") + lambda_psq * head_value("H_agg_pre_star_edge");
+                        if (suffix == "Delta")
+                        {
+                            return head_value("M_edge") - head_value("Z");
+                        }
+                        const auto eta_l = challenges_.at(
+                            hidden_challenge_name("eta_L_h", layer_index, local_head_index));
+                        if (suffix == "Table_L")
+                        {
+                            return value("P_T_L_x") + eta_l * value("P_T_L_y");
+                        }
+                        if (suffix == "Query_L")
+                        {
+                            return head_value("S") + eta_l * head_value("Z");
+                        }
+                        if (suffix == "Table_R")
+                        {
+                            return value("P_T_range");
+                        }
+                        if (suffix == "Query_R")
+                        {
+                            return head_value("Delta");
+                        }
+                        const auto eta_exp = challenges_.at(
+                            hidden_challenge_name("eta_exp_h", layer_index, local_head_index));
+                        if (suffix == "Table_exp")
+                        {
+                            return value("P_T_exp_x") + eta_exp * value("P_T_exp_y");
+                        }
+                        if (suffix == "Query_exp")
+                        {
+                            return head_value("Delta") + eta_exp * head_value("U");
+                        }
+                        const auto eta_elu = challenges_.at(
+                            hidden_challenge_name("eta_ELU_h", layer_index, local_head_index));
+                        if (suffix == "Table_ELU")
+                        {
+                            return value("P_T_ELU_x") + eta_elu * value("P_T_ELU_y");
+                        }
+                        if (suffix == "Query_ELU")
+                        {
+                            return head_value("H_ELU_in_flat") + eta_elu * head_value("H_agg_flat");
+                        }
+                        const auto eta_src = challenges_.at(
+                            hidden_challenge_name("eta_src_h", layer_index, local_head_index));
+                        if (suffix == "Query_src")
+                        {
+                            const auto eta_src_sq = eta_src * eta_src;
+                            return value("P_src") + eta_src * head_value("E_src_edge") + eta_src_sq * head_value("H_src_star_edge");
+                        }
+                        if (suffix == "w_psq")
+                        {
+                            if (lookup_polynomial(name) != nullptr || trace_.spilled_polynomials.contains(name))
+                            {
+                                return std::nullopt;
+                            }
+                            const auto lambda_psq = challenges_.at(
+                                hidden_challenge_name("lambda_psq_h", layer_index, local_head_index));
+                            return head_value("U") + lambda_psq * head_value("widehat_v_pre_star");
+                        }
+                        if (suffix == "T_psq_edge")
+                        {
+                            if (lookup_polynomial(name) != nullptr || trace_.spilled_polynomials.contains(name))
+                            {
+                                return std::nullopt;
+                            }
+                            const auto lambda_psq = challenges_.at(
+                                hidden_challenge_name("lambda_psq_h", layer_index, local_head_index));
+                            return head_value("Sum_edge") + lambda_psq * head_value("H_agg_pre_star_edge");
+                        }
+                        const auto eta_t = challenges_.at(
+                            hidden_challenge_name("eta_t_h", layer_index, local_head_index));
+                        if (suffix == "Query_t")
+                        {
+                            return value("P_dst") + eta_t * head_value("T_psq_edge");
+                        }
+                        const auto eta_dst = challenges_.at(
+                            hidden_challenge_name("eta_dst_h", layer_index, local_head_index));
+                        if (suffix == "Query_dst")
+                        {
+                            const auto eta_dst_sq = eta_dst * eta_dst;
+                            const auto eta_dst_cu = eta_dst_sq * eta_dst;
+                            const auto eta_dst_4 = eta_dst_cu * eta_dst;
+                            const auto eta_dst_5 = eta_dst_4 * eta_dst;
+                            return value("P_dst") + eta_dst * head_value("E_dst_edge") + eta_dst_sq * head_value("M_edge") + eta_dst_cu * head_value("Sum_edge") + eta_dst_4 * head_value("inv_edge") + eta_dst_5 * head_value("H_agg_star_edge");
+                        }
+                        return std::nullopt;
                     }
-                    const auto eta_t = challenges_.at(
-                        hidden_challenge_name("eta_t_h", layer_index, local_head_index));
-                    if (suffix == "Query_t")
-                    {
-                        return value("P_dst") + eta_t * head_value("T_psq_edge");
-                    }
-                    const auto eta_dst = challenges_.at(
-                        hidden_challenge_name("eta_dst_h", layer_index, local_head_index));
-                    if (suffix == "Query_dst")
-                    {
-                        const auto eta_dst_sq = eta_dst * eta_dst;
-                        const auto eta_dst_cu = eta_dst_sq * eta_dst;
-                        const auto eta_dst_4 = eta_dst_cu * eta_dst;
-                        const auto eta_dst_5 = eta_dst_4 * eta_dst;
-                        return value("P_dst") + eta_dst * head_value("E_dst_edge") + eta_dst_sq * head_value("M_edge") + eta_dst_cu * head_value("Sum_edge") + eta_dst_4 * head_value("inv_edge") + eta_dst_5 * head_value("H_agg_star_edge");
-                    }
-                    return std::nullopt;
-                }
 
                 for (std::size_t head_index = 0; head_index < context_.model.output_layer.heads.size(); ++head_index)
                 {
@@ -8912,16 +8903,16 @@ namespace gatzk::protocol
                 for (std::size_t layer_index = 0;
                      layer_index < context_.model.hidden_layers.size();
                      ++layer_index)
-                for (std::size_t local_head_index = 0;
-                     local_head_index < context_.model.hidden_layers[layer_index].heads.size();
-                     ++local_head_index)
-                {
-                    const auto prefix = hidden_head_prefix(layer_index, local_head_index) + "_";
-                    if (name.rfind(prefix, 0) == 0)
+                    for (std::size_t local_head_index = 0;
+                         local_head_index < context_.model.hidden_layers[layer_index].heads.size();
+                         ++local_head_index)
                     {
-                        return is_hidden_derived_suffix(name.substr(prefix.size()));
+                        const auto prefix = hidden_head_prefix(layer_index, local_head_index) + "_";
+                        if (name.rfind(prefix, 0) == 0)
+                        {
+                            return is_hidden_derived_suffix(name.substr(prefix.size()));
+                        }
                     }
-                }
                 auto is_output_derived_suffix = [](std::string_view suffix)
                 {
                     return suffix == "S" || suffix == "Delta" || suffix == "Table_L" || suffix == "Query_L" || suffix == "Table_R" || suffix == "Query_R" || suffix == "Table_exp" || suffix == "Query_exp" || suffix == "Query_src" || suffix == "Query_t" || suffix == "Query_dst" || suffix == "w" || suffix == "T_edge";
@@ -9040,116 +9031,116 @@ namespace gatzk::protocol
                 for (std::size_t layer_index = 0;
                      layer_index < context_.model.hidden_layers.size();
                      ++layer_index)
-                for (std::size_t local_head_index = 0;
-                     local_head_index < context_.model.hidden_layers[layer_index].heads.size();
-                     ++local_head_index)
-                {
-                    const auto prefix = hidden_head_prefix(layer_index, local_head_index) + "_";
-                    if (name.rfind(prefix, 0) != 0)
+                    for (std::size_t local_head_index = 0;
+                         local_head_index < context_.model.hidden_layers[layer_index].heads.size();
+                         ++local_head_index)
                     {
-                        continue;
+                        const auto prefix = hidden_head_prefix(layer_index, local_head_index) + "_";
+                        if (name.rfind(prefix, 0) != 0)
+                        {
+                            continue;
+                        }
+                        const auto suffix = name.substr(prefix.size());
+                        const auto eta_l = challenges_.at(
+                            hidden_challenge_name("eta_L_h", layer_index, local_head_index));
+                        const auto eta_exp = challenges_.at(
+                            hidden_challenge_name("eta_exp_h", layer_index, local_head_index));
+                        const auto eta_elu = challenges_.at(
+                            hidden_challenge_name("eta_ELU_h", layer_index, local_head_index));
+                        const auto eta_src = challenges_.at(
+                            hidden_challenge_name("eta_src_h", layer_index, local_head_index));
+                        const auto eta_dst = challenges_.at(
+                            hidden_challenge_name("eta_dst_h", layer_index, local_head_index));
+                        const auto eta_t = challenges_.at(
+                            hidden_challenge_name("eta_t_h", layer_index, local_head_index));
+                        if (suffix == "Table_L")
+                        {
+                            return scaled_coset_sum(name, {{"P_T_L_x", FieldElement::one()}, {"P_T_L_y", eta_l}});
+                        }
+                        if (suffix == "Query_L")
+                        {
+                            return scaled_coset_sum(name, {{prefix + "S", FieldElement::one()}, {prefix + "Z", eta_l}});
+                        }
+                        if (suffix == "S")
+                        {
+                            return scaled_coset_sum(name, {{prefix + "E_src_edge", FieldElement::one()}, {prefix + "E_dst_edge", FieldElement::one()}});
+                        }
+                        if (suffix == "Delta")
+                        {
+                            return scaled_coset_sum(name, {{prefix + "M_edge", FieldElement::one()}, {prefix + "Z", -FieldElement::one()}});
+                        }
+                        if (suffix == "Table_R")
+                        {
+                            return scaled_coset_sum(
+                                name,
+                                {{"P_T_range", FieldElement::one()}});
+                        }
+                        if (suffix == "Query_R")
+                        {
+                            return scaled_coset_sum(
+                                name,
+                                {{prefix + "Delta", FieldElement::one()}});
+                        }
+                        if (suffix == "Table_exp")
+                        {
+                            return scaled_coset_sum(name, {{"P_T_exp_x", FieldElement::one()}, {"P_T_exp_y", eta_exp}});
+                        }
+                        if (suffix == "Query_exp")
+                        {
+                            return scaled_coset_sum(name, {{prefix + "Delta", FieldElement::one()}, {prefix + "U", eta_exp}});
+                        }
+                        if (suffix == "w_psq")
+                        {
+                            const auto lambda_psq = challenges_.at(
+                                hidden_challenge_name("lambda_psq_h", layer_index, local_head_index));
+                            return scaled_coset_sum(name, {{prefix + "U", FieldElement::one()}, {prefix + "widehat_v_pre_star", lambda_psq}});
+                        }
+                        if (suffix == "T_psq_edge")
+                        {
+                            const auto lambda_psq = challenges_.at(
+                                hidden_challenge_name("lambda_psq_h", layer_index, local_head_index));
+                            return scaled_coset_sum(name, {{prefix + "Sum_edge", FieldElement::one()}, {prefix + "H_agg_pre_star_edge", lambda_psq}});
+                        }
+                        if (suffix == "Table_ELU")
+                        {
+                            return scaled_coset_sum(name, {{"P_T_ELU_x", FieldElement::one()}, {"P_T_ELU_y", eta_elu}});
+                        }
+                        if (suffix == "Query_ELU")
+                        {
+                            return scaled_coset_sum(
+                                name,
+                                {{prefix + "H_ELU_in_flat", FieldElement::one()}, {prefix + "H_agg_flat", eta_elu}});
+                        }
+                        if (suffix == "Query_src")
+                        {
+                            const auto eta_src_sq = eta_src * eta_src;
+                            return scaled_coset_sum(name, {
+                                                              {"P_src", FieldElement::one()},
+                                                              {prefix + "E_src_edge", eta_src},
+                                                              {prefix + "H_src_star_edge", eta_src_sq},
+                                                          });
+                        }
+                        if (suffix == "Query_t")
+                        {
+                            return scaled_coset_sum(name, {{"P_dst", FieldElement::one()}, {prefix + "T_psq_edge", eta_t}});
+                        }
+                        if (suffix == "Query_dst")
+                        {
+                            const auto eta_dst_sq = eta_dst * eta_dst;
+                            const auto eta_dst_cu = eta_dst_sq * eta_dst;
+                            const auto eta_dst_4 = eta_dst_cu * eta_dst;
+                            const auto eta_dst_5 = eta_dst_4 * eta_dst;
+                            return scaled_coset_sum(name, {
+                                                              {"P_dst", FieldElement::one()},
+                                                              {prefix + "E_dst_edge", eta_dst},
+                                                              {prefix + "M_edge", eta_dst_sq},
+                                                              {prefix + "Sum_edge", eta_dst_cu},
+                                                              {prefix + "inv_edge", eta_dst_4},
+                                                              {prefix + "H_agg_star_edge", eta_dst_5},
+                                                          });
+                        }
+                        return nullptr;
                     }
-                    const auto suffix = name.substr(prefix.size());
-                    const auto eta_l = challenges_.at(
-                        hidden_challenge_name("eta_L_h", layer_index, local_head_index));
-                    const auto eta_exp = challenges_.at(
-                        hidden_challenge_name("eta_exp_h", layer_index, local_head_index));
-                    const auto eta_elu = challenges_.at(
-                        hidden_challenge_name("eta_ELU_h", layer_index, local_head_index));
-                    const auto eta_src = challenges_.at(
-                        hidden_challenge_name("eta_src_h", layer_index, local_head_index));
-                    const auto eta_dst = challenges_.at(
-                        hidden_challenge_name("eta_dst_h", layer_index, local_head_index));
-                    const auto eta_t = challenges_.at(
-                        hidden_challenge_name("eta_t_h", layer_index, local_head_index));
-                    if (suffix == "Table_L")
-                    {
-                        return scaled_coset_sum(name, {{"P_T_L_x", FieldElement::one()}, {"P_T_L_y", eta_l}});
-                    }
-                    if (suffix == "Query_L")
-                    {
-                        return scaled_coset_sum(name, {{prefix + "S", FieldElement::one()}, {prefix + "Z", eta_l}});
-                    }
-                    if (suffix == "S")
-                    {
-                        return scaled_coset_sum(name, {{prefix + "E_src_edge", FieldElement::one()}, {prefix + "E_dst_edge", FieldElement::one()}});
-                    }
-                    if (suffix == "Delta")
-                    {
-                        return scaled_coset_sum(name, {{prefix + "M_edge", FieldElement::one()}, {prefix + "Z", -FieldElement::one()}});
-                    }
-                    if (suffix == "Table_R")
-                    {
-                        return scaled_coset_sum(
-                            name,
-                            {{"P_T_range", FieldElement::one()}});
-                    }
-                    if (suffix == "Query_R")
-                    {
-                        return scaled_coset_sum(
-                            name,
-                            {{prefix + "Delta", FieldElement::one()}});
-                    }
-                    if (suffix == "Table_exp")
-                    {
-                        return scaled_coset_sum(name, {{"P_T_exp_x", FieldElement::one()}, {"P_T_exp_y", eta_exp}});
-                    }
-                    if (suffix == "Query_exp")
-                    {
-                        return scaled_coset_sum(name, {{prefix + "Delta", FieldElement::one()}, {prefix + "U", eta_exp}});
-                    }
-                    if (suffix == "w_psq")
-                    {
-                        const auto lambda_psq = challenges_.at(
-                            hidden_challenge_name("lambda_psq_h", layer_index, local_head_index));
-                        return scaled_coset_sum(name, {{prefix + "U", FieldElement::one()}, {prefix + "widehat_v_pre_star", lambda_psq}});
-                    }
-                    if (suffix == "T_psq_edge")
-                    {
-                        const auto lambda_psq = challenges_.at(
-                            hidden_challenge_name("lambda_psq_h", layer_index, local_head_index));
-                        return scaled_coset_sum(name, {{prefix + "Sum_edge", FieldElement::one()}, {prefix + "H_agg_pre_star_edge", lambda_psq}});
-                    }
-                    if (suffix == "Table_ELU")
-                    {
-                        return scaled_coset_sum(name, {{"P_T_ELU_x", FieldElement::one()}, {"P_T_ELU_y", eta_elu}});
-                    }
-                    if (suffix == "Query_ELU")
-                    {
-                        return scaled_coset_sum(
-                            name,
-                            {{prefix + "H_ELU_in_flat", FieldElement::one()}, {prefix + "H_agg_flat", eta_elu}});
-                    }
-                    if (suffix == "Query_src")
-                    {
-                        const auto eta_src_sq = eta_src * eta_src;
-                        return scaled_coset_sum(name, {
-                                                          {"P_src", FieldElement::one()},
-                                                          {prefix + "E_src_edge", eta_src},
-                                                          {prefix + "H_src_star_edge", eta_src_sq},
-                                                      });
-                    }
-                    if (suffix == "Query_t")
-                    {
-                        return scaled_coset_sum(name, {{"P_dst", FieldElement::one()}, {prefix + "T_psq_edge", eta_t}});
-                    }
-                    if (suffix == "Query_dst")
-                    {
-                        const auto eta_dst_sq = eta_dst * eta_dst;
-                        const auto eta_dst_cu = eta_dst_sq * eta_dst;
-                        const auto eta_dst_4 = eta_dst_cu * eta_dst;
-                        const auto eta_dst_5 = eta_dst_4 * eta_dst;
-                        return scaled_coset_sum(name, {
-                                                          {"P_dst", FieldElement::one()},
-                                                          {prefix + "E_dst_edge", eta_dst},
-                                                          {prefix + "M_edge", eta_dst_sq},
-                                                          {prefix + "Sum_edge", eta_dst_cu},
-                                                          {prefix + "inv_edge", eta_dst_4},
-                                                          {prefix + "H_agg_star_edge", eta_dst_5},
-                                                      });
-                    }
-                    return nullptr;
-                }
                 return nullptr;
             }
 
@@ -11211,13 +11202,11 @@ namespace gatzk::protocol
     std::string static_context_compiler_artifact_identity(
         const ProtocolContext &context)
     {
-        if (context.compiler_artifact == nullptr
-            || context.validated_compiler_artifact_identity
-                   != context.compiler_artifact.get())
+        if (context.compiler_artifact == nullptr || context.validated_compiler_artifact_identity != context.compiler_artifact.get())
             return "missing";
         return "sha256:" + cache_sha256_hex(
-            context.compiler_artifact->protocol_canonical_bytes +
-            context.compiler_artifact->instance_canonical_bytes);
+                               context.compiler_artifact->protocol_canonical_bytes +
+                               context.compiler_artifact->instance_canonical_bytes);
     }
 
     ProtocolContext build_context(const util::AppConfig &config, RunMetrics *metrics)
@@ -11229,8 +11218,7 @@ namespace gatzk::protocol
             config.quant_cfg_id,
             config.hidden_profile,
             config.K_out,
-            (std::filesystem::path(config.project_root)
-             / "configs/quantization_scale_chain.cfg").string());
+            (std::filesystem::path(config.project_root) / "configs/quantization_scale_chain.cfg").string());
         static std::mutex cache_mutex;
         static std::unordered_map<std::string, StaticContextCachePayload> cache;
         // 这里只复用静态上下文对象，见证和挑战相关状态必须按每次正式证明重新生成。
@@ -11311,14 +11299,12 @@ namespace gatzk::protocol
             model::load_checkpoint_bundle_parameters(
                 checkpoint_root.string());
 
-        if (context.model.quantization_scale_chain
-            != scales.canonical_serialization())
+        if (context.model.quantization_scale_chain != scales.canonical_serialization())
         {
             throw std::runtime_error(
                 "checkpoint bundle quantization scale chain conflicts with formal config");
         }
-        if (context.model.input_preprocess_id
-            != canonical_config.input_preprocess_id)
+        if (context.model.input_preprocess_id != canonical_config.input_preprocess_id)
         {
             throw std::runtime_error(
                 "checkpoint bundle input_preprocess_id conflicts with formal config");
@@ -11337,64 +11323,64 @@ namespace gatzk::protocol
                 std::to_string(formal_hidden_head_count));
 
         std::string family_reason;
-            if (!model::hidden_family_dimension_chain_is_valid(context.model, &family_reason))
-            {
-                throw std::runtime_error("formal family shape is invalid: " + family_reason);
-            }
-            bool hidden_profile_matches = context.model.hidden_profile.size() == config.hidden_profile.size();
-            for (std::size_t i = 0; hidden_profile_matches && i < config.hidden_profile.size(); ++i)
-            {
-                hidden_profile_matches =
-                    context.model.hidden_profile[i].head_count == config.hidden_profile[i].head_count && context.model.hidden_profile[i].head_dim == config.hidden_profile[i].head_dim;
-            }
-            if (context.model.L != config.layer_count)
-            {
-                throw std::runtime_error(
-                    "config L=" + std::to_string(config.layer_count) + " conflicts with model L=" + std::to_string(context.model.L));
-            }
-            if (!hidden_profile_matches)
-            {
-                throw std::runtime_error("config hidden_profile conflicts with checkpoint manifest hidden_profile");
-            }
-            if (!config.d_in_profile.empty() && context.model.d_in_profile != config.d_in_profile)
-            {
-                throw std::runtime_error("config d_in_profile conflicts with checkpoint manifest d_in_profile");
-            }
-            if (context.model.K_out != config.K_out)
-            {
-                throw std::runtime_error(
-                    "config K_out=" + std::to_string(config.K_out) + " conflicts with model K_out=" + std::to_string(context.model.K_out));
-            }
-            if (context.model.C != config.num_classes)
-            {
-                throw std::runtime_error(
-                    "config num_classes=" + std::to_string(config.num_classes) + " conflicts with model C=" + std::to_string(context.model.C));
-            }
-            if (context.model.model_arch_id != config.model_arch_id)
-            {
-                throw std::runtime_error(
-                    "config model_arch_id conflicts with checkpoint manifest model_arch_id");
-            }
-            if (context.model.model_param_id != config.model_param_id)
-            {
-                throw std::runtime_error(
-                    "config model_param_id conflicts with checkpoint manifest model_param_id");
-            }
-            if (context.model.quant_cfg_id != config.quant_cfg_id)
-            {
-                throw std::runtime_error(
-                    "config quant_cfg_id conflicts with checkpoint manifest quant_cfg_id");
-            }
-            if (context.model.static_table_id != config.static_table_id)
-            {
-                throw std::runtime_error(
-                    "config static_table_id conflicts with checkpoint manifest static_table_id");
-            }
-            if (context.model.degree_bound_id != config.degree_bound_id)
-            {
-                throw std::runtime_error(
-                    "config degree_bound_id conflicts with checkpoint manifest degree_bound_id");
-            }
+        if (!model::hidden_family_dimension_chain_is_valid(context.model, &family_reason))
+        {
+            throw std::runtime_error("formal family shape is invalid: " + family_reason);
+        }
+        bool hidden_profile_matches = context.model.hidden_profile.size() == config.hidden_profile.size();
+        for (std::size_t i = 0; hidden_profile_matches && i < config.hidden_profile.size(); ++i)
+        {
+            hidden_profile_matches =
+                context.model.hidden_profile[i].head_count == config.hidden_profile[i].head_count && context.model.hidden_profile[i].head_dim == config.hidden_profile[i].head_dim;
+        }
+        if (context.model.L != config.layer_count)
+        {
+            throw std::runtime_error(
+                "config L=" + std::to_string(config.layer_count) + " conflicts with model L=" + std::to_string(context.model.L));
+        }
+        if (!hidden_profile_matches)
+        {
+            throw std::runtime_error("config hidden_profile conflicts with checkpoint manifest hidden_profile");
+        }
+        if (!config.d_in_profile.empty() && context.model.d_in_profile != config.d_in_profile)
+        {
+            throw std::runtime_error("config d_in_profile conflicts with checkpoint manifest d_in_profile");
+        }
+        if (context.model.K_out != config.K_out)
+        {
+            throw std::runtime_error(
+                "config K_out=" + std::to_string(config.K_out) + " conflicts with model K_out=" + std::to_string(context.model.K_out));
+        }
+        if (context.model.C != config.num_classes)
+        {
+            throw std::runtime_error(
+                "config num_classes=" + std::to_string(config.num_classes) + " conflicts with model C=" + std::to_string(context.model.C));
+        }
+        if (context.model.model_arch_id != config.model_arch_id)
+        {
+            throw std::runtime_error(
+                "config model_arch_id conflicts with checkpoint manifest model_arch_id");
+        }
+        if (context.model.model_param_id != config.model_param_id)
+        {
+            throw std::runtime_error(
+                "config model_param_id conflicts with checkpoint manifest model_param_id");
+        }
+        if (context.model.quant_cfg_id != config.quant_cfg_id)
+        {
+            throw std::runtime_error(
+                "config quant_cfg_id conflicts with checkpoint manifest quant_cfg_id");
+        }
+        if (context.model.static_table_id != config.static_table_id)
+        {
+            throw std::runtime_error(
+                "config static_table_id conflicts with checkpoint manifest static_table_id");
+        }
+        if (context.model.degree_bound_id != config.degree_bound_id)
+        {
+            throw std::runtime_error(
+                "config degree_bound_id conflicts with checkpoint manifest degree_bound_id");
+        }
         auto end = Clock::now();
         if (metrics != nullptr)
         {
@@ -11412,11 +11398,9 @@ namespace gatzk::protocol
                                                 std::size_t right,
                                                 std::string_view label)
                 {
-                    if (right != 0
-                        && left > std::numeric_limits<std::size_t>::max() / right)
+                    if (right != 0 && left > std::numeric_limits<std::size_t>::max() / right)
                         throw std::runtime_error(
-                            "feature table size overflows size_t: "
-                            + std::string(label));
+                            "feature table size overflows size_t: " + std::string(label));
                     return left * right;
                 };
                 return std::max(
@@ -11427,11 +11411,10 @@ namespace gatzk::protocol
                            checked_product(
                                context.local.num_nodes,
                                context.local.num_features,
-                               "local"))
-                    + 2;
+                               "local")) +
+                       2;
             }());
-        const auto dataset_feature_count = context.dataset.num_nodes
-            * context.dataset.num_features;
+        const auto dataset_feature_count = context.dataset.num_nodes * context.dataset.num_features;
         const std::size_t d_h = hidden_head_width(context.model);
         const std::size_t d_cat = concat_width(context.model);
         // The in-domain is a shared power-of-two capacity.  It must not be
@@ -11478,18 +11461,18 @@ namespace gatzk::protocol
         };
         context.domains.hidden_layers.resize(
             context.model.hidden_layers.size());
-            for (std::size_t layer_index = 0;
-                 layer_index < context.model.hidden_layers.size();
-                 ++layer_index)
-            {
-                auto &layer_domains = context.domains.hidden_layers[layer_index];
-                layer_domains.resize(
-                    context.model.hidden_layers[layer_index].heads.size(),
-                    AttentionHeadDomains{
-                        .in = context.domains.in,
-                        .d = context.domains.d,
-                    });
-            }
+        for (std::size_t layer_index = 0;
+             layer_index < context.model.hidden_layers.size();
+             ++layer_index)
+        {
+            auto &layer_domains = context.domains.hidden_layers[layer_index];
+            layer_domains.resize(
+                context.model.hidden_layers[layer_index].heads.size(),
+                AttentionHeadDomains{
+                    .in = context.domains.in,
+                    .d = context.domains.d,
+                });
+        }
         context.domains.output_head = AttentionHeadDomains{.in = context.domains.cat, .d = context.domains.c};
         end = Clock::now();
         if (metrics != nullptr)
@@ -11611,64 +11594,64 @@ namespace gatzk::protocol
             "P_Q_edge_valid",
             make_shared_eval_poly("P_Q_edge_valid", edge_valid, context.domains.edge));
         // Each hidden layer owns its own valid selectors.  The selector
-            // support is the layer's real shape; the surrounding work domain
-            // may still be a shared power-of-two capacity.
-            for (std::size_t layer_index = 0;
-                 layer_index < context.model.hidden_layers.size();
-                 ++layer_index)
-            {
-                const auto &layer = context.model.hidden_layers[layer_index];
-                const auto q_in_label = hidden_q_in_selector_label(layer_index);
-                const auto q_d_label = hidden_q_d_h_selector_label(layer_index);
-                const auto q_cat_label = hidden_q_cat_selector_label(layer_index);
-                const auto q_nd_h_label = hidden_q_nd_h_selector_label(layer_index);
-                add_public_poly(
-                    context,
-                    q_in_label,
-                    make_shared_eval_poly(
-                        q_in_label,
-                        build_selector(layer.input_dim, in_size),
-                        context.domains.in));
-                add_public_poly(
-                    context,
-                    q_d_label,
-                    make_shared_eval_poly(
-                        q_d_label,
-                        build_selector(layer.shape.head_dim, d_size),
-                        context.domains.d));
-                add_public_poly(
-                    context,
-                    q_cat_label,
-                    make_shared_eval_poly(
-                        q_cat_label,
-                        build_selector(layer.shape.head_count * layer.shape.head_dim, cat_size),
-                        context.domains.cat));
-                add_public_poly(
-                    context,
-                    q_nd_h_label,
-                    make_shared_eval_poly(
-                        q_nd_h_label,
-                        build_selector(context.local.num_nodes * layer.shape.head_dim, edge_size),
-                        context.domains.edge));
-            }
-            for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
-            {
-                const auto label = "P_Q_div_out" + std::to_string(head_index);
-                add_public_poly(
-                    context,
-                    label,
-                    make_shared_eval_poly(
-                        label,
-                        build_selector(context.local.num_nodes * context.local.num_classes, edge_size),
-                        context.domains.edge));
-            }
+        // support is the layer's real shape; the surrounding work domain
+        // may still be a shared power-of-two capacity.
+        for (std::size_t layer_index = 0;
+             layer_index < context.model.hidden_layers.size();
+             ++layer_index)
+        {
+            const auto &layer = context.model.hidden_layers[layer_index];
+            const auto q_in_label = hidden_q_in_selector_label(layer_index);
+            const auto q_d_label = hidden_q_d_h_selector_label(layer_index);
+            const auto q_cat_label = hidden_q_cat_selector_label(layer_index);
+            const auto q_nd_h_label = hidden_q_nd_h_selector_label(layer_index);
             add_public_poly(
                 context,
-                "P_Q_div_avg",
+                q_in_label,
                 make_shared_eval_poly(
-                    "P_Q_div_avg",
+                    q_in_label,
+                    build_selector(layer.input_dim, in_size),
+                    context.domains.in));
+            add_public_poly(
+                context,
+                q_d_label,
+                make_shared_eval_poly(
+                    q_d_label,
+                    build_selector(layer.shape.head_dim, d_size),
+                    context.domains.d));
+            add_public_poly(
+                context,
+                q_cat_label,
+                make_shared_eval_poly(
+                    q_cat_label,
+                    build_selector(layer.shape.head_count * layer.shape.head_dim, cat_size),
+                    context.domains.cat));
+            add_public_poly(
+                context,
+                q_nd_h_label,
+                make_shared_eval_poly(
+                    q_nd_h_label,
+                    build_selector(context.local.num_nodes * layer.shape.head_dim, edge_size),
+                    context.domains.edge));
+        }
+        for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
+        {
+            const auto label = "P_Q_div_out" + std::to_string(head_index);
+            add_public_poly(
+                context,
+                label,
+                make_shared_eval_poly(
+                    label,
                     build_selector(context.local.num_nodes * context.local.num_classes, edge_size),
                     context.domains.edge));
+        }
+        add_public_poly(
+            context,
+            "P_Q_div_avg",
+            make_shared_eval_poly(
+                "P_Q_div_avg",
+                build_selector(context.local.num_nodes * context.local.num_classes, edge_size),
+                context.domains.edge));
         add_public_poly(
             context,
             "P_Q_N",
@@ -12029,101 +12012,101 @@ namespace gatzk::protocol
             make_eval_poly("V_T_range", padded(context.tables.range, edge_size), context.domains.edge));
 
         // 模型参数在 context 阶段就固定成静态承诺，后面的 trace 只引用标签，不再重复构造权重对象。
-            for (std::size_t layer_index = 0;
-                 layer_index < context.model.hidden_layers.size();
-                 ++layer_index)
+        for (std::size_t layer_index = 0;
+             layer_index < context.model.hidden_layers.size();
+             ++layer_index)
+        {
+            const auto &layer = context.model.hidden_layers[layer_index];
+            for (std::size_t head_index = 0;
+                 head_index < layer.heads.size();
+                 ++head_index)
             {
-                const auto &layer = context.model.hidden_layers[layer_index];
-                for (std::size_t head_index = 0;
-                     head_index < layer.heads.size();
-                     ++head_index)
-                {
-                    const auto &head = layer.heads[head_index];
-                    const auto weight = quantize_model_matrix(
-                        head.seq_kernel_fp,
-                        scales.s_w_hidden.at(layer_index).at(head_index));
-                    const auto column_count = weight.empty() ? 0 : weight.front().size();
-                    for (std::size_t column = 0; column < column_count; ++column)
-                    {
-                        std::vector<FieldElement> values(
-                            context.domains.in->size, FieldElement::zero());
-                        for (std::size_t row = 0; row < weight.size(); ++row)
-                            values[row] = weight[row][column];
-                        const auto label = hidden_weight_column_label(
-                            layer_index, head_index, column);
-                        add_static_commitment(
-                            context, label,
-                            make_eval_poly(label, values, context.domains.in));
-                    }
-                    const auto src_label = hidden_src_label(layer_index, head_index);
-                    add_static_commitment(
-                        context, src_label,
-                        make_eval_poly(
-                            src_label,
-                            padded(quantize_model_vector_at_scale(
-                                       head.attn_src_kernel_fp,
-                                       scales.s_a_src_hidden.at(layer_index).at(head_index)),
-                                   context.domains.d->size),
-                            context.domains.d));
-                    const auto dst_label = hidden_dst_label(layer_index, head_index);
-                    add_static_commitment(
-                        context, dst_label,
-                        make_eval_poly(
-                            dst_label,
-                            padded(quantize_model_vector_at_scale(
-                                       head.attn_dst_kernel_fp,
-                                       scales.s_a_dst_hidden.at(layer_index).at(head_index)),
-                                   context.domains.d->size),
-                            context.domains.d));
-                }
-            }
-            for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
-            {
-                const auto &head = context.model.output_layer.heads[head_index];
+                const auto &head = layer.heads[head_index];
                 const auto weight = quantize_model_matrix(
                     head.seq_kernel_fp,
-                    scales.s_w_output.at(head_index));
+                    scales.s_w_hidden.at(layer_index).at(head_index));
                 const auto column_count = weight.empty() ? 0 : weight.front().size();
                 for (std::size_t column = 0; column < column_count; ++column)
                 {
-                    std::vector<FieldElement> values(context.domains.cat->size, FieldElement::zero());
+                    std::vector<FieldElement> values(
+                        context.domains.in->size, FieldElement::zero());
                     for (std::size_t row = 0; row < weight.size(); ++row)
                         values[row] = weight[row][column];
-                    const auto label = output_weight_column_label(head_index, column);
-                    add_static_commitment(context, label, make_eval_poly(label, values, context.domains.cat));
+                    const auto label = hidden_weight_column_label(
+                        layer_index, head_index, column);
+                    add_static_commitment(
+                        context, label,
+                        make_eval_poly(label, values, context.domains.in));
                 }
+                const auto src_label = hidden_src_label(layer_index, head_index);
                 add_static_commitment(
-                    context,
-                    output_src_label(head_index),
+                    context, src_label,
                     make_eval_poly(
-                        output_src_label(head_index),
+                        src_label,
                         padded(quantize_model_vector_at_scale(
                                    head.attn_src_kernel_fp,
-                                   scales.s_a_src_output.at(head_index)),
-                               context.domains.c->size),
-                        context.domains.c));
+                                   scales.s_a_src_hidden.at(layer_index).at(head_index)),
+                               context.domains.d->size),
+                        context.domains.d));
+                const auto dst_label = hidden_dst_label(layer_index, head_index);
                 add_static_commitment(
-                    context,
-                    output_dst_label(head_index),
+                    context, dst_label,
                     make_eval_poly(
-                        output_dst_label(head_index),
+                        dst_label,
                         padded(quantize_model_vector_at_scale(
                                    head.attn_dst_kernel_fp,
-                                   scales.s_a_dst_output.at(head_index)),
-                               context.domains.c->size),
-                        context.domains.c));
-                add_static_commitment(
-                    context,
-                    output_bias_label(head_index),
-                    make_eval_poly(
-                        output_bias_label(head_index),
-                        padded(
-                            quantize_model_vector(
-                                head.output_bias_fp,
-                                scales.s_b_output.at(head_index)),
-                            context.domains.c->size),
-                        context.domains.c));
+                                   scales.s_a_dst_hidden.at(layer_index).at(head_index)),
+                               context.domains.d->size),
+                        context.domains.d));
             }
+        }
+        for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
+        {
+            const auto &head = context.model.output_layer.heads[head_index];
+            const auto weight = quantize_model_matrix(
+                head.seq_kernel_fp,
+                scales.s_w_output.at(head_index));
+            const auto column_count = weight.empty() ? 0 : weight.front().size();
+            for (std::size_t column = 0; column < column_count; ++column)
+            {
+                std::vector<FieldElement> values(context.domains.cat->size, FieldElement::zero());
+                for (std::size_t row = 0; row < weight.size(); ++row)
+                    values[row] = weight[row][column];
+                const auto label = output_weight_column_label(head_index, column);
+                add_static_commitment(context, label, make_eval_poly(label, values, context.domains.cat));
+            }
+            add_static_commitment(
+                context,
+                output_src_label(head_index),
+                make_eval_poly(
+                    output_src_label(head_index),
+                    padded(quantize_model_vector_at_scale(
+                               head.attn_src_kernel_fp,
+                               scales.s_a_src_output.at(head_index)),
+                           context.domains.c->size),
+                    context.domains.c));
+            add_static_commitment(
+                context,
+                output_dst_label(head_index),
+                make_eval_poly(
+                    output_dst_label(head_index),
+                    padded(quantize_model_vector_at_scale(
+                               head.attn_dst_kernel_fp,
+                               scales.s_a_dst_output.at(head_index)),
+                           context.domains.c->size),
+                    context.domains.c));
+            add_static_commitment(
+                context,
+                output_bias_label(head_index),
+                make_eval_poly(
+                    output_bias_label(head_index),
+                    padded(
+                        quantize_model_vector(
+                            head.output_bias_fp,
+                            scales.s_b_output.at(head_index)),
+                        context.domains.c->size),
+                    context.domains.c));
+        }
         end = Clock::now();
         if (metrics != nullptr)
         {
@@ -12196,748 +12179,782 @@ namespace gatzk::protocol
             cuda_cache_release_guard;
 
         auto stage_start = Clock::now();
-            progress_note("prove:quotient:start");
-            // 先重放动态承诺之前的 transcript，再在这套固定挑战上构造各工作域 quotient。
-            const auto pre_quotient_challenges = replay_challenges(context, trace.commitments, {}, &trace.public_metadata);
-            std::shared_ptr<const ProofEvaluationBackendRegistry> backend_registry;
-            if (route2.packed_fft_backend)
-            {
-                // Packed backends retain non-owning polynomial pointers.
-                // Keep this registry proof-local so those pointers never
-                // outlive the current context or trace.  Construction only
-                // indexes labels; subset materialization remains lazy.
-                backend_registry =
-                    std::make_shared<ProofEvaluationBackendRegistry>(
-                        context, trace);
-            }
-            auto proof_domain_weight_cache = shared_proof_domain_weight_cache();
-            const std::vector<std::string> quotient_labels = {"t_FH", "t_edge", "t_in", "t_d_h", "t_cat", "t_C", "t_N"};
-            append_note(metrics, "quotient_cache=miss");
+        progress_note("prove:quotient:start");
+        // 先重放动态承诺之前的 transcript，再在这套固定挑战上构造各工作域 quotient。
+        const auto pre_quotient_challenges = replay_challenges(context, trace.commitments, {}, &trace.public_metadata);
+        std::shared_ptr<const ProofEvaluationBackendRegistry> backend_registry;
+        if (route2.packed_fft_backend)
+        {
+            // Packed backends retain non-owning polynomial pointers.
+            // Keep this registry proof-local so those pointers never
+            // outlive the current context or trace.  Construction only
+            // indexes labels; subset materialization remains lazy.
+            backend_registry =
+                std::make_shared<ProofEvaluationBackendRegistry>(
+                    context, trace);
+        }
+        auto proof_domain_weight_cache = shared_proof_domain_weight_cache();
+        const std::vector<std::string> quotient_labels = {"t_FH", "t_edge", "t_in", "t_d_h", "t_cat", "t_C", "t_N"};
+        append_note(metrics, "quotient_cache=miss");
 
-            // On integrated-memory CUDA systems a large resident SRS cache
-            // competes directly with the file-backed quotient working set.
-            //
-            // Keep the cache across phases for ordinary workloads, where its
-            // reuse is beneficial. Release it only for quotient shapes that
-            // already enter the large edge/FH working-set class.
-            const bool large_quotient_working_set =
-                (context.domains.edge != nullptr &&
-                 context.domains.edge->size >= (1ULL << 23)) ||
-                (context.domains.fh != nullptr &&
-                 context.domains.fh->size >= (1ULL << 25));
+        // On integrated-memory CUDA systems a large resident SRS cache
+        // competes directly with the file-backed quotient working set.
+        //
+        // Keep the cache across phases for ordinary workloads, where its
+        // reuse is beneficial. Release it only for quotient shapes that
+        // already enter the large edge/FH working-set class.
+        const bool large_quotient_working_set =
+            (context.domains.edge != nullptr &&
+             context.domains.edge->size >= (1ULL << 23)) ||
+            (context.domains.fh != nullptr &&
+             context.domains.fh->size >= (1ULL << 25));
 
-            if (route2.cuda_field_hotspots &&
-                large_quotient_working_set)
-            {
-                // Scalar conversion buffers and streamed-MSM staging are not
-                // useful during quotient construction. Release those first
-                // without throwing away immutable SRS bases.
-                crypto::
-                    release_cuda_g1_msm_execution_workspace();
-
-                constexpr std::size_t
-                    kMinimumRetainedCudaMsmBaseBytes =
-                        std::size_t{512} << 20;
-
-                constexpr std::size_t
-                    kMaximumIntegratedRetainedCudaMsmBaseBytes =
-                        std::size_t{4} << 30;
-
-                std::size_t
-                    retained_cuda_msm_base_bytes =
-                        kMinimumRetainedCudaMsmBaseBytes;
-
-                if (crypto::
-                        cuda_g1_msm_integrated_memory_device())
-                {
-                    const auto host_budget =
-                        quotient_coset_memory_budget();
-
-                    if (host_budget.available_bytes >
-                        host_budget.reserve_bytes)
-                    {
-                        const auto live_after_reserve =
-                            host_budget.available_bytes -
-                            host_budget.reserve_bytes;
-
-                        // Give only 1/16 of currently safe host/unified
-                        // headroom to cross-phase SRS residency.  Quotient
-                        // cosets retain the dominant share while useful
-                        // PPI/OGBN Lagrange prefixes can survive.
-                        retained_cuda_msm_base_bytes =
-                            std::clamp(
-                                live_after_reserve /
-                                    std::size_t{16},
-                                kMinimumRetainedCudaMsmBaseBytes,
-                                kMaximumIntegratedRetainedCudaMsmBaseBytes);
-                    }
-                }
-
-                progress_note(
-                    "prove:quotient:"
-                    "trim_cuda_msm_cache:start:"
-                    "maximum_bytes=" +
-                    std::to_string(
-                        retained_cuda_msm_base_bytes));
-
-                crypto::
-                    trim_cuda_g1_msm_resident_cache(
-                        retained_cuda_msm_base_bytes);
-
-                progress_note(
-                    "prove:quotient:"
-                    "trim_cuda_msm_cache:done:"
-                    "maximum_bytes=" +
-                    std::to_string(
-                        retained_cuda_msm_base_bytes));
-            }
-
-            auto named_quotient_polynomials = materialize_quotient_polynomials(
-                context,
-                trace,
-                pre_quotient_challenges,
-                quotient_labels,
-                metrics);
-            named_quotient_polynomials = blind_quotient_polynomials(
-                context,
-                std::move(named_quotient_polynomials));
-
-            if (route2.cuda_field_hotspots)
-            {
-                progress_note(
-                    "prove:quotient:"
-                    "release_cuda_transform_transients:start");
-
-                // Quotient coefficients are now canonical host-side prover
-                // material. t_edge execution state and CUDA NTT workspace are
-                // dead, so release them before coefficient-SRS KZG waves.
-                release_cuda_t_edge_executor_cache();
-
-                algebra::release_cuda_ntt_workspace();
-
-                // Scalar/stream MSM staging is also phase-local.  Preserve
-                // resident immutable SRS bases: they are useful again for
-                // quotient commitments and, later, folded openings.
-                crypto::
-                    release_cuda_g1_msm_execution_workspace();
-
-                progress_note(
-                    "prove:quotient:"
-                    "release_cuda_transform_transients:done");
-            }
-
-            progress_note("prove:quotient:commit_batch:start");
-            const auto quotient_commit_batch_start = Clock::now();
-            crypto::CommitBatchProfile quotient_commit_profile;
-            auto quotient_commitments = [&]()
-            {
-                // The owned batch may use CUDA waves or CPU worker
-                // dispatch. Measure the synchronously joined call as one
-                // wall-clock commitment span; never sum per-worker MSM
-                // profiles into the formal total.
-                timing::ScopedCommitment commitment_scope(metrics);
-                return batch_quotient_commitments(
-                    std::move(named_quotient_polynomials),
-                    context.kzg,
-                    metrics != nullptr ? &quotient_commit_profile : nullptr);
-            }();
-            progress_note(
-                "prove:quotient:commit_batch:done:ms=" + std::to_string(elapsed_ms(
-                                                             quotient_commit_batch_start, Clock::now())));
-            if (metrics != nullptr)
-            {
-                metrics->quotient_commitment_ms +=
-                    quotient_commit_profile.msm_ms;
-            }
-            // Quotient polynomials and commitments are proof-specific and must not be
-            // reused by a later fresh-proof measurement.
-            const auto challenges = replay_challenges(context, trace.commitments, quotient_commitments, &trace.public_metadata);
-            if (metrics != nullptr)
-            {
-                metrics->quotient_build_ms += elapsed_ms(stage_start, Clock::now());
-            }
-            progress_note("prove:quotient:done");
-
-            // 组装 proof 时必须严格按 schema 的 label 顺序回填，
-            // 否则 serializer / parser 与 verifier 会同时失配。
-            Proof proof;
-            proof.public_metadata = trace.public_metadata;
-            proof.block_order = proof_block_order();
-            proof.challenges = challenges;
-            proof.route_references =
-                route_opening_references(context, proof.challenges);
-            if (trace.pi_bind == nullptr)
-            {
-                throw std::runtime_error("trace is missing Pi_bind proof material");
-            }
-            proof.pi_bind = *trace.pi_bind;
-            for (const auto &label : dynamic_commitment_labels(context))
-            {
-                proof.dynamic_commitments.push_back({label, trace.commitments.at(label)});
-            }
-            for (const auto &label : quotient_commitment_labels(context))
-            {
-                proof.quotient_commitments.push_back({label, quotient_commitments.at(label)});
-            }
-
-            struct BundleSpec
-            {
-                std::string bundle_name;
-                std::string trace_domain_name;
-                std::shared_ptr<algebra::RootOfUnityDomain> domain;
-                std::string z_name;
-                std::string v_name;
-                std::string quotient_name;
-            };
-            const std::vector<BundleSpec> bundle_specs = {
-                {"FH", "FH", context.domains.fh, "z_FH", "v_FH", "t_FH"},
-                {"edge", "edge", context.domains.edge, "z_edge", "v_edge", "t_edge"},
-                {"in", "in", context.domains.in, "z_in", "v_in", "t_in"},
-                {"d_h", "d", context.domains.d, "z_d_h", "v_d_h", "t_d_h"},
-                {"cat", "cat", context.domains.cat, "z_cat", "v_cat", "t_cat"},
-                {"C", "C", context.domains.c, "z_C", "v_C", "t_C"},
-                {"N", "N", context.domains.n, "z_N", "v_N", "t_N"},
-            };
-            stage_start = Clock::now();
-            progress_note("prove:domain_opening:start");
-            struct BundleBuildResult
-            {
-                std::string bundle_name;
-                DomainOpeningBundle bundle;
-                double gather_ms = 0.0;
-                double total_ms = 0.0;
-                RunMetrics local_metrics;
-            };
-            auto build_bundle = [&](const BundleSpec &spec) -> BundleBuildResult
-            {
-                const auto progress_prefix = "prove:domain_opening:" + spec.bundle_name;
-                progress_note(progress_prefix + ":start");
-                RunMetrics local_metrics;
-                EvaluationMemoization opening_memo(
-                    context,
-                    trace,
-                    challenges,
-                    backend_registry,
-                    proof_domain_weight_cache,
-                    &local_metrics);
-                auto labels = domain_opening_labels(context, spec.trace_domain_name);
-                labels.push_back(spec.quotient_name);
-                labels.push_back(quotient_mask_label(spec.quotient_name));
-                const std::vector<FieldElement> points = {
-                    challenges.at(spec.z_name),
-                    challenges.at(spec.z_name) * spec.domain->omega,
-                };
-                double gather_ms = 0.0;
-                const auto local_start = Clock::now();
-                auto bundle = make_bundle(
-                    context,
-                    trace,
-                    opening_memo,
-                    quotient_commitments,
-                    labels,
-                    points,
-                    &local_metrics,
-                    &gather_ms,
-                    progress_prefix);
-                if (spec.bundle_name == "FH")
-                {
-                    const auto nested_ms =
-                        local_metrics.fh_eval_prep_ms + local_metrics.fh_interpolation_ms + local_metrics.fh_public_eval_reuse_ms + local_metrics.fh_quotient_assembly_ms;
-                    local_metrics.fh_open_gather_ms =
-                        std::max(0.0, local_metrics.fh_open_gather_ms - nested_ms);
-                }
-                const auto total_ms = elapsed_ms(local_start, Clock::now());
-                progress_note(
-                    progress_prefix + ":done:gather_ms=" + std::to_string(gather_ms) + ":total_ms=" + std::to_string(total_ms));
-                return {
-                    spec.bundle_name,
-                    std::move(bundle),
-                    gather_ms,
-                    total_ms,
-                    std::move(local_metrics),
-                };
-            };
-            std::vector<BundleBuildResult> bundle_results;
-            bundle_results.reserve(bundle_specs.size());
-            // 并行构造 opening bundle 之前先预热 barycentric 权重和 FH 公开值缓存。
-            // 大域权重向量体量极大，若在多个 bundle 中同时构造，会明显放大缺页和带宽争抢。
-
-            const auto spilled_bytes_for_domain =
-                [&](const std::string &domain_name)
-            {
-                std::size_t bytes = 0;
-
-                for (const auto &[name, spilled] :
-                     trace.spilled_polynomials)
-                {
-                    (void)name;
-
-                    if (spilled.domain_name !=
-                        domain_name)
-                    {
-                        continue;
-                    }
-
-                    if (spilled.size >
-                        std::numeric_limits<
-                            std::size_t>::max() /
-                            sizeof(FieldElement))
-                    {
-                        throw std::runtime_error(
-                            "domain opening spill "
-                            "byte overflow");
-                    }
-
-                    const auto added =
-                        spilled.size *
-                        sizeof(FieldElement);
-
-                    if (bytes >
-                        std::numeric_limits<
-                            std::size_t>::max() -
-                            added)
-                    {
-                        throw std::runtime_error(
-                            "domain opening spill "
-                            "byte overflow");
-                    }
-
-                    bytes += added;
-                }
-
-                return bytes;
-            };
+        if (route2.cuda_field_hotspots &&
+            large_quotient_working_set)
+        {
+            // Scalar conversion buffers and streamed-MSM staging are not
+            // useful during quotient construction. Release those first
+            // without throwing away immutable SRS bases.
+            crypto::
+                release_cuda_g1_msm_execution_workspace();
 
             constexpr std::size_t
-                kLargeOpeningSpillBytes =
-                    std::size_t{2} << 30;
+                kMinimumRetainedCudaMsmBaseBytes =
+                    std::size_t{512} << 20;
 
-            std::vector<std::size_t>
-                large_indices;
+            constexpr std::size_t
+                kMaximumIntegratedRetainedCudaMsmBaseBytes =
+                    std::size_t{4} << 30;
 
-            std::vector<std::size_t>
-                small_indices;
+            std::size_t
+                retained_cuda_msm_base_bytes =
+                    kMinimumRetainedCudaMsmBaseBytes;
 
-            for (std::size_t index = 0;
-                 index < bundle_specs.size();
-                 ++index)
+            if (crypto::
+                    cuda_g1_msm_integrated_memory_device())
             {
-                const auto spill_bytes =
-                    spilled_bytes_for_domain(
-                        bundle_specs[index]
-                            .trace_domain_name);
+                const auto host_budget =
+                    quotient_coset_memory_budget();
 
-                if (route2.cuda_field_hotspots &&
-                    spill_bytes >=
-                        kLargeOpeningSpillBytes)
+                if (host_budget.available_bytes >
+                    host_budget.reserve_bytes)
                 {
-                    large_indices.push_back(
-                        index);
-                }
-                else
-                {
-                    small_indices.push_back(
-                        index);
+                    const auto live_after_reserve =
+                        host_budget.available_bytes -
+                        host_budget.reserve_bytes;
+
+                    // Give only 1/16 of currently safe host/unified
+                    // headroom to cross-phase SRS residency.  Quotient
+                    // cosets retain the dominant share while useful
+                    // PPI/OGBN Lagrange prefixes can survive.
+                    retained_cuda_msm_base_bytes =
+                        std::clamp(
+                            live_after_reserve /
+                                std::size_t{16},
+                            kMinimumRetainedCudaMsmBaseBytes,
+                            kMaximumIntegratedRetainedCudaMsmBaseBytes);
                 }
             }
 
-            std::sort(
-                large_indices.begin(),
-                large_indices.end(),
-                [&](std::size_t lhs,
-                    std::size_t rhs)
-                {
-                    return spilled_bytes_for_domain(
-                               bundle_specs[lhs]
-                                   .trace_domain_name) >
-                           spilled_bytes_for_domain(
-                               bundle_specs[rhs]
-                                   .trace_domain_name);
-                });
+            progress_note(
+                "prove:quotient:"
+                "trim_cuda_msm_cache:start:"
+                "maximum_bytes=" +
+                std::to_string(
+                    retained_cuda_msm_base_bytes));
 
-            for (const auto index :
-                 large_indices)
+            crypto::
+                trim_cuda_g1_msm_resident_cache(
+                    retained_cuda_msm_base_bytes);
+
+            progress_note(
+                "prove:quotient:"
+                "trim_cuda_msm_cache:done:"
+                "maximum_bytes=" +
+                std::to_string(
+                    retained_cuda_msm_base_bytes));
+        }
+
+        auto named_quotient_polynomials = materialize_quotient_polynomials(
+            context,
+            trace,
+            pre_quotient_challenges,
+            quotient_labels,
+            metrics);
+        named_quotient_polynomials = blind_quotient_polynomials(
+            context,
+            std::move(named_quotient_polynomials));
+
+        if (route2.cuda_field_hotspots)
+        {
+            progress_note(
+                "prove:quotient:"
+                "release_cuda_transform_transients:start");
+
+            // Quotient coefficients are now canonical host-side prover
+            // material. t_edge execution state and CUDA NTT workspace are
+            // dead, so release them before coefficient-SRS KZG waves.
+            release_cuda_t_edge_executor_cache();
+
+            algebra::release_cuda_ntt_workspace();
+
+            // Scalar/stream MSM staging is also phase-local.  Preserve
+            // resident immutable SRS bases: they are useful again for
+            // quotient commitments and, later, folded openings.
+            crypto::
+                release_cuda_g1_msm_execution_workspace();
+
+            progress_note(
+                "prove:quotient:"
+                "release_cuda_transform_transients:done");
+        }
+
+        progress_note("prove:quotient:commit_batch:start");
+        const auto quotient_commit_batch_start = Clock::now();
+        crypto::CommitBatchProfile quotient_commit_profile;
+        auto quotient_commitments = [&]()
+        {
+            // The owned batch may use CUDA waves or CPU worker
+            // dispatch. Measure the synchronously joined call as one
+            // wall-clock commitment span; never sum per-worker MSM
+            // profiles into the formal total.
+            timing::ScopedCommitment commitment_scope(metrics);
+            return batch_quotient_commitments(
+                std::move(named_quotient_polynomials),
+                context.kzg,
+                metrics != nullptr ? &quotient_commit_profile : nullptr);
+        }();
+        progress_note(
+            "prove:quotient:commit_batch:done:ms=" + std::to_string(elapsed_ms(
+                                                         quotient_commit_batch_start, Clock::now())));
+        if (metrics != nullptr)
+        {
+            metrics->quotient_commitment_ms +=
+                quotient_commit_profile.msm_ms;
+        }
+        // Quotient polynomials and commitments are proof-specific and must not be
+        // reused by a later fresh-proof measurement.
+        const auto challenges = replay_challenges(context, trace.commitments, quotient_commitments, &trace.public_metadata);
+        if (metrics != nullptr)
+        {
+            metrics->quotient_build_ms += elapsed_ms(stage_start, Clock::now());
+        }
+        progress_note("prove:quotient:done");
+
+        // 组装 proof 时必须严格按 schema 的 label 顺序回填，
+        // 否则 serializer / parser 与 verifier 会同时失配。
+        Proof proof;
+        proof.public_metadata = trace.public_metadata;
+        proof.block_order = proof_block_order();
+        proof.challenges = challenges;
+        proof.route_references =
+            route_opening_references(context, proof.challenges);
+        if (trace.pi_bind == nullptr)
+        {
+            throw std::runtime_error("trace is missing Pi_bind proof material");
+        }
+        proof.pi_bind = *trace.pi_bind;
+        for (const auto &label : dynamic_commitment_labels(context))
+        {
+            proof.dynamic_commitments.push_back({label, trace.commitments.at(label)});
+        }
+        for (const auto &label : quotient_commitment_labels(context))
+        {
+            proof.quotient_commitments.push_back({label, quotient_commitments.at(label)});
+        }
+
+        struct BundleSpec
+        {
+            std::string bundle_name;
+            std::string trace_domain_name;
+            std::shared_ptr<algebra::RootOfUnityDomain> domain;
+            std::string z_name;
+            std::string v_name;
+            std::string quotient_name;
+        };
+        const std::vector<BundleSpec> bundle_specs = {
+            {"FH", "FH", context.domains.fh, "z_FH", "v_FH", "t_FH"},
+            {"edge", "edge", context.domains.edge, "z_edge", "v_edge", "t_edge"},
+            {"in", "in", context.domains.in, "z_in", "v_in", "t_in"},
+            {"d_h", "d", context.domains.d, "z_d_h", "v_d_h", "t_d_h"},
+            {"cat", "cat", context.domains.cat, "z_cat", "v_cat", "t_cat"},
+            {"C", "C", context.domains.c, "z_C", "v_C", "t_C"},
+            {"N", "N", context.domains.n, "z_N", "v_N", "t_N"},
+        };
+        stage_start = Clock::now();
+        progress_note("prove:domain_opening:start");
+        struct BundleBuildResult
+        {
+            std::string bundle_name;
+            DomainOpeningBundle bundle;
+            double gather_ms = 0.0;
+            double total_ms = 0.0;
+            RunMetrics local_metrics;
+        };
+        auto build_bundle = [&](const BundleSpec &spec) -> BundleBuildResult
+        {
+            const auto progress_prefix = "prove:domain_opening:" + spec.bundle_name;
+            progress_note(progress_prefix + ":start");
+            RunMetrics local_metrics;
+            EvaluationMemoization opening_memo(
+                context,
+                trace,
+                challenges,
+                backend_registry,
+                proof_domain_weight_cache,
+                &local_metrics);
+            auto labels = domain_opening_labels(context, spec.trace_domain_name);
+            labels.push_back(spec.quotient_name);
+            labels.push_back(quotient_mask_label(spec.quotient_name));
+            const std::vector<FieldElement> points = {
+                challenges.at(spec.z_name),
+                challenges.at(spec.z_name) * spec.domain->omega,
+            };
+            double gather_ms = 0.0;
+            const auto local_start = Clock::now();
+            auto bundle = make_bundle(
+                context,
+                trace,
+                opening_memo,
+                quotient_commitments,
+                labels,
+                points,
+                &local_metrics,
+                &gather_ms,
+                progress_prefix);
+            if (spec.bundle_name == "FH")
             {
-                const auto &spec =
-                    bundle_specs[index];
+                const auto nested_ms =
+                    local_metrics.fh_eval_prep_ms + local_metrics.fh_interpolation_ms + local_metrics.fh_public_eval_reuse_ms + local_metrics.fh_quotient_assembly_ms;
+                local_metrics.fh_open_gather_ms =
+                    std::max(0.0, local_metrics.fh_open_gather_ms - nested_ms);
+            }
+            const auto total_ms = elapsed_ms(local_start, Clock::now());
+            progress_note(
+                progress_prefix + ":done:gather_ms=" + std::to_string(gather_ms) + ":total_ms=" + std::to_string(total_ms));
+            return {
+                spec.bundle_name,
+                std::move(bundle),
+                gather_ms,
+                total_ms,
+                std::move(local_metrics),
+            };
+        };
+        std::vector<BundleBuildResult> bundle_results;
+        bundle_results.reserve(bundle_specs.size());
+        // 并行构造 opening bundle 之前先预热 barycentric 权重和 FH 公开值缓存。
+        // 大域权重向量体量极大，若在多个 bundle 中同时构造，会明显放大缺页和带宽争抢。
 
-                const auto z =
-                    challenges.at(
-                        spec.z_name);
+        const auto spilled_bytes_for_domain =
+            [&](const std::string &domain_name)
+        {
+            std::size_t bytes = 0;
 
-                proof_domain_weight_cache->get(
-                    spec.domain,
-                    z);
+            for (const auto &[name, spilled] :
+                 trace.spilled_polynomials)
+            {
+                (void)name;
 
-                proof_domain_weight_cache->get(
-                    spec.domain,
-                    z * spec.domain->omega);
+                if (spilled.domain_name !=
+                    domain_name)
+                {
+                    continue;
+                }
 
-                bundle_results.push_back(
-                    build_bundle(spec));
+                if (spilled.size >
+                    std::numeric_limits<
+                        std::size_t>::max() /
+                        sizeof(FieldElement))
+                {
+                    throw std::runtime_error(
+                        "domain opening spill "
+                        "byte overflow");
+                }
+
+                const auto added =
+                    spilled.size *
+                    sizeof(FieldElement);
+
+                if (bytes >
+                    std::numeric_limits<
+                        std::size_t>::max() -
+                        added)
+                {
+                    throw std::runtime_error(
+                        "domain opening spill "
+                        "byte overflow");
+                }
+
+                bytes += added;
             }
 
-            if (std::thread::hardware_concurrency() >
-                1)
+            return bytes;
+        };
+
+        constexpr std::size_t
+            kLargeOpeningSpillBytes =
+                std::size_t{2} << 30;
+
+        std::vector<std::size_t>
+            large_indices;
+
+        std::vector<std::size_t>
+            small_indices;
+
+        for (std::size_t index = 0;
+             index < bundle_specs.size();
+             ++index)
+        {
+            const auto spill_bytes =
+                spilled_bytes_for_domain(
+                    bundle_specs[index]
+                        .trace_domain_name);
+
+            if (route2.cuda_field_hotspots &&
+                spill_bytes >=
+                    kLargeOpeningSpillBytes)
             {
-                std::vector<
-                    std::future<
-                        BundleBuildResult>>
-                    futures;
-
-                futures.reserve(
-                    small_indices.size());
-
-                for (const auto index :
-                     small_indices)
-                {
-                    futures.push_back(
-                        std::async(
-                            std::launch::async,
-                            build_bundle,
-                            bundle_specs[index]));
-                }
-
-                for (auto &future :
-                     futures)
-                {
-                    bundle_results.push_back(
-                        future.get());
-                }
+                large_indices.push_back(
+                    index);
             }
             else
             {
-                for (const auto index :
-                     small_indices)
-                {
-                    bundle_results.push_back(
-                        build_bundle(
-                            bundle_specs[index]));
-                }
+                small_indices.push_back(
+                    index);
             }
-            for (const auto &spec : bundle_specs)
+        }
+
+        std::sort(
+            large_indices.begin(),
+            large_indices.end(),
+            [&](std::size_t lhs,
+                std::size_t rhs)
             {
-                const auto it = std::find_if(
-                    bundle_results.begin(),
-                    bundle_results.end(),
-                    [&](const BundleBuildResult &result)
-                    { return result.bundle_name == spec.bundle_name; });
-                if (it == bundle_results.end())
-                {
-                    throw std::runtime_error("missing bundle build result for " + spec.bundle_name);
-                }
-                proof.domain_openings.push_back({it->bundle_name, it->bundle});
-                if (metrics != nullptr)
-                {
-                    metrics->domain_eval_gather_ms += it->gather_ms;
-                    metrics->domain_open_denominator_inverse_ms += it->local_metrics.domain_open_denominator_inverse_ms;
-                    metrics->domain_open_denominator_inverse_reuse_ms +=
-                        it->local_metrics.domain_open_denominator_inverse_reuse_ms;
-                    metrics->domain_open_denominator_inverse_reuse_hits +=
-                        it->local_metrics.domain_open_denominator_inverse_reuse_hits;
-                    metrics->domain_open_denominator_inverse_cache_misses +=
-                        it->local_metrics.domain_open_denominator_inverse_cache_misses;
-                    metrics->domain_open_point_parallel_batches +=
-                        it->local_metrics.domain_open_point_parallel_batches;
-                    metrics->domain_open_point_parallel_workers +=
-                        it->local_metrics.domain_open_point_parallel_workers;
-                    metrics->domain_open_point_msm_worker_cap +=
-                        it->local_metrics.domain_open_point_msm_worker_cap;
-                    if (auto *metric = domain_open_metric(metrics, it->bundle_name); metric != nullptr)
-                    {
-                        *metric += it->total_ms;
-                    }
-                    if (it->bundle_name == "FH")
-                    {
-                        metrics->fh_eval_prep_ms += it->local_metrics.fh_eval_prep_ms;
-                        metrics->fh_interpolation_ms += it->local_metrics.fh_interpolation_ms;
-                        metrics->fh_public_eval_reuse_ms += it->local_metrics.fh_public_eval_reuse_ms;
-                        metrics->fh_quotient_assembly_ms += it->local_metrics.fh_quotient_assembly_ms;
-                        metrics->fh_open_gather_ms += it->local_metrics.fh_open_gather_ms;
-                        metrics->fh_open_witness_ms += it->local_metrics.fh_open_witness_ms;
-                        metrics->fh_open_fold_prepare_ms += it->local_metrics.fh_open_fold_prepare_ms;
-                    }
-                }
+                return spilled_bytes_for_domain(
+                           bundle_specs[lhs]
+                               .trace_domain_name) >
+                       spilled_bytes_for_domain(
+                           bundle_specs[rhs]
+                               .trace_domain_name);
+            });
+
+        for (const auto index :
+             large_indices)
+        {
+            const auto &spec =
+                bundle_specs[index];
+
+            const auto z =
+                challenges.at(
+                    spec.z_name);
+
+            proof_domain_weight_cache->get(
+                spec.domain,
+                z);
+
+            proof_domain_weight_cache->get(
+                spec.domain,
+                z * spec.domain->omega);
+
+            bundle_results.push_back(
+                build_bundle(spec));
+        }
+
+        if (std::thread::hardware_concurrency() >
+            1)
+        {
+            std::vector<
+                std::future<
+                    BundleBuildResult>>
+                futures;
+
+            futures.reserve(
+                small_indices.size());
+
+            for (const auto index :
+                 small_indices)
+            {
+                futures.push_back(
+                    std::async(
+                        std::launch::async,
+                        build_bundle,
+                        bundle_specs[index]));
             }
-            const auto domain_bundle_wall_ms =
-                elapsed_ms(stage_start, Clock::now());
+
+            for (auto &future :
+                 futures)
+            {
+                bundle_results.push_back(
+                    future.get());
+            }
+        }
+        else
+        {
+            for (const auto index :
+                 small_indices)
+            {
+                bundle_results.push_back(
+                    build_bundle(
+                        bundle_specs[index]));
+            }
+        }
+        for (const auto &spec : bundle_specs)
+        {
+            const auto it = std::find_if(
+                bundle_results.begin(),
+                bundle_results.end(),
+                [&](const BundleBuildResult &result)
+                { return result.bundle_name == spec.bundle_name; });
+            if (it == bundle_results.end())
+            {
+                throw std::runtime_error("missing bundle build result for " + spec.bundle_name);
+            }
+            proof.domain_openings.push_back({it->bundle_name, it->bundle});
             if (metrics != nullptr)
             {
-                metrics->domain_opening_ms += domain_bundle_wall_ms;
-            }
-            progress_note(
-                "prove:domain_opening:done:ms=" + std::to_string(domain_bundle_wall_ms));
-
-            // Every domain-opening scalar value has now been gathered into
-            // proof.domain_openings. The barycentric weight vectors are not
-            // needed by point-group witness construction below.
-            //
-            // In particular, large FH/edge instances can retain multiple
-            // GiB of challenge-specific weight vectors. Release them before
-            // folded opening plans allocate their own full-domain buffers.
-            proof_domain_weight_cache.reset();
-
-            progress_note(
-                "prove:domain_opening:weight_cache:released");
-
-            // Eval_bind owns every Pi_bind claim value.  The same claims remain
-            // inside the in-memory domain bundle solely so Open_dom can fold one
-            // global point group; the wire codec omits them from Eval_dom.
-            for (std::size_t head_index = 0;
-                 head_index < context.model.output_layer.heads.size();
-                 ++head_index)
-            {
-                const auto relation_id =
-                    "bind:output:" + std::to_string(head_index);
-                auto subproof_it = std::find_if(
-                    proof.pi_bind.subproofs.begin(), proof.pi_bind.subproofs.end(),
-                    [&](const BindingSubproof &subproof)
-                    { return subproof.relation_meta.relation_id == relation_id; });
-                if (subproof_it == proof.pi_bind.subproofs.end())
-                    throw std::runtime_error("missing output Eval_bind owner");
-                for (const auto *expected_bundle_name : {"C", "edge"})
+                metrics->domain_eval_gather_ms += it->gather_ms;
+                metrics->domain_open_denominator_inverse_ms += it->local_metrics.domain_open_denominator_inverse_ms;
+                metrics->domain_open_denominator_inverse_reuse_ms +=
+                    it->local_metrics.domain_open_denominator_inverse_reuse_ms;
+                metrics->domain_open_denominator_inverse_reuse_hits +=
+                    it->local_metrics.domain_open_denominator_inverse_reuse_hits;
+                metrics->domain_open_denominator_inverse_cache_misses +=
+                    it->local_metrics.domain_open_denominator_inverse_cache_misses;
+                metrics->domain_open_point_parallel_batches +=
+                    it->local_metrics.domain_open_point_parallel_batches;
+                metrics->domain_open_point_parallel_workers +=
+                    it->local_metrics.domain_open_point_parallel_workers;
+                metrics->domain_open_point_msm_worker_cap +=
+                    it->local_metrics.domain_open_point_msm_worker_cap;
+                if (auto *metric = domain_open_metric(metrics, it->bundle_name); metric != nullptr)
                 {
-                    const auto bundle_it = std::find_if(
-                        proof.domain_openings.begin(),
-                        proof.domain_openings.end(),
-                        [&](const auto &entry)
-                        { return entry.first == expected_bundle_name; });
-                    if (bundle_it == proof.domain_openings.end())
-                        throw std::runtime_error(
-                            "missing Pi_bind global opening bundle: " + std::string(expected_bundle_name));
-                    const auto &bundle_name = bundle_it->first;
-                    const auto &bundle = bundle_it->second;
-                    const bool is_c = bundle_name == "C";
-                    std::vector<std::string> owned_labels;
-                    if (is_c)
-                    {
-                        owned_labels = {
-                            model_proof_local_label(output_bias_label(head_index)),
-                            output_bias_view_label(head_index, "Table_can"),
-                            output_bias_view_label(head_index, "m_can"),
-                            output_bias_view_label(head_index, "J_can"),
-                            output_bias_view_label(head_index, "R_can"),
-                        };
-                    }
-                    else
-                    {
-                        owned_labels = {
-                            output_bias_view_label(head_index, "Query"),
-                            output_bias_view_label(head_index, "J_qry"),
-                            output_bias_view_label(head_index, "R_qry"),
-                        };
-                        if (subproof_it->relation_meta
-                                .coefficient_basis_relations.size() != 1)
-                            throw std::runtime_error(
-                                "missing output coefficient basis Eval_bind metadata");
-                        const auto &basis = subproof_it->relation_meta
-                                                .coefficient_basis_relations.front();
-                        for (const auto &chunk : basis.chunks)
-                        {
-                            owned_labels.push_back(chunk.object_id);
-                            owned_labels.push_back(chunk.accumulator_object);
-                        }
-                    }
-                    for (const auto &label : owned_labels)
-                    {
-                        const auto value_it = std::find_if(
-                            bundle.values.begin(), bundle.values.end(),
-                            [&](const auto &entry)
-                            { return entry.first == label; });
-                        if (value_it == bundle.values.end())
-                            throw std::runtime_error(
-                                "Pi_bind domain value missing from global opening: " + label);
-                        subproof_it->evaluations.push_back(BindingEvaluation{
-                            .domain = bundle_name,
-                            .object_id = label,
-                            .values = value_it->second,
-                            .kind = label.ends_with("_BiasView_m_can")
-                                        ? PayloadValueKind::PublicValue
-                                        : PayloadValueKind::MaskedPrivateValue,
-                        });
-                    }
-                    for (const auto &point : bundle.points)
-                    {
-                        const auto group_id =
-                            "Open_dom:" + bundle_name + ":" + point.to_string();
-                        if (std::none_of(
-                                subproof_it->opening_references.begin(),
-                                subproof_it->opening_references.end(),
-                                [&](const MetadataReference &reference)
-                                { return reference.object_id == group_id; }))
-                            subproof_it->opening_references.push_back({group_id});
-                    }
+                    *metric += it->total_ms;
+                }
+                if (it->bundle_name == "FH")
+                {
+                    metrics->fh_eval_prep_ms += it->local_metrics.fh_eval_prep_ms;
+                    metrics->fh_interpolation_ms += it->local_metrics.fh_interpolation_ms;
+                    metrics->fh_public_eval_reuse_ms += it->local_metrics.fh_public_eval_reuse_ms;
+                    metrics->fh_quotient_assembly_ms += it->local_metrics.fh_quotient_assembly_ms;
+                    metrics->fh_open_gather_ms += it->local_metrics.fh_open_gather_ms;
+                    metrics->fh_open_witness_ms += it->local_metrics.fh_open_witness_ms;
+                    metrics->fh_open_fold_prepare_ms += it->local_metrics.fh_open_fold_prepare_ms;
                 }
             }
-            const auto n_bundle_it = std::find_if(
-                proof.domain_openings.begin(), proof.domain_openings.end(),
-                [](const auto &entry)
-                { return entry.first == "N"; });
-            if (n_bundle_it == proof.domain_openings.end())
-                throw std::runtime_error(
-                    "missing canonical matrix N-domain opening bundle");
-            for (auto &subproof : proof.pi_bind.subproofs)
-            {
-                if (subproof.relation_meta.canonical_matrices.empty())
-                    continue;
-                for (const auto &matrix :
-                     subproof.relation_meta.canonical_matrices)
-                {
-                    auto owned_objects = matrix.column_objects;
-                    owned_objects.push_back(matrix.compressed_object);
-                    for (const auto &column : owned_objects)
-                    {
-                        const auto value_it = std::find_if(
-                            n_bundle_it->second.values.begin(),
-                            n_bundle_it->second.values.end(),
-                            [&](const auto &entry)
-                            { return entry.first == column; });
-                        if (value_it == n_bundle_it->second.values.end())
-                            throw std::runtime_error(
-                                "canonical matrix value missing from N opening: " + column);
-                        subproof.evaluations.push_back(BindingEvaluation{
-                            .domain = "N",
-                            .object_id = column,
-                            .values = value_it->second,
-                            .kind = PayloadValueKind::MaskedPrivateValue,
-                        });
-                    }
-                }
-                for (const auto &point : n_bundle_it->second.points)
-                {
-                    const auto group_id =
-                        "Open_dom:N:" + point.to_string();
-                    if (std::none_of(
-                            subproof.opening_references.begin(),
-                            subproof.opening_references.end(),
-                            [&](const MetadataReference &reference)
-                            { return reference.object_id == group_id; }))
-                        subproof.opening_references.push_back({group_id});
-                }
-            }
-            const auto append_binding_domain_values = [&](
-                                                          BindingSubproof &subproof,
-                                                          const std::string &bundle_name,
-                                                          const std::vector<std::string> &objects)
+        }
+        const auto domain_bundle_wall_ms =
+            elapsed_ms(stage_start, Clock::now());
+        if (metrics != nullptr)
+        {
+            metrics->domain_opening_ms += domain_bundle_wall_ms;
+        }
+        progress_note(
+            "prove:domain_opening:done:ms=" + std::to_string(domain_bundle_wall_ms));
+
+        // Every domain-opening scalar value has now been gathered into
+        // proof.domain_openings. The barycentric weight vectors are not
+        // needed by point-group witness construction below.
+        //
+        // In particular, large FH/edge instances can retain multiple
+        // GiB of challenge-specific weight vectors. Release them before
+        // folded opening plans allocate their own full-domain buffers.
+        proof_domain_weight_cache.reset();
+
+        progress_note(
+            "prove:domain_opening:weight_cache:released");
+
+        // Eval_bind owns every Pi_bind claim value.  The same claims remain
+        // inside the in-memory domain bundle solely so Open_dom can fold one
+        // global point group; the wire codec omits them from Eval_dom.
+        for (std::size_t head_index = 0;
+             head_index < context.model.output_layer.heads.size();
+             ++head_index)
+        {
+            const auto relation_id =
+                "bind:output:" + std::to_string(head_index);
+            auto subproof_it = std::find_if(
+                proof.pi_bind.subproofs.begin(), proof.pi_bind.subproofs.end(),
+                [&](const BindingSubproof &subproof)
+                { return subproof.relation_meta.relation_id == relation_id; });
+            if (subproof_it == proof.pi_bind.subproofs.end())
+                throw std::runtime_error("missing output Eval_bind owner");
+            for (const auto *expected_bundle_name : {"C", "edge"})
             {
                 const auto bundle_it = std::find_if(
                     proof.domain_openings.begin(),
                     proof.domain_openings.end(),
                     [&](const auto &entry)
-                    { return entry.first == bundle_name; });
+                    { return entry.first == expected_bundle_name; });
                 if (bundle_it == proof.domain_openings.end())
                     throw std::runtime_error(
-                        "aggregation binding opening bundle missing: " + bundle_name);
-                for (const auto &object : objects)
+                        "missing Pi_bind global opening bundle: " + std::string(expected_bundle_name));
+                const auto &bundle_name = bundle_it->first;
+                const auto &bundle = bundle_it->second;
+                const bool is_c = bundle_name == "C";
+                std::vector<std::string> owned_labels;
+                if (is_c)
+                {
+                    owned_labels = {
+                        model_proof_local_label(output_bias_label(head_index)),
+                        output_bias_view_label(head_index, "Table_can"),
+                        output_bias_view_label(head_index, "m_can"),
+                        output_bias_view_label(head_index, "J_can"),
+                        output_bias_view_label(head_index, "R_can"),
+                    };
+                }
+                else
+                {
+                    owned_labels = {
+                        output_bias_view_label(head_index, "Query"),
+                        output_bias_view_label(head_index, "J_qry"),
+                        output_bias_view_label(head_index, "R_qry"),
+                    };
+                    if (subproof_it->relation_meta
+                            .coefficient_basis_relations.size() != 1)
+                        throw std::runtime_error(
+                            "missing output coefficient basis Eval_bind metadata");
+                    const auto &basis = subproof_it->relation_meta
+                                            .coefficient_basis_relations.front();
+                    for (const auto &chunk : basis.chunks)
+                    {
+                        owned_labels.push_back(chunk.object_id);
+                        owned_labels.push_back(chunk.accumulator_object);
+                    }
+                }
+                for (const auto &label : owned_labels)
                 {
                     const auto value_it = std::find_if(
-                        bundle_it->second.values.begin(),
-                        bundle_it->second.values.end(),
+                        bundle.values.begin(), bundle.values.end(),
                         [&](const auto &entry)
-                        { return entry.first == object; });
-                    if (value_it == bundle_it->second.values.end())
+                        { return entry.first == label; });
+                    if (value_it == bundle.values.end())
                         throw std::runtime_error(
-                            "aggregation binding domain value missing: " + object);
-                    subproof.evaluations.push_back(BindingEvaluation{
+                            "Pi_bind domain value missing from global opening: " + label);
+                    subproof_it->evaluations.push_back(BindingEvaluation{
                         .domain = bundle_name,
-                        .object_id = object,
+                        .object_id = label,
+                        .values = value_it->second,
+                        .kind = label.ends_with("_BiasView_m_can")
+                                    ? PayloadValueKind::PublicValue
+                                    : PayloadValueKind::MaskedPrivateValue,
+                    });
+                }
+                for (const auto &point : bundle.points)
+                {
+                    const auto group_id =
+                        "Open_dom:" + bundle_name + ":" + point.to_string();
+                    if (std::none_of(
+                            subproof_it->opening_references.begin(),
+                            subproof_it->opening_references.end(),
+                            [&](const MetadataReference &reference)
+                            { return reference.object_id == group_id; }))
+                        subproof_it->opening_references.push_back({group_id});
+                }
+            }
+        }
+        const auto n_bundle_it = std::find_if(
+            proof.domain_openings.begin(), proof.domain_openings.end(),
+            [](const auto &entry)
+            { return entry.first == "N"; });
+        if (n_bundle_it == proof.domain_openings.end())
+            throw std::runtime_error(
+                "missing canonical matrix N-domain opening bundle");
+        for (auto &subproof : proof.pi_bind.subproofs)
+        {
+            if (subproof.relation_meta.canonical_matrices.empty())
+                continue;
+            for (const auto &matrix :
+                 subproof.relation_meta.canonical_matrices)
+            {
+                auto owned_objects = matrix.column_objects;
+                owned_objects.push_back(matrix.compressed_object);
+                for (const auto &column : owned_objects)
+                {
+                    const auto value_it = std::find_if(
+                        n_bundle_it->second.values.begin(),
+                        n_bundle_it->second.values.end(),
+                        [&](const auto &entry)
+                        { return entry.first == column; });
+                    if (value_it == n_bundle_it->second.values.end())
+                        throw std::runtime_error(
+                            "canonical matrix value missing from N opening: " + column);
+                    subproof.evaluations.push_back(BindingEvaluation{
+                        .domain = "N",
+                        .object_id = column,
                         .values = value_it->second,
                         .kind = PayloadValueKind::MaskedPrivateValue,
                     });
                 }
-                for (const auto &point : bundle_it->second.points)
-                {
-                    const auto group_id = "Open_dom:" + bundle_name + ":" + point.to_string();
-                    if (std::none_of(
-                            subproof.opening_references.begin(),
-                            subproof.opening_references.end(),
-                            [&](const MetadataReference &reference)
-                            { return reference.object_id == group_id; }))
-                        subproof.opening_references.push_back({group_id});
-                }
-            };
-            for (auto &subproof : proof.pi_bind.subproofs)
-            {
-                for (const auto &relation :
-                     subproof.relation_meta.aggregation_relations)
-                {
-                    std::vector<std::string> node_objects = {
-                        relation.source_node_object,
-                        relation.target_node_object,
-                    };
-                    std::vector<std::string> edge_objects = {
-                        relation.source_edge_object,
-                        relation.target_edge_object,
-                        relation.product_object,
-                        relation.psq_object,
-                    };
-                    for (const auto *route : {
-                             &relation.source_route,
-                             &relation.target_route})
-                    {
-                        node_objects.push_back(route->table_object);
-                        node_objects.push_back(route->node_inverse_object);
-                        node_objects.push_back(
-                            route->node_accumulator_object);
-                        edge_objects.push_back(route->query_object);
-                        edge_objects.push_back(route->edge_inverse_object);
-                        edge_objects.push_back(
-                            route->edge_accumulator_object);
-                    }
-                    append_binding_domain_values(
-                        subproof, relation.node_domain, node_objects);
-                    append_binding_domain_values(
-                        subproof, relation.edge_domain, edge_objects);
-                }
             }
-
-            const auto point_group_registry_start = Clock::now();
-            StandardPointGroupRegistry opening_registry;
-            for (const auto &spec : bundle_specs)
+            for (const auto &point : n_bundle_it->second.points)
             {
-                const auto bundle_it = std::find_if(
-                    proof.domain_openings.begin(),
-                    proof.domain_openings.end(),
+                const auto group_id =
+                    "Open_dom:N:" + point.to_string();
+                if (std::none_of(
+                        subproof.opening_references.begin(),
+                        subproof.opening_references.end(),
+                        [&](const MetadataReference &reference)
+                        { return reference.object_id == group_id; }))
+                    subproof.opening_references.push_back({group_id});
+            }
+        }
+        const auto append_binding_domain_values = [&](
+                                                      BindingSubproof &subproof,
+                                                      const std::string &bundle_name,
+                                                      const std::vector<std::string> &objects)
+        {
+            const auto bundle_it = std::find_if(
+                proof.domain_openings.begin(),
+                proof.domain_openings.end(),
+                [&](const auto &entry)
+                { return entry.first == bundle_name; });
+            if (bundle_it == proof.domain_openings.end())
+                throw std::runtime_error(
+                    "aggregation binding opening bundle missing: " + bundle_name);
+            for (const auto &object : objects)
+            {
+                const auto value_it = std::find_if(
+                    bundle_it->second.values.begin(),
+                    bundle_it->second.values.end(),
                     [&](const auto &entry)
-                    { return entry.first == spec.bundle_name; });
-                if (bundle_it == proof.domain_openings.end())
-                {
+                    { return entry.first == object; });
+                if (value_it == bundle_it->second.values.end())
                     throw std::runtime_error(
-                        "missing domain bundle while building global point groups: " + spec.bundle_name);
+                        "aggregation binding domain value missing: " + object);
+                subproof.evaluations.push_back(BindingEvaluation{
+                    .domain = bundle_name,
+                    .object_id = object,
+                    .values = value_it->second,
+                    .kind = PayloadValueKind::MaskedPrivateValue,
+                });
+            }
+            for (const auto &point : bundle_it->second.points)
+            {
+                const auto group_id = "Open_dom:" + bundle_name + ":" + point.to_string();
+                if (std::none_of(
+                        subproof.opening_references.begin(),
+                        subproof.opening_references.end(),
+                        [&](const MetadataReference &reference)
+                        { return reference.object_id == group_id; }))
+                    subproof.opening_references.push_back({group_id});
+            }
+        };
+        for (auto &subproof : proof.pi_bind.subproofs)
+        {
+            for (const auto &relation :
+                 subproof.relation_meta.aggregation_relations)
+            {
+                std::vector<std::string> node_objects = {
+                    relation.source_node_object,
+                    relation.target_node_object,
+                };
+                std::vector<std::string> edge_objects = {
+                    relation.source_edge_object,
+                    relation.target_edge_object,
+                    relation.product_object,
+                    relation.psq_object,
+                };
+                for (const auto *route : {
+                         &relation.source_route,
+                         &relation.target_route})
+                {
+                    node_objects.push_back(route->table_object);
+                    node_objects.push_back(route->node_inverse_object);
+                    node_objects.push_back(
+                        route->node_accumulator_object);
+                    edge_objects.push_back(route->query_object);
+                    edge_objects.push_back(route->edge_inverse_object);
+                    edge_objects.push_back(
+                        route->edge_accumulator_object);
                 }
-                auto labels = domain_opening_labels(
-                    context, spec.trace_domain_name);
-                labels.push_back(spec.quotient_name);
-                labels.push_back(quotient_mask_label(spec.quotient_name));
-                add_domain_bundle_claims(
-                    opening_registry,
-                    spec.bundle_name,
-                    bundle_it->second,
-                    collect_commitments(trace, quotient_commitments, labels));
+                append_binding_domain_values(
+                    subproof, relation.node_domain, node_objects);
+                append_binding_domain_values(
+                    subproof, relation.edge_domain, edge_objects);
             }
+        }
 
-            attach_public_output_statement(context, trace, &proof);
-            const auto ext_specs = multihead_external_specs(context);
-            std::vector<std::pair<Commitment, FieldElement>> external_commitments;
-            std::vector<FieldElement> external_points;
-            stage_start = Clock::now();
-            progress_note("prove:external_opening:start");
-            for (const auto &spec : ext_specs)
+        const auto point_group_registry_start = Clock::now();
+        StandardPointGroupRegistry opening_registry;
+        for (const auto &spec : bundle_specs)
+        {
+            const auto bundle_it = std::find_if(
+                proof.domain_openings.begin(),
+                proof.domain_openings.end(),
+                [&](const auto &entry)
+                { return entry.first == spec.bundle_name; });
+            if (bundle_it == proof.domain_openings.end())
             {
-                const auto value = trace.external_evaluations.at(spec.proof_name);
-                proof.external_evaluations.push_back({spec.proof_name, value});
-                proof.external_evaluation_kinds.push_back(payload_kind_for_label(context, spec.label));
-                external_commitments.push_back({spec.static_commitment ? context.static_commitments.at(spec.label) : trace.commitments.at(spec.label),
-                                                value});
-                external_points.push_back(challenges.at(spec.challenge_name));
+                throw std::runtime_error(
+                    "missing domain bundle while building global point groups: " + spec.bundle_name);
             }
-            for (const auto &subproof : proof.pi_bind.subproofs)
+            auto labels = domain_opening_labels(
+                context, spec.trace_domain_name);
+            labels.push_back(spec.quotient_name);
+            labels.push_back(quotient_mask_label(spec.quotient_name));
+            add_domain_bundle_claims(
+                opening_registry,
+                spec.bundle_name,
+                bundle_it->second,
+                collect_commitments(trace, quotient_commitments, labels));
+        }
+
+        attach_public_output_statement(context, trace, &proof);
+        const auto ext_specs = multihead_external_specs(context);
+        std::vector<std::pair<Commitment, FieldElement>> external_commitments;
+        std::vector<FieldElement> external_points;
+        stage_start = Clock::now();
+        progress_note("prove:external_opening:start");
+        for (const auto &spec : ext_specs)
+        {
+            const auto value = trace.external_evaluations.at(spec.proof_name);
+            proof.external_evaluations.push_back({spec.proof_name, value});
+            proof.external_evaluation_kinds.push_back(payload_kind_for_label(context, spec.label));
+            external_commitments.push_back({spec.static_commitment ? context.static_commitments.at(spec.label) : trace.commitments.at(spec.label),
+                                            value});
+            external_points.push_back(challenges.at(spec.challenge_name));
+        }
+        for (const auto &subproof : proof.pi_bind.subproofs)
+        {
+            for (const auto &relation :
+                 subproof.relation_meta.route_terminal_relations)
             {
-                for (const auto &relation :
-                     subproof.relation_meta.route_terminal_relations)
+                const auto evaluation_id =
+                    relation.shifted_accumulator_object + ":u_rel";
+                const auto evaluation = std::find_if(
+                    subproof.evaluations.begin(),
+                    subproof.evaluations.end(),
+                    [&](const BindingEvaluation &candidate)
+                    { return candidate.object_id == evaluation_id; });
+                if (evaluation == subproof.evaluations.end() || evaluation->values.size() != 1 || evaluation->kind != PayloadValueKind::MaskedPrivateValue)
+                    throw std::runtime_error(
+                        "missing route terminal shift value: " + relation.relation_id);
+                const auto y_rel = challenges.at(
+                    relation.challenge_label);
+                external_commitments.push_back({trace.commitments.at(
+                                                    relation.shifted_accumulator_object),
+                                                evaluation->values.front()});
+                external_points.push_back(y_rel);
+                external_commitments.push_back({trace.commitments.at(
+                                                    relation.edge_accumulator_object),
+                                                evaluation->values.front()});
+                external_points.push_back(
+                    y_rel + relation.terminal_delta);
+                external_commitments.push_back({trace.commitments.at(
+                                                    relation.relation_virtual_object),
+                                                FieldElement::zero()});
+                external_points.push_back(
+                    relation.node_terminal_point);
+            }
+            for (const auto &relation :
+                 subproof.relation_meta.aggregation_relations)
+            {
+                for (const auto *route : {
+                         &relation.source_route,
+                         &relation.target_route})
                 {
                     const auto evaluation_id =
-                        relation.shifted_accumulator_object + ":u_rel";
+                        route->shifted_accumulator_object + ":u_rel";
                     const auto evaluation = std::find_if(
                         subproof.evaluations.begin(),
                         subproof.evaluations.end(),
@@ -12945,1286 +12962,1252 @@ namespace gatzk::protocol
                         { return candidate.object_id == evaluation_id; });
                     if (evaluation == subproof.evaluations.end() || evaluation->values.size() != 1 || evaluation->kind != PayloadValueKind::MaskedPrivateValue)
                         throw std::runtime_error(
-                            "missing route terminal shift value: " + relation.relation_id);
+                            "missing aggregation terminal shift value: " + route->relation_id);
                     const auto y_rel = challenges.at(
-                        relation.challenge_label);
+                        route->terminal_challenge_label);
                     external_commitments.push_back({trace.commitments.at(
-                                                        relation.shifted_accumulator_object),
+                                                        route->shifted_accumulator_object),
                                                     evaluation->values.front()});
                     external_points.push_back(y_rel);
                     external_commitments.push_back({trace.commitments.at(
-                                                        relation.edge_accumulator_object),
+                                                        route->edge_accumulator_object),
                                                     evaluation->values.front()});
                     external_points.push_back(
-                        y_rel + relation.terminal_delta);
+                        y_rel + route->terminal_delta);
                     external_commitments.push_back({trace.commitments.at(
-                                                        relation.relation_virtual_object),
+                                                        route->relation_virtual_object),
                                                     FieldElement::zero()});
                     external_points.push_back(
-                        relation.node_terminal_point);
-                }
-                for (const auto &relation :
-                     subproof.relation_meta.aggregation_relations)
-                {
-                    for (const auto *route : {
-                             &relation.source_route,
-                             &relation.target_route})
-                    {
-                        const auto evaluation_id =
-                            route->shifted_accumulator_object + ":u_rel";
-                        const auto evaluation = std::find_if(
-                            subproof.evaluations.begin(),
-                            subproof.evaluations.end(),
-                            [&](const BindingEvaluation &candidate)
-                            { return candidate.object_id == evaluation_id; });
-                        if (evaluation == subproof.evaluations.end() || evaluation->values.size() != 1 || evaluation->kind != PayloadValueKind::MaskedPrivateValue)
-                            throw std::runtime_error(
-                                "missing aggregation terminal shift value: " + route->relation_id);
-                        const auto y_rel = challenges.at(
-                            route->terminal_challenge_label);
-                        external_commitments.push_back({trace.commitments.at(
-                                                            route->shifted_accumulator_object),
-                                                        evaluation->values.front()});
-                        external_points.push_back(y_rel);
-                        external_commitments.push_back({trace.commitments.at(
-                                                            route->edge_accumulator_object),
-                                                        evaluation->values.front()});
-                        external_points.push_back(
-                            y_rel + route->terminal_delta);
-                        external_commitments.push_back({trace.commitments.at(
-                                                            route->relation_virtual_object),
-                                                        FieldElement::zero()});
-                        external_points.push_back(
-                            route->node_terminal_point);
-                    }
+                        route->node_terminal_point);
                 }
             }
-            for (std::size_t head_index = 0;
-                 head_index < context.model.output_layer.heads.size();
-                 ++head_index)
+        }
+        for (std::size_t head_index = 0;
+             head_index < context.model.output_layer.heads.size();
+             ++head_index)
+        {
+            const auto relation_id =
+                "bind:output:" + std::to_string(head_index);
+            const auto subproof_it = std::find_if(
+                proof.pi_bind.subproofs.begin(), proof.pi_bind.subproofs.end(),
+                [&](const BindingSubproof &subproof)
+                { return subproof.relation_meta.relation_id == relation_id; });
+            if (subproof_it == proof.pi_bind.subproofs.end())
+                throw std::runtime_error("missing output bias shift proof");
+            const auto *relation_ptr = find_unique_shift_relation_by_kind(
+                subproof_it->relation_meta, "output-bias-terminal");
+            if (relation_ptr == nullptr)
+                throw std::runtime_error(
+                    "output bias shift proof relation is not unique");
+            const auto &relation = *relation_ptr;
+            if (relation.configured_degrees.empty())
             {
-                const auto relation_id =
-                    "bind:output:" + std::to_string(head_index);
-                const auto subproof_it = std::find_if(
-                    proof.pi_bind.subproofs.begin(), proof.pi_bind.subproofs.end(),
-                    [&](const BindingSubproof &subproof)
-                    { return subproof.relation_meta.relation_id == relation_id; });
-                if (subproof_it == proof.pi_bind.subproofs.end())
-                    throw std::runtime_error("missing output bias shift proof");
-                const auto *relation_ptr = find_unique_shift_relation_by_kind(
-                    subproof_it->relation_meta, "output-bias-terminal");
-                if (relation_ptr == nullptr)
-                    throw std::runtime_error(
-                        "output bias shift proof relation is not unique");
-                const auto &relation = *relation_ptr;
-                if (relation.configured_degrees.empty())
-                {
-                    const auto y_public = challenges.at(relation.challenge_label);
-                    external_commitments.push_back({trace.commitments.at(output_bias_view_label(
-                                                        head_index, "terminal_relation_virtual")),
-                                                    FieldElement::zero()});
-                    external_points.push_back(relation.canonical_points.front());
-                    const auto public_m_id = output_bias_view_label(
-                                                 head_index, "m_can") +
-                                             ":public_bind";
-                    const auto public_m_it = std::find_if(
-                        subproof_it->evaluations.begin(),
-                        subproof_it->evaluations.end(),
-                        [&](const BindingEvaluation &evaluation)
-                        { return evaluation.object_id == public_m_id; });
-                    if (public_m_it == subproof_it->evaluations.end() || public_m_it->values.size() != 1 || public_m_it->kind != PayloadValueKind::PublicValue)
-                        throw std::runtime_error(
-                            "missing same-point public bias multiplicity binding");
-                    external_commitments.push_back({trace.commitments.at(output_bias_view_label(
-                                                        head_index, "m_can")),
-                                                    public_m_it->values.front()});
-                    external_points.push_back(y_public);
-                    continue;
-                }
-                const auto shifted_label =
-                    output_bias_view_label(head_index, "R_shifted");
-                const auto u_id = shifted_label + ":u_rel";
-                const auto u_it = std::find_if(
-                    subproof_it->evaluations.begin(), subproof_it->evaluations.end(),
-                    [&](const BindingEvaluation &evaluation)
-                    { return evaluation.object_id == u_id; });
-                if (u_it == subproof_it->evaluations.end() || u_it->values.size() != 1)
-                    throw std::runtime_error("missing output bias shift check value");
-                const auto y_rel = challenges.at(relation.challenge_label);
-                external_commitments.push_back(
-                    {trace.commitments.at(shifted_label), u_it->values.front()});
-                external_points.push_back(y_rel);
-                const auto virtual_prefix =
-                    output_head_prefix(head_index) + "_BiasView_";
-                external_commitments.push_back(
-                    {trace.commitments.at(virtual_prefix + "F2"), u_it->values.front()});
-                external_points.push_back(y_rel + relation.deltas.at(1));
+                const auto y_public = challenges.at(relation.challenge_label);
                 external_commitments.push_back({trace.commitments.at(output_bias_view_label(
                                                     head_index, "terminal_relation_virtual")),
                                                 FieldElement::zero()});
-                external_points.push_back(relation.canonical_points.at(0));
-
-                const auto public_m_id =
-                    output_bias_view_label(head_index, "m_can") + ":public_bind";
+                external_points.push_back(relation.canonical_points.front());
+                const auto public_m_id = output_bias_view_label(
+                                             head_index, "m_can") +
+                                         ":public_bind";
                 const auto public_m_it = std::find_if(
-                    subproof_it->evaluations.begin(), subproof_it->evaluations.end(),
+                    subproof_it->evaluations.begin(),
+                    subproof_it->evaluations.end(),
                     [&](const BindingEvaluation &evaluation)
                     { return evaluation.object_id == public_m_id; });
                 if (public_m_it == subproof_it->evaluations.end() || public_m_it->values.size() != 1 || public_m_it->kind != PayloadValueKind::PublicValue)
-                    throw std::runtime_error("missing public bias multiplicity binding");
-                external_commitments.push_back({trace.commitments.at(output_bias_view_label(head_index, "m_can")),
-                                                public_m_it->values.front()});
-                external_points.push_back(y_rel);
-            }
-            for (std::size_t head_index = 0;
-                 head_index < context.model.output_layer.heads.size();
-                 ++head_index)
-            {
-                const auto relation_id =
-                    "bind:output:" + std::to_string(head_index);
-                const auto subproof_it = std::find_if(
-                    proof.pi_bind.subproofs.begin(),
-                    proof.pi_bind.subproofs.end(),
-                    [&](const BindingSubproof &subproof)
-                    { return subproof.relation_meta.relation_id == relation_id; });
-                if (subproof_it == proof.pi_bind.subproofs.end() || subproof_it->relation_meta
-                                                                            .coefficient_basis_relations.size() != 1)
                     throw std::runtime_error(
-                        "missing output coefficient basis external proof");
-                const auto &basis = subproof_it->relation_meta
-                                        .coefficient_basis_relations.front();
-                const auto gamma = challenges.at(
-                    basis.gamma_challenge_label);
-                const auto y_rel = challenges.at(
-                    basis.relation_challenge_label);
-                for (const auto &chunk : basis.chunks)
-                {
-                    const auto u_id = chunk.shifted_accumulator_object + ":u_rel";
-                    const auto u_it = std::find_if(
-                        subproof_it->evaluations.begin(),
-                        subproof_it->evaluations.end(),
-                        [&](const BindingEvaluation &evaluation)
-                        { return evaluation.object_id == u_id; });
-                    if (u_it == subproof_it->evaluations.end() || u_it->values.size() != 1 || u_it->kind != PayloadValueKind::MaskedPrivateValue)
-                        throw std::runtime_error(
-                            "missing output coefficient chunk shift value");
-                    external_commitments.push_back({trace.commitments.at(
-                                                        chunk.shifted_accumulator_object),
-                                                    u_it->values.front()});
-                    external_points.push_back(y_rel);
-                    external_commitments.push_back({trace.commitments.at(chunk.accumulator_object),
-                                                    u_it->values.front()});
-                    external_points.push_back(
-                        y_rel + chunk.terminal_point - gamma);
-                }
-                external_commitments.push_back({trace.commitments.at(output_bias_basis_label(
-                                                    head_index, "relation_virtual")),
-                                                FieldElement::zero()});
-                external_points.push_back(gamma);
+                        "missing same-point public bias multiplicity binding");
+                external_commitments.push_back({trace.commitments.at(output_bias_view_label(
+                                                    head_index, "m_can")),
+                                                public_m_it->values.front()});
+                external_points.push_back(y_public);
+                continue;
             }
-            const auto output_binding = derive_public_output_challenges(
-                proof.public_metadata,
-                trace.commitments.at("P_Y"),
-                proof.public_logits,
-                context.local.num_nodes,
-                context.local.num_classes);
-            external_commitments.push_back({trace.commitments.at("P_Y"),
-                                            evaluate_coefficient_vector(proof.public_logits, output_binding.point)});
-            external_points.push_back(output_binding.point);
-            add_external_claims(
-                opening_registry,
-                external_commitments,
-                external_points,
-                proof.external_evaluation_kinds);
-            opening_registry.finalize();
-            if (metrics != nullptr)
+            const auto shifted_label =
+                output_bias_view_label(head_index, "R_shifted");
+            const auto u_id = shifted_label + ":u_rel";
+            const auto u_it = std::find_if(
+                subproof_it->evaluations.begin(), subproof_it->evaluations.end(),
+                [&](const BindingEvaluation &evaluation)
+                { return evaluation.object_id == u_id; });
+            if (u_it == subproof_it->evaluations.end() || u_it->values.size() != 1)
+                throw std::runtime_error("missing output bias shift check value");
+            const auto y_rel = challenges.at(relation.challenge_label);
+            external_commitments.push_back(
+                {trace.commitments.at(shifted_label), u_it->values.front()});
+            external_points.push_back(y_rel);
+            const auto virtual_prefix =
+                output_head_prefix(head_index) + "_BiasView_";
+            external_commitments.push_back(
+                {trace.commitments.at(virtual_prefix + "F2"), u_it->values.front()});
+            external_points.push_back(y_rel + relation.deltas.at(1));
+            external_commitments.push_back({trace.commitments.at(output_bias_view_label(
+                                                head_index, "terminal_relation_virtual")),
+                                            FieldElement::zero()});
+            external_points.push_back(relation.canonical_points.at(0));
+
+            const auto public_m_id =
+                output_bias_view_label(head_index, "m_can") + ":public_bind";
+            const auto public_m_it = std::find_if(
+                subproof_it->evaluations.begin(), subproof_it->evaluations.end(),
+                [&](const BindingEvaluation &evaluation)
+                { return evaluation.object_id == public_m_id; });
+            if (public_m_it == subproof_it->evaluations.end() || public_m_it->values.size() != 1 || public_m_it->kind != PayloadValueKind::PublicValue)
+                throw std::runtime_error("missing public bias multiplicity binding");
+            external_commitments.push_back({trace.commitments.at(output_bias_view_label(head_index, "m_can")),
+                                            public_m_it->values.front()});
+            external_points.push_back(y_rel);
+        }
+        for (std::size_t head_index = 0;
+             head_index < context.model.output_layer.heads.size();
+             ++head_index)
+        {
+            const auto relation_id =
+                "bind:output:" + std::to_string(head_index);
+            const auto subproof_it = std::find_if(
+                proof.pi_bind.subproofs.begin(),
+                proof.pi_bind.subproofs.end(),
+                [&](const BindingSubproof &subproof)
+                { return subproof.relation_meta.relation_id == relation_id; });
+            if (subproof_it == proof.pi_bind.subproofs.end() || subproof_it->relation_meta
+                                                                        .coefficient_basis_relations.size() != 1)
+                throw std::runtime_error(
+                    "missing output coefficient basis external proof");
+            const auto &basis = subproof_it->relation_meta
+                                    .coefficient_basis_relations.front();
+            const auto gamma = challenges.at(
+                basis.gamma_challenge_label);
+            const auto y_rel = challenges.at(
+                basis.relation_challenge_label);
+            for (const auto &chunk : basis.chunks)
             {
-                metrics->point_group_registry_ms += elapsed_ms(
-                    point_group_registry_start, Clock::now());
+                const auto u_id = chunk.shifted_accumulator_object + ":u_rel";
+                const auto u_it = std::find_if(
+                    subproof_it->evaluations.begin(),
+                    subproof_it->evaluations.end(),
+                    [&](const BindingEvaluation &evaluation)
+                    { return evaluation.object_id == u_id; });
+                if (u_it == subproof_it->evaluations.end() || u_it->values.size() != 1 || u_it->kind != PayloadValueKind::MaskedPrivateValue)
+                    throw std::runtime_error(
+                        "missing output coefficient chunk shift value");
+                external_commitments.push_back({trace.commitments.at(
+                                                    chunk.shifted_accumulator_object),
+                                                u_it->values.front()});
+                external_points.push_back(y_rel);
+                external_commitments.push_back({trace.commitments.at(chunk.accumulator_object),
+                                                u_it->values.front()});
+                external_points.push_back(
+                    y_rel + chunk.terminal_point - gamma);
             }
-            for (auto &subproof : proof.pi_bind.subproofs)
+            external_commitments.push_back({trace.commitments.at(output_bias_basis_label(
+                                                head_index, "relation_virtual")),
+                                            FieldElement::zero()});
+            external_points.push_back(gamma);
+        }
+        const auto output_binding = derive_public_output_challenges(
+            proof.public_metadata,
+            trace.commitments.at("P_Y"),
+            proof.public_logits,
+            context.local.num_nodes,
+            context.local.num_classes);
+        external_commitments.push_back({trace.commitments.at("P_Y"),
+                                        evaluate_coefficient_vector(proof.public_logits, output_binding.point)});
+        external_points.push_back(output_binding.point);
+        add_external_claims(
+            opening_registry,
+            external_commitments,
+            external_points,
+            proof.external_evaluation_kinds);
+        opening_registry.finalize();
+        if (metrics != nullptr)
+        {
+            metrics->point_group_registry_ms += elapsed_ms(
+                point_group_registry_start, Clock::now());
+        }
+        for (auto &subproof : proof.pi_bind.subproofs)
+        {
+            std::vector<MetadataReference> normalized;
+            normalized.reserve(subproof.opening_references.size());
+            for (auto reference : subproof.opening_references)
             {
-                std::vector<MetadataReference> normalized;
-                normalized.reserve(subproof.opening_references.size());
-                for (auto reference : subproof.opening_references)
+                for (const auto &group : opening_registry.groups())
                 {
-                    for (const auto &group : opening_registry.groups())
+                    if (reference.object_id == "W_ext:" + group.point.to_string())
                     {
-                        if (reference.object_id == "W_ext:" + group.point.to_string())
-                        {
-                            reference.object_id = group.group_id;
-                            break;
-                        }
-                    }
-                    if (std::none_of(
-                            normalized.begin(), normalized.end(),
-                            [&](const MetadataReference &existing)
-                            { return existing == reference; }))
-                    {
-                        normalized.push_back(std::move(reference));
+                        reference.object_id = group.group_id;
+                        break;
                     }
                 }
-                subproof.opening_references = std::move(normalized);
+                if (std::none_of(
+                        normalized.begin(), normalized.end(),
+                        [&](const MetadataReference &existing)
+                        { return existing == reference; }))
+                {
+                    normalized.push_back(std::move(reference));
+                }
+            }
+            subproof.opening_references = std::move(normalized);
+        }
+
+        struct PointGroupOpeningResult
+        {
+            crypto::G1Point witness;
+            crypto::BatchOpeningProfile profile;
+            double elapsed_ms = 0.0;
+        };
+        const auto &point_groups = opening_registry.groups();
+        std::vector<PointGroupOpeningResult> opening_results(
+            point_groups.size());
+        std::mutex file_backed_opening_cache_mutex;
+        std::unordered_map<
+            std::string,
+            std::weak_ptr<const algebra::Polynomial>>
+            file_backed_opening_cache;
+
+        // CPU opening for a very large file-backed evaluation domain has a much
+        // larger transient host-memory footprint than the corresponding CUDA MSM
+        // route. Keep ordinary/PPI-sized file-backed point groups parallel, but
+        // prevent two 2^25-or-larger CPU point groups from constructing their
+        // folded values, quotient buffers and MSM working sets simultaneously.
+        std::mutex large_cpu_file_backed_opening_mutex;
+        constexpr std::size_t kLargeCpuFileBackedOpeningValueCount =
+            1ULL << 25;
+
+        file_backed_opening_cache.reserve(
+            trace.spilled_polynomials.size());
+        const crypto::OpeningPolynomialResolver
+            file_backed_opening_resolver =
+                [&](const Commitment &commitment)
+            -> std::shared_ptr<const algebra::Polynomial>
+        {
+            if (commitment.opening_polynomial != nullptr)
+            {
+                return commitment.opening_polynomial;
+            }
+            const auto spilled_it =
+                trace.spilled_polynomials.find(
+                    commitment.name);
+            if (spilled_it == trace.spilled_polynomials.end())
+            {
+                throw std::runtime_error(
+                    "file-backed opening material is missing: " + commitment.name);
+            }
+            // A standard domain has two independently folded point
+            // groups.  Let concurrent groups share the same decoded
+            // source, but do not keep every large source alive for
+            // the rest of the proof.  build_streamed_folded_opening_plan
+            // consumes one source at a time, so a weak cache releases
+            // it as soon as the active folds advance.  A strong cache
+            // grows with every spilled edge-domain polynomial and can
+            // exhaust memory before external openings complete.
+            std::lock_guard<std::mutex> lock(
+                file_backed_opening_cache_mutex);
+            if (const auto cached =
+                    file_backed_opening_cache.find(
+                        commitment.name);
+                cached != file_backed_opening_cache.end())
+            {
+                if (auto material = cached->second.lock();
+                    material != nullptr)
+                {
+                    return material;
+                }
+            }
+            auto material = load_spilled_opening_polynomial(
+                context,
+                spilled_it->second,
+                commitment.name);
+            file_backed_opening_cache.insert_or_assign(
+                commitment.name,
+                std::weak_ptr<const algebra::Polynomial>(material));
+            return material;
+        };
+
+        const crypto::OpeningSemanticSourceResolver
+            file_backed_opening_semantic_source_resolver =
+                [&](const Commitment &commitment)
+            -> std::optional<
+                crypto::OpeningSemanticSourceInfo>
+        {
+            if (commitment.opening_polynomial != nullptr)
+            {
+                return std::nullopt;
             }
 
-            struct PointGroupOpeningResult
+            const auto spilled_it =
+                trace.spilled_polynomials.find(
+                    commitment.name);
+
+            if (spilled_it == trace.spilled_polynomials.end())
             {
-                crypto::G1Point witness;
-                crypto::BatchOpeningProfile profile;
-                double elapsed_ms = 0.0;
+                return std::nullopt;
+            }
+
+            const auto &spilled =
+                spilled_it->second;
+
+            if (spilled.semantic_source_id == 0)
+            {
+                return std::nullopt;
+            }
+
+            const auto domain =
+                context_domain_by_name(
+                    context,
+                    spilled.domain_name);
+
+            if (domain == nullptr)
+            {
+                throw std::runtime_error(
+                    "file-backed opening semantic source has unknown domain: " + commitment.name);
+            }
+
+            return crypto::OpeningSemanticSourceInfo{
+                .key =
+                    spilled.domain_name + ":" + std::to_string(spilled.size) + ":" + std::to_string(spilled.semantic_source_id),
+                .domain = domain,
+                .value_count = spilled.size,
+
+                .zero_domain_blinder =
+                    spilled.zero_domain_blinder,
+
+                .file_path =
+                    spilled.path,
+
+                .file_backed =
+                    true,
             };
-            const auto &point_groups = opening_registry.groups();
-            std::vector<PointGroupOpeningResult> opening_results(
-                point_groups.size());
-            std::mutex file_backed_opening_cache_mutex;
+        };
+
+        const auto estimate_point_group_work =
+            [&](std::size_t index)
+        {
+            std::size_t total = 0;
+
+            for (const auto &claim :
+                 point_groups[index].claims)
+            {
+                if (claim.commitment
+                        .opening_polynomial !=
+                    nullptr)
+                {
+                    total +=
+                        claim.commitment
+                            .opening_polynomial
+                            ->size();
+                }
+                else if (
+                    const auto spilled_it =
+                        trace.spilled_polynomials
+                            .find(
+                                claim.commitment.name);
+                    spilled_it !=
+                    trace.spilled_polynomials
+                        .end())
+                {
+                    total +=
+                        spilled_it->second.size;
+                }
+            }
+
+            return total;
+        };
+
+        const auto
+            shared_file_backed_semantic_source_count =
+                [&](std::size_t first_index,
+                    std::size_t second_index)
+        {
+            // Keep small/medium resident opening paths unchanged.
+            // The paired source scan is reserved for genuinely large
+            // streamed sources where memory traffic dominates.
+            constexpr std::size_t
+                kMinimumSharedStreamSourceValues =
+                    1ULL << 22;
+
             std::unordered_map<
                 std::string,
-                std::weak_ptr<const algebra::Polynomial>>
-                file_backed_opening_cache;
+                std::string>
+                first_sources;
 
-            // CPU opening for a very large file-backed evaluation domain has a much
-            // larger transient host-memory footprint than the corresponding CUDA MSM
-            // route. Keep ordinary/PPI-sized file-backed point groups parallel, but
-            // prevent two 2^25-or-larger CPU point groups from constructing their
-            // folded values, quotient buffers and MSM working sets simultaneously.
-            std::mutex large_cpu_file_backed_opening_mutex;
-            constexpr std::size_t kLargeCpuFileBackedOpeningValueCount =
-                1ULL << 25;
-
-            file_backed_opening_cache.reserve(
-                trace.spilled_polynomials.size());
-            const crypto::OpeningPolynomialResolver
-                file_backed_opening_resolver =
-                    [&](const Commitment &commitment)
-                -> std::shared_ptr<const algebra::Polynomial>
+            for (const auto &claim :
+                 point_groups[first_index].claims)
             {
-                if (commitment.opening_polynomial != nullptr)
+                if (claim.commitment
+                        .opening_polynomial !=
+                    nullptr)
                 {
-                    return commitment.opening_polynomial;
-                }
-                const auto spilled_it =
-                    trace.spilled_polynomials.find(
-                        commitment.name);
-                if (spilled_it == trace.spilled_polynomials.end())
-                {
-                    throw std::runtime_error(
-                        "file-backed opening material is missing: " + commitment.name);
-                }
-                // A standard domain has two independently folded point
-                // groups.  Let concurrent groups share the same decoded
-                // source, but do not keep every large source alive for
-                // the rest of the proof.  build_streamed_folded_opening_plan
-                // consumes one source at a time, so a weak cache releases
-                // it as soon as the active folds advance.  A strong cache
-                // grows with every spilled edge-domain polynomial and can
-                // exhaust memory before external openings complete.
-                std::lock_guard<std::mutex> lock(
-                    file_backed_opening_cache_mutex);
-                if (const auto cached =
-                        file_backed_opening_cache.find(
-                            commitment.name);
-                    cached != file_backed_opening_cache.end())
-                {
-                    if (auto material = cached->second.lock();
-                        material != nullptr)
-                    {
-                        return material;
-                    }
-                }
-                auto material = load_spilled_opening_polynomial(
-                    context,
-                    spilled_it->second,
-                    commitment.name);
-                file_backed_opening_cache.insert_or_assign(
-                    commitment.name,
-                    std::weak_ptr<const algebra::Polynomial>(material));
-                return material;
-            };
-
-            const crypto::OpeningSemanticSourceResolver
-                file_backed_opening_semantic_source_resolver =
-                    [&](const Commitment &commitment)
-                -> std::optional<
-                    crypto::OpeningSemanticSourceInfo>
-            {
-                if (commitment.opening_polynomial != nullptr)
-                {
-                    return std::nullopt;
+                    continue;
                 }
 
                 const auto spilled_it =
                     trace.spilled_polynomials.find(
-                        commitment.name);
+                        claim.commitment.name);
 
-                if (spilled_it == trace.spilled_polynomials.end())
+                if (spilled_it ==
+                    trace.spilled_polynomials.end())
                 {
-                    return std::nullopt;
+                    continue;
                 }
 
                 const auto &spilled =
                     spilled_it->second;
 
-                if (spilled.semantic_source_id == 0)
+                if (spilled.semantic_source_id == 0 ||
+                    spilled.size <
+                        kMinimumSharedStreamSourceValues)
                 {
-                    return std::nullopt;
+                    continue;
                 }
 
-                const auto domain =
-                    context_domain_by_name(
-                        context,
-                        spilled.domain_name);
+                const auto key =
+                    spilled.domain_name + ":" +
+                    std::to_string(spilled.size) + ":" +
+                    std::to_string(
+                        spilled.semantic_source_id);
 
-                if (domain == nullptr)
+                first_sources.try_emplace(
+                    key,
+                    claim.commitment.name);
+            }
+
+            std::size_t shared = 0;
+
+            std::unordered_map<
+                std::string,
+                bool>
+                counted;
+
+            for (const auto &claim :
+                 point_groups[second_index].claims)
+            {
+                if (claim.commitment
+                        .opening_polynomial !=
+                    nullptr)
                 {
-                    throw std::runtime_error(
-                        "file-backed opening semantic source has unknown domain: " + commitment.name);
+                    continue;
                 }
 
-                return crypto::OpeningSemanticSourceInfo{
-                    .key =
-                        spilled.domain_name + ":" + std::to_string(spilled.size) + ":" + std::to_string(spilled.semantic_source_id),
-                    .domain = domain,
-                    .value_count = spilled.size,
+                const auto spilled_it =
+                    trace.spilled_polynomials.find(
+                        claim.commitment.name);
 
-                    .zero_domain_blinder =
-                        spilled.zero_domain_blinder,
+                if (spilled_it ==
+                    trace.spilled_polynomials.end())
+                {
+                    continue;
+                }
 
-                    .file_path =
-                        spilled.path,
+                const auto &spilled =
+                    spilled_it->second;
 
-                    .file_backed =
-                        true,
-                };
-            };
+                if (spilled.semantic_source_id == 0 ||
+                    spilled.size <
+                        kMinimumSharedStreamSourceValues)
+                {
+                    continue;
+                }
 
-            const auto estimate_point_group_work =
-                [&](std::size_t index)
+                const auto key =
+                    spilled.domain_name + ":" +
+                    std::to_string(spilled.size) + ":" +
+                    std::to_string(
+                        spilled.semantic_source_id);
+
+                const auto first =
+                    first_sources.find(key);
+
+                if (first ==
+                        first_sources.end() ||
+                    first->second !=
+                        claim.commitment.name)
+                {
+                    continue;
+                }
+
+                if (counted.emplace(
+                               key,
+                               true)
+                        .second)
+                {
+                    ++shared;
+                }
+            }
+
+            return shared;
+        };
+
+        const auto open_group_indices = [&](const std::vector<std::size_t> &indices)
+        {
+            if (indices.empty())
+                return 0.0;
+            const auto phase_start = Clock::now();
+            auto work_order = indices;
+            const auto estimated_work = [&](std::size_t index)
             {
                 std::size_t total = 0;
+                for (const auto &claim : point_groups[index].claims)
+                {
+                    if (claim.commitment.opening_polynomial != nullptr)
+                    {
+                        total += claim.commitment
+                                     .opening_polynomial->size();
+                    }
+                    else if (const auto spilled_it =
+                                 trace.spilled_polynomials.find(
+                                     claim.commitment.name);
+                             spilled_it != trace.spilled_polynomials.end())
+                    {
+                        total += spilled_it->second.size;
+                    }
+                }
+                return total;
+            };
+            const auto largest_file_backed_value_count =
+                [&](std::size_t index)
+            {
+                std::size_t largest = 0;
 
                 for (const auto &claim :
                      point_groups[index].claims)
                 {
-                    if (claim.commitment
-                            .opening_polynomial !=
-                        nullptr)
+                    if (claim.commitment.opening_polynomial != nullptr)
                     {
-                        total +=
-                            claim.commitment
-                                .opening_polynomial
-                                ->size();
+                        continue;
                     }
-                    else if (
-                        const auto spilled_it =
-                            trace.spilled_polynomials
-                                .find(
-                                    claim.commitment.name);
-                        spilled_it !=
-                        trace.spilled_polynomials
-                            .end())
+
+                    if (const auto spilled_it =
+                            trace.spilled_polynomials.find(
+                                claim.commitment.name);
+                        spilled_it != trace.spilled_polynomials.end())
                     {
-                        total +=
-                            spilled_it->second.size;
+                        largest = std::max(
+                            largest,
+                            spilled_it->second.size);
                     }
                 }
 
-                return total;
+                return largest;
             };
-
-            const auto
-                shared_file_backed_semantic_source_count =
-                    [&](std::size_t first_index,
-                        std::size_t second_index)
-            {
-                // Keep small/medium resident opening paths unchanged.
-                // The paired source scan is reserved for genuinely large
-                // streamed sources where memory traffic dominates.
-                constexpr std::size_t
-                    kMinimumSharedStreamSourceValues =
-                        1ULL << 22;
-
-                std::unordered_map<
-                    std::string,
-                    std::string>
-                    first_sources;
-
-                for (const auto &claim :
-                     point_groups[first_index].claims)
+            std::stable_sort(
+                work_order.begin(), work_order.end(),
+                [&](std::size_t lhs, std::size_t rhs)
                 {
-                    if (claim.commitment
-                            .opening_polynomial !=
-                        nullptr)
-                    {
-                        continue;
-                    }
+                    return estimated_work(lhs) > estimated_work(rhs);
+                });
+            const auto hardware_workers =
+                std::max<unsigned>(
+                    1,
+                    std::thread::hardware_concurrency());
 
-                    const auto spilled_it =
-                        trace.spilled_polynomials.find(
-                            claim.commitment.name);
+            const bool external_phase =
+                point_groups[work_order.front()]
+                    .owner_block == "W_ext";
 
-                    if (spilled_it ==
-                        trace.spilled_polynomials.end())
-                    {
-                        continue;
-                    }
-
-                    const auto &spilled =
-                        spilled_it->second;
-
-                    if (spilled.semantic_source_id == 0 ||
-                        spilled.size <
-                            kMinimumSharedStreamSourceValues)
-                    {
-                        continue;
-                    }
-
-                    const auto key =
-                        spilled.domain_name + ":" +
-                        std::to_string(spilled.size) + ":" +
-                        std::to_string(
-                            spilled.semantic_source_id);
-
-                    first_sources.try_emplace(
-                        key,
-                        claim.commitment.name);
-                }
-
-                std::size_t shared = 0;
-
-                std::unordered_map<
-                    std::string,
-                    bool>
-                    counted;
-
-                for (const auto &claim :
-                     point_groups[second_index].claims)
-                {
-                    if (claim.commitment
-                            .opening_polynomial !=
-                        nullptr)
-                    {
-                        continue;
-                    }
-
-                    const auto spilled_it =
-                        trace.spilled_polynomials.find(
-                            claim.commitment.name);
-
-                    if (spilled_it ==
-                        trace.spilled_polynomials.end())
-                    {
-                        continue;
-                    }
-
-                    const auto &spilled =
-                        spilled_it->second;
-
-                    if (spilled.semantic_source_id == 0 ||
-                        spilled.size <
-                            kMinimumSharedStreamSourceValues)
-                    {
-                        continue;
-                    }
-
-                    const auto key =
-                        spilled.domain_name + ":" +
-                        std::to_string(spilled.size) + ":" +
-                        std::to_string(
-                            spilled.semantic_source_id);
-
-                    const auto first =
-                        first_sources.find(key);
-
-                    if (first ==
-                            first_sources.end() ||
-                        first->second !=
-                            claim.commitment.name)
-                    {
-                        continue;
-                    }
-
-                    if (counted.emplace(
-                                   key,
-                                   true)
-                            .second)
-                    {
-                        ++shared;
-                    }
-                }
-
-                return shared;
-            };
-
-            const auto open_group_indices = [&](const std::vector<std::size_t> &indices)
-            {
-                if (indices.empty())
-                    return 0.0;
-                const auto phase_start = Clock::now();
-                auto work_order = indices;
-                const auto estimated_work = [&](std::size_t index)
-                {
-                    std::size_t total = 0;
-                    for (const auto &claim : point_groups[index].claims)
-                    {
-                        if (claim.commitment.opening_polynomial != nullptr)
-                        {
-                            total += claim.commitment
-                                         .opening_polynomial->size();
-                        }
-                        else if (const auto spilled_it =
-                                     trace.spilled_polynomials.find(
-                                         claim.commitment.name);
-                                 spilled_it != trace.spilled_polynomials.end())
-                        {
-                            total += spilled_it->second.size;
-                        }
-                    }
-                    return total;
-                };
-                const auto largest_file_backed_value_count =
+            const bool has_file_backed_openings =
+                std::any_of(
+                    work_order.begin(),
+                    work_order.end(),
                     [&](std::size_t index)
-                {
-                    std::size_t largest = 0;
-
-                    for (const auto &claim :
-                         point_groups[index].claims)
                     {
-                        if (claim.commitment.opening_polynomial != nullptr)
-                        {
-                            continue;
-                        }
-
-                        if (const auto spilled_it =
-                                trace.spilled_polynomials.find(
-                                    claim.commitment.name);
-                            spilled_it != trace.spilled_polynomials.end())
-                        {
-                            largest = std::max(
-                                largest,
-                                spilled_it->second.size);
-                        }
-                    }
-
-                    return largest;
-                };
-                std::stable_sort(
-                    work_order.begin(), work_order.end(),
-                    [&](std::size_t lhs, std::size_t rhs)
-                    {
-                        return estimated_work(lhs) > estimated_work(rhs);
+                        return std::any_of(
+                            point_groups[index].claims.begin(),
+                            point_groups[index].claims.end(),
+                            [&](const auto &claim)
+                            {
+                                return claim.commitment
+                                               .opening_polynomial ==
+                                           nullptr &&
+                                       trace.spilled_polynomials
+                                           .contains(
+                                               claim.commitment.name);
+                            });
                     });
-                const auto hardware_workers =
-                    std::max<unsigned>(
-                        1,
-                        std::thread::hardware_concurrency());
 
-                const bool external_phase =
-                    point_groups[work_order.front()]
-                        .owner_block == "W_ext";
-
-                const bool has_file_backed_openings =
+            // A 2^25-or-larger CPU file-backed group already needs
+            // several full-domain vectors while folding and constructing
+            // its witness. Do not overlap another point group with that
+            // working set. Smaller/PPI-sized file-backed phases retain
+            // the existing two-group pipeline.
+            const bool
+                has_large_cpu_file_backed_opening =
+                    !util::route2_options()
+                         .cuda_field_hotspots &&
                     std::any_of(
                         work_order.begin(),
                         work_order.end(),
                         [&](std::size_t index)
                         {
-                            return std::any_of(
-                                point_groups[index].claims.begin(),
-                                point_groups[index].claims.end(),
-                                [&](const auto &claim)
-                                {
-                                    return claim.commitment
-                                                   .opening_polynomial ==
-                                               nullptr &&
-                                           trace.spilled_polynomials
-                                               .contains(
-                                                   claim.commitment.name);
-                                });
+                            return largest_file_backed_value_count(
+                                       index) >=
+                                   kLargeCpuFileBackedOpeningValueCount;
                         });
 
-                // A 2^25-or-larger CPU file-backed group already needs
-                // several full-domain vectors while folding and constructing
-                // its witness. Do not overlap another point group with that
-                // working set. Smaller/PPI-sized file-backed phases retain
-                // the existing two-group pipeline.
-                const bool
-                    has_large_cpu_file_backed_opening =
-                        !util::route2_options()
-                             .cuda_field_hotspots &&
-                        std::any_of(
-                            work_order.begin(),
-                            work_order.end(),
-                            [&](std::size_t index)
-                            {
-                                return largest_file_backed_value_count(
-                                           index) >=
-                                       kLargeCpuFileBackedOpeningValueCount;
-                            });
-
-                const auto outer_worker_limit =
-                    external_phase
-                        ? std::min<std::size_t>(
-                              20,
-                              hardware_workers)
-                        : std::min<std::size_t>(
-                              8,
-                              std::max<unsigned>(
-                                  1,
-                                  hardware_workers / 4));
-
-                const auto worker_count =
-                    std::min<std::size_t>(
-                        work_order.size(),
-                        has_large_cpu_file_backed_opening
-                            ? std::size_t{1}
-                        : has_file_backed_openings
-                            ? std::min<std::size_t>(
-                                  2,
-                                  outer_worker_limit)
-                            : outer_worker_limit);
-
-                const auto base_inner_worker_count =
-                    worker_count > 1
-                        ? std::max<std::size_t>(
+            const auto outer_worker_limit =
+                external_phase
+                    ? std::min<std::size_t>(
+                          20,
+                          hardware_workers)
+                    : std::min<std::size_t>(
+                          8,
+                          std::max<unsigned>(
                               1,
-                              hardware_workers /
-                                  worker_count)
-                        : std::size_t{0};
+                              hardware_workers / 4));
 
-                if (has_large_cpu_file_backed_opening)
-                {
-                    progress_note(
-                        "prove:opening:"
-                        "phase_policy="
-                        "large_cpu_file_backed_outer_serial:"
-                        "groups=" +
-                        std::to_string(
-                            work_order.size()));
-                }
-                std::atomic<std::size_t> next{0};
-                crypto::g1_parallel_msm_batch_workers(
-                    worker_count,
-                    [&](std::size_t)
-                    {
-                        while (true)
-                        {
-                            const auto position = next.fetch_add(1);
-                            if (position >= work_order.size())
-                                break;
-                            const auto group_index = work_order[position];
-                            const auto &group = point_groups[group_index];
-                            std::vector<Commitment> commitments;
-                            std::vector<FieldElement> values;
-                            commitments.reserve(group.claims.size());
-                            values.reserve(group.claims.size());
-                            for (const auto &claim : group.claims)
-                            {
-                                commitments.push_back(claim.commitment);
-                                values.push_back(claim.value);
-                            }
-                            const auto largest_file_backed_count =
-                                largest_file_backed_value_count(
-                                    group_index);
+            const auto worker_count =
+                std::min<std::size_t>(
+                    work_order.size(),
+                    has_large_cpu_file_backed_opening
+                        ? std::size_t{1}
+                    : has_file_backed_openings
+                        ? std::min<std::size_t>(
+                              2,
+                              outer_worker_limit)
+                        : outer_worker_limit);
 
-                            const bool
-                                serialize_large_cpu_file_backed_opening =
-                                    !util::route2_options()
-                                         .cuda_field_hotspots &&
-                                    largest_file_backed_count >=
-                                        kLargeCpuFileBackedOpeningValueCount;
+            const auto base_inner_worker_count =
+                worker_count > 1
+                    ? std::max<std::size_t>(
+                          1,
+                          hardware_workers /
+                              worker_count)
+                    : std::size_t{0};
 
-                            // Preserve bounded inner parallelism even when the
-                            // phase itself is outer-serial. Otherwise worker_count
-                            // == 1 would drop execution_options entirely and the
-                            // largest opening could fall back to an unconstrained
-                            // inner worker policy.
-                            const auto inner_worker_count =
-                                serialize_large_cpu_file_backed_opening
-                                    ? std::min<std::size_t>(
-                                          16,
-                                          hardware_workers)
-                                : worker_count > 1 &&
-                                        !external_phase &&
-                                        estimated_work(
-                                            group_index) >=
-                                            (1ULL << 18)
-                                    ? std::min<std::size_t>(
-                                          16,
-                                          hardware_workers)
-                                    : base_inner_worker_count;
-
-                            const crypto::
-                                PointGroupOpeningExecutionOptions
-                                    execution_options{
-                                        .max_field_worker_count =
-                                            inner_worker_count,
-                                        .msm = {
-                                            .max_worker_count =
-                                                inner_worker_count,
-                                        },
-                                    };
-                            std::unique_lock<std::mutex>
-                                large_cpu_file_backed_opening_guard;
-
-                            if (serialize_large_cpu_file_backed_opening)
-                            {
-                                large_cpu_file_backed_opening_guard =
-                                    std::unique_lock<std::mutex>(
-                                        large_cpu_file_backed_opening_mutex);
-
-                                progress_note(
-                                    "prove:opening:"
-                                    "large_cpu_file_backed_serial:" +
-                                    group.owner_block + ":values=" + std::to_string(largest_file_backed_count));
-                            }
-
-                            const auto local_start = Clock::now();
-                            opening_results[group_index].witness =
-                                crypto::KZG::open_point_group(
-                                    commitments,
-                                    group.point,
-                                    values,
-                                    derive_point_group_challenge(
-                                        proof.public_metadata, group),
-                                    context.kzg,
-                                    &opening_results[group_index].profile,
-                                    inner_worker_count != 0
-                                        ? &execution_options
-                                        : nullptr,
-                                    trace.spilled_polynomials.empty()
-                                        ? nullptr
-                                        : &file_backed_opening_resolver,
-                                    trace.spilled_polynomials.empty()
-                                        ? nullptr
-                                        : &file_backed_opening_semantic_source_resolver);
-                            opening_results[group_index].profile.point_parallel_batches = 1;
-                            opening_results[group_index].profile.point_parallel_workers =
-                                serialize_large_cpu_file_backed_opening
-                                    ? 1
-                                    : worker_count;
-                            opening_results[group_index].elapsed_ms =
-                                elapsed_ms(local_start, Clock::now());
-                        }
-                    });
-                return elapsed_ms(phase_start, Clock::now());
-            };
-
-            std::vector<std::size_t> domain_group_indices;
-            std::vector<std::size_t> external_group_indices;
-            for (std::size_t i = 0; i < point_groups.size(); ++i)
+            if (has_large_cpu_file_backed_opening)
             {
-                (point_groups[i].owner_block == "W_ext"
-                     ? external_group_indices
-                     : domain_group_indices)
-                    .push_back(i);
+                progress_note(
+                    "prove:opening:"
+                    "phase_policy="
+                    "large_cpu_file_backed_outer_serial:"
+                    "groups=" +
+                    std::to_string(
+                        work_order.size()));
             }
-            struct SharedStreamPairSelection
-            {
-                std::array<std::size_t, 2>
-                    groups{0, 0};
-
-                std::size_t shared_source_count = 0;
-
-                std::size_t estimated_work = 0;
-            };
-
-            const auto select_shared_stream_pairs =
-                [&](const std::vector<std::size_t> &candidates,
-                    bool require_same_owner)
-            {
-                std::vector<
-                    SharedStreamPairSelection>
-                    selections;
-
-                if (!util::route2_options()
-                         .cuda_field_hotspots ||
-                    candidates.size() < 2)
+            std::atomic<std::size_t> next{0};
+            crypto::g1_parallel_msm_batch_workers(
+                worker_count,
+                [&](std::size_t)
                 {
-                    return selections;
-                }
-
-                std::unordered_set<std::size_t>
-                    consumed;
-
-                while (true)
-                {
-                    bool found = false;
-
-                    SharedStreamPairSelection
-                        best;
-
-                    for (std::size_t lhs_position = 0;
-                         lhs_position <
-                         candidates.size();
-                         ++lhs_position)
+                    while (true)
                     {
-                        const auto lhs =
-                            candidates[lhs_position];
+                        const auto position = next.fetch_add(1);
+                        if (position >= work_order.size())
+                            break;
+                        const auto group_index = work_order[position];
+                        const auto &group = point_groups[group_index];
+                        std::vector<Commitment> commitments;
+                        std::vector<FieldElement> values;
+                        commitments.reserve(group.claims.size());
+                        values.reserve(group.claims.size());
+                        for (const auto &claim : group.claims)
+                        {
+                            commitments.push_back(claim.commitment);
+                            values.push_back(claim.value);
+                        }
+                        const auto largest_file_backed_count =
+                            largest_file_backed_value_count(
+                                group_index);
 
-                        if (consumed.contains(lhs))
+                        const bool
+                            serialize_large_cpu_file_backed_opening =
+                                !util::route2_options()
+                                     .cuda_field_hotspots &&
+                                largest_file_backed_count >=
+                                    kLargeCpuFileBackedOpeningValueCount;
+
+                        // Preserve bounded inner parallelism even when the
+                        // phase itself is outer-serial. Otherwise worker_count
+                        // == 1 would drop execution_options entirely and the
+                        // largest opening could fall back to an unconstrained
+                        // inner worker policy.
+                        const auto inner_worker_count =
+                            serialize_large_cpu_file_backed_opening
+                                ? std::min<std::size_t>(
+                                      16,
+                                      hardware_workers)
+                            : worker_count > 1 &&
+                                    !external_phase &&
+                                    estimated_work(
+                                        group_index) >=
+                                        (1ULL << 18)
+                                ? std::min<std::size_t>(
+                                      16,
+                                      hardware_workers)
+                                : base_inner_worker_count;
+
+                        const crypto::
+                            PointGroupOpeningExecutionOptions
+                                execution_options{
+                                    .max_field_worker_count =
+                                        inner_worker_count,
+                                    .msm = {
+                                        .max_worker_count =
+                                            inner_worker_count,
+                                    },
+                                };
+                        std::unique_lock<std::mutex>
+                            large_cpu_file_backed_opening_guard;
+
+                        if (serialize_large_cpu_file_backed_opening)
+                        {
+                            large_cpu_file_backed_opening_guard =
+                                std::unique_lock<std::mutex>(
+                                    large_cpu_file_backed_opening_mutex);
+
+                            progress_note(
+                                "prove:opening:"
+                                "large_cpu_file_backed_serial:" +
+                                group.owner_block + ":values=" + std::to_string(largest_file_backed_count));
+                        }
+
+                        const auto local_start = Clock::now();
+                        opening_results[group_index].witness =
+                            crypto::KZG::open_point_group(
+                                commitments,
+                                group.point,
+                                values,
+                                derive_point_group_challenge(
+                                    proof.public_metadata, group),
+                                context.kzg,
+                                &opening_results[group_index].profile,
+                                inner_worker_count != 0
+                                    ? &execution_options
+                                    : nullptr,
+                                trace.spilled_polynomials.empty()
+                                    ? nullptr
+                                    : &file_backed_opening_resolver,
+                                trace.spilled_polynomials.empty()
+                                    ? nullptr
+                                    : &file_backed_opening_semantic_source_resolver);
+                        opening_results[group_index].profile.point_parallel_batches = 1;
+                        opening_results[group_index].profile.point_parallel_workers =
+                            serialize_large_cpu_file_backed_opening
+                                ? 1
+                                : worker_count;
+                        opening_results[group_index].elapsed_ms =
+                            elapsed_ms(local_start, Clock::now());
+                    }
+                });
+            return elapsed_ms(phase_start, Clock::now());
+        };
+
+        std::vector<std::size_t> domain_group_indices;
+        std::vector<std::size_t> external_group_indices;
+        for (std::size_t i = 0; i < point_groups.size(); ++i)
+        {
+            (point_groups[i].owner_block == "W_ext"
+                 ? external_group_indices
+                 : domain_group_indices)
+                .push_back(i);
+        }
+        struct SharedStreamPairSelection
+        {
+            std::array<std::size_t, 2>
+                groups{0, 0};
+
+            std::size_t shared_source_count = 0;
+
+            std::size_t estimated_work = 0;
+        };
+
+        const auto select_shared_stream_pairs =
+            [&](const std::vector<std::size_t> &candidates,
+                bool require_same_owner)
+        {
+            std::vector<
+                SharedStreamPairSelection>
+                selections;
+
+            if (!util::route2_options()
+                     .cuda_field_hotspots ||
+                candidates.size() < 2)
+            {
+                return selections;
+            }
+
+            std::unordered_set<std::size_t>
+                consumed;
+
+            while (true)
+            {
+                bool found = false;
+
+                SharedStreamPairSelection
+                    best;
+
+                for (std::size_t lhs_position = 0;
+                     lhs_position <
+                     candidates.size();
+                     ++lhs_position)
+                {
+                    const auto lhs =
+                        candidates[lhs_position];
+
+                    if (consumed.contains(lhs))
+                    {
+                        continue;
+                    }
+
+                    for (std::size_t rhs_position =
+                             lhs_position + 1;
+                         rhs_position <
+                         candidates.size();
+                         ++rhs_position)
+                    {
+                        const auto rhs =
+                            candidates[rhs_position];
+
+                        if (consumed.contains(rhs))
                         {
                             continue;
                         }
 
-                        for (std::size_t rhs_position =
-                                 lhs_position + 1;
-                             rhs_position <
-                             candidates.size();
-                             ++rhs_position)
+                        if (require_same_owner &&
+                            point_groups[lhs]
+                                    .owner_block !=
+                                point_groups[rhs]
+                                    .owner_block)
                         {
-                            const auto rhs =
-                                candidates[rhs_position];
+                            continue;
+                        }
 
-                            if (consumed.contains(rhs))
-                            {
-                                continue;
-                            }
+                        const auto shared =
+                            shared_file_backed_semantic_source_count(
+                                lhs,
+                                rhs);
 
-                            if (require_same_owner &&
-                                point_groups[lhs]
-                                        .owner_block !=
-                                    point_groups[rhs]
-                                        .owner_block)
-                            {
-                                continue;
-                            }
+                        if (shared == 0)
+                        {
+                            continue;
+                        }
 
-                            const auto shared =
-                                shared_file_backed_semantic_source_count(
-                                    lhs,
-                                    rhs);
+                        const auto work =
+                            estimate_point_group_work(
+                                lhs) +
+                            estimate_point_group_work(
+                                rhs);
 
-                            if (shared == 0)
-                            {
-                                continue;
-                            }
+                        if (!found ||
+                            shared >
+                                best.shared_source_count ||
+                            (shared ==
+                                 best.shared_source_count &&
+                             work >
+                                 best.estimated_work))
+                        {
+                            best.groups = {
+                                lhs,
+                                rhs,
+                            };
 
-                            const auto work =
-                                estimate_point_group_work(
-                                    lhs) +
-                                estimate_point_group_work(
-                                    rhs);
+                            best.shared_source_count =
+                                shared;
 
-                            if (!found ||
-                                shared >
-                                    best.shared_source_count ||
-                                (shared ==
-                                     best.shared_source_count &&
-                                 work >
-                                     best.estimated_work))
-                            {
-                                best.groups = {
-                                    lhs,
-                                    rhs,
-                                };
+                            best.estimated_work =
+                                work;
 
-                                best.shared_source_count =
-                                    shared;
-
-                                best.estimated_work =
-                                    work;
-
-                                found = true;
-                            }
+                            found = true;
                         }
                     }
-
-                    if (!found)
-                    {
-                        break;
-                    }
-
-                    consumed.insert(
-                        best.groups[0]);
-
-                    consumed.insert(
-                        best.groups[1]);
-
-                    selections.push_back(
-                        best);
                 }
 
-                return selections;
-            };
-
-            const auto
-                shared_stream_domain_pairs =
-                    select_shared_stream_pairs(
-                        domain_group_indices,
-                        true);
-
-            const auto
-                shared_stream_external_pairs =
-                    select_shared_stream_pairs(
-                        external_group_indices,
-                        false);
-            const auto external_claim_assembly_ms =
-                elapsed_ms(
-                    stage_start,
-                    Clock::now());
-
-            const auto domain_witness_start =
-                Clock::now();
-
-            auto open_shared_stream_pair =
-                [&](const SharedStreamPairSelection
-                        &selection)
-            {
-                const auto pair =
-                    selection.groups;
-
-                std::array<
-                    std::vector<Commitment>,
-                    2>
-                    pair_commitments;
-
-                std::array<
-                    std::vector<FieldElement>,
-                    2>
-                    pair_values;
-
-                std::array<FieldElement, 2>
-                    pair_points{
-                        point_groups[pair[0]].point,
-                        point_groups[pair[1]].point,
-                    };
-
-                std::array<FieldElement, 2>
-                    pair_challenges{
-                        derive_point_group_challenge(
-                            proof.public_metadata,
-                            point_groups[pair[0]]),
-                        derive_point_group_challenge(
-                            proof.public_metadata,
-                            point_groups[pair[1]]),
-                    };
-
-                for (std::size_t slot = 0;
-                     slot < 2;
-                     ++slot)
+                if (!found)
                 {
-                    const auto &group =
-                        point_groups[pair[slot]];
-
-                    pair_commitments[slot]
-                        .reserve(
-                            group.claims.size());
-
-                    pair_values[slot]
-                        .reserve(
-                            group.claims.size());
-
-                    for (const auto &claim :
-                         group.claims)
-                    {
-                        pair_commitments[slot]
-                            .push_back(
-                                claim.commitment);
-
-                        pair_values[slot]
-                            .push_back(
-                                claim.value);
-                    }
+                    break;
                 }
 
-                const auto hardware_workers =
-                    std::max<unsigned>(
-                        1,
-                        std::thread::
-                            hardware_concurrency());
+                consumed.insert(
+                    best.groups[0]);
 
-                const auto inner_worker_count =
-                    std::min<std::size_t>(
-                        16,
-                        hardware_workers);
+                consumed.insert(
+                    best.groups[1]);
 
-                const std::array<
-                    crypto::
-                        PointGroupOpeningExecutionOptions,
-                    2>
-                    pair_execution_options{
-                        crypto::
-                            PointGroupOpeningExecutionOptions{
-                                .max_field_worker_count =
-                                    inner_worker_count,
-                                .msm = {
-                                    .max_worker_count =
-                                        inner_worker_count,
-                                },
-                            },
-                        crypto::PointGroupOpeningExecutionOptions{
-                            .max_field_worker_count = inner_worker_count,
-                            .msm = {
-                                .max_worker_count = inner_worker_count,
-                            },
-                        },
-                    };
-
-                std::array<
-                    crypto::BatchOpeningProfile,
-                    2>
-                    pair_profiles;
-
-                const auto pair_start =
-                    Clock::now();
-
-                const auto witnesses =
-                    crypto::KZG::
-                        open_point_group_pair_shared_stream(
-                            pair_commitments,
-                            pair_points,
-                            pair_values,
-                            pair_challenges,
-                            context.kzg,
-                            &pair_profiles,
-                            &pair_execution_options,
-                            trace.spilled_polynomials
-                                    .empty()
-                                ? nullptr
-                                : &file_backed_opening_resolver,
-                            trace.spilled_polynomials
-                                    .empty()
-                                ? nullptr
-                                : &file_backed_opening_semantic_source_resolver);
-
-                const auto pair_wall_ms =
-                    elapsed_ms(
-                        pair_start,
-                        Clock::now());
-
-                for (std::size_t slot = 0;
-                     slot < 2;
-                     ++slot)
-                {
-                    const auto index =
-                        pair[slot];
-
-                    pair_profiles[slot]
-                        .point_parallel_batches = 1;
-
-                    pair_profiles[slot]
-                        .point_parallel_workers = 2;
-
-                    opening_results[index]
-                        .witness =
-                        witnesses[slot];
-
-                    opening_results[index]
-                        .profile =
-                        pair_profiles[slot];
-
-                    opening_results[index]
-                        .elapsed_ms =
-                        pair_profiles[slot]
-                            .precompute_ms +
-                        pair_profiles[slot]
-                            .finalize_ms;
-                }
-
-                progress_note(
-                    "prove:opening:"
-                    "shared_stream_pair:"
-                    "first_owner=" +
-                    point_groups[pair[0]]
-                        .owner_block +
-                    ":second_owner=" +
-                    point_groups[pair[1]]
-                        .owner_block +
-                    ":shared_sources=" +
-                    std::to_string(
-                        selection
-                            .shared_source_count) +
-                    ":ms=" +
-                    std::to_string(
-                        pair_wall_ms));
-            };
-
-            const auto erase_opened_pair =
-                [](std::vector<std::size_t> *indices,
-                   const std::array<std::size_t, 2>
-                       &pair)
-            {
-                indices->erase(
-                    std::remove_if(
-                        indices->begin(),
-                        indices->end(),
-                        [&](std::size_t index)
-                        {
-                            return index ==
-                                       pair[0] ||
-                                   index ==
-                                       pair[1];
-                        }),
-                    indices->end());
-            };
-
-            auto remaining_domain_group_indices =
-                domain_group_indices;
-
-            for (const auto &selection :
-                 shared_stream_domain_pairs)
-            {
-                open_shared_stream_pair(
-                    selection);
-
-                erase_opened_pair(
-                    &remaining_domain_group_indices,
-                    selection.groups);
+                selections.push_back(
+                    best);
             }
 
-            (void)open_group_indices(
-                remaining_domain_group_indices);
+            return selections;
+        };
 
-            const auto domain_witness_wall_ms =
-                elapsed_ms(
-                    domain_witness_start,
-                    Clock::now());
+        const auto
+            shared_stream_domain_pairs =
+                select_shared_stream_pairs(
+                    domain_group_indices,
+                    true);
 
-            for (const auto group_index :
-                 domain_group_indices)
+        const auto
+            shared_stream_external_pairs =
+                select_shared_stream_pairs(
+                    external_group_indices,
+                    false);
+        const auto external_claim_assembly_ms =
+            elapsed_ms(
+                stage_start,
+                Clock::now());
+
+        const auto domain_witness_start =
+            Clock::now();
+
+        auto open_shared_stream_pair =
+            [&](const SharedStreamPairSelection
+                    &selection)
+        {
+            const auto pair =
+                selection.groups;
+
+            std::array<
+                std::vector<Commitment>,
+                2>
+                pair_commitments;
+
+            std::array<
+                std::vector<FieldElement>,
+                2>
+                pair_values;
+
+            std::array<FieldElement, 2>
+                pair_points{
+                    point_groups[pair[0]].point,
+                    point_groups[pair[1]].point,
+                };
+
+            std::array<FieldElement, 2>
+                pair_challenges{
+                    derive_point_group_challenge(
+                        proof.public_metadata,
+                        point_groups[pair[0]]),
+                    derive_point_group_challenge(
+                        proof.public_metadata,
+                        point_groups[pair[1]]),
+                };
+
+            for (std::size_t slot = 0;
+                 slot < 2;
+                 ++slot)
             {
                 const auto &group =
-                    point_groups[group_index];
+                    point_groups[pair[slot]];
 
-                const auto &profile =
-                    opening_results[group_index]
-                        .profile;
+                pair_commitments[slot]
+                    .reserve(
+                        group.claims.size());
 
-                progress_note(
-                    "prove:domain_witness:group:" +
-                    group.owner_block +
-                    ":ms=" +
-                    std::to_string(
-                        opening_results[group_index]
-                            .elapsed_ms) +
-                    ":precompute_ms=" +
-                    std::to_string(
-                        profile.precompute_ms) +
-                    ":inverse_ms=" +
-                    std::to_string(
-                        profile
-                            .denominator_inverse_ms) +
-                    ":assembly_ms=" +
-                    std::to_string(
-                        profile
-                            .quotient_assembly_ms) +
-                    ":witness_msm_ms=" +
-                    std::to_string(
-                        profile
-                            .witness_msm_ms) +
-                    ":blinder_ms=" +
-                    std::to_string(
-                        profile
-                            .blinder_witness_ms) +
-                    ":workers=" +
-                    std::to_string(
-                        profile
-                            .point_msm_worker_cap) +
-                    ":outer_workers=" +
-                    std::to_string(
-                        profile
-                            .point_parallel_workers));
-            }
+                pair_values[slot]
+                    .reserve(
+                        group.claims.size());
 
-            progress_note(
-                "prove:domain_witness:done:ms=" +
-                std::to_string(
-                    domain_witness_wall_ms));
-
-            auto remaining_external_group_indices =
-                external_group_indices;
-
-            const auto external_witness_start =
-                Clock::now();
-
-            for (const auto &selection :
-                 shared_stream_external_pairs)
-            {
-                open_shared_stream_pair(
-                    selection);
-
-                erase_opened_pair(
-                    &remaining_external_group_indices,
-                    selection.groups);
-            }
-
-            (void)open_group_indices(
-                remaining_external_group_indices);
-
-            const auto external_witness_wall_ms =
-                elapsed_ms(
-                    external_witness_start,
-                    Clock::now());
-
-            proof.opening_groups.reserve(point_groups.size());
-            for (std::size_t i = 0; i < point_groups.size(); ++i)
-            {
-                proof.opening_groups.push_back(PointGroupOpening{
-                    .group_id = point_groups[i].group_id,
-                    .owner_block = point_groups[i].owner_block,
-                    .point = point_groups[i].point,
-                    .witness = opening_results[i].witness,
-                });
-                if (metrics == nullptr)
-                    continue;
-                const auto &profile = opening_results[i].profile;
-                metrics->domain_open_denominator_inverse_ms +=
-                    profile.denominator_inverse_ms;
-                metrics->domain_open_denominator_inverse_reuse_ms +=
-                    profile.denominator_inverse_reuse_ms;
-                metrics->domain_open_denominator_inverse_reuse_hits +=
-                    profile.denominator_inverse_reuse_hits;
-                metrics->domain_open_denominator_inverse_cache_misses +=
-                    profile.denominator_inverse_cache_misses;
-                if (point_groups[i].owner_block.rfind(
-                        "Open_dom:", 0) == 0)
+                for (const auto &claim :
+                     group.claims)
                 {
-                    const auto domain = point_groups[i].owner_block.substr(9);
-                    metrics->domain_open_witness_ms +=
-                        opening_results[i].elapsed_ms;
-                    if (auto *metric = domain_open_metric(metrics, domain);
-                        metric != nullptr)
-                    {
-                        *metric += opening_results[i].elapsed_ms;
-                    }
-                    if (domain == "FH")
-                    {
-                        metrics->fh_open_fold_prepare_ms += profile.precompute_ms;
-                        metrics->fh_fold_prep_ms += profile.precompute_ms;
-                        metrics->fh_open_witness_ms += std::max(
-                            0.0,
-                            opening_results[i].elapsed_ms - profile.precompute_ms);
-                    }
+                    pair_commitments[slot]
+                        .push_back(
+                            claim.commitment);
+
+                    pair_values[slot]
+                        .push_back(
+                            claim.value);
                 }
             }
-            if (metrics != nullptr)
+
+            const auto hardware_workers =
+                std::max<unsigned>(
+                    1,
+                    std::thread::
+                        hardware_concurrency());
+
+            const auto inner_worker_count =
+                std::min<std::size_t>(
+                    16,
+                    hardware_workers);
+
+            const std::array<
+                crypto::
+                    PointGroupOpeningExecutionOptions,
+                2>
+                pair_execution_options{
+                    crypto::
+                        PointGroupOpeningExecutionOptions{
+                            .max_field_worker_count =
+                                inner_worker_count,
+                            .msm = {
+                                .max_worker_count =
+                                    inner_worker_count,
+                            },
+                        },
+                    crypto::PointGroupOpeningExecutionOptions{
+                        .max_field_worker_count = inner_worker_count,
+                        .msm = {
+                            .max_worker_count = inner_worker_count,
+                        },
+                    },
+                };
+
+            std::array<
+                crypto::BatchOpeningProfile,
+                2>
+                pair_profiles;
+
+            const auto pair_start =
+                Clock::now();
+
+            const auto witnesses =
+                crypto::KZG::
+                    open_point_group_pair_shared_stream(
+                        pair_commitments,
+                        pair_points,
+                        pair_values,
+                        pair_challenges,
+                        context.kzg,
+                        &pair_profiles,
+                        &pair_execution_options,
+                        trace.spilled_polynomials
+                                .empty()
+                            ? nullptr
+                            : &file_backed_opening_resolver,
+                        trace.spilled_polynomials
+                                .empty()
+                            ? nullptr
+                            : &file_backed_opening_semantic_source_resolver);
+
+            const auto pair_wall_ms =
+                elapsed_ms(
+                    pair_start,
+                    Clock::now());
+
+            for (std::size_t slot = 0;
+                 slot < 2;
+                 ++slot)
             {
-                metrics->domain_opening_ms += domain_witness_wall_ms;
-                metrics->external_opening_ms +=
-                    external_claim_assembly_ms + external_witness_wall_ms;
+                const auto index =
+                    pair[slot];
+
+                pair_profiles[slot]
+                    .point_parallel_batches = 1;
+
+                pair_profiles[slot]
+                    .point_parallel_workers = 2;
+
+                opening_results[index]
+                    .witness =
+                    witnesses[slot];
+
+                opening_results[index]
+                    .profile =
+                    pair_profiles[slot];
+
+                opening_results[index]
+                    .elapsed_ms =
+                    pair_profiles[slot]
+                        .precompute_ms +
+                    pair_profiles[slot]
+                        .finalize_ms;
             }
-            progress_note("prove:external_opening:done");
-            strip_prover_material_from_proof(&proof);
-            progress_note(
-                "prove:cuda_cache_release:start");
-
-            crypto::
-                release_cuda_g1_msm_resident_cache();
-
-            algebra::
-                release_cuda_ntt_workspace();
-
-            algebra::
-                release_cuda_weighted_dot_cache();
-
-            release_cuda_t_edge_executor_cache();
 
             progress_note(
-                "prove:cuda_cache_release:done");
+                "prove:opening:"
+                "shared_stream_pair:"
+                "first_owner=" +
+                point_groups[pair[0]]
+                    .owner_block +
+                ":second_owner=" +
+                point_groups[pair[1]]
+                    .owner_block +
+                ":shared_sources=" +
+                std::to_string(
+                    selection
+                        .shared_source_count) +
+                ":ms=" +
+                std::to_string(
+                    pair_wall_ms));
+        };
 
-            cuda_cache_release_guard.dismiss();
+        const auto erase_opened_pair =
+            [](std::vector<std::size_t> *indices,
+               const std::array<std::size_t, 2>
+                   &pair)
+        {
+            indices->erase(
+                std::remove_if(
+                    indices->begin(),
+                    indices->end(),
+                    [&](std::size_t index)
+                    {
+                        return index ==
+                                   pair[0] ||
+                               index ==
+                                   pair[1];
+                    }),
+                indices->end());
+        };
 
-            return proof;
+        auto remaining_domain_group_indices =
+            domain_group_indices;
+
+        for (const auto &selection :
+             shared_stream_domain_pairs)
+        {
+            open_shared_stream_pair(
+                selection);
+
+            erase_opened_pair(
+                &remaining_domain_group_indices,
+                selection.groups);
+        }
+
+        (void)open_group_indices(
+            remaining_domain_group_indices);
+
+        const auto domain_witness_wall_ms =
+            elapsed_ms(
+                domain_witness_start,
+                Clock::now());
+
+        for (const auto group_index :
+             domain_group_indices)
+        {
+            const auto &group =
+                point_groups[group_index];
+
+            const auto &profile =
+                opening_results[group_index]
+                    .profile;
+
+            progress_note(
+                "prove:domain_witness:group:" +
+                group.owner_block +
+                ":ms=" +
+                std::to_string(
+                    opening_results[group_index]
+                        .elapsed_ms) +
+                ":precompute_ms=" +
+                std::to_string(
+                    profile.precompute_ms) +
+                ":inverse_ms=" +
+                std::to_string(
+                    profile
+                        .denominator_inverse_ms) +
+                ":assembly_ms=" +
+                std::to_string(
+                    profile
+                        .quotient_assembly_ms) +
+                ":witness_msm_ms=" +
+                std::to_string(
+                    profile
+                        .witness_msm_ms) +
+                ":blinder_ms=" +
+                std::to_string(
+                    profile
+                        .blinder_witness_ms) +
+                ":workers=" +
+                std::to_string(
+                    profile
+                        .point_msm_worker_cap) +
+                ":outer_workers=" +
+                std::to_string(
+                    profile
+                        .point_parallel_workers));
+        }
+
+        progress_note(
+            "prove:domain_witness:done:ms=" +
+            std::to_string(
+                domain_witness_wall_ms));
+
+        auto remaining_external_group_indices =
+            external_group_indices;
+
+        const auto external_witness_start =
+            Clock::now();
+
+        for (const auto &selection :
+             shared_stream_external_pairs)
+        {
+            open_shared_stream_pair(
+                selection);
+
+            erase_opened_pair(
+                &remaining_external_group_indices,
+                selection.groups);
+        }
+
+        (void)open_group_indices(
+            remaining_external_group_indices);
+
+        const auto external_witness_wall_ms =
+            elapsed_ms(
+                external_witness_start,
+                Clock::now());
+
+        proof.opening_groups.reserve(point_groups.size());
+        for (std::size_t i = 0; i < point_groups.size(); ++i)
+        {
+            proof.opening_groups.push_back(PointGroupOpening{
+                .group_id = point_groups[i].group_id,
+                .owner_block = point_groups[i].owner_block,
+                .point = point_groups[i].point,
+                .witness = opening_results[i].witness,
+            });
+            if (metrics == nullptr)
+                continue;
+            const auto &profile = opening_results[i].profile;
+            metrics->domain_open_denominator_inverse_ms +=
+                profile.denominator_inverse_ms;
+            metrics->domain_open_denominator_inverse_reuse_ms +=
+                profile.denominator_inverse_reuse_ms;
+            metrics->domain_open_denominator_inverse_reuse_hits +=
+                profile.denominator_inverse_reuse_hits;
+            metrics->domain_open_denominator_inverse_cache_misses +=
+                profile.denominator_inverse_cache_misses;
+            if (point_groups[i].owner_block.rfind(
+                    "Open_dom:", 0) == 0)
+            {
+                const auto domain = point_groups[i].owner_block.substr(9);
+                metrics->domain_open_witness_ms +=
+                    opening_results[i].elapsed_ms;
+                if (auto *metric = domain_open_metric(metrics, domain);
+                    metric != nullptr)
+                {
+                    *metric += opening_results[i].elapsed_ms;
+                }
+                if (domain == "FH")
+                {
+                    metrics->fh_open_fold_prepare_ms += profile.precompute_ms;
+                    metrics->fh_fold_prep_ms += profile.precompute_ms;
+                    metrics->fh_open_witness_ms += std::max(
+                        0.0,
+                        opening_results[i].elapsed_ms - profile.precompute_ms);
+                }
+            }
+        }
+        if (metrics != nullptr)
+        {
+            metrics->domain_opening_ms += domain_witness_wall_ms;
+            metrics->external_opening_ms +=
+                external_claim_assembly_ms + external_witness_wall_ms;
+        }
+        progress_note("prove:external_opening:done");
+        strip_prover_material_from_proof(&proof);
+        progress_note(
+            "prove:cuda_cache_release:start");
+
+        crypto::
+            release_cuda_g1_msm_resident_cache();
+
+        algebra::
+            release_cuda_ntt_workspace();
+
+        algebra::
+            release_cuda_weighted_dot_cache();
+
+        release_cuda_t_edge_executor_cache();
+
+        progress_note(
+            "prove:cuda_cache_release:done");
+
+        cuda_cache_release_guard.dismiss();
+
+        return proof;
     }
 
 } // namespace gatzk::protocol

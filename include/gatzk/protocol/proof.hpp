@@ -176,7 +176,9 @@ namespace gatzk::protocol
     // Shape-only model view.  Head entries intentionally carry no tensor or
     // floating-point parameter fields; they exist solely to preserve the
     // canonical layer/local-head iteration order used by the verifier.
-    struct VerifierModelHeadShape {};
+    struct VerifierModelHeadShape
+    {
+    };
 
     struct VerifierHiddenLayerShape
     {
@@ -993,6 +995,19 @@ namespace gatzk::protocol
         bool gpu_runtime_present = false;
         bool gpu_backend_requested = false;
         std::size_t gpu_kernel_invocation_count = 0;
+        std::uint64_t gpu_h2d_bytes = 0;
+        std::uint64_t gpu_d2h_bytes = 0;
+        std::uint64_t gpu_h2d_operations = 0;
+        std::uint64_t gpu_d2h_operations = 0;
+        std::uint64_t gpu_stream_synchronizations = 0;
+        std::uint64_t gpu_ntt_calls = 0;
+        std::uint64_t gpu_intt_calls = 0;
+        std::uint64_t gpu_quotient_calls = 0;
+        std::uint64_t gpu_opening_fold_calls = 0;
+        std::uint64_t gpu_msm_single_calls = 0;
+        std::uint64_t gpu_msm_batch_calls = 0;
+        std::uint64_t gpu_resident_hits = 0;
+        std::uint64_t gpu_resident_misses = 0;
         std::string gpu_device;
         std::string gpu_used_for;
         std::string gpu_fallback_stages;
@@ -1056,9 +1071,7 @@ namespace gatzk::protocol
             if (metrics == nullptr)
                 return;
             require_valid(*metrics);
-            if (metrics->prove_timer_started
-                || metrics->prove_timer_finished
-                || metrics->commitment_timer_depth != 0)
+            if (metrics->prove_timer_started || metrics->prove_timer_finished || metrics->commitment_timer_depth != 0)
             {
                 mark_invalid(
                     metrics,
@@ -1078,9 +1091,7 @@ namespace gatzk::protocol
             if (metrics == nullptr)
                 return;
             require_valid(*metrics);
-            if (!metrics->prove_timer_started
-                || !metrics->prove_timer_running
-                || metrics->commitment_timer_depth != 0)
+            if (!metrics->prove_timer_started || !metrics->prove_timer_running || metrics->commitment_timer_depth != 0)
             {
                 mark_invalid(
                     metrics,
@@ -1130,8 +1141,7 @@ namespace gatzk::protocol
             if (metrics->commitment_timer_depth == 0)
             {
                 metrics->commitment_timer_start = Clock::now();
-                if (metrics->prove_timer_started
-                    && metrics->prove_timer_running)
+                if (metrics->prove_timer_started && metrics->prove_timer_running)
                 {
                     metrics->prove_time_ms += elapsed_ms(
                         metrics->prove_timer_segment_start,
@@ -1190,9 +1200,7 @@ namespace gatzk::protocol
         inline void assert_quiescent(RunMetrics &metrics)
         {
             require_valid(metrics);
-            if (metrics.commitment_timer_depth != 0
-                || metrics.prove_timer_started
-                || metrics.prove_timer_running)
+            if (metrics.commitment_timer_depth != 0 || metrics.prove_timer_started || metrics.prove_timer_running)
             {
                 mark_invalid(
                     &metrics,
@@ -1205,10 +1213,7 @@ namespace gatzk::protocol
         inline void assert_prove_finished(RunMetrics &metrics)
         {
             require_valid(metrics);
-            if (!metrics.prove_timer_finished
-                || metrics.prove_timer_started
-                || metrics.prove_timer_running
-                || metrics.commitment_timer_depth != 0)
+            if (!metrics.prove_timer_finished || metrics.prove_timer_started || metrics.prove_timer_running || metrics.commitment_timer_depth != 0)
             {
                 mark_invalid(
                     &metrics,

@@ -148,10 +148,9 @@ namespace gatzk::protocol
                     "failed to seek artifact for byte comparison: " + path.string());
             input.seekg(0, std::ios::beg);
             std::vector<std::uint8_t> bytes(static_cast<std::size_t>(end));
-            if (!bytes.empty()
-                && !input.read(
-                    reinterpret_cast<char *>(bytes.data()),
-                    static_cast<std::streamsize>(bytes.size())))
+            if (!bytes.empty() && !input.read(
+                                      reinterpret_cast<char *>(bytes.data()),
+                                      static_cast<std::streamsize>(bytes.size())))
             {
                 throw std::runtime_error(
                     "failed to read artifact for byte comparison: " + path.string());
@@ -164,11 +163,9 @@ namespace gatzk::protocol
             std::string_view bytes)
         {
             std::ofstream output(path, std::ios::binary | std::ios::trunc);
-            if (!output
-                || (!bytes.empty()
-                    && !output.write(
-                        bytes.data(),
-                        static_cast<std::streamsize>(bytes.size()))))
+            if (!output || (!bytes.empty() && !output.write(
+                                                  bytes.data(),
+                                                  static_cast<std::streamsize>(bytes.size()))))
             {
                 throw std::runtime_error(
                     "failed to write artifact: " + path.string());
@@ -321,9 +318,7 @@ namespace gatzk::protocol
             throw std::runtime_error(
                 "SRS manifest changed after authenticated context load");
         }
-        if (proof.public_metadata.input_preprocess_id.empty()
-            || proof.public_metadata.input_preprocess_id
-                   != context.config.input_preprocess_id)
+        if (proof.public_metadata.input_preprocess_id.empty() || proof.public_metadata.input_preprocess_id != context.config.input_preprocess_id)
         {
             throw std::runtime_error(
                 "artifact export input_preprocess_id is not config-bound");
@@ -363,10 +358,7 @@ namespace gatzk::protocol
         {
             return metrics.compute_backend_name == "cuda_hotspots" ? std::string("gpu") : std::string("cpu");
         };
-        if (!validate_verifier_context(verifier_context)
-            || verifier_context.trusted_registry_digest.empty()
-            || verifier_context.authenticated_registry_digest
-                   != verifier_context.trusted_registry_digest)
+        if (!validate_verifier_context(verifier_context) || verifier_context.trusted_registry_digest.empty() || verifier_context.authenticated_registry_digest != verifier_context.trusted_registry_digest)
             throw std::runtime_error(
                 "artifact export requires the independently loaded authenticated verifier context");
         if (serialize_proof(parsed_proof) != proof_bytes)
@@ -376,20 +368,17 @@ namespace gatzk::protocol
             parsed_proof.public_logits,
             verifier_context.local.num_nodes,
             verifier_context.local.num_classes);
-        if (trace.proof_public_output_hash.empty()
-            || trace.proof_public_output_hash != parsed_output_hash)
+        if (trace.proof_public_output_hash.empty() || trace.proof_public_output_hash != parsed_output_hash)
             throw std::runtime_error(
                 "artifact export proof_public_output_hash is not derived from parsed proof output");
         const auto source_tree_hash = std::string(
             gatzk::build_provenance::kSourceTreeHash);
-        if (source_tree_hash.size() != 64
-            || !std::all_of(
-                source_tree_hash.begin(), source_tree_hash.end(),
-                [](unsigned char ch)
-                {
-                    return (ch >= '0' && ch <= '9')
-                        || (ch >= 'a' && ch <= 'f');
-                }))
+        if (source_tree_hash.size() != 64 || !std::all_of(
+                                                 source_tree_hash.begin(), source_tree_hash.end(),
+                                                 [](unsigned char ch)
+                                                 {
+                                                     return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f');
+                                                 }))
             throw std::runtime_error("embedded build source inventory hash is invalid");
         std::error_code binary_error;
         const auto binary_target = std::filesystem::read_symlink(
@@ -398,11 +387,7 @@ namespace gatzk::protocol
             throw std::runtime_error(
                 "formal artifact requires the actual executable bytes via /proc/self/exe");
         const auto binary_path = std::filesystem::absolute(binary_target).lexically_normal();
-        if (binary_path.empty()
-            || std::filesystem::is_symlink(
-                std::filesystem::symlink_status(binary_path, binary_error))
-            || binary_error
-            || !std::filesystem::is_regular_file(binary_path, binary_error))
+        if (binary_path.empty() || std::filesystem::is_symlink(std::filesystem::symlink_status(binary_path, binary_error)) || binary_error || !std::filesystem::is_regular_file(binary_path, binary_error))
             throw std::runtime_error(
                 "formal artifact executable target is not a regular non-symlink file");
         const auto binary_hash = sha256_file_hex(binary_path);
@@ -451,10 +436,7 @@ namespace gatzk::protocol
         const auto public_metadata_hash = hash_key_values(metadata);
         const auto proof_hash = sha256_hex(proof_bytes);
         const auto config_id =
-            context.config.model_arch_id + ":"
-            + context.config.quant_cfg_id + ":"
-            + context.config.static_table_id + ":"
-            + context.config.degree_bound_id;
+            context.config.model_arch_id + ":" + context.config.quant_cfg_id + ":" + context.config.static_table_id + ":" + context.config.degree_bound_id;
         const auto verifier_registry_digest =
             verifier_context.authenticated_registry_digest;
         const auto source_manifest_path =
@@ -590,9 +572,7 @@ namespace gatzk::protocol
         metrics.export_artifact_ms = elapsed_ms(export_start, Clock::now());
         metrics.total_wall_clock_ms += metrics.export_artifact_ms;
         metrics.formal_time_sum_ms =
-            metrics.commitment_time_ms
-            + metrics.prove_time_ms
-            + metrics.verify_time_ms;
+            metrics.commitment_time_ms + metrics.prove_time_ms + metrics.verify_time_ms;
         metrics.non_formal_overhead_ms = std::max(
             0.0,
             metrics.total_wall_clock_ms - metrics.formal_time_sum_ms);

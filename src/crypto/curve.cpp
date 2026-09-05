@@ -953,7 +953,7 @@ namespace gatzk::crypto
             }
 
             constexpr std::size_t
-                kMaximumBatchSize = 8;
+                kMaximumBatchSize = 16;
 
             for (auto &group :
                  groups)
@@ -1188,15 +1188,31 @@ namespace gatzk::crypto
     };
 
     bool should_use_cuda_msm_shape(
+        const G1Point *points,
         std::size_t count,
-        bool stable_srs_bases)
+        bool stable_srs_bases,
+        std::size_t stable_srs_capacity)
     {
-        const auto minimum_count =
-            stable_srs_bases
-                ? (std::size_t{1} << 12)
-                : (std::size_t{1} << 14);
+        if (count == 0)
+        {
+            return false;
+        }
 
-        return count >= minimum_count;
+        if (stable_srs_bases &&
+            cuda_g1_msm_resident_prefix_available(
+                points,
+                count,
+                stable_srs_capacity))
+        {
+            return count >=
+                   (std::size_t{1} << 12);
+        }
+
+        return stable_srs_bases
+                   ? count >=
+                         (std::size_t{1} << 14)
+                   : count >=
+                         (std::size_t{1} << 16);
     }
 
     bool execute_cuda_msm_when_requested(
@@ -1213,8 +1229,10 @@ namespace gatzk::crypto
             return false;
         }
         if (!should_use_cuda_msm_shape(
+                points,
                 count,
-                stable_srs_bases))
+                stable_srs_bases,
+                stable_srs_capacity))
         {
             return false;
         }
