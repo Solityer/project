@@ -12626,7 +12626,7 @@ namespace gatzk::protocol
                     y_average,
                     y_out_challenge);
 
-            aauto average_binding =
+            auto average_binding =
                 build_binding_trace_from_row_major_matrix(
                     y_average,
                     output_powers,

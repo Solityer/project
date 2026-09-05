@@ -142,9 +142,11 @@ class LayeredSchemaRegression(unittest.TestCase):
             "std::vector<std::vector<HiddenQuantizedWitness>>\n                hidden_head_quantized",
             trace,
         )
-        self.assertGreaterEqual(
-            trace.count("hidden_head_quantized\n                                             .at(layer_index)\n                                             .at(local_head_index)"),
-            1,
+        self.assertRegex(
+            trace,
+            r"hidden_head_quantized\s*"
+            r"\.at\((?:layer|layer_index)\)\s*"
+            r"\.at\((?:local_head|local_head_index)\)",
         )
         self.assertIn(
             "std::vector<std::vector<HiddenHeadEvaluationConstants>> hidden_head_constants",

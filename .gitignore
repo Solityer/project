@@ -1,6 +1,7 @@
 .venv/
 build/
 build_cuda/
+build_san/
 __pycache__/
 *.pyc
 runs/
