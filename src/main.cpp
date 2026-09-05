@@ -514,6 +514,11 @@ int main(int argc, char **argv)
                 std::chrono::steady_clock::now();
             const auto cuda_kernel_count_at_start =
                 gatzk::algebra::cuda_kernel_invocation_count();
+
+            const auto cuda_stats_at_start =
+                gatzk::algebra::
+                    cuda_execution_stats_snapshot();
+
             gatzk::protocol::RunMetrics metrics;
             metrics.crypto_backend_name = gatzk::crypto::backend_name();
             metrics.algebra_backend_name = gatzk::algebra::configured_algebra_backend_name();
@@ -542,15 +547,18 @@ int main(int argc, char **argv)
                     : "none";
             metrics.gpu_fallback_stages =
                 metrics.compute_backend_name == "cuda_hotspots"
-                    ? "pairing,NTT_IFFT,quotient_materialization,cold_singleton_stable_SRS_MSM,small_opening_folds,small_domains"
+                    ? "runtime_measured"
                     : "not_requested";
+
             metrics.gpu_fallback_reason =
                 metrics.compute_backend_name == "cuda_hotspots"
-                    ? "CUDA G1 MSM uses same-SRS batching and warm resident stable-SRS reuse; cold singleton stable-SRS MSMs may remain on CPU to avoid unamortized upload/cache preparation; selected large MSMs retain resident or bounded streamed CUDA execution; pairing, transforms, and non-MSM small work remain CPU"
+                    ? "workload_aware_hybrid_routing"
                     : "cpu backend run";
-            metrics.gpu_acceleration_status = metrics.compute_backend_name == "cuda_hotspots"
-                                                  ? std::string("enabled_cuda_hotspots; accelerated_stages=barycentric_weights,packed_weighted_evaluation,lookup_histogram_size_aware,opening_witness_field_fold_size_aware,KZG_G1_MSM_size_aware,opening_witness_MSM_size_aware; cpu_fallback=pairing,cold_singleton_stable_SRS_MSM,small_opening_folds,small_domains; runtime_present=") + std::string(metrics.gpu_runtime_present ? "true" : "false")
-                                                  : std::string("not_requested_cpu_run");
+
+            metrics.gpu_acceleration_status =
+                metrics.compute_backend_name == "cuda_hotspots"
+                    ? "runtime_measured"
+                    : "not_requested_cpu_run";
             if (route2.packed_fft_backend && route2.rotated_fft_kernel)
             {
                 metrics.fft_backend_route = "packed_rotated_kernel";
@@ -1262,6 +1270,63 @@ int main(int argc, char **argv)
             }
             metrics.gpu_kernel_invocation_count =
                 cuda_kernel_count_at_end - cuda_kernel_count_at_start;
+
+            const auto cuda_stats_at_end =
+                gatzk::algebra::
+                    cuda_execution_stats_snapshot();
+
+            metrics.gpu_h2d_bytes =
+                cuda_stats_at_end.h2d_bytes -
+                cuda_stats_at_start.h2d_bytes;
+
+            metrics.gpu_d2h_bytes =
+                cuda_stats_at_end.d2h_bytes -
+                cuda_stats_at_start.d2h_bytes;
+
+            metrics.gpu_h2d_operations =
+                cuda_stats_at_end.h2d_operations -
+                cuda_stats_at_start.h2d_operations;
+
+            metrics.gpu_d2h_operations =
+                cuda_stats_at_end.d2h_operations -
+                cuda_stats_at_start.d2h_operations;
+
+            metrics.gpu_stream_synchronizations =
+                cuda_stats_at_end.stream_synchronizations -
+                cuda_stats_at_start.stream_synchronizations;
+
+            metrics.gpu_ntt_calls =
+                cuda_stats_at_end.ntt_calls -
+                cuda_stats_at_start.ntt_calls;
+
+            metrics.gpu_intt_calls =
+                cuda_stats_at_end.intt_calls -
+                cuda_stats_at_start.intt_calls;
+
+            metrics.gpu_quotient_calls =
+                cuda_stats_at_end.quotient_calls -
+                cuda_stats_at_start.quotient_calls;
+
+            metrics.gpu_opening_fold_calls =
+                cuda_stats_at_end.opening_fold_calls -
+                cuda_stats_at_start.opening_fold_calls;
+
+            metrics.gpu_msm_single_calls =
+                cuda_stats_at_end.msm_single_calls -
+                cuda_stats_at_start.msm_single_calls;
+
+            metrics.gpu_msm_batch_calls =
+                cuda_stats_at_end.msm_batch_calls -
+                cuda_stats_at_start.msm_batch_calls;
+
+            metrics.gpu_resident_hits =
+                cuda_stats_at_end.resident_hits -
+                cuda_stats_at_start.resident_hits;
+
+            metrics.gpu_resident_misses =
+                cuda_stats_at_end.resident_misses -
+                cuda_stats_at_start.resident_misses;
+
             if (metrics.compute_backend_name == "cuda_hotspots")
             {
                 if (metrics.gpu_kernel_invocation_count == 0)
@@ -1273,12 +1338,50 @@ int main(int argc, char **argv)
                 else
                 {
                     metrics.gpu_used_for =
-                        "partial_size_aware_hotspots; kernel_invocations=" + std::to_string(metrics.gpu_kernel_invocation_count);
+                        "runtime_measured;"
+                        "ntt_calls=" +
+                        std::to_string(
+                            metrics.gpu_ntt_calls) +
+                        ";intt_calls=" +
+                        std::to_string(
+                            metrics.gpu_intt_calls) +
+                        ";quotient_calls=" +
+                        std::to_string(
+                            metrics.gpu_quotient_calls) +
+                        ";opening_fold_calls=" +
+                        std::to_string(
+                            metrics.gpu_opening_fold_calls) +
+                        ";msm_single_calls=" +
+                        std::to_string(
+                            metrics.gpu_msm_single_calls) +
+                        ";msm_batch_calls=" +
+                        std::to_string(
+                            metrics.gpu_msm_batch_calls);
+
+                    metrics.gpu_fallback_stages =
+                        "pairing,workloads_below_cuda_threshold_or_resource_admission";
+
+                    metrics.gpu_fallback_reason =
+                        "workload_aware_hybrid_routing";
+
                     metrics.gpu_acceleration_status =
-                        "partial_cuda_hotspots_executed; kernels_executed=" + std::to_string(metrics.gpu_kernel_invocation_count) + "; gpu_field_fold=opening_witness_size_aware"
-                                                                                                                                    "; gpu_g1_msm=dense_immutable_srs_size_aware"
-                                                                                                                                    "; cpu_fallback=pairing,NTT_IFFT,quotient_materialization,small_or_sparse_KZG_MSM,small_opening_folds,small_domains";
-                    append_note(metrics, "cuda_kernel_execution=partial_hotspots_only");
+                        "cuda_hotspots_executed;"
+                        "kernels=" +
+                        std::to_string(
+                            metrics.gpu_kernel_invocation_count) +
+                        ";h2d_bytes=" +
+                        std::to_string(
+                            metrics.gpu_h2d_bytes) +
+                        ";d2h_bytes=" +
+                        std::to_string(
+                            metrics.gpu_d2h_bytes) +
+                        ";stream_syncs=" +
+                        std::to_string(
+                            metrics.gpu_stream_synchronizations);
+
+                    append_note(
+                        metrics,
+                        "cuda_kernel_execution=workload_aware_hybrid");
                 }
             }
 

@@ -44,6 +44,7 @@
 #include "gatzk/algebra/field_io.hpp"
 #include "gatzk/algebra/polynomial.hpp"
 #include "gatzk/algebra/vector_ops.hpp"
+#include "gatzk/algebra/cuda_ntt_device.hpp"
 #include "gatzk/algebra/cuda_weighted_session.hpp"
 #include "gatzk/crypto/cuda_msm.hpp"
 #include "gatzk/data/loader.hpp"
@@ -7375,6 +7376,47 @@ namespace gatzk::protocol
                     coefficients =
                         std::move(
                             cuda_t_edge_coefficients);
+
+                    algebra::
+                        record_cuda_quotient_call();
+                }
+                else if (
+                    algebra::
+                        should_use_cuda_intt(
+                            target_size_))
+                {
+                    coefficients.assign(
+                        target_size_,
+                        FieldElement::zero());
+
+                    const bool cuda_materialized =
+                        algebra::
+                            cuda_coset_host_to_coefficients_exact(
+                                FieldElement::
+                                    native_array_data(
+                                        quotient_values.data()),
+                                target_size_,
+                                shift_,
+                                FieldElement::
+                                    mutable_native_array_data(
+                                        coefficients.data()));
+
+                    if (cuda_materialized)
+                    {
+                        algebra::
+                            record_cuda_quotient_call();
+
+                        quotient_values.clear();
+                        quotient_values.shrink_to_fit();
+                    }
+                    else
+                    {
+                        coefficients =
+                            coefficients_from_coset_evaluations_in_place(
+                                std::move(
+                                    quotient_values),
+                                shift_);
+                    }
                 }
                 else
                 {
@@ -7653,14 +7695,96 @@ namespace gatzk::protocol
                         label,
                         [&](FieldElement *output)
                         {
-                            coset_evaluate_polynomial_into(
-                                polynomial,
-                                target_size_,
-                                shift_,
-                                label,
-                                &shift_powers(),
-                                output,
-                                preserve_split_lane);
+                            bool cuda_materialized =
+                                false;
+
+                            if (util::route2_options()
+                                    .cuda_field_hotspots &&
+                                target_size_ >= 2 &&
+                                algebra::
+                                    should_use_cuda_ntt_pair(
+                                        target_size_ / 2))
+                            {
+                                auto *native_output =
+                                    FieldElement::
+                                        mutable_native_array_data(
+                                            output);
+
+                                if (polynomial.basis ==
+                                        algebra::
+                                            PolynomialBasis::
+                                                Evaluation &&
+                                    polynomial.domain != nullptr &&
+                                    algebra::
+                                        should_use_cuda_intt(
+                                            polynomial
+                                                .domain
+                                                ->size))
+                                {
+                                    const auto &values =
+                                        polynomial.values();
+
+                                    const auto &blinder =
+                                        polynomial
+                                            .zero_domain_blinder;
+
+                                    cuda_materialized =
+                                        algebra::
+                                            cuda_coset_evaluations_to_host_exact(
+                                                FieldElement::
+                                                    native_array_data(
+                                                        values.data()),
+                                                values.size(),
+                                                polynomial
+                                                    .domain
+                                                    ->size,
+                                                blinder.empty()
+                                                    ? nullptr
+                                                    : FieldElement::
+                                                          native_array_data(
+                                                              blinder.data()),
+                                                blinder.size(),
+                                                shift_,
+                                                native_output,
+                                                target_size_,
+                                                preserve_split_lane);
+                                }
+                                else if (
+                                    polynomial.basis ==
+                                    algebra::
+                                        PolynomialBasis::
+                                            Coefficient)
+                                {
+                                    const auto &coefficients =
+                                        polynomial.values();
+
+                                    cuda_materialized =
+                                        algebra::
+                                            cuda_coset_coefficients_to_host_exact(
+                                                coefficients.empty()
+                                                    ? nullptr
+                                                    : FieldElement::
+                                                          native_array_data(
+                                                              coefficients.data()),
+                                                coefficients.size(),
+                                                shift_,
+                                                native_output,
+                                                target_size_,
+                                                preserve_split_lane);
+                                }
+                            }
+
+                            if (!cuda_materialized)
+                            {
+                                coset_evaluate_polynomial_into(
+                                    polynomial,
+                                    target_size_,
+                                    shift_,
+                                    label,
+                                    &shift_powers(),
+                                    output,
+                                    preserve_split_lane);
+                            }
                         },
                         preserve_split_lane);
 

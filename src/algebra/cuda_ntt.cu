@@ -520,6 +520,30 @@ namespace gatzk::algebra
             odd_output[index] =
                 input[2 * index + 1];
         }
+
+        __global__ void
+        interleave_split_lanes_kernel(
+            const GpuFr *input,
+            GpuFr *output,
+            std::size_t half_size)
+        {
+            const auto index =
+                static_cast<std::size_t>(
+                    blockIdx.x) *
+                    blockDim.x +
+                threadIdx.x;
+
+            if (index >= half_size)
+            {
+                return;
+            }
+
+            output[2 * index] =
+                input[index];
+
+            output[2 * index + 1] =
+                input[index + half_size];
+        }
         __global__ void
         combine_inverse_coset_kernel(
             const GpuFr *even_values,
@@ -685,6 +709,16 @@ namespace gatzk::algebra
                 throw_cuda_ntt_error(
                     "execution",
                     status);
+            }
+
+            if (direction ==
+                ntt::NTTDir::kForward)
+            {
+                record_cuda_ntt_call();
+            }
+            else
+            {
+                record_cuda_intt_call();
             }
 
             return true;
@@ -905,6 +939,8 @@ namespace gatzk::algebra
                     "synchronization",
                     status);
             }
+
+            record_cuda_stream_sync();
 
             return true;
         }
@@ -1557,6 +1593,9 @@ namespace gatzk::algebra
                 status);
         }
 
+        record_cuda_d2h(
+            total_bytes);
+
         status =
             cudaStreamSynchronize(
                 stream);
@@ -1569,6 +1608,360 @@ namespace gatzk::algebra
         }
 
         return true;
+    }
+
+    bool cuda_coset_evaluations_to_host_exact(
+        const mcl::Fr *values,
+        std::size_t value_count,
+        std::size_t domain_size,
+        const mcl::Fr *zero_domain_blinder,
+        std::size_t blinder_count,
+        const FieldElement &shift,
+        mcl::Fr *host_output,
+        std::size_t target_size,
+        bool preserve_split_lane)
+    {
+        if (host_output == nullptr ||
+            target_size < 2)
+        {
+            return false;
+        }
+
+        int device = 0;
+
+        auto status =
+            cudaGetDevice(
+                &device);
+
+        if (status != cudaSuccess)
+        {
+            throw_cuda_ntt_error(
+                "device lookup",
+                status);
+        }
+
+        auto &workspace =
+            cuda_ntt_workspace();
+
+        const auto total_bytes =
+            checked_ntt_bytes(
+                target_size,
+                1);
+
+        if (!workspace.ensure(
+                total_bytes,
+                device))
+        {
+            return false;
+        }
+
+        if (!cuda_coset_evaluations_to_device_exact(
+                values,
+                value_count,
+                domain_size,
+                zero_domain_blinder,
+                blinder_count,
+                shift,
+                reinterpret_cast<mcl::Fr *>(
+                    workspace.output),
+                target_size))
+        {
+            return false;
+        }
+
+        const auto stream =
+            workspace.stream;
+
+        const auto half_size =
+            target_size / 2;
+
+        const mcl::Fr *device_source =
+            reinterpret_cast<const mcl::Fr *>(
+                workspace.output);
+
+        if (!preserve_split_lane)
+        {
+            constexpr unsigned
+                kBlockSize = 256;
+
+            const auto block_count =
+                static_cast<unsigned>(
+                    (half_size +
+                     kBlockSize - 1) /
+                    kBlockSize);
+
+            interleave_split_lanes_kernel<<<
+                block_count,
+                kBlockSize,
+                0,
+                stream>>>(
+                reinterpret_cast<
+                    const GpuFr *>(
+                    workspace.output),
+                reinterpret_cast<
+                    GpuFr *>(
+                    workspace.input),
+                half_size);
+
+            status =
+                cudaGetLastError();
+
+            if (status != cudaSuccess)
+            {
+                throw_cuda_ntt_error(
+                    "coset interleave",
+                    status);
+            }
+
+            record_cuda_kernel_invocations(
+                1);
+
+            device_source =
+                reinterpret_cast<const mcl::Fr *>(
+                    workspace.input);
+        }
+
+        status =
+            cudaMemcpyAsync(
+                host_output,
+                device_source,
+                total_bytes,
+                cudaMemcpyDeviceToHost,
+                stream);
+
+        if (status != cudaSuccess)
+        {
+            throw_cuda_ntt_error(
+                "coset output download",
+                status);
+        }
+
+        record_cuda_d2h(
+            total_bytes);
+
+        status =
+            cudaStreamSynchronize(
+                stream);
+
+        if (status != cudaSuccess)
+        {
+            throw_cuda_ntt_error(
+                "coset output synchronization",
+                status);
+        }
+
+        record_cuda_stream_sync();
+
+        return true;
+    }
+
+    bool cuda_coset_coefficients_to_host_exact(
+        const mcl::Fr *coefficients,
+        std::size_t coefficient_count,
+        const FieldElement &shift,
+        mcl::Fr *host_output,
+        std::size_t target_size,
+        bool preserve_split_lane)
+    {
+        if (host_output == nullptr ||
+            target_size < 2)
+        {
+            return false;
+        }
+
+        int device = 0;
+
+        auto status =
+            cudaGetDevice(
+                &device);
+
+        if (status != cudaSuccess)
+        {
+            throw_cuda_ntt_error(
+                "device lookup",
+                status);
+        }
+
+        auto &workspace =
+            cuda_ntt_workspace();
+
+        const auto total_bytes =
+            checked_ntt_bytes(
+                target_size,
+                1);
+
+        if (!workspace.ensure(
+                total_bytes,
+                device))
+        {
+            return false;
+        }
+
+        if (!cuda_coset_coefficients_to_device_exact(
+                coefficients,
+                coefficient_count,
+                shift,
+                reinterpret_cast<mcl::Fr *>(
+                    workspace.output),
+                target_size))
+        {
+            return false;
+        }
+
+        const auto stream =
+            workspace.stream;
+
+        const auto half_size =
+            target_size / 2;
+
+        const mcl::Fr *device_source =
+            reinterpret_cast<const mcl::Fr *>(
+                workspace.output);
+
+        if (!preserve_split_lane)
+        {
+            constexpr unsigned
+                kBlockSize = 256;
+
+            const auto block_count =
+                static_cast<unsigned>(
+                    (half_size +
+                     kBlockSize - 1) /
+                    kBlockSize);
+
+            interleave_split_lanes_kernel<<<
+                block_count,
+                kBlockSize,
+                0,
+                stream>>>(
+                reinterpret_cast<
+                    const GpuFr *>(
+                    workspace.output),
+                reinterpret_cast<
+                    GpuFr *>(
+                    workspace.input),
+                half_size);
+
+            status =
+                cudaGetLastError();
+
+            if (status != cudaSuccess)
+            {
+                throw_cuda_ntt_error(
+                    "coefficient coset interleave",
+                    status);
+            }
+
+            record_cuda_kernel_invocations(
+                1);
+
+            device_source =
+                reinterpret_cast<const mcl::Fr *>(
+                    workspace.input);
+        }
+
+        status =
+            cudaMemcpyAsync(
+                host_output,
+                device_source,
+                total_bytes,
+                cudaMemcpyDeviceToHost,
+                stream);
+
+        if (status != cudaSuccess)
+        {
+            throw_cuda_ntt_error(
+                "coefficient coset output download",
+                status);
+        }
+
+        record_cuda_d2h(
+            total_bytes);
+
+        status =
+            cudaStreamSynchronize(
+                stream);
+
+        if (status != cudaSuccess)
+        {
+            throw_cuda_ntt_error(
+                "coefficient coset output synchronization",
+                status);
+        }
+
+        record_cuda_stream_sync();
+
+        return true;
+    }
+
+    bool cuda_coset_host_to_coefficients_exact(
+        const mcl::Fr *host_values,
+        std::size_t size,
+        const FieldElement &shift,
+        mcl::Fr *host_coefficients)
+    {
+        if (host_values == nullptr ||
+            host_coefficients == nullptr ||
+            size < 2)
+        {
+            return false;
+        }
+
+        int device = 0;
+
+        auto status =
+            cudaGetDevice(
+                &device);
+
+        if (status != cudaSuccess)
+        {
+            throw_cuda_ntt_error(
+                "device lookup",
+                status);
+        }
+
+        auto &workspace =
+            cuda_ntt_workspace();
+
+        const auto total_bytes =
+            checked_ntt_bytes(
+                size,
+                1);
+
+        if (!workspace.ensure(
+                total_bytes,
+                device))
+        {
+            return false;
+        }
+
+        const auto stream =
+            workspace.stream;
+
+        status =
+            cudaMemcpyAsync(
+                workspace.output,
+                host_values,
+                total_bytes,
+                cudaMemcpyHostToDevice,
+                stream);
+
+        if (status != cudaSuccess)
+        {
+            throw_cuda_ntt_error(
+                "quotient coset upload",
+                status);
+        }
+
+        record_cuda_h2d(
+            total_bytes);
+
+        return cuda_coset_device_to_coefficients_exact(
+            reinterpret_cast<const mcl::Fr *>(
+                workspace.output),
+            size,
+            shift,
+            host_coefficients);
     }
 
     bool cuda_intt_in_place_exact(

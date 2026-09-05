@@ -15,6 +15,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "gatzk/algebra/vector_ops.hpp"
 #include "gatzk/crypto/cuda_msm.hpp"
 #include "gatzk/util/route2.hpp"
 #define GLV2 GATZK_UNUSED_GLV2
@@ -953,7 +954,7 @@ namespace gatzk::crypto
             }
 
             constexpr std::size_t
-                kMaximumBatchSize = 16;
+                kMaximumBatchSize = 8;
 
             for (auto &group :
                  groups)
@@ -1007,6 +1008,9 @@ namespace gatzk::crypto
                                     "attempted an unexpected fallback");
                             }
 
+                            algebra::
+                                record_cuda_msm_single_call();
+
                             request->executed_on_cuda =
                                 true;
 
@@ -1047,6 +1051,9 @@ namespace gatzk::crypto
                                 "CUDA same-SRS batch "
                                 "attempted a CPU fallback");
                         }
+
+                        algebra::
+                            record_cuda_msm_batch_call();
 
                         for (std::size_t batch = 0;
                              batch < current_batch;
@@ -1197,16 +1204,23 @@ namespace gatzk::crypto
         {
             return false;
         }
-
-        if (stable_srs_bases &&
-            cuda_g1_msm_resident_prefix_available(
+        if (!try_cuda_g1_msm(
+                output,
                 points,
+                scalars,
                 count,
+                stable_srs_bases,
                 stable_srs_capacity))
         {
-            return count >=
-                   (std::size_t{1} << 12);
+            throw std::runtime_error(
+                "cuda_hotspots mode attempted a G1 MSM "
+                "CPU fallback");
         }
+
+        algebra::
+            record_cuda_msm_single_call();
+
+        return true;
 
         return stable_srs_bases
                    ? count >=

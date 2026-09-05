@@ -1,4 +1,5 @@
 #include "gatzk/algebra/vector_ops.hpp"
+#include "gatzk/algebra/cuda_ntt_device.hpp"
 #include "gatzk/algebra/cuda_weighted_session.hpp"
 
 #include <algorithm>
@@ -58,6 +59,30 @@ namespace gatzk::algebra
         {
             static std::atomic<std::size_t> counter{0};
             return counter;
+        }
+
+        struct CudaExecutionCounters
+        {
+            std::atomic<std::uint64_t> h2d_bytes{0};
+            std::atomic<std::uint64_t> d2h_bytes{0};
+            std::atomic<std::uint64_t> h2d_operations{0};
+            std::atomic<std::uint64_t> d2h_operations{0};
+            std::atomic<std::uint64_t> stream_synchronizations{0};
+            std::atomic<std::uint64_t> ntt_calls{0};
+            std::atomic<std::uint64_t> intt_calls{0};
+            std::atomic<std::uint64_t> quotient_calls{0};
+            std::atomic<std::uint64_t> opening_fold_calls{0};
+            std::atomic<std::uint64_t> msm_single_calls{0};
+            std::atomic<std::uint64_t> msm_batch_calls{0};
+            std::atomic<std::uint64_t> resident_hits{0};
+            std::atomic<std::uint64_t> resident_misses{0};
+        };
+
+        CudaExecutionCounters &
+        cuda_execution_counters()
+        {
+            static CudaExecutionCounters counters;
+            return counters;
         }
 
         bool cuda_field_route_enabled()
@@ -891,7 +916,7 @@ namespace gatzk::algebra
                 "INTT requires a non-null power-of-two field vector");
         }
 
-        if (should_use_cuda_ntt_pair(
+        if (should_use_cuda_intt(
                 size))
         {
             if (!try_cuda_intt_in_place(
@@ -1081,9 +1106,205 @@ namespace gatzk::algebra
     {
         cuda_kernel_counter().fetch_add(count, std::memory_order_relaxed);
     }
+
+    CudaExecutionStats cuda_execution_stats_snapshot()
+    {
+        const auto &counters =
+            cuda_execution_counters();
+
+        return CudaExecutionStats{
+            .h2d_bytes =
+                counters.h2d_bytes.load(
+                    std::memory_order_relaxed),
+            .d2h_bytes =
+                counters.d2h_bytes.load(
+                    std::memory_order_relaxed),
+            .h2d_operations =
+                counters.h2d_operations.load(
+                    std::memory_order_relaxed),
+            .d2h_operations =
+                counters.d2h_operations.load(
+                    std::memory_order_relaxed),
+            .stream_synchronizations =
+                counters.stream_synchronizations.load(
+                    std::memory_order_relaxed),
+            .ntt_calls =
+                counters.ntt_calls.load(
+                    std::memory_order_relaxed),
+            .intt_calls =
+                counters.intt_calls.load(
+                    std::memory_order_relaxed),
+            .quotient_calls =
+                counters.quotient_calls.load(
+                    std::memory_order_relaxed),
+            .opening_fold_calls =
+                counters.opening_fold_calls.load(
+                    std::memory_order_relaxed),
+            .msm_single_calls =
+                counters.msm_single_calls.load(
+                    std::memory_order_relaxed),
+            .msm_batch_calls =
+                counters.msm_batch_calls.load(
+                    std::memory_order_relaxed),
+            .resident_hits =
+                counters.resident_hits.load(
+                    std::memory_order_relaxed),
+            .resident_misses =
+                counters.resident_misses.load(
+                    std::memory_order_relaxed),
+        };
+    }
+
+    void record_cuda_h2d(
+        std::size_t bytes)
+    {
+        auto &counters =
+            cuda_execution_counters();
+
+        counters.h2d_bytes.fetch_add(
+            bytes,
+            std::memory_order_relaxed);
+
+        counters.h2d_operations.fetch_add(
+            1,
+            std::memory_order_relaxed);
+    }
+
+    void record_cuda_d2h(
+        std::size_t bytes)
+    {
+        auto &counters =
+            cuda_execution_counters();
+
+        counters.d2h_bytes.fetch_add(
+            bytes,
+            std::memory_order_relaxed);
+
+        counters.d2h_operations.fetch_add(
+            1,
+            std::memory_order_relaxed);
+    }
+
+    void record_cuda_stream_sync()
+    {
+        cuda_execution_counters()
+            .stream_synchronizations
+            .fetch_add(
+                1,
+                std::memory_order_relaxed);
+    }
+
+    void record_cuda_ntt_call()
+    {
+        cuda_execution_counters()
+            .ntt_calls
+            .fetch_add(
+                1,
+                std::memory_order_relaxed);
+    }
+
+    void record_cuda_intt_call()
+    {
+        cuda_execution_counters()
+            .intt_calls
+            .fetch_add(
+                1,
+                std::memory_order_relaxed);
+    }
+
+    void record_cuda_quotient_call()
+    {
+        cuda_execution_counters()
+            .quotient_calls
+            .fetch_add(
+                1,
+                std::memory_order_relaxed);
+    }
+
+    void record_cuda_opening_fold_call()
+    {
+        cuda_execution_counters()
+            .opening_fold_calls
+            .fetch_add(
+                1,
+                std::memory_order_relaxed);
+    }
+
+    void record_cuda_msm_single_call()
+    {
+        cuda_execution_counters()
+            .msm_single_calls
+            .fetch_add(
+                1,
+                std::memory_order_relaxed);
+    }
+
+    void record_cuda_msm_batch_call()
+    {
+        cuda_execution_counters()
+            .msm_batch_calls
+            .fetch_add(
+                1,
+                std::memory_order_relaxed);
+    }
+
+    void record_cuda_resident_hit()
+    {
+        cuda_execution_counters()
+            .resident_hits
+            .fetch_add(
+                1,
+                std::memory_order_relaxed);
+    }
+
+    void record_cuda_resident_miss()
+    {
+        cuda_execution_counters()
+            .resident_misses
+            .fetch_add(
+                1,
+                std::memory_order_relaxed);
+    }
 #if !GATZK_ENABLE_CUDA_BACKEND
 
+    bool cuda_coset_evaluations_to_host_exact(
+        const mcl::Fr *,
+        std::size_t,
+        std::size_t,
+        const mcl::Fr *,
+        std::size_t,
+        const FieldElement &,
+        mcl::Fr *,
+        std::size_t,
+        bool)
+    {
+        return false;
+    }
+
+    bool cuda_coset_coefficients_to_host_exact(
+        const mcl::Fr *,
+        std::size_t,
+        const FieldElement &,
+        mcl::Fr *,
+        std::size_t,
+        bool)
+    {
+        return false;
+    }
+
+    bool cuda_coset_host_to_coefficients_exact(
+        const mcl::Fr *,
+        std::size_t,
+        const FieldElement &,
+        mcl::Fr *)
+    {
+        return false;
+    }
+
     void release_cuda_ntt_workspace()
+#if !GATZK_ENABLE_CUDA_BACKEND
+
+        void release_cuda_ntt_workspace()
     {
     }
 
@@ -1317,74 +1538,57 @@ namespace gatzk::algebra
                    min_indices_per_bucket;
     }
 
-    bool should_use_cuda_ntt_pair(
+    bool should_use_cuda_intt(
         std::size_t size)
     {
-        if (!util::route2_options().cuda_field_hotspots ||
-            size == 0 ||
-            (size & (size - 1U)) != 0U ||
-            size > (std::size_t{1} << 24))
+        constexpr std::size_t
+            kCudaInttMinimumSize =
+                std::size_t{1} << 23;
+
+        constexpr std::size_t
+            kCudaInttMaximumSize =
+                std::size_t{1} << 24;
+
+        if (!util::route2_options()
+                 .cuda_field_hotspots ||
+            size < kCudaInttMinimumSize ||
+            size > kCudaInttMaximumSize)
         {
             return false;
         }
 
 #if GATZK_ENABLE_CUDA_BACKEND
-        if (!cuda_field_hotspots_available())
-        {
-            return false;
-        }
-
-        const auto element_count =
-            static_cast<double>(size) * 2.0;
-
-        const auto log_size =
-            static_cast<double>(
-                std::bit_width(size) - 1U);
-
-        const auto cpu_work =
-            element_count * log_size;
-
-        const auto gpu_work =
-            element_count * log_size;
-
-        constexpr double kCpuWorkUnitsPerMs =
-            5.0e6;
-
-        constexpr double kGpuWorkUnitsPerMs =
-            5.0e7;
-
-        constexpr double kHostDeviceBytesPerMs =
-            12.0e6;
-
-        constexpr double kSynchronizationMs =
-            0.08;
-
-        const auto transfer_bytes =
-            element_count *
-            static_cast<double>(
-                sizeof(mcl::Fr));
-
-        const auto estimated_cpu_ms =
-            cpu_work /
-            kCpuWorkUnitsPerMs;
-
-        const auto estimated_gpu_ms =
-            gpu_work /
-                kGpuWorkUnitsPerMs +
-            2.0 *
-                transfer_bytes /
-                kHostDeviceBytesPerMs +
-            kSynchronizationMs;
-
-        return size >=
-                   (std::size_t{1} << 15) &&
-               estimated_gpu_ms <
-                   estimated_cpu_ms * 0.95;
+        return cuda_field_hotspots_available();
 #else
         return false;
 #endif
     }
 
+    bool should_use_cuda_ntt_pair(
+        std::size_t size)
+    {
+        constexpr std::size_t
+            kCudaPairMinimumSize =
+                std::size_t{1} << 23;
+
+        constexpr std::size_t
+            kCudaPairMaximumSize =
+                std::size_t{1} << 24;
+
+        if (!util::route2_options()
+                 .cuda_field_hotspots ||
+            size < kCudaPairMinimumSize ||
+            size > kCudaPairMaximumSize)
+        {
+            return false;
+        }
+
+#if GATZK_ENABLE_CUDA_BACKEND
+        return cuda_field_hotspots_available();
+#else
+        return false;
+#endif
+    }
     bool try_cuda_scaled_accumulate_native(
         mcl::Fr *target,
         const mcl::Fr *source,
@@ -1395,8 +1599,12 @@ namespace gatzk::algebra
         // device walks the process host page tables.  Keep smaller vectors on
         // the existing CPU path so kernel launch and page-fault costs cannot
         // dominate the opening fold.
-        constexpr std::size_t kMinCudaElements = 1ULL << 20;
-        if (element_count < kMinCudaElements ||
+        const auto min_cuda_elements =
+            cuda_backend_unified_addressing_available()
+                ? (1ULL << 20)
+                : (1ULL << 22);
+
+        if (element_count < min_cuda_elements ||
             !cuda_field_route_enabled())
         {
             return false;
@@ -1431,10 +1639,12 @@ namespace gatzk::algebra
         const mcl::Fr &second_scale,
         std::size_t element_count)
     {
-        constexpr std::size_t kMinCudaElements =
-            1ULL << 20;
+        const auto min_cuda_elements =
+            cuda_backend_unified_addressing_available()
+                ? (1ULL << 20)
+                : (1ULL << 22);
 
-        if (element_count < kMinCudaElements ||
+        if (element_count < min_cuda_elements ||
             !cuda_field_route_enabled())
         {
             return false;

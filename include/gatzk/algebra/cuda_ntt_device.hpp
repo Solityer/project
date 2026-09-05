@@ -57,4 +57,29 @@ namespace gatzk::algebra
         std::size_t size,
         const FieldElement &shift,
         mcl::Fr *host_coefficients);
+
+    bool cuda_coset_evaluations_to_host_exact(
+        const mcl::Fr *values,
+        std::size_t value_count,
+        std::size_t domain_size,
+        const mcl::Fr *zero_domain_blinder,
+        std::size_t blinder_count,
+        const FieldElement &shift,
+        mcl::Fr *host_output,
+        std::size_t target_size,
+        bool preserve_split_lane);
+
+    bool cuda_coset_coefficients_to_host_exact(
+        const mcl::Fr *coefficients,
+        std::size_t coefficient_count,
+        const FieldElement &shift,
+        mcl::Fr *host_output,
+        std::size_t target_size,
+        bool preserve_split_lane);
+
+    bool cuda_coset_host_to_coefficients_exact(
+        const mcl::Fr *host_values,
+        std::size_t size,
+        const FieldElement &shift,
+        mcl::Fr *host_coefficients);
 }

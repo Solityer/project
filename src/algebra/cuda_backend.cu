@@ -91,29 +91,6 @@ namespace gatzk::algebra
             throw std::runtime_error(
                 std::string("CUDA scaled accumulate ") + operation + " failed: " + cudaGetErrorString(status));
         }
-    }
-
-    void scaled_accumulate_cuda(
-        uint64_t *target_limbs,
-        const uint64_t *source_limbs,
-        const uint64_t scale_limbs[4],
-        std::size_t element_count)
-    {
-        if (element_count == 0)
-        {
-            return;
-        }
-        if (target_limbs == nullptr || source_limbs == nullptr || scale_limbs == nullptr)
-        {
-            throw std::runtime_error(
-                "CUDA scaled accumulate received a null limb buffer");
-        }
-        static_assert(
-            sizeof(gpu::GpuFr) == 4 * sizeof(uint64_t),
-            "CUDA scaled accumulate requires four-limb GpuFr storage");
-
-        gpu::GpuFr scale{};
-        std::memcpy(scale.d, scale_limbs, sizeof(scale.d));
 
         class ScaledAccumulateCudaWorkspace
         {
@@ -140,19 +117,185 @@ namespace gatzk::algebra
                 return stream_;
             }
 
+            bool ensure(
+                std::size_t element_count)
+            {
+                if (element_count <= capacity_ &&
+                    first_target_ != nullptr &&
+                    second_target_ != nullptr &&
+                    source_ != nullptr)
+                {
+                    return true;
+                }
+
+                const auto active_stream =
+                    stream();
+
+                auto status =
+                    cudaStreamSynchronize(
+                        active_stream);
+
+                if (status != cudaSuccess)
+                {
+                    throw_scaled_accumulate_cuda_error(
+                        "workspace resize synchronization",
+                        status);
+                }
+
+                release_buffers();
+
+                if (element_count == 0)
+                {
+                    return true;
+                }
+
+                if (element_count >
+                    std::numeric_limits<std::size_t>::max() /
+                        sizeof(gpu::GpuFr))
+                {
+                    throw std::runtime_error(
+                        "CUDA scaled accumulate workspace byte-size overflow");
+                }
+
+                const auto byte_count =
+                    element_count *
+                    sizeof(gpu::GpuFr);
+
+                status =
+                    cudaMalloc(
+                        reinterpret_cast<void **>(
+                            &first_target_),
+                        byte_count);
+
+                if (status == cudaErrorMemoryAllocation)
+                {
+                    (void)cudaGetLastError();
+                    release_buffers();
+                    return false;
+                }
+
+                if (status != cudaSuccess)
+                {
+                    throw_scaled_accumulate_cuda_error(
+                        "first target allocation",
+                        status);
+                }
+
+                status =
+                    cudaMalloc(
+                        reinterpret_cast<void **>(
+                            &second_target_),
+                        byte_count);
+
+                if (status == cudaErrorMemoryAllocation)
+                {
+                    (void)cudaGetLastError();
+                    release_buffers();
+                    return false;
+                }
+
+                if (status != cudaSuccess)
+                {
+                    release_buffers();
+
+                    throw_scaled_accumulate_cuda_error(
+                        "second target allocation",
+                        status);
+                }
+
+                status =
+                    cudaMalloc(
+                        reinterpret_cast<void **>(
+                            &source_),
+                        byte_count);
+
+                if (status == cudaErrorMemoryAllocation)
+                {
+                    (void)cudaGetLastError();
+                    release_buffers();
+                    return false;
+                }
+
+                if (status != cudaSuccess)
+                {
+                    release_buffers();
+
+                    throw_scaled_accumulate_cuda_error(
+                        "source allocation",
+                        status);
+                }
+
+                capacity_ =
+                    element_count;
+
+                return true;
+            }
+
+            gpu::GpuFr *first_target()
+            {
+                return first_target_;
+            }
+
+            gpu::GpuFr *second_target()
+            {
+                return second_target_;
+            }
+
+            gpu::GpuFr *source()
+            {
+                return source_;
+            }
+
             ~ScaledAccumulateCudaWorkspace()
             {
                 if (stream_ != nullptr)
                 {
                     (void)cudaStreamSynchronize(
                         stream_);
+                }
 
+                release_buffers();
+
+                if (stream_ != nullptr)
+                {
                     (void)cudaStreamDestroy(
                         stream_);
                 }
             }
 
         private:
+            void release_buffers() noexcept
+            {
+                if (first_target_ != nullptr)
+                {
+                    (void)cudaFree(
+                        first_target_);
+                }
+
+                if (second_target_ != nullptr)
+                {
+                    (void)cudaFree(
+                        second_target_);
+                }
+
+                if (source_ != nullptr)
+                {
+                    (void)cudaFree(
+                        source_);
+                }
+
+                first_target_ = nullptr;
+                second_target_ = nullptr;
+                source_ = nullptr;
+                capacity_ = 0;
+            }
+
+            gpu::GpuFr *first_target_ = nullptr;
+            gpu::GpuFr *second_target_ = nullptr;
+            gpu::GpuFr *source_ = nullptr;
+
+            std::size_t capacity_ = 0;
+
             cudaStream_t stream_ = nullptr;
         };
 
@@ -164,47 +307,154 @@ namespace gatzk::algebra
 
             return workspace;
         }
+    }
+    void scaled_accumulate_cuda(
+        uint64_t *target_limbs,
+        const uint64_t *source_limbs,
+        const uint64_t scale_limbs[4],
+        std::size_t element_count)
+    {
+        if (element_count == 0)
+        {
+            return;
+        }
+        if (target_limbs == nullptr || source_limbs == nullptr || scale_limbs == nullptr)
+        {
+            throw std::runtime_error(
+                "CUDA scaled accumulate received a null limb buffer");
+        }
+        static_assert(
+            sizeof(gpu::GpuFr) == 4 * sizeof(uint64_t),
+            "CUDA scaled accumulate requires four-limb GpuFr storage");
 
-        // A private non-blocking stream makes independent opening groups safe
-        // to invoke concurrently when their target buffers differ.  The
-        // source remains read-only and the call synchronizes before returning.
-        auto stream =
-            scaled_accumulate_workspace()
-                .stream();
+        gpu::GpuFr scale{};
+        std::memcpy(scale.d, scale_limbs, sizeof(scale.d));
+
+        auto &workspace =
+            scaled_accumulate_workspace();
+
+        if (!workspace.ensure(
+                element_count))
+        {
+            throw std::runtime_error(
+                "CUDA scaled accumulate cannot admit workspace");
+        }
+
+        const auto stream =
+            workspace.stream();
+
+        const auto byte_count =
+            element_count *
+            sizeof(gpu::GpuFr);
 
         auto status =
-            cudaSuccess;
+            cudaMemcpyAsync(
+                workspace.first_target(),
+                target_limbs,
+                byte_count,
+                cudaMemcpyHostToDevice,
+                stream);
+
+        if (status != cudaSuccess)
+        {
+            throw_scaled_accumulate_cuda_error(
+                "target upload",
+                status);
+        }
+
+        record_cuda_h2d(
+            byte_count);
+
+        status =
+            cudaMemcpyAsync(
+                workspace.source(),
+                source_limbs,
+                byte_count,
+                cudaMemcpyHostToDevice,
+                stream);
+
+        if (status != cudaSuccess)
+        {
+            throw_scaled_accumulate_cuda_error(
+                "source upload",
+                status);
+        }
+
+        record_cuda_h2d(
+            byte_count);
 
         constexpr unsigned kBlockSize = 256;
+
         const auto block_count_size =
-            (element_count + kBlockSize - 1) / kBlockSize;
-        if (block_count_size > std::numeric_limits<unsigned>::max())
+            (element_count + kBlockSize - 1) /
+            kBlockSize;
+
+        if (block_count_size >
+            std::numeric_limits<unsigned>::max())
         {
-            (void)cudaStreamDestroy(stream);
             throw std::runtime_error(
                 "CUDA scaled accumulate grid exceeds CUDA launch limits");
         }
-        const auto block_count = static_cast<unsigned>(block_count_size);
+
+        const auto block_count =
+            static_cast<unsigned>(
+                block_count_size);
+
         scaled_accumulate_kernel<<<
-            block_count, kBlockSize, 0, stream>>>(
-            reinterpret_cast<gpu::GpuFr *>(target_limbs),
-            reinterpret_cast<const gpu::GpuFr *>(source_limbs),
+            block_count,
+            kBlockSize,
+            0,
+            stream>>>(
+            workspace.first_target(),
+            workspace.source(),
             scale,
             element_count);
-        status = cudaGetLastError();
+
+        status =
+            cudaGetLastError();
+
         if (status != cudaSuccess)
         {
-            (void)cudaStreamDestroy(stream);
-            throw_scaled_accumulate_cuda_error("kernel launch", status);
-        }
-        status = cudaStreamSynchronize(stream);
-        if (status != cudaSuccess)
-        {
-            (void)cudaStreamDestroy(stream);
             throw_scaled_accumulate_cuda_error(
-                "kernel synchronization", status);
+                "kernel launch",
+                status);
         }
-        record_cuda_kernel_invocations(1);
+
+        record_cuda_kernel_invocations(
+            1);
+
+        record_cuda_opening_fold_call();
+
+        status =
+            cudaMemcpyAsync(
+                target_limbs,
+                workspace.first_target(),
+                byte_count,
+                cudaMemcpyDeviceToHost,
+                stream);
+
+        if (status != cudaSuccess)
+        {
+            throw_scaled_accumulate_cuda_error(
+                "target download",
+                status);
+        }
+
+        record_cuda_d2h(
+            byte_count);
+
+        status =
+            cudaStreamSynchronize(
+                stream);
+
+        if (status != cudaSuccess)
+        {
+            throw_scaled_accumulate_cuda_error(
+                "kernel synchronization",
+                status);
+        }
+
+        record_cuda_stream_sync();
     }
 
     void scaled_accumulate_pair_cuda(
@@ -255,12 +505,76 @@ namespace gatzk::algebra
             second_scale_limbs,
             sizeof(second_scale.d));
 
-        auto stream =
-            scaled_accumulate_workspace()
-                .stream();
+        auto &workspace =
+            scaled_accumulate_workspace();
+
+        if (!workspace.ensure(
+                element_count))
+        {
+            throw std::runtime_error(
+                "CUDA paired scaled accumulate cannot admit workspace");
+        }
+
+        const auto stream =
+            workspace.stream();
+
+        const auto byte_count =
+            element_count *
+            sizeof(gpu::GpuFr);
 
         auto status =
-            cudaSuccess;
+            cudaMemcpyAsync(
+                workspace.first_target(),
+                first_target_limbs,
+                byte_count,
+                cudaMemcpyHostToDevice,
+                stream);
+
+        if (status != cudaSuccess)
+        {
+            throw_scaled_accumulate_cuda_error(
+                "first target upload",
+                status);
+        }
+
+        record_cuda_h2d(
+            byte_count);
+
+        status =
+            cudaMemcpyAsync(
+                workspace.second_target(),
+                second_target_limbs,
+                byte_count,
+                cudaMemcpyHostToDevice,
+                stream);
+
+        if (status != cudaSuccess)
+        {
+            throw_scaled_accumulate_cuda_error(
+                "second target upload",
+                status);
+        }
+
+        record_cuda_h2d(
+            byte_count);
+
+        status =
+            cudaMemcpyAsync(
+                workspace.source(),
+                source_limbs,
+                byte_count,
+                cudaMemcpyHostToDevice,
+                stream);
+
+        if (status != cudaSuccess)
+        {
+            throw_scaled_accumulate_cuda_error(
+                "source upload",
+                status);
+        }
+
+        record_cuda_h2d(
+            byte_count);
 
         constexpr unsigned kBlockSize = 256;
 
@@ -271,8 +585,6 @@ namespace gatzk::algebra
         if (block_count_size >
             std::numeric_limits<unsigned>::max())
         {
-            (void)cudaStreamDestroy(stream);
-
             throw std::runtime_error(
                 "CUDA paired scaled accumulate grid exceeds CUDA launch limits");
         }
@@ -286,40 +598,76 @@ namespace gatzk::algebra
             kBlockSize,
             0,
             stream>>>(
-            reinterpret_cast<gpu::GpuFr *>(
-                first_target_limbs),
-            reinterpret_cast<gpu::GpuFr *>(
-                second_target_limbs),
-            reinterpret_cast<const gpu::GpuFr *>(
-                source_limbs),
+            workspace.first_target(),
+            workspace.second_target(),
+            workspace.source(),
             first_scale,
             second_scale,
             element_count);
 
-        status = cudaGetLastError();
+        status =
+            cudaGetLastError();
 
         if (status != cudaSuccess)
         {
-            (void)cudaStreamDestroy(stream);
-
             throw_scaled_accumulate_cuda_error(
                 "paired kernel launch",
                 status);
         }
 
+        record_cuda_kernel_invocations(
+            1);
+
+        record_cuda_opening_fold_call();
+
         status =
-            cudaStreamSynchronize(stream);
+            cudaMemcpyAsync(
+                first_target_limbs,
+                workspace.first_target(),
+                byte_count,
+                cudaMemcpyDeviceToHost,
+                stream);
 
         if (status != cudaSuccess)
         {
-            (void)cudaStreamDestroy(stream);
+            throw_scaled_accumulate_cuda_error(
+                "first target download",
+                status);
+        }
 
+        record_cuda_d2h(
+            byte_count);
+
+        status =
+            cudaMemcpyAsync(
+                second_target_limbs,
+                workspace.second_target(),
+                byte_count,
+                cudaMemcpyDeviceToHost,
+                stream);
+
+        if (status != cudaSuccess)
+        {
+            throw_scaled_accumulate_cuda_error(
+                "second target download",
+                status);
+        }
+
+        record_cuda_d2h(
+            byte_count);
+
+        status =
+            cudaStreamSynchronize(
+                stream);
+
+        if (status != cudaSuccess)
+        {
             throw_scaled_accumulate_cuda_error(
                 "paired kernel synchronization",
                 status);
         }
 
-        record_cuda_kernel_invocations(1);
+        record_cuda_stream_sync();
     }
 
     // 重心插值权重计算(用于在单个挑战点x上快速评估多项式)

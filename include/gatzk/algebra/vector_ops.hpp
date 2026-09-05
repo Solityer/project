@@ -31,6 +31,36 @@ namespace gatzk::algebra
     std::string cuda_device_summary();
     std::size_t cuda_kernel_invocation_count();
     void record_cuda_kernel_invocations(std::size_t count);
+    struct CudaExecutionStats
+    {
+        std::uint64_t h2d_bytes = 0;
+        std::uint64_t d2h_bytes = 0;
+        std::uint64_t h2d_operations = 0;
+        std::uint64_t d2h_operations = 0;
+        std::uint64_t stream_synchronizations = 0;
+        std::uint64_t ntt_calls = 0;
+        std::uint64_t intt_calls = 0;
+        std::uint64_t quotient_calls = 0;
+        std::uint64_t opening_fold_calls = 0;
+        std::uint64_t msm_single_calls = 0;
+        std::uint64_t msm_batch_calls = 0;
+        std::uint64_t resident_hits = 0;
+        std::uint64_t resident_misses = 0;
+    };
+
+    CudaExecutionStats cuda_execution_stats_snapshot();
+
+    void record_cuda_h2d(std::size_t bytes);
+    void record_cuda_d2h(std::size_t bytes);
+    void record_cuda_stream_sync();
+    void record_cuda_ntt_call();
+    void record_cuda_intt_call();
+    void record_cuda_quotient_call();
+    void record_cuda_opening_fold_call();
+    void record_cuda_msm_single_call();
+    void record_cuda_msm_batch_call();
+    void record_cuda_resident_hit();
+    void record_cuda_resident_miss();
 
     // partial CUDA Fr 热点能力探针；KZG、pairing 与 quotient 仍走 CPU。
     bool cuda_field_hotspots_build_enabled();
@@ -53,6 +83,9 @@ namespace gatzk::algebra
     // the CPU implementation on integrated/UMA devices, where explicit
     // host/device staging duplicates shared-memory traffic and serializes
     // concurrent prewarm work.
+    bool should_use_cuda_intt(
+        std::size_t size);
+
     bool should_use_cuda_ntt_pair(
         std::size_t size);
 
