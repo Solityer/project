@@ -17,36 +17,34 @@ namespace gatzk::algebra
     {
         Cpu,
         Cuda,
-    };
-    void release_cuda_ntt_workspace();
+        void release_cuda_ntt_workspace();
+        void release_cuda_scaled_accumulate_workspace();
 
-    // 返回当前构建与运行环境解析出的代数后端信息。
-    AlgebraBackend configured_algebra_backend();
-    std::string configured_algebra_backend_name();
-    bool cuda_backend_build_enabled();
-    bool cuda_backend_available();
-    // True only when the active CUDA device has UVA and may coherently read
-    // pageable host buffers without explicit registration.
-    bool cuda_backend_unified_addressing_available();
-    std::string cuda_device_summary();
-    std::size_t cuda_kernel_invocation_count();
-    void record_cuda_kernel_invocations(std::size_t count);
-    struct CudaExecutionStats
-    {
-        std::uint64_t h2d_bytes = 0;
-        std::uint64_t d2h_bytes = 0;
-        std::uint64_t h2d_operations = 0;
-        std::uint64_t d2h_operations = 0;
-        std::uint64_t stream_synchronizations = 0;
-        std::uint64_t ntt_calls = 0;
-        std::uint64_t intt_calls = 0;
-        std::uint64_t quotient_calls = 0;
-        std::uint64_t opening_fold_calls = 0;
-        std::uint64_t msm_single_calls = 0;
-        std::uint64_t msm_batch_calls = 0;
-        std::uint64_t resident_hits = 0;
-        std::uint64_t resident_misses = 0;
-    };
+        // 返回当前构建与运行环境解析出的代数后端信息。
+        AlgebraBackend configured_algebra_backend();
+        std::string configured_algebra_backend_name();
+        bool cuda_backend_build_enabled();
+        bool cuda_backend_available();
+        // True only when the active CUDA device has UVA and may coherently read
+        // pageable host buffers without explicit registration.
+        bool cuda_backend_unified_addressing_available();
+        std::string cuda_device_summary();
+        std::size_t cuda_kernel_invocation_count();
+        void record_cuda_kernel_invocations(std::size_t count);
+        struct CudaExecutionStats{
+            std::uint64_t h2d_bytes = 0;
+            std::uint64_t d2h_bytes = 0;
+            std::uint64_t h2d_operations = 0;
+            std::uint64_t d2h_operations = 0;
+            std::uint64_t stream_synchronizations = 0;
+            std::uint64_t ntt_calls = 0;
+            std::uint64_t intt_calls = 0;
+            std::uint64_t quotient_calls = 0;
+            std::uint64_t opening_fold_calls = 0;
+            std::uint64_t msm_single_calls = 0;
+            std::uint64_t msm_batch_calls = 0;
+            std::uint64_t resident_hits = 0;
+            std::uint64_t resident_misses = 0;};
 
     CudaExecutionStats cuda_execution_stats_snapshot();
 
@@ -84,6 +82,9 @@ namespace gatzk::algebra
     // host/device staging duplicates shared-memory traffic and serializes
     // concurrent prewarm work.
     bool should_use_cuda_intt(
+        std::size_t size);
+
+    bool should_use_cuda_ntt(
         std::size_t size);
 
     bool should_use_cuda_ntt_pair(
@@ -217,6 +218,11 @@ namespace gatzk::algebra
         std::size_t size,
         std::size_t max_worker_count = 0);
 
+    void ntt_in_place(
+        mcl::Fr *values,
+        std::size_t size,
+        std::size_t max_worker_count = 0);
+
     // Execute two independent same-size forward NTTs concurrently at formal
     // transform sizes.  Small inputs retain the canonical serial plan calls.
     void ntt_pair_in_place(
@@ -236,6 +242,10 @@ namespace gatzk::algebra
     // the current resource envelope.  Once CUDA execution starts, CUDA/ICICLE
     // failures are reported fail-closed by exception.
     bool try_cuda_intt_in_place(
+        mcl::Fr *values,
+        std::size_t size);
+
+    bool try_cuda_ntt_in_place(
         mcl::Fr *values,
         std::size_t size);
 

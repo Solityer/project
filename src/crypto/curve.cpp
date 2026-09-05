@@ -1204,23 +1204,33 @@ namespace gatzk::crypto
         {
             return false;
         }
-        if (!try_cuda_g1_msm(
-                output,
+
+        const bool resident =
+            stable_srs_bases &&
+            cuda_g1_msm_resident_prefix_available(
                 points,
-                scalars,
                 count,
-                stable_srs_bases,
-                stable_srs_capacity))
+                stable_srs_capacity);
+
+        if (stable_srs_bases)
         {
-            throw std::runtime_error(
-                "cuda_hotspots mode attempted a G1 MSM "
-                "CPU fallback");
+            if (resident)
+            {
+                algebra::
+                    record_cuda_resident_hit();
+            }
+            else
+            {
+                algebra::
+                    record_cuda_resident_miss();
+            }
         }
 
-        algebra::
-            record_cuda_msm_single_call();
-
-        return true;
+        if (resident)
+        {
+            return count >=
+                   (std::size_t{1} << 12);
+        }
 
         return stable_srs_bases
                    ? count >=
@@ -1284,6 +1294,9 @@ namespace gatzk::crypto
                 "cuda_hotspots mode attempted a G1 MSM "
                 "CPU fallback");
         }
+
+        algebra::
+            record_cuda_msm_single_call();
 
         return true;
     }

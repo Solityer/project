@@ -177,6 +177,15 @@ namespace gatzk::protocol
                 try
                 {
                     algebra::
+                        release_cuda_scaled_accumulate_workspace();
+                }
+                catch (...)
+                {
+                }
+
+                try
+                {
+                    algebra::
                         release_cuda_weighted_dot_cache();
                 }
                 catch (...)
@@ -414,7 +423,9 @@ namespace gatzk::protocol
 
             auto coefficients = polynomial.values();
             auto *native_coefficients = FieldElement::mutable_native_array_data(coefficients.data());
-            algebra::ntt_plan(coefficients.size())->intt(native_coefficients);
+            algebra::intt_in_place(
+                native_coefficients,
+                coefficients.size());
             trim_coefficients(&coefficients);
             return std::make_shared<Polynomial>(Polynomial::from_coefficients(name, std::move(coefficients)));
         }
@@ -7381,9 +7392,10 @@ namespace gatzk::protocol
                         record_cuda_quotient_call();
                 }
                 else if (
+                    target_size_ >= 2 &&
                     algebra::
-                        should_use_cuda_intt(
-                            target_size_))
+                        should_use_cuda_ntt_pair(
+                            target_size_ / 2))
                 {
                     coefficients.assign(
                         target_size_,

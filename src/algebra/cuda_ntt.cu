@@ -858,6 +858,9 @@ namespace gatzk::algebra
                     status);
             }
 
+            record_cuda_h2d(
+                one_vector_bytes);
+
             if (batch_size == 2)
             {
                 status =
@@ -876,6 +879,9 @@ namespace gatzk::algebra
                         "second input upload",
                         status);
                 }
+
+                record_cuda_h2d(
+                    one_vector_bytes);
             }
 
             if (!run_cuda_ntt_device(
@@ -907,6 +913,9 @@ namespace gatzk::algebra
                     status);
             }
 
+            record_cuda_d2h(
+                one_vector_bytes);
+
             if (batch_size == 2)
             {
                 status =
@@ -925,6 +934,9 @@ namespace gatzk::algebra
                         "second output download",
                         status);
                 }
+
+                record_cuda_d2h(
+                    one_vector_bytes);
             }
 
             status =
@@ -1071,6 +1083,11 @@ namespace gatzk::algebra
                     "evaluation upload",
                     status);
             }
+
+            record_cuda_h2d(
+                checked_ntt_bytes(
+                    value_count,
+                    1));
         }
 
         if (!run_cuda_ntt_device(
@@ -1104,6 +1121,11 @@ namespace gatzk::algebra
                     "blinder upload",
                     status);
             }
+
+            record_cuda_h2d(
+                checked_ntt_bytes(
+                    blinder_count,
+                    1));
         }
 
         status =
@@ -1212,6 +1234,8 @@ namespace gatzk::algebra
                 status);
         }
 
+        record_cuda_stream_sync();
+
         return true;
     }
 
@@ -1311,6 +1335,11 @@ namespace gatzk::algebra
                     "coefficient upload",
                     status);
             }
+
+            record_cuda_h2d(
+                checked_ntt_bytes(
+                    coefficient_count,
+                    1));
         }
 
         const auto root =
@@ -1401,6 +1430,8 @@ namespace gatzk::algebra
                 "coefficient coset synchronization",
                 status);
         }
+
+        record_cuda_stream_sync();
 
         return true;
     }
@@ -1606,6 +1637,8 @@ namespace gatzk::algebra
                 "coefficient synchronization",
                 status);
         }
+
+        record_cuda_stream_sync();
 
         return true;
     }
@@ -1962,6 +1995,18 @@ namespace gatzk::algebra
             size,
             shift,
             host_coefficients);
+    }
+
+    bool cuda_ntt_in_place_exact(
+        mcl::Fr *values,
+        std::size_t size)
+    {
+        return run_cuda_ntt_batch(
+            values,
+            nullptr,
+            size,
+            1,
+            ntt::NTTDir::kForward);
     }
 
     bool cuda_intt_in_place_exact(

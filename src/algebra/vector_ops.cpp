@@ -47,6 +47,10 @@ namespace gatzk::algebra
         mcl::Fr *values,
         std::size_t size);
 
+    bool cuda_ntt_in_place_exact(
+        mcl::Fr *values,
+        std::size_t size);
+
     bool cuda_ntt_pair_in_place_exact(
         mcl::Fr *first,
         mcl::Fr *second,
@@ -943,6 +947,40 @@ namespace gatzk::algebra
             transform_workers);
     }
 
+    void ntt_in_place(
+        mcl::Fr *values,
+        std::size_t size,
+        std::size_t max_worker_count)
+    {
+        if (values == nullptr ||
+            size == 0 ||
+            (size & (size - 1U)) != 0U)
+        {
+            throw std::runtime_error(
+                "NTT requires a non-null power-of-two field vector");
+        }
+
+        if (should_use_cuda_ntt(
+                size))
+        {
+            if (!try_cuda_ntt_in_place(
+                    values,
+                    size))
+            {
+                throw std::runtime_error(
+                    "CUDA production NTT route "
+                    "was selected but not admitted");
+            }
+
+            return;
+        }
+
+        (void)max_worker_count;
+
+        ntt_plan(size)->ntt(
+            values);
+    }
+
     void ntt_pair_in_place(
         mcl::Fr *first,
         mcl::Fr *second,
@@ -1065,6 +1103,26 @@ namespace gatzk::algebra
         }
 
         return cuda_intt_in_place_exact(
+            values,
+            size);
+#else
+        (void)values;
+        (void)size;
+        return false;
+#endif
+    }
+
+    bool try_cuda_ntt_in_place(
+        mcl::Fr *values,
+        std::size_t size)
+    {
+#if GATZK_ENABLE_CUDA_BACKEND
+        if (!cuda_field_hotspots_available())
+        {
+            return false;
+        }
+
+        return cuda_ntt_in_place_exact(
             values,
             size);
 #else
@@ -1300,6 +1358,30 @@ namespace gatzk::algebra
     {
         return false;
     }
+
+    void release_cuda_ntt_workspace()
+    {
+    }
+
+    void release_cuda_scaled_accumulate_workspace()
+    {
+    }
+
+    std::unique_ptr<CudaWeightedDotSession>
+    create_cuda_weighted_dot_session(
+        const std::vector<
+            const mcl::Fr *> &,
+        std::size_t,
+        std::size_t)
+    {
+        return nullptr;
+    }
+
+    void release_cuda_weighted_dot_cache()
+    {
+    }
+
+#endif
 
     void release_cuda_ntt_workspace()
 #if !GATZK_ENABLE_CUDA_BACKEND
@@ -1553,6 +1635,32 @@ namespace gatzk::algebra
                  .cuda_field_hotspots ||
             size < kCudaInttMinimumSize ||
             size > kCudaInttMaximumSize)
+        {
+            return false;
+        }
+
+#if GATZK_ENABLE_CUDA_BACKEND
+        return cuda_field_hotspots_available();
+#else
+        return false;
+#endif
+    }
+
+    bool should_use_cuda_ntt(
+        std::size_t size)
+    {
+        constexpr std::size_t
+            kCudaNttMinimumSize =
+                std::size_t{1} << 23;
+
+        constexpr std::size_t
+            kCudaNttMaximumSize =
+                std::size_t{1} << 24;
+
+        if (!util::route2_options()
+                 .cuda_field_hotspots ||
+            size < kCudaNttMinimumSize ||
+            size > kCudaNttMaximumSize)
         {
             return false;
         }

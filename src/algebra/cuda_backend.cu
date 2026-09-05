@@ -246,7 +246,7 @@ namespace gatzk::algebra
                 return source_;
             }
 
-            ~ScaledAccumulateCudaWorkspace()
+            void release() noexcept
             {
                 if (stream_ != nullptr)
                 {
@@ -260,7 +260,14 @@ namespace gatzk::algebra
                 {
                     (void)cudaStreamDestroy(
                         stream_);
+
+                    stream_ = nullptr;
                 }
+            }
+
+            ~ScaledAccumulateCudaWorkspace()
+            {
+                release();
             }
 
         private:
@@ -308,6 +315,13 @@ namespace gatzk::algebra
             return workspace;
         }
     }
+
+    void release_cuda_scaled_accumulate_workspace()
+    {
+        scaled_accumulate_workspace()
+            .release();
+    }
+
     void scaled_accumulate_cuda(
         uint64_t *target_limbs,
         const uint64_t *source_limbs,

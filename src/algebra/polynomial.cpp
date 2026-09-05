@@ -652,7 +652,10 @@ namespace gatzk::algebra
 
         std::vector<FieldElement> semantic(polynomial.domain->size, FieldElement::zero());
         std::copy(polynomial.values().begin(), polynomial.values().end(), semantic.begin());
-        ntt_plan(semantic.size())->intt(FieldElement::mutable_native_array_data(semantic.data()));
+        intt_in_place(
+            FieldElement::mutable_native_array_data(
+                semantic.data()),
+            semantic.size());
         std::copy(semantic.begin(), semantic.end(), out.begin());
 
         const auto n = polynomial.domain->size;
@@ -765,7 +768,12 @@ namespace gatzk::algebra
                 prepared->shifted_inverse_factorial.begin(),
                 prepared->shifted_inverse_factorial.end(),
                 prepared->shifted_inverse_factorial_ntt.begin());
-            ntt_plan(prepared->convolution_domain_size)->ntt(FieldElement::mutable_native_array_data(prepared->shifted_inverse_factorial_ntt.data()));
+            ntt_in_place(
+                FieldElement::mutable_native_array_data(
+                    prepared
+                        ->shifted_inverse_factorial_ntt
+                        .data()),
+                prepared->convolution_domain_size);
 
             std::lock_guard<std::mutex> lock(cache_mutex);
             const auto [it, _] =
@@ -806,9 +814,11 @@ namespace gatzk::algebra
                 coefficients[source_index] * prepared->factorial[source_index];
         }
 
-        const auto plan =
-            ntt_plan(prepared->convolution_domain_size);
-        plan->ntt(FieldElement::mutable_native_array_data(a_rev.data()));
+        ntt_in_place(
+            FieldElement::mutable_native_array_data(
+                a_rev.data()),
+            prepared->convolution_domain_size);
+
         for (std::size_t i = 0;
              i < prepared->convolution_domain_size;
              ++i)
@@ -816,7 +826,11 @@ namespace gatzk::algebra
             a_rev[i] *=
                 prepared->shifted_inverse_factorial_ntt[i];
         }
-        plan->intt(FieldElement::mutable_native_array_data(a_rev.data()));
+
+        intt_in_place(
+            FieldElement::mutable_native_array_data(
+                a_rev.data()),
+            prepared->convolution_domain_size);
 
         // With the short cyclic domain, coefficient r contains
         // linear_conv[r] + linear_conv[N+r]. Remove the latter exactly.
