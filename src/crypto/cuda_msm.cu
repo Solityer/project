@@ -66,47 +66,13 @@ namespace gatzk::crypto
 
         constexpr std::size_t kMinimumStreamMsmChunkSize =
             1ULL << 16;
-
-        // ICICLE v2.8.0 is pinned by the canonical CUDA build.  Its automatic
-        // MSM window changes from c=19 to c=20 immediately above 2^23 inputs.
-        // Keep larger formal BLS12-381 MSMs inside the already exercised c=19
-        // execution regime without changing the mathematical MSM.
-        constexpr std::size_t kIcicleV28LargeMsmThreshold =
-            1ULL << 23;
-
-        constexpr int kIcicleV28MaximumValidatedWindowBits =
-            19;
-
-        constexpr int icicle_msm_window_override(
-            std::size_t count)
-        {
-            return count > kIcicleV28LargeMsmThreshold
-                       ? kIcicleV28MaximumValidatedWindowBits
-                       : 0;
-        }
-
-        static_assert(
-            icicle_msm_window_override(
-                1ULL << 23) == 0);
-
-        static_assert(
-            icicle_msm_window_override(
-                (1ULL << 23) + 1) ==
-            kIcicleV28MaximumValidatedWindowBits);
-
-        void configure_icicle_msm_window(
-            msm::MSMConfig &config,
-            std::size_t count)
-        {
-            const auto override =
-                icicle_msm_window_override(
-                    count);
-
-            if (override != 0)
-            {
-                config.c = override;
-            }
-        }
+        // ICICLE v2.8.0 direct resident BLS12-381 MSM is kept within the
+        // validated <= 2^23 execution range.  Larger MSMs remain on CUDA but
+        // are routed through the existing bounded chunked/streamed paths,
+        // avoiding one oversized ICICLE bucket-method invocation.
+        constexpr std::size_t
+            kIcicleV28MaximumDirectResidentMsmCount =
+                1ULL << 23;
 
         constexpr std::size_t kDeviceBaseCacheLimitBytes =
             24ULL << 30;
@@ -1020,6 +986,18 @@ namespace gatzk::crypto
             const bool integrated =
                 cuda_msm_device_is_integrated();
 
+            // Direct full-width ICICLE resident MSMs above 2^23 have produced
+            // invalid projective results on the pinned v2.8.0 backend.
+            // Keep the immutable base prefix resident on UMA when possible,
+            // but execute the scalar dimension through the bounded chunked
+            // route instead of issuing one oversized MSM.
+            if (!bounded_integrated_scalar_staging &&
+                count >
+                    kIcicleV28MaximumDirectResidentMsmCount)
+            {
+                return false;
+            }
+
             const auto max_resident_count =
                 integrated
                     ? kMaxIntegratedResidentCudaMsmCount
@@ -1214,15 +1192,10 @@ namespace gatzk::crypto
             auto config =
                 msm::default_msm_config();
 
-            configure_icicle_msm_window(
-                config,
-                count);
-
             config.are_points_on_device = true;
             config.are_points_montgomery_form = false;
             config.are_scalars_montgomery_form = true;
             config.are_results_on_device = false;
-
             bls12_381::projective_t result;
             cudaError_t status = cudaSuccess;
 
@@ -1337,13 +1310,8 @@ namespace gatzk::crypto
                     "CUDA G1 MSM resident batch result staging "
                     "exhausted host memory");
             }
-
             auto config =
                 msm::default_msm_config();
-
-            configure_icicle_msm_window(
-                config,
-                count);
 
             config.points_size =
                 static_cast<int>(count);
