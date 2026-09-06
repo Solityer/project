@@ -263,6 +263,15 @@ namespace gatzk::protocol
                 configured_degree,
                 delta,
                 key);
+
+            progress_note(
+                "trace:taylor_shift_commit:" +
+                shifted_name +
+                ":start:size=" +
+                std::to_string(shifted.size()) +
+                ":configured_degree=" +
+                std::to_string(configured_degree));
+
             crypto::CommitObjectProfile profile;
             auto commitment = [&]()
             {

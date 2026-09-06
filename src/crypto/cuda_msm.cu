@@ -67,6 +67,47 @@ namespace gatzk::crypto
         constexpr std::size_t kMinimumStreamMsmChunkSize =
             1ULL << 16;
 
+        // ICICLE v2.8.0 is pinned by the canonical CUDA build.  Its automatic
+        // MSM window changes from c=19 to c=20 immediately above 2^23 inputs.
+        // Keep larger formal BLS12-381 MSMs inside the already exercised c=19
+        // execution regime without changing the mathematical MSM.
+        constexpr std::size_t kIcicleV28LargeMsmThreshold =
+            1ULL << 23;
+
+        constexpr int kIcicleV28MaximumValidatedWindowBits =
+            19;
+
+        constexpr int icicle_msm_window_override(
+            std::size_t count)
+        {
+            return count > kIcicleV28LargeMsmThreshold
+                       ? kIcicleV28MaximumValidatedWindowBits
+                       : 0;
+        }
+
+        static_assert(
+            icicle_msm_window_override(
+                1ULL << 23) == 0);
+
+        static_assert(
+            icicle_msm_window_override(
+                (1ULL << 23) + 1) ==
+            kIcicleV28MaximumValidatedWindowBits);
+
+        void configure_icicle_msm_window(
+            msm::MSMConfig &config,
+            std::size_t count)
+        {
+            const auto override =
+                icicle_msm_window_override(
+                    count);
+
+            if (override != 0)
+            {
+                config.c = override;
+            }
+        }
+
         constexpr std::size_t kDeviceBaseCacheLimitBytes =
             24ULL << 30;
 
@@ -879,24 +920,87 @@ namespace gatzk::crypto
             return mutex;
         }
 
-        G1Point to_mcl_point(const bls12_381::projective_t &input)
+        G1Point to_mcl_point(
+            const bls12_381::projective_t &input,
+            const char *route,
+            std::size_t count,
+            int configured_window_bits,
+            std::size_t batch_index =
+                std::numeric_limits<std::size_t>::max())
         {
+            G1Point output;
+
+            if (bls12_381::projective_t::is_zero(input))
+            {
+                output.value.clear();
+                return output;
+            }
+
+            if (!bls12_381::projective_t::is_on_curve(input))
+            {
+                throw std::runtime_error(
+                    "CUDA G1 MSM returned an off-curve ICICLE "
+                    "projective point: route=" +
+                    std::string(route) +
+                    " count=" +
+                    std::to_string(count) +
+                    " configured_c=" +
+                    std::to_string(configured_window_bits) +
+                    (batch_index ==
+                             std::numeric_limits<std::size_t>::max()
+                         ? std::string{}
+                         : " batch_index=" +
+                               std::to_string(batch_index)));
+            }
+
             const auto affine =
                 bls12_381::projective_t::to_affine(input);
-            G1Point output;
+
             if (affine == bls12_381::affine_t::zero())
             {
                 output.value.clear();
                 return output;
             }
-            output.value.x = to_mcl_field<mcl::Fp>(affine.x);
-            output.value.y = to_mcl_field<mcl::Fp>(affine.y);
+
+            output.value.x =
+                to_mcl_field<mcl::Fp>(affine.x);
+            output.value.y =
+                to_mcl_field<mcl::Fp>(affine.y);
             output.value.z = 1;
-            if (!output.value.isValid() || !mcl::bn::isValidOrderBLS12(output.value))
+
+            const bool mcl_valid =
+                output.value.isValid();
+
+            const bool subgroup_valid =
+                mcl_valid &&
+                mcl::bn::isValidOrderBLS12(
+                    output.value);
+
+            if (!mcl_valid || !subgroup_valid)
             {
                 throw std::runtime_error(
-                    "CUDA G1 MSM returned an invalid or non-subgroup point");
+                    "CUDA G1 MSM returned an invalid converted "
+                    "point: route=" +
+                    std::string(route) +
+                    " count=" +
+                    std::to_string(count) +
+                    " configured_c=" +
+                    std::to_string(configured_window_bits) +
+                    " mcl_valid=" +
+                    std::string(
+                        mcl_valid ? "true" : "false") +
+                    " subgroup_valid=" +
+                    std::string(
+                        subgroup_valid
+                            ? "true"
+                            : "false") +
+                    (batch_index ==
+                             std::numeric_limits<std::size_t>::max()
+                         ? std::string{}
+                         : " batch_index=" +
+                               std::to_string(batch_index)));
             }
+
             return output;
         }
 
@@ -1110,6 +1214,10 @@ namespace gatzk::crypto
             auto config =
                 msm::default_msm_config();
 
+            configure_icicle_msm_window(
+                config,
+                count);
+
             config.are_points_on_device = true;
             config.are_points_montgomery_form = false;
             config.are_scalars_montgomery_form = true;
@@ -1179,7 +1287,11 @@ namespace gatzk::crypto
             }
 
             *output =
-                to_mcl_point(result);
+                to_mcl_point(
+                    result,
+                    "resident",
+                    count,
+                    config.c);
 
             algebra::record_cuda_kernel_invocations(1);
         }
@@ -1228,6 +1340,10 @@ namespace gatzk::crypto
 
             auto config =
                 msm::default_msm_config();
+
+            configure_icicle_msm_window(
+                config,
+                count);
 
             config.points_size =
                 static_cast<int>(count);
@@ -1322,7 +1438,11 @@ namespace gatzk::crypto
             {
                 *outputs[batch] =
                     to_mcl_point(
-                        results[batch]);
+                        results[batch],
+                        "resident_batch",
+                        count,
+                        config.c,
+                        batch);
             }
 
             algebra::record_cuda_kernel_invocations(1);
@@ -1570,7 +1690,11 @@ namespace gatzk::crypto
                 {
                     const auto partial =
                         to_mcl_point(
-                            results[batch]);
+                            results[batch],
+                            "resident_chunked_batch",
+                            current_count,
+                            config.c,
+                            batch);
 
                     mcl::G1::add(
                         totals[batch].value,
@@ -1930,7 +2054,11 @@ namespace gatzk::crypto
                 }
 
                 const auto partial =
-                    to_mcl_point(result);
+                    to_mcl_point(
+                        result,
+                        "streamed",
+                        current_count,
+                        config.c);
 
                 mcl::G1::add(
                     total.value,
@@ -2179,7 +2307,11 @@ namespace gatzk::crypto
                 {
                     const auto partial =
                         to_mcl_point(
-                            results[batch]);
+                            results[batch],
+                            "streamed_batch",
+                            current_count,
+                            config.c,
+                            batch);
 
                     mcl::G1::add(
                         totals[batch].value,
