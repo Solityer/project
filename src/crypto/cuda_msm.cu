@@ -216,49 +216,6 @@ namespace gatzk::crypto
             return integrated != 0;
         }
 
-        bool icicle_msm_requires_big_triangle_reduction()
-        {
-            int device = 0;
-
-            auto status =
-                cudaGetDevice(&device);
-
-            if (status != cudaSuccess)
-            {
-                throw_cuda_error(
-                    "device lookup",
-                    status);
-            }
-
-            int major = 0;
-
-            status =
-                cudaDeviceGetAttribute(
-                    &major,
-                    cudaDevAttrComputeCapabilityMajor,
-                    device);
-
-            if (status != cudaSuccess)
-            {
-                throw_cuda_error(
-                    "compute-capability query",
-                    status);
-            }
-
-            return major >= 12;
-        }
-
-        msm::MSMConfig configured_icicle_msm()
-        {
-            auto config =
-                msm::default_msm_config();
-
-            config.is_big_triangle =
-                icicle_msm_requires_big_triangle_reduction();
-
-            return config;
-        }
-
         template <class IcicleField, class MclField>
         IcicleField to_icicle_field(const MclField &input)
         {
@@ -279,19 +236,11 @@ namespace gatzk::crypto
             return output;
         }
 
-        void copy_mcl_montgomery_scalars_to_icicle(
+                void copy_mcl_canonical_scalars_to_icicle(
             bls12_381::scalar_t *output,
             const algebra::FieldElement *input,
             std::size_t count)
         {
-            static_assert(
-                sizeof(bls12_381::scalar_t) == sizeof(mcl::Fr),
-                "ICICLE BLS12-381 scalar and mcl::Fr must have identical width");
-
-            static_assert(
-                sizeof(mcl::Fr) == 4 * sizeof(std::uint64_t),
-                "mcl::Fr must use four 64-bit limbs");
-
             if (count == 0)
             {
                 return;
@@ -300,33 +249,24 @@ namespace gatzk::crypto
             if (output == nullptr || input == nullptr)
             {
                 throw std::runtime_error(
-                    "CUDA G1 MSM Montgomery scalar staging received a null buffer");
+                    "CUDA G1 MSM canonical scalar staging received a null buffer");
             }
 
-            const auto *native =
-                algebra::FieldElement::native_array_data(input);
-
-            std::memcpy(
-                output,
-                native,
-                checked_byte_count(
-                    count,
-                    sizeof(mcl::Fr),
-                    "Montgomery scalar staging"));
+            for (std::size_t index = 0;
+                 index < count;
+                 ++index)
+            {
+                output[index] =
+                    to_icicle_field<bls12_381::scalar_t>(
+                        input[index].native());
+            }
         }
-        void copy_mcl_montgomery_scalars_to_device(
+
+        void copy_icicle_scalars_to_device(
             bls12_381::scalar_t *output,
-            const algebra::FieldElement *input,
+            const bls12_381::scalar_t *input,
             std::size_t count)
         {
-            static_assert(
-                sizeof(bls12_381::scalar_t) == sizeof(mcl::Fr),
-                "ICICLE BLS12-381 scalar and mcl::Fr must have identical width");
-
-            static_assert(
-                sizeof(mcl::Fr) == 4 * sizeof(std::uint64_t),
-                "mcl::Fr must use four 64-bit limbs");
-
             if (count == 0)
             {
                 return;
@@ -338,17 +278,14 @@ namespace gatzk::crypto
                     "CUDA G1 MSM device scalar staging received a null buffer");
             }
 
-            const auto *native =
-                algebra::FieldElement::native_array_data(input);
-
             const auto status =
                 cudaMemcpy(
                     output,
-                    native,
+                    input,
                     checked_byte_count(
                         count,
-                        sizeof(mcl::Fr),
-                        "device Montgomery scalar staging"),
+                        sizeof(bls12_381::scalar_t),
+                        "device canonical scalar staging"),
                     cudaMemcpyHostToDevice);
 
             if (status != cudaSuccess)
@@ -1101,11 +1038,14 @@ namespace gatzk::crypto
             auto &scalar_staging =
                 reusable_scalar_staging();
 
-            const auto incremental_scalar_bytes =
+            const auto incremental_host_scalar_bytes =
+                scalar_staging
+                    .additional_host_bytes(
+                        staged_scalar_count);
+
+            const auto incremental_device_scalar_bytes =
                 integrated
-                    ? scalar_staging
-                          .additional_host_bytes(
-                              staged_scalar_count)
+                    ? std::size_t{0}
                     : scalar_staging
                           .additional_device_bytes(
                               staged_scalar_count);
@@ -1133,7 +1073,7 @@ namespace gatzk::crypto
                     auto required_host =
                         checked_add(
                             new_base_bytes,
-                            incremental_scalar_bytes,
+                            incremental_host_scalar_bytes,
                             "integrated resident working set");
 
                     const auto reserve =
@@ -1177,7 +1117,7 @@ namespace gatzk::crypto
             auto required_cuda =
                 checked_add(
                     new_base_bytes,
-                    incremental_scalar_bytes,
+                    incremental_device_scalar_bytes,
                     "resident CUDA requirement");
 
             required_cuda =
@@ -1200,12 +1140,18 @@ namespace gatzk::crypto
                 std::numeric_limits<
                     std::size_t>::max())
             {
-                const auto required_host =
+                const auto reserve =
                     std::max<std::size_t>(
                         kHostSafetyReserveBytes,
                         host.total_bytes == 0
                             ? kHostSafetyReserveBytes
                             : host.total_bytes / 8);
+
+                const auto required_host =
+                    checked_add(
+                        incremental_host_scalar_bytes,
+                        reserve,
+                        "resident host requirement");
 
                 if (host.available_bytes <
                     required_host)
@@ -1237,7 +1183,7 @@ namespace gatzk::crypto
 
             config.are_points_on_device = true;
             config.are_points_montgomery_form = false;
-            config.are_scalars_montgomery_form = true;
+            config.are_scalars_montgomery_form = false;
             config.are_results_on_device = false;
             bls12_381::projective_t result;
             cudaError_t status = cudaSuccess;
@@ -1245,16 +1191,16 @@ namespace gatzk::crypto
             auto &scalar_staging =
                 reusable_scalar_staging();
 
+            auto *converted_scalars =
+                scalar_staging.host(count);
+
+            copy_mcl_canonical_scalars_to_icicle(
+                converted_scalars,
+                scalars,
+                count);
+
             if (cuda_msm_device_is_integrated())
             {
-                auto *converted_scalars =
-                    scalar_staging.host(count);
-
-                copy_mcl_montgomery_scalars_to_icicle(
-                    converted_scalars,
-                    scalars,
-                    count);
-
                 config.are_scalars_on_device = false;
 
                 status =
@@ -1270,9 +1216,9 @@ namespace gatzk::crypto
                 auto *device_scalars =
                     scalar_staging.device(count);
 
-                copy_mcl_montgomery_scalars_to_device(
+                copy_icicle_scalars_to_device(
                     device_scalars,
-                    scalars,
+                    converted_scalars,
                     count);
 
                 config.are_scalars_on_device = true;
@@ -1361,10 +1307,9 @@ namespace gatzk::crypto
 
             config.batch_size =
                 static_cast<int>(batch_size);
-
             config.are_points_on_device = true;
             config.are_points_montgomery_form = false;
-            config.are_scalars_montgomery_form = true;
+            config.are_scalars_montgomery_form = false;
             config.are_results_on_device = false;
 
             cudaError_t status = cudaSuccess;
@@ -1372,23 +1317,23 @@ namespace gatzk::crypto
             auto &scalar_staging =
                 reusable_scalar_staging();
 
+            auto *batched_scalars =
+                scalar_staging.host(
+                    total_scalar_count);
+
+            for (std::size_t batch = 0;
+                 batch < batch_size;
+                 ++batch)
+            {
+                copy_mcl_canonical_scalars_to_icicle(
+                    batched_scalars +
+                        batch * count,
+                    scalar_vectors[batch],
+                    count);
+            }
+
             if (cuda_msm_device_is_integrated())
             {
-                auto *batched_scalars =
-                    scalar_staging.host(
-                        total_scalar_count);
-
-                for (std::size_t batch = 0;
-                     batch < batch_size;
-                     ++batch)
-                {
-                    copy_mcl_montgomery_scalars_to_icicle(
-                        batched_scalars +
-                            batch * count,
-                        scalar_vectors[batch],
-                        count);
-                }
-
                 config.are_scalars_on_device = false;
 
                 status =
@@ -1405,16 +1350,10 @@ namespace gatzk::crypto
                     scalar_staging.device(
                         total_scalar_count);
 
-                for (std::size_t batch = 0;
-                     batch < batch_size;
-                     ++batch)
-                {
-                    copy_mcl_montgomery_scalars_to_device(
-                        device_scalars +
-                            batch * count,
-                        scalar_vectors[batch],
-                        count);
-                }
+                copy_icicle_scalars_to_device(
+                    device_scalars,
+                    batched_scalars,
+                    total_scalar_count);
 
                 config.are_scalars_on_device = true;
 
@@ -1611,7 +1550,7 @@ namespace gatzk::crypto
                      batch < batch_size;
                      ++batch)
                 {
-                    copy_mcl_montgomery_scalars_to_icicle(
+                    copy_mcl_canonical_scalars_to_icicle(
                         converted_scalars.data() +
                             batch * current_count,
                         scalar_vectors[batch] +
@@ -1640,7 +1579,7 @@ namespace gatzk::crypto
                     false;
 
                 config.are_scalars_montgomery_form =
-                    true;
+                    false;
 
                 config.are_results_on_device =
                     false;
@@ -2001,7 +1940,7 @@ namespace gatzk::crypto
                     points + offset,
                     current_count);
 
-                copy_mcl_montgomery_scalars_to_icicle(
+                copy_mcl_canonical_scalars_to_icicle(
                     buffers.converted_scalars.data(),
                     scalars + offset,
                     current_count);
@@ -2013,7 +1952,7 @@ namespace gatzk::crypto
                 config.are_points_montgomery_form = false;
 
                 config.are_scalars_on_device = false;
-                config.are_scalars_montgomery_form = true;
+                config.are_scalars_montgomery_form = false;
 
                 config.are_results_on_device = false;
 
@@ -2205,7 +2144,7 @@ namespace gatzk::crypto
                      batch < batch_size;
                      ++batch)
                 {
-                    copy_mcl_montgomery_scalars_to_icicle(
+                    copy_mcl_canonical_scalars_to_icicle(
                         buffers
                                 .converted_scalars
                                 .data() +
@@ -2237,7 +2176,7 @@ namespace gatzk::crypto
                     false;
 
                 config.are_scalars_montgomery_form =
-                    true;
+                    false;
 
                 config.are_results_on_device =
                     false;
