@@ -213,7 +213,7 @@ namespace gatzk::crypto
                     status);
             }
 
-                        return integrated != 0;
+            return integrated != 0;
         }
 
         bool icicle_msm_requires_big_triangle_reduction()
@@ -250,8 +250,8 @@ namespace gatzk::crypto
 
         msm::MSMConfig configured_icicle_msm()
         {
-                        auto config =
-                configured_icicle_msm();
+            auto config =
+                msm::default_msm_config();
 
             config.is_big_triangle =
                 icicle_msm_requires_big_triangle_reduction();
@@ -1232,8 +1232,8 @@ namespace gatzk::crypto
                     count,
                     stable_srs_capacity);
 
-                        auto config =
-                configured_icicle_msm();
+            auto config =
+                msm::default_msm_config();
 
             config.are_points_on_device = true;
             config.are_points_montgomery_form = false;
@@ -1353,8 +1353,8 @@ namespace gatzk::crypto
                     "CUDA G1 MSM resident batch result staging "
                     "exhausted host memory");
             }
-                        auto config =
-                configured_icicle_msm();
+            auto config =
+                msm::default_msm_config();
 
             config.points_size =
                 static_cast<int>(count);

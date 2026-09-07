@@ -130,8 +130,7 @@ class LayeredSchemaRegression(unittest.TestCase):
         )
         self.assertIn("hidden_head_prefix(layer_index, head_index)", layer_loop)
         self.assertIn("append_concat_labels(", layer_loop)
-                self.assertLess(
-            layer_loop.index("append_concat_labels("),
+        self.assertLess(layer_loop.index("append_concat_labels("),
             dynamic.index("for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size();"),
         )
 
