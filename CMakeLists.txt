@@ -281,6 +281,17 @@ add_executable(gatzk_input_quantization_test tests/input_quantization_runtime.cp
 target_link_libraries(gatzk_input_quantization_test PRIVATE gatzkml)
 add_test(NAME input_quantization_runtime COMMAND gatzk_input_quantization_test)
 
+# Manual partial multi-graph diagnostic for the real protocol chain.
+# It deliberately is NOT registered with CTest because it requires
+# canonical dataset/checkpoint/SRS resources.  The executable itself
+# rejects full-dataset contexts.
+add_executable(
+    gatzk_protocol_replay_diag
+    tests/protocol_replay_diagnostic.cpp)
+target_link_libraries(
+    gatzk_protocol_replay_diag
+    PRIVATE gatzkml)
+
 if(GATZK_ENABLE_CUDA_BACKEND)
     add_executable(gatzk_cuda_t_edge_test tests/cuda_t_edge_runtime.cpp)
     target_link_libraries(gatzk_cuda_t_edge_test PRIVATE gatzkml)
