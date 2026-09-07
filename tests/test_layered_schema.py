@@ -130,9 +130,56 @@ class LayeredSchemaRegression(unittest.TestCase):
         )
         self.assertIn("hidden_head_prefix(layer_index, head_index)", layer_loop)
         self.assertIn("append_concat_labels(", layer_loop)
-        self.assertLess(
+                self.assertLess(
             layer_loop.index("append_concat_labels("),
             dynamic.index("for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size();"),
+        )
+
+    def test_trace_challenge_replay_boundary_is_canonical(self) -> None:
+        trace = read("src/protocol/trace.cpp")
+
+        concat_block = region(
+            trace,
+            "            auto commit_hidden_layer_concat =",
+            "            stage_start = Clock::now();\n"
+            "            const auto hidden_stack_start",
+        )
+        self.assertNotIn(
+            "for (const auto &column :\n"
+            "                         binding->relation_meta\n"
+            "                             .canonical_matrices.front()\n"
+            "                             .column_objects)",
+            concat_block,
+        )
+
+        finalize = region(
+            trace,
+            "        void finalize_trace_registry(",
+            "        // 多层多头正式路径",
+        )
+        self.assertNotIn(
+            'transcript.challenge("alpha_quot")',
+            finalize,
+        )
+        self.assertNotIn(
+            "derive_domain_opening_challenges(context, transcript)",
+            finalize,
+        )
+        self.assertIn(
+            'trace.challenges["alpha_quot"] = replayed_pre_quotient.at("alpha_quot");',
+            finalize,
+        )
+        self.assertIn(
+            "trace challenge is missing from canonical verifier replay",
+            finalize,
+        )
+
+    def test_multigraph_context_is_not_retained_across_warmup(self) -> None:
+        prover = read("src/protocol/prover.cpp")
+        self.assertIn(
+            'const bool allow_static_context_cache =\n'
+            '            canonical_config.batching_rule != "multi_graph_batch";',
+            prover,
         )
 
     def test_formal_witness_and_edge_plan_are_nested(self) -> None:

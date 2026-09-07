@@ -11358,10 +11358,11 @@ namespace gatzk::protocol
             config.hidden_profile,
             config.K_out,
             (std::filesystem::path(config.project_root) / "configs/quantization_scale_chain.cfg").string());
-        static std::mutex cache_mutex;
+                static std::mutex cache_mutex;
         static std::unordered_map<std::string, StaticContextCachePayload> cache;
         // 这里只复用静态上下文对象，见证和挑战相关状态必须按每次正式证明重新生成。
-        const bool allow_static_context_cache = true;
+        const bool allow_static_context_cache =
+            canonical_config.batching_rule != "multi_graph_batch";
 
         const auto cache_lookup_start = Clock::now();
         const auto cache_key = context_cache_key(canonical_config);

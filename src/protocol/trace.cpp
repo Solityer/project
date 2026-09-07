@@ -6710,16 +6710,10 @@ namespace gatzk::protocol
 
         void finalize_trace_registry(
             const ProtocolContext &context,
-            crypto::Transcript &transcript,
             TraceArtifacts &trace,
             RunMetrics *metrics)
         {
             const auto stage_start = Clock::now();
-            trace.challenges["alpha_quot"] = transcript.challenge("alpha_quot");
-            for (const auto &[label, point] :
-                 derive_domain_opening_challenges(context, transcript))
-                trace.challenges[label] = point;
-            add_metric(metrics != nullptr ? &metrics->trace_finalize_ms : nullptr, stage_start);
 
             const auto canonical_commitment_order = dynamic_commitment_labels(context);
             std::set<std::string> expected_commitments(
@@ -6797,18 +6791,27 @@ namespace gatzk::protocol
                     throw std::runtime_error(
                         "dynamic commitment is missing from ProofSchema: " + label);
             }
-            trace.commitment_order = canonical_commitment_order;
+                        trace.commitment_order = canonical_commitment_order;
             const auto replayed_pre_quotient =
                 replay_challenges(context, trace.commitments, {}, &trace.public_metadata);
             for (const auto &[label, value] : trace.challenges)
             {
-                if (label == "alpha_quot" || !replayed_pre_quotient.contains(label))
+                if (label == "alpha_quot")
                     continue;
-                if (replayed_pre_quotient.at(label) != value)
+
+                const auto replayed =
+                    replayed_pre_quotient.find(label);
+
+                if (replayed == replayed_pre_quotient.end())
                     throw std::runtime_error(
-                        "trace challenge diverged from canonical verifier replay: " + label + " trace=" + value.to_string() + " replay=" + replayed_pre_quotient.at(label).to_string());
+                        "trace challenge is missing from canonical verifier replay: " + label);
+
+                if (replayed->second != value)
+                    throw std::runtime_error(
+                        "trace challenge diverged from canonical verifier replay: " + label + " trace=" + value.to_string() + " replay=" + replayed->second.to_string());
             }
             trace.challenges["alpha_quot"] = replayed_pre_quotient.at("alpha_quot");
+            add_metric(metrics != nullptr ? &metrics->trace_finalize_ms : nullptr, stage_start);
         }
 
         // 多层多头正式路径：按层序物化隐藏头、输出头与跨层拼接相关的全部 witness 列。
@@ -9424,17 +9427,6 @@ namespace gatzk::protocol
                         binding->relation_meta
                             .canonical_matrices.front(),
                         h_cat_layer);
-
-                    for (const auto &column :
-                         binding->relation_meta
-                             .canonical_matrices.front()
-                             .column_objects)
-                    {
-                        transcript.absorb_commitment(
-                            column,
-                            trace.commitments.at(column)
-                                .point);
-                    }
                 }
                 transcript.absorb_commitment(concat_label, trace.commitments.at(concat_label).point);
                 trace.challenges[xi_name] = transcript.challenge(xi_name);
@@ -12717,7 +12709,7 @@ namespace gatzk::protocol
                     elapsed_ms(output_trace_start, Clock::now()) - (metrics->commit_dynamic_ms - output_initial_commit_dynamic_ms));
             }
 
-            finalize_trace_registry(context, transcript, trace, metrics);
+                        finalize_trace_registry(context, trace, metrics);
             // Semantic commitment reuse is needed only while dynamic
             // commitments are being produced.  Do not carry its pointer/hash
             // registry into quotient and opening phases.

@@ -213,7 +213,50 @@ namespace gatzk::crypto
                     status);
             }
 
-            return integrated != 0;
+                        return integrated != 0;
+        }
+
+        bool icicle_msm_requires_big_triangle_reduction()
+        {
+            int device = 0;
+
+            auto status =
+                cudaGetDevice(&device);
+
+            if (status != cudaSuccess)
+            {
+                throw_cuda_error(
+                    "device lookup",
+                    status);
+            }
+
+            int major = 0;
+
+            status =
+                cudaDeviceGetAttribute(
+                    &major,
+                    cudaDevAttrComputeCapabilityMajor,
+                    device);
+
+            if (status != cudaSuccess)
+            {
+                throw_cuda_error(
+                    "compute-capability query",
+                    status);
+            }
+
+            return major >= 12;
+        }
+
+        msm::MSMConfig configured_icicle_msm()
+        {
+                        auto config =
+                configured_icicle_msm();
+
+            config.is_big_triangle =
+                icicle_msm_requires_big_triangle_reduction();
+
+            return config;
         }
 
         template <class IcicleField, class MclField>
@@ -1189,8 +1232,8 @@ namespace gatzk::crypto
                     count,
                     stable_srs_capacity);
 
-            auto config =
-                msm::default_msm_config();
+                        auto config =
+                configured_icicle_msm();
 
             config.are_points_on_device = true;
             config.are_points_montgomery_form = false;
@@ -1310,8 +1353,8 @@ namespace gatzk::crypto
                     "CUDA G1 MSM resident batch result staging "
                     "exhausted host memory");
             }
-            auto config =
-                msm::default_msm_config();
+                        auto config =
+                configured_icicle_msm();
 
             config.points_size =
                 static_cast<int>(count);
