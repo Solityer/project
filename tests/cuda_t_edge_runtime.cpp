@@ -770,32 +770,85 @@ int main()
         return 77;
     }
 
-    if (gatzk::protocol::cuda_t_edge_executor_can_admit(0, 1) ||
-        gatzk::protocol::cuda_t_edge_executor_can_admit(3, 1) ||
+    constexpr std::size_t target_size_2_24 =
+        std::size_t{1} << 24;
+    constexpr std::size_t target_size_2_25 =
+        std::size_t{1} << 25;
+    constexpr std::size_t target_size_2_26 =
+        std::size_t{1} << 26;
+
+    if (gatzk::protocol::cuda_t_edge_executor_can_admit(
+            0,
+            1,
+            false) ||
+        gatzk::protocol::cuda_t_edge_executor_can_admit(
+            3,
+            1,
+            false) ||
         gatzk::protocol::cuda_t_edge_executor_can_admit(
             std::size_t{1} << (sizeof(std::size_t) * 8 - 1),
-            1) ||
+            1,
+            false) ||
         gatzk::protocol::cuda_t_edge_executor_can_admit(
             std::size_t{1} << 16,
-            std::numeric_limits<std::uint32_t>::max()))
+            std::numeric_limits<std::uint32_t>::max(),
+            false))
     {
         throw std::runtime_error(
             "CUDA t_edge admission accepted an invalid/overflow shape");
     }
 
-    // Exact direct leaves use paired NTTs of target_size / 2.  The quotient
-    // executor remains a valid pointwise device route above this boundary;
-    // production code must therefore report the leaf capability explicitly
-    // instead of claiming direct coverage for the OGBN-sized 2^26 target.
+    // Exact leaves and final coefficient conversion use paired NTTs of
+    // target_size / 2.  The executor must therefore report this capability
+    // explicitly instead of claiming coverage for the OGBN-sized 2^26 target.
     if (!gatzk::protocol::cuda_t_edge_leaf_exact_ntt_supported(
-            std::size_t{1} << 25) ||
+            target_size_2_24) ||
+        !gatzk::protocol::cuda_t_edge_leaf_exact_ntt_supported(
+            target_size_2_25) ||
         gatzk::protocol::cuda_t_edge_leaf_exact_ntt_supported(
-            std::size_t{1} << 26) ||
+            target_size_2_26) ||
         gatzk::protocol::cuda_t_edge_leaf_exact_ntt_supported(3))
     {
         throw std::runtime_error(
             "CUDA t_edge leaf NTT capability boundary is incorrect");
     }
+
+    // Admission must cover both exact leaf materialization and the final
+    // device-resident quotient -> coefficient conversion.  The latter uses
+    // the same target_size / 2 paired-NTT boundary, so an unsupported 2^26
+    // target must fail closed even if a caller supplies a stale true flag.
+    const auto admit_2_24 =
+        gatzk::protocol::cuda_t_edge_executor_can_admit(
+            target_size_2_24,
+            1,
+            true);
+    const auto admit_2_25 =
+        gatzk::protocol::cuda_t_edge_executor_can_admit(
+            target_size_2_25,
+            1,
+            true);
+    if (gatzk::protocol::cuda_t_edge_executor_can_admit(
+            target_size_2_26,
+            1,
+            true) ||
+        gatzk::protocol::cuda_t_edge_executor_can_admit(
+            target_size_2_26,
+            1,
+            false) ||
+        gatzk::protocol::cuda_t_edge_executor_can_admit(
+            target_size_2_26,
+            1))
+    {
+        throw std::runtime_error(
+            "CUDA t_edge admission accepted unsupported 2^26 final conversion");
+    }
+
+    std::cout
+        << "CUDA_T_EDGE_CAPABILITY_OK target_2^24="
+        << (admit_2_24 ? 1 : 0)
+        << " target_2^25="
+        << (admit_2_25 ? 1 : 0)
+        << " target_2^26=0\n";
 
     constexpr std::size_t
         domain_size = 1024;

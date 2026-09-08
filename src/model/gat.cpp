@@ -2218,9 +2218,6 @@ namespace gatzk::model
     {
         MultiHeadForwardTrace trace;
 
-        // H is the canonical input matrix for the nested forward trace.
-        trace.H = features;
-
         ForwardGraphLayout graph_layout;
 
         if (!features.empty())
@@ -2237,7 +2234,7 @@ namespace gatzk::model
             parameters.hidden_layers.size());
 
         const FloatMatrix *layer_input =
-            &trace.H;
+            &features;
 
         // 1. Hidden layers.
         for (const auto &layer :
@@ -2245,11 +2242,6 @@ namespace gatzk::model
         {
             HiddenLayerForwardTrace
                 layer_trace;
-
-            // Use the retained layer input directly for all heads instead of
-            // creating an additional transient matrix.
-            layer_trace.input =
-                *layer_input;
 
             layer_trace.head_traces.resize(
                 layer.heads.size());
@@ -2278,7 +2270,7 @@ namespace gatzk::model
                         layer_trace
                             .head_traces[head_index] =
                             attention_head_forward_impl(
-                                layer_trace.input,
+                                *layer_input,
                                 edges,
                                 layer.heads[head_index],
                                 false,

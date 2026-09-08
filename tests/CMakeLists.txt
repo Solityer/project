@@ -9,6 +9,10 @@ add_executable(gatzk_verifier_privacy_test verifier_privacy_runtime.cpp)
 target_link_libraries(gatzk_verifier_privacy_test PRIVATE gatzkml)
 add_test(NAME verifier_privacy_runtime COMMAND gatzk_verifier_privacy_test)
 
+add_executable(gatzk_static_table_streaming_test static_table_streaming_runtime.cpp)
+target_link_libraries(gatzk_static_table_streaming_test PRIVATE gatzkml)
+add_test(NAME static_table_streaming_runtime COMMAND gatzk_static_table_streaming_test)
+
 # Focused public AggBind reconstruction regression. The internal header is
 # deliberately outside the installed include tree and is used only to share
 # the production verifier helper with this small synthetic test.
@@ -62,6 +66,13 @@ add_test(NAME t_edge_descriptor_runtime COMMAND gatzk_t_edge_descriptor_test)
 # contexts.
 add_executable(gatzk_protocol_replay_diag protocol_replay_diagnostic.cpp)
 target_link_libraries(gatzk_protocol_replay_diag PRIVATE gatzkml)
+
+add_executable(gatzk_forward_trace_regression forward_trace_regression.cpp)
+target_link_libraries(gatzk_forward_trace_regression PRIVATE gatzkml)
+target_compile_definitions(
+    gatzk_forward_trace_regression
+    PRIVATE GATZK_SOURCE_ROOT="${PROJECT_SOURCE_DIR}")
+add_test(NAME forward_trace_regression COMMAND gatzk_forward_trace_regression)
 
 add_test(
     NAME cuda_weighted_eval_contract

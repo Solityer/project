@@ -63,6 +63,7 @@ for entry in (
     "weighted_poly_eval_gpu",
     "weighted_poly_eval_gpu_columnar",
     "weighted_poly_eval_gpu_multi",
+    "weighted_poly_eval_gpu_multi_rotations",
 ):
     checked_cuda_calls(function_body(entry), entry)
 
@@ -80,5 +81,12 @@ assert "std::min(row_count, static_cast<std::size_t>(65535))" not in function_bo
 assert "std::min(row_count, static_cast<std::size_t>(65535))" not in function_body(
     "weighted_poly_eval_gpu_columnar"
 )
+rotations_body = function_body("weighted_poly_eval_gpu_multi_rotations")
+assert "checked_size_add" in rotations_body
+assert "cudaMemGetInfo" in rotations_body
+assert "kAdmissionHeadroomBytes" in rotations_body
+assert "common_partial_bytes > kMaxRotationPartialBytes" in rotations_body
+assert "rotation_count > 65535" in rotations_body
+assert "poly_count > 65535" in rotations_body
 
 print("CUDA weighted evaluation fail-closed contract: PASS")

@@ -48,6 +48,26 @@ namespace gatzk::protocol
     // This is intentionally independent of the proving context.
     bool validate_verifier_context(const VerifierContext &verifier_context);
 
+    // Execution-only canonical table encoders used by registry construction
+    // and bounded regression tests.  These helpers expose no new wire or
+    // transcript field; they only provide the existing canonical bytes through
+    // a counting/incremental-hash path.
+    namespace detail
+    {
+        std::size_t canonical_static_table_serialization_size(
+            const StaticTables &tables);
+        std::string canonical_static_table_digest(
+            const StaticTables &tables);
+        std::string canonical_static_table_spec_hash(
+            const ProtocolContext &context);
+        std::string canonical_static_table_spec_hash(
+            const VerifierContext &context);
+        std::string canonical_range_and_scale_certificate(
+            const ProtocolContext &context);
+        std::string canonical_range_and_scale_certificate(
+            const VerifierContext &context);
+    }
+
     // Shape-only projection used by verifier execution.  It contains public
     // data and a VK copy, and never points back to a proving context.
     namespace detail

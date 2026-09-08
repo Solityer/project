@@ -101,17 +101,16 @@ namespace gatzk::protocol
 
     bool cuda_t_edge_executor_available();
 
-    // A direct evaluation/coefficient leaf materialization uses paired NTTs
-    // over target_size / 2.  This capability is intentionally separate from
-    // the quotient executor: large targets may still use the device-resident
-    // quotient program while their leaves must be uploaded from host cosets.
+    // Direct leaf materialization and final coefficient conversion both use
+    // paired NTTs over target_size / 2.  The executor admission path requires
+    // this capability before any target-sized host/device work is started.
     bool cuda_t_edge_leaf_exact_ntt_supported(
         std::size_t target_size);
 
     bool cuda_t_edge_executor_can_admit(
         std::size_t target_size,
         std::size_t cache_slot_count,
-        bool leaf_exact_ntt_supported = true);
+        bool leaf_exact_ntt_supported = false);
 
     void release_cuda_t_edge_executor_cache();
 

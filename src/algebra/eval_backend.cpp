@@ -568,6 +568,105 @@ namespace gatzk::algebra
         // ---- GPU path for rotated evaluations ----
         if (try_gpu)
         {
+            constexpr std::size_t kMaxRotationPartialBytes =
+                256ULL * 1024ULL * 1024ULL;
+            constexpr std::size_t kCudaReductionBlockSize = 256;
+            const auto partial_blocks =
+                domain_->size / kCudaReductionBlockSize +
+                (domain_->size % kCudaReductionBlockSize == 0 ? 0 : 1);
+            const auto partial_bytes_per_point =
+                static_cast<unsigned __int128>(partial_blocks) *
+                static_cast<unsigned __int128>(row_count) *
+                sizeof(mcl::Fr);
+            const auto rotations_per_launch =
+                partial_bytes_per_point == 0 ||
+                        partial_bytes_per_point >
+                            static_cast<unsigned __int128>(
+                                kMaxRotationPartialBytes)
+                    ? std::size_t{1}
+                    : std::max<std::size_t>(
+                          1,
+                          kMaxRotationPartialBytes /
+                              static_cast<std::size_t>(
+                                  partial_bytes_per_point));
+
+            // For a genuine multi-rotation launch, upload the representative
+            // weights once and preserve the canonical `[rotation][column]`
+            // output order supplied by the CUDA API.  Keep the established
+            // single-rotation route below when there is no batch to amortize.
+            // A cached subset is intentionally kept on the established
+            // interleaved route.  Turning it into row-major columns here
+            // would duplicate a potentially multi-GiB host buffer.  The
+            // canonical polynomial values below are already contiguous and
+            // can be passed directly with their true lengths.
+            if (point_count > 1 && rotations_per_launch > 1 &&
+                !use_cached_subset)
+            {
+                std::vector<const uint64_t*> col_ptrs(row_count);
+                std::vector<std::size_t> column_lengths(row_count);
+                for (std::size_t r = 0; r < row_count; ++r)
+                {
+                    const auto label_it = label_to_index_.find(labels[r]);
+                    if (label_it == label_to_index_.end())
+                    {
+                        throw std::runtime_error(
+                            "domain evaluation backend is missing label: " +
+                            labels[r]);
+                    }
+                    const auto& values =
+                        polynomials_[label_it->second].second->values();
+                    col_ptrs[r] = reinterpret_cast<const uint64_t*>(
+                        FieldElement::native_array_data(values.data()));
+                    column_lengths[r] = std::min(
+                        values.size(),
+                        domain_->size);
+                }
+
+                for (std::size_t rotation_begin = 0;
+                     rotation_begin < point_count;
+                     rotation_begin += rotations_per_launch)
+                {
+                    const auto launch_count = std::min(
+                        rotations_per_launch,
+                        point_count - rotation_begin);
+                    const bool gpu_ok =
+                        weighted_poly_eval_gpu_multi_rotations(
+                            reinterpret_cast<const uint64_t*>(
+                                representative_weights.data()),
+                            col_ptrs.data(),
+                            reinterpret_cast<uint64_t*>(
+                                native_out.data() +
+                                rotation_begin * row_count),
+                            domain_->size,
+                            row_count,
+                            rotations.data() + rotation_begin,
+                            launch_count,
+                            column_lengths.data());
+                    if (!gpu_ok)
+                    {
+                        throw std::runtime_error(
+                            "CUDA batched rotated evaluation kernel failed; refusing silent CPU fallback");
+                    }
+                }
+
+                std::vector<std::vector<FieldElement>> out(
+                    point_count,
+                    std::vector<FieldElement>(
+                        row_count,
+                        FieldElement::zero()));
+                for (std::size_t point_index = 0;
+                     point_index < point_count;
+                     ++point_index)
+                {
+                    for (std::size_t row = 0; row < row_count; ++row)
+                    {
+                        out[point_index][row] = FieldElement::from_native(
+                            native_out[point_index * row_count + row]);
+                    }
+                }
+                return out;
+            }
+
             if (use_cached_subset)
             {
                 bool all_ok = true;
@@ -619,29 +718,26 @@ namespace gatzk::algebra
             }
 
             // 旋转点评估共享同一代表权重，只是在域上做循环平移。
-            // 列缓冲区只构造一次，逐个旋转点复用。
-            std::vector<std::vector<mcl::Fr>> col_buffers(row_count);
+            // Canonical evaluation columns are already contiguous; pass them
+            // directly and let the CUDA path zero-fill any short tail.
             std::vector<const uint64_t*> col_ptrs(row_count);
+            std::vector<std::size_t> column_lengths(row_count);
             for (std::size_t r = 0; r < row_count; ++r)
             {
-                col_buffers[r].resize(domain_->size);
-                if (use_cached_subset)
+                const auto label_it = label_to_index_.find(labels[r]);
+                if (label_it == label_to_index_.end())
                 {
-                    for (std::size_t col = 0; col < domain_->size; ++col)
-                    {
-                        col_buffers[r][col] = subset.interleaved_values[col * row_count + r];
-                    }
+                    throw std::runtime_error(
+                        "domain evaluation backend is missing label: " +
+                        labels[r]);
                 }
-                else
-                {
-                    const auto global_row = subset.row_indices[r];
-                    for (std::size_t col = 0; col < domain_->size; ++col)
-                    {
-                        col_buffers[r][col] =
-                            native_value_at(global_row, col);
-                    }
-                }
-                col_ptrs[r] = reinterpret_cast<const uint64_t*>(col_buffers[r].data());
+                const auto& values =
+                    polynomials_[label_it->second].second->values();
+                col_ptrs[r] = reinterpret_cast<const uint64_t*>(
+                    FieldElement::native_array_data(values.data()));
+                column_lengths[r] = std::min(
+                    values.size(),
+                    domain_->size);
             }
 
             bool all_ok = true;
@@ -663,7 +759,8 @@ namespace gatzk::algebra
                     col_ptrs.data(),
                     reinterpret_cast<uint64_t*>(gpu_results.data()),
                     domain_->size,
-                    row_count);
+                    row_count,
+                    column_lengths.data());
 
                 if (!gpu_ok) { all_ok = false; break; }
                 for (std::size_t r = 0; r < row_count; ++r)

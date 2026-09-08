@@ -2200,7 +2200,9 @@ namespace gatzk::protocol
         const algebra::FieldElement &omega,
         std::size_t cache_slot_count)
     {
-        if (!cuda_t_edge_executor_available())
+        if (!cuda_t_edge_executor_available() ||
+            !cuda_t_edge_leaf_exact_ntt_supported(
+                target_size))
         {
             return nullptr;
         }
@@ -2235,6 +2237,9 @@ namespace gatzk::protocol
         bool leaf_exact_ntt_supported)
     {
         if (!cuda_t_edge_executor_available() ||
+            !leaf_exact_ntt_supported ||
+            !cuda_t_edge_leaf_exact_ntt_supported(
+                target_size) ||
             target_size == 0 ||
             cache_slot_count == 0 ||
             (target_size &

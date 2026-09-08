@@ -5431,7 +5431,7 @@ namespace gatzk::protocol
                 const RawMatrix input_raw =
                     layer_index == 0
                         ? quantize_matrix_raw_at_scale(
-                              layer_trace.input,
+                              context.local.features_fp,
                               context.config.quantization.s_input)
                         : hidden_layer_concat_raw.back();
                 artifacts->hidden_layer_inputs_quantized.push_back(field_matrix_from_raw(input_raw));

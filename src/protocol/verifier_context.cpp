@@ -43,6 +43,303 @@ namespace gatzk::protocol
             out->append(value.data(), value.size());
         }
 
+        // The canonical table text is intentionally kept byte-for-byte
+        // compatible with the historical ostringstream implementation.  The
+        // sinks below let the same encoder target an owned string, a counting
+        // pass, or an incremental SHA-256 state without retaining the complete
+        // table text in memory.
+        class StringSink
+        {
+        public:
+            explicit StringSink(std::string *out)
+                : out_(out)
+            {
+            }
+
+            void write(std::string_view bytes)
+            {
+                out_->append(bytes.data(), bytes.size());
+            }
+
+        private:
+            std::string *out_;
+        };
+
+        class CountingSink
+        {
+        public:
+            void write(std::string_view bytes)
+            {
+                if (bytes.size() > std::numeric_limits<std::size_t>::max() - size_)
+                    throw std::runtime_error(
+                        "canonical static-table serialization size overflow");
+                size_ += bytes.size();
+            }
+
+            std::size_t size() const
+            {
+                return size_;
+            }
+
+        private:
+            std::size_t size_ = 0;
+        };
+
+        class Sha256Sink
+        {
+        public:
+            Sha256Sink()
+            {
+                if (SHA256_Init(&context_) != 1)
+                    throw std::runtime_error(
+                        "failed to initialize canonical static-table SHA-256");
+            }
+
+            Sha256Sink(const Sha256Sink &) = delete;
+            Sha256Sink &operator=(const Sha256Sink &) = delete;
+
+            void write(std::string_view bytes)
+            {
+                if (bytes.empty())
+                    return;
+                if (bytes.size() > std::numeric_limits<std::size_t>::max() - size_)
+                    throw std::runtime_error(
+                        "canonical static-table serialization size overflow");
+                const auto next_size = size_ + bytes.size();
+                if (SHA256_Update(
+                        &context_, bytes.data(), bytes.size())
+                    != 1)
+                    throw std::runtime_error(
+                        "failed to update canonical static-table SHA-256");
+                size_ = next_size;
+            }
+
+            std::string finish_hex()
+            {
+                if (finished_)
+                    throw std::runtime_error(
+                        "canonical static-table SHA-256 finalized twice");
+                std::array<unsigned char, SHA256_DIGEST_LENGTH> digest{};
+                if (SHA256_Final(digest.data(), &context_) != 1)
+                    throw std::runtime_error(
+                        "failed to finalize canonical static-table SHA-256");
+                finished_ = true;
+                std::ostringstream out;
+                out << std::hex << std::setfill('0');
+                for (const auto byte : digest)
+                    out << std::setw(2) << static_cast<unsigned int>(byte);
+                return out.str();
+            }
+
+            std::size_t size() const
+            {
+                return size_;
+            }
+
+        private:
+            SHA256_CTX context_{};
+            std::size_t size_ = 0;
+            bool finished_ = false;
+        };
+
+        template <typename Sink>
+        void sink_u64(Sink &sink, std::uint64_t value)
+        {
+            std::array<char, sizeof(value)> bytes{};
+            for (std::size_t index = 0; index < sizeof(value); ++index)
+                bytes[index] = static_cast<char>((value >> (8U * index)) & 0xffU);
+            sink.write(std::string_view(bytes.data(), bytes.size()));
+        }
+
+        std::uint64_t checked_size_to_u64(
+            std::size_t value,
+            std::string_view label)
+        {
+            if constexpr (
+                std::numeric_limits<std::size_t>::digits
+                > std::numeric_limits<std::uint64_t>::digits)
+            {
+                if (value > std::numeric_limits<std::uint64_t>::max())
+                    throw std::runtime_error(
+                        std::string(label) + " exceeds uint64 length encoding");
+            }
+            return static_cast<std::uint64_t>(value);
+        }
+
+        template <typename Sink>
+        void sink_size(
+            Sink &sink,
+            std::size_t value,
+            std::string_view label)
+        {
+            sink_u64(sink, checked_size_to_u64(value, label));
+        }
+
+        template <typename Sink>
+        void sink_string(Sink &sink, std::string_view value)
+        {
+            sink_size(sink, value.size(), "canonical length-prefixed string");
+            sink.write(value);
+        }
+
+        template <typename Sink>
+        void sink_decimal(Sink &sink, std::size_t value)
+        {
+            const auto text = std::to_string(value);
+            sink.write(text);
+        }
+
+        template <typename Sink>
+        void sink_field(Sink &sink, const FieldElement &value)
+        {
+            // A field string is deliberately scoped to one row component.  It
+            // is never retained across the table, including during the hash
+            // pass.
+            const auto text = value.to_string();
+            sink.write(text);
+        }
+
+        template <typename Sink>
+        void encode_static_tables(Sink &sink, const StaticTables &tables)
+        {
+            sink.write("static_tables|range=");
+            sink_decimal(sink, tables.range.size());
+            for (const auto &value : tables.range)
+            {
+                sink.write("|");
+                sink_field(sink, value);
+            }
+            sink.write("|lrelu=");
+            sink_decimal(sink, tables.lrelu.size());
+            for (const auto &[x, y] : tables.lrelu)
+            {
+                sink.write("|");
+                sink_field(sink, x);
+                sink.write(",");
+                sink_field(sink, y);
+            }
+            sink.write("|elu=");
+            sink_decimal(sink, tables.elu.size());
+            for (const auto &[x, y] : tables.elu)
+            {
+                sink.write("|");
+                sink_field(sink, x);
+                sink.write(",");
+                sink_field(sink, y);
+            }
+            sink.write("|exp=");
+            sink_decimal(sink, tables.exp.size());
+            for (const auto &[x, y] : tables.exp)
+            {
+                sink.write("|");
+                sink_field(sink, x);
+                sink.write(",");
+                sink_field(sink, y);
+            }
+        }
+
+        template <typename Sink>
+        void sink_static_table_shape(
+            Sink &sink,
+            const CanonicalStaticTableShape &shape)
+        {
+            sink_string(sink, "canonical_static_table_shape");
+            sink_size(sink, shape.range_table_size, "static-table range size");
+            sink_u64(sink, static_cast<std::uint64_t>(shape.lrelu_min_raw));
+            sink_u64(sink, static_cast<std::uint64_t>(shape.lrelu_max_raw));
+            sink_size(sink, shape.lrelu_table_size, "static-table LReLU size");
+            sink_size(sink, shape.elu_bound, "static-table ELU bound");
+            sink_size(sink, shape.elu_table_size, "static-table ELU size");
+            sink_u64(sink, shape.lrelu_output_bound);
+            sink_u64(sink, shape.exp_input_bound);
+            sink_size(sink, shape.exp_table_size, "static-table ExpMap size");
+            sink_size(
+                sink,
+                shape.table_edge_domain_size,
+                "static-table edge-domain size");
+            sink_u64(sink, shape.large_whole_graph ? 1U : 0U);
+        }
+
+        template <typename Sink, typename Encoder>
+        void sink_length_prefixed(Sink &sink, Encoder &&encoder)
+        {
+            CountingSink counting;
+            encoder(counting);
+            sink_size(
+                sink,
+                counting.size(),
+                "canonical nested serialization length");
+            encoder(sink);
+        }
+
+        template <typename Sink, typename Context>
+        void encode_static_table_spec(Sink &sink, const Context &context)
+        {
+            sink_string(sink, "static_table_spec");
+            sink_string(sink, kStaticTableGeneratorId);
+            sink_string(sink, context.config.static_table_id);
+            sink_size(sink, context.config.range_bits, "range_bits");
+            const auto quantization = context.config.quantization.canonical_serialization();
+            sink_string(sink, quantization);
+            sink_string(
+                sink,
+                "range=ascending-u64;LReLU=canonical-signed-round;"
+                "ELU=exp-minus-one-signed-round;"
+                "ExpMap=exp-negative-delta-positive-saturate-one;"
+                "pairs=ordered-functional;field=canonical");
+            sink_static_table_shape(
+                sink, plan_canonical_static_table_shape(context));
+            sink_length_prefixed(
+                sink,
+                [&](auto &nested) { encode_static_tables(nested, context.tables); });
+        }
+
+        template <typename Sink, typename Context>
+        void encode_range_scale_certificate(Sink &sink, const Context &context)
+        {
+            if (context.compiler_artifact == nullptr)
+                throw std::runtime_error(
+                    "range/scale certificate requires ProtocolCompilerArtifact");
+            sink_string(sink, "range_scale_certificate");
+            sink_size(sink, context.config.range_bits, "range_bits");
+            const auto quantization = context.config.quantization.canonical_serialization();
+            sink_string(sink, quantization);
+            sink_static_table_shape(
+                sink, plan_canonical_static_table_shape(context));
+            sink_length_prefixed(
+                sink,
+                [&](auto &nested) { encode_static_tables(nested, context.tables); });
+            // The compiler ledger has a stable, already-authenticated canonical
+            // byte representation.  Keep it as one nested value; the large
+            // StaticTables payload above is the streamed part of this path.
+            const auto ledger = integer_bound_ledger_canonical_bytes(
+                context.compiler_artifact->integer_bound_ledger);
+            sink_string(sink, ledger);
+        }
+
+        std::string static_table_digest_streaming(const StaticTables &tables)
+        {
+            Sha256Sink sink;
+            encode_static_tables(sink, tables);
+            return sink.finish_hex();
+        }
+
+        std::string static_table_spec_digest_streaming(
+            const ProtocolContext &context)
+        {
+            Sha256Sink sink;
+            encode_static_table_spec(sink, context);
+            return sink.finish_hex();
+        }
+
+        std::string range_scale_certificate_digest_streaming(
+            const ProtocolContext &context)
+        {
+            Sha256Sink sink;
+            encode_range_scale_certificate(sink, context);
+            return sink.finish_hex();
+        }
+
         std::string sha256_hex(std::string_view bytes)
         {
             std::array<unsigned char, SHA256_DIGEST_LENGTH> digest{};
@@ -145,61 +442,26 @@ namespace gatzk::protocol
 
         std::string static_table_serialization(const StaticTables &tables)
         {
-            std::ostringstream out;
-            out << "static_tables|range=" << tables.range.size();
-            for (const auto &value : tables.range) out << '|' << value.to_string();
-            out << "|lrelu=" << tables.lrelu.size();
-            for (const auto &[x, y] : tables.lrelu)
-                out << '|' << x.to_string() << ',' << y.to_string();
-            out << "|elu=" << tables.elu.size();
-            for (const auto &[x, y] : tables.elu)
-                out << '|' << x.to_string() << ',' << y.to_string();
-            out << "|exp=" << tables.exp.size();
-            for (const auto &[x, y] : tables.exp)
-                out << '|' << x.to_string() << ',' << y.to_string();
-            return out.str();
+            std::string out;
+            StringSink sink(&out);
+            encode_static_tables(sink, tables);
+            return out;
         }
 
         void append_static_table_shape(
             std::string *bytes,
             const CanonicalStaticTableShape &shape)
         {
-            append_string(bytes, "canonical_static_table_shape");
-            append_u64(bytes, shape.range_table_size);
-            append_u64(bytes, static_cast<std::uint64_t>(shape.lrelu_min_raw));
-            append_u64(bytes, static_cast<std::uint64_t>(shape.lrelu_max_raw));
-            append_u64(bytes, shape.lrelu_table_size);
-            append_u64(bytes, shape.elu_bound);
-            append_u64(bytes, shape.elu_table_size);
-            append_u64(bytes, shape.lrelu_output_bound);
-            append_u64(bytes, shape.exp_input_bound);
-            append_u64(bytes, shape.exp_table_size);
-            append_u64(bytes, shape.table_edge_domain_size);
-            append_u64(bytes, shape.large_whole_graph ? 1U : 0U);
+            StringSink sink(bytes);
+            sink_static_table_shape(sink, shape);
         }
 
         std::string static_table_spec_serialization(
             const ProtocolContext &context)
         {
-            // This is the producer's deterministic table specification.  The
-            // digest binds the exact table bytes as well as the rules that
-            // determine their interpretation; a marker-only certificate is
-            // intentionally not sufficient.
             std::string bytes;
-            append_string(&bytes, "static_table_spec");
-            append_string(&bytes, kStaticTableGeneratorId);
-            append_string(&bytes, context.config.static_table_id);
-            append_u64(&bytes, context.config.range_bits);
-            append_string(&bytes, context.config.quantization.canonical_serialization());
-            append_string(
-                &bytes,
-                "range=ascending-u64;LReLU=canonical-signed-round;"
-                "ELU=exp-minus-one-signed-round;"
-                "ExpMap=exp-negative-delta-positive-saturate-one;"
-                "pairs=ordered-functional;field=canonical");
-            append_static_table_shape(
-                &bytes, plan_canonical_static_table_shape(context));
-            append_string(&bytes, static_table_serialization(context.tables));
+            StringSink sink(&bytes);
+            encode_static_table_spec(sink, context);
             return bytes;
         }
 
@@ -207,19 +469,8 @@ namespace gatzk::protocol
             const ProtocolContext &context)
         {
             std::string bytes;
-            append_string(&bytes, "range_scale_certificate");
-            append_u64(&bytes, context.config.range_bits);
-            append_string(&bytes, context.config.quantization.canonical_serialization());
-            append_static_table_shape(
-                &bytes, plan_canonical_static_table_shape(context));
-            append_string(&bytes, static_table_serialization(context.tables));
-            if (context.compiler_artifact == nullptr)
-                throw std::runtime_error(
-                    "range/scale certificate requires ProtocolCompilerArtifact");
-            append_string(
-                &bytes,
-                integer_bound_ledger_canonical_bytes(
-                    context.compiler_artifact->integer_bound_ledger));
+            StringSink sink(&bytes);
+            encode_range_scale_certificate(sink, context);
             return bytes;
         }
 
@@ -227,40 +478,17 @@ namespace gatzk::protocol
             const VerifierContext &context)
         {
             std::string bytes;
-            append_string(&bytes, "static_table_spec");
-            append_string(&bytes, kStaticTableGeneratorId);
-            append_string(&bytes, context.config.static_table_id);
-            append_u64(&bytes, context.config.range_bits);
-            append_string(&bytes, context.config.quantization.canonical_serialization());
-            append_string(
-                &bytes,
-                "range=ascending-u64;LReLU=canonical-signed-round;"
-                "ELU=exp-minus-one-signed-round;"
-                "ExpMap=exp-negative-delta-positive-saturate-one;"
-                "pairs=ordered-functional;field=canonical");
-            append_static_table_shape(
-                &bytes, plan_canonical_static_table_shape(context));
-            append_string(&bytes, static_table_serialization(context.tables));
+            StringSink sink(&bytes);
+            encode_static_table_spec(sink, context);
             return bytes;
         }
 
         std::string range_scale_certificate_serialization(
             const VerifierContext &context)
         {
-            if (context.compiler_artifact == nullptr)
-                throw std::runtime_error(
-                    "range/scale certificate requires ProtocolCompilerArtifact");
             std::string bytes;
-            append_string(&bytes, "range_scale_certificate");
-            append_u64(&bytes, context.config.range_bits);
-            append_string(&bytes, context.config.quantization.canonical_serialization());
-            append_static_table_shape(
-                &bytes, plan_canonical_static_table_shape(context));
-            append_string(&bytes, static_table_serialization(context.tables));
-            append_string(
-                &bytes,
-                integer_bound_ledger_canonical_bytes(
-                    context.compiler_artifact->integer_bound_ledger));
+            StringSink sink(&bytes);
+            encode_range_scale_certificate(sink, context);
             return bytes;
         }
 
@@ -588,13 +816,13 @@ namespace gatzk::protocol
             registry.quant_chain_digest =
                 sha256_hex(context.config.quantization.canonical_serialization());
             registry.static_table_digest =
-                sha256_hex(static_table_serialization(context.tables));
+                detail::canonical_static_table_digest(context.tables);
             registry.static_table_generator_id =
                 std::string(kStaticTableGeneratorId);
             registry.static_table_spec_hash =
-                sha256_hex(static_table_spec_serialization(context));
+                detail::canonical_static_table_spec_hash(context);
             registry.range_and_scale_certificate =
-                sha256_hex(range_scale_certificate_serialization(context));
+                detail::canonical_range_and_scale_certificate(context);
             registry.integer_bound_ledger_digest =
                 sha256_hex(integer_bound_ledger_canonical_bytes(
                     context.compiler_artifact->integer_bound_ledger));
@@ -1696,15 +1924,15 @@ namespace gatzk::protocol
                        != sha256_hex(context.config.quantization.canonical_serialization())
                 || !lower_hex_256(context.registry.static_table_digest)
                 || context.registry.static_table_digest
-                       != sha256_hex(static_table_serialization(context.tables))
+                       != detail::canonical_static_table_digest(context.tables)
                 || context.registry.static_table_generator_id
                        != kStaticTableGeneratorId
                 || !lower_hex_256(context.registry.static_table_spec_hash)
                 || context.registry.static_table_spec_hash
-                       != sha256_hex(static_table_spec_serialization(context))
+                       != detail::canonical_static_table_spec_hash(context)
                 || !lower_hex_256(context.registry.range_and_scale_certificate)
                 || context.registry.range_and_scale_certificate
-                       != sha256_hex(range_scale_certificate_serialization(context))
+                       != detail::canonical_range_and_scale_certificate(context)
                 || context.registry.integer_bound_ledger_digest.empty()
                 || !lower_hex_256(context.registry.integer_bound_ledger_digest)
                 || context.compiler_artifact->integer_bound_ledger.empty()
@@ -1784,6 +2012,51 @@ namespace gatzk::protocol
             return true;
         }
     } // namespace
+
+    namespace detail
+    {
+        std::size_t canonical_static_table_serialization_size(
+            const StaticTables &tables)
+        {
+            CountingSink sink;
+            encode_static_tables(sink, tables);
+            return sink.size();
+        }
+
+        std::string canonical_static_table_digest(
+            const StaticTables &tables)
+        {
+            return static_table_digest_streaming(tables);
+        }
+
+        std::string canonical_static_table_spec_hash(
+            const ProtocolContext &context)
+        {
+            return static_table_spec_digest_streaming(context);
+        }
+
+        std::string canonical_static_table_spec_hash(
+            const VerifierContext &context)
+        {
+            Sha256Sink sink;
+            encode_static_table_spec(sink, context);
+            return sink.finish_hex();
+        }
+
+        std::string canonical_range_and_scale_certificate(
+            const ProtocolContext &context)
+        {
+            return range_scale_certificate_digest_streaming(context);
+        }
+
+        std::string canonical_range_and_scale_certificate(
+            const VerifierContext &context)
+        {
+            Sha256Sink sink;
+            encode_range_scale_certificate(sink, context);
+            return sink.finish_hex();
+        }
+    } // namespace detail
 
     std::vector<IntegerBoundLedgerEntry> rebuild_integer_bound_ledger(
         const VerifierContext &context)

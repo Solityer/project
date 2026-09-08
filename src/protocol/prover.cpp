@@ -6592,6 +6592,18 @@ namespace gatzk::protocol
                         "is missing evaluation plan");
                 }
 
+                // The executor finalizes through the same exact paired NTT
+                // boundary as its direct leaves.  Reject an unsupported
+                // target before building/materializing the CUDA program so
+                // the canonical CPU quotient path owns large targets.
+                const bool leaf_exact_ntt_supported =
+                    cuda_t_edge_leaf_exact_ntt_supported(
+                        target_size_);
+                if (!leaf_exact_ntt_supported)
+                {
+                    return false;
+                }
+
                 const auto program =
                     build_t_edge_bound_program(
                         context_,
@@ -6603,10 +6615,6 @@ namespace gatzk::protocol
                 const auto cache_slot_count =
                     cuda_t_edge_leaf_cache_slot_count(
                         program);
-
-                const bool leaf_exact_ntt_supported =
-                    cuda_t_edge_leaf_exact_ntt_supported(
-                        target_size_);
 
                 if (!cuda_t_edge_executor_can_admit(
                         target_size_,

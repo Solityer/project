@@ -196,7 +196,6 @@ namespace gatzk::model
     // 按层聚合的隐藏层前向结果。
     struct HiddenLayerForwardTrace
     {
-        FloatMatrix input;
         std::vector<HeadForwardTrace> head_traces;
         FloatMatrix concat;
     };
@@ -204,7 +203,6 @@ namespace gatzk::model
     // 参考前向输出，trace 构建会从这里提取 witness、lookup 与 route 所需对象。
     struct MultiHeadForwardTrace
     {
-        FloatMatrix H;
         std::vector<HiddenLayerForwardTrace> hidden_layer_traces;
         std::vector<HeadForwardTrace> output_head_traces;
         FloatMatrix Y_lin;
