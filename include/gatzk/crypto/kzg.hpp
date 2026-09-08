@@ -12,6 +12,7 @@
 
 #include "gatzk/algebra/field.hpp"
 #include "gatzk/algebra/polynomial.hpp"
+#include "gatzk/util/trace_spill.hpp"
 #include "gatzk/crypto/curve.hpp"
 
 namespace gatzk::crypto
@@ -134,6 +135,11 @@ namespace gatzk::crypto
     // This metadata is prover-local and is never serialized into the proof.
     struct OpeningSemanticSourceInfo
     {
+        // Execution-only grouping identity.  Producers must bind the
+        // authenticated/stable source identity together with domain, logical
+        // and physical shape, compaction mode, and file path.  Independent
+        // commitment names and blinders are intentionally excluded so they
+        // can share one physical scan while retaining separate formal terms.
         std::string key;
 
         std::shared_ptr<
@@ -142,6 +148,13 @@ namespace gatzk::crypto
 
         std::size_t value_count = 0;
 
+        // Execution-only physical prefix length for a file-backed source.
+        // `value_count` remains the logical domain-vector length.  When
+        // `zero_tail_compacted` is false, the file contains all value_count
+        // entries and this field is ignored.
+        std::size_t stored_value_count = 0;
+        bool zero_tail_compacted = false;
+
         std::vector<
             algebra::FieldElement>
             zero_domain_blinder;
@@ -149,6 +162,7 @@ namespace gatzk::crypto
         // Prover-local execution metadata.
         std::string file_path;
         bool file_backed = false;
+        std::shared_ptr<const util::TraceSpillLease> lease;
     };
 
     using OpeningSemanticSourceResolver = std::function<
@@ -170,6 +184,11 @@ namespace gatzk::crypto
         std::size_t point_parallel_batches = 0;
         std::size_t point_parallel_workers = 0;
         std::size_t point_msm_worker_cap = 0;
+        // Execution-only accounting for file-backed semantic-source scans.
+        // These counters describe physical bytes traversed by the bounded
+        // streamed opening path and never enter proof/transcript bytes.
+        std::size_t streamed_semantic_source_scan_count = 0;
+        std::size_t streamed_semantic_source_scan_bytes = 0;
     };
 
     struct PointGroupOpeningExecutionOptions

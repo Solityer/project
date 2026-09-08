@@ -10,6 +10,7 @@ load a dataset, canonical checkpoint, or SRS.
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import unittest
@@ -31,7 +32,34 @@ def region(text: str, start: str, end: str) -> str:
 
 class LayeredSchemaRegression(unittest.TestCase):
     def test_production_runtime_schema_api(self) -> None:
-        runtime = ROOT / "build" / "gatzk_layered_schema_test"
+        configured = os.environ.get("GATZK_LAYERED_SCHEMA_RUNTIME")
+        if configured:
+            runtime = Path(configured)
+            if not runtime.is_absolute():
+                runtime = ROOT / runtime
+            self.assertTrue(
+                runtime.is_file(),
+                f"GATZK_LAYERED_SCHEMA_RUNTIME is not a file: {runtime}",
+            )
+        else:
+            # The documented build_tests tree is checked first.  Refuse to
+            # guess when both independent build trees exist, because either
+            # one may contain a stale binary from another source revision.
+            candidates = (
+                ROOT / "build_tests" / "tests" / "gatzk_layered_schema_test",
+                ROOT / "build" / "tests" / "gatzk_layered_schema_test",
+            )
+            existing = [path for path in candidates if path.is_file()]
+            self.assertEqual(
+                len(existing),
+                1,
+                "expected exactly one layered-schema runtime in the documented "
+                "build_tests/tests, build/tests locations; found "
+                f"{[str(path) for path in existing]}. Set "
+                "GATZK_LAYERED_SCHEMA_RUNTIME to select an explicitly reviewed "
+                "binary.",
+            )
+            runtime = existing[0]
         self.assertTrue(
             runtime.is_file(),
             f"build the test-only production runtime first: {runtime}",

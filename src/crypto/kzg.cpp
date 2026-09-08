@@ -3806,6 +3806,88 @@ namespace gatzk::crypto
                     });
             }
         }
+        std::size_t validated_file_backed_semantic_source_count(
+            const OpeningSemanticSourceInfo &info,
+            std::string_view operation)
+        {
+            if (!info.file_backed || info.file_path.empty() ||
+                info.domain == nullptr ||
+                info.value_count > info.domain->size)
+            {
+                throw std::runtime_error(
+                    std::string(operation) +
+                    " metadata is incomplete");
+            }
+
+            // An uncompacted descriptor has a canonical full-length file.
+            // Keep zero as the legacy/default sentinel, but reject any other
+            // contradictory stored count instead of silently selecting a
+            // different physical representation.
+            if (!info.zero_tail_compacted)
+            {
+                if (info.stored_value_count != 0 &&
+                    info.stored_value_count != info.value_count)
+                {
+                    throw std::runtime_error(
+                        std::string(operation) +
+                        " metadata has an inconsistent stored count for an uncompacted source");
+                }
+                return info.value_count;
+            }
+
+            if (info.stored_value_count > info.value_count)
+            {
+                throw std::runtime_error(
+                    std::string(operation) +
+                    " metadata has a physical count larger than its logical count");
+            }
+            return info.stored_value_count;
+        }
+
+        bool compatible_streamed_semantic_source_metadata(
+            const OpeningSemanticSourceInfo &first,
+            const OpeningSemanticSourceInfo &second)
+        {
+            if (first.domain == nullptr || second.domain == nullptr ||
+                first.domain->name != second.domain->name ||
+                first.domain->size != second.domain->size ||
+                !(first.domain->omega == second.domain->omega) ||
+                first.value_count != second.value_count ||
+                first.file_backed != second.file_backed)
+            {
+                return false;
+            }
+
+            if (!first.file_backed)
+            {
+                return true;
+            }
+
+            if (first.lease == nullptr || second.lease == nullptr ||
+                first.lease.get() != second.lease.get())
+            {
+                return false;
+            }
+
+            const auto first_stored_count =
+                validated_file_backed_semantic_source_count(
+                    first,
+                    "streamed semantic source compatibility");
+            const auto second_stored_count =
+                validated_file_backed_semantic_source_count(
+                    second,
+                    "streamed semantic source compatibility");
+
+            // A shared scan is valid only when both descriptors authenticate
+            // the same physical representation.  In particular, a compacted
+            // prefix and a full-length file (or two different paths) must be
+            // scanned independently rather than silently combining a
+            // representative descriptor with the other source's bytes.
+            return first_stored_count == second_stored_count &&
+                   first.zero_tail_compacted == second.zero_tail_compacted &&
+                   first.file_path == second.file_path;
+        }
+
         template <typename Consumer>
         void for_each_file_backed_semantic_source_chunk(
             const OpeningSemanticSourceInfo &info,
@@ -3823,11 +3905,30 @@ namespace gatzk::crypto
             constexpr std::size_t kChunkSize =
                 std::size_t{1} << 20;
 
-            std::ifstream stream(
-                info.file_path,
-                std::ios::binary);
+            const auto stored_value_count =
+                validated_file_backed_semantic_source_count(
+                    info,
+                    operation);
+            if (info.lease == nullptr)
+            {
+                throw std::runtime_error(
+                    std::string(operation) +
+                    " has no authenticated trace spill lease");
+            }
+            const auto payload_name =
+                info.lease->payload_name(info.file_path);
+            if (info.lease->payload_size(payload_name) !=
+                algebra::field_elements_binary_size(stored_value_count))
+            {
+                throw std::runtime_error(
+                    std::string(operation) +
+                    " field-element spill length mismatch: " +
+                    info.file_path);
+            }
 
-            if (!stream)
+            auto stream =
+                info.lease->open_payload_stream(payload_name);
+            if (!stream || !stream->good())
             {
                 throw std::runtime_error(
                     "failed to open " +
@@ -3840,22 +3941,22 @@ namespace gatzk::crypto
             chunk.reserve(
                 std::min(
                     kChunkSize,
-                    info.value_count));
+                    stored_value_count));
 
             for (std::size_t offset = 0;
-                 offset < info.value_count;)
+                 offset < stored_value_count;)
             {
                 const auto count =
                     std::min(
                         kChunkSize,
-                        info.value_count - offset);
+                        stored_value_count - offset);
 
                 chunk.resize(count);
 
                 try
                 {
                     algebra::read_field_elements_binary_into(
-                        stream,
+                        *stream,
                         std::span<FieldElement>(
                             chunk.data(),
                             chunk.size()));
@@ -3883,7 +3984,8 @@ namespace gatzk::crypto
             FoldedEvaluationGroup *group,
             const OpeningSemanticSourceInfo &info,
             const FieldElement &scale,
-            std::size_t worker_cap)
+            std::size_t worker_cap,
+            BatchOpeningProfile *profile = nullptr)
         {
             if (!info.file_backed ||
                 info.file_path.empty())
@@ -3896,6 +3998,18 @@ namespace gatzk::crypto
             if (scale.is_zero())
             {
                 return;
+            }
+
+            const auto stored_value_count =
+                validated_file_backed_semantic_source_count(
+                    info,
+                    "semantic source");
+            if (profile != nullptr)
+            {
+                ++profile->streamed_semantic_source_scan_count;
+                profile->streamed_semantic_source_scan_bytes +=
+                    algebra::field_elements_binary_size(
+                        stored_value_count);
             }
 
             for_each_file_backed_semantic_source_chunk(
@@ -3920,7 +4034,8 @@ namespace gatzk::crypto
             const OpeningSemanticSourceInfo &info,
             const FieldElement &first_scale,
             const FieldElement &second_scale,
-            std::size_t worker_cap)
+            std::size_t worker_cap,
+            BatchOpeningProfile *profile = nullptr)
         {
             if (!info.file_backed ||
                 info.file_path.empty())
@@ -3934,6 +4049,18 @@ namespace gatzk::crypto
                 second_scale.is_zero())
             {
                 return;
+            }
+
+            const auto stored_value_count =
+                validated_file_backed_semantic_source_count(
+                    info,
+                    "paired semantic source");
+            if (profile != nullptr)
+            {
+                ++profile->streamed_semantic_source_scan_count;
+                profile->streamed_semantic_source_scan_bytes +=
+                    algebra::field_elements_binary_size(
+                        stored_value_count);
             }
 
             for_each_file_backed_semantic_source_chunk(
@@ -4244,7 +4371,8 @@ namespace gatzk::crypto
             const OpeningPolynomialResolver &opening_resolver,
             const OpeningSemanticSourceResolver *semantic_source_resolver,
             const StreamedSemanticSourceDefer
-                *defer_semantic_source)
+                *defer_semantic_source,
+            BatchOpeningProfile *profile)
         {
             if (commitments.size() != claimed_values.size() || commitments.size() != powers.size())
             {
@@ -4322,6 +4450,53 @@ namespace gatzk::crypto
                             "invalid streamed opening semantic source metadata: " + commitments[i].name);
                     }
 
+                    if (semantic_info->zero_tail_compacted &&
+                        semantic_info->stored_value_count >
+                            semantic_info->value_count)
+                    {
+                        throw std::runtime_error(
+                            "invalid streamed opening semantic source physical count: " + commitments[i].name);
+                    }
+                    if (!semantic_info->file_backed &&
+                        !semantic_info->zero_tail_compacted &&
+                        semantic_info->stored_value_count != 0 &&
+                        semantic_info->stored_value_count !=
+                            semantic_info->value_count)
+                    {
+                        throw std::runtime_error(
+                            "invalid streamed opening semantic source stored count: " + commitments[i].name);
+                    }
+
+                    if (semantic_info->file_backed)
+                    {
+                        const auto stored_value_count =
+                            validated_file_backed_semantic_source_count(
+                                *semantic_info,
+                                "streamed opening semantic source");
+                        if (semantic_info->lease == nullptr)
+                        {
+                            throw std::runtime_error(
+                                "streamed opening semantic source has no authenticated trace spill lease: " +
+                                commitments[i].name);
+                        }
+                        const auto payload_name =
+                            semantic_info->lease->payload_name(
+                                semantic_info->file_path);
+                        // Validate every descriptor before grouping by the
+                        // execution-only semantic key.  A representative
+                        // path may be reused for a valid shared source, but
+                        // a malformed alternate descriptor must never be
+                        // hidden by that reuse.
+                        if (semantic_info->lease->payload_size(payload_name) !=
+                            algebra::field_elements_binary_size(
+                                stored_value_count))
+                        {
+                            throw std::runtime_error(
+                                "streamed opening semantic source length mismatch: " +
+                                semantic_info->file_path);
+                        }
+                    }
+
                     const auto [existing, inserted] =
                         semantic_fold_index.emplace(
                             semantic_info->key,
@@ -4350,10 +4525,12 @@ namespace gatzk::crypto
                         const auto &existing_info =
                             semantic_folds[fold_index].info;
 
-                        if (existing_info.domain == nullptr || existing_info.domain->name != semantic_info->domain->name || existing_info.domain->size != semantic_info->domain->size || !(existing_info.domain->omega == semantic_info->domain->omega) || existing_info.value_count != semantic_info->value_count)
+                        if (!compatible_streamed_semantic_source_metadata(
+                                existing_info,
+                                *semantic_info))
                         {
                             throw std::runtime_error(
-                                "conflicting streamed opening semantic source metadata: " + commitments[i].name);
+                                "conflicting streamed opening semantic source metadata/physical metadata: " + commitments[i].name);
                         }
                     }
 
@@ -4397,9 +4574,10 @@ namespace gatzk::crypto
                     }
                 }
 
-                // A singleton source has nothing to deduplicate.  Keep it on the
-                // original streamed path so this optimization changes execution only
-                // where an actual shared semantic source exists.
+                // Singleton file-backed sources still stay on the streamed
+                // path.  They have no pair to fuse, but materializing their
+                // logical vector would recreate the large opening working set
+                // that this resolver is intended to avoid.
                 std::size_t shared_source_count = 0;
                 std::size_t shared_member_count = 0;
 
@@ -4410,7 +4588,8 @@ namespace gatzk::crypto
                     auto &fold =
                         semantic_folds[fold_index];
 
-                    if (fold.members.size() < 2)
+                    if (fold.members.size() < 2 &&
+                        !fold.info.file_backed)
                     {
                         if (defer_semantic_source == nullptr)
                         {
@@ -4506,7 +4685,8 @@ namespace gatzk::crypto
                                     &group,
                                     semantic_fold.info,
                                     semantic_fold.source_scale,
-                                    worker_cap);
+                                    worker_cap,
+                                    profile);
                             }
                             else
                             {
@@ -4725,7 +4905,8 @@ namespace gatzk::crypto
             const std::array<std::size_t, 2> &worker_caps,
             const OpeningPolynomialResolver &opening_resolver,
             const OpeningSemanticSourceResolver
-                &semantic_source_resolver)
+                &semantic_source_resolver,
+            const std::array<BatchOpeningProfile *, 2> *scan_profiles)
         {
             PairedStreamedFoldBuild result;
 
@@ -4757,7 +4938,8 @@ namespace gatzk::crypto
                         false,
                         opening_resolver,
                         &semantic_source_resolver,
-                        &defer);
+                        &defer,
+                        nullptr);
             };
 
             auto first_future =
@@ -4846,7 +5028,10 @@ namespace gatzk::crypto
                         &group,
                         source.info,
                         source.scale,
-                        worker_caps[plan_index]);
+                        worker_caps[plan_index],
+                        scan_profiles != nullptr
+                            ? (*scan_profiles)[plan_index]
+                            : nullptr);
 
                     return;
                 }
@@ -4888,25 +5073,17 @@ namespace gatzk::crypto
                 const auto &second =
                     deferred[1][second_index];
 
-                const bool same_source =
-                    first.representative.name ==
-                        second.representative.name &&
-                    first.representative.point ==
-                        second.representative.point &&
-                    first.info.domain != nullptr &&
-                    second.info.domain != nullptr &&
-                    first.info.domain->name ==
-                        second.info.domain->name &&
-                    first.info.domain->size ==
-                        second.info.domain->size &&
-                    first.info.domain->omega ==
-                        second.info.domain->omega &&
-                    first.info.value_count ==
-                        second.info.value_count &&
-                    first.info.zero_domain_blinder ==
-                        second.info.zero_domain_blinder;
+                // The semantic source key, not the formal commitment name or
+                // commitment point, determines whether two point groups may
+                // share a physical scan.  Their commitments and blinders are
+                // intentionally still folded independently below.
+                const bool same_source_with_physical_metadata =
+                    first.info.key == second.info.key &&
+                    compatible_streamed_semantic_source_metadata(
+                        first.info,
+                        second.info);
 
-                if (!same_source)
+                if (!same_source_with_physical_metadata)
                 {
                     process_single(
                         0,
@@ -4925,6 +5102,7 @@ namespace gatzk::crypto
                         &result.plans[1],
                         second.info.domain);
 
+                bool fused_scan = false;
                 if (first.info.file_backed &&
                     second.info.file_backed &&
                     first.info.file_path ==
@@ -4936,7 +5114,35 @@ namespace gatzk::crypto
                         first.info,
                         first.scale,
                         second.scale,
-                        shared_worker_cap);
+                        shared_worker_cap,
+                        scan_profiles != nullptr
+                            ? (*scan_profiles)[0]
+                            : nullptr);
+                    fused_scan = true;
+                }
+                else if (first.info.file_backed &&
+                         second.info.file_backed)
+                {
+                    // Distinct physical paths may still represent the same
+                    // logical zero-tailed source.  Validate and consume both
+                    // descriptors independently rather than treating the
+                    // first path as an alias for the second one.
+                    accumulate_file_backed_semantic_source(
+                        &first_group,
+                        first.info,
+                        first.scale,
+                        worker_caps[0],
+                        scan_profiles != nullptr
+                            ? (*scan_profiles)[0]
+                            : nullptr);
+                    accumulate_file_backed_semantic_source(
+                        &second_group,
+                        second.info,
+                        second.scale,
+                        worker_caps[1],
+                        scan_profiles != nullptr
+                            ? (*scan_profiles)[1]
+                            : nullptr);
                 }
                 else
                 {
@@ -4959,8 +5165,11 @@ namespace gatzk::crypto
                 second_consumed[second_index] =
                     true;
 
-                ++result
-                      .fused_semantic_source_count;
+                if (fused_scan || !first.info.file_backed)
+                {
+                    ++result
+                          .fused_semantic_source_count;
+                }
             }
 
             for (std::size_t index = 0;
@@ -7551,7 +7760,8 @@ namespace gatzk::crypto
                       false,
                       *opening_resolver,
                       semantic_source_resolver,
-                      nullptr);
+                      nullptr,
+                      profile);
 
         if (profile != nullptr)
         {
@@ -7679,6 +7889,12 @@ namespace gatzk::crypto
         const auto precompute_start =
             Clock::now();
 
+        const std::array<BatchOpeningProfile *, 2>
+            scan_profiles{
+                profiles != nullptr ? &(*profiles)[0] : nullptr,
+                profiles != nullptr ? &(*profiles)[1] : nullptr,
+            };
+
         auto folded =
             build_streamed_folded_opening_plan_pair(
                 commitments,
@@ -7687,7 +7903,8 @@ namespace gatzk::crypto
                 points,
                 field_worker_caps,
                 *opening_resolver,
-                *semantic_source_resolver);
+                *semantic_source_resolver,
+                &scan_profiles);
 
         const auto precompute_ms =
             elapsed_ms(

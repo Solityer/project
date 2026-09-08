@@ -28,7 +28,7 @@ verifier registry 和对应 `run_manifest.json`，不会生成 proof、加载 pr
 自身摘要推导信任根：
 
 ```bash
-build_tests/gatzk_protocol_tamper_tests \
+build_tests/tests/gatzk_protocol_tamper_tests \
   --proof runs/cora_secure/cpu_formal/warm/proof.bin \
   --registry artifacts/verifier_registry/cora_verifier_registry.bin \
   --trusted-registry-digest <reviewed-registry-sha256> \
@@ -86,7 +86,7 @@ PPI 的 test-only 配置位于
 diagnostic 入口（不注册到 CTest）为：
 
 ```bash
-build_tests/gatzk_protocol_replay_diag \
+build_tests/tests/gatzk_protocol_replay_diag \
   --config tests/configs/ppi_protocol_diag.cfg \
   --compute-backend cpu
 ```

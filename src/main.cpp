@@ -27,6 +27,7 @@
 #include "gatzk/protocol/verifier_context.hpp"
 #include "gatzk/util/config.hpp"
 #include "gatzk/util/route2.hpp"
+#include "gatzk/util/trace_spill.hpp"
 
 // 读取配置、选择 CPU / partial CUDA-hotspot 执行路线，并串联 context、trace、prove、verify 与 artifact 导出。
 // 对外只汇总三项正式时间与 canonical proof bytes 大小，不在入口层改写 proof contract。
@@ -493,6 +494,11 @@ int main(int argc, char **argv)
         const auto loaded_config = gatzk::util::load_config(config_path);
         const ExclusiveFormalRunLock formal_run_lock(
             std::filesystem::current_path() / "runs" / ".gatzk_run.lock");
+        // Reap only authenticated inactive trace leases before entering the
+        // measured run. Legacy/incomplete/unverifiable directories remain
+        // untouched by the fail-closed collector.
+        gatzk::util::TraceSpillLease::collect_stale(
+            gatzk::util::TraceSpillLease::default_root());
         const auto absolute_config_path = std::filesystem::absolute(config_path).string();
         gatzk::util::set_route2_options(route2);
 

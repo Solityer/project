@@ -19,6 +19,7 @@
 #include <optional>
 #include <set>
 #include <sstream>
+#include <span>
 #include <stdexcept>
 #include <string_view>
 #include <thread>
@@ -41,6 +42,10 @@
 #include "gatzk/protocol/schema.hpp"
 #include "gatzk/protocol/zkmap.hpp"
 #include "gatzk/util/route2.hpp"
+#include "gatzk/util/effective_memory.hpp"
+#include "gatzk/util/spill_arena_accounting.hpp"
+#include "gatzk/util/storage_reservation.hpp"
+#include "gatzk/util/trace_spill.hpp"
 
 namespace gatzk::protocol
 {
@@ -836,7 +841,6 @@ namespace gatzk::protocol
             bool linear_commitment_derived = false;
             bool proof_local_blinded = false;
             std::vector<DynamicCommitmentLinearTerm> deferred_linear_terms;
-            std::uintptr_t source_identity = 0;
             double materialization_ms = 0.0;
         };
 
@@ -966,17 +970,36 @@ namespace gatzk::protocol
                 throw std::runtime_error(
                     "spilled polynomial domain mismatch: " + name);
             }
-            std::ifstream stream(spilled.path, std::ios::binary);
-            if (!stream)
+            if (spilled.lease == nullptr)
             {
                 throw std::runtime_error(
-                    "failed to open spilled polynomial: " + spilled.path);
+                    "spilled polynomial has no authenticated trace spill lease: " +
+                    name);
             }
+            const auto physical_size =
+                spilled_file_value_count(spilled);
+            const auto payload_name =
+                spilled.lease->payload_name(spilled.path);
+            const auto expected_bytes =
+                algebra::field_elements_binary_size(physical_size);
+            if (spilled.lease->payload_size(payload_name) != expected_bytes)
+            {
+                throw std::runtime_error(
+                    "spilled polynomial length mismatch: " + spilled.path);
+            }
+            auto stream =
+                spilled.lease->open_payload_stream(payload_name);
             std::vector<FieldElement> values;
             try
             {
-                values = algebra::read_field_elements_binary(
-                    stream, spilled.size);
+                values.assign(
+                    spilled.size,
+                    FieldElement::zero());
+                algebra::read_field_elements_binary_into(
+                    *stream,
+                    std::span<FieldElement>(
+                        values.data(),
+                        physical_size));
             }
             catch (const std::exception &error)
             {
@@ -1319,7 +1342,10 @@ namespace gatzk::protocol
                 const auto *values = spec.shared_column_values != nullptr
                                          ? spec.shared_column_values.get()
                                          : (spec.borrowed_column_values != nullptr ? spec.borrowed_column_values : &spec.owned_column_values);
-                return values->size() * sizeof(FieldElement);
+                return util::checked_spill_bytes(
+                    values->size(),
+                    sizeof(FieldElement),
+                    "dynamic commitment column payload");
             }
             if (spec.matrix == nullptr)
             {
@@ -1327,82 +1353,45 @@ namespace gatzk::protocol
             }
             std::size_t rows = spec.matrix->size();
             std::size_t cols = rows == 0 ? 0 : (*spec.matrix)[0].size();
-            return rows * cols * sizeof(FieldElement);
+            if (rows == 0 || cols == 0)
+            {
+                return 0;
+            }
+            const auto elements = util::checked_spill_bytes(
+                rows,
+                cols,
+                "dynamic commitment matrix element count");
+            return util::checked_spill_bytes(
+                elements,
+                sizeof(FieldElement),
+                "dynamic commitment matrix payload");
         }
 
         std::size_t dynamic_commitment_prepared_budget_bytes()
         {
-            static constexpr std::size_t kMinimumBudgetBytes =
-                96ULL * 1024ULL * 1024ULL;
-
             static constexpr std::size_t kMaximumBudgetBytes =
                 512ULL * 1024ULL * 1024ULL;
 
             // A fixed 96 MiB window can fragment large same-SRS commitment
-            // families before they reach KZG::commit_batch.
-            //
-            // Size the execution window from the host/unified-memory class,
-            // while keeping a conservative hard ceiling. This changes only
-            // how many already-required commitment objects are prepared
-            // together; it does not change their values, labels or order.
-            static const std::size_t budget = []()
-            {
-                std::ifstream input("/proc/meminfo");
+            // families before they reach KZG::commit_batch.  The shared
+            // effective-memory snapshot accounts for host available memory
+            // and finite cgroup limits while keeping the existing ceiling.
+            const auto snapshot =
+                util::cached_effective_memory_snapshot();
+            const auto admission =
+                util::admit_effective_memory(
+                    snapshot,
+                    0,
+                    0,
+                    0,
+                    64,
+                    kMaximumBudgetBytes);
 
-                if (!input)
-                {
-                    return kMinimumBudgetBytes;
-                }
-
-                std::string line;
-
-                while (std::getline(input, line))
-                {
-                    std::istringstream row(line);
-
-                    std::string key;
-                    std::uint64_t kibibytes = 0;
-
-                    if (!(row >> key >> kibibytes) || key != "MemTotal:")
-                    {
-                        continue;
-                    }
-
-                    constexpr std::uint64_t kKiB =
-                        1024ULL;
-
-                    const auto max_size =
-                        static_cast<std::uint64_t>(
-                            std::numeric_limits<
-                                std::size_t>::max());
-
-                    if (kibibytes >
-                        max_size / kKiB)
-                    {
-                        return kMaximumBudgetBytes;
-                    }
-
-                    const auto total_bytes =
-                        static_cast<std::size_t>(
-                            kibibytes * kKiB);
-
-                    // At most 1/64 of physical/unified memory is admitted
-                    // as simultaneously prepared trace commitment payload.
-                    // 128 GiB therefore admits the 2 GiB ceiling, while
-                    // smaller machines automatically retain smaller windows.
-                    const std::size_t adaptive_budget =
-                        total_bytes / std::size_t{64};
-
-                    return std::clamp(
-                        adaptive_budget,
-                        kMinimumBudgetBytes,
-                        kMaximumBudgetBytes);
-                }
-
-                return kMinimumBudgetBytes;
-            }();
-
-            return budget;
+            // This window controls batching only.  It must never recreate a
+            // fixed floor larger than the effective admission on a limited
+            // host/cgroup; a smaller safe window is still a valid streamed
+            // execution route.
+            return admission.budget_bytes;
         }
 
         std::size_t dynamic_commitment_prepared_budget_bytes(
@@ -1411,8 +1400,6 @@ namespace gatzk::protocol
             constexpr std::size_t kLargeEdgeDomainSize =
                 1ULL << 23;
 
-            constexpr std::size_t kMinimumLargeEdgeFamilyBudgetBytes =
-                256ULL * 1024ULL * 1024ULL;
             constexpr std::size_t kMaximumLargeEdgeFamilyBudgetBytes =
                 512ULL * 1024ULL * 1024ULL;
 
@@ -1465,69 +1452,29 @@ namespace gatzk::protocol
                 return host_budget;
             }
 
-            std::size_t live_family_budget =
-                kMinimumLargeEdgeFamilyBudgetBytes;
+            std::size_t live_family_budget = 0;
 
-            std::ifstream input(
-                "/proc/meminfo");
-
-            if (input)
+            const auto snapshot =
+                util::cached_effective_memory_snapshot();
+            const auto reserve_bytes =
+                util::recommended_memory_reserve_bytes(
+                    snapshot,
+                    kLargeEdgeHostReserveBytes,
+                    1,
+                    4);
+            if (snapshot.effective_available_known &&
+                snapshot.effective_available_bytes > reserve_bytes)
             {
-                std::string line;
-
-                while (std::getline(
-                    input,
-                    line))
-                {
-                    std::istringstream row(line);
-
-                    std::string key;
-                    std::uint64_t kibibytes = 0;
-
-                    if (!(row >> key >> kibibytes) ||
-                        key != "MemAvailable:")
-                    {
-                        continue;
-                    }
-
-                    constexpr std::uint64_t kKiB =
-                        1024ULL;
-
-                    const auto max_size =
-                        static_cast<std::uint64_t>(
-                            std::numeric_limits<
-                                std::size_t>::max());
-
-                    if (kibibytes >
-                        max_size / kKiB)
-                    {
-                        live_family_budget =
-                            kMaximumLargeEdgeFamilyBudgetBytes;
-
-                        break;
-                    }
-
-                    const auto available_bytes =
-                        static_cast<std::size_t>(
-                            kibibytes * kKiB);
-
-                    if (available_bytes >
-                        kLargeEdgeHostReserveBytes)
-                    {
-                        const auto usable_bytes =
-                            available_bytes -
-                            kLargeEdgeHostReserveBytes;
-
-                        live_family_budget =
-                            std::clamp(
-                                usable_bytes /
-                                    std::size_t{8},
-                                kMinimumLargeEdgeFamilyBudgetBytes,
-                                kMaximumLargeEdgeFamilyBudgetBytes);
-                    }
-
-                    break;
-                }
+                const auto usable_bytes =
+                    snapshot.effective_available_bytes - reserve_bytes;
+                live_family_budget =
+                    std::min(
+                        usable_bytes / std::size_t{8},
+                        kMaximumLargeEdgeFamilyBudgetBytes);
+            }
+            else
+            {
+                live_family_budget = 0;
             }
 
             const auto family_budget =
@@ -2019,10 +1966,6 @@ namespace gatzk::protocol
                 const bool use_shared_backing =
                     spec.shared_column_values != nullptr && source_values->size() >= kMinSharedColumnLength;
                 out.reused_shared = use_shared_backing;
-                if (use_shared_backing)
-                {
-                    out.source_identity = reinterpret_cast<std::uintptr_t>(source_values);
-                }
                 if (keep_trace_payloads)
                 {
                     out.column_export = *source_values;
@@ -2223,61 +2166,30 @@ namespace gatzk::protocol
             return !keep_trace_payloads && polynomial.basis == algebra::PolynomialBasis::Evaluation && polynomial.domain != nullptr && polynomial.domain->size >= kMinFileBackedValueCount;
         }
 
-        std::filesystem::path spill_root_directory()
+        using TraceSpillReservation =
+            util::FilesystemSpaceReservation;
+
+        std::size_t physical_spill_value_count(
+            std::span<const FieldElement> values)
         {
-            const auto root = std::filesystem::current_path() / "runs" / ".trace_spill";
-            std::filesystem::create_directories(root);
-            return root;
+            std::size_t count = values.size();
+            while (count != 0 && values[count - 1].is_zero())
+            {
+                --count;
+            }
+            return count;
         }
 
-        std::shared_ptr<const std::string> create_trace_spill_directory_lease()
+        std::filesystem::path spill_root_directory()
         {
-            const auto root = spill_root_directory();
-            for (std::size_t attempt = 0; attempt < 16; ++attempt)
-            {
-                std::array<std::uint8_t, 16> random_bytes{};
-                if (RAND_bytes(
-                        random_bytes.data(),
-                        static_cast<int>(random_bytes.size())) != 1)
-                {
-                    throw std::runtime_error(
-                        "CSPRNG failed while creating trace spill directory");
-                }
-                std::ostringstream suffix;
-                suffix << "proof-";
-                for (const auto byte : random_bytes)
-                {
-                    suffix << std::hex << std::setw(2)
-                           << std::setfill('0')
-                           << static_cast<unsigned>(byte);
-                }
-                const auto directory = root / suffix.str();
-                std::error_code create_error;
-                if (!std::filesystem::create_directory(
-                        directory, create_error))
-                {
-                    if (!create_error)
-                    {
-                        continue;
-                    }
-                    throw std::runtime_error(
-                        "failed to create trace spill directory: " + create_error.message());
-                }
-                auto *owned_path =
-                    new std::string(directory.string());
-                return std::shared_ptr<const std::string>(
-                    owned_path,
-                    [](const std::string *path)
-                    {
-                        std::error_code cleanup_error;
-                        std::filesystem::remove_all(
-                            std::filesystem::path(*path),
-                            cleanup_error);
-                        delete path;
-                    });
-            }
-            throw std::runtime_error(
-                "failed to allocate a unique trace spill directory");
+            return util::TraceSpillLease::default_root();
+        }
+
+        std::shared_ptr<const util::TraceSpillLease>
+        create_trace_spill_directory_lease()
+        {
+            return util::TraceSpillLease::create(
+                spill_root_directory());
         }
 
         const std::filesystem::path &ensure_trace_spill_directory(
@@ -2295,7 +2207,7 @@ namespace gatzk::protocol
                     create_trace_spill_directory_lease();
             }
             *storage = std::filesystem::path(
-                *trace.spill_directory_lease);
+                trace.spill_directory_lease->path());
             return *storage;
         }
 
@@ -2318,11 +2230,91 @@ namespace gatzk::protocol
             return name.find("_Div_Limb_") != std::string::npos || (name.find("_Div_Range_") != std::string::npos && name.ends_with("_Query"));
         }
 
+        std::uintptr_t next_trace_semantic_source_token(
+            TraceArtifacts &trace)
+        {
+            if (trace.next_spill_semantic_source_token == 0)
+            {
+                throw std::runtime_error(
+                    "trace spill semantic source token exhausted");
+            }
+            const auto token = trace.next_spill_semantic_source_token++;
+            if (trace.next_spill_semantic_source_token == 0)
+            {
+                throw std::runtime_error(
+                    "trace spill semantic source token exhausted");
+            }
+            return token;
+        }
+
+        bool same_shared_evaluation_owner(
+            const std::shared_ptr<const std::vector<FieldElement>> &first,
+            const std::shared_ptr<const std::vector<FieldElement>> &second)
+        {
+            return first != nullptr && second != nullptr &&
+                   !first.owner_before(second) &&
+                   !second.owner_before(first);
+        }
+
+        std::uintptr_t trace_semantic_source_token(
+            TraceArtifacts &trace,
+            const algebra::Polynomial &polynomial)
+        {
+            if (polynomial.shared_data != nullptr)
+            {
+                for (auto it = trace.semantic_source_identity_cache.begin();
+                     it != trace.semantic_source_identity_cache.end();)
+                {
+                    const auto retained = it->values.lock();
+                    if (retained == nullptr)
+                    {
+                        it = trace.semantic_source_identity_cache.erase(it);
+                        continue;
+                    }
+
+                    const auto domain_name = polynomial.domain != nullptr
+                                                 ? polynomial.domain->name
+                                                 : std::string();
+                    if (it->domain_name == domain_name &&
+                        it->size == polynomial.size() &&
+                        same_shared_evaluation_owner(
+                            retained,
+                            polynomial.shared_data))
+                    {
+                        return it->token;
+                    }
+                    ++it;
+                }
+
+                const auto token = next_trace_semantic_source_token(trace);
+                trace.semantic_source_identity_cache.push_back(
+                    TraceArtifacts::SemanticSourceIdentityCacheEntry{
+                        .values = polynomial.shared_data,
+                        .domain_name = polynomial.domain != nullptr
+                                           ? polynomial.domain->name
+                                           : std::string(),
+                        .size = polynomial.size(),
+                        .token = token,
+                    });
+                return token;
+            }
+
+            // Non-shared descriptors have no owner to compare. Allocate a
+            // fresh scalar identity; never derive one from a transient
+            // buffer address.
+            return next_trace_semantic_source_token(trace);
+        }
+
         TraceArtifacts::SpilledEvaluationPolynomial spill_evaluation_polynomial(
             TraceArtifacts &trace,
-            const algebra::Polynomial &polynomial,
-            std::uintptr_t semantic_source_id)
+            const algebra::Polynomial &polynomial)
         {
+            // Resolve identity from an exact weak-owner match and a
+            // proof-local monotonic token. The token is never a raw pointer,
+            // and the weak cache never retains the large source vector.
+            const auto semantic_source_id =
+                trace_semantic_source_token(trace, polynomial);
+
             bool compact_semantic_source_all_zero = false;
             if (semantic_source_id != 0 && is_signed_division_compact_zero_scan_candidate(
                                                polynomial.name))
@@ -2398,8 +2390,6 @@ namespace gatzk::protocol
 
                     const bool same_owner =
                         retained != nullptr &&
-                        retained.get() ==
-                            polynomial.shared_data.get() &&
                         !retained.owner_before(
                             polynomial.shared_data) &&
                         !polynomial.shared_data.owner_before(
@@ -2427,6 +2417,10 @@ namespace gatzk::protocol
                                         .domain_name,
                                 .size =
                                     cache_it->second.size,
+                                .physical_size =
+                                    cache_it->second.physical_size,
+                                .zero_tail_compacted =
+                                    cache_it->second.zero_tail_compacted,
                                 .semantic_source_id =
                                     semantic_source_id,
                                 .compact_semantic_source_all_zero =
@@ -2435,6 +2429,8 @@ namespace gatzk::protocol
                                 .zero_domain_blinder =
                                     polynomial
                                         .zero_domain_blinder,
+                                .lease =
+                                    trace.spill_directory_lease,
                             };
                     }
 
@@ -2452,21 +2448,53 @@ namespace gatzk::protocol
             const auto unique =
                 sanitize_spill_name(polynomial.name) + "_" +
                 sha256_hex(
-                    polynomial.name + ":" + std::to_string(polynomial.size()))
+                    polynomial.name + ":" +
+                    std::to_string(polynomial.size()) + ":" +
+                    std::to_string(semantic_source_id))
                     .substr(0, 24);
             const auto path = root / (unique + ".bin");
-            std::ofstream stream(path, std::ios::binary | std::ios::trunc);
-            if (!stream)
-            {
-                throw std::runtime_error("failed to open spill file for polynomial " + polynomial.name);
-            }
+            const auto physical_size = physical_spill_value_count(
+                std::span<const FieldElement>(
+                    polynomial.values().data(),
+                    polynomial.values().size()));
+            const auto physical_bytes =
+                algebra::field_elements_binary_size(
+                    physical_size);
+            TraceSpillReservation reservation(
+                root,
+                physical_bytes,
+                polynomial.name);
             try
             {
-                algebra::write_field_elements_binary(
-                    stream, polynomial.values());
+                {
+                    auto stream =
+                        trace.spill_directory_lease
+                            ->create_payload_stream(
+                                path.filename().string());
+                    if (!stream || !stream->good())
+                    {
+                        throw std::runtime_error(
+                            "failed to open spill file for polynomial " +
+                            polynomial.name);
+                    }
+                    algebra::write_field_elements_binary(
+                        *stream,
+                        std::span<const FieldElement>(
+                            polynomial.values().data(),
+                            physical_size));
+                    stream->flush();
+                    if (!*stream)
+                    {
+                        throw std::runtime_error(
+                            "failed to flush spill file for polynomial " +
+                            polynomial.name);
+                    }
+                }
             }
             catch (const std::exception &error)
             {
+                trace.spill_directory_lease->remove_payload(
+                    path.filename().string());
                 throw std::runtime_error(
                     "failed to write spill file for polynomial " + polynomial.name + ": " + error.what());
             }
@@ -2477,6 +2505,8 @@ namespace gatzk::protocol
                         .domain_name =
                             semantic_domain_name,
                         .size = polynomial.size(),
+                        .physical_size = physical_size,
+                        .zero_tail_compacted = true,
                         .semantic_source_id =
                             semantic_source_id,
                         .compact_semantic_source_all_zero =
@@ -2484,6 +2514,8 @@ namespace gatzk::protocol
                         .zero_domain_blinder =
                             polynomial
                                 .zero_domain_blinder,
+                        .lease =
+                            trace.spill_directory_lease,
                     };
 
             if (!semantic_spill_cache_key.empty() &&
@@ -2502,6 +2534,10 @@ namespace gatzk::protocol
                                     spilled.domain_name,
                                 .size =
                                     spilled.size,
+                                .physical_size =
+                                    spilled.physical_size,
+                                .zero_tail_compacted =
+                                    spilled.zero_tail_compacted,
                                 .compact_semantic_source_all_zero =
                                     spilled
                                         .compact_semantic_source_all_zero,
@@ -3356,8 +3392,7 @@ namespace gatzk::protocol
                         trace.spilled_polynomials[item.name] =
                             spill_evaluation_polynomial(
                                 trace,
-                                *item.polynomial,
-                                item.source_identity);
+                                *item.polynomial);
                         item.commitment.opening_polynomial.reset();
                     }
                     else
@@ -4217,59 +4252,157 @@ namespace gatzk::protocol
             Matrix h_agg_pre;
             Matrix h_agg_pre_lookup;
             Matrix h_agg;
-            RawMatrix h_agg_raw;
-            std::vector<FieldElement> e_src;
-            std::vector<FieldElement> e_dst;
-            std::vector<FieldElement> s;
-            std::vector<FieldElement> z;
-            std::vector<FieldElement> m;
-            std::vector<FieldElement> delta;
-            std::vector<FieldElement> u;
-            std::vector<FieldElement> sum;
-            std::vector<FieldElement> inv;
-            std::vector<FieldElement> alpha;
-            std::vector<FieldElement> e_src_edge;
-            std::vector<FieldElement> e_dst_edge;
-            std::vector<FieldElement> m_edge;
-            std::vector<FieldElement> sum_edge;
-            std::vector<FieldElement> inv_edge;
-            std::vector<std::int64_t> aggregate_numerators_scaled;
-            std::vector<std::int64_t> aggregate_denominators;
+            mutable RawMatrix h_agg_raw;
+            mutable std::vector<FieldElement> e_src;
+            mutable std::vector<FieldElement> e_dst;
+            mutable std::vector<FieldElement> s;
+            mutable std::vector<FieldElement> z;
+            mutable std::vector<FieldElement> m;
+            mutable std::vector<FieldElement> delta;
+            mutable std::vector<FieldElement> u;
+            mutable std::vector<FieldElement> sum;
+            mutable std::vector<FieldElement> inv;
+            mutable std::vector<FieldElement> alpha;
+            mutable std::vector<FieldElement> e_src_edge;
+            mutable std::vector<FieldElement> e_dst_edge;
+            mutable std::vector<FieldElement> m_edge;
+            mutable std::vector<FieldElement> sum_edge;
+            mutable std::vector<FieldElement> inv_edge;
+            mutable std::vector<std::int64_t> aggregate_numerators_scaled;
+            mutable std::vector<std::int64_t> aggregate_denominators;
+
+            void release_concat_raw() const
+            {
+                RawMatrix{}.swap(h_agg_raw);
+            }
+
+            void release_lrelu_vectors() const
+            {
+                std::vector<FieldElement>{}.swap(s);
+                std::vector<FieldElement>{}.swap(z);
+            }
+
+            void release_src_vectors() const
+            {
+                std::vector<FieldElement>{}.swap(e_src);
+                std::vector<FieldElement>{}.swap(e_src_edge);
+            }
+
+            void release_delta_vector() const
+            {
+                std::vector<FieldElement>{}.swap(delta);
+            }
+
+            void release_psq_vectors() const
+            {
+                std::vector<FieldElement>{}.swap(u);
+                std::vector<FieldElement>{}.swap(alpha);
+            }
+
+            void release_dst_vectors() const
+            {
+                std::vector<FieldElement>{}.swap(e_dst);
+                std::vector<FieldElement>{}.swap(e_dst_edge);
+                std::vector<FieldElement>{}.swap(m);
+                std::vector<FieldElement>{}.swap(m_edge);
+                std::vector<FieldElement>{}.swap(sum);
+                std::vector<FieldElement>{}.swap(sum_edge);
+                std::vector<FieldElement>{}.swap(inv);
+                std::vector<FieldElement>{}.swap(inv_edge);
+            }
+
+            void release_aggregate_round_div_vectors() const
+            {
+                std::vector<std::int64_t>{}.swap(aggregate_numerators_scaled);
+                std::vector<std::int64_t>{}.swap(aggregate_denominators);
+            }
         };
 
         struct OutputQuantizedWitness
         {
             Matrix y_prime;
             Matrix y_lin;
-            Matrix y;
+            mutable Matrix y;
             Matrix y_quant;
-            RawMatrix y_quant_raw;
-            std::vector<FieldElement> y_pre_flat;
+            mutable RawMatrix y_quant_raw;
+            mutable std::vector<FieldElement> y_pre_flat;
             std::vector<FieldElement> bias_flat;
             std::vector<FieldElement> y_flat;
-            std::vector<FieldElement> e_src;
-            std::vector<FieldElement> e_dst;
-            std::vector<FieldElement> s;
-            std::vector<FieldElement> z;
-            std::vector<FieldElement> m;
-            std::vector<FieldElement> delta;
-            std::vector<FieldElement> u;
-            std::vector<FieldElement> sum;
-            std::vector<FieldElement> inv;
-            std::vector<FieldElement> alpha;
-            std::vector<FieldElement> e_src_edge;
-            std::vector<FieldElement> e_dst_edge;
-            std::vector<FieldElement> m_edge;
-            std::vector<FieldElement> sum_edge;
-            std::vector<FieldElement> inv_edge;
-            std::vector<std::int64_t> aggregate_numerators_scaled;
-            std::vector<std::int64_t> aggregate_denominators;
+            mutable std::vector<FieldElement> e_src;
+            mutable std::vector<FieldElement> e_dst;
+            mutable std::vector<FieldElement> s;
+            mutable std::vector<FieldElement> z;
+            mutable std::vector<FieldElement> m;
+            mutable std::vector<FieldElement> delta;
+            mutable std::vector<FieldElement> u;
+            mutable std::vector<FieldElement> sum;
+            mutable std::vector<FieldElement> inv;
+            mutable std::vector<FieldElement> alpha;
+            mutable std::vector<FieldElement> e_src_edge;
+            mutable std::vector<FieldElement> e_dst_edge;
+            mutable std::vector<FieldElement> m_edge;
+            mutable std::vector<FieldElement> sum_edge;
+            mutable std::vector<FieldElement> inv_edge;
+            mutable std::vector<std::int64_t> aggregate_numerators_scaled;
+            mutable std::vector<std::int64_t> aggregate_denominators;
+
+            void release_average_builder_sources() const
+            {
+                Matrix{}.swap(y);
+                RawMatrix{}.swap(y_quant_raw);
+            }
+
+            void release_lrelu_vectors() const
+            {
+                std::vector<FieldElement>{}.swap(s);
+                std::vector<FieldElement>{}.swap(z);
+            }
+
+            void release_src_vectors() const
+            {
+                std::vector<FieldElement>{}.swap(e_src);
+                std::vector<FieldElement>{}.swap(e_src_edge);
+            }
+
+            void release_delta_vector() const
+            {
+                std::vector<FieldElement>{}.swap(delta);
+            }
+
+            void release_psq_vectors() const
+            {
+                std::vector<FieldElement>{}.swap(u);
+                std::vector<FieldElement>{}.swap(alpha);
+            }
+
+            void release_dst_vectors() const
+            {
+                std::vector<FieldElement>{}.swap(e_dst);
+                std::vector<FieldElement>{}.swap(e_dst_edge);
+                std::vector<FieldElement>{}.swap(m);
+                std::vector<FieldElement>{}.swap(m_edge);
+                std::vector<FieldElement>{}.swap(sum);
+                std::vector<FieldElement>{}.swap(sum_edge);
+                std::vector<FieldElement>{}.swap(inv);
+                std::vector<FieldElement>{}.swap(inv_edge);
+            }
+
+            void release_aggregate_round_div_vectors() const
+            {
+                std::vector<std::int64_t>{}.swap(aggregate_numerators_scaled);
+                std::vector<std::int64_t>{}.swap(aggregate_denominators);
+            }
+
+            void release_y_pre_flat() const
+            {
+                std::vector<FieldElement>{}.swap(y_pre_flat);
+            }
         };
 
         struct CachedForwardArtifacts
         {
             model::ForwardProfile profile;
-            std::vector<Matrix> hidden_layer_inputs_quantized;
+            mutable std::vector<Matrix> hidden_layer_inputs_quantized;
             std::vector<Matrix> hidden_layer_concat_quantized;
             // Formal witness storage is keyed by (layer, local head).
             std::vector<std::vector<HiddenQuantizedWitness>>
@@ -4279,8 +4412,225 @@ namespace gatzk::protocol
             model::FloatMatrix reference_logits_fp32;
             Matrix output_y_lin_average;
             Matrix output_y_average;
-            std::vector<std::int64_t> output_average_numerators;
-            std::vector<std::int64_t> output_average_denominators;
+            mutable std::vector<std::int64_t> output_average_numerators;
+            mutable std::vector<std::int64_t> output_average_denominators;
+
+            template <typename T>
+            static std::size_t vector_storage_bytes(const std::vector<T> &values) noexcept
+            {
+                if (values.capacity() >
+                    std::numeric_limits<std::size_t>::max() / sizeof(T))
+                {
+                    return std::numeric_limits<std::size_t>::max();
+                }
+                return values.capacity() * sizeof(T);
+            }
+
+            template <typename MatrixLike>
+            static std::size_t matrix_storage_bytes(const MatrixLike &matrix) noexcept
+            {
+                std::size_t total = vector_storage_bytes(matrix);
+                for (const auto &row : matrix)
+                {
+                    const auto row_bytes = vector_storage_bytes(row);
+                    if (row_bytes > std::numeric_limits<std::size_t>::max() - total)
+                    {
+                        return std::numeric_limits<std::size_t>::max();
+                    }
+                    total += row_bytes;
+                }
+                return total;
+            }
+
+            static void add_storage_bytes(
+                std::size_t *total,
+                std::size_t bytes) noexcept
+            {
+                if (bytes > std::numeric_limits<std::size_t>::max() - *total)
+                {
+                    *total = std::numeric_limits<std::size_t>::max();
+                }
+                else
+                {
+                    *total += bytes;
+                }
+            }
+
+            std::size_t live_bytes() const noexcept
+            {
+                std::size_t total = 0;
+                add_storage_bytes(&total, vector_storage_bytes(hidden_layer_inputs_quantized));
+                for (const auto &matrix : hidden_layer_inputs_quantized)
+                {
+                    add_storage_bytes(&total, matrix_storage_bytes(matrix));
+                }
+                add_storage_bytes(&total, vector_storage_bytes(hidden_layer_concat_quantized));
+                for (const auto &matrix : hidden_layer_concat_quantized)
+                {
+                    add_storage_bytes(&total, matrix_storage_bytes(matrix));
+                }
+                add_storage_bytes(&total, vector_storage_bytes(hidden_head_quantized));
+                for (const auto &layer : hidden_head_quantized)
+                {
+                    add_storage_bytes(&total, vector_storage_bytes(layer));
+                    for (const auto &head : layer)
+                    {
+                        add_storage_bytes(&total, matrix_storage_bytes(head.h_prime));
+                        add_storage_bytes(&total, matrix_storage_bytes(head.h_agg_pre));
+                        add_storage_bytes(&total, matrix_storage_bytes(head.h_agg_pre_lookup));
+                        add_storage_bytes(&total, matrix_storage_bytes(head.h_agg));
+                        add_storage_bytes(&total, matrix_storage_bytes(head.h_agg_raw));
+                        add_storage_bytes(&total, vector_storage_bytes(head.e_src));
+                        add_storage_bytes(&total, vector_storage_bytes(head.e_dst));
+                        add_storage_bytes(&total, vector_storage_bytes(head.s));
+                        add_storage_bytes(&total, vector_storage_bytes(head.z));
+                        add_storage_bytes(&total, vector_storage_bytes(head.m));
+                        add_storage_bytes(&total, vector_storage_bytes(head.delta));
+                        add_storage_bytes(&total, vector_storage_bytes(head.u));
+                        add_storage_bytes(&total, vector_storage_bytes(head.sum));
+                        add_storage_bytes(&total, vector_storage_bytes(head.inv));
+                        add_storage_bytes(&total, vector_storage_bytes(head.alpha));
+                        add_storage_bytes(&total, vector_storage_bytes(head.e_src_edge));
+                        add_storage_bytes(&total, vector_storage_bytes(head.e_dst_edge));
+                        add_storage_bytes(&total, vector_storage_bytes(head.m_edge));
+                        add_storage_bytes(&total, vector_storage_bytes(head.sum_edge));
+                        add_storage_bytes(&total, vector_storage_bytes(head.inv_edge));
+                        add_storage_bytes(&total, vector_storage_bytes(head.aggregate_numerators_scaled));
+                        add_storage_bytes(&total, vector_storage_bytes(head.aggregate_denominators));
+                    }
+                }
+                add_storage_bytes(&total, vector_storage_bytes(output_head_quantized));
+                for (const auto &head : output_head_quantized)
+                {
+                    add_storage_bytes(&total, matrix_storage_bytes(head.y_prime));
+                    add_storage_bytes(&total, matrix_storage_bytes(head.y_lin));
+                    add_storage_bytes(&total, matrix_storage_bytes(head.y));
+                    add_storage_bytes(&total, matrix_storage_bytes(head.y_quant));
+                    add_storage_bytes(&total, matrix_storage_bytes(head.y_quant_raw));
+                    add_storage_bytes(&total, vector_storage_bytes(head.y_pre_flat));
+                    add_storage_bytes(&total, vector_storage_bytes(head.bias_flat));
+                    add_storage_bytes(&total, vector_storage_bytes(head.y_flat));
+                    add_storage_bytes(&total, vector_storage_bytes(head.e_src));
+                    add_storage_bytes(&total, vector_storage_bytes(head.e_dst));
+                    add_storage_bytes(&total, vector_storage_bytes(head.s));
+                    add_storage_bytes(&total, vector_storage_bytes(head.z));
+                    add_storage_bytes(&total, vector_storage_bytes(head.m));
+                    add_storage_bytes(&total, vector_storage_bytes(head.delta));
+                    add_storage_bytes(&total, vector_storage_bytes(head.u));
+                    add_storage_bytes(&total, vector_storage_bytes(head.sum));
+                    add_storage_bytes(&total, vector_storage_bytes(head.inv));
+                    add_storage_bytes(&total, vector_storage_bytes(head.alpha));
+                    add_storage_bytes(&total, vector_storage_bytes(head.e_src_edge));
+                    add_storage_bytes(&total, vector_storage_bytes(head.e_dst_edge));
+                    add_storage_bytes(&total, vector_storage_bytes(head.m_edge));
+                    add_storage_bytes(&total, vector_storage_bytes(head.sum_edge));
+                    add_storage_bytes(&total, vector_storage_bytes(head.inv_edge));
+                    add_storage_bytes(&total, vector_storage_bytes(head.aggregate_numerators_scaled));
+                    add_storage_bytes(&total, vector_storage_bytes(head.aggregate_denominators));
+                }
+                add_storage_bytes(&total, matrix_storage_bytes(reference_quantized_logits));
+                add_storage_bytes(&total, matrix_storage_bytes(reference_logits_fp32));
+                add_storage_bytes(&total, matrix_storage_bytes(output_y_lin_average));
+                add_storage_bytes(&total, matrix_storage_bytes(output_y_average));
+                add_storage_bytes(&total, vector_storage_bytes(output_average_numerators));
+                add_storage_bytes(&total, vector_storage_bytes(output_average_denominators));
+                return total;
+            }
+
+            void report_live_bytes(std::string_view stage) const
+            {
+                progress_note(
+                    "trace:forward_artifacts:stage=" + std::string(stage) +
+                    ":live_bytes=" + std::to_string(live_bytes()));
+            }
+
+            void release_hidden_layer_input(std::size_t layer_index) const
+            {
+                Matrix{}.swap(hidden_layer_inputs_quantized.at(layer_index));
+            }
+
+            void release_hidden_lrelu_vectors(
+                std::size_t layer_index,
+                std::size_t head_index) const
+            {
+                hidden_head_quantized.at(layer_index).at(head_index).release_lrelu_vectors();
+            }
+
+            void release_hidden_src_vectors(
+                std::size_t layer_index,
+                std::size_t head_index) const
+            {
+                hidden_head_quantized.at(layer_index).at(head_index).release_src_vectors();
+            }
+
+            void release_hidden_delta_vector(
+                std::size_t layer_index,
+                std::size_t head_index) const
+            {
+                hidden_head_quantized.at(layer_index).at(head_index).release_delta_vector();
+            }
+
+            void release_hidden_psq_vectors(
+                std::size_t layer_index,
+                std::size_t head_index) const
+            {
+                hidden_head_quantized.at(layer_index).at(head_index).release_psq_vectors();
+            }
+
+            void release_hidden_dst_vectors(
+                std::size_t layer_index,
+                std::size_t head_index) const
+            {
+                hidden_head_quantized.at(layer_index).at(head_index).release_dst_vectors();
+            }
+
+            void release_hidden_aggregate_round_div_vectors(
+                std::size_t layer_index,
+                std::size_t head_index) const
+            {
+                hidden_head_quantized.at(layer_index).at(head_index).release_aggregate_round_div_vectors();
+            }
+
+            void release_output_lrelu_vectors(std::size_t head_index) const
+            {
+                output_head_quantized.at(head_index).release_lrelu_vectors();
+            }
+
+            void release_output_src_vectors(std::size_t head_index) const
+            {
+                output_head_quantized.at(head_index).release_src_vectors();
+            }
+
+            void release_output_delta_vector(std::size_t head_index) const
+            {
+                output_head_quantized.at(head_index).release_delta_vector();
+            }
+
+            void release_output_psq_vectors(std::size_t head_index) const
+            {
+                output_head_quantized.at(head_index).release_psq_vectors();
+            }
+
+            void release_output_dst_vectors(std::size_t head_index) const
+            {
+                output_head_quantized.at(head_index).release_dst_vectors();
+            }
+
+            void release_output_aggregate_round_div_vectors(std::size_t head_index) const
+            {
+                output_head_quantized.at(head_index).release_aggregate_round_div_vectors();
+            }
+
+            void release_output_y_pre_flat(std::size_t head_index) const
+            {
+                output_head_quantized.at(head_index).release_y_pre_flat();
+            }
+
+            void release_output_average_round_div_vectors() const
+            {
+                std::vector<std::int64_t>{}.swap(output_average_numerators);
+                std::vector<std::int64_t>{}.swap(output_average_denominators);
+            }
         };
 
         std::string trace_cache_prefix(const ProtocolContext &context);
@@ -5132,13 +5482,20 @@ namespace gatzk::protocol
                         &h_prime_raw,
                         &e_src_raw,
                         &e_dst_raw);
-                    layer_head_outputs_raw.push_back(quantized_head.h_agg_raw);
+                    layer_head_outputs_raw.push_back(std::move(quantized_head.h_agg_raw));
                     layer_quantized_heads.push_back(std::move(quantized_head));
                 }
                 hidden_layer_concat_raw.push_back(concat_raw_columns(
                     layer_head_outputs_raw,
                     "hidden layer concat " + std::to_string(layer_index)));
                 artifacts->hidden_layer_concat_quantized.push_back(field_matrix_from_raw(hidden_layer_concat_raw.back()));
+                for (auto &head : layer_quantized_heads)
+                {
+                    head.release_concat_raw();
+                }
+                artifacts->report_live_bytes(
+                    "hidden-layer-" + std::to_string(layer_index) +
+                    "-concat-built");
             }
             artifacts->output_head_quantized.reserve(
                 forward.output_head_traces.size());
@@ -5264,6 +5621,11 @@ namespace gatzk::protocol
                     std::move(sum_values);
                 artifacts->output_average_denominators =
                     std::move(denominators);
+                for (auto &head : artifacts->output_head_quantized)
+                {
+                    head.release_average_builder_sources();
+                }
+                artifacts->report_live_bytes("output-average-built");
             }
             artifacts->reference_quantized_logits =
                 independent_quantized_reference_forward(
@@ -5271,6 +5633,7 @@ namespace gatzk::protocol
                     edge_src_indices,
                     edge_dst_indices,
                     destination_groups);
+            artifacts->report_live_bytes("forward-built");
             return artifacts;
         }
 
@@ -8528,6 +8891,13 @@ namespace gatzk::protocol
                     context.kzg,
                     keep_trace_payloads,
                     metrics);
+                forward_artifacts->release_hidden_src_vectors(
+                    layer_index,
+                    local_head_index);
+                forward_artifacts->report_live_bytes(
+                    "hidden-l" + std::to_string(layer_index) +
+                    "-h" + std::to_string(local_head_index) +
+                    "-src-committed");
                 for (const auto *suffix : {"Table_src", "Query_src", "m_src"})
                 {
                     const auto label = prefix + suffix;
@@ -8622,6 +8992,13 @@ namespace gatzk::protocol
                     context.kzg,
                     keep_trace_payloads,
                     metrics);
+                forward_artifacts->release_hidden_lrelu_vectors(
+                    layer_index,
+                    local_head_index);
+                forward_artifacts->report_live_bytes(
+                    "hidden-l" + std::to_string(layer_index) +
+                    "-h" + std::to_string(local_head_index) +
+                    "-lrelu-committed");
                 for (const auto *suffix : {"Table_L", "Query_L", "m_L"})
                 {
                     const auto label = prefix + suffix;
@@ -8800,6 +9177,13 @@ namespace gatzk::protocol
                 stage_start = Clock::now();
                 auto s_max = build_first_zero_group_selector(delta, edge_groups_by_dst, domains.edge->size);
                 add_metric(metrics != nullptr ? &metrics->hidden_edge_score_trace_ms : nullptr, stage_start);
+                forward_artifacts->release_hidden_delta_vector(
+                    layer_index,
+                    local_head_index);
+                forward_artifacts->report_live_bytes(
+                    "hidden-l" + std::to_string(layer_index) +
+                    "-h" + std::to_string(local_head_index) +
+                    "-delta-consumed");
                 stage_start = Clock::now();
                 const auto c_max = cached_state_vector(
                     [&]()
@@ -8888,6 +9272,13 @@ namespace gatzk::protocol
                     context.kzg,
                     keep_trace_payloads,
                     metrics);
+                forward_artifacts->release_hidden_psq_vectors(
+                    layer_index,
+                    local_head_index);
+                forward_artifacts->report_live_bytes(
+                    "hidden-l" + std::to_string(layer_index) +
+                    "-h" + std::to_string(local_head_index) +
+                    "-psq-committed");
                 append_external_mask(
                     prefix + "H_agg_pre_star",
                     external_mask_label(prefix + "H_agg_pre_star"));
@@ -9187,6 +9578,13 @@ namespace gatzk::protocol
                     context.kzg,
                     keep_trace_payloads,
                     metrics);
+                forward_artifacts->release_hidden_dst_vectors(
+                    layer_index,
+                    local_head_index);
+                forward_artifacts->report_live_bytes(
+                    "hidden-l" + std::to_string(layer_index) +
+                    "-h" + std::to_string(local_head_index) +
+                    "-dst-committed");
                 for (const auto *suffix : {"Table_dst", "Query_dst", "m_dst"})
                 {
                     const auto label = prefix + suffix;
@@ -9280,6 +9678,13 @@ namespace gatzk::protocol
                     div,
                     hidden_q_nd_h_selector_label(layer_index));
                 div = SignedRoundDivWitness{};
+                forward_artifacts->release_hidden_aggregate_round_div_vectors(
+                    layer_index,
+                    local_head_index);
+                forward_artifacts->report_live_bytes(
+                    "hidden-l" + std::to_string(layer_index) +
+                    "-h" + std::to_string(local_head_index) +
+                    "-round-div-committed");
                 std::vector<std::pair<std::string, FieldElement>> hidden_weight_terms;
                 hidden_weight_terms.reserve(head_dim);
                 auto hidden_weight_power = FieldElement::one();
@@ -9494,6 +9899,10 @@ namespace gatzk::protocol
                 {
                     commit_hidden_head(layer_index, local_head_index);
                 }
+                forward_artifacts->release_hidden_layer_input(layer_index);
+                forward_artifacts->report_live_bytes(
+                    "hidden-layer-" + std::to_string(layer_index) +
+                    "-input-released");
                 commit_hidden_layer_concat(layer_index);
             }
             const auto &h_cat = hidden_layer_concat_quantized.back();
@@ -9904,6 +10313,10 @@ namespace gatzk::protocol
                     context.kzg,
                     keep_trace_payloads,
                     metrics);
+                forward_artifacts->release_output_src_vectors(head_index);
+                forward_artifacts->report_live_bytes(
+                    "output-h" + std::to_string(head_index) +
+                    "-src-committed");
                 for (const auto *suffix : {"J_src_node", "J_src_edge", "R_src_node", "R_src"})
                 {
                     const auto label = prefix + suffix;
@@ -10033,6 +10446,10 @@ namespace gatzk::protocol
                             eta_l_out),
                     },
                     lookup_active_transition_limit(context.tables.lrelu.size(), n_edges, domains.edge->size));
+                forward_artifacts->release_output_lrelu_vectors(head_index);
+                forward_artifacts->report_live_bytes(
+                    "output-h" + std::to_string(head_index) +
+                    "-lrelu-committed");
 
                 auto out_s_max = build_first_zero_group_selector(out_delta, edge_groups_by_dst, domains.edge->size);
                 const auto out_c_max = cached_state_vector(
@@ -10117,6 +10534,10 @@ namespace gatzk::protocol
                             eta_exp_out),
                     },
                     lookup_active_transition_limit(context.tables.exp.size(), n_edges, domains.edge->size));
+                forward_artifacts->release_output_delta_vector(head_index);
+                forward_artifacts->report_live_bytes(
+                    "output-h" + std::to_string(head_index) +
+                    "-delta-consumed");
 
                 const auto lambda_out = transcript.challenge(output_challenge_name("lambda_out", head_index));
                 trace.challenges[output_challenge_name("lambda_out", head_index)] = lambda_out;
@@ -10187,6 +10608,10 @@ namespace gatzk::protocol
                     context.kzg,
                     keep_trace_payloads,
                     metrics);
+                forward_artifacts->release_output_psq_vectors(head_index);
+                forward_artifacts->report_live_bytes(
+                    "output-h" + std::to_string(head_index) +
+                    "-psq-committed");
                 append_external_mask(
                     prefix + "Y_star",
                     external_mask_label(prefix + "Y_star"));
@@ -10475,6 +10900,10 @@ namespace gatzk::protocol
                     context.kzg,
                     keep_trace_payloads,
                     metrics);
+                forward_artifacts->release_output_dst_vectors(head_index);
+                forward_artifacts->report_live_bytes(
+                    "output-h" + std::to_string(head_index) +
+                    "-dst-committed");
                 for (const auto *suffix : {"Table_dst", "Query_dst", "m_dst"})
                 {
                     const auto label = prefix + suffix;
@@ -10569,11 +10998,19 @@ namespace gatzk::protocol
                     context.kzg,
                     keep_trace_payloads,
                     metrics);
+                forward_artifacts->release_output_y_pre_flat(head_index);
+                forward_artifacts->report_live_bytes(
+                    "output-h" + std::to_string(head_index) +
+                    "-y-pre-flat-committed");
                 commit_signed_division(
                     prefix + "Div_",
                     div,
                     "P_Q_div_out" + std::to_string(head_index));
                 div = SignedRoundDivWitness{};
+                forward_artifacts->release_output_aggregate_round_div_vectors(head_index);
+                forward_artifacts->report_live_bytes(
+                    "output-h" + std::to_string(head_index) +
+                    "-round-div-committed");
                 std::vector<std::pair<std::string, FieldElement>> output_weight_terms;
                 output_weight_terms.reserve(n_classes);
                 auto output_weight_power =
@@ -10773,6 +11210,8 @@ namespace gatzk::protocol
                 metrics);
             commit_signed_division("P_avg_Div_", average_div, "P_Q_div_avg");
             average_div = SignedRoundDivWitness{};
+            forward_artifacts->release_output_average_round_div_vectors();
+            forward_artifacts->report_live_bytes("output-average-round-div-committed");
 
             for (std::size_t layer = 0;
                  layer < context.model.hidden_layers.size(); ++layer)

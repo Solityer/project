@@ -1,10 +1,15 @@
 #include "gatzk/algebra/field_io.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
+#include <cstring>
+#include <filesystem>
 #include <future>
 #include <istream>
+#include <limits>
 #include <ostream>
+#include <string>
 #include <stdexcept>
 #include <thread>
 #include <vector>
@@ -94,6 +99,52 @@ namespace gatzk::algebra
         }
 
     } // namespace
+
+    std::size_t field_elements_binary_size(
+        std::size_t value_count)
+    {
+        if (value_count >
+            std::numeric_limits<std::size_t>::max() /
+                kFieldBytes)
+        {
+            throw std::runtime_error(
+                "field-element spill byte size overflow");
+        }
+        return value_count * kFieldBytes;
+    }
+
+    void require_field_elements_binary_size(
+        const std::filesystem::path &path,
+        std::size_t value_count,
+        std::string_view operation)
+    {
+        const auto expected_bytes =
+            field_elements_binary_size(value_count);
+
+        std::error_code error;
+        const auto actual_bytes =
+            std::filesystem::file_size(path, error);
+        if (error)
+        {
+            throw std::runtime_error(
+                std::string(operation) +
+                " failed to stat field-element spill: " +
+                path.string() + ": " +
+                error.message());
+        }
+
+        if (actual_bytes !=
+            static_cast<std::uintmax_t>(expected_bytes))
+        {
+            throw std::runtime_error(
+                std::string(operation) +
+                " field-element spill length mismatch: " +
+                path.string() + " expected=" +
+                std::to_string(expected_bytes) +
+                " actual=" +
+                std::to_string(actual_bytes));
+        }
+    }
 
     void write_field_elements_binary(
         std::ostream &stream,
@@ -189,12 +240,26 @@ namespace gatzk::algebra
                          i < end;
                          ++i)
                     {
-                        values[offset + i] =
-                            FieldElement::
-                                from_little_endian_mod(
-                                    buffer.data() +
-                                        i * kFieldBytes,
-                                    kFieldBytes);
+                        const auto *encoded =
+                            buffer.data() + i * kFieldBytes;
+                        const auto value =
+                            FieldElement::from_little_endian_mod(
+                                encoded,
+                                kFieldBytes);
+                        std::array<std::uint8_t, kFieldBytes>
+                            canonical{};
+                        value.write_little_endian(
+                            canonical.data(),
+                            canonical.size());
+                        if (std::memcmp(
+                                encoded,
+                                canonical.data(),
+                                canonical.size()) != 0)
+                        {
+                            throw std::runtime_error(
+                                "non-canonical field encoding in spill data");
+                        }
+                        values[offset + i] = value;
                     }
                 });
         }

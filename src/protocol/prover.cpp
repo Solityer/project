@@ -20,6 +20,7 @@
 #include <mutex>
 #include <optional>
 #include <sstream>
+#include <span>
 #include <stdexcept>
 #include <system_error>
 #include <string_view>
@@ -32,8 +33,11 @@
 #include <exception>
 
 #include <fcntl.h>
+#include <dirent.h>
 #include <sys/mman.h>
+#include <sys/file.h>
 #include <sys/stat.h>
+#include <signal.h>
 #include <unistd.h>
 
 #include <mcl/ntt.hpp>
@@ -62,6 +66,9 @@
 #include "gatzk/protocol/cuda_t_edge.hpp"
 #include "gatzk/protocol/t_edge_program.hpp"
 #include "protocol/internal/t_edge_descriptor.hpp"
+#include "gatzk/util/effective_memory.hpp"
+#include "gatzk/util/spill_arena_accounting.hpp"
+#include "gatzk/util/storage_reservation.hpp"
 
 namespace gatzk::protocol
 {
@@ -1926,10 +1933,53 @@ namespace gatzk::protocol
                     "spilled polynomial is missing its domain");
             }
 
+            if (spilled.domain_name.empty() ||
+                spilled.domain_name != domain->name)
+            {
+                throw std::runtime_error(
+                    "spilled polynomial domain metadata mismatch");
+            }
+
+            if (spilled.size > domain->size)
+            {
+                throw std::runtime_error(
+                    "spilled polynomial logical size exceeds its domain");
+            }
+
+            if (!spilled.zero_tail_compacted &&
+                spilled.physical_size != 0 &&
+                spilled.physical_size != spilled.size)
+            {
+                throw std::runtime_error(
+                    "spilled polynomial physical metadata is inconsistent");
+            }
+
             if (points.size() != weights.size())
             {
                 throw std::runtime_error(
                     "spilled polynomial point/weight count mismatch");
+            }
+
+            const auto physical_size =
+                spilled_file_value_count(spilled);
+
+            // Validate the on-disk representation even when no evaluation
+            // points were requested. Otherwise an empty-point fast return
+            // could silently accept a missing, truncated, or trailing-byte
+            // spill that would fail on the first non-empty request.
+            if (spilled.lease == nullptr)
+            {
+                throw std::runtime_error(
+                    "spilled polynomial has no authenticated trace spill lease");
+            }
+            const auto payload_name =
+                spilled.lease->payload_name(spilled.path);
+            const auto expected_bytes =
+                algebra::field_elements_binary_size(physical_size);
+            if (spilled.lease->payload_size(payload_name) != expected_bytes)
+            {
+                throw std::runtime_error(
+                    "spilled polynomial length mismatch: " + spilled.path);
             }
 
             std::vector<FieldElement> values(
@@ -1980,22 +2030,14 @@ namespace gatzk::protocol
 
             constexpr std::size_t kFieldBytes = 32;
 
-            std::ifstream stream(
-                spilled.path,
-                std::ios::binary);
-
-            if (!stream)
-            {
-                throw std::runtime_error(
-                    "failed to open spilled polynomial file: " +
-                    spilled.path);
-            }
+            auto stream =
+                spilled.lease->open_payload_stream(payload_name);
 
             // Direct domain hits are sparse. Keep the O(number_of_points)
             // seek route so a direct-only opening never scans the whole spill.
             if (interpolation_indices.empty())
             {
-                std::array<std::uint8_t, kFieldBytes> bytes{};
+                std::array<FieldElement, 1> decoded{};
 
                 for (const auto point_index :
                      direct_indices)
@@ -2009,42 +2051,79 @@ namespace gatzk::protocol
                         continue;
                     }
 
+                    if (direct_index >= physical_size)
+                    {
+                        continue;
+                    }
+
+                    if (direct_index >
+                        std::numeric_limits<std::size_t>::max() /
+                            kFieldBytes)
+                    {
+                        throw std::runtime_error(
+                            "direct spilled polynomial offset overflow: " +
+                            spilled.path);
+                    }
+
                     const auto offset =
                         static_cast<std::streamoff>(
                             direct_index *
                             kFieldBytes);
 
-                    stream.seekg(offset);
+                    stream->seekg(offset);
 
-                    stream.read(
-                        reinterpret_cast<char *>(
-                            bytes.data()),
-                        static_cast<std::streamsize>(
-                            bytes.size()));
-
-                    if (!stream)
+                    try
+                    {
+                        algebra::read_field_elements_binary_into(
+                            *stream,
+                            std::span<FieldElement>(
+                                decoded.data(),
+                                decoded.size()));
+                    }
+                    catch (const std::exception &error)
                     {
                         throw std::runtime_error(
                             "failed to read direct spilled polynomial entry: " +
-                            spilled.path);
+                            spilled.path + ": " + error.what());
                     }
 
-                    values[point_index] =
-                        FieldElement::
-                            from_little_endian_mod(
-                                bytes.data(),
-                                bytes.size());
+                    values[point_index] = decoded.front();
                 }
 
+                return values;
+            }
+
+            const auto add_zero_domain_blinder =
+                [&](std::size_t point_index)
+            {
+                if (!spilled.zero_domain_blinder.empty())
+                {
+                    values[point_index] +=
+                        domain->zero_polynomial_eval(
+                            points[point_index]) *
+                        algebra::horner(
+                            spilled.zero_domain_blinder,
+                            points[point_index]);
+                }
+            };
+
+            // A physically empty compact spill is a logical all-zero vector.
+            // Preserve the proof-local domain blinder at every non-domain
+            // opening point without touching the empty file again.
+            if (physical_size == 0)
+            {
+                for (const auto point_index : interpolation_indices)
+                {
+                    add_zero_domain_blinder(point_index);
+                }
                 return values;
             }
 
             const bool use_cuda_stream =
                 util::route2_options()
                     .cuda_field_hotspots &&
-                algebra::
-                    cuda_field_hotspots_available() &&
-                spilled.size >=
+                algebra::cuda_field_hotspots_available() &&
+                physical_size >=
                     (std::size_t{1} << 18);
 
             constexpr std::size_t kStreamChunkSize =
@@ -2054,7 +2133,7 @@ namespace gatzk::protocol
             chunk.reserve(
                 std::min(
                     kStreamChunkSize,
-                    spilled.size));
+                    physical_size));
 
             auto read_chunk =
                 [&](std::size_t count)
@@ -2064,7 +2143,7 @@ namespace gatzk::protocol
                 try
                 {
                     algebra::read_field_elements_binary_into(
-                        stream,
+                        *stream,
                         std::span<FieldElement>(
                             chunk.data(),
                             chunk.size()));
@@ -2123,7 +2202,7 @@ namespace gatzk::protocol
                     algebra::
                         create_cuda_weighted_dot_session(
                             interpolation_weights,
-                            spilled.size,
+                            physical_size,
                             kStreamChunkSize);
 
                 if (session == nullptr)
@@ -2133,12 +2212,12 @@ namespace gatzk::protocol
                 }
 
                 for (std::size_t offset = 0;
-                     offset < spilled.size;)
+                     offset < physical_size;)
                 {
                     const auto count =
                         std::min(
                             kStreamChunkSize,
-                            spilled.size - offset);
+                            physical_size - offset);
 
                     read_chunk(count);
                     collect_direct_values(
@@ -2177,18 +2256,7 @@ namespace gatzk::protocol
                         FieldElement::from_native(
                             native_results[result_index]);
 
-                    if (!spilled
-                             .zero_domain_blinder
-                             .empty())
-                    {
-                        values[point_index] +=
-                            domain->zero_polynomial_eval(
-                                points[point_index]) *
-                            algebra::horner(
-                                spilled
-                                    .zero_domain_blinder,
-                                points[point_index]);
-                    }
+                    add_zero_domain_blinder(point_index);
                 }
 
                 return values;
@@ -2203,12 +2271,12 @@ namespace gatzk::protocol
             }
 
             for (std::size_t offset = 0;
-                 offset < spilled.size;)
+                 offset < physical_size;)
             {
                 const auto count =
                     std::min(
                         kStreamChunkSize,
-                        spilled.size - offset);
+                        physical_size - offset);
 
                 read_chunk(count);
                 collect_direct_values(
@@ -2255,18 +2323,7 @@ namespace gatzk::protocol
                     FieldElement::from_native(
                         native_sums[point_index]);
 
-                if (!spilled
-                         .zero_domain_blinder
-                         .empty())
-                {
-                    values[point_index] +=
-                        domain->zero_polynomial_eval(
-                            points[point_index]) *
-                        algebra::horner(
-                            spilled
-                                .zero_domain_blinder,
-                            points[point_index]);
-                }
+                add_zero_domain_blinder(point_index);
             }
 
             return values;
@@ -4159,15 +4216,36 @@ namespace gatzk::protocol
 
         std::vector<FieldElement> load_spilled_values(const TraceArtifacts::SpilledEvaluationPolynomial &spilled)
         {
-            std::ifstream stream(spilled.path, std::ios::binary);
-            if (!stream)
+            const auto physical_size =
+                spilled_file_value_count(spilled);
+            if (spilled.lease == nullptr)
             {
-                throw std::runtime_error("failed to open spilled quotient dependency: " + spilled.path);
+                throw std::runtime_error(
+                    "spilled quotient dependency has no authenticated trace spill lease");
             }
+            const auto payload_name =
+                spilled.lease->payload_name(spilled.path);
+            const auto expected_bytes =
+                algebra::field_elements_binary_size(physical_size);
+            if (spilled.lease->payload_size(payload_name) != expected_bytes)
+            {
+                throw std::runtime_error(
+                    "spilled quotient dependency length mismatch: " +
+                    spilled.path);
+            }
+            auto stream =
+                spilled.lease->open_payload_stream(payload_name);
             try
             {
-                return algebra::read_field_elements_binary(
-                    stream, spilled.size);
+                std::vector<FieldElement> values(
+                    spilled.size,
+                    FieldElement::zero());
+                algebra::read_field_elements_binary_into(
+                    *stream,
+                    std::span<FieldElement>(
+                        values.data(),
+                        physical_size));
+                return values;
             }
             catch (const std::exception &error)
             {
@@ -4195,23 +4273,6 @@ namespace gatzk::protocol
             if (name == "N")
                 return context.domains.n;
             throw std::runtime_error("unknown quotient materialization domain: " + name);
-        }
-
-        std::shared_ptr<const algebra::Polynomial>
-        load_spilled_opening_polynomial(
-            const ProtocolContext &context,
-            const TraceArtifacts::SpilledEvaluationPolynomial &spilled,
-            const std::string &name)
-        {
-            auto polynomial = algebra::Polynomial::from_shared_evaluations(
-                name,
-                std::make_shared<const std::vector<FieldElement>>(
-                    load_spilled_values(spilled)),
-                context_domain_by_name(context, spilled.domain_name));
-            polynomial.set_zero_domain_blinder(
-                spilled.zero_domain_blinder);
-            return std::make_shared<const algebra::Polynomial>(
-                std::move(polynomial));
         }
 
         std::shared_ptr<algebra::RootOfUnityDomain> quotient_domain(
@@ -4723,15 +4784,13 @@ namespace gatzk::protocol
             std::size_t available_bytes = 0;
             std::size_t reserve_bytes = 0;
             std::size_t budget_bytes = 0;
+            bool available_known = false;
+            bool conservative = false;
         };
 
         QuotientCosetMemoryBudget
         quotient_coset_memory_budget()
         {
-            constexpr std::size_t
-                kFallbackMaximumMemoryCosetBytes =
-                    std::size_t{8} << 30;
-
             constexpr std::size_t
                 kMaximumMemoryCosetBytes =
                     std::size_t{24} << 30;
@@ -4740,136 +4799,485 @@ namespace gatzk::protocol
                 kMinimumHostReserveBytes =
                     std::size_t{16} << 30;
 
-            QuotientCosetMemoryBudget result;
-
-            const auto kib_to_bytes =
-                [](unsigned long long value_kib)
-                -> std::size_t
-            {
-                const auto maximum =
-                    std::numeric_limits<
-                        std::size_t>::max();
-
-                if (value_kib > static_cast<unsigned long long>(
-                                    maximum / 1024ULL))
-                {
-                    return maximum;
-                }
-
-                return static_cast<std::size_t>(
-                    value_kib * 1024ULL);
+            const auto snapshot =
+                util::cached_effective_memory_snapshot();
+            QuotientCosetMemoryBudget result{
+                .total_bytes = snapshot.effective_total_bytes,
+                .available_bytes = snapshot.effective_available_known
+                                       ? snapshot.effective_available_bytes
+                                       : std::size_t{0},
+                .reserve_bytes = util::recommended_memory_reserve_bytes(
+                    snapshot,
+                    kMinimumHostReserveBytes,
+                    1,
+                    4),
+                .budget_bytes = 0,
+                .available_known = snapshot.effective_available_known,
+                .conservative = snapshot.conservative,
             };
 
-            std::ifstream input("/proc/meminfo");
-
-            if (input)
-            {
-                std::string line;
-
-                while (std::getline(input, line))
-                {
-                    std::istringstream row(line);
-
-                    std::string key;
-                    unsigned long long value_kib = 0;
-                    std::string unit;
-
-                    if (!(row >> key >> value_kib))
-                    {
-                        continue;
-                    }
-
-                    row >> unit;
-
-                    if (!unit.empty() && unit != "kB")
-                    {
-                        continue;
-                    }
-
-                    if (key == "MemTotal:")
-                    {
-                        result.total_bytes =
-                            kib_to_bytes(value_kib);
-                    }
-                    else if (key == "MemAvailable:")
-                    {
-                        result.available_bytes =
-                            kib_to_bytes(value_kib);
-                    }
-                }
-            }
-
-            if (result.total_bytes == 0)
-            {
-                const auto physical_pages =
-                    ::sysconf(_SC_PHYS_PAGES);
-
-                const auto page_size =
-                    ::sysconf(_SC_PAGESIZE);
-
-                if (physical_pages > 0 && page_size > 0)
-                {
-                    const auto pages =
-                        static_cast<unsigned long long>(
-                            physical_pages);
-
-                    const auto bytes_per_page =
-                        static_cast<unsigned long long>(
-                            page_size);
-
-                    const auto maximum =
-                        static_cast<unsigned long long>(
-                            std::numeric_limits<
-                                std::size_t>::max());
-
-                    result.total_bytes =
-                        pages > maximum / bytes_per_page
-                            ? std::numeric_limits<
-                                  std::size_t>::max()
-                            : static_cast<std::size_t>(
-                                  pages * bytes_per_page);
-                }
-            }
-
-            if (result.available_bytes == 0)
-            {
-                if (result.total_bytes != 0)
-                {
-                    result.budget_bytes =
-                        std::min(
-                            kFallbackMaximumMemoryCosetBytes,
-                            result.total_bytes / 8);
-                }
-
-                return result;
-            }
-
-            result.reserve_bytes =
-                std::max(
-                    kMinimumHostReserveBytes,
-                    result.total_bytes == 0
-                        ? kMinimumHostReserveBytes
-                        : result.total_bytes / 4);
-
-            if (result.available_bytes <= result.reserve_bytes)
-            {
-                return result;
-            }
-
-            const auto safely_usable_bytes =
-                result.available_bytes - result.reserve_bytes;
-
             result.budget_bytes =
-                std::min(
-                    kMaximumMemoryCosetBytes,
-                    safely_usable_bytes / 2);
-
+                util::admit_effective_memory(
+                    snapshot,
+                    0,
+                    0,
+                    result.reserve_bytes,
+                    2,
+                    kMaximumMemoryCosetBytes)
+                    .budget_bytes;
             return result;
         }
 
         std::vector<std::string> quotient_materialization_dependency_labels(
             const ProtocolContext &context,
             const std::string &quotient_name);
+
+        bool quotient_private_component(
+            const std::filesystem::path &component)
+        {
+            const auto value = component.string();
+            return !value.empty() && value != "." && value != ".." &&
+                   value.find('/') == std::string::npos;
+        }
+
+        int open_private_quotient_root(
+            const std::filesystem::path &root)
+        {
+            std::error_code absolute_error;
+            const auto absolute = std::filesystem::absolute(root, absolute_error);
+            if (absolute_error || absolute.empty())
+                throw std::runtime_error(
+                    "failed to resolve quotient spill root: " +
+                    (absolute_error ? absolute_error.message() : "empty path"));
+            const auto normalized = absolute.lexically_normal();
+            if (!normalized.is_absolute() ||
+                normalized == normalized.root_path())
+                throw std::runtime_error(
+                    "quotient spill root must be a non-root absolute directory");
+            for (const auto &component : normalized.relative_path())
+            {
+                if (!quotient_private_component(component))
+                    throw std::runtime_error(
+                        "quotient spill root contains an unsafe component");
+            }
+            int current = ::open(
+                normalized.root_path().c_str(),
+                O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+            if (current < 0)
+                throw std::system_error(
+                    errno,
+                    std::generic_category(),
+                    "failed to open quotient spill filesystem root");
+            try
+            {
+                const auto relative = normalized.relative_path();
+                for (auto it = relative.begin(); it != relative.end(); ++it)
+                {
+                    const auto name = it->string();
+                    int next = ::openat(
+                        current,
+                        name.c_str(),
+                        O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+                    if (next < 0 && errno == ENOENT)
+                    {
+                        if (::mkdirat(
+                                current,
+                                name.c_str(),
+                                S_IRWXU) != 0 &&
+                            errno != EEXIST)
+                            throw std::system_error(
+                                errno,
+                                std::generic_category(),
+                                "failed to create quotient spill directory");
+                        next = ::openat(
+                            current,
+                            name.c_str(),
+                            O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+                    }
+                    if (next < 0)
+                        throw std::system_error(
+                            errno,
+                            std::generic_category(),
+                            "failed to open quotient spill directory");
+                    struct stat status{};
+                    if (::fstat(next, &status) != 0 || !S_ISDIR(status.st_mode))
+                    {
+                        const auto saved_errno = errno != 0 ? errno : ENOTDIR;
+                        (void)::close(next);
+                        errno = saved_errno;
+                        throw std::system_error(
+                            errno,
+                            std::generic_category(),
+                            "quotient spill path component is not a directory");
+                    }
+                    const bool final_component = std::next(it) == relative.end();
+                    if (final_component)
+                    {
+                        if (::fchmod(next, S_IRWXU) != 0 ||
+                            ::fstat(next, &status) != 0 ||
+                            status.st_uid != ::geteuid() ||
+                            (status.st_mode & 0777) != S_IRWXU)
+                        {
+                            const auto saved_errno = errno != 0 ? errno : EACCES;
+                            (void)::close(next);
+                            errno = saved_errno;
+                            throw std::system_error(
+                                errno,
+                                std::generic_category(),
+                                "quotient spill root permissions are invalid");
+                        }
+                    }
+                    (void)::close(current);
+                    current = next;
+                }
+                return current;
+            }
+            catch (...)
+            {
+                (void)::close(current);
+                throw;
+            }
+        }
+
+        std::string quotient_arena_nonce()
+        {
+            std::array<std::uint8_t, 16> bytes{};
+            if (RAND_bytes(
+                    bytes.data(),
+                    static_cast<int>(bytes.size())) != 1)
+                throw std::runtime_error(
+                    "CSPRNG failed while creating quotient spill arena");
+            std::ostringstream output;
+            for (const auto byte : bytes)
+            {
+                output << std::hex;
+                output.width(2);
+                output.fill('0');
+                output << static_cast<unsigned>(byte);
+            }
+            return output.str();
+        }
+
+        struct QuotientProcessIdentity
+        {
+            bool exists = false;
+            bool readable = false;
+            std::uint64_t start_ticks = 0;
+        };
+
+        QuotientProcessIdentity quotient_process_identity(
+            std::uint64_t pid)
+        {
+            if (pid == 0 || pid > static_cast<std::uint64_t>(INT_MAX))
+                return {};
+            const auto path =
+                std::string("/proc/") + std::to_string(pid) + "/stat";
+            const auto fd = ::open(
+                path.c_str(),
+                O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+            if (fd < 0)
+            {
+                if (errno == ENOENT || errno == ESRCH)
+                {
+                    errno = 0;
+                    if (::kill(static_cast<pid_t>(pid), 0) == 0 ||
+                        errno == EPERM)
+                        return {.exists = true, .readable = false};
+                    if (errno == ESRCH)
+                        return {};
+                }
+                return {.exists = true, .readable = false};
+            }
+            std::string text;
+            std::array<char, 256> buffer{};
+            try
+            {
+                for (;;)
+                {
+                    const auto count = ::read(fd, buffer.data(), buffer.size());
+                    if (count < 0)
+                        throw std::system_error(
+                            errno,
+                            std::generic_category(),
+                            "failed to read quotient process identity");
+                    if (count == 0)
+                        break;
+                    if (text.size() > 8192 - static_cast<std::size_t>(count))
+                        throw std::runtime_error(
+                            "quotient process identity is too large");
+                    text.append(buffer.data(), static_cast<std::size_t>(count));
+                }
+            }
+            catch (...)
+            {
+                (void)::close(fd);
+                return {.exists = true, .readable = false};
+            }
+            (void)::close(fd);
+            const auto close_paren = text.rfind(')');
+            if (close_paren == std::string::npos ||
+                close_paren + 2 >= text.size())
+                return {.exists = true, .readable = false};
+            std::istringstream fields(text.substr(close_paren + 2));
+            std::string token;
+            for (int field = 3; field <= 22; ++field)
+            {
+                if (!(fields >> token))
+                    return {.exists = true, .readable = false};
+                if (field == 22)
+                {
+                    try
+                    {
+                        std::size_t consumed = 0;
+                        const auto value = std::stoull(token, &consumed, 10);
+                        if (consumed != token.size() || value == 0)
+                            return {.exists = true, .readable = false};
+                        return {
+                            .exists = true,
+                            .readable = true,
+                            .start_ticks = static_cast<std::uint64_t>(value),
+                        };
+                    }
+                    catch (const std::exception &)
+                    {
+                        return {.exists = true, .readable = false};
+                    }
+                }
+            }
+            return {.exists = true, .readable = false};
+        }
+
+        std::uint64_t quotient_current_process_start_ticks()
+        {
+            const auto identity = quotient_process_identity(
+                static_cast<std::uint64_t>(::getpid()));
+            if (!identity.exists || !identity.readable ||
+                identity.start_ticks == 0)
+                throw std::runtime_error(
+                    "cannot authenticate quotient arena process identity");
+            return identity.start_ticks;
+        }
+
+        struct QuotientArenaIdentity
+        {
+            std::uint64_t pid = 0;
+            std::uint64_t start_ticks = 0;
+            std::string nonce;
+        };
+
+        std::optional<QuotientArenaIdentity> parse_quotient_arena_name(
+            std::string_view name)
+        {
+            constexpr std::string_view prefix = "arena-";
+            if (name.substr(0, prefix.size()) != prefix)
+                return std::nullopt;
+            const auto suffix = name.substr(prefix.size());
+            const auto first = suffix.find('-');
+            const auto second = first == std::string_view::npos
+                                    ? std::string_view::npos
+                                    : suffix.find('-', first + 1);
+            if (first == std::string_view::npos ||
+                second == std::string_view::npos ||
+                first == 0 || second <= first + 1 ||
+                second + 1 >= suffix.size())
+                return std::nullopt;
+            const auto nonce = suffix.substr(second + 1);
+            if (nonce.size() != 32)
+                return std::nullopt;
+            for (const auto ch : nonce)
+            {
+                if (!((ch >= '0' && ch <= '9') ||
+                      (ch >= 'a' && ch <= 'f')))
+                    return std::nullopt;
+            }
+            try
+            {
+                const auto pid_text = suffix.substr(0, first);
+                const auto start_text = suffix.substr(
+                    first + 1,
+                    second - first - 1);
+                for (const auto ch : pid_text)
+                {
+                    if (ch < '0' || ch > '9')
+                        return std::nullopt;
+                }
+                for (const auto ch : start_text)
+                {
+                    if (ch < '0' || ch > '9')
+                        return std::nullopt;
+                }
+                std::size_t consumed = 0;
+                const auto pid = std::stoull(
+                    std::string(pid_text),
+                    &consumed,
+                    10);
+                if (consumed != first || pid == 0 ||
+                    pid > static_cast<std::uint64_t>(INT_MAX))
+                    return std::nullopt;
+                consumed = 0;
+                const auto start = std::stoull(
+                    std::string(start_text),
+                    &consumed,
+                    10);
+                if (consumed != second - first - 1 || start == 0)
+                    return std::nullopt;
+                return QuotientArenaIdentity{
+                    .pid = static_cast<std::uint64_t>(pid),
+                    .start_ticks = static_cast<std::uint64_t>(start),
+                    .nonce = std::string(nonce),
+                };
+            }
+            catch (const std::exception &)
+            {
+                return std::nullopt;
+            }
+        }
+
+        bool quotient_private_regular(
+            const struct stat &status)
+        {
+            return S_ISREG(status.st_mode) &&
+                   status.st_uid == ::geteuid() &&
+                   (status.st_mode & 0777) == (S_IRUSR | S_IWUSR) &&
+                   status.st_nlink == 1;
+        }
+
+        std::vector<std::string> quotient_root_entries(
+            int root_fd)
+        {
+            const auto duplicate = ::fcntl(root_fd, F_DUPFD_CLOEXEC, 0);
+            if (duplicate < 0)
+                throw std::system_error(
+                    errno,
+                    std::generic_category(),
+                    "failed to duplicate quotient spill root FD");
+            if (::lseek(duplicate, 0, SEEK_SET) < 0)
+            {
+                const auto error = errno;
+                (void)::close(duplicate);
+                throw std::system_error(
+                    error,
+                    std::generic_category(),
+                    "failed to rewind quotient spill root scan");
+            }
+            DIR *directory = ::fdopendir(duplicate);
+            if (directory == nullptr)
+            {
+                const auto error = errno;
+                (void)::close(duplicate);
+                throw std::system_error(
+                    error,
+                    std::generic_category(),
+                    "failed to scan quotient spill root");
+            }
+            std::vector<std::string> entries;
+            errno = 0;
+            while (auto *entry = ::readdir(directory))
+            {
+                const std::string name(entry->d_name);
+                if (name != "." && name != "..")
+                    entries.push_back(name);
+            }
+            const auto scan_error = errno;
+            (void)::closedir(directory);
+            if (scan_error != 0)
+                throw std::system_error(
+                    scan_error,
+                    std::generic_category(),
+                    "failed to scan quotient spill root entries");
+            return entries;
+        }
+
+        void collect_stale_quotient_arenas(
+            int root_fd)
+        {
+            std::vector<std::string> entries;
+            try
+            {
+                entries = quotient_root_entries(root_fd);
+            }
+            catch (const std::exception &)
+            {
+                return;
+            }
+            for (const auto &name : entries)
+            {
+                const auto identity = parse_quotient_arena_name(name);
+                if (!identity.has_value())
+                    continue;
+                const auto fd = ::openat(
+                    root_fd,
+                    name.c_str(),
+                    O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+                if (fd < 0)
+                    continue;
+                struct stat snapshot{};
+                if (::fstat(fd, &snapshot) != 0 ||
+                    !quotient_private_regular(snapshot))
+                {
+                    (void)::close(fd);
+                    continue;
+                }
+                const auto process = quotient_process_identity(identity->pid);
+                const bool active_or_unverifiable =
+                    (process.exists && !process.readable) ||
+                    (process.exists &&
+                     process.start_ticks == identity->start_ticks);
+                if (active_or_unverifiable)
+                {
+                    (void)::close(fd);
+                    continue;
+                }
+                struct stat current{};
+                const bool unchanged =
+                    ::fstatat(
+                        root_fd,
+                        name.c_str(),
+                        &current,
+                        AT_SYMLINK_NOFOLLOW) == 0 &&
+                    quotient_private_regular(current) &&
+                    snapshot.st_dev == current.st_dev &&
+                    snapshot.st_ino == current.st_ino &&
+                    snapshot.st_mode == current.st_mode &&
+                    snapshot.st_nlink == current.st_nlink &&
+                    snapshot.st_size == current.st_size;
+                (void)::close(fd);
+                if (unchanged)
+                    (void)::unlinkat(root_fd, name.c_str(), 0);
+            }
+        }
+
+        int open_quotient_arena_lock(
+            int root_fd)
+        {
+            constexpr char lock_name[] = ".arena.gc.lock";
+            const auto fd = ::openat(
+                root_fd,
+                lock_name,
+                O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW,
+                S_IRUSR | S_IWUSR);
+            if (fd < 0)
+                throw std::system_error(
+                    errno,
+                    std::generic_category(),
+                    "failed to open quotient spill arena lock");
+            struct stat status{};
+            if (::fstat(fd, &status) != 0 ||
+                !S_ISREG(status.st_mode) ||
+                status.st_uid != ::geteuid() ||
+                (status.st_mode & 0777) != (S_IRUSR | S_IWUSR) ||
+                status.st_nlink != 1 ||
+                ::flock(fd, LOCK_EX) != 0)
+            {
+                const auto error = errno != 0 ? errno : EACCES;
+                (void)::close(fd);
+                throw std::system_error(
+                    error,
+                    std::generic_category(),
+                    "quotient spill arena lock is invalid");
+            }
+            return fd;
+        }
 
         class QuotientCosetSpillArena
         {
@@ -4879,53 +5287,164 @@ namespace gatzk::protocol
                 FieldElement *data = nullptr;
             };
 
-            QuotientCosetSpillArena()
+            QuotientCosetSpillArena(
+                std::size_t total_cap_bytes,
+                std::size_t transient_bytes,
+                std::size_t geometry_bytes)
+                : total_cap_bytes_(total_cap_bytes),
+                  transient_bytes_(transient_bytes),
+                  geometry_bytes_(geometry_bytes)
             {
-                const auto root =
-                    std::filesystem::current_path() / "runs" / ".quotient_coset_spill";
-                std::filesystem::create_directories(root);
-                if (::chmod(root.c_str(), S_IRWXU) != 0)
+                int arena_lock_fd = -1;
+                try
                 {
-                    throw std::runtime_error(
-                        "failed to secure quotient coset spill directory: " + std::string(std::strerror(errno)));
+                    const auto root =
+                        std::filesystem::current_path() /
+                        "runs" /
+                        ".quotient_coset_spill";
+                    root_ = root;
+                    root_fd_ = open_private_quotient_root(root_);
+                    arena_lock_fd = open_quotient_arena_lock(root_fd_);
+                    collect_stale_quotient_arenas(root_fd_);
+
+                    bool created = false;
+                    const auto creator_pid =
+                        static_cast<std::uint64_t>(::getpid());
+                    const auto creator_start_ticks =
+                        quotient_current_process_start_ticks();
+
+                    // Anonymous temporary files are preferred.  No directory
+                    // entry exists for O_TMPFILE, so a crash cannot leave an
+                    // arena name behind.
+                    fd_ = ::openat(
+                        root_fd_,
+                        ".",
+                        O_RDWR | O_TMPFILE | O_CLOEXEC,
+                        S_IRUSR | S_IWUSR);
+                    if (fd_ >= 0)
+                    {
+                        struct stat status{};
+                        const auto descriptor_flags = ::fcntl(fd_, F_GETFD);
+                        if (::fchmod(fd_, S_IRUSR | S_IWUSR) != 0 ||
+                            descriptor_flags < 0 ||
+                            (descriptor_flags & FD_CLOEXEC) == 0 ||
+                            ::fstat(fd_, &status) != 0 ||
+                            !S_ISREG(status.st_mode) ||
+                            status.st_uid != ::geteuid() ||
+                            (status.st_mode & 0777) !=
+                                (S_IRUSR | S_IWUSR) ||
+                            status.st_nlink != 0)
+                        {
+                            const auto error = errno != 0 ? errno : EACCES;
+                            ::close(fd_);
+                            fd_ = -1;
+                            throw std::system_error(
+                                error,
+                                std::generic_category(),
+                                "quotient coset spill arena permissions are invalid");
+                        }
+                        created = true;
+                    }
+                    else if (errno != EOPNOTSUPP && errno != ENOTSUP &&
+                             errno != EINVAL && errno != EISDIR &&
+                             errno != EPERM)
+                    {
+                        throw std::system_error(
+                            errno,
+                            std::generic_category(),
+                            "failed to create quotient coset spill arena");
+                    }
+
+                    // Filesystems without O_TMPFILE use a strict, private
+                    // staging name containing authenticated process identity.
+                    // It is unlinked immediately; the next constructor's
+                    // lock-protected GC handles only a crash in this tiny
+                    // open-to-unlink window.
+                    for (std::size_t attempt = 0; !created && attempt < 64;
+                         ++attempt)
+                    {
+                        const auto name =
+                            std::string("arena-") +
+                            std::to_string(creator_pid) + "-" +
+                            std::to_string(creator_start_ticks) + "-" +
+                            quotient_arena_nonce();
+                        fd_ = ::openat(
+                            root_fd_,
+                            name.c_str(),
+                            O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC |
+                                O_NOFOLLOW,
+                            S_IRUSR | S_IWUSR);
+                        if (fd_ < 0)
+                        {
+                            if (errno == EEXIST)
+                                continue;
+                            throw std::system_error(
+                                errno,
+                                std::generic_category(),
+                                "failed to create quotient coset spill arena");
+                        }
+                        struct stat status{};
+                        const auto descriptor_flags = ::fcntl(fd_, F_GETFD);
+                        if (::fchmod(fd_, S_IRUSR | S_IWUSR) != 0 ||
+                            descriptor_flags < 0 ||
+                            (descriptor_flags & FD_CLOEXEC) == 0 ||
+                            ::fstat(fd_, &status) != 0 ||
+                            !quotient_private_regular(status))
+                        {
+                            const auto error = errno != 0 ? errno : EACCES;
+                            ::close(fd_);
+                            fd_ = -1;
+                            (void)::unlinkat(root_fd_, name.c_str(), 0);
+                            throw std::system_error(
+                                error,
+                                std::generic_category(),
+                                "quotient coset spill arena permissions are invalid");
+                        }
+                        if (::unlinkat(root_fd_, name.c_str(), 0) != 0)
+                        {
+                            const auto error = errno;
+                            ::close(fd_);
+                            fd_ = -1;
+                            throw std::system_error(
+                                error,
+                                std::generic_category(),
+                                "failed to unlink quotient coset spill arena");
+                        }
+                        created = true;
+                    }
+                    if (!created)
+                        throw std::runtime_error(
+                            "failed to allocate a unique quotient coset spill arena");
+
+                    (void)::flock(arena_lock_fd, LOCK_UN);
+                    (void)::close(arena_lock_fd);
+                    arena_lock_fd = -1;
+                    const auto page_size_raw = ::sysconf(_SC_PAGESIZE);
+                    if (page_size_raw <= 0)
+                        throw std::runtime_error(
+                            "failed to determine quotient spill page size");
+                    page_size_ = static_cast<std::size_t>(page_size_raw);
                 }
-                auto template_path =
-                    (root / "arena_XXXXXX").string();
-                std::vector<char> path(
-                    template_path.begin(), template_path.end());
-                path.push_back('\0');
-                fd_ = ::mkstemp(path.data());
-                if (fd_ < 0)
+                catch (...)
                 {
-                    throw std::runtime_error(
-                        "failed to create quotient coset spill arena: " + std::string(std::strerror(errno)));
+                    if (arena_lock_fd >= 0)
+                    {
+                        (void)::flock(arena_lock_fd, LOCK_UN);
+                        (void)::close(arena_lock_fd);
+                        arena_lock_fd = -1;
+                    }
+                    if (fd_ >= 0)
+                    {
+                        ::close(fd_);
+                        fd_ = -1;
+                    }
+                    if (root_fd_ >= 0)
+                    {
+                        ::close(root_fd_);
+                        root_fd_ = -1;
+                    }
+                    throw;
                 }
-                if (::fchmod(fd_, S_IRUSR | S_IWUSR) != 0)
-                {
-                    const auto error = errno;
-                    ::close(fd_);
-                    fd_ = -1;
-                    ::unlink(path.data());
-                    throw std::runtime_error(
-                        "failed to secure quotient coset spill arena: " + std::string(std::strerror(error)));
-                }
-                if (::unlink(path.data()) != 0)
-                {
-                    const auto error = errno;
-                    ::close(fd_);
-                    fd_ = -1;
-                    throw std::runtime_error(
-                        "failed to unlink quotient coset spill arena: " + std::string(std::strerror(error)));
-                }
-                const auto page_size_raw = ::sysconf(_SC_PAGESIZE);
-                if (page_size_raw <= 0)
-                {
-                    ::close(fd_);
-                    fd_ = -1;
-                    throw std::runtime_error(
-                        "failed to determine quotient spill page size");
-                }
-                page_size_ = static_cast<std::size_t>(page_size_raw);
             }
 
             QuotientCosetSpillArena(
@@ -4946,6 +5465,10 @@ namespace gatzk::protocol
                 {
                     ::close(fd_);
                 }
+                if (root_fd_ >= 0)
+                {
+                    ::close(root_fd_);
+                }
             }
 
             Allocation allocate(
@@ -4957,13 +5480,47 @@ namespace gatzk::protocol
                     return {};
                 }
                 std::lock_guard<std::mutex> lock(mutex_);
-                const auto aligned_bytes = align_up(byte_count);
-                if (chunks_.empty() || align_up(chunks_.back().used) + aligned_bytes > chunks_.back().capacity)
+                if (poisoned_)
+                {
+                    throw std::runtime_error(
+                        "quotient coset spill arena is poisoned after rollback failure for " +
+                        label);
+                }
+                const auto aligned_bytes =
+                    util::spill_align_up(
+                        byte_count,
+                        page_size_,
+                        label);
+                const bool fits_existing =
+                    !chunks_.empty() &&
+                    [&]()
+                    {
+                        const auto begin =
+                            util::spill_align_up(
+                                chunks_.back().used,
+                                page_size_,
+                                label);
+                        return begin <= chunks_.back().capacity &&
+                               aligned_bytes <=
+                                   chunks_.back().capacity - begin;
+                    }();
+                if (!fits_existing)
                 {
                     add_chunk(aligned_bytes, label);
                 }
                 auto &chunk = chunks_.back();
-                const auto begin = align_up(chunk.used);
+                const auto begin =
+                    util::spill_align_up(
+                        chunk.used,
+                        page_size_,
+                        label);
+                if (begin > chunk.capacity ||
+                    aligned_bytes > chunk.capacity - begin)
+                {
+                    throw std::runtime_error(
+                        "quotient coset spill allocation exceeds chunk for " +
+                        label);
+                }
                 chunk.used = begin + aligned_bytes;
                 return {
                     .data = reinterpret_cast<FieldElement *>(
@@ -4977,17 +5534,9 @@ namespace gatzk::protocol
                 void *mapping = nullptr;
                 std::size_t capacity = 0;
                 std::size_t used = 0;
+                std::unique_ptr<util::FilesystemSpaceReservation>
+                    reservation;
             };
-
-            std::size_t align_up(std::size_t value) const
-            {
-                if (value > std::numeric_limits<std::size_t>::max() - (page_size_ - 1))
-                {
-                    throw std::runtime_error(
-                        "quotient coset spill allocation overflow");
-                }
-                return (value + page_size_ - 1) / page_size_ * page_size_;
-            }
 
             void add_chunk(
                 std::size_t minimum_capacity,
@@ -4995,8 +5544,42 @@ namespace gatzk::protocol
             {
                 constexpr std::size_t kChunkBytes =
                     std::size_t{1} << 30;
-                const auto capacity =
-                    align_up(std::max(kChunkBytes, minimum_capacity));
+                if (!util::spill_arena_can_grow(
+                        file_size_,
+                        minimum_capacity,
+                        total_cap_bytes_))
+                {
+                    throw std::runtime_error(
+                        "quotient coset spill arena effective-memory cap exceeded for " +
+                        label);
+                }
+
+                const auto preferred_capacity =
+                    std::max(kChunkBytes, minimum_capacity);
+                auto capacity =
+                    util::spill_align_up(
+                        preferred_capacity,
+                        page_size_,
+                        label);
+                const auto remaining_cap =
+                    total_cap_bytes_ - file_size_;
+                if (capacity > remaining_cap)
+                {
+                    capacity =
+                        util::spill_align_up(
+                            minimum_capacity,
+                            page_size_,
+                            label);
+                }
+                if (!util::spill_arena_can_grow(
+                        file_size_,
+                        capacity,
+                        total_cap_bytes_))
+                {
+                    throw std::runtime_error(
+                        "quotient coset spill arena chunk cap exceeded for " +
+                        label);
+                }
                 const auto offset = file_size_;
                 if (capacity > static_cast<std::size_t>(
                                    std::numeric_limits<off_t>::max()) ||
@@ -5007,12 +5590,29 @@ namespace gatzk::protocol
                     throw std::runtime_error(
                         "quotient coset spill arena exceeds off_t for " + label);
                 }
+                auto reservation =
+                    std::make_unique<util::FilesystemSpaceReservation>(
+                        root_,
+                        capacity,
+                        label);
+                // Establish vector capacity before extending the file.  If
+                // this allocation fails there is no file extent to roll
+                // back; after it succeeds publication is non-allocating for
+                // the normal movable Chunk path.
+                chunks_.reserve(chunks_.size() + 1);
+
                 const auto allocation_error = ::posix_fallocate(
                     fd_,
                     static_cast<off_t>(offset),
                     static_cast<off_t>(capacity));
                 if (allocation_error != 0)
                 {
+                    rollback_extent_or_poison(
+                        offset,
+                        reservation,
+                        label,
+                        allocation_error,
+                        "posix_fallocate");
                     throw std::runtime_error(
                         "insufficient quotient coset spill arena resource for " + label + ": " + std::string(std::strerror(allocation_error)));
                 }
@@ -5026,20 +5626,92 @@ namespace gatzk::protocol
                 if (mapping == MAP_FAILED)
                 {
                     const auto error = errno;
+                    rollback_extent_or_poison(
+                        offset,
+                        reservation,
+                        label,
+                        error,
+                        "mmap");
                     throw std::runtime_error(
                         "failed to map quotient coset spill arena for " + label + ": " + std::string(std::strerror(error)));
                 }
-                (void)::madvise(mapping, capacity, MADV_SEQUENTIAL);
-                chunks_.push_back(Chunk{
+                if (::madvise(mapping, capacity, MADV_SEQUENTIAL) != 0)
+                {
+                    const auto error = errno;
+                    progress_note(
+                        "prove:quotient:spill:madvise_unavailable:" +
+                        label + ":" + std::string(std::strerror(error)));
+                }
+                Chunk pending_chunk{
                     .mapping = mapping,
                     .capacity = capacity,
                     .used = 0,
-                });
+                    .reservation = std::move(reservation),
+                };
+                try
+                {
+                    chunks_.push_back(std::move(pending_chunk));
+                }
+                catch (...)
+                {
+                    // Recover ownership if publication throws after the
+                    // reservation moved into the pending object.
+                    if (reservation == nullptr)
+                    {
+                        reservation = std::move(pending_chunk.reservation);
+                    }
+                    (void)::munmap(mapping, capacity);
+                    rollback_extent_or_poison(
+                        offset,
+                        reservation,
+                        label,
+                        0,
+                        "chunk publication");
+                    throw;
+                }
                 file_size_ += capacity;
             }
 
+            void rollback_extent_or_poison(
+                std::size_t offset,
+                std::unique_ptr<util::FilesystemSpaceReservation> &reservation,
+                const std::string &label,
+                int original_error,
+                const char *operation)
+            {
+                if (::ftruncate(
+                        fd_,
+                        static_cast<off_t>(offset)) == 0)
+                {
+                    return;
+                }
+
+                const auto rollback_error = errno;
+                // The file extent may still consume filesystem space.  Keep
+                // the reservation alive and poison this arena so accounting
+                // cannot silently claim that the extent was released.  No
+                // subsequent growth is permitted after this point.
+                poisoned_ = true;
+                poisoned_reservation_ = std::move(reservation);
+                throw std::runtime_error(
+                    "quotient coset spill " + std::string(operation) +
+                    " failed and rollback also failed for " + label +
+                    " (operation_errno=" + std::to_string(original_error) +
+                    ", rollback_errno=" +
+                    std::to_string(rollback_error) + ")");
+            }
+
+            std::filesystem::path root_;
+            std::size_t total_cap_bytes_ = 0;
+            std::size_t transient_bytes_ = 0;
+            std::size_t geometry_bytes_ = 0;
+
             std::mutex mutex_;
             std::vector<Chunk> chunks_;
+            std::unique_ptr<util::FilesystemSpaceReservation>
+                poisoned_reservation_;
+            bool poisoned_ = false;
+            int root_fd_ = -1;
             int fd_ = -1;
             std::size_t page_size_ = 0;
             std::size_t file_size_ = 0;
@@ -5074,7 +5746,10 @@ namespace gatzk::protocol
                 }
 
                 const auto byte_count =
-                    size_ * sizeof(FieldElement);
+                    util::checked_spill_bytes(
+                        size_,
+                        sizeof(FieldElement),
+                        label);
 
                 mapping_ =
                     spill_arena_->allocate(
@@ -5095,10 +5770,16 @@ namespace gatzk::protocol
                 // MAP_SHARED pages: the kernel can write back and reclaim
                 // them under pressure, and the point loop explicitly drops
                 // each consumed prefix.
-                (void)::madvise(
-                    mapping_,
-                    byte_count,
-                    MADV_SEQUENTIAL);
+                if (::madvise(
+                        mapping_,
+                        byte_count,
+                        MADV_SEQUENTIAL) != 0)
+                {
+                    const auto error = errno;
+                    progress_note(
+                        "prove:quotient:spill:madvise_unavailable:" +
+                        label + ":" + std::string(std::strerror(error)));
+                }
 
                 std::vector<FieldElement>().swap(values);
             }
@@ -5142,7 +5823,10 @@ namespace gatzk::protocol
                 }
 
                 const auto byte_count =
-                    size_ * sizeof(FieldElement);
+                    util::checked_spill_bytes(
+                        size_,
+                        sizeof(FieldElement),
+                        label);
 
                 mapping_ =
                     spill_arena_->allocate(
@@ -5157,10 +5841,16 @@ namespace gatzk::protocol
                     elements,
                     size_);
 
-                (void)::madvise(
-                    mapping_,
-                    byte_count,
-                    MADV_SEQUENTIAL);
+                if (::madvise(
+                        mapping_,
+                        byte_count,
+                        MADV_SEQUENTIAL) != 0)
+                {
+                    const auto error = errno;
+                    progress_note(
+                        "prove:quotient:spill:madvise_unavailable:" +
+                        label + ":" + std::string(std::strerror(error)));
+                }
             }
 
             QuotientCosetValues(
@@ -5584,11 +6274,17 @@ namespace gatzk::protocol
                             lane * lane_bytes +
                             discarded_split_lane_bytes_[lane];
 
-                        (void)::madvise(
-                            begin,
-                            aligned_end -
-                                discarded_split_lane_bytes_[lane],
-                            MADV_DONTNEED);
+                        if (::madvise(
+                                begin,
+                                aligned_end -
+                                    discarded_split_lane_bytes_[lane],
+                                MADV_DONTNEED) != 0)
+                        {
+                            const auto error = errno;
+                            progress_note(
+                                "prove:quotient:spill:madvise_dontneed_unavailable:" +
+                                std::string(std::strerror(error)));
+                        }
 
                         discarded_split_lane_bytes_[lane] =
                             aligned_end;
@@ -5606,10 +6302,16 @@ namespace gatzk::protocol
                 }
                 auto *begin =
                     static_cast<std::uint8_t *>(mapping_) + discarded_bytes_;
-                (void)::madvise(
-                    begin,
-                    aligned_end - discarded_bytes_,
-                    MADV_DONTNEED);
+                if (::madvise(
+                        begin,
+                        aligned_end - discarded_bytes_,
+                        MADV_DONTNEED) != 0)
+                {
+                    const auto error = errno;
+                    progress_note(
+                        "prove:quotient:spill:madvise_dontneed_unavailable:" +
+                        std::string(std::strerror(error)));
+                }
                 discarded_bytes_ = aligned_end;
             }
 
@@ -5765,9 +6467,52 @@ namespace gatzk::protocol
                                 kCudaTedgeWorkspaceReserveBytes));
                     }
 
+                    constexpr std::size_t
+                        kMaximumQuotientSpillArenaBytes =
+                            std::size_t{128} << 30;
+
+                    const auto geometry_bytes =
+                        coset_byte_count(
+                            target_size_,
+                            label_);
+                    const auto triple_geometry_bytes =
+                        geometry_bytes >
+                                std::numeric_limits<std::size_t>::max() / 3
+                            ? std::numeric_limits<std::size_t>::max()
+                            : geometry_bytes * 3;
+                    std::size_t transient_bytes =
+                        triple_geometry_bytes;
+                    if (label_ == "t_edge" &&
+                        target_size_ >= (std::size_t{1} << 25) &&
+                        util::route2_options().cuda_field_hotspots)
+                    {
+                        constexpr std::size_t
+                            kCudaTedgeWorkspaceReserveBytes =
+                                std::size_t{6} << 30;
+                        transient_bytes =
+                            transient_bytes >
+                                    std::numeric_limits<std::size_t>::max() -
+                                        kCudaTedgeWorkspaceReserveBytes
+                                ? std::numeric_limits<std::size_t>::max()
+                                : transient_bytes +
+                                      kCudaTedgeWorkspaceReserveBytes;
+                    }
+
+                    const auto spill_admission =
+                        util::admit_effective_memory(
+                            util::cached_effective_memory_snapshot(),
+                            transient_bytes,
+                            geometry_bytes,
+                            memory_budget.reserve_bytes,
+                            1,
+                            kMaximumQuotientSpillArenaBytes);
+
                     spill_arena_ =
                         std::make_shared<
-                            QuotientCosetSpillArena>();
+                            QuotientCosetSpillArena>(
+                            spill_admission.budget_bytes,
+                            transient_bytes,
+                            geometry_bytes);
                 }
             }
 
@@ -7988,17 +8733,10 @@ namespace gatzk::protocol
                 std::size_t element_count,
                 const std::string &label) const
             {
-                if (element_count > std::numeric_limits<
-                                        std::size_t>::max() /
-                                        sizeof(FieldElement))
-                {
-                    throw std::runtime_error(
-                        "quotient coset byte-size "
-                        "overflow: " +
-                        label);
-                }
-
-                return element_count * sizeof(FieldElement);
+                return util::checked_spill_bytes(
+                    element_count,
+                    sizeof(FieldElement),
+                    label);
             }
 
             bool try_reserve_in_memory_coset_bytes(
@@ -8750,7 +9488,12 @@ namespace gatzk::protocol
                     }
                     ++semantic_objects;
                     const auto source_key =
-                        spilled_it->second.domain_name + ":" + std::to_string(spilled_it->second.size) + ":" + std::to_string(spilled_it->second.semantic_source_id);
+                        spilled_it->second.domain_name + ":" +
+                        std::to_string(spilled_it->second.size) + ":" +
+                        std::to_string(spilled_file_value_count(spilled_it->second)) + ":" +
+                        (spilled_it->second.zero_tail_compacted ? "compact:" : "full:") +
+                        spilled_it->second.path + ":" +
+                        std::to_string(spilled_it->second.semantic_source_id);
                     const auto [group_it, inserted] =
                         spilled_groups_by_source.emplace(
                             source_key, nullptr);
@@ -9157,7 +9900,51 @@ namespace gatzk::protocol
                 {
                     return {};
                 }
-                return polynomial->domain->name + ":" + std::to_string(polynomial->domain->size) + ":" + std::to_string(reinterpret_cast<std::uintptr_t>(polynomial->shared_data.get()));
+
+                std::lock_guard<std::mutex> lock(
+                    semantic_source_identity_mutex_);
+                for (auto it = semantic_source_identity_cache_.begin();
+                     it != semantic_source_identity_cache_.end();)
+                {
+                    const auto retained = it->values.lock();
+                    if (retained == nullptr)
+                    {
+                        it = semantic_source_identity_cache_.erase(it);
+                        continue;
+                    }
+                    if (it->domain_name == polynomial->domain->name &&
+                        it->size == polynomial->size() &&
+                        !retained.owner_before(polynomial->shared_data) &&
+                        !polynomial->shared_data.owner_before(retained))
+                    {
+                        return polynomial->domain->name + ":" +
+                               std::to_string(polynomial->domain->size) + ":" +
+                               std::to_string(it->token);
+                    }
+                    ++it;
+                }
+
+                if (next_semantic_source_token_ == 0)
+                {
+                    throw std::runtime_error(
+                        "quotient semantic source token exhausted");
+                }
+                const auto token = next_semantic_source_token_++;
+                if (next_semantic_source_token_ == 0)
+                {
+                    throw std::runtime_error(
+                        "quotient semantic source token exhausted");
+                }
+                semantic_source_identity_cache_.push_back(
+                    SemanticSourceIdentityEntry{
+                        .values = polynomial->shared_data,
+                        .domain_name = polynomial->domain->name,
+                        .size = polynomial->size(),
+                        .token = token,
+                    });
+                return polynomial->domain->name + ":" +
+                       std::to_string(polynomial->domain->size) + ":" +
+                       std::to_string(token);
             }
 
             void seed_shared_source_coset_aliases(std::vector<std::string> *labels)
@@ -10268,6 +11055,17 @@ namespace gatzk::protocol
             std::vector<std::shared_ptr<SemanticCosetGroup>> semantic_coset_groups_;
             std::unordered_map<std::string, std::shared_ptr<SemanticCosetGroup>>
                 semantic_coset_group_by_label_;
+            struct SemanticSourceIdentityEntry
+            {
+                std::weak_ptr<const std::vector<FieldElement>> values;
+                std::string domain_name;
+                std::size_t size = 0;
+                std::uintptr_t token = 0;
+            };
+            mutable std::mutex semantic_source_identity_mutex_;
+            mutable std::vector<SemanticSourceIdentityEntry>
+                semantic_source_identity_cache_;
+            mutable std::uintptr_t next_semantic_source_token_ = 1;
             std::shared_ptr<const std::vector<FieldElement>>
                 semantic_coset_points_;
             std::vector<FieldElement> semantic_coset_zero_cycle_;
@@ -11444,7 +12242,9 @@ namespace gatzk::protocol
             }
             ++sequential_job_count;
             const auto remaining = kMinParallelFieldElements - bounded_work;
-            bounded_work += std::min(request.spilled->size, remaining);
+            bounded_work += std::min(
+                spilled_file_value_count(*request.spilled),
+                remaining);
         }
         const auto available_workers = std::max<std::size_t>(
             1, std::thread::hardware_concurrency());
@@ -12558,7 +13358,7 @@ namespace gatzk::protocol
 
             std::size_t
                 retained_cuda_msm_base_bytes =
-                    kMinimumRetainedCudaMsmBaseBytes;
+                kMinimumRetainedCudaMsmBaseBytes;
 
             if (crypto::
                     cuda_g1_msm_integrated_memory_device())
@@ -12567,7 +13367,8 @@ namespace gatzk::protocol
                     quotient_coset_memory_budget();
 
                 if (host_budget.available_bytes >
-                    host_budget.reserve_bytes)
+                        host_budget.reserve_bytes &&
+                    host_budget.available_known)
                 {
                     const auto live_after_reserve =
                         host_budget.available_bytes -
@@ -12578,11 +13379,25 @@ namespace gatzk::protocol
                     // cosets retain the dominant share while useful
                     // PPI/OGBN Lagrange prefixes can survive.
                     retained_cuda_msm_base_bytes =
-                        std::clamp(
-                            live_after_reserve /
-                                std::size_t{16},
-                            kMinimumRetainedCudaMsmBaseBytes,
-                            kMaximumIntegratedRetainedCudaMsmBaseBytes);
+                        std::min(
+                            host_budget.budget_bytes,
+                            std::min(
+                                live_after_reserve /
+                                    std::size_t{16},
+                                kMaximumIntegratedRetainedCudaMsmBaseBytes));
+                }
+                else
+                {
+                    // The historical 512 MiB floor is only an optimization
+                    // hint.  It must not survive when effective admission is
+                    // unavailable or below that floor on a constrained UMA
+                    // host.
+                    retained_cuda_msm_base_bytes =
+                        host_budget.available_known
+                            ? std::min(
+                                  kMinimumRetainedCudaMsmBaseBytes,
+                                  host_budget.budget_bytes)
+                            : 0;
                 }
             }
 
@@ -12791,19 +13606,11 @@ namespace gatzk::protocol
                     continue;
                 }
 
-                if (spilled.size >
-                    std::numeric_limits<
-                        std::size_t>::max() /
-                        sizeof(FieldElement))
-                {
-                    throw std::runtime_error(
-                        "domain opening spill "
-                        "byte overflow");
-                }
-
+                const auto physical_size =
+                    spilled_file_value_count(spilled);
                 const auto added =
-                    spilled.size *
-                    sizeof(FieldElement);
+                    algebra::field_elements_binary_size(
+                        physical_size);
 
                 if (bytes >
                     std::numeric_limits<
@@ -13489,23 +14296,83 @@ namespace gatzk::protocol
         const auto &point_groups = opening_registry.groups();
         std::vector<PointGroupOpeningResult> opening_results(
             point_groups.size());
-        std::mutex file_backed_opening_cache_mutex;
-        std::unordered_map<
-            std::string,
-            std::weak_ptr<const algebra::Polynomial>>
-            file_backed_opening_cache;
 
-        // CPU opening for a very large file-backed evaluation domain has a much
-        // larger transient host-memory footprint than the corresponding CUDA MSM
-        // route. Keep ordinary/PPI-sized file-backed point groups parallel, but
-        // prevent two 2^25-or-larger CPU point groups from constructing their
-        // folded values, quotient buffers and MSM working sets simultaneously.
-        std::mutex large_cpu_file_backed_opening_mutex;
-        constexpr std::size_t kLargeCpuFileBackedOpeningValueCount =
-            1ULL << 25;
+        // Older in-memory fixtures can still carry an id-zero spill
+        // descriptor.  Assign a proof-local descriptor token on demand for
+        // those entries; this map owns only scalar identities and never a
+        // source vector.  Current trace construction assigns the token when
+        // the spill is written, so this is a fail-safe compatibility seam.
+        std::mutex descriptor_semantic_source_token_mutex;
+        std::unordered_map<std::string, std::uintptr_t>
+            descriptor_semantic_source_tokens;
+        std::uintptr_t next_descriptor_semantic_source_token = 1;
+        const auto descriptor_semantic_source_token =
+            [&](const std::string &name)
+        {
+            std::lock_guard<std::mutex> lock(
+                descriptor_semantic_source_token_mutex);
+            if (const auto it = descriptor_semantic_source_tokens.find(name);
+                it != descriptor_semantic_source_tokens.end())
+            {
+                return it->second;
+            }
+            if (next_descriptor_semantic_source_token == 0)
+            {
+                throw std::runtime_error(
+                    "opening semantic source descriptor token exhausted");
+            }
+            const auto token = next_descriptor_semantic_source_token++;
+            if (next_descriptor_semantic_source_token == 0)
+            {
+                throw std::runtime_error(
+                    "opening semantic source descriptor token exhausted");
+            }
+            descriptor_semantic_source_tokens.emplace(name, token);
+            return token;
+        };
 
-        file_backed_opening_cache.reserve(
-            trace.spilled_polynomials.size());
+        const auto streamed_semantic_source_key =
+            [&](const TraceArtifacts::SpilledEvaluationPolynomial &spilled,
+                std::uintptr_t source_token)
+        {
+            // Length-prefix each variable component so a path/domain/name
+            // boundary cannot collide.  The key is execution-only and never
+            // enters transcript or proof bytes.
+            const auto append_component =
+                [](std::string *out, std::string_view value)
+            {
+                out->append(std::to_string(value.size()));
+                out->push_back(':');
+                out->append(value);
+                out->push_back('|');
+            };
+            std::string key;
+            append_component(
+                &key,
+                spilled.semantic_source_id == 0
+                    ? std::string_view("descriptor")
+                    : std::string_view("authenticated"));
+            append_component(
+                &key,
+                std::to_string(source_token));
+            append_component(
+                &key,
+                spilled.domain_name);
+            append_component(
+                &key,
+                std::to_string(spilled.size));
+            append_component(
+                &key,
+                std::to_string(spilled_file_value_count(spilled)));
+            append_component(
+                &key,
+                spilled.zero_tail_compacted ? "compact" : "full");
+            append_component(
+                &key,
+                spilled.path);
+            return key;
+        };
+
         const crypto::OpeningPolynomialResolver
             file_backed_opening_resolver =
                 [&](const Commitment &commitment)
@@ -13523,35 +14390,9 @@ namespace gatzk::protocol
                 throw std::runtime_error(
                     "file-backed opening material is missing: " + commitment.name);
             }
-            // A standard domain has two independently folded point
-            // groups.  Let concurrent groups share the same decoded
-            // source, but do not keep every large source alive for
-            // the rest of the proof.  build_streamed_folded_opening_plan
-            // consumes one source at a time, so a weak cache releases
-            // it as soon as the active folds advance.  A strong cache
-            // grows with every spilled edge-domain polynomial and can
-            // exhaust memory before external openings complete.
-            std::lock_guard<std::mutex> lock(
-                file_backed_opening_cache_mutex);
-            if (const auto cached =
-                    file_backed_opening_cache.find(
-                        commitment.name);
-                cached != file_backed_opening_cache.end())
-            {
-                if (auto material = cached->second.lock();
-                    material != nullptr)
-                {
-                    return material;
-                }
-            }
-            auto material = load_spilled_opening_polynomial(
-                context,
-                spilled_it->second,
+            throw std::runtime_error(
+                "file-backed opening requires streamed semantic source: " +
                 commitment.name);
-            file_backed_opening_cache.insert_or_assign(
-                commitment.name,
-                std::weak_ptr<const algebra::Polynomial>(material));
-            return material;
         };
 
         const crypto::OpeningSemanticSourceResolver
@@ -13577,11 +14418,6 @@ namespace gatzk::protocol
             const auto &spilled =
                 spilled_it->second;
 
-            if (spilled.semantic_source_id == 0)
-            {
-                return std::nullopt;
-            }
-
             const auto domain =
                 context_domain_by_name(
                     context,
@@ -13593,11 +14429,23 @@ namespace gatzk::protocol
                     "file-backed opening semantic source has unknown domain: " + commitment.name);
             }
 
+            const auto source_token =
+                spilled.semantic_source_id != 0
+                    ? spilled.semantic_source_id
+                    : descriptor_semantic_source_token(
+                          commitment.name);
+
             return crypto::OpeningSemanticSourceInfo{
                 .key =
-                    spilled.domain_name + ":" + std::to_string(spilled.size) + ":" + std::to_string(spilled.semantic_source_id),
+                    streamed_semantic_source_key(
+                        spilled,
+                        source_token),
                 .domain = domain,
                 .value_count = spilled.size,
+                .stored_value_count =
+                    spilled_file_value_count(spilled),
+                .zero_tail_compacted =
+                    spilled.zero_tail_compacted,
 
                 .zero_domain_blinder =
                     spilled.zero_domain_blinder,
@@ -13607,7 +14455,120 @@ namespace gatzk::protocol
 
                 .file_backed =
                     true,
+                .lease =
+                    spilled.lease,
             };
+        };
+
+        constexpr std::size_t kOpeningStreamChunkValues =
+            std::size_t{1} << 20;
+
+        const auto add_opening_element_bytes =
+            [](std::size_t element_count,
+               std::size_t *target,
+               bool *overflow)
+        {
+            if (overflow == nullptr || target == nullptr || *overflow)
+            {
+                return;
+            }
+            if (element_count >
+                std::numeric_limits<std::size_t>::max() /
+                    sizeof(FieldElement))
+            {
+                *overflow = true;
+                *target = std::numeric_limits<std::size_t>::max();
+                return;
+            }
+            const auto bytes = element_count * sizeof(FieldElement);
+            if (bytes >
+                std::numeric_limits<std::size_t>::max() - *target)
+            {
+                *overflow = true;
+                *target = std::numeric_limits<std::size_t>::max();
+                return;
+            }
+            *target += bytes;
+        };
+
+        const auto opening_group_workset =
+            [&](std::size_t index)
+        {
+            util::OpeningMemoryWorkset workset;
+            bool overflow = false;
+            std::unordered_set<std::string> folded_domains;
+
+            const auto add_evaluation_group =
+                [&](const std::shared_ptr<algebra::RootOfUnityDomain> &domain)
+            {
+                if (domain == nullptr)
+                {
+                    overflow = true;
+                    return;
+                }
+                const auto key = domain->name + ":" +
+                                 std::to_string(domain->size);
+                if (folded_domains.emplace(key).second)
+                {
+                    add_opening_element_bytes(
+                        domain->size,
+                        &workset.folded_bytes,
+                        &overflow);
+                    add_opening_element_bytes(
+                        domain->size,
+                        &workset.scratch_bytes,
+                        &overflow);
+                }
+            };
+
+            for (const auto &claim : point_groups[index].claims)
+            {
+                if (claim.commitment.opening_polynomial != nullptr)
+                {
+                    const auto &polynomial =
+                        *claim.commitment.opening_polynomial;
+                    if (polynomial.basis ==
+                        algebra::PolynomialBasis::Evaluation)
+                    {
+                        add_evaluation_group(polynomial.domain);
+                    }
+                    add_opening_element_bytes(
+                        polynomial.size(),
+                        &workset.source_bytes,
+                        &overflow);
+                    continue;
+                }
+
+                const auto spilled_it =
+                    trace.spilled_polynomials.find(
+                        claim.commitment.name);
+                if (spilled_it == trace.spilled_polynomials.end())
+                {
+                    continue;
+                }
+                const auto &spilled = spilled_it->second;
+                const auto domain = context_domain_by_name(
+                    context,
+                    spilled.domain_name);
+                add_evaluation_group(domain);
+                add_opening_element_bytes(
+                    std::min(
+                        spilled_file_value_count(spilled),
+                        kOpeningStreamChunkValues),
+                    &workset.source_bytes,
+                    &overflow);
+            }
+
+            if (overflow)
+            {
+                workset.folded_bytes =
+                    std::numeric_limits<std::size_t>::max();
+                workset.scratch_bytes =
+                    std::numeric_limits<std::size_t>::max();
+                workset.source_bytes =
+                    std::numeric_limits<std::size_t>::max();
+            }
+            return workset;
         };
 
         const auto estimate_point_group_work =
@@ -13694,8 +14655,10 @@ namespace gatzk::protocol
                 const auto key =
                     spilled.domain_name + ":" +
                     std::to_string(spilled.size) + ":" +
-                    std::to_string(
-                        spilled.semantic_source_id);
+                    std::to_string(spilled_file_value_count(spilled)) + ":" +
+                    (spilled.zero_tail_compacted ? "compact:" : "full:") +
+                    spilled.path + ":" +
+                    std::to_string(spilled.semantic_source_id);
 
                 first_sources.try_emplace(
                     key,
@@ -13742,16 +14705,15 @@ namespace gatzk::protocol
                 const auto key =
                     spilled.domain_name + ":" +
                     std::to_string(spilled.size) + ":" +
-                    std::to_string(
-                        spilled.semantic_source_id);
+                    std::to_string(spilled_file_value_count(spilled)) + ":" +
+                    (spilled.zero_tail_compacted ? "compact:" : "full:") +
+                    spilled.path + ":" +
+                    std::to_string(spilled.semantic_source_id);
 
                 const auto first =
                     first_sources.find(key);
 
-                if (first ==
-                        first_sources.end() ||
-                    first->second !=
-                        claim.commitment.name)
+                if (first == first_sources.end())
                 {
                     continue;
                 }
@@ -13794,32 +14756,6 @@ namespace gatzk::protocol
                 }
                 return total;
             };
-            const auto largest_file_backed_value_count =
-                [&](std::size_t index)
-            {
-                std::size_t largest = 0;
-
-                for (const auto &claim :
-                     point_groups[index].claims)
-                {
-                    if (claim.commitment.opening_polynomial != nullptr)
-                    {
-                        continue;
-                    }
-
-                    if (const auto spilled_it =
-                            trace.spilled_polynomials.find(
-                                claim.commitment.name);
-                        spilled_it != trace.spilled_polynomials.end())
-                    {
-                        largest = std::max(
-                            largest,
-                            spilled_it->second.size);
-                    }
-                }
-
-                return largest;
-            };
             std::stable_sort(
                 work_order.begin(), work_order.end(),
                 [&](std::size_t lhs, std::size_t rhs)
@@ -13830,6 +14766,15 @@ namespace gatzk::protocol
                 std::max<unsigned>(
                     1,
                     std::thread::hardware_concurrency());
+
+            std::vector<util::OpeningMemoryWorkset>
+                opening_worksets;
+            opening_worksets.reserve(work_order.size());
+            for (const auto index : work_order)
+            {
+                opening_worksets.push_back(
+                    opening_group_workset(index));
+            }
 
             const bool external_phase =
                 point_groups[work_order.front()]
@@ -13855,25 +14800,6 @@ namespace gatzk::protocol
                             });
                     });
 
-            // A 2^25-or-larger CPU file-backed group already needs
-            // several full-domain vectors while folding and constructing
-            // its witness. Do not overlap another point group with that
-            // working set. Smaller/PPI-sized file-backed phases retain
-            // the existing two-group pipeline.
-            const bool
-                has_large_cpu_file_backed_opening =
-                    !util::route2_options()
-                         .cuda_field_hotspots &&
-                    std::any_of(
-                        work_order.begin(),
-                        work_order.end(),
-                        [&](std::size_t index)
-                        {
-                            return largest_file_backed_value_count(
-                                       index) >=
-                                   kLargeCpuFileBackedOpeningValueCount;
-                        });
-
             const auto outer_worker_limit =
                 external_phase
                     ? std::min<std::size_t>(
@@ -13885,16 +14811,38 @@ namespace gatzk::protocol
                               1,
                               hardware_workers / 4));
 
+            const auto memory_snapshot =
+                util::cached_effective_memory_snapshot();
+            const auto memory_reserve =
+                util::recommended_memory_reserve_bytes(
+                    memory_snapshot,
+                    std::size_t{1} << 30,
+                    1,
+                    8);
+            const auto memory_admission =
+                util::admit_opening_memory(
+                    memory_snapshot,
+                    opening_worksets.data(),
+                    opening_worksets.size(),
+                    memory_reserve,
+                    outer_worker_limit);
+            const auto memory_worker_cap =
+                std::max<std::size_t>(
+                    1,
+                    memory_admission.maximum_parallel_groups);
+
             const auto worker_count =
                 std::min<std::size_t>(
                     work_order.size(),
-                    has_large_cpu_file_backed_opening
-                        ? std::size_t{1}
-                    : has_file_backed_openings
+                    has_file_backed_openings
                         ? std::min<std::size_t>(
                               2,
-                              outer_worker_limit)
-                        : outer_worker_limit);
+                              std::min(
+                                  outer_worker_limit,
+                                  memory_worker_cap))
+                        : std::min(
+                              outer_worker_limit,
+                              memory_worker_cap));
 
             const auto base_inner_worker_count =
                 worker_count > 1
@@ -13904,15 +14852,19 @@ namespace gatzk::protocol
                               worker_count)
                     : std::size_t{0};
 
-            if (has_large_cpu_file_backed_opening)
+            if (memory_admission.overflow ||
+                !memory_admission.memory_known ||
+                memory_admission.maximum_parallel_groups <= 1)
             {
                 progress_note(
                     "prove:opening:"
                     "phase_policy="
-                    "large_cpu_file_backed_outer_serial:"
-                    "groups=" +
-                    std::to_string(
-                        work_order.size()));
+                    "effective_memory_serial:groups=" +
+                    std::to_string(work_order.size()) +
+                    ":budget_bytes=" +
+                    std::to_string(memory_admission.budget_bytes) +
+                    ":largest_workset_bytes=" +
+                    std::to_string(memory_admission.largest_workset_bytes));
             }
             std::atomic<std::size_t> next{0};
             crypto::g1_parallel_msm_batch_workers(
@@ -13935,28 +14887,8 @@ namespace gatzk::protocol
                             commitments.push_back(claim.commitment);
                             values.push_back(claim.value);
                         }
-                        const auto largest_file_backed_count =
-                            largest_file_backed_value_count(
-                                group_index);
-
-                        const bool
-                            serialize_large_cpu_file_backed_opening =
-                                !util::route2_options()
-                                     .cuda_field_hotspots &&
-                                largest_file_backed_count >=
-                                    kLargeCpuFileBackedOpeningValueCount;
-
-                        // Preserve bounded inner parallelism even when the
-                        // phase itself is outer-serial. Otherwise worker_count
-                        // == 1 would drop execution_options entirely and the
-                        // largest opening could fall back to an unconstrained
-                        // inner worker policy.
                         const auto inner_worker_count =
-                            serialize_large_cpu_file_backed_opening
-                                ? std::min<std::size_t>(
-                                      16,
-                                      hardware_workers)
-                            : worker_count > 1 &&
+                            worker_count > 1 &&
                                     !external_phase &&
                                     estimated_work(
                                         group_index) >=
@@ -13976,21 +14908,6 @@ namespace gatzk::protocol
                                             inner_worker_count,
                                     },
                                 };
-                        std::unique_lock<std::mutex>
-                            large_cpu_file_backed_opening_guard;
-
-                        if (serialize_large_cpu_file_backed_opening)
-                        {
-                            large_cpu_file_backed_opening_guard =
-                                std::unique_lock<std::mutex>(
-                                    large_cpu_file_backed_opening_mutex);
-
-                            progress_note(
-                                "prove:opening:"
-                                "large_cpu_file_backed_serial:" +
-                                group.owner_block + ":values=" + std::to_string(largest_file_backed_count));
-                        }
-
                         const auto local_start = Clock::now();
                         opening_results[group_index].witness =
                             crypto::KZG::open_point_group(
@@ -14012,9 +14929,7 @@ namespace gatzk::protocol
                                     : &file_backed_opening_semantic_source_resolver);
                         opening_results[group_index].profile.point_parallel_batches = 1;
                         opening_results[group_index].profile.point_parallel_workers =
-                            serialize_large_cpu_file_backed_opening
-                                ? 1
-                                : worker_count;
+                            worker_count;
                         opening_results[group_index].elapsed_ms =
                             elapsed_ms(local_start, Clock::now());
                     }
@@ -14041,6 +14956,27 @@ namespace gatzk::protocol
             std::size_t estimated_work = 0;
         };
 
+        const auto opening_workset_total =
+            [](const util::OpeningMemoryWorkset &workset,
+               std::size_t *total)
+        {
+            if (total == nullptr ||
+                workset.folded_bytes >
+                    std::numeric_limits<std::size_t>::max() -
+                        workset.scratch_bytes)
+            {
+                return false;
+            }
+            *total = workset.folded_bytes + workset.scratch_bytes;
+            if (workset.source_bytes >
+                std::numeric_limits<std::size_t>::max() - *total)
+            {
+                return false;
+            }
+            *total += workset.source_bytes;
+            return true;
+        };
+
         const auto select_shared_stream_pairs =
             [&](const std::vector<std::size_t> &candidates,
                 bool require_same_owner)
@@ -14049,12 +14985,19 @@ namespace gatzk::protocol
                 SharedStreamPairSelection>
                 selections;
 
-            if (!util::route2_options()
-                     .cuda_field_hotspots ||
-                candidates.size() < 2)
+            if (candidates.size() < 2)
             {
                 return selections;
             }
+
+            const auto memory_snapshot =
+                util::cached_effective_memory_snapshot();
+            const auto memory_reserve =
+                util::recommended_memory_reserve_bytes(
+                    memory_snapshot,
+                    std::size_t{1} << 30,
+                    1,
+                    8);
 
             std::unordered_set<std::size_t>
                 consumed;
@@ -14108,6 +15051,47 @@ namespace gatzk::protocol
                                 rhs);
 
                         if (shared == 0)
+                        {
+                            continue;
+                        }
+
+                        const std::array<
+                            util::OpeningMemoryWorkset,
+                            2>
+                            pair_worksets{
+                                opening_group_workset(lhs),
+                                opening_group_workset(rhs),
+                            };
+                        std::size_t first_workset_bytes = 0;
+                        std::size_t second_workset_bytes = 0;
+                        std::size_t pair_workset_bytes = 0;
+                        if (!opening_workset_total(
+                                pair_worksets[0],
+                                &first_workset_bytes) ||
+                            !opening_workset_total(
+                                pair_worksets[1],
+                                &second_workset_bytes) ||
+                            first_workset_bytes >
+                                std::numeric_limits<std::size_t>::max() -
+                                    second_workset_bytes)
+                        {
+                            continue;
+                        }
+                        pair_workset_bytes =
+                            first_workset_bytes +
+                            second_workset_bytes;
+                        const auto pair_admission =
+                            util::admit_opening_memory(
+                                memory_snapshot,
+                                pair_worksets.data(),
+                                pair_worksets.size(),
+                                memory_reserve,
+                                2);
+                        if (pair_admission.overflow ||
+                            !pair_admission.memory_known ||
+                            pair_admission.maximum_parallel_groups < 2 ||
+                            pair_workset_bytes >
+                                pair_admission.budget_bytes)
                         {
                             continue;
                         }

@@ -564,12 +564,6 @@ namespace gatzk::protocol
             return out.str();
         };
 
-        for (const auto &[name, spilled] : trace.spilled_polynomials)
-        {
-            (void)name;
-            std::error_code ignored;
-            std::filesystem::remove(spilled.path, ignored);
-        }
         metrics.export_artifact_ms = elapsed_ms(export_start, Clock::now());
         metrics.total_wall_clock_ms += metrics.export_artifact_ms;
         metrics.formal_time_sum_ms =

@@ -6,15 +6,14 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <fstream>
 #include <limits>
-#include <sstream>
 #include <memory>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
 #include "gatzk/algebra/cuda_ntt_device.hpp"
+#include "gatzk/util/effective_memory.hpp"
 
 #include "gatzk/algebra/cuda_field.cuh"
 #include "gatzk/algebra/vector_ops.hpp"
@@ -2371,123 +2370,52 @@ namespace gatzk::protocol
 
         if (integrated != 0)
         {
-            std::size_t host_total_bytes = 0;
+            const auto host =
+                util::cached_effective_memory_snapshot();
 
-            std::size_t host_available_bytes =
-                std::numeric_limits<
-                    std::size_t>::max();
-
-            std::ifstream input(
-                "/proc/meminfo");
-
-            if (input)
+            // UMA execution shares host DRAM with CUDA allocations.  A
+            // conservative total fallback is not a known available budget;
+            // reject admission until a trustworthy host snapshot exists.
+            if (!host.effective_available_known)
             {
-                std::string line;
-
-                while (std::getline(
-                    input,
-                    line))
-                {
-                    std::istringstream row(
-                        line);
-
-                    std::string key;
-                    unsigned long long
-                        value_kib = 0;
-
-                    std::string unit;
-
-                    if (!(row >>
-                          key >>
-                          value_kib))
-                    {
-                        continue;
-                    }
-
-                    row >> unit;
-
-                    if (!unit.empty() &&
-                        unit != "kB")
-                    {
-                        continue;
-                    }
-
-                    const auto maximum =
-                        std::numeric_limits<
-                            std::size_t>::max();
-
-                    const auto bytes =
-                        value_kib >
-                                maximum /
-                                    1024ULL
-                            ? maximum
-                            : static_cast<
-                                  std::size_t>(
-                                  value_kib *
-                                  1024ULL);
-
-                    if (key ==
-                        "MemTotal:")
-                    {
-                        host_total_bytes =
-                            bytes;
-                    }
-                    else if (
-                        key ==
-                        "MemAvailable:")
-                    {
-                        host_available_bytes =
-                            bytes;
-                    }
-                }
+                return false;
             }
 
-            if (host_available_bytes !=
-                std::numeric_limits<
-                    std::size_t>::max())
+            constexpr std::size_t
+                kMinimumIntegratedReserve =
+                    std::size_t{8}
+                    << 30;
+
+            constexpr std::size_t
+                kIntegratedTransformHeadroom =
+                    std::size_t{3}
+                    << 30;
+
+            const auto reserve_bytes =
+                std::max(
+                    kMinimumIntegratedReserve,
+                    !host.effective_total_known
+                        ? kMinimumIntegratedReserve
+                        : host.effective_total_bytes /
+                          16);
+
+            std::size_t minimum_available_bytes = 0;
+            if (!checked_add_size(
+                    reserve_bytes,
+                    kIntegratedTransformHeadroom,
+                    &minimum_available_bytes) ||
+                host.effective_available_bytes <=
+                    minimum_available_bytes)
             {
-                constexpr std::size_t
-                    kMinimumIntegratedReserve =
-                        std::size_t{8}
-                        << 30;
-
-                constexpr std::size_t
-                    kIntegratedTransformHeadroom =
-                        std::size_t{3}
-                        << 30;
-
-                const auto reserve_bytes =
-                    std::max(
-                        kMinimumIntegratedReserve,
-                        host_total_bytes == 0
-                            ? kMinimumIntegratedReserve
-                            : host_total_bytes /
-                                  16);
-
-                std::size_t minimum_available_bytes = 0;
-                if (!checked_add_size(
-                        reserve_bytes,
-                        kIntegratedTransformHeadroom,
-                        &minimum_available_bytes) ||
-                    host_available_bytes <=
-                        minimum_available_bytes)
-                {
-                    return false;
-                }
-
-                const auto safely_usable =
-                    host_available_bytes -
-                    reserve_bytes -
-                    kIntegratedTransformHeadroom;
-
-                return required_bytes <= safely_usable;
+                return false;
             }
 
-            // UMA 上 cudaMemGetInfo() 不能代表可回收
-            // page cache / shared DRAM 的真实可用量。
-            // 上面的 MemAvailable 仅做预 admission；
-            // cudaMalloc 仍是最终 fail-closed 检查。
-            return true;
+            const auto safely_usable =
+                host.effective_available_bytes -
+                reserve_bytes -
+                kIntegratedTransformHeadroom;
+
+            return required_bytes <= safely_usable;
         }
 
         std::size_t free_bytes = 0;

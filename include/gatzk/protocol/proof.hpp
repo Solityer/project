@@ -18,6 +18,7 @@
 #include "gatzk/model/gat.hpp"
 #include "gatzk/protocol/schema.hpp"
 #include "gatzk/util/config.hpp"
+#include "gatzk/util/trace_spill.hpp"
 
 namespace gatzk::protocol
 {
@@ -412,6 +413,11 @@ namespace gatzk::protocol
             std::string path;
             std::string domain_name;
             std::size_t size = 0;
+            // Logical evaluation-vector length.  The file may physically omit
+            // a strict all-zero suffix; consumers must reconstruct that suffix
+            // as canonical zero rather than infer a shorter polynomial/domain.
+            std::size_t physical_size = 0;
+            bool zero_tail_compacted = false;
             // Exact per-proof identity of an immutable shared evaluation buffer.
             // Execution-only: it is used to share semantic cosets across
             // independently blinded columns and is never serialized.
@@ -420,6 +426,10 @@ namespace gatzk::protocol
             // semantic source.  This metadata is never serialized into proof.
             bool compact_semantic_source_all_zero = false;
             std::vector<algebra::FieldElement> zero_domain_blinder;
+            // The authenticated execution-only lease is carried by every
+            // descriptor so opening/KZG consumers cannot fall back to an
+            // untrusted path after the trace owner has moved on.
+            std::shared_ptr<const util::TraceSpillLease> lease;
         };
 
         struct CompactSemanticSourceZeroCacheEntry
@@ -439,7 +449,22 @@ namespace gatzk::protocol
             std::string path;
             std::string domain_name;
             std::size_t size = 0;
+            std::size_t physical_size = 0;
+            bool zero_tail_compacted = false;
             bool compact_semantic_source_all_zero = false;
+        };
+
+        struct SemanticSourceIdentityCacheEntry
+        {
+            // The weak owner is used only to validate exact shared ownership;
+            // retaining a large evaluation vector merely to keep an identity
+            // alive would defeat the spill path's memory contract.
+            std::weak_ptr<
+                const std::vector<algebra::FieldElement>>
+                values;
+            std::string domain_name;
+            std::size_t size = 0;
+            std::uintptr_t token = 0;
         };
 
         // 原始列与矩阵，主要服务 artifact 导出与后续按标签取值。
@@ -448,6 +473,18 @@ namespace gatzk::protocol
         // 多项式视图与可选落盘信息。
         std::unordered_map<std::string, algebra::Polynomial> polynomials;
         std::unordered_map<std::string, SpilledEvaluationPolynomial> spilled_polynomials;
+        // Monotonic proof-local token source for spilled descriptors that do
+        // not carry a shared backing identity.  This is execution metadata
+        // only: it deliberately owns no evaluation values and is never
+        // serialized.  Keeping the token in TraceArtifacts prevents a
+        // recycled raw buffer address from accidentally aliasing two
+        // independent spilled sources.
+        std::uintptr_t next_spill_semantic_source_token = 1;
+        // Proof-local stable identities for exact shared evaluation owners.
+        // The vector is deliberately weak and execution-only; tokens never
+        // enter proof bytes or the Fiat-Shamir transcript.
+        std::vector<SemanticSourceIdentityCacheEntry>
+            semantic_source_identity_cache;
         // Proof-local execution cache keyed by exact shared-buffer identity.
         // It prevents Limb/Query aliases from rescanning the same compact source
         // and is never serialized.
@@ -465,7 +502,7 @@ namespace gatzk::protocol
             semantic_spill_source_cache;
         // Owns the per-proof spill directory.  The custom lease deleter removes
         // the directory after the last TraceArtifacts copy is released.
-        std::shared_ptr<const std::string> spill_directory_lease;
+        std::shared_ptr<const util::TraceSpillLease> spill_directory_lease;
         std::unordered_map<std::string, std::string> polynomial_domains;
         // 动态承诺、正式承诺顺序以及挑战重放结果。
         std::unordered_map<std::string, crypto::Commitment> commitments;
@@ -484,6 +521,23 @@ namespace gatzk::protocol
         std::string proof_public_output_hash;
         std::shared_ptr<PiBindProof> pi_bind;
     };
+
+    // Resolve the physical prefix represented by an execution-only spill
+    // descriptor while retaining its logical evaluation-vector length.
+    inline std::size_t spilled_file_value_count(
+        const TraceArtifacts::SpilledEvaluationPolynomial &spilled)
+    {
+        if (!spilled.zero_tail_compacted)
+        {
+            return spilled.size;
+        }
+        if (spilled.physical_size > spilled.size)
+        {
+            throw std::runtime_error(
+                "spilled polynomial physical size exceeds logical size");
+        }
+        return spilled.physical_size;
+    }
 
     struct DynamicCommitmentObjectProfile
     {

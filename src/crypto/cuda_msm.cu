@@ -19,6 +19,7 @@
 
 #include "gatzk/algebra/vector_ops.hpp"
 #include "gatzk/crypto/curve.hpp"
+#include "gatzk/util/effective_memory.hpp"
 #include "gatzk/util/logging.hpp"
 #include "gatzk/util/route2.hpp"
 
@@ -99,60 +100,6 @@ namespace gatzk::crypto
         public:
             using std::runtime_error::runtime_error;
         };
-
-        struct HostMemoryInfo
-        {
-            std::size_t total_bytes = 0;
-            std::size_t available_bytes =
-                std::numeric_limits<std::size_t>::max();
-        };
-
-        HostMemoryInfo read_host_memory_info()
-        {
-            HostMemoryInfo info;
-
-            std::ifstream input("/proc/meminfo");
-            if (!input)
-            {
-                return info;
-            }
-
-            std::string line;
-            while (std::getline(input, line))
-            {
-                std::istringstream row(line);
-
-                std::string key;
-                unsigned long long value_kib = 0;
-                std::string unit;
-
-                if (!(row >> key >> value_kib))
-                {
-                    continue;
-                }
-
-                row >> unit;
-
-                const auto max_bytes =
-                    std::numeric_limits<std::size_t>::max();
-
-                const std::size_t bytes =
-                    value_kib > max_bytes / 1024ULL
-                        ? max_bytes
-                        : static_cast<std::size_t>(value_kib * 1024ULL);
-
-                if (key == "MemTotal:")
-                {
-                    info.total_bytes = bytes;
-                }
-                else if (key == "MemAvailable:")
-                {
-                    info.available_bytes = bytes;
-                }
-            }
-
-            return info;
-        }
 
         std::size_t checked_byte_count(
             std::size_t count,
@@ -1064,36 +1011,41 @@ namespace gatzk::crypto
             if (integrated)
             {
                 const auto host =
-                    read_host_memory_info();
+                    util::cached_effective_memory_snapshot();
 
-                if (host.available_bytes !=
-                    std::numeric_limits<
-                        std::size_t>::max())
+                // UMA device memory is the host working set.  A non-zero
+                // fallback byte count is not evidence that MemAvailable (or
+                // a cgroup limit/current pair) was trustworthy; do not let
+                // an unknown host snapshot fail open while cudaMemGetInfo()
+                // is unable to distinguish reclaimable DRAM from page cache.
+                if (!host.effective_available_known)
                 {
-                    auto required_host =
-                        checked_add(
-                            new_base_bytes,
-                            incremental_host_scalar_bytes,
-                            "integrated resident working set");
+                    return false;
+                }
 
-                    const auto reserve =
-                        std::max<std::size_t>(
-                            kIntegratedHostSafetyReserveBytes,
-                            host.total_bytes == 0
-                                ? kIntegratedHostSafetyReserveBytes
-                                : host.total_bytes / 4);
+                auto required_host =
+                    checked_add(
+                        new_base_bytes,
+                        incremental_host_scalar_bytes,
+                        "integrated resident working set");
 
-                    required_host =
-                        checked_add(
-                            required_host,
-                            reserve,
-                            "integrated resident reserve");
+                const auto reserve =
+                    std::max<std::size_t>(
+                        kIntegratedHostSafetyReserveBytes,
+                        !host.effective_total_known
+                            ? kIntegratedHostSafetyReserveBytes
+                            : host.effective_total_bytes / 4);
 
-                    if (host.available_bytes <
-                        required_host)
-                    {
-                        return false;
-                    }
+                required_host =
+                    checked_add(
+                        required_host,
+                        reserve,
+                        "integrated resident reserve");
+
+                if (host.effective_available_bytes <
+                    required_host)
+                {
+                    return false;
                 }
 
                 return true;
@@ -1134,18 +1086,24 @@ namespace gatzk::crypto
             }
 
             const auto host =
-                read_host_memory_info();
+                util::cached_effective_memory_snapshot();
 
-            if (host.available_bytes !=
-                std::numeric_limits<
-                    std::size_t>::max())
+            // Device free bytes above are deliberately checked separately
+            // from host staging/reserve admission.  If the host snapshot is
+            // unknown, fail closed for the host portion rather than treating
+            // device free memory as a proxy for host RAM.
+            if (!host.effective_available_known)
+            {
+                return false;
+            }
+
             {
                 const auto reserve =
                     std::max<std::size_t>(
                         kHostSafetyReserveBytes,
-                        host.total_bytes == 0
+                        !host.effective_total_known
                             ? kHostSafetyReserveBytes
-                            : host.total_bytes / 8);
+                            : host.effective_total_bytes / 8);
 
                 const auto required_host =
                     checked_add(
@@ -1153,7 +1111,7 @@ namespace gatzk::crypto
                         reserve,
                         "resident host requirement");
 
-                if (host.available_bytes <
+                if (host.effective_available_bytes <
                     required_host)
                 {
                     return false;
