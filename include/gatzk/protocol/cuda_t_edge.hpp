@@ -13,6 +13,24 @@
 namespace gatzk::protocol
 {
 
+    enum class CudaTEdgeLeafLayout : std::uint8_t
+    {
+        Contiguous = 0,
+        Split = 1,
+    };
+
+    // Source descriptor for execution-only resident linear materialization.
+    // The resident slot contains a complete target-size coset; the blinder
+    // coefficients are supplied separately because they are not part of that
+    // resident evaluation payload.
+    struct CudaTEdgeLinearSource
+    {
+        std::uint32_t slot = 0;
+        algebra::FieldElement scale = algebra::FieldElement::one();
+        const mcl::Fr *zero_domain_blinder = nullptr;
+        std::size_t blinder_count = 0;
+    };
+
     class CudaTEdgeExecutor
     {
     public:
@@ -34,6 +52,23 @@ namespace gatzk::protocol
             std::size_t slot,
             const mcl::Fr *coefficients,
             std::size_t coefficient_count) = 0;
+
+        // Materialize
+        //
+        //   target = sum_i scale_i * source_i
+        //          + Z_domain * (R_target - sum_i scale_i * R_source_i)
+        //
+        // directly on the device. Source slots may be contiguous or split;
+        // the target is written in the explicitly selected output layout and
+        // is tracked by the executor for later t_edge term loads. No
+        // target-sized host vector is accepted or transferred here.
+        virtual bool materialize_linear_leaf(
+            std::size_t target_slot,
+            const std::vector<CudaTEdgeLinearSource> &sources,
+            const mcl::Fr *target_zero_domain_blinder,
+            std::size_t target_blinder_count,
+            CudaTEdgeLeafLayout output_layout =
+                CudaTEdgeLeafLayout::Split) = 0;
 
         virtual void upload_leaf_chunk(
             std::size_t slot,
@@ -66,9 +101,17 @@ namespace gatzk::protocol
 
     bool cuda_t_edge_executor_available();
 
+    // A direct evaluation/coefficient leaf materialization uses paired NTTs
+    // over target_size / 2.  This capability is intentionally separate from
+    // the quotient executor: large targets may still use the device-resident
+    // quotient program while their leaves must be uploaded from host cosets.
+    bool cuda_t_edge_leaf_exact_ntt_supported(
+        std::size_t target_size);
+
     bool cuda_t_edge_executor_can_admit(
         std::size_t target_size,
-        std::size_t cache_slot_count);
+        std::size_t cache_slot_count,
+        bool leaf_exact_ntt_supported = true);
 
     void release_cuda_t_edge_executor_cache();
 

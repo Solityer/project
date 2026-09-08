@@ -926,6 +926,90 @@ namespace gatzk::algebra
     namespace
     {
 
+        constexpr std::size_t kMaxGpuValueBytes =
+            2ULL * 1024ULL * 1024ULL * 1024ULL;
+
+        bool checked_size_mul(
+            std::size_t lhs,
+            std::size_t rhs,
+            std::size_t *result)
+        {
+            if (result == nullptr ||
+                (rhs != 0 &&
+                 lhs > std::numeric_limits<std::size_t>::max() / rhs))
+            {
+                return false;
+            }
+            *result = lhs * rhs;
+            return true;
+        }
+
+        bool checked_ceil_div(
+            std::size_t value,
+            std::size_t divisor,
+            std::size_t *result)
+        {
+            if (result == nullptr || divisor == 0)
+                return false;
+
+            const auto quotient = value / divisor;
+            const auto remainder = value % divisor;
+            if (remainder != 0 &&
+                quotient == std::numeric_limits<std::size_t>::max())
+            {
+                return false;
+            }
+            *result = quotient + (remainder == 0 ? 0 : 1);
+            return true;
+        }
+
+        struct WeightedEvalChunkPlan
+        {
+            std::size_t weight_bytes = 0;
+            std::size_t result_bytes = 0;
+            std::size_t bytes_per_column = 0;
+            std::size_t cols_per_chunk = 0;
+        };
+
+        bool make_weighted_eval_chunk_plan(
+            std::size_t domain_size,
+            std::size_t row_count,
+            WeightedEvalChunkPlan *plan)
+        {
+            if (plan == nullptr ||
+                !checked_size_mul(
+                    domain_size,
+                    sizeof(gpu::GpuFr),
+                    &plan->weight_bytes) ||
+                !checked_size_mul(
+                    row_count,
+                    sizeof(gpu::GpuFr),
+                    &plan->result_bytes))
+            {
+                return false;
+            }
+
+            // A single column must fit under the hard per-chunk cap.  Keep
+            // this check explicit so a future row-count/grid limit cannot
+            // silently turn an overflowing denominator into one oversized
+            // allocation.
+            plan->bytes_per_column = plan->result_bytes;
+            if (plan->bytes_per_column == 0 ||
+                plan->bytes_per_column > kMaxGpuValueBytes)
+            {
+                return false;
+            }
+
+            const auto max_cols_per_chunk =
+                kMaxGpuValueBytes / plan->bytes_per_column;
+            if (max_cols_per_chunk == 0)
+                return false;
+
+            plan->cols_per_chunk =
+                std::min(domain_size, max_cols_per_chunk);
+            return plan->cols_per_chunk != 0;
+        }
+
         // ---- Columnar kernel: reads polynomial data via array of column pointers ----
         // 每个线程处理一个域元素，对每个多项式累加 `w[col] * values[row][col]`，
         // 再在 block 内用共享内存做归约。
@@ -1143,14 +1227,26 @@ namespace gatzk::algebra
         if (domain_size == 0 || row_count == 0)
             return true;
 
-        const auto weight_bytes = domain_size * sizeof(gpu::GpuFr);
-        const auto result_bytes = row_count * sizeof(gpu::GpuFr);
+        WeightedEvalChunkPlan chunk_plan;
+        if (!make_weighted_eval_chunk_plan(
+                domain_size,
+                row_count,
+                &chunk_plan))
+        {
+            return false;
+        }
+        if (row_count > 65535)
+            return false;
+        if (weight_limbs == nullptr ||
+            interleaved_value_limbs == nullptr ||
+            output_limbs == nullptr)
+        {
+            return false;
+        }
 
-        // 超大列按域维度流式分块，避免一次性占满显存。
-        constexpr std::size_t kMaxGpuValueBytes = 2ULL * 1024 * 1024 * 1024; // 2 GB per chunk
-        const std::size_t max_cols_per_chunk =
-            row_count > 0 ? kMaxGpuValueBytes / (row_count * sizeof(gpu::GpuFr)) : domain_size;
-        const std::size_t cols_per_chunk = std::min(domain_size, std::max(max_cols_per_chunk, static_cast<std::size_t>(1024)));
+        const auto weight_bytes = chunk_plan.weight_bytes;
+        const auto result_bytes = chunk_plan.result_bytes;
+        const auto cols_per_chunk = chunk_plan.cols_per_chunk;
 
         const bool zero_copy = cuda_backend_unified_addressing_available();
 
@@ -1180,20 +1276,57 @@ namespace gatzk::algebra
             zero_copy ? reinterpret_cast<const gpu::GpuFr *>(weight_limbs) : nullptr;
         if (!zero_copy)
         {
-            cudaMemcpy(d_weights, weight_limbs, weight_bytes, cudaMemcpyHostToDevice);
+            if (cudaMemcpy(d_weights, weight_limbs, weight_bytes, cudaMemcpyHostToDevice) != cudaSuccess)
+            {
+                cleanup();
+                return false;
+            }
             weight_ptr = d_weights;
         }
-        cudaMemset(d_final, 0, result_bytes);
+        if (cudaMemset(d_final, 0, result_bytes) != cudaSuccess)
+        {
+            cleanup();
+            return false;
+        }
         std::size_t kernel_launches = 0;
 
         // 分块处理域元素，统一管理设备内存占用。
-        for (std::size_t chunk_start = 0; chunk_start < domain_size; chunk_start += cols_per_chunk)
+        for (std::size_t chunk_start = 0;
+             chunk_start < domain_size;)
         {
-            const auto chunk_end = std::min(domain_size, chunk_start + cols_per_chunk);
-            const auto chunk_cols = chunk_end - chunk_start;
-            const auto chunk_value_bytes = chunk_cols * row_count * sizeof(gpu::GpuFr);
+            const auto chunk_cols =
+                std::min(domain_size - chunk_start, cols_per_chunk);
+            if (chunk_cols == 0)
+            {
+                cleanup();
+                return false;
+            }
+            const auto chunk_end = chunk_start + chunk_cols;
 
-            const auto *chunk_values = reinterpret_cast<const gpu::GpuFr *>(interleaved_value_limbs) + chunk_start * row_count;
+            std::size_t chunk_value_elements = 0;
+            std::size_t chunk_value_bytes = 0;
+            std::size_t chunk_offset_elements = 0;
+            if (!checked_size_mul(
+                    chunk_cols,
+                    row_count,
+                    &chunk_value_elements) ||
+                !checked_size_mul(
+                    chunk_value_elements,
+                    sizeof(gpu::GpuFr),
+                    &chunk_value_bytes) ||
+                chunk_value_bytes > kMaxGpuValueBytes ||
+                !checked_size_mul(
+                    chunk_start,
+                    row_count,
+                    &chunk_offset_elements))
+            {
+                cleanup();
+                return false;
+            }
+
+            const auto *chunk_values =
+                reinterpret_cast<const gpu::GpuFr *>(interleaved_value_limbs) +
+                chunk_offset_elements;
             if (!zero_copy)
             {
                 if (d_values != nullptr)
@@ -1206,24 +1339,62 @@ namespace gatzk::algebra
                     cleanup();
                     return false;
                 }
-                cudaMemcpy(d_values, chunk_values, chunk_value_bytes, cudaMemcpyHostToDevice);
+                if (cudaMemcpy(d_values, chunk_values, chunk_value_bytes, cudaMemcpyHostToDevice) != cudaSuccess)
+                {
+                    cleanup();
+                    return false;
+                }
                 chunk_values = d_values;
             }
 
             constexpr unsigned kBlockDim = 128;
-            const auto num_domain_blocks = static_cast<unsigned>((chunk_cols + kBlockDim - 1) / kBlockDim);
+            std::size_t num_domain_blocks_size = 0;
+            if (!checked_ceil_div(
+                    chunk_cols,
+                    kBlockDim,
+                    &num_domain_blocks_size) ||
+                num_domain_blocks_size >
+                    std::numeric_limits<unsigned>::max())
+            {
+                cudaFree(d_values);
+                d_values = nullptr;
+                cleanup();
+                return false;
+            }
+            const auto num_domain_blocks =
+                static_cast<unsigned>(num_domain_blocks_size);
 
             // 为当前 chunk 准备局部结果缓冲区。
             gpu::GpuFr *d_partials = nullptr;
-            const auto partial_bytes = num_domain_blocks * row_count * sizeof(gpu::GpuFr);
+            std::size_t partial_elements = 0;
+            std::size_t partial_bytes = 0;
+            if (!checked_size_mul(
+                    num_domain_blocks_size,
+                    row_count,
+                    &partial_elements) ||
+                !checked_size_mul(
+                    partial_elements,
+                    sizeof(gpu::GpuFr),
+                    &partial_bytes))
+            {
+                cudaFree(d_values);
+                d_values = nullptr;
+                cleanup();
+                return false;
+            }
             if (cudaMalloc(&d_partials, partial_bytes) != cudaSuccess)
             {
                 cleanup();
                 return false;
             }
-            cudaMemset(d_partials, 0, partial_bytes);
+            if (cudaMemset(d_partials, 0, partial_bytes) != cudaSuccess)
+            {
+                cudaFree(d_partials);
+                cleanup();
+                return false;
+            }
 
-            const auto grid_y = static_cast<unsigned>(std::min(row_count, static_cast<std::size_t>(65535)));
+            const auto grid_y = static_cast<unsigned>(row_count);
             dim3 grid(num_domain_blocks, grid_y);
             const auto smem_bytes = kBlockDim * sizeof(gpu::GpuFr);
 
@@ -1236,7 +1407,18 @@ namespace gatzk::algebra
             // 把当前 chunk 的局部结果并入全局输出。
             {
                 constexpr unsigned rBlock = 256;
-                const auto rGrid = static_cast<unsigned>((row_count + rBlock - 1) / rBlock);
+                std::size_t r_grid_size = 0;
+                if (!checked_ceil_div(
+                        row_count,
+                        rBlock,
+                        &r_grid_size) ||
+                    r_grid_size > std::numeric_limits<unsigned>::max())
+                {
+                    cudaFree(d_partials);
+                    cleanup();
+                    return false;
+                }
+                const auto rGrid = static_cast<unsigned>(r_grid_size);
                 // 先把本 chunk 内的局部结果折叠成单列结果。
                 gpu::GpuFr *d_chunk_result = nullptr;
                 if (cudaMalloc(&d_chunk_result, result_bytes) != cudaSuccess)
@@ -1258,6 +1440,7 @@ namespace gatzk::algebra
                 cudaFree(d_chunk_result);
             }
             cudaFree(d_partials);
+            chunk_start = chunk_end;
         }
 
         // 下载最终结果。
@@ -1266,7 +1449,11 @@ namespace gatzk::algebra
             cleanup();
             return false;
         }
-        cudaMemcpy(output_limbs, d_final, result_bytes, cudaMemcpyDeviceToHost);
+        if (cudaMemcpy(output_limbs, d_final, result_bytes, cudaMemcpyDeviceToHost) != cudaSuccess)
+        {
+            cleanup();
+            return false;
+        }
 
         cleanup();
         record_cuda_kernel_invocations(kernel_launches);
@@ -1287,11 +1474,13 @@ namespace gatzk::algebra
 
         if (domain_size == 0 || row_count == 0)
             return true;
+        if (row_count > 65535)
+            return false;
 
         // 统一地址空间设备上，GPU 可直接访问主机指针，只需为局部结果与指针表分配设备内存。
         constexpr unsigned kBlockDim = 256;
         const auto num_blocks = static_cast<unsigned>((domain_size + kBlockDim - 1) / kBlockDim);
-        const auto grid_y = static_cast<unsigned>(std::min(row_count, static_cast<std::size_t>(65535)));
+        const auto grid_y = static_cast<unsigned>(row_count);
 
         // 在设备端保存列指针数组。
         const gpu::GpuFr **d_columns = nullptr;
@@ -1305,7 +1494,11 @@ namespace gatzk::algebra
         {
             h_columns[i] = reinterpret_cast<const gpu::GpuFr *>(column_ptrs[i]);
         }
-        cudaMemcpy(d_columns, h_columns.data(), ptr_bytes, cudaMemcpyHostToDevice);
+        if (cudaMemcpy(d_columns, h_columns.data(), ptr_bytes, cudaMemcpyHostToDevice) != cudaSuccess)
+        {
+            cudaFree(d_columns);
+            return false;
+        }
 
         std::size_t *d_column_lengths = nullptr;
         if (column_lengths != nullptr)
@@ -1337,7 +1530,13 @@ namespace gatzk::algebra
             cudaFree(d_columns);
             return false;
         }
-        cudaMemset(d_partials, 0, partial_bytes);
+        if (cudaMemset(d_partials, 0, partial_bytes) != cudaSuccess)
+        {
+            cudaFree(d_partials);
+            cudaFree(d_column_lengths);
+            cudaFree(d_columns);
+            return false;
+        }
 
         // 启动列式 kernel，直接读取主机侧权重和列数据。
         dim3 grid(num_blocks, grid_y);
@@ -1378,7 +1577,14 @@ namespace gatzk::algebra
         }
 
         // 下载最终结果。
-        cudaMemcpy(output_limbs, d_final, result_bytes, cudaMemcpyDeviceToHost);
+        if (cudaMemcpy(output_limbs, d_final, result_bytes, cudaMemcpyDeviceToHost) != cudaSuccess)
+        {
+            cudaFree(d_final);
+            cudaFree(d_partials);
+            cudaFree(d_column_lengths);
+            cudaFree(d_columns);
+            return false;
+        }
 
         cudaFree(d_final);
         cudaFree(d_partials);
@@ -1419,7 +1625,11 @@ namespace gatzk::algebra
         gpu::GpuFr *d_weights = nullptr;
         if (cudaMalloc(&d_weights, weight_bytes) != cudaSuccess)
             return false;
-        cudaMemcpy(d_weights, weight_limbs, weight_bytes, cudaMemcpyHostToDevice);
+        if (cudaMemcpy(d_weights, weight_limbs, weight_bytes, cudaMemcpyHostToDevice) != cudaSuccess)
+        {
+            cudaFree(d_weights);
+            return false;
+        }
 
         gpu::GpuFr *d_values = nullptr;
         if (cudaMalloc(&d_values, single_val_bytes) != cudaSuccess)
@@ -1458,14 +1668,35 @@ namespace gatzk::algebra
                                          : std::min(domain_size, column_lengths[p]);
             if (column_size < domain_size)
             {
-                cudaMemset(d_values, 0, single_val_bytes);
+                if (cudaMemset(d_values, 0, single_val_bytes) != cudaSuccess)
+                {
+                    cudaFree(d_result);
+                    cudaFree(d_partials);
+                    cudaFree(d_values);
+                    cudaFree(d_weights);
+                    return false;
+                }
             }
-            cudaMemcpy(
-                d_values,
-                column_value_ptrs[p],
-                column_size * sizeof(gpu::GpuFr),
-                cudaMemcpyHostToDevice);
-            cudaMemset(d_partials, 0, partial_bytes);
+            if (cudaMemcpy(
+                    d_values,
+                    column_value_ptrs[p],
+                    column_size * sizeof(gpu::GpuFr),
+                    cudaMemcpyHostToDevice) != cudaSuccess)
+            {
+                cudaFree(d_result);
+                cudaFree(d_partials);
+                cudaFree(d_values);
+                cudaFree(d_weights);
+                return false;
+            }
+            if (cudaMemset(d_partials, 0, partial_bytes) != cudaSuccess)
+            {
+                cudaFree(d_result);
+                cudaFree(d_partials);
+                cudaFree(d_values);
+                cudaFree(d_weights);
+                return false;
+            }
 
             dim3 grid(num_blocks, 1);
             weighted_eval_kernel<<<grid, kBlockDim, smem_bytes>>>(
@@ -1476,7 +1707,14 @@ namespace gatzk::algebra
             reduce_partials_kernel<<<1, rBlock>>>(d_partials, d_result, num_blocks, 1);
 
             auto *output_ptr = reinterpret_cast<gpu::GpuFr *>(output_limbs) + p;
-            cudaMemcpy(output_ptr, d_result, result_bytes_single, cudaMemcpyDeviceToHost);
+            if (cudaMemcpy(output_ptr, d_result, result_bytes_single, cudaMemcpyDeviceToHost) != cudaSuccess)
+            {
+                cudaFree(d_result);
+                cudaFree(d_partials);
+                cudaFree(d_values);
+                cudaFree(d_weights);
+                return false;
+            }
         }
 
         if (cudaDeviceSynchronize() != cudaSuccess)

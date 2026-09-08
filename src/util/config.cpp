@@ -30,9 +30,6 @@ namespace gatzk::util
     namespace
     {
 
-        constexpr std::string_view kCanonicalScaleChainSourceName =
-            "configs/quantization_scale_chain.cfg";
-
         std::string serialize_scale_vector(
             std::string_view name,
             const std::vector<std::uint64_t> &values)
@@ -305,7 +302,8 @@ namespace gatzk::util
 #ifdef GATZK_CANONICAL_SCALE_CHAIN_PATH
                 path = GATZK_CANONICAL_SCALE_CHAIN_PATH;
 #else
-                path = std::string(kCanonicalScaleChainSourceName);
+                throw std::runtime_error(
+                    "canonical quantization scale-chain path is missing from the build");
 #endif
             }
             else
@@ -913,7 +911,21 @@ namespace gatzk::util
         require_explicit_family_shape_fields(entries);
         const auto absolute = std::filesystem::absolute(path);
         config.config_dir = absolute.parent_path().string();
-        config.project_root = absolute.parent_path().parent_path().string();
+        std::filesystem::path canonical_scale_chain_path;
+#ifdef GATZK_CANONICAL_SCALE_CHAIN_PATH
+        canonical_scale_chain_path = GATZK_CANONICAL_SCALE_CHAIN_PATH;
+#else
+        throw std::runtime_error(
+            "canonical quantization scale-chain path is missing from the build");
+#endif
+        if (!canonical_scale_chain_path.is_absolute()
+            || canonical_scale_chain_path.parent_path().filename() != "configs")
+        {
+            throw std::runtime_error(
+                "canonical quantization scale-chain path must be an absolute file under configs");
+        }
+        config.project_root =
+            canonical_scale_chain_path.parent_path().parent_path().string();
         if (entries.contains("dataset"))
             config.dataset = entries["dataset"];
         if (entries.contains("data_root"))
@@ -1013,8 +1025,7 @@ namespace gatzk::util
             config.quant_cfg_id,
             config.hidden_profile,
             config.K_out,
-            (std::filesystem::path(config.project_root)
-             / kCanonicalScaleChainSourceName).string());
+            canonical_scale_chain_path.string());
         // 这里最后做一次 shape 和 formal 约束校验，保证 prover / verifier 看到的是同一套配置含义。
         validate_config(config);
         return config;

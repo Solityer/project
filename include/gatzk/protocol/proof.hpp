@@ -993,6 +993,7 @@ namespace gatzk::protocol
         bool enabled_cuda_field_hotspots = false;
         bool is_full_dataset = false;
         bool gpu_runtime_present = false;
+        bool gpu_runtime_loaded = false;
         bool gpu_backend_requested = false;
         std::size_t gpu_kernel_invocation_count = 0;
         std::uint64_t gpu_h2d_bytes = 0;

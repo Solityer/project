@@ -2,8 +2,6 @@ cmake_minimum_required(VERSION 3.16)
 
 project(gatzkml LANGUAGES CXX)
 
-enable_testing()
-
 if(POLICY CMP0104)
     cmake_policy(SET CMP0104 NEW)
 endif()
@@ -14,6 +12,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(GATZK_ENABLE_CUDA_BACKEND "Enable optional CUDA algebra backend build" OFF)
+option(GATZK_BUILD_TESTS "Build test-only runtime and diagnostic targets" OFF)
 option(GATZK_ENABLE_FAST_MSM_DEFAULT "Enable fast MSM / fixed-base batch route by default" ON)
 option(GATZK_ENABLE_PARALLEL_FFT_DEFAULT "Enable parallel domain/FFT route by default" ON)
 option(GATZK_ENABLE_PACKED_FFT_DEFAULT "Enable packed domain evaluation backend by default" ON)
@@ -90,6 +89,7 @@ set(GATZK_SOURCES
     src/protocol/challenges.cpp
     src/protocol/opening_registry.cpp
     src/protocol/artifact_export.cpp
+    src/protocol/internal/t_edge_descriptor.cpp
     src/protocol/prover.cpp
     src/protocol/proof_codec.cpp
     src/protocol/psq.cpp
@@ -247,6 +247,9 @@ add_executable(gatzk_srs_setup tools/srs/generate_srs.cpp)
 target_include_directories(gatzk_srs_setup PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(gatzk_srs_setup PRIVATE gatzkml)
 
+if(GATZK_BUILD_TESTS)
+    enable_testing()
+
 # Test-only runtime regression for the layered formal schema.  It exercises
 # the production label, selector, and checkpoint-shape APIs without touching
 # canonical checkpoints, SRS files, or proof runs.
@@ -281,6 +284,20 @@ add_executable(gatzk_input_quantization_test tests/input_quantization_runtime.cp
 target_link_libraries(gatzk_input_quantization_test PRIVATE gatzkml)
 add_test(NAME input_quantization_runtime COMMAND gatzk_input_quantization_test)
 
+# The 39-case tamper suite is an explicit test-only consumer of an already
+# completed proof/run. It never constructs a proving context or starts a
+# formal proof; production gatzk_run remains independent of this target.
+add_executable(gatzk_protocol_tamper_tests tests/protocol_tamper_tests.cpp)
+target_link_libraries(gatzk_protocol_tamper_tests PRIVATE gatzkml)
+
+add_executable(
+    gatzk_t_edge_descriptor_test
+    tests/t_edge_descriptor_runtime.cpp)
+target_include_directories(gatzk_t_edge_descriptor_test PRIVATE
+    "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(gatzk_t_edge_descriptor_test PRIVATE gatzkml)
+add_test(NAME t_edge_descriptor_runtime COMMAND gatzk_t_edge_descriptor_test)
+
 # Manual partial multi-graph diagnostic for the real protocol chain.
 # It deliberately is NOT registered with CTest because it requires
 # canonical dataset/checkpoint/SRS resources.  The executable itself
@@ -292,6 +309,16 @@ target_link_libraries(
     gatzk_protocol_replay_diag
     PRIVATE gatzkml)
 
+add_test(
+    NAME cuda_weighted_eval_contract
+    COMMAND "${Python3_EXECUTABLE}"
+            "${PROJECT_SOURCE_DIR}/tests/test_cuda_weighted_eval_contract.py")
+
+add_test(
+    NAME cuda_t_edge_descriptor_contract
+    COMMAND "${Python3_EXECUTABLE}"
+            "${PROJECT_SOURCE_DIR}/tests/test_t_edge_descriptor_contract.py")
+
 if(GATZK_ENABLE_CUDA_BACKEND)
     add_executable(gatzk_cuda_t_edge_test tests/cuda_t_edge_runtime.cpp)
     target_link_libraries(gatzk_cuda_t_edge_test PRIVATE gatzkml)
@@ -302,4 +329,50 @@ if(GATZK_ENABLE_CUDA_BACKEND)
     target_link_libraries(gatzk_cuda_msm_test PRIVATE gatzkml)
     add_test(NAME cuda_msm_runtime COMMAND gatzk_cuda_msm_test)
     set_tests_properties(cuda_msm_runtime PROPERTIES SKIP_RETURN_CODE 77)
+
+    add_executable(
+        gatzk_cuda_msm_big_triangle_bench
+        tests/cuda_msm_big_triangle_bench.cu)
+    target_include_directories(
+        gatzk_cuda_msm_big_triangle_bench
+        PRIVATE third_party/icicle/icicle/include)
+    target_compile_definitions(
+        gatzk_cuda_msm_big_triangle_bench
+        PRIVATE CURVE=bls12_381 CURVE_ID=2 FIELD_ID=2)
+    target_compile_options(
+        gatzk_cuda_msm_big_triangle_bench
+        PRIVATE
+            $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>
+            $<$<COMPILE_LANGUAGE:CUDA>:-include=cstdint>)
+    target_link_libraries(
+        gatzk_cuda_msm_big_triangle_bench
+        PRIVATE gatzkml)
+    add_test(
+        NAME cuda_msm_big_triangle_bench
+        COMMAND gatzk_cuda_msm_big_triangle_bench
+                --case 8193 1
+                --repeats 1
+                --warmups 1)
+    set_tests_properties(
+        cuda_msm_big_triangle_bench
+        PROPERTIES SKIP_RETURN_CODE 77)
+
+    add_executable(gatzk_cuda_weighted_eval_test tests/cuda_weighted_eval_runtime.cpp)
+    target_link_libraries(gatzk_cuda_weighted_eval_test PRIVATE gatzkml)
+    add_test(NAME cuda_weighted_eval_runtime COMMAND gatzk_cuda_weighted_eval_test)
+    set_tests_properties(cuda_weighted_eval_runtime PROPERTIES SKIP_RETURN_CODE 77)
+
+    add_executable(
+        gatzk_cuda_t_edge_linear_stage_bench
+        tests/cuda_t_edge_linear_stage_bench.cpp)
+    target_link_libraries(gatzk_cuda_t_edge_linear_stage_bench PRIVATE gatzkml)
+    add_test(
+        NAME cuda_t_edge_linear_stage_bench
+        COMMAND gatzk_cuda_t_edge_linear_stage_bench)
+    set_tests_properties(
+        cuda_t_edge_linear_stage_bench
+        PROPERTIES SKIP_RETURN_CODE 77)
+
+endif()
+
 endif()

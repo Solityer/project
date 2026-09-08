@@ -27,6 +27,32 @@ _AGGREGATE_SPEC.loader.exec_module(_AGGREGATE)
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
+class LoadedManifest(dict):
+    """Manifest carrying the inputs needed for repeatable attestation re-auth."""
+
+    def __init__(
+        self,
+        values: Dict[str, object],
+        manifest_path: pathlib.Path,
+        attestation_path: str,
+        attestation_digest: str,
+    ):
+        super().__init__(values)
+        # A prevalidated dictionary is deliberately not accepted here.  The
+        # exporter rereads the external path and checks its digest/bindings on
+        # every make_success_row call, so a caller cannot bypass that gate by
+        # supplying ``verified=true`` or a shaped mapping.
+        if not isinstance(manifest_path, pathlib.Path):
+            raise ValueError("loaded manifest requires its regular manifest path")
+        if not isinstance(attestation_path, str) or not attestation_path.strip():
+            raise ValueError("loaded manifest requires an external attestation path")
+        if not isinstance(attestation_digest, str) or not attestation_digest.strip():
+            raise ValueError("loaded manifest requires an external attestation digest")
+        self._manifest_path = manifest_path
+        self._attestation_path = attestation_path
+        self._attestation_digest = attestation_digest
+
+
 def parse_assignment(value: str, flag: str) -> Tuple[str, str]:
     if "=" not in value:
         raise ValueError(f"{flag} expects dataset=path_or_reason")
@@ -94,12 +120,7 @@ def _validate_verifier_report_binding(
     report_path = manifest_path.parent / report_relative
     if not report_path.is_file() or report_path.is_symlink():
         raise ValueError(f"{context}: missing verifier report: {report_path}")
-    try:
-        report = json.loads(report_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise ValueError(f"{context}: cannot read verifier report: {report_path}") from exc
-    if not isinstance(report, dict):
-        raise ValueError(f"{context}: verifier report must be a JSON object")
+    report = _AGGREGATE.load_json_object(report_path, context)
     if set(report) != _AGGREGATE.VERIFIER_REPORT_KEYS:
         raise ValueError(f"{context}: verifier report has unexpected or missing fields")
     if report.get("format") != "zkgat_verifier_report":
@@ -115,7 +136,6 @@ def _validate_verifier_report_binding(
         raise ValueError(f"{context}: verifier report acceptance is not manifest-bound")
     for field in (
         "reference_consistency_passed",
-        "tamper_tests_passed",
         "security_budget_passed",
     ):
         if not _AGGREGATE.as_bool(report.get(field), field, context):
@@ -123,11 +143,48 @@ def _validate_verifier_report_binding(
         if _AGGREGATE.as_bool(manifest.get(field), field, context) is not True:
             raise ValueError(f"{context}: manifest {field} is not true")
 
-    if report.get("tamper_test_case_map") != manifest.get("tamper_test_case_map"):
-        raise ValueError(f"{context}: verifier report tamper map is not manifest-bound")
-    _AGGREGATE.canonical_tamper_case_map(
-        report.get("tamper_test_case_map"), "tamper_test_case_map", context
+    report_tamper_passed = _AGGREGATE.as_bool(
+        report.get("tamper_tests_passed"), "tamper_tests_passed", context
     )
+    report_tamper_ms = _AGGREGATE.as_float(
+        report.get("tamper_tests_ms"), "tamper_tests_ms", context
+    )
+    if report_tamper_passed:
+        report_tamper_map = _AGGREGATE.canonical_tamper_case_string(
+            report.get("tamper_test_case_map"), "tamper_test_case_map", context
+        )
+        if report_tamper_ms <= 0.0:
+            raise ValueError(f"{context}: verifier report tamper_tests_ms must be positive")
+    else:
+        if report.get("tamper_test_case_map") != "" or report_tamper_ms != 0.0:
+            raise ValueError(f"{context}: verifier report pending tamper state is malformed")
+        report_tamper_map = ""
+
+    manifest_tamper_keys = {
+        "tamper_tests_passed",
+        "tamper_test_case_map",
+        "tamper_tests_ms",
+    }
+    present_manifest_tamper_keys = manifest_tamper_keys & set(manifest)
+    if present_manifest_tamper_keys:
+        if present_manifest_tamper_keys != manifest_tamper_keys:
+            raise ValueError(f"{context}: run manifest tamper state is partial")
+        manifest_tamper_passed = _AGGREGATE.as_bool(
+            manifest.get("tamper_tests_passed"), "tamper_tests_passed", context
+        )
+        manifest_tamper_ms = _AGGREGATE.as_float(
+            manifest.get("tamper_tests_ms"), "tamper_tests_ms", context
+        )
+        if manifest_tamper_passed:
+            manifest_tamper_map = _AGGREGATE.canonical_tamper_case_string(
+                manifest.get("tamper_test_case_map"), "tamper_test_case_map", context
+            )
+            if manifest_tamper_map != report_tamper_map or manifest_tamper_ms != report_tamper_ms:
+                raise ValueError(f"{context}: verifier report tamper state is not manifest-bound")
+        elif manifest.get("tamper_test_case_map") != "" or manifest_tamper_ms != 0.0:
+            raise ValueError(f"{context}: run manifest pending tamper state is malformed")
+        if manifest_tamper_passed is not report_tamper_passed:
+            raise ValueError(f"{context}: verifier report tamper state is not manifest-bound")
     for field in (
         "security_budget_ledger_digest",
         "security_budget_exact",
@@ -164,13 +221,17 @@ def _validate_verifier_report_binding(
         raise ValueError(f"{context}: verifier_report_hash does not match verifier_report.json")
 
 
-def load_manifest(path: pathlib.Path) -> Dict[str, object]:
+def load_manifest(
+    path: pathlib.Path,
+    attestation_path: str | None = None,
+    attestation_digest: str | None = None,
+) -> Dict[str, object]:
     manifest_path = path / "run_manifest.json" if path.is_dir() else path
     if not manifest_path.is_file() or manifest_path.is_symlink():
         raise ValueError(f"run manifest must be a regular file: {manifest_path}")
-    data = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if not isinstance(data, dict):
-        raise ValueError(f"run manifest must be a JSON object: {manifest_path}")
+    data = _AGGREGATE.load_json_object(
+        manifest_path, f"benchmark export/{manifest_path.parent}"
+    )
     manifest = {key: normalize_scalar(value) for key, value in data.items()}
     _AGGREGATE.nonempty_string(
         manifest.get("input_preprocess_id"),
@@ -186,7 +247,21 @@ def load_manifest(path: pathlib.Path) -> Dict[str, object]:
             f"official benchmark export proof_hash does not match proof.bin: {manifest_path.parent}"
         )
     _validate_verifier_report_binding(manifest, manifest_path, actual_proof_hash)
-    return manifest
+    attestation = _AGGREGATE.check_tamper_attestation_manifest_binding(
+        PROJECT_ROOT,
+        manifest_path.parent,
+        proof_path,
+        manifest,
+        attestation_path,
+        attestation_digest,
+        f"benchmark export/{manifest_path.parent}",
+    )
+    return LoadedManifest(
+        manifest,
+        manifest_path,
+        attestation_path,
+        attestation_digest,
+    )
 
 
 def infer_benchmark_mode(manifest: Dict[str, object]) -> str:
@@ -214,6 +289,24 @@ def make_success_row(dataset: str, manifest: Dict[str, object]) -> Dict[str, obj
     # `backend_name` 与 `is_full_dataset` 只保留在 latest.json 这类机器复核产物中，
     # 不会进入 latest.csv / summary.md 的正式展示面。
     context = f"benchmark export/{dataset}"
+    # The binding helper performs `check_verified_tamper_attestation` from the
+    # external path and digest; no caller-provided verified mapping is trusted.
+    if not isinstance(manifest, LoadedManifest):
+        raise ValueError(
+            f"{context}: benchmark export requires a manifest loaded with external attestation inputs"
+        )
+    manifest_path = manifest._manifest_path
+    proof_path = manifest_path.parent / "proof.bin"
+    attestation = _AGGREGATE.check_tamper_attestation_manifest_binding(
+        PROJECT_ROOT,
+        manifest_path.parent,
+        proof_path,
+        manifest,
+        manifest._attestation_path,
+        manifest._attestation_digest,
+        context,
+    )
+    _AGGREGATE.check_manifest_tamper_state(manifest, attestation, context)
     _, _, input_preprocess_id = _AGGREGATE.check_manifest_config_binding(
         PROJECT_ROOT, dataset, manifest, context
     )
@@ -263,6 +356,13 @@ def make_success_row(dataset: str, manifest: Dict[str, object]) -> Dict[str, obj
         "prove_time_ms": timing_values["prove_time_ms"],
         "verify_time_ms": timing_values["verify_time_ms"],
         "proof_size_bytes": proof_size,
+        "tamper_tests_passed": True,
+        "tamper_test_case_map": attestation["tamper_test_case_map"],
+        "tamper_tests_ms": attestation["tamper_tests_ms"],
+        "tamper_attestation_path": attestation["tamper_attestation_path"],
+        "tamper_attestation_sha256": attestation["tamper_attestation_sha256"],
+        "tamper_attestation_format": attestation["format"],
+        "tamper_attestation_suite_id": attestation["suite_id"],
         "is_full_dataset": bool(manifest["is_full_dataset"]),
         "backend_name": str(manifest.get("backend_name", manifest.get("backend", ""))),
     }
@@ -380,6 +480,18 @@ def main() -> None:
     # 数据集顺序只影响展示，不允许改变每行来自正式 manifest 的字段定义。
     parser = argparse.ArgumentParser()
     parser.add_argument("--run", action="append", default=[], help="dataset=run_manifest.json_or_dir")
+    parser.add_argument(
+        "--attestation",
+        action="append",
+        default=[],
+        help="dataset=external tamper attestation path (one per --run)",
+    )
+    parser.add_argument(
+        "--attestation-digest",
+        action="append",
+        default=[],
+        help="dataset=external SHA-256 tamper-attestation digest (one per --run)",
+    )
     parser.add_argument("--blocked", action="append", default=[], help="dataset=reason")
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--dataset-order", default="cora,citeseer,pubmed,ppi,ogbn_arxiv")
@@ -387,15 +499,52 @@ def main() -> None:
     args = parser.parse_args()
 
     rows_by_dataset: Dict[str, Dict[str, object]] = {}
+    attestation_paths: Dict[str, str] = {}
+    attestation_digests: Dict[str, str] = {}
+    for item in args.attestation:
+        dataset, value = parse_assignment(item, "--attestation")
+        if dataset in attestation_paths:
+            raise ValueError(f"duplicate attestation assignment: {dataset}")
+        attestation_paths[dataset] = value
+    for item in args.attestation_digest:
+        dataset, value = parse_assignment(item, "--attestation-digest")
+        if dataset in attestation_digests:
+            raise ValueError(f"duplicate attestation digest assignment: {dataset}")
+        attestation_digests[dataset] = value
     for item in args.run:
         dataset, path_value = parse_assignment(item, "--run")
-        rows_by_dataset[dataset] = make_success_row(dataset, load_manifest(pathlib.Path(path_value)))
+        if dataset in rows_by_dataset:
+            raise ValueError(f"duplicate run assignment: {dataset}")
+        if dataset not in attestation_paths or dataset not in attestation_digests:
+            raise ValueError(f"missing external attestation path or digest for {dataset}")
+        rows_by_dataset[dataset] = make_success_row(
+            dataset,
+            load_manifest(
+                pathlib.Path(path_value),
+                attestation_paths[dataset],
+                attestation_digests[dataset],
+            ),
+        )
 
     mode = ensure_consistent_benchmark_mode(list(rows_by_dataset.values()))
     blocked_mode = args.blocked_benchmark_mode or mode
     for item in args.blocked:
         dataset, reason = parse_assignment(item, "--blocked")
+        if dataset in rows_by_dataset:
+            raise ValueError(f"duplicate benchmark assignment: {dataset}")
         rows_by_dataset[dataset] = make_blocked_row(dataset, blocked_mode, reason)
+
+    successful_datasets = {
+        dataset for dataset, row in rows_by_dataset.items() if row["status"] == "ok"
+    }
+    if set(attestation_paths) != successful_datasets:
+        raise ValueError(
+            "external attestation paths must cover exactly the successful --run datasets"
+        )
+    if set(attestation_digests) != successful_datasets:
+        raise ValueError(
+            "external attestation digests must cover exactly the successful --run datasets"
+        )
 
     ordered_rows: List[Dict[str, object]] = []
     ordered_datasets = [entry.strip() for entry in args.dataset_order.split(",") if entry.strip()]

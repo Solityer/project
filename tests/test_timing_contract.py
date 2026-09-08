@@ -16,6 +16,12 @@ CANONICAL_TIMING_SCHEMA = "exclusive_commit_prove_protocol_verify"
 assert f'"{CANONICAL_TIMING_SCHEMA}"' in PROOF
 assert f'"{CANONICAL_TIMING_SCHEMA}"' in AGGREGATE
 assert f'"{CANONICAL_TIMING_SCHEMA}"' in EXPORT
+assert "load_tamper_attestation" in AGGREGATE
+assert "tamper_attestation_sha256" in AGGREGATE
+assert "tamper_tests_ms" in AGGREGATE
+assert "check_tamper_attestation_manifest_binding" in EXPORT
+assert "--cpu-attestation" in AGGREGATE
+assert "--cuda-attestation" in AGGREGATE
 
 
 # The exclusive prove timer starts only after the canonical forward, reference
@@ -81,18 +87,15 @@ for forbidden in (
 
 # The protocol verify clock starts at parse_proof and ends at the protocol
 # verifier return.  Output digest, external payload audit, reference
-# consistency, final acceptance, tamper checks, and export are outside it.
+# consistency, final acceptance, and the pending tamper state are outside it.
 verify_start = MAIN.index("const auto verify_start = std::chrono::steady_clock::now();")
 verify_end = MAIN.index(
     "const auto verify_end = std::chrono::steady_clock::now();",
     verify_start,
 )
-tamper_start = MAIN.index(
-    "const auto tamper_start = std::chrono::steady_clock::now();",
-    verify_start,
-)
 protocol_verify_block = MAIN[verify_start:verify_end]
-post_protocol_block = MAIN[verify_end:tamper_start]
+post_protocol_end = MAIN.index("metrics.total_wall_clock_ms =", verify_end)
+post_protocol_block = MAIN[verify_end:post_protocol_end]
 
 
 parse_call = protocol_verify_block.index(
@@ -120,6 +123,7 @@ assert "gatzk::protocol::canonical_output_digest(" not in protocol_verify_block
 assert "private_plain_value_count(verifier_context, parsed_proof)" not in protocol_verify_block
 assert "payload_audit_ms" not in protocol_verify_block
 assert "reference_consistency" not in protocol_verify_block
+assert "tamper_tests_ms" not in protocol_verify_block
 assert "final_formal_run_accepted(" not in protocol_verify_block
 assert "metrics.verify_point_group_registry_ms" in MAIN
 
@@ -130,6 +134,7 @@ assert "private_plain_value_count(verifier_context, parsed_proof)" in post_proto
 assert "metrics.payload_audit_ms" in post_protocol_block
 assert "metrics.reference_consistency_ms" in post_protocol_block
 assert "gatzk::protocol::final_formal_run_accepted(" in post_protocol_block
+assert "tamper_tests_ms" in post_protocol_block or "tamper_tests_ms" in MAIN[verify_end:]
 
 accounted_start = MAIN.index("auto verify_accounted_ms =")
 accounted_end = MAIN.index("};", accounted_start)
@@ -143,9 +148,9 @@ assert "payload_audit_ms" not in misc_block
 assert "reference_consistency_ms" not in misc_block
 
 # Registration/VK loading and the independent reference forward happen before
-# this source-level verify block; tamper checks and export happen after it.
+# this source-level verify block; post-verifier audits and export happen after
+# it.
 assert MAIN.index("load_verifier_context_from_registry(") < verify_start
-assert MAIN.index("const auto tamper_start", verify_start) > verify_end
 assert "independent_quantized_reference_forward(" not in protocol_verify_block
 
 print("verify timing contract: PASS")

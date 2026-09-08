@@ -27,10 +27,7 @@ import torch.nn.functional as F
 
 from checkpoint_bundle import (
     canonical_checkpoint_semantics,
-    load_checkpoint_manifest,
-    validate_checkpoint_manifest,
     validate_checkpoint_metadata,
-    validate_tensor_encodings,
 )
 from planetoid_utils import (
     build_sorted_edge_index,
@@ -108,11 +105,11 @@ def input_quantization_diagnostic(
     scale: int | None = None,
     range_bits: int | None = None,
 ) -> Dict[str, object]:
-    """Return a lightweight, non-training diagnostic for input quantization.
+    """Return a lightweight provenance diagnostic for input quantization.
 
-    This helper deliberately does not alter the registered chain or clip
-    values; it reports the canonical nearest-integer quantizer's information
-    loss for the actual formal ``S_input``.
+    This helper does not alter the registered chain or clip values; it reports
+    the canonical nearest-integer quantizer's information loss for the actual
+    formal ``S_input`` and is persisted with the training summary.
     """
     if scale is None:
         scale = canonical_quantization_scale_chain().s_input
@@ -835,212 +832,6 @@ def checkpoint_hidden_profile(bundle: Mapping[str, object]) -> HiddenProfile:
     raise ValueError("checkpoint metadata must expose a non-empty hidden_profile")
 
 
-def structured_checkpoint_state(
-    state: Mapping[str, torch.Tensor],
-) -> Dict[str, torch.Tensor]:
-    """Load the structured multi-layer checkpoint state for parity replay."""
-    for key in state:
-        if ("attn_src.bias" in key or "attn_dst.bias" in key or
-                "attn_src_bias" in key or "attn_dst_bias" in key):
-            raise ValueError(
-                "bias-enabled attention checkpoint is not accepted by the formal loader"
-            )
-    if not state or any(
-        not key.startswith(("hidden_layers.", "output_heads."))
-        for key in state
-    ):
-        raise ValueError("checkpoint state_dict must expose only structured model keys")
-    return dict(state)
-
-
-def load_bundle_state(
-    bundle_dir: pathlib.Path,
-) -> Tuple[Dict[str, object], Dict[str, torch.Tensor]]:
-    manifest = load_checkpoint_manifest(bundle_dir / "manifest.json")
-    validate_checkpoint_manifest(manifest)
-    tensor_map = validate_tensor_encodings(
-        manifest,
-        bundle_dir / "tensors.npz",
-        bundle_dir / "tensors.txt",
-    )
-    manifest_chain = manifest["quantization_scale_chain"]
-    if manifest["family_schema"] != "multi_layer_multi_head":
-        raise ValueError("formal bundle family_schema is not canonical")
-    if manifest["L"] != 3 or manifest["K_out"] != 2:
-        raise ValueError("formal bundle must declare the canonical L=3 and K_out=2")
-    if not isinstance(manifest_chain, str) or not manifest_chain:
-        raise ValueError(
-            "formal bundle is missing quantization_scale_chain; quant_cfg_id alone is insufficient"
-        )
-    expected_chain = canonical_quantization_scale_chain(
-        manifest["quant_cfg_id"],
-        manifest["hidden_profile"],
-        manifest["K_out"],
-    )
-    if manifest_chain != expected_chain.canonical_serialization():
-        raise ValueError("formal bundle quantization_scale_chain is not canonical")
-    dataset = manifest["dataset"]
-    expected_preprocess_id = canonical_input_preprocess_id(dataset)
-    if manifest["input_preprocess_id"] != expected_preprocess_id:
-        raise ValueError(
-            "formal bundle input_preprocess_id does not match its dataset"
-        )
-    hidden_profile = normalize_hidden_profile(manifest["hidden_profile"])
-    d_in_profile = list(manifest["d_in_profile"])
-    if len(d_in_profile) != len(hidden_profile):
-        raise ValueError("bundle d_in_profile must align with hidden_profile")
-    k_out = manifest["K_out"]
-    num_classes = manifest["C"]
-    def tensor(name: str) -> np.ndarray:
-        return tensor_map[name]
-
-    state: Dict[str, torch.Tensor] = {}
-    for head in manifest["hidden_head_specs"]:
-        layer_index = head["layer_index"]
-        local_head_index = head["local_head_index"]
-        prefix = f"hidden_layers.{layer_index}.heads.{local_head_index}"
-        seq = tensor(head["seq_kernel"])
-        state[f"{prefix}.seq.weight"] = torch.from_numpy(
-            seq.reshape(seq.shape[1], seq.shape[2]).T.copy()
-        )
-        state[f"{prefix}.attn_dst.weight"] = torch.from_numpy(
-            tensor(head["attn_dst_kernel"]).reshape(1, -1)
-        )
-        state[f"{prefix}.attn_src.weight"] = torch.from_numpy(
-            tensor(head["attn_src_kernel"]).reshape(1, -1)
-        )
-
-    for head in manifest["output_head_specs"]:
-        head_index = head["head_index"]
-        prefix = f"output_heads.{head_index}"
-        seq = tensor(head["seq_kernel"])
-        state[f"{prefix}.seq.weight"] = torch.from_numpy(
-            seq.reshape(seq.shape[1], seq.shape[2]).T.copy()
-        )
-        state[f"{prefix}.attn_dst.weight"] = torch.from_numpy(
-            tensor(head["attn_dst_kernel"]).reshape(1, -1)
-        )
-        state[f"{prefix}.attn_src.weight"] = torch.from_numpy(
-            tensor(head["attn_src_kernel"]).reshape(1, -1)
-        )
-        state[f"{prefix}.output_bias"] = torch.from_numpy(
-            tensor(head["output_bias"]).reshape(-1)
-        )
-
-    metadata = {
-        "L": len(hidden_profile) + 1,
-        "d_in_profile": d_in_profile,
-        "hidden_profile": hidden_profile,
-        "K_out": k_out,
-        "C": num_classes,
-        "num_features": d_in_profile[0],
-        "num_classes": num_classes,
-        "output_average_rule": manifest["output_average_rule"],
-        "quant_cfg_id": manifest["quant_cfg_id"],
-        "quantization_scale_chain": manifest_chain,
-        "input_preprocess_id": manifest["input_preprocess_id"],
-    }
-    return metadata, state
-
-
-def _numpy_trace(logits: torch.Tensor, trace: Dict[str, object]) -> Dict[str, object]:
-    return {
-        "logits": logits.detach().cpu().numpy(),
-        "hidden_layers": [
-            {
-                "concat": layer["concat"].numpy(),
-                "heads": [
-                    {key: value.numpy() for key, value in head.items()}
-                    for head in layer["heads"]
-                ],
-            }
-            for layer in trace["hidden_layers"]
-        ],
-        "output_heads": [
-            {key: value.numpy() for key, value in head.items()}
-            for head in trace["output_heads"]
-        ],
-    }
-
-
-def _run_trace(
-    model: PlanetoidGAT,
-    tensors: DatasetTensors,
-) -> Dict[str, object]:
-    model.eval()
-    with torch.no_grad():
-        logits, trace = model(
-            tensors.features,
-            tensors.edge_src,
-            tensors.edge_dst,
-            dropout=0.0,
-            training=False,
-            return_trace=True,
-        )
-    assert trace is not None
-    result = _numpy_trace(logits, trace)
-    return result
-
-
-def run_trace_from_checkpoint(
-    checkpoint_path: pathlib.Path,
-    data_root: pathlib.Path,
-    dataset: str,
-    device: torch.device,
-    *,
-    cache_root: pathlib.Path | None = None,
-) -> Dict[str, object]:
-    checkpoint = load_checkpoint(checkpoint_path, device)
-    bundle = checkpoint["bundle"]
-    hidden_profile = checkpoint_hidden_profile(bundle)
-    k_out = bundle["K_out"]
-    chain = canonical_quantization_scale_chain(
-        bundle["quant_cfg_id"], hidden_profile, k_out
-    )
-    tensors = load_dataset(
-        data_root, dataset, device, cache_root=cache_root, chain=chain
-    )
-    model = PlanetoidGAT(
-        tensors.num_features,
-        num_classes=tensors.num_classes,
-        hidden_profile=hidden_profile,
-        k_out=k_out,
-        quantization=chain,
-    ).to(device)
-    model.load_state_dict(
-        structured_checkpoint_state(checkpoint["state_dict"])
-    )
-    return _run_trace(model, tensors)
-
-
-def run_trace_from_bundle(
-    bundle_dir: pathlib.Path,
-    data_root: pathlib.Path,
-    dataset: str,
-    device: torch.device,
-    *,
-    cache_root: pathlib.Path | None = None,
-) -> Dict[str, object]:
-    bundle, state = load_bundle_state(bundle_dir)
-    hidden_profile = bundle["hidden_profile"]
-    k_out = bundle["K_out"]
-    chain = canonical_quantization_scale_chain(
-        bundle["quant_cfg_id"], hidden_profile, k_out
-    )
-    tensors = load_dataset(
-        data_root, dataset, device, cache_root=cache_root, chain=chain
-    )
-    model = PlanetoidGAT(
-        tensors.num_features,
-        num_classes=tensors.num_classes,
-        hidden_profile=hidden_profile,
-        k_out=k_out,
-        quantization=chain,
-    ).to(device)
-    model.load_state_dict(state)
-    return _run_trace(model, tensors)
-
-
 def _resolve_output_dir(
     project_root: pathlib.Path,
     cfg: Mapping[str, str],
@@ -1083,11 +874,6 @@ def add_training_cli(parser: argparse.ArgumentParser) -> None:
         "--overwrite",
         action="store_true",
         help="allow replacing best_model.pt in the selected output directory",
-    )
-    parser.add_argument(
-        "--diagnostic-test-each-epoch",
-        action="store_true",
-        help="opt in to per-epoch test diagnostics; never affects checkpoint selection",
     )
 
 
@@ -1225,11 +1011,6 @@ def main() -> None:
             validation_accuracy = masked_accuracy(
                 eval_logits, tensors.labels, tensors.val_mask
             )
-            diagnostic_test_accuracy = (
-                masked_accuracy(eval_logits, tensors.labels, tensors.test_mask)
-                if args.diagnostic_test_each_epoch
-                else None
-            )
         epoch_metrics = {
             "epoch": float(epoch),
             "train_loss": float(loss.item()),
@@ -1237,18 +1018,11 @@ def main() -> None:
             "val_loss": validation_loss,
             "val_acc": validation_accuracy,
         }
-        if diagnostic_test_accuracy is not None:
-            epoch_metrics["test_acc"] = diagnostic_test_accuracy
         history.append(epoch_metrics)
-        test_suffix = (
-            f" test_acc={diagnostic_test_accuracy:.4f}"
-            if diagnostic_test_accuracy is not None
-            else ""
-        )
         print(
             f"[{dataset}] epoch={epoch:04d} train_loss={loss.item():.6f} "
             f"train_acc={train_accuracy:.4f} val_loss={validation_loss:.6f} "
-            f"val_acc={validation_accuracy:.4f}{test_suffix}",
+            f"val_acc={validation_accuracy:.4f}",
             flush=True,
         )
         if validation_loss < best_val_loss:
@@ -1276,6 +1050,7 @@ def main() -> None:
 
     if best_state is None or best_metrics is None:
         raise RuntimeError("training did not produce a checkpoint")
+
     model.load_state_dict(best_state)
     model.eval()
     with torch.no_grad():
@@ -1308,7 +1083,6 @@ def main() -> None:
                     "test_loss": final_test_loss,
                     "test_acc": final_test_accuracy,
                 },
-                "per_epoch_test_diagnostic": bool(args.diagnostic_test_each_epoch),
                 "input_quantization_diagnostic": input_quantization,
                 "history_tail": history[-10:],
                 "checkpoint_metadata": metadata,

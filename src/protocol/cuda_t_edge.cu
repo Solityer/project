@@ -34,6 +34,14 @@ namespace gatzk::protocol
         constexpr std::size_t
             kMaximumProgramStackDepth = 64;
 
+        // The exact leaf helpers feed the paired CUDA NTT with one lane of
+        // target_size / 2 elements.  Keep this capability boundary local to
+        // the t_edge executor and do not conflate it with the quotient
+        // program, whose pointwise kernel can still run for larger targets.
+        constexpr std::size_t
+            kMaximumCudaLeafNttSize =
+                std::size_t{1} << 24;
+
         static_assert(
             sizeof(GpuFr) == sizeof(mcl::Fr));
 
@@ -54,6 +62,40 @@ namespace gatzk::protocol
             }
 
             return count * element_size;
+        }
+
+        bool checked_add_size(
+            std::size_t lhs,
+            std::size_t rhs,
+            std::size_t *out)
+        {
+            if (out == nullptr ||
+                lhs >
+                    std::numeric_limits<std::size_t>::max() - rhs)
+            {
+                return false;
+            }
+
+            *out = lhs + rhs;
+            return true;
+        }
+
+        bool checked_mul_size(
+            std::size_t lhs,
+            std::size_t rhs,
+            std::size_t *out)
+        {
+            if (out == nullptr ||
+                (lhs != 0 &&
+                 rhs >
+                     std::numeric_limits<std::size_t>::max() /
+                         lhs))
+            {
+                return false;
+            }
+
+            *out = lhs * rhs;
+            return true;
         }
 
         [[noreturn]] void
@@ -246,6 +288,194 @@ namespace gatzk::protocol
                     contribution);
         }
 
+        __device__ __forceinline__ GpuFr
+        t_edge_pow_u64(
+            GpuFr base,
+            std::size_t exponent)
+        {
+            auto result =
+                algebra::gpu::fr_one();
+
+            while (exponent != 0)
+            {
+                if ((exponent & 1U) != 0U)
+                {
+                    result =
+                        algebra::gpu::fr_mul(
+                            result,
+                            base);
+                }
+
+                exponent >>= 1U;
+
+                if (exponent != 0)
+                {
+                    base =
+                        algebra::gpu::fr_mul(
+                            base,
+                            base);
+                }
+            }
+
+            return result;
+        }
+
+        __device__ __forceinline__ GpuFr
+        t_edge_eval_blinder(
+            const GpuFr *coefficients,
+            std::size_t offset,
+            std::size_t count,
+            GpuFr point)
+        {
+            auto value =
+                algebra::gpu::fr_zero();
+
+            while (count != 0)
+            {
+                --count;
+                value =
+                    algebra::gpu::fr_add(
+                        algebra::gpu::fr_mul(
+                            value,
+                            point),
+                        coefficients[offset + count]);
+            }
+
+            return value;
+        }
+
+        __global__ void
+        t_edge_materialize_linear_kernel(
+            GpuFr *const *leaf_slots,
+            const std::uint8_t *leaf_split_layout,
+            const std::uint32_t *source_slots,
+            const GpuFr *source_scales,
+            const GpuFr *source_blinders,
+            const std::size_t *source_blinder_offsets,
+            const std::size_t *source_blinder_counts,
+            std::size_t source_count,
+            const GpuFr *target_blinder,
+            std::size_t target_blinder_count,
+            std::size_t domain_size,
+            std::size_t target_size,
+            GpuFr shift,
+            GpuFr root,
+            GpuFr shift_domain_power,
+            GpuFr zero_step,
+            std::uint8_t output_split_layout,
+            GpuFr *target)
+        {
+            const auto logical_index =
+                static_cast<std::size_t>(
+                    blockIdx.x) *
+                    blockDim.x +
+                threadIdx.x;
+
+            if (logical_index >= target_size)
+            {
+                return;
+            }
+
+            const auto half_size =
+                target_size / 2U;
+            const auto output_index =
+                output_split_layout != 0U
+                    ? logical_index / 2U +
+                          ((logical_index & 1U) != 0U
+                               ? half_size
+                               : 0U)
+                    : logical_index;
+
+            auto value =
+                algebra::gpu::fr_zero();
+
+            auto source_blinder_sum =
+                algebra::gpu::fr_zero();
+
+            const auto point =
+                algebra::gpu::fr_mul(
+                    shift,
+                    t_edge_pow_u64(
+                        root,
+                        logical_index));
+
+            for (std::size_t source_index = 0;
+                 source_index < source_count;
+                 ++source_index)
+            {
+                const auto slot =
+                    source_slots[source_index];
+
+                const auto physical_index =
+                    leaf_split_layout[slot] != 0U
+                        ? logical_index / 2U +
+                              ((logical_index & 1U) != 0U
+                                   ? half_size
+                                   : 0U)
+                        : logical_index;
+
+                value =
+                    algebra::gpu::fr_add(
+                        value,
+                        algebra::gpu::fr_mul(
+                            leaf_slots[slot]
+                                      [physical_index],
+                            source_scales[source_index]));
+
+                const auto blinder_count =
+                    source_blinder_counts[source_index];
+
+                if (blinder_count != 0)
+                {
+                    const auto blinder_value =
+                        t_edge_eval_blinder(
+                            source_blinders,
+                            source_blinder_offsets[
+                                source_index],
+                            blinder_count,
+                            point);
+
+                    source_blinder_sum =
+                        algebra::gpu::fr_add(
+                            source_blinder_sum,
+                            algebra::gpu::fr_mul(
+                                blinder_value,
+                                source_scales[
+                                    source_index]));
+                }
+            }
+
+            const auto target_blinder_value =
+                target_blinder_count == 0
+                    ? algebra::gpu::fr_zero()
+                    : t_edge_eval_blinder(
+                          target_blinder,
+                          0,
+                          target_blinder_count,
+                          point);
+
+            const auto correction =
+                algebra::gpu::fr_sub(
+                    target_blinder_value,
+                    source_blinder_sum);
+
+            const auto zero_domain_value =
+                algebra::gpu::fr_sub(
+                    algebra::gpu::fr_mul(
+                        shift_domain_power,
+                        t_edge_pow_u64(
+                            zero_step,
+                            logical_index)),
+                    algebra::gpu::fr_one());
+
+            target[output_index] =
+                algebra::gpu::fr_add(
+                    value,
+                    algebra::gpu::fr_mul(
+                        zero_domain_value,
+                        correction));
+        }
+
         __global__ void
         t_edge_finalize_kernel(
             GpuFr *quotient,
@@ -290,6 +520,8 @@ namespace gatzk::protocol
 
                 if (domain_size_ == 0 ||
                     target_size_ == 0 ||
+                    (domain_size_ &
+                     (domain_size_ - 1U)) != 0 ||
                     target_size_ %
                             domain_size_ !=
                         0 ||
@@ -313,6 +545,14 @@ namespace gatzk::protocol
                 }
 
                 host_leaf_split_layout_.assign(
+                    cache_slot_count_,
+                    0);
+
+                host_leaf_bound_.assign(
+                    cache_slot_count_,
+                    false);
+
+                host_leaf_uploaded_prefix_.assign(
                     cache_slot_count_,
                     0);
 
@@ -784,6 +1024,9 @@ namespace gatzk::protocol
                         "leaf-layout upload",
                         status);
                 }
+                algebra::record_cuda_h2d(sizeof(std::uint8_t));
+                host_leaf_bound_[slot] = true;
+                host_leaf_uploaded_prefix_[slot] = target_size_;
                 return true;
             }
 
@@ -833,6 +1076,403 @@ namespace gatzk::protocol
                         "leaf-layout upload",
                         status);
                 }
+                algebra::record_cuda_h2d(sizeof(std::uint8_t));
+                host_leaf_bound_[slot] = true;
+                host_leaf_uploaded_prefix_[slot] = target_size_;
+                return true;
+            }
+
+            bool materialize_linear_leaf(
+                std::size_t target_slot,
+                const std::vector<CudaTEdgeLinearSource>
+                    &sources,
+                const mcl::Fr *target_zero_domain_blinder,
+                std::size_t target_blinder_count,
+                CudaTEdgeLeafLayout output_layout)
+                override
+            {
+                if (target_slot >= cache_slot_count_ ||
+                    target_size_ < 2 ||
+                    sources.empty())
+                {
+                    throw std::runtime_error(
+                        "invalid CUDA t_edge linear target");
+                }
+
+                if (output_layout !=
+                        CudaTEdgeLeafLayout::Split &&
+                    output_layout !=
+                        CudaTEdgeLeafLayout::Contiguous)
+                {
+                    throw std::runtime_error(
+                        "invalid CUDA t_edge linear output layout");
+                }
+
+                if (host_leaf_bound_[target_slot])
+                {
+                    throw std::runtime_error(
+                        "CUDA t_edge linear target slot is already bound");
+                }
+
+                if (host_leaf_uploaded_prefix_[target_slot] != 0)
+                {
+                    throw std::runtime_error(
+                        "CUDA t_edge linear target slot has an incomplete upload");
+                }
+
+                if (target_blinder_count != 0 &&
+                    target_zero_domain_blinder == nullptr)
+                {
+                    throw std::runtime_error(
+                        "CUDA t_edge linear target blinder is null");
+                }
+
+                const auto maximum_blinder_count =
+                    target_size_ - domain_size_;
+
+                if (target_blinder_count > maximum_blinder_count)
+                {
+                    throw std::runtime_error(
+                        "CUDA t_edge linear target blinder exceeds shape");
+                }
+
+                std::vector<std::uint8_t> seen(
+                    cache_slot_count_,
+                    0);
+                std::vector<std::uint32_t> source_slots;
+                std::vector<GpuFr> source_scales;
+                std::vector<std::size_t> source_blinder_offsets;
+                std::vector<std::size_t> source_blinder_counts;
+
+                source_slots.reserve(sources.size());
+                source_scales.reserve(sources.size());
+                source_blinder_offsets.reserve(sources.size());
+                source_blinder_counts.reserve(sources.size());
+
+                std::size_t packed_blinder_count = 0;
+                std::vector<GpuFr> host_source_blinders;
+
+                for (const auto &source : sources)
+                {
+                    if (source.slot >= cache_slot_count_ ||
+                        source.slot == target_slot ||
+                        seen[source.slot] != 0 ||
+                        !host_leaf_bound_[source.slot])
+                    {
+                        throw std::runtime_error(
+                            "CUDA t_edge linear source slot is missing or duplicated");
+                    }
+
+                    if (source.scale.is_zero())
+                    {
+                        throw std::runtime_error(
+                            "CUDA t_edge linear source scale is zero");
+                    }
+
+                    if (source.blinder_count >
+                        maximum_blinder_count)
+                    {
+                        throw std::runtime_error(
+                            "CUDA t_edge linear source blinder exceeds shape");
+                    }
+
+                    if (source.blinder_count != 0 &&
+                        source.zero_domain_blinder == nullptr)
+                    {
+                        throw std::runtime_error(
+                            "CUDA t_edge linear source blinder is null");
+                    }
+
+                    seen[source.slot] = 1;
+                    source_slots.push_back(source.slot);
+                    source_scales.push_back(
+                        gpu_field(source.scale));
+                    source_blinder_offsets.push_back(
+                        packed_blinder_count);
+                    source_blinder_counts.push_back(
+                        source.blinder_count);
+
+                    std::size_t next_count = 0;
+                    if (!checked_add_size(
+                            packed_blinder_count,
+                            source.blinder_count,
+                            &next_count))
+                    {
+                        throw std::runtime_error(
+                            "CUDA t_edge linear blinder count overflow");
+                    }
+
+                    if (next_count != packed_blinder_count)
+                    {
+                        host_source_blinders.resize(
+                            next_count);
+
+                        if (source.blinder_count != 0)
+                        {
+                            std::memcpy(
+                                host_source_blinders.data() +
+                                    packed_blinder_count,
+                                source.zero_domain_blinder,
+                                checked_bytes(
+                                    source.blinder_count,
+                                    sizeof(GpuFr),
+                                    "linear source blinder"));
+                        }
+                    }
+
+                    packed_blinder_count = next_count;
+                }
+
+                std::vector<GpuFr> host_target_blinder(
+                    target_blinder_count);
+
+                if (target_blinder_count != 0)
+                {
+                    std::memcpy(
+                        host_target_blinder.data(),
+                        target_zero_domain_blinder,
+                        checked_bytes(
+                            target_blinder_count,
+                            sizeof(GpuFr),
+                            "linear target blinder"));
+                }
+
+                ensure_linear_buffers(
+                    source_slots.size(),
+                    packed_blinder_count,
+                    target_blinder_count);
+
+                auto status = cudaMemcpy(
+                    device_linear_source_slots_,
+                    source_slots.data(),
+                    checked_bytes(
+                        source_slots.size(),
+                        sizeof(std::uint32_t),
+                        "linear source slots"),
+                    cudaMemcpyHostToDevice);
+
+                if (status != cudaSuccess)
+                {
+                    throw_cuda_t_edge_error(
+                        "linear source-slot upload",
+                        status);
+                }
+
+                algebra::record_cuda_h2d(
+                    checked_bytes(
+                        source_slots.size(),
+                        sizeof(std::uint32_t),
+                        "linear source slots"));
+
+                status = cudaMemcpy(
+                    device_linear_source_scales_,
+                    source_scales.data(),
+                    checked_bytes(
+                        source_scales.size(),
+                        sizeof(GpuFr),
+                        "linear source scales"),
+                    cudaMemcpyHostToDevice);
+
+                if (status != cudaSuccess)
+                {
+                    throw_cuda_t_edge_error(
+                        "linear source-scale upload",
+                        status);
+                }
+
+                algebra::record_cuda_h2d(
+                    checked_bytes(
+                        source_scales.size(),
+                        sizeof(GpuFr),
+                        "linear source scales"));
+
+                status = cudaMemcpy(
+                    device_linear_source_blinder_offsets_,
+                    source_blinder_offsets.data(),
+                    checked_bytes(
+                        source_blinder_offsets.size(),
+                        sizeof(std::size_t),
+                        "linear blinder offsets"),
+                    cudaMemcpyHostToDevice);
+
+                if (status != cudaSuccess)
+                {
+                    throw_cuda_t_edge_error(
+                        "linear blinder-offset upload",
+                        status);
+                }
+
+                algebra::record_cuda_h2d(
+                    checked_bytes(
+                        source_blinder_offsets.size(),
+                        sizeof(std::size_t),
+                        "linear blinder offsets"));
+
+                status = cudaMemcpy(
+                    device_linear_source_blinder_counts_,
+                    source_blinder_counts.data(),
+                    checked_bytes(
+                        source_blinder_counts.size(),
+                        sizeof(std::size_t),
+                        "linear blinder counts"),
+                    cudaMemcpyHostToDevice);
+
+                if (status != cudaSuccess)
+                {
+                    throw_cuda_t_edge_error(
+                        "linear blinder-count upload",
+                        status);
+                }
+
+                algebra::record_cuda_h2d(
+                    checked_bytes(
+                        source_blinder_counts.size(),
+                        sizeof(std::size_t),
+                        "linear blinder counts"));
+
+                if (packed_blinder_count != 0)
+                {
+                    status = cudaMemcpy(
+                        device_linear_source_blinders_,
+                        host_source_blinders.data(),
+                        checked_bytes(
+                            packed_blinder_count,
+                            sizeof(GpuFr),
+                            "linear source blinders"),
+                        cudaMemcpyHostToDevice);
+
+                    if (status != cudaSuccess)
+                    {
+                        throw_cuda_t_edge_error(
+                            "linear source-blinder upload",
+                            status);
+                    }
+
+                    algebra::record_cuda_h2d(
+                        checked_bytes(
+                            packed_blinder_count,
+                            sizeof(GpuFr),
+                            "linear source blinders"));
+                }
+
+                if (target_blinder_count != 0)
+                {
+                    status = cudaMemcpy(
+                        device_linear_target_blinder_,
+                        host_target_blinder.data(),
+                        checked_bytes(
+                            target_blinder_count,
+                            sizeof(GpuFr),
+                            "linear target blinder"),
+                        cudaMemcpyHostToDevice);
+
+                    if (status != cudaSuccess)
+                    {
+                        throw_cuda_t_edge_error(
+                            "linear target-blinder upload",
+                            status);
+                    }
+
+                    algebra::record_cuda_h2d(
+                        checked_bytes(
+                            target_blinder_count,
+                            sizeof(GpuFr),
+                            "linear target blinder"));
+                }
+
+                constexpr unsigned kBlockSize = 256;
+                if (target_size_ >
+                    std::numeric_limits<std::size_t>::max() -
+                        (kBlockSize - 1U))
+                {
+                    throw std::runtime_error(
+                        "CUDA t_edge linear grid size overflow");
+                }
+                const auto block_count_size =
+                    (target_size_ + kBlockSize - 1U) /
+                    kBlockSize;
+
+                if (block_count_size >
+                    std::numeric_limits<unsigned>::max())
+                {
+                    throw std::runtime_error(
+                        "CUDA t_edge linear grid overflow");
+                }
+
+                const auto root =
+                    algebra::FieldElement::root_of_unity(
+                        target_size_);
+                const auto zero_step =
+                    root.pow(domain_size_);
+                const auto shift_domain_power =
+                    shift_.pow(domain_size_);
+
+                const auto output_split_layout =
+                    output_layout == CudaTEdgeLeafLayout::Split
+                        ? std::uint8_t{1}
+                        : std::uint8_t{0};
+
+                t_edge_materialize_linear_kernel<<<
+                    static_cast<unsigned>(block_count_size),
+                    kBlockSize>>>(
+                    device_leaf_table_,
+                    device_leaf_split_layout_,
+                    device_linear_source_slots_,
+                    device_linear_source_scales_,
+                    device_linear_source_blinders_,
+                    device_linear_source_blinder_offsets_,
+                    device_linear_source_blinder_counts_,
+                    source_slots.size(),
+                    device_linear_target_blinder_,
+                    target_blinder_count,
+                    domain_size_,
+                    target_size_,
+                    gpu_field(shift_),
+                    gpu_field(root),
+                    gpu_field(shift_domain_power),
+                    gpu_field(zero_step),
+                    output_split_layout,
+                    device_leaf_slots_[target_slot]);
+
+                status = cudaGetLastError();
+
+                if (status != cudaSuccess)
+                {
+                    throw_cuda_t_edge_error(
+                        "linear materialization launch",
+                        status);
+                }
+
+                status = cudaStreamSynchronize(0);
+
+                if (status != cudaSuccess)
+                {
+                    throw_cuda_t_edge_error(
+                        "linear materialization synchronization",
+                        status);
+                }
+
+                algebra::record_cuda_stream_sync();
+                algebra::record_cuda_kernel_invocations(1);
+
+                host_leaf_split_layout_[target_slot] =
+                    output_split_layout;
+
+                status = cudaMemcpy(
+                    device_leaf_split_layout_ + target_slot,
+                    &host_leaf_split_layout_[target_slot],
+                    sizeof(std::uint8_t),
+                    cudaMemcpyHostToDevice);
+
+                if (status != cudaSuccess)
+                {
+                    throw_cuda_t_edge_error(
+                        "linear target-layout upload",
+                        status);
+                }
+
+                algebra::record_cuda_h2d(sizeof(std::uint8_t));
+                host_leaf_bound_[target_slot] = true;
                 return true;
             }
 
@@ -867,6 +1507,9 @@ namespace gatzk::protocol
                     host_leaf_split_layout_[slot] =
                         0;
 
+                    host_leaf_bound_[slot] = false;
+                    host_leaf_uploaded_prefix_[slot] = 0;
+
                     const auto layout_status =
                         cudaMemcpy(
                             device_leaf_split_layout_ +
@@ -882,6 +1525,14 @@ namespace gatzk::protocol
                             "fallback leaf-layout upload",
                             layout_status);
                     }
+
+                    algebra::record_cuda_h2d(sizeof(std::uint8_t));
+                }
+                else if (logical_offset !=
+                         host_leaf_uploaded_prefix_[slot])
+                {
+                    throw std::runtime_error(
+                        "CUDA t_edge leaf upload is not contiguous");
                 }
 
                 const auto byte_count =
@@ -904,6 +1555,14 @@ namespace gatzk::protocol
                         "leaf upload",
                         status);
                 }
+
+                algebra::record_cuda_h2d(byte_count);
+
+                host_leaf_uploaded_prefix_[slot] =
+                    logical_offset + count;
+                host_leaf_bound_[slot] =
+                    host_leaf_uploaded_prefix_[slot] ==
+                    target_size_;
             }
 
             void accumulate_term(
@@ -935,7 +1594,9 @@ namespace gatzk::protocol
                         access_slots[access] ==
                             kInvalidLeafSlot ||
                         access_slots[access] >=
-                            cache_slot_count_)
+                            cache_slot_count_ ||
+                        !host_leaf_bound_[
+                            access_slots[access]])
                     {
                         throw std::runtime_error(
                             "CUDA t_edge term has "
@@ -1025,6 +1686,10 @@ namespace gatzk::protocol
                         "invalid CUDA t_edge "
                         "leaf release");
                 }
+
+                host_leaf_bound_[slot] = false;
+                host_leaf_split_layout_[slot] = 0;
+                host_leaf_uploaded_prefix_[slot] = 0;
             }
 
             void finalize(
@@ -1091,6 +1756,8 @@ namespace gatzk::protocol
                         "quotient download",
                         status);
                 }
+
+                algebra::record_cuda_d2h(byte_count);
 
                 algebra::
                     record_cuda_kernel_invocations(
@@ -1171,6 +1838,166 @@ namespace gatzk::protocol
             }
 
         private:
+            void ensure_linear_buffers(
+                std::size_t source_count,
+                std::size_t source_blinder_count,
+                std::size_t target_blinder_count)
+            {
+                const auto ensure =
+                    [&](void **pointer,
+                        std::size_t *capacity,
+                        std::size_t required_bytes,
+                        const char *label)
+                {
+                    if (required_bytes == 0 ||
+                        (*pointer != nullptr &&
+                         *capacity >= required_bytes))
+                    {
+                        return;
+                    }
+
+                    if (*pointer != nullptr)
+                    {
+                        (void)cudaFree(*pointer);
+                        *pointer = nullptr;
+                        *capacity = 0;
+                    }
+
+                    const auto status =
+                        cudaMalloc(
+                            pointer,
+                            required_bytes);
+
+                    if (status != cudaSuccess)
+                    {
+                        throw_cuda_t_edge_error(
+                            label,
+                            status);
+                    }
+
+                    *capacity = required_bytes;
+                };
+
+                try
+                {
+                    ensure(
+                        reinterpret_cast<void **>(
+                            &device_linear_source_slots_),
+                        &device_linear_source_slots_capacity_bytes_,
+                        checked_bytes(
+                            source_count,
+                            sizeof(std::uint32_t),
+                            "linear source slots"),
+                        "linear source-slot allocation");
+
+                    ensure(
+                        reinterpret_cast<void **>(
+                            &device_linear_source_scales_),
+                        &device_linear_source_scales_capacity_bytes_,
+                        checked_bytes(
+                            source_count,
+                            sizeof(GpuFr),
+                            "linear source scales"),
+                        "linear source-scale allocation");
+
+                    ensure(
+                        reinterpret_cast<void **>(
+                            &device_linear_source_blinder_offsets_),
+                        &device_linear_source_blinder_offsets_capacity_bytes_,
+                        checked_bytes(
+                            source_count,
+                            sizeof(std::size_t),
+                            "linear blinder offsets"),
+                        "linear blinder-offset allocation");
+
+                    ensure(
+                        reinterpret_cast<void **>(
+                            &device_linear_source_blinder_counts_),
+                        &device_linear_source_blinder_counts_capacity_bytes_,
+                        checked_bytes(
+                            source_count,
+                            sizeof(std::size_t),
+                            "linear blinder counts"),
+                        "linear blinder-count allocation");
+
+                    ensure(
+                        reinterpret_cast<void **>(
+                            &device_linear_source_blinders_),
+                        &device_linear_source_blinders_capacity_bytes_,
+                        checked_bytes(
+                            source_blinder_count,
+                            sizeof(GpuFr),
+                            "linear source blinders"),
+                        "linear source-blinder allocation");
+
+                    ensure(
+                        reinterpret_cast<void **>(
+                            &device_linear_target_blinder_),
+                        &device_linear_target_blinder_capacity_bytes_,
+                        checked_bytes(
+                            target_blinder_count,
+                            sizeof(GpuFr),
+                            "linear target blinder"),
+                        "linear target-blinder allocation");
+                }
+                catch (...)
+                {
+                    release_linear_buffers_noexcept();
+                    throw;
+                }
+            }
+
+            void release_linear_buffers_noexcept() noexcept
+            {
+                if (device_linear_source_slots_ != nullptr)
+                {
+                    (void)cudaFree(device_linear_source_slots_);
+                }
+
+                if (device_linear_source_scales_ != nullptr)
+                {
+                    (void)cudaFree(device_linear_source_scales_);
+                }
+
+                if (device_linear_source_blinder_offsets_ != nullptr)
+                {
+                    (void)cudaFree(
+                        device_linear_source_blinder_offsets_);
+                }
+
+                if (device_linear_source_blinder_counts_ != nullptr)
+                {
+                    (void)cudaFree(
+                        device_linear_source_blinder_counts_);
+                }
+
+                if (device_linear_source_blinders_ != nullptr)
+                {
+                    (void)cudaFree(
+                        device_linear_source_blinders_);
+                }
+
+                if (device_linear_target_blinder_ != nullptr)
+                {
+                    (void)cudaFree(
+                        device_linear_target_blinder_);
+                }
+
+                device_linear_source_slots_ = nullptr;
+                device_linear_source_scales_ = nullptr;
+                device_linear_source_blinder_offsets_ = nullptr;
+                device_linear_source_blinder_counts_ = nullptr;
+                device_linear_source_blinders_ = nullptr;
+                device_linear_target_blinder_ = nullptr;
+
+                device_linear_source_slots_capacity_bytes_ = 0;
+                device_linear_source_scales_capacity_bytes_ = 0;
+                device_linear_source_blinder_offsets_capacity_bytes_ = 0;
+                device_linear_source_blinder_counts_capacity_bytes_ = 0;
+                device_linear_source_blinders_capacity_bytes_ = 0;
+                device_linear_target_blinder_capacity_bytes_ = 0;
+            }
+
             void release_program_noexcept() noexcept
             {
                 if (device_instructions_ !=
@@ -1219,6 +2046,7 @@ namespace gatzk::protocol
             void release_all_noexcept() noexcept
             {
                 release_program_noexcept();
+                release_linear_buffers_noexcept();
 
                 for (auto *slot :
                      device_leaf_slots_)
@@ -1290,6 +2118,12 @@ namespace gatzk::protocol
             std::vector<std::uint8_t>
                 host_leaf_split_layout_;
 
+            std::vector<bool>
+                host_leaf_bound_;
+
+            std::vector<std::size_t>
+                host_leaf_uploaded_prefix_;
+
             std::uint8_t
                 *device_leaf_split_layout_ =
                     nullptr;
@@ -1299,6 +2133,42 @@ namespace gatzk::protocol
 
             GpuFr *device_zero_inverse_cycle_ =
                 nullptr;
+
+            std::uint32_t *device_linear_source_slots_ =
+                nullptr;
+
+            GpuFr *device_linear_source_scales_ =
+                nullptr;
+
+            GpuFr *device_linear_source_blinders_ =
+                nullptr;
+
+            std::size_t *device_linear_source_blinder_offsets_ =
+                nullptr;
+
+            std::size_t *device_linear_source_blinder_counts_ =
+                nullptr;
+
+            GpuFr *device_linear_target_blinder_ =
+                nullptr;
+
+            std::size_t
+                device_linear_source_slots_capacity_bytes_ = 0;
+
+            std::size_t
+                device_linear_source_scales_capacity_bytes_ = 0;
+
+            std::size_t
+                device_linear_source_blinder_offsets_capacity_bytes_ = 0;
+
+            std::size_t
+                device_linear_source_blinder_counts_capacity_bytes_ = 0;
+
+            std::size_t
+                device_linear_source_blinders_capacity_bytes_ = 0;
+
+            std::size_t
+                device_linear_target_blinder_capacity_bytes_ = 0;
 
             std::size_t
                 zero_inverse_cycle_size_ = 0;
@@ -1351,52 +2221,127 @@ namespace gatzk::protocol
             cuda_field_hotspots_available();
     }
 
+    bool cuda_t_edge_leaf_exact_ntt_supported(
+        std::size_t target_size)
+    {
+        return target_size >= 2 &&
+               (target_size & (target_size - 1U)) == 0U &&
+               target_size / 2 <=
+                   kMaximumCudaLeafNttSize;
+    }
+
     bool cuda_t_edge_executor_can_admit(
         std::size_t target_size,
-        std::size_t cache_slot_count)
+        std::size_t cache_slot_count,
+        bool leaf_exact_ntt_supported)
     {
         if (!cuda_t_edge_executor_available() ||
             target_size == 0 ||
-            cache_slot_count == 0)
+            cache_slot_count == 0 ||
+            (target_size &
+             (target_size - 1U)) != 0U ||
+            cache_slot_count >
+                std::numeric_limits<
+                    std::uint32_t>::max())
         {
             return false;
         }
 
-        if (target_size >
-            std::numeric_limits<
-                std::size_t>::max() /
-                sizeof(GpuFr))
+        std::size_t leaf_bytes = 0;
+        if (!checked_mul_size(
+                target_size,
+                sizeof(GpuFr),
+                &leaf_bytes))
         {
             return false;
         }
 
-        const auto leaf_bytes =
-            target_size *
-            sizeof(GpuFr);
-
-        if (cache_slot_count >
-            std::numeric_limits<
-                std::size_t>::max() /
-                leaf_bytes)
+        std::size_t leaf_cache_bytes = 0;
+        if (!checked_mul_size(
+                cache_slot_count,
+                leaf_bytes,
+                &leaf_cache_bytes))
         {
             return false;
         }
 
-        const auto leaf_cache_bytes =
-            cache_slot_count *
-            leaf_bytes;
-
-        if (leaf_cache_bytes >
-            std::numeric_limits<
-                std::size_t>::max() -
-                leaf_bytes)
+        std::size_t ntt_workspace_bytes = 0;
+        if (leaf_exact_ntt_supported &&
+            !checked_mul_size(
+                leaf_bytes,
+                2,
+                &ntt_workspace_bytes))
         {
             return false;
         }
 
-        const auto required_bytes =
-            leaf_cache_bytes +
-            leaf_bytes;
+        // ICICLE is initialized lazily by the first CUDA NTT call.  The
+        // pinned generic-domain implementation allocates one max-domain
+        // managed twiddle vector plus small fixed tables.  Account for the
+        // vector here so admission cannot succeed before that allocation and
+        // then fail after source materialization starts.
+        constexpr std::size_t kMaximumCudaNttSize =
+            std::size_t{1} << 24;
+        std::size_t icicle_domain_bytes = 0;
+        if (!checked_mul_size(
+                kMaximumCudaNttSize + 1,
+                sizeof(GpuFr),
+                &icicle_domain_bytes))
+        {
+            return false;
+        }
+
+        // The domain's small internal/basic tables and executor-side CUDA
+        // bookkeeping are bounded independent of the graph workload.  Keep a
+        // fixed conservative allowance rather than silently omitting them.
+        constexpr std::size_t kFixedMetadataBytes =
+            std::size_t{1} << 20;
+
+        std::size_t table_bytes = 0;
+        if (!checked_mul_size(
+                cache_slot_count,
+                sizeof(GpuFr *),
+                &table_bytes))
+        {
+            return false;
+        }
+
+        std::size_t layout_bytes = 0;
+        if (!checked_mul_size(
+                cache_slot_count,
+                sizeof(std::uint8_t),
+                &layout_bytes))
+        {
+            return false;
+        }
+
+        std::size_t required_bytes = 0;
+        const auto add_required =
+            [&required_bytes](std::size_t value)
+        {
+            return checked_add_size(
+                required_bytes,
+                value,
+                &required_bytes);
+        };
+
+        // Leaf slots, quotient, the most conservative possible inverse-cycle
+        // vector (domain size >= 1), leaf pointer/layout tables, ICICLE domain
+        // storage and fixed metadata are all live at the same point in the
+        // production route.  The two target-sized NTT buffers are live only
+        // when exact direct leaf materialization is actually supported.
+        if (!add_required(leaf_cache_bytes) ||
+            !add_required(leaf_bytes) ||
+            (leaf_exact_ntt_supported &&
+             !add_required(ntt_workspace_bytes)) ||
+            !add_required(leaf_bytes) ||
+            !add_required(table_bytes) ||
+            !add_required(layout_bytes) ||
+            !add_required(icicle_domain_bytes) ||
+            !add_required(kFixedMetadataBytes))
+        {
+            return false;
+        }
 
         int device = 0;
 
@@ -1519,9 +2464,13 @@ namespace gatzk::protocol
                             : host_total_bytes /
                                   16);
 
-                if (host_available_bytes <=
-                    reserve_bytes +
-                        kIntegratedTransformHeadroom)
+                std::size_t minimum_available_bytes = 0;
+                if (!checked_add_size(
+                        reserve_bytes,
+                        kIntegratedTransformHeadroom,
+                        &minimum_available_bytes) ||
+                    host_available_bytes <=
+                        minimum_available_bytes)
                 {
                     return false;
                 }
@@ -1531,11 +2480,7 @@ namespace gatzk::protocol
                     reserve_bytes -
                     kIntegratedTransformHeadroom;
 
-                if (required_bytes >
-                    safely_usable)
-                {
-                    return false;
-                }
+                return required_bytes <= safely_usable;
             }
 
             // UMA 上 cudaMemGetInfo() 不能代表可回收
@@ -1568,8 +2513,7 @@ namespace gatzk::protocol
                 kMinimumCudaReserveBytes,
                 total_bytes / 8);
 
-        if (free_bytes <=
-            reserve_bytes)
+        if (free_bytes <= reserve_bytes)
         {
             return false;
         }

@@ -1,7 +1,9 @@
 import hashlib
 import importlib.util
 import json
+import os
 import pathlib
+import shutil
 import tempfile
 import unittest
 
@@ -95,6 +97,8 @@ class SecureAggregationRuntimeTests(unittest.TestCase):
             "registry_digest": self.digest("registry"),
             "security_budget_ledger_digest": self.digest("budget-ledger"),
             "security_budget_exact": "1/2",
+            "protocol_schema_id": self.digest("protocol-schema"),
+            "instance_schema_hash": self.digest("instance-schema"),
             "public_input_digest": self.digest("public-input"),
             "topology_digest": self.digest("topology"),
         }
@@ -104,10 +108,90 @@ class SecureAggregationRuntimeTests(unittest.TestCase):
             "reference_consistency_passed": True,
             "tamper_tests_passed": True,
             "tamper_test_case_map": self.tamper_map(),
+            "tamper_tests_ms": 1.0,
             "security_budget_passed": True,
             "security_budget_ledger_digest": self.digest("budget-ledger"),
             "security_budget_exact": "1/2",
         }
+
+    def exact_attestation(self, manifest=None, **overrides):
+        """Build the producer's strict 21-field attestation object."""
+        manifest = manifest or self.export_acceptance_manifest()
+        value = {
+            "binary_sha256": manifest["binary_hash"],
+            "build_identity": manifest["build_identity"],
+            "build_receipt_sha256": manifest["build_receipt_hash"],
+            "config_sha256": manifest["config_sha256"],
+            "format": AGGREGATOR.TAMPER_ATTESTATION_FORMAT,
+            "instance_schema_hash": manifest["instance_schema_hash"],
+            "proof_sha256": manifest["proof_hash"],
+            "protocol_schema_id": manifest["protocol_schema_id"],
+            "public_input_digest": manifest["public_input_digest"],
+            "public_output_digest": manifest["proof_public_output_hash"],
+            "source_manifest_sha256": manifest["source_manifest_hash"],
+            "source_tree_hash": manifest["source_tree_hash"],
+            "srs_manifest_sha256": manifest["srs_manifest_hash"],
+            "suite_id": AGGREGATOR.TAMPER_ATTESTATION_SUITE_ID,
+            "tamper_test_case_map": self.tamper_map(),
+            "tamper_tests_ms": "1.000",
+            "tamper_tests_passed": "true",
+            "topology_digest": manifest["topology_digest"],
+            "trusted_registry_digest": manifest["trusted_registry_digest"],
+            "verifier_registry_digest": manifest["verifier_registry_digest"],
+        }
+        value.update(overrides)
+        return value
+
+    def loaded_export_manifest(self, manifest=None, **attestation_overrides):
+        manifest = manifest or self.export_acceptance_manifest()
+        run_dir = pathlib.Path(
+            tempfile.mkdtemp(prefix=".synthetic-export-", dir=ROOT / "tests")
+        )
+        self.addCleanup(shutil.rmtree, run_dir, ignore_errors=True)
+        proof_path = run_dir / "proof.bin"
+        proof_path.write_bytes(b"synthetic proof")
+        manifest["proof_hash"] = AGGREGATOR.sha256_file(proof_path)
+        manifest["proof_size_bytes"] = str(proof_path.stat().st_size)
+        attestation = self.exact_attestation(manifest, **attestation_overrides)
+        attestation_path, attestation_digest = self.write_attestation(
+            run_dir, attestation, "attestation.json"
+        )
+        manifest_path = run_dir / "run_manifest.json"
+        manifest_path.write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
+        return EXPORTER.LoadedManifest(
+            manifest,
+            manifest_path,
+            str(attestation_path.relative_to(ROOT)),
+            attestation_digest,
+        )
+
+    def write_attestation(self, directory, value=None, filename="attestation.json"):
+        path = pathlib.Path(directory) / filename
+        path.relative_to(ROOT / "tests")
+        path.write_text(
+            json.dumps(value or self.exact_attestation(), sort_keys=True),
+            encoding="utf-8",
+        )
+        return path, AGGREGATOR.sha256_file(path)
+
+    def complete_security_manifest(self, manifest, proof_path):
+        """Fill the direct security gate's complete binding surface."""
+        defaults = self.export_acceptance_manifest()
+        for key, value in defaults.items():
+            manifest.setdefault(key, value)
+        manifest["proof_hash"] = AGGREGATOR.sha256_file(proof_path)
+        return manifest
+
+    def security_attestation(self, manifest, proof_path, **overrides):
+        manifest = self.complete_security_manifest(manifest, proof_path)
+        directory = pathlib.Path(
+            tempfile.mkdtemp(prefix=".synthetic-security-", dir=ROOT / "tests")
+        )
+        self.addCleanup(shutil.rmtree, directory, ignore_errors=True)
+        return self.write_attestation(
+            directory,
+            self.exact_attestation(manifest, **overrides),
+        )
 
     def acceptance_manifest(self):
         return {
@@ -132,6 +216,8 @@ class SecureAggregationRuntimeTests(unittest.TestCase):
                 "reference_consistency_passed": True,
                 "tamper_tests_passed": True,
                 "security_budget_passed": True,
+                "protocol_schema_id": self.digest("protocol-schema"),
+                "instance_schema_hash": self.digest("instance-schema"),
                 "verifier_reads_witness": False,
                 "private_plain_value_count": 0,
                 "proof_payload_audit_status": "passed",
@@ -189,8 +275,9 @@ class SecureAggregationRuntimeTests(unittest.TestCase):
 
     def test_benchmark_export_requires_canonical_timing_schema(self):
         manifest = self.export_acceptance_manifest()
-        row = EXPORTER.make_success_row("cora", manifest)
+        row = EXPORTER.make_success_row("cora", self.loaded_export_manifest(manifest))
         self.assertEqual(row["timing_schema"], EXPORTER.CANONICAL_TIMING_SCHEMA)
+        manifest = self.loaded_export_manifest()
         manifest["timing_schema"] = "malformed_timing_schema"
         with self.assertRaises(ValueError):
             EXPORTER.make_success_row("cora", manifest)
@@ -203,7 +290,7 @@ class SecureAggregationRuntimeTests(unittest.TestCase):
             else:
                 manifest["input_preprocess_id"] = value
             with self.assertRaises(ValueError):
-                EXPORTER.make_success_row("cora", manifest)
+                EXPORTER.make_success_row("cora", self.loaded_export_manifest(manifest))
 
     def test_benchmark_export_requires_complete_acceptance_state(self):
         for field in (
@@ -216,7 +303,7 @@ class SecureAggregationRuntimeTests(unittest.TestCase):
             manifest = self.export_acceptance_manifest()
             manifest[field] = "false"
             with self.assertRaises(ValueError, msg=field):
-                EXPORTER.make_success_row("cora", manifest)
+                EXPORTER.make_success_row("cora", self.loaded_export_manifest(manifest))
 
     def test_benchmark_export_rejects_incomplete_security_audit(self):
         for field in (
@@ -233,7 +320,7 @@ class SecureAggregationRuntimeTests(unittest.TestCase):
             else:
                 manifest.pop(field)
             with self.assertRaises(ValueError, msg=field):
-                EXPORTER.make_success_row("cora", manifest)
+                EXPORTER.make_success_row("cora", self.loaded_export_manifest(manifest))
 
     def test_benchmark_export_load_binds_manifest_to_proof_bytes(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -246,6 +333,254 @@ class SecureAggregationRuntimeTests(unittest.TestCase):
             )
             with self.assertRaises(ValueError):
                 EXPORTER.load_manifest(run_dir)
+
+    def test_external_tamper_attestation_validates_exact_producer_schema(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / "tests") as temporary:
+            path, digest = self.write_attestation(temporary)
+            value = AGGREGATOR.load_tamper_attestation(ROOT, path, digest, "synthetic")
+            self.assertTrue(value["tamper_tests_passed"])
+            self.assertEqual(value["tamper_test_case_map"], self.tamper_map())
+            self.assertEqual(value["tamper_attestation_sha256"], digest)
+
+    def test_external_tamper_attestation_rejects_unknown_missing_and_duplicate_fields(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / "tests") as temporary:
+            value = self.exact_attestation()
+            unknown = dict(value)
+            unknown["unexpected"] = "test-only"
+            path, digest = self.write_attestation(temporary, unknown, "unknown.json")
+            with self.assertRaises(ValueError):
+                AGGREGATOR.load_tamper_attestation(ROOT, path, digest, "unknown")
+
+            missing = dict(value)
+            del missing["proof_sha256"]
+            path, digest = self.write_attestation(temporary, missing, "missing.json")
+            with self.assertRaises(ValueError):
+                AGGREGATOR.load_tamper_attestation(ROOT, path, digest, "missing")
+
+            encoded = json.dumps(value, sort_keys=True)[:-1]
+            encoded += ',"format":"zkgat_protocol_tamper_attestation"}'
+            path = pathlib.Path(temporary) / "duplicate.json"
+            path.write_text(encoded, encoding="utf-8")
+            with self.assertRaises(ValueError):
+                AGGREGATOR.load_tamper_attestation(
+                    ROOT, path, AGGREGATOR.sha256_file(path), "duplicate"
+                )
+
+    def test_external_tamper_attestation_rejects_identity_and_state_failures(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / "tests") as temporary:
+            for field in AGGREGATOR.TAMPER_ATTESTATION_HASH_FIELDS:
+                value = self.exact_attestation()
+                value[field] = "not-a-sha256"
+                path, digest = self.write_attestation(temporary, value, f"bad_{field}.json")
+                with self.assertRaises(ValueError, msg=field):
+                    AGGREGATOR.load_tamper_attestation(ROOT, path, digest, field)
+
+            malformed_values = (
+                ("format", "wrong-format"),
+                ("suite_id", "wrong-suite"),
+                ("tamper_tests_passed", "false"),
+                ("tamper_tests_ms", "0"),
+                ("tamper_tests_ms", "-1"),
+                ("tamper_tests_ms", "nan"),
+                ("tamper_test_case_map", ""),
+            )
+            for field, replacement in malformed_values:
+                value = self.exact_attestation()
+                value[field] = replacement
+                path, digest = self.write_attestation(
+                    temporary, value, f"malformed_{field}_{replacement}.json"
+                )
+                with self.assertRaises(ValueError, msg=f"{field}={replacement}"):
+                    AGGREGATOR.load_tamper_attestation(ROOT, path, digest, "malformed")
+
+            value = self.exact_attestation()
+            path, _ = self.write_attestation(temporary, value, "wrong_digest.json")
+            with self.assertRaises(ValueError):
+                AGGREGATOR.load_tamper_attestation(
+                    ROOT, path, self.digest("wrong"), "wrong-digest"
+                )
+
+    def test_external_tamper_attestation_rejects_unknown_duplicate_missing_and_bad_case_order(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / "tests") as temporary:
+            cases = list(AGGREGATOR.REQUIRED_TAMPER_CASE_ORDER)
+            variants = {
+                "unknown": "unknown_case=reject," + ",".join(
+                    f"{name}=reject" for name in cases[:-1]
+                ),
+                "duplicate": ",".join(
+                    [f"{name}=reject" for name in cases] + ["codec_tag=reject"]
+                ),
+                "missing": ",".join(f"{name}=reject" for name in cases[:-1]),
+                "wrong_order": ",".join(
+                    [f"{cases[1]}=reject", f"{cases[0]}=reject"]
+                    + [f"{name}=reject" for name in cases[2:]]
+                ),
+                "failed": ",".join(
+                    f"{name}={'fail' if index == 0 else 'reject'}"
+                    for index, name in enumerate(cases)
+                ),
+            }
+            for name, case_map in variants.items():
+                value = self.exact_attestation(tamper_test_case_map=case_map)
+                path, digest = self.write_attestation(temporary, value, f"case_{name}.json")
+                with self.assertRaises(ValueError, msg=name):
+                    AGGREGATOR.load_tamper_attestation(ROOT, path, digest, name)
+
+    def test_external_tamper_attestation_path_is_tests_canonical_and_symlink_free(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / "tests") as temporary:
+            directory = pathlib.Path(temporary)
+            value = self.exact_attestation()
+            path, digest = self.write_attestation(directory, value, "regular.json")
+            self.assertTrue(
+                AGGREGATOR.load_tamper_attestation(ROOT, path, digest, "regular")
+            )
+
+            outside = pathlib.Path(tempfile.mkdtemp(prefix=".synthetic-outside-"))
+            self.addCleanup(shutil.rmtree, outside, ignore_errors=True)
+            outside_path = outside / "outside.json"
+            outside_path.write_text(json.dumps(value, sort_keys=True), encoding="utf-8")
+            outside_digest = AGGREGATOR.sha256_file(outside_path)
+            for candidate in (outside_path, ROOT / "results" / "attestation.json"):
+                with self.assertRaises(ValueError):
+                    AGGREGATOR.load_tamper_attestation(
+                        ROOT, candidate, outside_digest, "non-tests"
+                    )
+
+            symlink = directory / "symlink.json"
+            os.symlink(path, symlink)
+            with self.assertRaises(ValueError):
+                AGGREGATOR.load_tamper_attestation(
+                    ROOT, symlink, digest, "symlink"
+                )
+
+    def test_verified_attestation_and_exporter_reject_direct_api_bypass(self):
+        value = self.exact_attestation()
+        with self.assertRaises(ValueError):
+            AGGREGATOR.check_verified_tamper_attestation(
+                ROOT, value, self.digest("forged"), "forged-mapping"
+            )
+        with self.assertRaises(ValueError):
+            EXPORTER.make_success_row("cora", self.export_acceptance_manifest())
+        with self.assertRaises((TypeError, ValueError)):
+            EXPORTER.LoadedManifest(self.export_acceptance_manifest(), value)
+
+    def test_external_tamper_attestation_manifest_binding_covers_all_identity_fields(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / "tests") as temporary:
+            run_dir = pathlib.Path(temporary)
+            proof_path = run_dir / "proof.bin"
+            proof_path.write_bytes(b"synthetic proof")
+            manifest = self.export_acceptance_manifest()
+            manifest["proof_hash"] = AGGREGATOR.sha256_file(proof_path)
+            value = self.exact_attestation(manifest)
+            path, digest = self.write_attestation(run_dir, value)
+            result = AGGREGATOR.check_tamper_attestation_manifest_binding(
+                ROOT,
+                run_dir,
+                proof_path,
+                manifest,
+                str(path.relative_to(ROOT)),
+                digest,
+                "synthetic/binding",
+            )
+            self.assertTrue(result["tamper_attestation_verified"])
+
+            for attestation_field in (
+                "source_tree_hash",
+                "source_manifest_sha256",
+                "build_receipt_sha256",
+                "binary_sha256",
+                "build_identity",
+                "srs_manifest_sha256",
+                "protocol_schema_id",
+                "instance_schema_hash",
+                "public_input_digest",
+                "public_output_digest",
+                "topology_digest",
+                "trusted_registry_digest",
+                "verifier_registry_digest",
+                "config_sha256",
+                "proof_sha256",
+            ):
+                mutated = dict(value)
+                mutated[attestation_field] = self.digest("binding-mismatch")
+                bad_path, bad_digest = self.write_attestation(
+                    run_dir, mutated, f"bad_{attestation_field}.json"
+                )
+                with self.assertRaises(ValueError, msg=attestation_field):
+                    AGGREGATOR.check_tamper_attestation_manifest_binding(
+                        ROOT,
+                        run_dir,
+                        proof_path,
+                        manifest,
+                        str(bad_path.relative_to(ROOT)),
+                        bad_digest,
+                        f"synthetic/{attestation_field}",
+                    )
+
+    def test_security_gate_requires_external_attestation_and_uses_its_map(self):
+        proof_bytes = b"synthetic proof"
+        with tempfile.TemporaryDirectory() as temporary:
+            proof_path = pathlib.Path(temporary) / "proof.bin"
+            proof_path.write_bytes(proof_bytes)
+            manifest = {
+                "verifier_reads_witness": "false",
+                "private_plain_value_count": "0",
+                "proof_payload_audit_status": "passed",
+                "reference_consistency_passed": "true",
+                "security_budget_passed": "true",
+                "security_budget_exact": "1/2",
+                "proof_hash": hashlib.sha256(proof_bytes).hexdigest(),
+                "secure_trace_logits_hash": self.digest("public-output"),
+                "reference_quant_logits_hash": self.digest("public-output"),
+                "proof_public_output_hash": self.digest("public-output"),
+                "public_input_digest": self.digest("public-input"),
+                "topology_digest": self.digest("topology"),
+                "source_tree_hash": self.digest("source-tree"),
+                "source_manifest_hash": self.digest("source-manifest"),
+                "binary_hash": self.digest("binary"),
+                "build_identity": self.digest("build"),
+                "build_receipt_hash": self.digest("build-receipt"),
+                "verifier_report_hash": self.digest("verifier-report"),
+                "trusted_registry_digest": self.digest("registry"),
+                "verifier_registry_digest": self.digest("registry"),
+                "security_budget_ledger_digest": self.digest("budget-ledger"),
+                "quant_config_hash": self.digest("quant-config"),
+                "srs_manifest_hash": self.digest("srs-manifest"),
+                "public_metadata_hash": self.digest("proof-specific-metadata"),
+                "static_table_hash": self.digest("static-tables"),
+            }
+            self.complete_security_manifest(manifest, proof_path)
+            with self.assertRaises(ValueError):
+                AGGREGATOR.check_security(
+                    manifest,
+                    proof_path,
+                    self.report(),
+                    self.registration(),
+                    "synthetic/missing-attestation",
+                )
+            attestation_path, attestation_digest = self.security_attestation(
+                manifest, proof_path
+            )
+            security = AGGREGATOR.check_security(
+                manifest,
+                proof_path,
+                self.report(),
+                self.registration(),
+                "synthetic/external-attestation",
+                str(attestation_path.relative_to(ROOT)),
+                attestation_digest,
+                ROOT,
+            )
+            self.assertEqual(security["tamper_test_case_map"], self.tamper_map())
+
+    def test_pending_local_tamper_state_does_not_promote_to_export_pass(self):
+        manifest = self.export_acceptance_manifest()
+        manifest["tamper_tests_passed"] = False
+        manifest["tamper_test_case_map"] = ""
+        manifest["tamper_tests_ms"] = 0.0
+        row = EXPORTER.make_success_row("cora", self.loaded_export_manifest(manifest))
+        self.assertTrue(row["tamper_tests_passed"])
+        self.assertEqual(row["tamper_test_case_map"], self.tamper_map())
 
     def test_single_run_acceptance_rejects_verified_verifier_mismatch(self):
         manifest = self.acceptance_manifest()
@@ -330,6 +665,9 @@ class SecureAggregationRuntimeTests(unittest.TestCase):
                 for invalid in ("", "not-a-sha256"):
                     mutated = dict(manifest)
                     mutated[field] = invalid
+                    attestation_path, attestation_digest = self.security_attestation(
+                        mutated, proof_path
+                    )
                     with self.assertRaises(ValueError):
                         AGGREGATOR.check_security(
                             mutated,
@@ -337,6 +675,9 @@ class SecureAggregationRuntimeTests(unittest.TestCase):
                             self.report(),
                             self.registration(),
                             f"synthetic/cpu/{field}",
+                            str(attestation_path.relative_to(ROOT)),
+                            attestation_digest,
+                            ROOT,
                         )
 
     def test_cpu_cuda_pair_hash_mutation_fails_closed(self):
@@ -395,12 +736,19 @@ class SecureAggregationRuntimeTests(unittest.TestCase):
                 "public_metadata_hash": self.digest("proof-specific-metadata"),
                 "static_table_hash": self.digest("static-tables"),
             }
+            self.complete_security_manifest(manifest, proof_path)
+            attestation_path, attestation_digest = self.security_attestation(
+                manifest, proof_path
+            )
             security = AGGREGATOR.check_security(
                 manifest,
                 proof_path,
                 self.report(),
                 self.registration(),
                 "synthetic/cpu",
+                str(attestation_path.relative_to(ROOT)),
+                attestation_digest,
+                ROOT,
             )
             self.assertTrue(security["reference_consistency_passed"])
             self.assertNotIn(
@@ -443,6 +791,10 @@ class SecureAggregationRuntimeTests(unittest.TestCase):
                 "public_metadata_hash": self.digest("proof-specific-metadata"),
                 "static_table_hash": self.digest("static-tables"),
             }
+            self.complete_security_manifest(manifest, proof_path)
+            attestation_path, attestation_digest = self.security_attestation(
+                manifest, proof_path
+            )
             with self.assertRaises(ValueError):
                 AGGREGATOR.check_security(
                     manifest,
@@ -450,6 +802,9 @@ class SecureAggregationRuntimeTests(unittest.TestCase):
                     self.report(),
                     self.registration(),
                     "synthetic/cpu",
+                    str(attestation_path.relative_to(ROOT)),
+                    attestation_digest,
+                    ROOT,
                 )
 
     def test_wrong_external_registry_digest_is_rejected(self):
@@ -502,6 +857,10 @@ class SecureAggregationRuntimeTests(unittest.TestCase):
                 "public_metadata_hash": self.digest("proof-specific-metadata"),
                 "static_table_hash": self.digest("static-tables"),
             }
+            self.complete_security_manifest(manifest, proof_path)
+            attestation_path, attestation_digest = self.security_attestation(
+                manifest, proof_path
+            )
             report = self.report()
             report["security_budget_ledger_digest"] = self.digest("different-ledger")
             with self.assertRaises(ValueError):
@@ -511,6 +870,9 @@ class SecureAggregationRuntimeTests(unittest.TestCase):
                     report,
                     self.registration(),
                     "synthetic/cpu",
+                    str(attestation_path.relative_to(ROOT)),
+                    attestation_digest,
+                    ROOT,
                 )
 
 

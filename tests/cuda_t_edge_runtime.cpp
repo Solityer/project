@@ -1,6 +1,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -19,6 +20,9 @@ namespace
     using gatzk::protocol::TEdgeProgramInstruction;
     using gatzk::protocol::TEdgeProgramOpcode;
     using gatzk::protocol::TEdgeProgramTerm;
+
+    using gatzk::protocol::CudaTEdgeLinearSource;
+    using gatzk::protocol::CudaTEdgeLeafLayout;
 
     TEdgeBoundProgram make_program()
     {
@@ -201,6 +205,109 @@ namespace
         return evaluations;
     }
 
+    std::vector<FieldElement> materialize_cpu_coset(
+        const std::vector<FieldElement> &evaluations,
+        const std::vector<FieldElement> &blinder,
+        std::size_t domain_size,
+        std::size_t target_size,
+        const FieldElement &shift)
+    {
+        if (evaluations.size() != domain_size ||
+            domain_size == 0 ||
+            target_size == 0 ||
+            target_size % domain_size != 0 ||
+            (domain_size & (domain_size - 1U)) != 0 ||
+            (target_size & (target_size - 1U)) != 0 ||
+            blinder.size() > target_size - domain_size)
+        {
+            throw std::runtime_error(
+                "invalid CUDA t_edge linear CPU fixture");
+        }
+
+        std::vector<FieldElement> coefficients = evaluations;
+        gatzk::algebra::ntt_plan(domain_size)->intt(
+            FieldElement::mutable_native_array_data(
+                coefficients.data()));
+        coefficients.resize(target_size, FieldElement::zero());
+        for (std::size_t index = 0; index < blinder.size(); ++index)
+        {
+            coefficients[index] -= blinder[index];
+            coefficients[domain_size + index] += blinder[index];
+        }
+
+        auto shift_power = FieldElement::one();
+        for (auto &coefficient : coefficients)
+        {
+            coefficient *= shift_power;
+            shift_power *= shift;
+        }
+        gatzk::algebra::ntt_plan(target_size)->ntt(
+            FieldElement::mutable_native_array_data(
+                coefficients.data()));
+        return coefficients;
+    }
+
+    TEdgeBoundProgram make_linear_program()
+    {
+        TEdgeBoundProgram program;
+        program.accesses = {
+            TEdgeProgramAccess{
+                .label = "derived",
+                .rotated = false,
+            },
+        };
+        program.instructions = {
+            TEdgeProgramInstruction{
+                .opcode = TEdgeProgramOpcode::LoadAccess,
+                .operand = 0,
+            },
+        };
+        program.terms = {
+            TEdgeProgramTerm{
+                .instruction_begin = 0,
+                .instruction_end = 1,
+                .alpha_scale = FieldElement::one(),
+                .required_accesses = {0},
+                .maximum_stack_depth = 1,
+            },
+        };
+        program.maximum_stack_depth = 1;
+        return program;
+    }
+
+    template <typename Function>
+    void require_throw(Function &&function, const std::string &label)
+    {
+        try
+        {
+            function();
+        }
+        catch (const std::exception &)
+        {
+            return;
+        }
+        throw std::runtime_error(
+            label + " unexpectedly accepted");
+    }
+
+    FieldElement evaluate_blinder(
+        const std::vector<FieldElement> &blinder,
+        const FieldElement &point)
+    {
+        FieldElement value = FieldElement::zero();
+        for (auto it = blinder.rbegin(); it != blinder.rend(); ++it)
+        {
+            value *= point;
+            value += *it;
+        }
+        return value;
+    }
+
+    void require_equal(
+        const std::vector<FieldElement> &actual,
+        const std::vector<FieldElement> &expected,
+        const std::string &label);
+
     std::unique_ptr<
         gatzk::protocol::CudaTEdgeExecutor>
     make_executor(
@@ -253,6 +360,374 @@ namespace
             });
     }
 
+    std::unique_ptr<gatzk::protocol::CudaTEdgeExecutor>
+    make_linear_executor(
+        std::size_t domain_size,
+        std::size_t target_size,
+        const FieldElement &shift)
+    {
+        auto executor = gatzk::protocol::create_cuda_t_edge_executor(
+            domain_size,
+            target_size,
+            shift,
+            FieldElement::root_of_unity(domain_size),
+            3);
+        if (executor == nullptr)
+        {
+            throw std::runtime_error(
+                "CUDA t_edge linear executor factory returned null");
+        }
+        static const auto program = make_linear_program();
+        executor->prepare_program(program);
+        return executor;
+    }
+
+    std::vector<FieldElement> expected_linear_output(
+        const std::vector<FieldElement> &source_split,
+        const std::vector<FieldElement> &source_contiguous,
+        const std::vector<FieldElement> &source_blinder_split,
+        const std::vector<FieldElement> &source_blinder_contiguous,
+        const std::vector<FieldElement> &target_blinder,
+        const FieldElement &source_split_scale,
+        const FieldElement &source_contiguous_scale,
+        std::size_t domain_size,
+        std::size_t target_size,
+        const FieldElement &shift)
+    {
+        if (source_split.size() != target_size ||
+            source_contiguous.size() != target_size)
+        {
+            throw std::runtime_error(
+                "invalid CUDA t_edge linear expected source shape");
+        }
+
+        const auto root = FieldElement::root_of_unity(target_size);
+        const auto one = FieldElement::one();
+        auto point = shift;
+        std::vector<FieldElement> expected(
+            target_size,
+            FieldElement::zero());
+
+        for (std::size_t index = 0; index < target_size; ++index)
+        {
+            const auto zero = point.pow(domain_size) - one;
+            if (zero.is_zero())
+            {
+                throw std::runtime_error(
+                    "CUDA t_edge linear fixture overlaps base domain");
+            }
+            const auto target_value =
+                source_split[index] * source_split_scale +
+                source_contiguous[index] * source_contiguous_scale +
+                zero *
+                    (evaluate_blinder(target_blinder, point) -
+                     source_split_scale *
+                         evaluate_blinder(source_blinder_split, point) -
+                     source_contiguous_scale *
+                         evaluate_blinder(source_blinder_contiguous, point));
+            expected[index] = target_value * zero.inv();
+            point *= root;
+        }
+        return expected;
+    }
+
+    void materialize_linear_sources(
+        gatzk::protocol::CudaTEdgeExecutor &executor,
+        const std::vector<FieldElement> &source_evaluations,
+        const std::vector<FieldElement> &source_blinder_split,
+        const std::vector<FieldElement> &source_contiguous,
+        std::size_t domain_size,
+        std::size_t target_size,
+        const FieldElement &shift)
+    {
+        if (!executor.materialize_evaluation_leaf(
+                0,
+                FieldElement::native_array_data(
+                    source_evaluations.data()),
+                source_evaluations.size(),
+                FieldElement::native_array_data(
+                    source_blinder_split.data()),
+                source_blinder_split.size()))
+        {
+            throw std::runtime_error(
+                "CUDA t_edge split source materialization declined");
+        }
+        executor.upload_leaf_chunk(
+            1,
+            0,
+            FieldElement::native_array_data(
+                source_contiguous.data()),
+            target_size);
+        (void)domain_size;
+        (void)shift;
+    }
+
+    void run_linear_runtime_contracts()
+    {
+        constexpr std::size_t domain_size = 1024;
+        constexpr std::size_t target_size = 4096;
+        const FieldElement shift(7);
+
+        std::vector<FieldElement> source_evaluations;
+        source_evaluations.reserve(domain_size);
+        for (std::size_t index = 0; index < domain_size; ++index)
+        {
+            source_evaluations.emplace_back(
+                static_cast<std::uint64_t>(index + 13));
+        }
+
+        std::vector<FieldElement> source_contiguous;
+        source_contiguous.reserve(target_size);
+        for (std::size_t index = 0; index < target_size; ++index)
+        {
+            source_contiguous.emplace_back(
+                static_cast<std::uint64_t>(index * 3 + 19));
+        }
+
+        const std::vector<FieldElement> source_blinder_split = {
+            FieldElement(2),
+            FieldElement(5),
+        };
+        const std::vector<FieldElement> source_blinder_contiguous = {
+            FieldElement(7),
+            FieldElement(11),
+            FieldElement(13),
+        };
+        const std::vector<FieldElement> target_blinder = {
+            FieldElement(17),
+            FieldElement(19),
+            FieldElement(23),
+        };
+        const auto source_split_coset = materialize_cpu_coset(
+            source_evaluations,
+            source_blinder_split,
+            domain_size,
+            target_size,
+            shift);
+        const auto split_scale = FieldElement(3);
+        const auto contiguous_scale = FieldElement(8);
+        const auto expected = expected_linear_output(
+            source_split_coset,
+            source_contiguous,
+            source_blinder_split,
+            source_blinder_contiguous,
+            target_blinder,
+            split_scale,
+            contiguous_scale,
+            domain_size,
+            target_size,
+            shift);
+
+        auto executor = make_linear_executor(
+            domain_size,
+            target_size,
+            shift);
+        materialize_linear_sources(
+            *executor,
+            source_evaluations,
+            source_blinder_split,
+            source_contiguous,
+            domain_size,
+            target_size,
+            shift);
+
+        const std::vector<CudaTEdgeLinearSource> sources = {
+            CudaTEdgeLinearSource{
+                .slot = 0,
+                .scale = split_scale,
+                .zero_domain_blinder =
+                    FieldElement::native_array_data(
+                        source_blinder_split.data()),
+                .blinder_count = source_blinder_split.size(),
+            },
+            CudaTEdgeLinearSource{
+                .slot = 1,
+                .scale = contiguous_scale,
+                .zero_domain_blinder =
+                    FieldElement::native_array_data(
+                        source_blinder_contiguous.data()),
+                .blinder_count = source_blinder_contiguous.size(),
+            },
+        };
+        if (!executor->materialize_linear_leaf(
+                2,
+                sources,
+                FieldElement::native_array_data(target_blinder.data()),
+                target_blinder.size(),
+                CudaTEdgeLeafLayout::Contiguous))
+        {
+            throw std::runtime_error(
+                "CUDA t_edge linear materialization declined");
+        }
+        executor->accumulate_term(0, {2});
+        std::vector<FieldElement> actual(
+            target_size,
+            FieldElement::zero());
+        executor->finalize(actual.data(), actual.size());
+        require_equal(
+            actual,
+            expected,
+            "CUDA t_edge split/contiguous linear output");
+
+        auto coefficient_executor = make_linear_executor(
+            domain_size,
+            target_size,
+            shift);
+        materialize_linear_sources(
+            *coefficient_executor,
+            source_evaluations,
+            source_blinder_split,
+            source_contiguous,
+            domain_size,
+            target_size,
+            shift);
+        if (!coefficient_executor->materialize_linear_leaf(
+                2,
+                sources,
+                FieldElement::native_array_data(target_blinder.data()),
+                target_blinder.size(),
+                CudaTEdgeLeafLayout::Contiguous))
+        {
+            throw std::runtime_error(
+                "CUDA t_edge coefficient linear materialization declined");
+        }
+        coefficient_executor->accumulate_term(0, {2});
+        std::vector<FieldElement> actual_coefficients(
+            target_size,
+            FieldElement::zero());
+        coefficient_executor->finalize_coefficients(
+            actual_coefficients.data(),
+            actual_coefficients.size());
+        require_equal(
+            actual_coefficients,
+            expected_coefficients(expected, shift),
+            "CUDA t_edge linear coefficient output");
+
+        auto guards = make_linear_executor(
+            domain_size,
+            target_size,
+            shift);
+        materialize_linear_sources(
+            *guards,
+            source_evaluations,
+            source_blinder_split,
+            source_contiguous,
+            domain_size,
+            target_size,
+            shift);
+
+        require_throw(
+            [&]() {
+                guards->materialize_linear_leaf(
+                    2,
+                    {sources[0], sources[0]},
+                    FieldElement::native_array_data(target_blinder.data()),
+                    target_blinder.size(),
+                    CudaTEdgeLeafLayout::Contiguous);
+            },
+            "CUDA t_edge duplicate source guard");
+        require_throw(
+            [&]() {
+                guards->materialize_linear_leaf(
+                    2,
+                    {CudaTEdgeLinearSource{
+                        .slot = 3,
+                        .scale = split_scale,
+                        .zero_domain_blinder = nullptr,
+                        .blinder_count = 0,
+                    }},
+                    nullptr,
+                    0,
+                    CudaTEdgeLeafLayout::Contiguous);
+            },
+            "CUDA t_edge missing source guard");
+        require_throw(
+            [&]() {
+                guards->materialize_linear_leaf(
+                    2,
+                    {CudaTEdgeLinearSource{
+                        .slot = 0,
+                        .scale = FieldElement::zero(),
+                        .zero_domain_blinder =
+                            FieldElement::native_array_data(
+                                source_blinder_split.data()),
+                        .blinder_count = source_blinder_split.size(),
+                    }},
+                    nullptr,
+                    0,
+                    CudaTEdgeLeafLayout::Contiguous);
+            },
+            "CUDA t_edge zero scale guard");
+        require_throw(
+            [&]() {
+                guards->materialize_linear_leaf(
+                    2,
+                    {sources[0]},
+                    FieldElement::native_array_data(target_blinder.data()),
+                    target_size - domain_size + 1,
+                    CudaTEdgeLeafLayout::Contiguous);
+            },
+            "CUDA t_edge blinder shape guard");
+        require_throw(
+            [&]() {
+                guards->materialize_linear_leaf(
+                    2,
+                    {sources[0]},
+                    nullptr,
+                    0,
+                    static_cast<CudaTEdgeLeafLayout>(99));
+            },
+            "CUDA t_edge output layout guard");
+        require_throw(
+            [&]() {
+                guards->upload_leaf_chunk(
+                    2,
+                    1,
+                    FieldElement::native_array_data(
+                        source_contiguous.data()),
+                    1);
+            },
+            "CUDA t_edge first offset guard");
+
+        auto incomplete = make_linear_executor(
+            domain_size,
+            target_size,
+            shift);
+        incomplete->upload_leaf_chunk(
+            2,
+            0,
+            FieldElement::native_array_data(source_contiguous.data()),
+            domain_size);
+        require_throw(
+            [&]() {
+                incomplete->accumulate_term(0, {2});
+            },
+            "CUDA t_edge incomplete binding guard");
+        require_throw(
+            [&]() {
+                incomplete->materialize_linear_leaf(
+                    2,
+                    {sources[0]},
+                    nullptr,
+                    0,
+                    CudaTEdgeLeafLayout::Contiguous);
+            },
+            "CUDA t_edge partial target overwrite guard");
+        incomplete->upload_leaf_chunk(
+            2,
+            domain_size,
+            FieldElement::native_array_data(
+                source_contiguous.data()) + domain_size,
+            target_size - domain_size);
+        incomplete->accumulate_term(0, {2});
+        incomplete->release_leaf(2);
+        require_throw(
+            [&]() {
+                incomplete->accumulate_term(0, {2});
+            },
+            "CUDA t_edge released binding guard");
+    }
+
     void require_equal(
         const std::vector<FieldElement>
             &actual,
@@ -293,6 +768,33 @@ int main()
             << "SKIP cuda_t_edge runtime unavailable\n";
 
         return 77;
+    }
+
+    if (gatzk::protocol::cuda_t_edge_executor_can_admit(0, 1) ||
+        gatzk::protocol::cuda_t_edge_executor_can_admit(3, 1) ||
+        gatzk::protocol::cuda_t_edge_executor_can_admit(
+            std::size_t{1} << (sizeof(std::size_t) * 8 - 1),
+            1) ||
+        gatzk::protocol::cuda_t_edge_executor_can_admit(
+            std::size_t{1} << 16,
+            std::numeric_limits<std::uint32_t>::max()))
+    {
+        throw std::runtime_error(
+            "CUDA t_edge admission accepted an invalid/overflow shape");
+    }
+
+    // Exact direct leaves use paired NTTs of target_size / 2.  The quotient
+    // executor remains a valid pointwise device route above this boundary;
+    // production code must therefore report the leaf capability explicitly
+    // instead of claiming direct coverage for the OGBN-sized 2^26 target.
+    if (!gatzk::protocol::cuda_t_edge_leaf_exact_ntt_supported(
+            std::size_t{1} << 25) ||
+        gatzk::protocol::cuda_t_edge_leaf_exact_ntt_supported(
+            std::size_t{1} << 26) ||
+        gatzk::protocol::cuda_t_edge_leaf_exact_ntt_supported(3))
+    {
+        throw std::runtime_error(
+            "CUDA t_edge leaf NTT capability boundary is incorrect");
     }
 
     constexpr std::size_t
@@ -410,6 +912,8 @@ int main()
         actual_coefficients,
         expected_coefficient_values,
         "CUDA t_edge coefficient output");
+
+    run_linear_runtime_contracts();
 
     const auto kernel_count_after =
         gatzk::algebra::

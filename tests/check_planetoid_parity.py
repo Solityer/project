@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+"""Compare a trained checkpoint and exported bundle on a CPU forward trace."""
 from __future__ import annotations
 
 import argparse
@@ -9,7 +10,7 @@ from typing import Dict
 import numpy as np
 import torch
 
-from train_planetoid_gat import run_trace_from_bundle, run_trace_from_checkpoint
+from planetoid_parity_helpers import run_trace_from_bundle, run_trace_from_checkpoint
 
 
 def compare_arrays(name: str, expected: np.ndarray, actual: np.ndarray) -> Dict[str, object]:
@@ -48,14 +49,14 @@ def main() -> None:
     output_path = pathlib.Path(args.output).resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    training_trace = run_trace_from_checkpoint(checkpoint_path, data_root, args.dataset, torch.device("cpu"))
-    bundle_trace = run_trace_from_bundle(bundle_dir, data_root, args.dataset, torch.device("cpu"))
+    training_trace = run_trace_from_checkpoint(
+        checkpoint_path, data_root, args.dataset, torch.device("cpu")
+    )
+    bundle_trace = run_trace_from_bundle(
+        bundle_dir, data_root, args.dataset, torch.device("cpu")
+    )
 
-    comparisons = [
-        compare_arrays(
-            "output/Y", training_trace["logits"], bundle_trace["logits"]
-        )
-    ]
+    comparisons = [compare_arrays("output/Y", training_trace["logits"], bundle_trace["logits"])]
     training_layers = training_trace["hidden_layers"]
     bundle_layers = bundle_trace["hidden_layers"]
     if len(training_layers) != len(bundle_layers):
@@ -75,9 +76,7 @@ def main() -> None:
             )
         )
         if len(training_layer["heads"]) != len(bundle_layer["heads"]):
-            raise ValueError(
-                f"checkpoint and bundle head counts differ at layer {layer_index}"
-            )
+            raise ValueError(f"checkpoint and bundle head counts differ at layer {layer_index}")
         for head_index, (training_head, bundle_head) in enumerate(
             zip(training_layer["heads"], bundle_layer["heads"])
         ):
@@ -121,9 +120,7 @@ def main() -> None:
     }
     output_path.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
     if not summary["passed"]:
-        raise RuntimeError(
-            f"checkpoint/bundle parity failed; see {output_path}"
-        )
+        raise RuntimeError(f"checkpoint/bundle parity failed; see {output_path}")
 
 
 if __name__ == "__main__":

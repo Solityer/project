@@ -10,6 +10,12 @@
 - `ProofSchema` classifies committed objects as `Public`, `PublicOutput`, or `PrivateWitness`; private witness values require masked evaluation semantics.
 - `private_plain_value_count` is computed by the verifier from typed proof payload tags and must be zero for secure runs.
 - The exporter refuses non-secure, failed, partial, or missing-field runs.
+- Tamper coverage is accepted only from the exact external attestation JSON emitted by
+  `gatzk_protocol_tamper_tests` after the caller supplies and reviews an independent
+  SHA-256 digest.  The attestation path must be a regular, symlink-free file under
+  the repository `tests/` directory; a local verifier report or run-manifest boolean
+  is never a trust root, and `false` with an empty case map and zero milliseconds is
+  only a pending state.
 - `proof_size_bytes` is the proof transport size and excludes SRS files, manifest file bodies, local caches, raw witness, checkpoint files, datasets, logs, and run manifest attachments.
 
 ## Limitations
@@ -38,4 +44,5 @@ Each paper result row must include:
 - `private_plain_value_count = 0`, as returned by verifier payload audit
 - `reference_consistency_passed = true`
 - `tamper_tests_passed = true`
+- externally verified `tamper_attestation_path` and `tamper_attestation_sha256`
 - `full_dataset = true`

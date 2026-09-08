@@ -313,9 +313,17 @@ class LayeredSchemaRegression(unittest.TestCase):
             read("scripts/checkpoint_bundle.py"),
             read("scripts/check_checkpoint_bundle.py"),
             read("scripts/import_ppi_bundle.py"),
-            read("scripts/train_planetoid_gat.py"),
         ):
             self.assertIn("validate_checkpoint_manifest", consumer)
+
+        parity = read("tests/planetoid_parity_helpers.py")
+        self.assertIn("load_checkpoint_manifest", parity)
+        self.assertIn("validate_checkpoint_manifest", parity)
+        self.assertIn("validate_tensor_encodings", parity)
+
+        trainer = read("scripts/train_planetoid_gat.py")
+        self.assertIn("def load_checkpoint(", trainer)
+        self.assertIn("validate_checkpoint_metadata", trainer)
 
     def test_attention_scalar_bias_is_fail_closed_and_output_bias_is_explicit(self) -> None:
         trainer = read("scripts/train_planetoid_gat.py")
@@ -371,7 +379,8 @@ class LayeredSchemaRegression(unittest.TestCase):
         self.assertIn("shared ELU table scale equality", config)
         self.assertIn("parse_scale_vector(source, \"s_h_prime_hidden_\"", config)
         self.assertIn("parse_scale_vector(source, \"s_a_src_hidden_\"", config)
-        self.assertIn("configs/quantization_scale_chain.cfg", config)
+        self.assertIn("GATZK_CANONICAL_SCALE_CHAIN_PATH", config)
+        self.assertIn("canonical_scale_chain_path.parent_path().parent_path()", config)
         source = read("configs/quantization_scale_chain.cfg")
         self.assertIn("s_input = 16", source)
         self.assertIn("s_delta = 256", source)

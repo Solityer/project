@@ -11,6 +11,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <future>
 #include <iomanip>
 #include <iostream>
@@ -60,6 +61,7 @@
 #include "gatzk/protocol/verifier.hpp"
 #include "gatzk/protocol/cuda_t_edge.hpp"
 #include "gatzk/protocol/t_edge_program.hpp"
+#include "protocol/internal/t_edge_descriptor.hpp"
 
 namespace gatzk::protocol
 {
@@ -69,6 +71,14 @@ namespace gatzk::protocol
         using algebra::Polynomial;
         using crypto::Commitment;
         using Clock = std::chrono::steady_clock;
+        using TEdgeDerivedLinearSource =
+            internal::TEdgeDerivedLinearSource;
+        using TEdgeDerivedLinearDescriptor =
+            internal::TEdgeDerivedLinearDescriptor;
+        using TEdgeDerivedLinearFlattenStatus =
+            internal::TEdgeDerivedLinearFlattenStatus;
+        using TEdgeDerivedLinearFlattenResult =
+            internal::TEdgeDerivedLinearFlattenResult;
 
         thread_local std::size_t
             quotient_transform_worker_cap = 0;
@@ -5655,6 +5665,15 @@ namespace gatzk::protocol
                 {
                     throw std::runtime_error("quotient materialization is missing domain: " + label_);
                 }
+                t_edge_descriptor_shape_.hidden_head_counts.reserve(
+                    context_.model.hidden_layers.size());
+                for (const auto &layer : context_.model.hidden_layers)
+                {
+                    t_edge_descriptor_shape_.hidden_head_counts.push_back(
+                        layer.heads.size());
+                }
+                t_edge_descriptor_shape_.output_head_count =
+                    context_.model.output_layer.heads.size();
                 if (rotation_step_ == 0 || target_size_ % domain_->size != 0)
                 {
                     throw std::runtime_error("invalid quotient coset/domain size for " + label_);
@@ -5840,9 +5859,14 @@ namespace gatzk::protocol
                     cuda_t_edge_leaf_cache_slot_count(
                         program);
 
+                const bool leaf_exact_ntt_supported =
+                    cuda_t_edge_leaf_exact_ntt_supported(
+                        target_size_);
+
                 if (!cuda_t_edge_executor_can_admit(
                         target_size_,
-                        cache_slot_count))
+                        cache_slot_count,
+                        leaf_exact_ntt_supported))
                 {
                     return false;
                 }
@@ -5898,6 +5922,10 @@ namespace gatzk::protocol
                     cuda_t_edge_leaf_cache_slot_count(
                         program);
 
+                const bool leaf_exact_ntt_supported =
+                    cuda_t_edge_leaf_exact_ntt_supported(
+                        target_size_);
+
                 auto executor =
                     create_cuda_t_edge_executor(
                         domain_->size,
@@ -5923,6 +5951,11 @@ namespace gatzk::protocol
                 // use the same zero-domain blinder correction
                 // geometry as the canonical materializer.
                 seed_lazy_blinder_geometry();
+
+                const auto cuda_stats_before =
+                    algebra::cuda_execution_stats_snapshot();
+                const auto cuda_kernels_before =
+                    algebra::cuda_kernel_invocation_count();
 
                 const auto invalid_slot =
                     std::numeric_limits<
@@ -6175,18 +6208,394 @@ namespace gatzk::protocol
 
                     return false;
                 };
+
+                struct CudaTEdgeLinearTelemetry
+                {
+                    std::size_t descriptor_requests = 0;
+                    std::size_t descriptor_eligible = 0;
+                    std::size_t linear_hits = 0;
+                    std::size_t fallback_capacity = 0;
+                    std::size_t fallback_unsupported = 0;
+                    std::size_t fallback_api_declined = 0;
+                    std::size_t host_derived_fallback = 0;
+                    std::size_t direct_api_declined = 0;
+                    std::size_t host_leaf_fallback = 0;
+                    std::size_t host_leaf_materialization_required = 0;
+                    std::size_t flattened_source_count = 0;
+                } linear_telemetry;
+
+                if (!leaf_exact_ntt_supported)
+                {
+                    progress_note(
+                        "prove:quotient:t_edge:cuda_linear:"
+                        "leaf_exact_ntt_supported=0:"
+                        "host_leaf_materialization_required=1");
+                }
+
+                const auto linear_direct_shape_is_supported =
+                    [&](const std::string &label)
+                {
+                    if (const auto *polynomial =
+                            lookup_polynomial(label);
+                        polynomial != nullptr)
+                    {
+                        if (polynomial->basis ==
+                                algebra::PolynomialBasis::Evaluation)
+                        {
+                            return polynomial->domain != nullptr &&
+                                   polynomial->domain->size ==
+                                       domain_->size &&
+                                   polynomial->domain->omega ==
+                                       domain_->omega &&
+                                   polynomial->values().size() ==
+                                       domain_->size;
+                        }
+                        if (polynomial->basis ==
+                            algebra::PolynomialBasis::Coefficient)
+                        {
+                            const auto maximum_coefficient_count =
+                                target_size_ >= 2
+                                    ? target_size_ / 2
+                                    : std::size_t{0};
+                            return polynomial->values().size() <=
+                                   maximum_coefficient_count;
+                        }
+                        return false;
+                    }
+                    const auto spilled_it =
+                        trace_.spilled_polynomials.find(label);
+                    return spilled_it !=
+                               trace_.spilled_polynomials.end() &&
+                           spilled_it->second.domain_name ==
+                               domain_->name &&
+                           spilled_it->second.size == domain_->size;
+                };
+
+                const auto try_materialize_derived_linear_gpu_leaf =
+                    [&](const std::string &target_label,
+                        std::size_t target_slot,
+                        const std::vector<std::string> &required)
+                    -> bool
+                {
+                    const auto descriptor =
+                        t_edge_derived_linear_descriptor(
+                            target_label);
+                    if (!descriptor.has_value())
+                    {
+                        return false;
+                    }
+                    ++linear_telemetry.descriptor_requests;
+
+                    if (!leaf_exact_ntt_supported)
+                    {
+                        ++linear_telemetry
+                              .host_leaf_materialization_required;
+                        return false;
+                    }
+
+                    const auto flattened =
+                        flatten_t_edge_descriptor_sources(
+                            *descriptor);
+                    if (flattened.status !=
+                            TEdgeDerivedLinearFlattenStatus::Success ||
+                        flattened.sources.empty())
+                    {
+                        ++linear_telemetry.fallback_unsupported;
+                        return false;
+                    }
+                    linear_telemetry.flattened_source_count +=
+                        flattened.sources.size();
+
+                    if (target_slot >= slot_labels.size() ||
+                        !slot_labels[target_slot].empty())
+                    {
+                        ++linear_telemetry.fallback_capacity;
+                        return false;
+                    }
+
+                    const auto is_required =
+                        [&](const std::string &label)
+                    {
+                        return std::find(
+                                   required.begin(),
+                                   required.end(),
+                                   label) != required.end();
+                    };
+
+                    std::unordered_map<
+                        std::string,
+                        std::size_t>
+                        source_slots_by_label;
+                    source_slots_by_label.reserve(
+                        flattened.sources.size());
+                    std::vector<std::pair<
+                        std::string,
+                        std::size_t>>
+                        missing_sources;
+                    std::unordered_set<std::size_t>
+                        reserved_slots;
+
+                    for (const auto &source : flattened.sources)
+                    {
+                        std::size_t source_slot =
+                            slot_labels.size();
+                        for (std::size_t slot = 0;
+                             slot < slot_labels.size();
+                             ++slot)
+                        {
+                            if (slot_labels[slot] ==
+                                source.label)
+                            {
+                                source_slot = slot;
+                                break;
+                            }
+                        }
+                        if (source_slot < slot_labels.size())
+                        {
+                            source_slots_by_label.emplace(
+                                source.label,
+                                source_slot);
+                            continue;
+                        }
+
+                        std::size_t selected_slot =
+                            slot_labels.size();
+                        std::size_t selected_next_use = 0;
+                        for (std::size_t slot = 0;
+                             slot < slot_labels.size();
+                             ++slot)
+                        {
+                            if (slot == target_slot ||
+                                reserved_slots.contains(slot))
+                            {
+                                continue;
+                            }
+                            const auto &candidate =
+                                slot_labels[slot];
+                            if (!candidate.empty() &&
+                                is_required(candidate))
+                            {
+                                continue;
+                            }
+                            if (candidate.empty())
+                            {
+                                selected_slot = slot;
+                                break;
+                            }
+                            std::size_t candidate_next_use =
+                                std::numeric_limits<std::size_t>::max();
+                            const auto use_it =
+                                leaf_use_terms.find(candidate);
+                            if (use_it != leaf_use_terms.end())
+                            {
+                                const auto cursor_it =
+                                    leaf_use_cursors.find(candidate);
+                                const auto cursor =
+                                    cursor_it == leaf_use_cursors.end()
+                                        ? std::size_t{0}
+                                        : cursor_it->second;
+                                if (cursor < use_it->second.size())
+                                {
+                                    candidate_next_use =
+                                        use_it->second[cursor];
+                                }
+                            }
+                            if (selected_slot == slot_labels.size() ||
+                                candidate_next_use > selected_next_use)
+                            {
+                                selected_slot = slot;
+                                selected_next_use =
+                                    candidate_next_use;
+                            }
+                        }
+                        if (selected_slot == slot_labels.size())
+                        {
+                            ++linear_telemetry.fallback_capacity;
+                            return false;
+                        }
+                        reserved_slots.insert(selected_slot);
+                        missing_sources.push_back({
+                            source.label,
+                            selected_slot});
+                        source_slots_by_label.emplace(
+                            source.label,
+                            selected_slot);
+                    }
+
+                    for (const auto &source : flattened.sources)
+                    {
+                        if (!linear_direct_shape_is_supported(
+                                source.label))
+                        {
+                            ++linear_telemetry.fallback_unsupported;
+                            return false;
+                        }
+                    }
+                    ++linear_telemetry.descriptor_eligible;
+
+                    std::vector<std::size_t> newly_loaded_slots;
+                    newly_loaded_slots.reserve(
+                        missing_sources.size());
+                    for (const auto &[source_label, source_slot] :
+                         missing_sources)
+                    {
+                        if (!slot_labels[source_slot].empty())
+                        {
+                            clear_label_mapping(
+                                slot_labels[source_slot]);
+                            executor->release_leaf(source_slot);
+                        }
+                        if (!try_materialize_direct_gpu_leaf(
+                                source_label,
+                                source_slot))
+                        {
+                            for (const auto loaded_slot :
+                                 newly_loaded_slots)
+                            {
+                                clear_label_mapping(
+                                    slot_labels[loaded_slot]);
+                                executor->release_leaf(loaded_slot);
+                                slot_labels[loaded_slot].clear();
+                            }
+                            ++linear_telemetry.fallback_api_declined;
+                            return false;
+                        }
+                        slot_labels[source_slot] = source_label;
+                        bind_label_mapping(
+                            source_label,
+                            source_slot);
+                        newly_loaded_slots.push_back(source_slot);
+                    }
+
+                    std::vector<CudaTEdgeLinearSource> cuda_sources;
+                    cuda_sources.reserve(flattened.sources.size());
+                    for (const auto &source : flattened.sources)
+                    {
+                        const auto source_slot_it =
+                            source_slots_by_label.find(
+                                source.label);
+                        if (source_slot_it ==
+                            source_slots_by_label.end())
+                        {
+                            throw std::runtime_error(
+                                "CUDA t_edge linear source slot binding is missing: " +
+                                source.label);
+                        }
+                        const auto *blinder =
+                            registered_blinder_data_for_label(
+                                source.label);
+                        cuda_sources.push_back(
+                            CudaTEdgeLinearSource{
+                                .slot = static_cast<
+                                    std::uint32_t>(
+                                    source_slot_it->second),
+                                .scale = source.scale,
+                                .zero_domain_blinder =
+                                    blinder != nullptr &&
+                                            !blinder->empty()
+                                        ? FieldElement::native_array_data(
+                                              blinder->data())
+                                        : nullptr,
+                                .blinder_count =
+                                    blinder == nullptr
+                                        ? 0
+                                        : blinder->size(),
+                            });
+                    }
+
+                    const auto *target_blinder =
+                        descriptor->target_zero_domain_blinder.empty()
+                            ? nullptr
+                            : FieldElement::native_array_data(
+                                  descriptor->target_zero_domain_blinder.data());
+                    if (!executor->materialize_linear_leaf(
+                            target_slot,
+                            cuda_sources,
+                            target_blinder,
+                            descriptor->target_zero_domain_blinder.size(),
+                            CudaTEdgeLeafLayout::Split))
+                    {
+                        for (const auto loaded_slot : newly_loaded_slots)
+                        {
+                            clear_label_mapping(
+                                slot_labels[loaded_slot]);
+                            executor->release_leaf(loaded_slot);
+                            slot_labels[loaded_slot].clear();
+                        }
+                        ++linear_telemetry.fallback_api_declined;
+                        return false;
+                    }
+
+                    ++linear_telemetry.linear_hits;
+                    for (const auto loaded_slot : newly_loaded_slots)
+                    {
+                        const auto &loaded_label =
+                            slot_labels[loaded_slot];
+                        if (!is_required(loaded_label))
+                        {
+                            clear_label_mapping(loaded_label);
+                            executor->release_leaf(loaded_slot);
+                            slot_labels[loaded_slot].clear();
+                        }
+                    }
+                    return true;
+                };
                 const auto materialize_label =
                     [&](const std::string &label,
-                        std::size_t slot)
+                        std::size_t slot,
+                        const std::vector<std::string> &required)
                 {
-                    if (label !=
-                            "__t_edge_boundary_l0" &&
-                        try_materialize_direct_gpu_leaf(
-                            label,
-                            slot))
+                    // Preserve the canonical cache -> derived -> direct /
+                    // spill resolver order.  A descriptor target must first
+                    // attempt resident-linear materialization; every decline
+                    // (capacity, unsupported source, or API) falls directly
+                    // through to the host derived coset view.  In particular,
+                    // do not let a colliding direct target bypass its derived
+                    // resolver here.
+                    const auto descriptor =
+                        t_edge_derived_linear_descriptor(label);
+                    if (label != "__t_edge_boundary_l0" &&
+                        descriptor.has_value())
                     {
-                        reset_cuda_t_edge_transient_leaf_state();
-                        return;
+                        if (try_materialize_derived_linear_gpu_leaf(
+                                label,
+                                slot,
+                                required))
+                        {
+                            reset_cuda_t_edge_transient_leaf_state();
+                            return;
+                        }
+                        ++linear_telemetry.host_derived_fallback;
+                    }
+                    else if (label != "__t_edge_boundary_l0")
+                    {
+                        const bool direct_source_exists =
+                            lookup_polynomial(label) != nullptr ||
+                            trace_.spilled_polynomials.contains(label);
+                        if (leaf_exact_ntt_supported &&
+                            try_materialize_direct_gpu_leaf(
+                                label,
+                                slot))
+                        {
+                            reset_cuda_t_edge_transient_leaf_state();
+                            return;
+                        }
+                        if (leaf_exact_ntt_supported &&
+                            direct_source_exists)
+                        {
+                            ++linear_telemetry.direct_api_declined;
+                        }
+                        else if (!leaf_exact_ntt_supported)
+                        {
+                            ++linear_telemetry
+                                  .host_leaf_materialization_required;
+                        }
+                        ++linear_telemetry.host_leaf_fallback;
+                    }
+                    else if (!leaf_exact_ntt_supported)
+                    {
+                        ++linear_telemetry
+                              .host_leaf_materialization_required;
                     }
 
                     QuotientCosetValuesPtr values;
@@ -6427,7 +6836,8 @@ namespace gatzk::protocol
 
                             materialize_label(
                                 label,
-                                selected_slot);
+                                selected_slot,
+                                required);
 
                             slot_labels[selected_slot] =
                                 label;
@@ -6496,6 +6906,78 @@ namespace gatzk::protocol
                     executor->finalize_coefficients(
                         output.data(),
                         output.size());
+
+                    const auto cuda_stats_after =
+                        algebra::cuda_execution_stats_snapshot();
+                    const auto cuda_kernels_after =
+                        algebra::cuda_kernel_invocation_count();
+                    const auto delta =
+                        [](std::uint64_t after,
+                           std::uint64_t before)
+                    {
+                        return after >= before
+                                   ? after - before
+                                   : 0;
+                    };
+                    progress_note(
+                        "prove:quotient:t_edge:cuda_linear:descriptor_requests=" +
+                        std::to_string(
+                            linear_telemetry.descriptor_requests) +
+                        ":eligible=" +
+                        std::to_string(
+                            linear_telemetry.descriptor_eligible) +
+                        ":linear_hits=" +
+                        std::to_string(
+                            linear_telemetry.linear_hits) +
+                        ":fallback_capacity=" +
+                        std::to_string(
+                            linear_telemetry.fallback_capacity) +
+                        ":fallback_unsupported=" +
+                        std::to_string(
+                            linear_telemetry.fallback_unsupported) +
+                        ":fallback_api_declined=" +
+                        std::to_string(
+                            linear_telemetry.fallback_api_declined) +
+                        ":host_derived_fallback=" +
+                        std::to_string(
+                            linear_telemetry.host_derived_fallback) +
+                        ":direct_api_declined=" +
+                        std::to_string(
+                            linear_telemetry.direct_api_declined) +
+                        ":host_leaf_fallback=" +
+                        std::to_string(
+                            linear_telemetry.host_leaf_fallback) +
+                        ":host_leaf_materialization_required=" +
+                        std::to_string(
+                            linear_telemetry.host_leaf_materialization_required) +
+                        ":leaf_exact_ntt_supported=" +
+                        std::to_string(
+                            leaf_exact_ntt_supported ? 1 : 0) +
+                        ":flattened_source_count=" +
+                        std::to_string(
+                            linear_telemetry.flattened_source_count) +
+                        ":kernel_invocations=" +
+                        std::to_string(
+                            delta(
+                                cuda_kernels_after,
+                                cuda_kernels_before)) +
+                        ":stream_syncs=" +
+                        std::to_string(
+                            delta(
+                                cuda_stats_after
+                                    .stream_synchronizations,
+                                cuda_stats_before
+                                    .stream_synchronizations)) +
+                        ":h2d_bytes=" +
+                        std::to_string(
+                            delta(
+                                cuda_stats_after.h2d_bytes,
+                                cuda_stats_before.h2d_bytes)) +
+                        ":h2d_ops=" +
+                        std::to_string(
+                            delta(
+                                cuda_stats_after.h2d_operations,
+                                cuda_stats_before.h2d_operations)));
 
                     trim_field_coefficients(
                         &output);
@@ -8156,84 +8638,6 @@ namespace gatzk::protocol
                 return false;
             }
 
-            bool append_t_edge_materializer_dependency(
-                std::vector<std::string> *labels,
-                const std::string &name) const
-            {
-                if (label_ != "t_edge")
-                {
-                    return false;
-                }
-                // A committed column carries its own registered Z_edge*R
-                // blinder.  Its semantic expression is equal only on the
-                // edge domain and cannot replace that polynomial on a coset.
-                if (lookup_polynomial(name) != nullptr || trace_.spilled_polynomials.contains(name))
-                {
-                    return false;
-                }
-                for (std::size_t layer_index = 0;
-                     layer_index < context_.model.hidden_layers.size();
-                     ++layer_index)
-                    for (std::size_t local_head_index = 0;
-                         local_head_index < context_.model.hidden_layers[layer_index].heads.size();
-                         ++local_head_index)
-                    {
-                        const auto prefix = hidden_head_prefix(layer_index, local_head_index) + "_";
-                        if (name.rfind(prefix, 0) != 0)
-                        {
-                            continue;
-                        }
-                        const auto suffix = std::string_view(name).substr(prefix.size());
-                        if (suffix == "w_psq")
-                        {
-                            labels->push_back(prefix + "U");
-                            labels->push_back(prefix + "widehat_v_pre_star");
-                            return true;
-                        }
-                        if (suffix == "T_psq_edge")
-                        {
-                            labels->push_back(prefix + "Sum_edge");
-                            labels->push_back(prefix + "H_agg_pre_star_edge");
-                            return true;
-                        }
-                        if (suffix == "Query_ELU")
-                        {
-                            labels->push_back(name);
-                            return true;
-                        }
-                        if (suffix == "H_agg_pre_flat" || suffix == "H_agg_flat")
-                        {
-                            return true;
-                        }
-                        return is_edge_derived_coset_request(name);
-                    }
-
-                for (std::size_t head_index = 0; head_index < context_.model.output_layer.heads.size(); ++head_index)
-                {
-                    const auto prefix = output_head_prefix(head_index) + "_";
-                    if (name.rfind(prefix, 0) != 0)
-                    {
-                        continue;
-                    }
-                    const auto suffix = std::string_view(name).substr(prefix.size());
-                    if (suffix == "w")
-                    {
-                        labels->push_back(prefix + "U");
-                        labels->push_back(prefix + "widehat_y_star");
-                        return true;
-                    }
-                    if (suffix == "T_edge")
-                    {
-                        labels->push_back(prefix + "Sum_edge");
-                        labels->push_back(prefix + "Y_star_edge");
-                        return true;
-                    }
-                    return is_edge_derived_coset_request(name);
-                }
-
-                return false;
-            }
-
             FieldElement coset_value_at(const std::string &requested_name, std::size_t index)
             {
                 if (label_ == "t_edge")
@@ -8249,217 +8653,6 @@ namespace gatzk::protocol
                     }
                 }
                 return fast_coset_values(requested_name)[index];
-            }
-
-            std::optional<FieldElement> t_edge_derived_value_at(const std::string &name, std::size_t index)
-            {
-                if (label_ != "t_edge")
-                {
-                    return std::nullopt;
-                }
-                if (lookup_polynomial(name) != nullptr || trace_.spilled_polynomials.contains(name))
-                {
-                    return std::nullopt;
-                }
-                for (std::size_t layer_index = 0;
-                     layer_index < context_.model.hidden_layers.size();
-                     ++layer_index)
-                    for (std::size_t local_head_index = 0;
-                         local_head_index < context_.model.hidden_layers[layer_index].heads.size();
-                         ++local_head_index)
-                    {
-                        const auto prefix = hidden_head_prefix(layer_index, local_head_index) + "_";
-                        if (name.rfind(prefix, 0) != 0)
-                        {
-                            continue;
-                        }
-                        const auto suffix = std::string_view(name).substr(prefix.size());
-                        const auto value = [&](const std::string &label)
-                        {
-                            return coset_value_at(label, index);
-                        };
-                        const auto head_value = [&](std::string_view inner_suffix)
-                        {
-                            return value(prefix + std::string(inner_suffix));
-                        };
-                        if (suffix == "S")
-                        {
-                            return head_value("E_src_edge") + head_value("E_dst_edge");
-                        }
-                        if (suffix == "Delta")
-                        {
-                            return head_value("M_edge") - head_value("Z");
-                        }
-                        const auto eta_l = challenges_.at(
-                            hidden_challenge_name("eta_L_h", layer_index, local_head_index));
-                        if (suffix == "Table_L")
-                        {
-                            return value("P_T_L_x") + eta_l * value("P_T_L_y");
-                        }
-                        if (suffix == "Query_L")
-                        {
-                            return head_value("S") + eta_l * head_value("Z");
-                        }
-                        if (suffix == "Table_R")
-                        {
-                            return value("P_T_range");
-                        }
-                        if (suffix == "Query_R")
-                        {
-                            return head_value("Delta");
-                        }
-                        const auto eta_exp = challenges_.at(
-                            hidden_challenge_name("eta_exp_h", layer_index, local_head_index));
-                        if (suffix == "Table_exp")
-                        {
-                            return value("P_T_exp_x") + eta_exp * value("P_T_exp_y");
-                        }
-                        if (suffix == "Query_exp")
-                        {
-                            return head_value("Delta") + eta_exp * head_value("U");
-                        }
-                        const auto eta_elu = challenges_.at(
-                            hidden_challenge_name("eta_ELU_h", layer_index, local_head_index));
-                        if (suffix == "Table_ELU")
-                        {
-                            return value("P_T_ELU_x") + eta_elu * value("P_T_ELU_y");
-                        }
-                        if (suffix == "Query_ELU")
-                        {
-                            return head_value("H_ELU_in_flat") + eta_elu * head_value("H_agg_flat");
-                        }
-                        const auto eta_src = challenges_.at(
-                            hidden_challenge_name("eta_src_h", layer_index, local_head_index));
-                        if (suffix == "Query_src")
-                        {
-                            const auto eta_src_sq = eta_src * eta_src;
-                            return value("P_src") + eta_src * head_value("E_src_edge") + eta_src_sq * head_value("H_src_star_edge");
-                        }
-                        if (suffix == "w_psq")
-                        {
-                            if (lookup_polynomial(name) != nullptr || trace_.spilled_polynomials.contains(name))
-                            {
-                                return std::nullopt;
-                            }
-                            const auto lambda_psq = challenges_.at(
-                                hidden_challenge_name("lambda_psq_h", layer_index, local_head_index));
-                            return head_value("U") + lambda_psq * head_value("widehat_v_pre_star");
-                        }
-                        if (suffix == "T_psq_edge")
-                        {
-                            if (lookup_polynomial(name) != nullptr || trace_.spilled_polynomials.contains(name))
-                            {
-                                return std::nullopt;
-                            }
-                            const auto lambda_psq = challenges_.at(
-                                hidden_challenge_name("lambda_psq_h", layer_index, local_head_index));
-                            return head_value("Sum_edge") + lambda_psq * head_value("H_agg_pre_star_edge");
-                        }
-                        const auto eta_t = challenges_.at(
-                            hidden_challenge_name("eta_t_h", layer_index, local_head_index));
-                        if (suffix == "Query_t")
-                        {
-                            return value("P_dst") + eta_t * head_value("T_psq_edge");
-                        }
-                        const auto eta_dst = challenges_.at(
-                            hidden_challenge_name("eta_dst_h", layer_index, local_head_index));
-                        if (suffix == "Query_dst")
-                        {
-                            const auto eta_dst_sq = eta_dst * eta_dst;
-                            const auto eta_dst_cu = eta_dst_sq * eta_dst;
-                            const auto eta_dst_4 = eta_dst_cu * eta_dst;
-                            const auto eta_dst_5 = eta_dst_4 * eta_dst;
-                            return value("P_dst") + eta_dst * head_value("E_dst_edge") + eta_dst_sq * head_value("M_edge") + eta_dst_cu * head_value("Sum_edge") + eta_dst_4 * head_value("inv_edge") + eta_dst_5 * head_value("H_agg_star_edge");
-                        }
-                        return std::nullopt;
-                    }
-
-                for (std::size_t head_index = 0; head_index < context_.model.output_layer.heads.size(); ++head_index)
-                {
-                    const auto prefix = output_head_prefix(head_index) + "_";
-                    if (name.rfind(prefix, 0) != 0)
-                    {
-                        continue;
-                    }
-                    const auto suffix = std::string_view(name).substr(prefix.size());
-                    const auto value = [&](const std::string &label)
-                    {
-                        return coset_value_at(label, index);
-                    };
-                    const auto head_value = [&](std::string_view inner_suffix)
-                    {
-                        return value(prefix + std::string(inner_suffix));
-                    };
-                    if (suffix == "S")
-                    {
-                        return head_value("E_src_edge") + head_value("E_dst_edge");
-                    }
-                    if (suffix == "Delta")
-                    {
-                        return head_value("M_edge") - head_value("Z");
-                    }
-                    const auto eta_l = challenges_.at(output_challenge_name("eta_L_out", head_index));
-                    if (suffix == "Table_L")
-                    {
-                        return value("P_T_L_x") + eta_l * value("P_T_L_y");
-                    }
-                    if (suffix == "Query_L")
-                    {
-                        return head_value("S") + eta_l * head_value("Z");
-                    }
-                    if (suffix == "Table_R")
-                    {
-                        return value("P_T_range");
-                    }
-                    if (suffix == "Query_R")
-                    {
-                        return head_value("Delta");
-                    }
-                    const auto eta_exp = challenges_.at(output_challenge_name("eta_exp_out", head_index));
-                    if (suffix == "Table_exp")
-                    {
-                        return value("P_T_exp_x") + eta_exp * value("P_T_exp_y");
-                    }
-                    if (suffix == "Query_exp")
-                    {
-                        return head_value("Delta") + eta_exp * head_value("U");
-                    }
-                    const auto eta_src = challenges_.at(output_challenge_name("eta_src_out", head_index));
-                    if (suffix == "Query_src")
-                    {
-                        return value("P_src") + eta_src * head_value("E_src_edge");
-                    }
-                    if (suffix == "w")
-                    {
-                        if (lookup_polynomial(name) != nullptr || trace_.spilled_polynomials.contains(name))
-                        {
-                            return std::nullopt;
-                        }
-                        const auto lambda_out = challenges_.at(output_challenge_name("lambda_out", head_index));
-                        return head_value("U") + lambda_out * head_value("widehat_y_star");
-                    }
-                    if (suffix == "T_edge")
-                    {
-                        const auto lambda_out = challenges_.at(output_challenge_name("lambda_out", head_index));
-                        return head_value("Sum_edge") + lambda_out * head_value("Y_star_edge");
-                    }
-                    const auto eta_t = challenges_.at(output_challenge_name("eta_t_out", head_index));
-                    if (suffix == "Query_t")
-                    {
-                        return value("P_dst") + eta_t * head_value("T_edge");
-                    }
-                    const auto eta_dst = challenges_.at(output_challenge_name("eta_dst_out", head_index));
-                    if (suffix == "Query_dst")
-                    {
-                        const auto eta_dst_sq = eta_dst * eta_dst;
-                        const auto eta_dst_cu = eta_dst_sq * eta_dst;
-                        const auto eta_dst_4 = eta_dst_cu * eta_dst;
-                        const auto eta_dst_5 = eta_dst_4 * eta_dst;
-                        return value("P_dst") + eta_dst * head_value("E_dst_edge") + eta_dst_sq * head_value("M_edge") + eta_dst_cu * head_value("Sum_edge") + eta_dst_4 * head_value("inv_edge") + eta_dst_5 * head_value("Y_star_edge");
-                    }
-                    return std::nullopt;
-                }
-                return std::nullopt;
             }
 
             std::vector<FieldElement> quotient_alpha_powers_;
@@ -9029,44 +9222,6 @@ namespace gatzk::protocol
                 }
             }
 
-            bool is_edge_derived_coset_request(const std::string &name) const
-            {
-                if (label_ != "t_edge")
-                {
-                    return false;
-                }
-                auto is_hidden_derived_suffix = [](std::string_view suffix)
-                {
-                    return suffix == "S" || suffix == "Delta" || suffix == "Table_L" || suffix == "Query_L" || suffix == "Table_R" || suffix == "Query_R" || suffix == "Table_exp" || suffix == "Query_exp" || suffix == "Table_ELU" || suffix == "Query_ELU" || suffix == "Query_src" || suffix == "Query_t" || suffix == "Query_dst" || suffix == "w_psq" || suffix == "T_psq_edge";
-                };
-                for (std::size_t layer_index = 0;
-                     layer_index < context_.model.hidden_layers.size();
-                     ++layer_index)
-                    for (std::size_t local_head_index = 0;
-                         local_head_index < context_.model.hidden_layers[layer_index].heads.size();
-                         ++local_head_index)
-                    {
-                        const auto prefix = hidden_head_prefix(layer_index, local_head_index) + "_";
-                        if (name.rfind(prefix, 0) == 0)
-                        {
-                            return is_hidden_derived_suffix(name.substr(prefix.size()));
-                        }
-                    }
-                auto is_output_derived_suffix = [](std::string_view suffix)
-                {
-                    return suffix == "S" || suffix == "Delta" || suffix == "Table_L" || suffix == "Query_L" || suffix == "Table_R" || suffix == "Query_R" || suffix == "Table_exp" || suffix == "Query_exp" || suffix == "Query_src" || suffix == "Query_t" || suffix == "Query_dst" || suffix == "w" || suffix == "T_edge";
-                };
-                for (std::size_t head_index = 0; head_index < context_.model.output_layer.heads.size(); ++head_index)
-                {
-                    const auto prefix = output_head_prefix(head_index) + "_";
-                    if (name.rfind(prefix, 0) == 0)
-                    {
-                        return is_output_derived_suffix(name.substr(prefix.size()));
-                    }
-                }
-                return false;
-            }
-
             std::vector<FieldElement> registered_blinder_for_label(
                 const std::string &label) const
             {
@@ -9089,31 +9244,143 @@ namespace gatzk::protocol
                 return {};
             }
 
-            QuotientCosetValuesPtr scaled_coset_sum(
-                const std::string &derived_label,
-                const std::vector<std::pair<std::string, FieldElement>> &terms)
+            const std::vector<FieldElement> *registered_blinder_data_for_label(
+                const std::string &label) const
             {
+                if (const auto *polynomial = lookup_polynomial(label);
+                    polynomial != nullptr)
+                {
+                    return &polynomial->zero_domain_blinder;
+                }
+                if (const auto spilled_it =
+                        trace_.spilled_polynomials.find(label);
+                    spilled_it != trace_.spilled_polynomials.end())
+                {
+                    return &spilled_it->second.zero_domain_blinder;
+                }
+                const auto canonical = canonical_coset_label(label);
+                if (canonical != label)
+                {
+                    return registered_blinder_data_for_label(canonical);
+                }
+                return nullptr;
+            }
+
+            std::optional<TEdgeDerivedLinearDescriptor>
+            t_edge_derived_linear_descriptor(
+                const std::string &name) const
+            {
+                if (label_ != "t_edge")
+                {
+                    return std::nullopt;
+                }
+
+                const auto collision_predicate =
+                    [this](std::string_view candidate)
+                {
+                    const auto candidate_name =
+                        std::string(candidate);
+                    return lookup_polynomial(candidate_name) != nullptr ||
+                           trace_.spilled_polynomials.contains(candidate_name);
+                };
+
+                auto descriptor =
+                    internal::make_t_edge_derived_linear_descriptor(
+                        name,
+                        t_edge_descriptor_shape_,
+                        challenges_,
+                        collision_predicate);
+                if (descriptor.has_value())
+                {
+                    // Registered blinder ownership stays in the production
+                    // materializer; the pure mapper only describes semantics.
+                    descriptor->target_zero_domain_blinder =
+                        registered_blinder_for_label(name);
+                }
+                return descriptor;
+            }
+
+            bool is_edge_derived_coset_request(
+                const std::string &name) const
+            {
+                return t_edge_derived_linear_descriptor(name).has_value();
+            }
+
+            TEdgeDerivedLinearFlattenResult
+            flatten_t_edge_descriptor_sources(
+                const TEdgeDerivedLinearDescriptor &descriptor) const
+            {
+                const auto lookup =
+                    [this](std::string_view label)
+                    -> std::optional<TEdgeDerivedLinearDescriptor>
+                {
+                    return t_edge_derived_linear_descriptor(
+                        std::string(label));
+                };
+                const auto is_registered_source =
+                    [this](std::string_view label)
+                {
+                    const auto candidate = std::string(label);
+                    if (lookup_polynomial(candidate) != nullptr ||
+                        trace_.spilled_polynomials.contains(candidate))
+                    {
+                        return true;
+                    }
+                    const auto canonical =
+                        canonical_coset_label(candidate);
+                    return canonical != candidate &&
+                           (lookup_polynomial(canonical) != nullptr ||
+                            trace_.spilled_polynomials.contains(canonical));
+                };
+                return internal::flatten_t_edge_derived_linear_sources(
+                    descriptor,
+                    lookup,
+                    is_registered_source);
+            }
+
+            QuotientCosetValuesPtr scaled_coset_sum(
+                const TEdgeDerivedLinearDescriptor &descriptor)
+            {
+                const auto flattened =
+                    flatten_t_edge_descriptor_sources(descriptor);
+                if (flattened.status ==
+                        TEdgeDerivedLinearFlattenStatus::Cycle ||
+                    flattened.status ==
+                        TEdgeDerivedLinearFlattenStatus::DepthExceeded)
+                {
+                    throw std::runtime_error(
+                        "invalid recursive t_edge derived descriptor: " +
+                        descriptor.target_label);
+                }
+                const auto &terms =
+                    flattened.status ==
+                            TEdgeDerivedLinearFlattenStatus::Success
+                        ? flattened.sources
+                        : descriptor.sources;
+
                 std::vector<std::pair<
                     QuotientCosetValuesPtr,
                     FieldElement>>
                     resolved_terms;
                 resolved_terms.reserve(terms.size());
                 auto correction =
-                    registered_blinder_for_label(derived_label);
-                for (const auto &[label, scale] : terms)
+                    descriptor.target_zero_domain_blinder;
+                for (const auto &source : terms)
                 {
-                    if (scale.is_zero())
+                    if (source.scale.is_zero())
                     {
                         continue;
                     }
-                    const auto values = coset_values_ptr(label);
+                    const auto values = coset_values_ptr(source.label);
                     if (values->size() != target_size_)
                     {
-                        throw std::runtime_error("linear coset dependency size mismatch: " + label);
+                        throw std::runtime_error(
+                            "linear coset dependency size mismatch: " +
+                            source.label);
                     }
-                    resolved_terms.push_back({values, scale});
+                    resolved_terms.push_back({values, source.scale});
                     const auto source_blinder =
-                        registered_blinder_for_label(label);
+                        registered_blinder_for_label(source.label);
                     if (correction.size() < source_blinder.size())
                     {
                         correction.resize(
@@ -9125,27 +9392,28 @@ namespace gatzk::protocol
                          ++coefficient)
                     {
                         correction[coefficient] -=
-                            scale * source_blinder[coefficient];
+                            source.scale * source_blinder[coefficient];
                     }
                 }
                 trim_field_coefficients(&correction);
-                if (correction.size() == 1 && correction.front().is_zero())
-                {
-                    correction.clear();
-                }
                 if (resolved_terms.empty())
                 {
                     throw std::runtime_error(
-                        "derived t_edge linear view has no terms: " + derived_label);
+                        "derived t_edge linear view has no terms: " +
+                        descriptor.target_label);
                 }
-                if (resolved_terms.size() == 1 && resolved_terms.front().second == FieldElement::one() && correction.empty())
+                if (resolved_terms.size() == 1 &&
+                    resolved_terms.front().second == FieldElement::one() &&
+                    correction.empty())
                 {
                     return resolved_terms.front().first;
                 }
-                if (!correction.empty() && semantic_coset_zero_cycle_.empty())
+                if (!correction.empty() &&
+                    semantic_coset_zero_cycle_.empty())
                 {
                     throw std::runtime_error(
-                        "derived t_edge linear view is missing blinder geometry: " + derived_label);
+                        "derived t_edge linear view is missing blinder geometry: " +
+                        descriptor.target_label);
                 }
                 auto retained =
                     std::make_shared<const QuotientCosetValues>(
@@ -9161,219 +9429,143 @@ namespace gatzk::protocol
                 return retained;
             }
 
-            QuotientCosetValuesPtr derived_hidden_edge_coset(const std::string &name)
+            QuotientCosetValuesPtr derived_hidden_edge_coset(
+                const std::string &name)
             {
-                if (label_ != "t_edge")
-                {
-                    return nullptr;
-                }
-                for (std::size_t layer_index = 0;
-                     layer_index < context_.model.hidden_layers.size();
-                     ++layer_index)
-                    for (std::size_t local_head_index = 0;
-                         local_head_index < context_.model.hidden_layers[layer_index].heads.size();
-                         ++local_head_index)
-                    {
-                        const auto prefix = hidden_head_prefix(layer_index, local_head_index) + "_";
-                        if (name.rfind(prefix, 0) != 0)
-                        {
-                            continue;
-                        }
-                        const auto suffix = name.substr(prefix.size());
-                        const auto eta_l = challenges_.at(
-                            hidden_challenge_name("eta_L_h", layer_index, local_head_index));
-                        const auto eta_exp = challenges_.at(
-                            hidden_challenge_name("eta_exp_h", layer_index, local_head_index));
-                        const auto eta_elu = challenges_.at(
-                            hidden_challenge_name("eta_ELU_h", layer_index, local_head_index));
-                        const auto eta_src = challenges_.at(
-                            hidden_challenge_name("eta_src_h", layer_index, local_head_index));
-                        const auto eta_dst = challenges_.at(
-                            hidden_challenge_name("eta_dst_h", layer_index, local_head_index));
-                        const auto eta_t = challenges_.at(
-                            hidden_challenge_name("eta_t_h", layer_index, local_head_index));
-                        if (suffix == "Table_L")
-                        {
-                            return scaled_coset_sum(name, {{"P_T_L_x", FieldElement::one()}, {"P_T_L_y", eta_l}});
-                        }
-                        if (suffix == "Query_L")
-                        {
-                            return scaled_coset_sum(name, {{prefix + "S", FieldElement::one()}, {prefix + "Z", eta_l}});
-                        }
-                        if (suffix == "S")
-                        {
-                            return scaled_coset_sum(name, {{prefix + "E_src_edge", FieldElement::one()}, {prefix + "E_dst_edge", FieldElement::one()}});
-                        }
-                        if (suffix == "Delta")
-                        {
-                            return scaled_coset_sum(name, {{prefix + "M_edge", FieldElement::one()}, {prefix + "Z", -FieldElement::one()}});
-                        }
-                        if (suffix == "Table_R")
-                        {
-                            return scaled_coset_sum(
-                                name,
-                                {{"P_T_range", FieldElement::one()}});
-                        }
-                        if (suffix == "Query_R")
-                        {
-                            return scaled_coset_sum(
-                                name,
-                                {{prefix + "Delta", FieldElement::one()}});
-                        }
-                        if (suffix == "Table_exp")
-                        {
-                            return scaled_coset_sum(name, {{"P_T_exp_x", FieldElement::one()}, {"P_T_exp_y", eta_exp}});
-                        }
-                        if (suffix == "Query_exp")
-                        {
-                            return scaled_coset_sum(name, {{prefix + "Delta", FieldElement::one()}, {prefix + "U", eta_exp}});
-                        }
-                        if (suffix == "w_psq")
-                        {
-                            const auto lambda_psq = challenges_.at(
-                                hidden_challenge_name("lambda_psq_h", layer_index, local_head_index));
-                            return scaled_coset_sum(name, {{prefix + "U", FieldElement::one()}, {prefix + "widehat_v_pre_star", lambda_psq}});
-                        }
-                        if (suffix == "T_psq_edge")
-                        {
-                            const auto lambda_psq = challenges_.at(
-                                hidden_challenge_name("lambda_psq_h", layer_index, local_head_index));
-                            return scaled_coset_sum(name, {{prefix + "Sum_edge", FieldElement::one()}, {prefix + "H_agg_pre_star_edge", lambda_psq}});
-                        }
-                        if (suffix == "Table_ELU")
-                        {
-                            return scaled_coset_sum(name, {{"P_T_ELU_x", FieldElement::one()}, {"P_T_ELU_y", eta_elu}});
-                        }
-                        if (suffix == "Query_ELU")
-                        {
-                            return scaled_coset_sum(
-                                name,
-                                {{prefix + "H_ELU_in_flat", FieldElement::one()}, {prefix + "H_agg_flat", eta_elu}});
-                        }
-                        if (suffix == "Query_src")
-                        {
-                            const auto eta_src_sq = eta_src * eta_src;
-                            return scaled_coset_sum(name, {
-                                                              {"P_src", FieldElement::one()},
-                                                              {prefix + "E_src_edge", eta_src},
-                                                              {prefix + "H_src_star_edge", eta_src_sq},
-                                                          });
-                        }
-                        if (suffix == "Query_t")
-                        {
-                            return scaled_coset_sum(name, {{"P_dst", FieldElement::one()}, {prefix + "T_psq_edge", eta_t}});
-                        }
-                        if (suffix == "Query_dst")
-                        {
-                            const auto eta_dst_sq = eta_dst * eta_dst;
-                            const auto eta_dst_cu = eta_dst_sq * eta_dst;
-                            const auto eta_dst_4 = eta_dst_cu * eta_dst;
-                            const auto eta_dst_5 = eta_dst_4 * eta_dst;
-                            return scaled_coset_sum(name, {
-                                                              {"P_dst", FieldElement::one()},
-                                                              {prefix + "E_dst_edge", eta_dst},
-                                                              {prefix + "M_edge", eta_dst_sq},
-                                                              {prefix + "Sum_edge", eta_dst_cu},
-                                                              {prefix + "inv_edge", eta_dst_4},
-                                                              {prefix + "H_agg_star_edge", eta_dst_5},
-                                                          });
-                        }
-                        return nullptr;
-                    }
-                return nullptr;
+                const auto descriptor =
+                    t_edge_derived_linear_descriptor(name);
+                return descriptor.has_value()
+                           ? scaled_coset_sum(*descriptor)
+                           : nullptr;
             }
 
-            QuotientCosetValuesPtr derived_output_edge_coset(const std::string &name)
+            QuotientCosetValuesPtr derived_output_edge_coset(
+                const std::string &name)
             {
-                if (label_ != "t_edge")
+                const auto descriptor =
+                    t_edge_derived_linear_descriptor(name);
+                return descriptor.has_value()
+                           ? scaled_coset_sum(*descriptor)
+                           : nullptr;
+            }
+
+            bool append_t_edge_materializer_dependency(
+                std::vector<std::string> *labels,
+                const std::string &name) const
+            {
+                if (label_ != "t_edge" || labels == nullptr)
                 {
-                    return nullptr;
+                    return false;
                 }
-                for (std::size_t head_index = 0; head_index < context_.model.output_layer.heads.size(); ++head_index)
+                // A registered artifact takes the direct/spilled materializer
+                // path.  This preserves the pre-existing collision
+                // precedence for direct artifacts whose suffix resembles a
+                // derived label.
+                if (lookup_polynomial(name) != nullptr ||
+                    trace_.spilled_polynomials.contains(name))
                 {
-                    const auto prefix = output_head_prefix(head_index) + "_";
-                    if (name.rfind(prefix, 0) != 0)
+                    return false;
+                }
+                const auto descriptor =
+                    t_edge_derived_linear_descriptor(name);
+                if (!descriptor.has_value())
+                {
+                    return false;
+                }
+                const auto flattened =
+                    flatten_t_edge_descriptor_sources(*descriptor);
+                const auto &sources =
+                    flattened.status ==
+                            TEdgeDerivedLinearFlattenStatus::Success
+                        ? flattened.sources
+                        : descriptor->sources;
+                for (const auto &source : sources)
+                {
+                    if (!source.scale.is_zero())
+                    {
+                        labels->push_back(source.label);
+                    }
+                }
+                return true;
+            }
+
+            std::optional<FieldElement> t_edge_derived_value_at(
+                const std::string &name,
+                std::size_t index)
+            {
+                if (label_ != "t_edge" ||
+                    lookup_polynomial(name) != nullptr ||
+                    trace_.spilled_polynomials.contains(name))
+                {
+                    return std::nullopt;
+                }
+                const auto descriptor =
+                    t_edge_derived_linear_descriptor(name);
+                if (!descriptor.has_value())
+                {
+                    return std::nullopt;
+                }
+                const auto flattened =
+                    flatten_t_edge_descriptor_sources(*descriptor);
+                if (flattened.status ==
+                        TEdgeDerivedLinearFlattenStatus::Cycle ||
+                    flattened.status ==
+                        TEdgeDerivedLinearFlattenStatus::DepthExceeded)
+                {
+                    throw std::runtime_error(
+                        "invalid recursive t_edge derived descriptor: " +
+                        name);
+                }
+                const auto &terms =
+                    flattened.status ==
+                            TEdgeDerivedLinearFlattenStatus::Success
+                        ? flattened.sources
+                        : descriptor->sources;
+                FieldElement value = FieldElement::zero();
+                auto correction =
+                    descriptor->target_zero_domain_blinder;
+                for (const auto &source : terms)
+                {
+                    if (source.scale.is_zero())
                     {
                         continue;
                     }
-                    const auto suffix = name.substr(prefix.size());
-                    const auto eta_l = challenges_.at(output_challenge_name("eta_L_out", head_index));
-                    const auto eta_exp = challenges_.at(output_challenge_name("eta_exp_out", head_index));
-                    const auto eta_src = challenges_.at(output_challenge_name("eta_src_out", head_index));
-                    const auto eta_dst = challenges_.at(output_challenge_name("eta_dst_out", head_index));
-                    const auto eta_t = challenges_.at(output_challenge_name("eta_t_out", head_index));
-                    if (suffix == "Table_L")
+                    value +=
+                        source.scale * coset_value_at(source.label, index);
+                    const auto source_blinder =
+                        registered_blinder_for_label(source.label);
+                    if (correction.size() < source_blinder.size())
                     {
-                        return scaled_coset_sum(name, {{"P_T_L_x", FieldElement::one()}, {"P_T_L_y", eta_l}});
+                        correction.resize(
+                            source_blinder.size(),
+                            FieldElement::zero());
                     }
-                    if (suffix == "Query_L")
+                    for (std::size_t coefficient = 0;
+                         coefficient < source_blinder.size();
+                         ++coefficient)
                     {
-                        return scaled_coset_sum(name, {{prefix + "S", FieldElement::one()}, {prefix + "Z", eta_l}});
+                        correction[coefficient] -=
+                            source.scale * source_blinder[coefficient];
                     }
-                    if (suffix == "S")
-                    {
-                        return scaled_coset_sum(name, {{prefix + "E_src_edge", FieldElement::one()}, {prefix + "E_dst_edge", FieldElement::one()}});
-                    }
-                    if (suffix == "Delta")
-                    {
-                        return scaled_coset_sum(name, {{prefix + "M_edge", FieldElement::one()}, {prefix + "Z", -FieldElement::one()}});
-                    }
-                    if (suffix == "Table_R")
-                    {
-                        return scaled_coset_sum(
-                            name,
-                            {{"P_T_range", FieldElement::one()}});
-                    }
-                    if (suffix == "Query_R")
-                    {
-                        return scaled_coset_sum(
-                            name,
-                            {{prefix + "Delta", FieldElement::one()}});
-                    }
-                    if (suffix == "Table_exp")
-                    {
-                        return scaled_coset_sum(name, {{"P_T_exp_x", FieldElement::one()}, {"P_T_exp_y", eta_exp}});
-                    }
-                    if (suffix == "Query_exp")
-                    {
-                        return scaled_coset_sum(name, {{prefix + "Delta", FieldElement::one()}, {prefix + "U", eta_exp}});
-                    }
-                    if (suffix == "w")
-                    {
-                        const auto lambda_out = challenges_.at(output_challenge_name("lambda_out", head_index));
-                        return scaled_coset_sum(name, {{prefix + "U", FieldElement::one()}, {prefix + "widehat_y_star", lambda_out}});
-                    }
-                    if (suffix == "T_edge")
-                    {
-                        const auto lambda_out = challenges_.at(output_challenge_name("lambda_out", head_index));
-                        return scaled_coset_sum(name, {{prefix + "Sum_edge", FieldElement::one()}, {prefix + "Y_star_edge", lambda_out}});
-                    }
-                    if (suffix == "Query_src")
-                    {
-                        return scaled_coset_sum(name, {{"P_src", FieldElement::one()}, {prefix + "E_src_edge", eta_src}});
-                    }
-                    if (suffix == "Query_t")
-                    {
-                        return scaled_coset_sum(name, {{"P_dst", FieldElement::one()}, {prefix + "T_edge", eta_t}});
-                    }
-                    if (suffix == "Query_dst")
-                    {
-                        const auto eta_dst_sq = eta_dst * eta_dst;
-                        const auto eta_dst_cu = eta_dst_sq * eta_dst;
-                        const auto eta_dst_4 = eta_dst_cu * eta_dst;
-                        const auto eta_dst_5 = eta_dst_4 * eta_dst;
-                        return scaled_coset_sum(name, {
-                                                          {"P_dst", FieldElement::one()},
-                                                          {prefix + "E_dst_edge", eta_dst},
-                                                          {prefix + "M_edge", eta_dst_sq},
-                                                          {prefix + "Sum_edge", eta_dst_cu},
-                                                          {prefix + "inv_edge", eta_dst_4},
-                                                          {prefix + "Y_star_edge", eta_dst_5},
-                                                      });
-                    }
-                    return nullptr;
                 }
-                return nullptr;
+                trim_field_coefficients(&correction);
+                if (correction.empty())
+                {
+                    return value;
+                }
+                seed_lazy_blinder_geometry();
+                if (semantic_coset_points_ == nullptr ||
+                    semantic_coset_zero_cycle_.empty())
+                {
+                    throw std::runtime_error(
+                        "t_edge derived descriptor is missing blinder geometry: " +
+                        name);
+                }
+                const auto &point = (*semantic_coset_points_)[index];
+                value +=
+                    semantic_coset_zero_cycle_[index % rotation_step_] *
+                    algebra::horner(correction, point);
+                return value;
             }
 
             std::string canonical_coset_label(const std::string &name) const
@@ -9713,24 +9905,21 @@ namespace gatzk::protocol
                         alias_owner = alias_it->second;
                     }
                 }
-                if (is_edge_derived_coset_request(requested_name))
+                // The cache -> derived -> resolver order is canonical.  A
+                // derived name is described once and all host consumers use
+                // the same descriptor, including recursive source flattening
+                // and its independent blinder correction.
+                if (const auto descriptor =
+                        t_edge_derived_linear_descriptor(requested_name);
+                    descriptor.has_value())
                 {
-                    auto values =
-                        derived_hidden_edge_coset(requested_name);
-                    if (values == nullptr)
-                    {
-                        values =
-                            derived_output_edge_coset(requested_name);
-                    }
-                    if (values != nullptr)
-                    {
-                        std::lock_guard<std::mutex> lock(
-                            coset_cache_mutex_);
-                        const auto [it, inserted] =
-                            coset_cache_.emplace(
-                                requested_name, values);
-                        return inserted ? values : it->second;
-                    }
+                    auto values = scaled_coset_sum(*descriptor);
+                    std::lock_guard<std::mutex> lock(
+                        coset_cache_mutex_);
+                    const auto [it, inserted] =
+                        coset_cache_.emplace(
+                            requested_name, values);
+                    return inserted ? values : it->second;
                 }
                 if (const auto *polynomial =
                         lookup_polynomial(requested_name);
@@ -10057,6 +10246,7 @@ namespace gatzk::protocol
             const TraceArtifacts &trace_;
             const std::map<std::string, FieldElement> &challenges_;
             std::string label_;
+            internal::TEdgeDescriptorShape t_edge_descriptor_shape_;
             std::shared_ptr<algebra::RootOfUnityDomain> domain_;
             std::size_t target_size_ = 0;
             std::size_t rotation_step_ = 0;

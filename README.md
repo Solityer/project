@@ -50,30 +50,28 @@ python3 -m venv .venv
 CPU Release：
 
 ```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DGATZK_ENABLE_CUDA_BACKEND=OFF
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DGATZK_ENABLE_CUDA_BACKEND=OFF -DGATZK_BUILD_TESTS=OFF
 cmake --build build -j10
 ```
 
 CUDA Release：
 
 ```bash
-cmake -S . -B build_cuda -DCMAKE_BUILD_TYPE=Release -DGATZK_ENABLE_CUDA_BACKEND=ON -DCMAKE_CUDA_ARCHITECTURES=native
+cmake -S . -B build_cuda -DCMAKE_BUILD_TYPE=Release -DGATZK_ENABLE_CUDA_BACKEND=ON -DCMAKE_CUDA_ARCHITECTURES=native -DGATZK_BUILD_TESTS=OFF
 cmake --build build_cuda -j10
 ```
 
-短时 schema/static 检查（不加载正式数据、不生成 checkpoint/SRS/run）：
+上述正式构建默认不编译 `tests/` 中的 test-only targets。正式构建的短时 schema/static 检查（不加载正式数据、不生成 checkpoint/SRS/run）：
 
 ```bash
 cmake --build build -j10
 cmake --build build_cuda -j10
-build/gatzk_layered_schema_test
-build_cuda/gatzk_layered_schema_test
-ctest --test-dir build --output-on-failure
-ctest --test-dir build_cuda --output-on-failure
-python3 tests/test_layered_schema.py
 python3 tools/security/static_scan_no_tau.py
 git diff --check -- README.md include src tests
 ```
+
+测试构建、targeted runtime tests、Planetoid parity 和 PPI diagnostic 配置均位于
+`tests/`；独立测试构建与路径说明见 [`tests/README.md`](tests/README.md)。
 
 `--compute-backend cuda_hotspots` 需要 CUDA-enabled binary、可用 CUDA runtime 和至少
 一个真实 CUDA kernel。当前 backend 只把已有 size-aware hotspot 路径放到 CUDA，pairing、
@@ -141,25 +139,8 @@ PPI 训练复用 `train_planetoid_gat.py` 的 `PlanetoidGAT`、optimizer、seed 
 
 ## forward/parity 短检查
 
-三个 Planetoid 数据集可以在完整 proof 前做 checkpoint 与导出 bundle 的 CPU forward trace
-parity。输出是临时文件，检查后删除，不是正式性能结果：
-
-```bash
-parity_cora=$(mktemp /tmp/zkgat-parity-cora.XXXXXX.json)
-.venv/bin/python scripts/check_planetoid_parity.py --checkpoint artifacts/checkpoints/cora_gat/best_model.pt --bundle-dir artifacts/checkpoints/cora_gat --data-root data --dataset cora --output "$parity_cora"
-jq -e '.passed == true and .comparison_count > 0' "$parity_cora"
-unlink "$parity_cora"
-
-parity_citeseer=$(mktemp /tmp/zkgat-parity-citeseer.XXXXXX.json)
-.venv/bin/python scripts/check_planetoid_parity.py --checkpoint artifacts/checkpoints/citeseer_gat/best_model.pt --bundle-dir artifacts/checkpoints/citeseer_gat --data-root data --dataset citeseer --output "$parity_citeseer"
-jq -e '.passed == true and .comparison_count > 0' "$parity_citeseer"
-unlink "$parity_citeseer"
-
-parity_pubmed=$(mktemp /tmp/zkgat-parity-pubmed.XXXXXX.json)
-.venv/bin/python scripts/check_planetoid_parity.py --checkpoint artifacts/checkpoints/pubmed_gat/best_model.pt --bundle-dir artifacts/checkpoints/pubmed_gat --data-root data --dataset pubmed --output "$parity_pubmed"
-jq -e '.passed == true and .comparison_count > 0' "$parity_pubmed"
-unlink "$parity_pubmed"
-```
+三个 Planetoid 数据集的 checkpoint 与导出 bundle CPU forward trace parity 属于
+test-only 检查；命令和临时输出约束见 [`tests/README.md`](tests/README.md)。
 
 ## SRS 检查与必要重建
 
@@ -272,11 +253,23 @@ SRS hash 非空；只有这些 current-source manifest 才能进入结果表。�
 
 ## 结果整理
 
+每个 dataset/backend 的 protocol tamper suite 都必须由用户在独立审阅后提供一份
+external attestation 和它的外部 SHA-256 信任锚。`gatzk_protocol_tamper_tests` 的输出
+只允许写入仓库 canonical `tests/` 目录（推荐 `tests/attestations/`）；不要把测试
+artifact 写入仓库外或 `runs/`、`artifacts/`、`results/`。聚合器使用
+`--cpu-attestation dataset=path`、`--cpu-attestation-digest dataset=sha256` 以及对应的
+`--cuda-attestation*` 参数逐项认证五组 CPU/CUDA attestation；benchmark exporter 使用
+`--attestation dataset=path` 和 `--attestation-digest dataset=sha256`。摘要必须由用户
+从 attestation 文件外部计算（例如 `sha256sum`），不能把 attestation 自身的字段当作信任根。
+正式 verifier report 中 `tamper_tests_passed=false`、空 map、`tamper_tests_ms=0` 是待补
+状态，不是安全通过；只有外部 digest 已校验且所有 provenance/schema/public-input/topology
+binding 一致时，consumer 才会输出 tamper pass。
+
 十组正式 run 全部通过上述检查后，生成 CPU 与 CUDA 两份结果目录：
 
 ```bash
-.venv/bin/python scripts/export_benchmark_table.py --output-dir results/paper_secure/cpu --run cora=runs/cora_secure/cpu_formal/warm --run citeseer=runs/citeseer_secure/cpu_formal/warm --run pubmed=runs/pubmed_secure/cpu_formal/warm --run ppi=runs/ppi_secure/cpu_formal/warm --run ogbn_arxiv=runs/ogbn_arxiv_secure/cpu_formal/warm
-.venv/bin/python scripts/export_benchmark_table.py --output-dir results/paper_secure/cuda --run cora=runs/cora_secure/cuda_formal/warm --run citeseer=runs/citeseer_secure/cuda_formal/warm --run pubmed=runs/pubmed_secure/cuda_formal/warm --run ppi=runs/ppi_secure/cuda_formal/warm --run ogbn_arxiv=runs/ogbn_arxiv_secure/cuda_formal/warm
+.venv/bin/python scripts/export_benchmark_table.py --output-dir results/paper_secure/cpu --run cora=runs/cora_secure/cpu_formal/warm --run citeseer=runs/citeseer_secure/cpu_formal/warm --run pubmed=runs/pubmed_secure/cpu_formal/warm --run ppi=runs/ppi_secure/cpu_formal/warm --run ogbn_arxiv=runs/ogbn_arxiv_secure/cpu_formal/warm --attestation cora=tests/attestations/cora_cpu_tamper.json --attestation citeseer=tests/attestations/citeseer_cpu_tamper.json --attestation pubmed=tests/attestations/pubmed_cpu_tamper.json --attestation ppi=tests/attestations/ppi_cpu_tamper.json --attestation ogbn_arxiv=tests/attestations/ogbn_arxiv_cpu_tamper.json --attestation-digest cora=<reviewed-cora-cpu-attestation-sha256> --attestation-digest citeseer=<reviewed-citeseer-cpu-attestation-sha256> --attestation-digest pubmed=<reviewed-pubmed-cpu-attestation-sha256> --attestation-digest ppi=<reviewed-ppi-cpu-attestation-sha256> --attestation-digest ogbn_arxiv=<reviewed-ogbn-arxiv-cpu-attestation-sha256>
+.venv/bin/python scripts/export_benchmark_table.py --output-dir results/paper_secure/cuda --run cora=runs/cora_secure/cuda_formal/warm --run citeseer=runs/citeseer_secure/cuda_formal/warm --run pubmed=runs/pubmed_secure/cuda_formal/warm --run ppi=runs/ppi_secure/cuda_formal/warm --run ogbn_arxiv=runs/ogbn_arxiv_secure/cuda_formal/warm --attestation cora=tests/attestations/cora_cuda_tamper.json --attestation citeseer=tests/attestations/citeseer_cuda_tamper.json --attestation pubmed=tests/attestations/pubmed_cuda_tamper.json --attestation ppi=tests/attestations/ppi_cuda_tamper.json --attestation ogbn_arxiv=tests/attestations/ogbn_arxiv_cuda_tamper.json --attestation-digest cora=<reviewed-cora-cuda-attestation-sha256> --attestation-digest citeseer=<reviewed-citeseer-cuda-attestation-sha256> --attestation-digest pubmed=<reviewed-pubmed-cuda-attestation-sha256> --attestation-digest ppi=<reviewed-ppi-cuda-attestation-sha256> --attestation-digest ogbn_arxiv=<reviewed-ogbn-arxiv-cuda-attestation-sha256>
 jq -e '.benchmark_mode == "warm" and (.rows | length) == 5' results/paper_secure/cpu/latest.json
 jq -e '.benchmark_mode == "warm" and (.rows | length) == 5' results/paper_secure/cuda/latest.json
 ```
@@ -289,7 +282,7 @@ CUDA run 全部存在且通过 `VERIFY_OK`、full-dataset、proof hash、配置/
 篡改或不一致都会 fail-closed，且不会写出根结果文件：
 
 ```bash
-.venv/bin/python scripts/aggregate_secure_results.py --output-dir results/paper_secure --cpu-run cora=runs/cora_secure/cpu_formal/warm --cpu-run citeseer=runs/citeseer_secure/cpu_formal/warm --cpu-run pubmed=runs/pubmed_secure/cpu_formal/warm --cpu-run ppi=runs/ppi_secure/cpu_formal/warm --cpu-run ogbn_arxiv=runs/ogbn_arxiv_secure/cpu_formal/warm --cuda-run cora=runs/cora_secure/cuda_formal/warm --cuda-run citeseer=runs/citeseer_secure/cuda_formal/warm --cuda-run pubmed=runs/pubmed_secure/cuda_formal/warm --cuda-run ppi=runs/ppi_secure/cuda_formal/warm --cuda-run ogbn_arxiv=runs/ogbn_arxiv_secure/cuda_formal/warm
+.venv/bin/python scripts/aggregate_secure_results.py --output-dir results/paper_secure --cpu-run cora=runs/cora_secure/cpu_formal/warm --cpu-run citeseer=runs/citeseer_secure/cpu_formal/warm --cpu-run pubmed=runs/pubmed_secure/cpu_formal/warm --cpu-run ppi=runs/ppi_secure/cpu_formal/warm --cpu-run ogbn_arxiv=runs/ogbn_arxiv_secure/cpu_formal/warm --cuda-run cora=runs/cora_secure/cuda_formal/warm --cuda-run citeseer=runs/citeseer_secure/cuda_formal/warm --cuda-run pubmed=runs/pubmed_secure/cuda_formal/warm --cuda-run ppi=runs/ppi_secure/cuda_formal/warm --cuda-run ogbn_arxiv=runs/ogbn_arxiv_secure/cuda_formal/warm --cpu-attestation cora=tests/attestations/cora_cpu_tamper.json --cpu-attestation citeseer=tests/attestations/citeseer_cpu_tamper.json --cpu-attestation pubmed=tests/attestations/pubmed_cpu_tamper.json --cpu-attestation ppi=tests/attestations/ppi_cpu_tamper.json --cpu-attestation ogbn_arxiv=tests/attestations/ogbn_arxiv_cpu_tamper.json --cpu-attestation-digest cora=<reviewed-cora-cpu-attestation-sha256> --cpu-attestation-digest citeseer=<reviewed-citeseer-cpu-attestation-sha256> --cpu-attestation-digest pubmed=<reviewed-pubmed-cpu-attestation-sha256> --cpu-attestation-digest ppi=<reviewed-ppi-cpu-attestation-sha256> --cpu-attestation-digest ogbn_arxiv=<reviewed-ogbn-arxiv-cpu-attestation-sha256> --cuda-attestation cora=tests/attestations/cora_cuda_tamper.json --cuda-attestation citeseer=tests/attestations/citeseer_cuda_tamper.json --cuda-attestation pubmed=tests/attestations/pubmed_cuda_tamper.json --cuda-attestation ppi=tests/attestations/ppi_cuda_tamper.json --cuda-attestation ogbn_arxiv=tests/attestations/ogbn_arxiv_cuda_tamper.json --cuda-attestation-digest cora=<reviewed-cora-cuda-attestation-sha256> --cuda-attestation-digest citeseer=<reviewed-citeseer-cuda-attestation-sha256> --cuda-attestation-digest pubmed=<reviewed-pubmed-cuda-attestation-sha256> --cuda-attestation-digest ppi=<reviewed-ppi-cuda-attestation-sha256> --cuda-attestation-digest ogbn_arxiv=<reviewed-ogbn-arxiv-cuda-attestation-sha256>
 jq -e '.run_count == 10 and (.rows | length) == 10 and .security_tests.all_passed == true' results/paper_secure/latest.json
 test -s results/paper_secure/security_tests_report.md
 test "$(awk 'END {print NR-1}' results/paper_secure/latest.csv)" -eq 10

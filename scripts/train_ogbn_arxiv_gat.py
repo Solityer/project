@@ -25,7 +25,6 @@ from train_planetoid_gat import (
     cfg_bool,
     cfg_float,
     cfg_int,
-    input_quantization_diagnostic,
     quantized_input_features,
     parse_cfg,
     require_canonical_model_config,
@@ -226,11 +225,6 @@ def main() -> None:
             train_acc = masked_accuracy(eval_logits, labels, train_idx)
             val_loss = float(masked_loss(eval_logits, labels, valid_idx).item())
             val_acc = masked_accuracy(eval_logits, labels, valid_idx)
-            diagnostic_test_acc = (
-                masked_accuracy(eval_logits, labels, test_idx)
-                if args.diagnostic_test_each_epoch
-                else None
-            )
 
         epoch_metrics = {
             "epoch": float(epoch),
@@ -239,17 +233,10 @@ def main() -> None:
             "val_loss": val_loss,
             "val_acc": val_acc,
         }
-        if diagnostic_test_acc is not None:
-            epoch_metrics["test_acc"] = diagnostic_test_acc
         history.append(epoch_metrics)
-        test_suffix = (
-            f" test_acc={diagnostic_test_acc:.4f}"
-            if diagnostic_test_acc is not None
-            else ""
-        )
         print(
             f"[ogbn_arxiv] epoch={epoch:04d} train_loss={loss.item():.6f} train_acc={train_acc:.4f} "
-            f"val_loss={val_loss:.6f} val_acc={val_acc:.4f}{test_suffix}",
+            f"val_loss={val_loss:.6f} val_acc={val_acc:.4f}",
             flush=True,
         )
 
@@ -306,7 +293,6 @@ def main() -> None:
                     "test_loss": final_test_loss,
                     "test_acc": final_test_acc,
                 },
-                "per_epoch_test_diagnostic": bool(args.diagnostic_test_each_epoch),
                 "input_quantization_diagnostic": input_quantization,
                 "history_tail": history[-10:],
         "checkpoint_metadata": metadata,

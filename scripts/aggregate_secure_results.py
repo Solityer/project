@@ -14,6 +14,7 @@ import hashlib
 import importlib.util
 import json
 import math
+import os
 import pathlib
 import subprocess
 from datetime import datetime, timezone
@@ -136,6 +137,9 @@ PAIR_CONSISTENCY_FIELDS = (
     "verifier_registry_digest",
     "security_budget_ledger_digest",
     "security_budget_exact",
+    "tamper_attestation_format",
+    "tamper_attestation_suite_id",
+    "tamper_tests_passed",
     "tamper_test_case_map",
     "config",
     "config_sha256",
@@ -191,6 +195,7 @@ VERIFIER_REPORT_KEYS = {
     "reference_consistency_passed",
     "tamper_tests_passed",
     "tamper_test_case_map",
+    "tamper_tests_ms",
     "security_budget_passed",
     "security_budget_ledger_digest",
     "security_budget_exact",
@@ -244,6 +249,100 @@ REQUIRED_TAMPER_CASES = frozenset(
         "public_input_digest",
     }
 )
+
+# The C++ test-only producer and both Python consumers use one byte-stable
+# attestation schema.  These names intentionally match its canonical JSON
+# object exactly; the run manifest keeps its older ``*_hash`` spellings and is
+# mapped to this schema only at the consumer binding boundary.
+TAMPER_ATTESTATION_FORMAT = "zkgat_protocol_tamper_attestation"
+TAMPER_ATTESTATION_SUITE_ID = "zkgat_protocol_tamper_39"
+TAMPER_ATTESTATION_CANONICAL_KEYS = frozenset(
+    {
+        "binary_sha256",
+        "build_identity",
+        "build_receipt_sha256",
+        "config_sha256",
+        "format",
+        "instance_schema_hash",
+        "proof_sha256",
+        "protocol_schema_id",
+        "public_input_digest",
+        "public_output_digest",
+        "source_manifest_sha256",
+        "source_tree_hash",
+        "srs_manifest_sha256",
+        "suite_id",
+        "tamper_test_case_map",
+        "tamper_tests_ms",
+        "tamper_tests_passed",
+        "topology_digest",
+        "trusted_registry_digest",
+        "verifier_registry_digest",
+    }
+)
+TAMPER_ATTESTATION_HASH_FIELDS = (
+    "binary_sha256",
+    "build_identity",
+    "build_receipt_sha256",
+    "config_sha256",
+    "instance_schema_hash",
+    "proof_sha256",
+    "protocol_schema_id",
+    "public_input_digest",
+    "public_output_digest",
+    "source_manifest_sha256",
+    "source_tree_hash",
+    "srs_manifest_sha256",
+    "trusted_registry_digest",
+    "topology_digest",
+    "verifier_registry_digest",
+)
+
+# Keep the order in sync with the production tamper runner.  A map that has
+# all 39 names but a different order is not the canonical result artifact.
+REQUIRED_TAMPER_CASE_ORDER = (
+    "codec_tag",
+    "codec_length",
+    "codec_trailing",
+    "public_output",
+    "metadata",
+    "schema",
+    "ids",
+    "dynamic_commitment",
+    "quotient_commitment",
+    "opening",
+    "reblind_commitment",
+    "static_registry",
+    "model_registry",
+    "reference_mismatch",
+    "private_opening",
+    "route_padding",
+    "route_query",
+    "lookup_inverse",
+    "lookup_multiplicity",
+    "psq",
+    "shift",
+    "logup",
+    "aggregate",
+    "average",
+    "division",
+    "transcript_challenge",
+    "transcript_value",
+    "srs_metadata",
+    "srs_consistency",
+    "srs_resource_identity",
+    "srs_resource_compromised",
+    "proof_scope",
+    "observation_ledger",
+    "random_identity_ledger",
+    "integer_bound_ledger",
+    "integer_bound_certificate",
+    "security_budget_ledger",
+    "security_budget_exact",
+    "public_input_digest",
+)
+if set(REQUIRED_TAMPER_CASE_ORDER) != set(REQUIRED_TAMPER_CASES) or len(REQUIRED_TAMPER_CASE_ORDER) != 39:
+    raise RuntimeError("canonical tamper case registry must contain exactly 39 cases")
 
 
 def require(condition: bool, message: str) -> None:
@@ -331,15 +430,17 @@ def resolve_input_path(project_root: pathlib.Path, value: str) -> pathlib.Path:
 def load_manifest(project_root: pathlib.Path, value: str) -> Tuple[pathlib.Path, pathlib.Path, Dict[str, Any]]:
     input_path = resolve_input_path(project_root, value)
     manifest_path = input_path / "run_manifest.json" if input_path.is_dir() else input_path
-    require(manifest_path.is_file(), f"run manifest does not exist: {manifest_path}")
+    require(
+        manifest_path.is_file() and not manifest_path.is_symlink(),
+        f"run manifest must be a regular file: {manifest_path}",
+    )
     run_dir = manifest_path.parent
     proof_path = run_dir / "proof.bin"
-    require(proof_path.is_file(), f"run manifest has no proof.bin: {proof_path}")
-    try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise ValueError(f"cannot read run manifest {manifest_path}: {exc}") from exc
-    require(isinstance(manifest, dict), f"run manifest must be a JSON object: {manifest_path}")
+    require(
+        proof_path.is_file() and not proof_path.is_symlink(),
+        f"run manifest has no regular proof.bin: {proof_path}",
+    )
+    manifest = load_json_object(manifest_path, f"run manifest/{run_dir}")
     nonempty_string(
         manifest.get("input_preprocess_id"),
         "input_preprocess_id",
@@ -348,14 +449,41 @@ def load_manifest(project_root: pathlib.Path, value: str) -> Tuple[pathlib.Path,
     return run_dir, proof_path, manifest
 
 
-def load_json_object(path: pathlib.Path, context: str) -> Dict[str, Any]:
-    require(path.is_file(), f"{context}: missing JSON artifact {path}")
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise ValueError(f"{context}: cannot read JSON artifact {path}: {exc}") from exc
-    require(isinstance(value, dict), f"{context}: JSON artifact must be an object: {path}")
+def _reject_duplicate_json_pairs(pairs: List[Tuple[str, Any]]) -> Dict[str, Any]:
+    """Reject duplicate keys in every JSON object, including nested objects."""
+    value: Dict[str, Any] = {}
+    for key, item in pairs:
+        require(key not in value, f"JSON artifact has duplicate field {key!r}")
+        value[key] = item
     return value
+
+
+def parse_json_object_strict(encoded: str, context: str) -> Dict[str, Any]:
+    """Parse one canonical JSON object without silently accepting duplicate keys."""
+    try:
+        value = json.loads(encoded, object_pairs_hook=_reject_duplicate_json_pairs)
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise ValueError(f"{context}: cannot parse strict JSON object: {exc}") from exc
+    require(isinstance(value, dict), f"{context}: JSON artifact must be an object")
+    return value
+
+
+def load_json_object(path: pathlib.Path, context: str) -> Dict[str, Any]:
+    """Load a regular JSON artifact using the repository-wide strict decoder."""
+    require(
+        path.is_file() and not path.is_symlink(),
+        f"{context}: missing regular JSON artifact {path}",
+    )
+    try:
+        encoded = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise ValueError(f"{context}: cannot read JSON artifact {path}: {exc}") from exc
+    return parse_json_object_strict(encoded, f"{context}/{path.name}")
+
+
+def load_json_object_strict(path: pathlib.Path, context: str) -> Dict[str, Any]:
+    """Explicit spelling retained for security-sensitive callers."""
+    return load_json_object(path, context)
 
 
 def sha256_file(path: pathlib.Path) -> str:
@@ -403,12 +531,209 @@ def canonical_tamper_case_map(value: Any, field: str, context: str) -> Dict[str,
         set(parsed) == set(REQUIRED_TAMPER_CASES),
         f"{context}: {field} is incomplete",
     )
+    require(
+        tuple(parsed) == REQUIRED_TAMPER_CASE_ORDER,
+        f"{context}: {field} is not in canonical case order",
+    )
     return parsed
 
 
+def canonical_tamper_case_string(value: Any, field: str, context: str) -> str:
+    parsed = canonical_tamper_case_map(value, field, context)
+    return ",".join(
+        f"{name}={parsed[name]}" for name in REQUIRED_TAMPER_CASE_ORDER
+    )
+
+
+def _canonicalize_tamper_attestation(
+    value: Dict[str, Any], context: str
+) -> Dict[str, Any]:
+    """Validate and normalize the strict external attestation object."""
+    unknown = set(value) - set(TAMPER_ATTESTATION_CANONICAL_KEYS)
+    require(not unknown, f"{context}: tamper attestation has unknown field(s): {sorted(unknown)}")
+    normalized: Dict[str, Any] = {}
+    for field in TAMPER_ATTESTATION_CANONICAL_KEYS:
+        require(field in value, f"{context}: tamper attestation field {field} is missing")
+        normalized[field] = value[field]
+
+    require(
+        normalized["format"] == TAMPER_ATTESTATION_FORMAT,
+        f"{context}: tamper attestation format mismatch",
+    )
+    require(
+        normalized["suite_id"] == TAMPER_ATTESTATION_SUITE_ID,
+        f"{context}: tamper attestation suite_id mismatch",
+    )
+    for field in TAMPER_ATTESTATION_HASH_FIELDS:
+        normalized[field] = sha256_string(normalized[field], field, context)
+    for field in (
+        "protocol_schema_id",
+        "tamper_test_case_map",
+    ):
+        normalized[field] = nonempty_string(normalized[field], field, context)
+    normalized["tamper_tests_passed"] = as_bool(
+        normalized["tamper_tests_passed"], "tamper_tests_passed", context
+    )
+    require(
+        normalized["tamper_tests_passed"],
+        f"{context}: external tamper attestation did not pass",
+    )
+    normalized["tamper_test_case_map"] = canonical_tamper_case_string(
+        normalized["tamper_test_case_map"], "tamper_test_case_map", context
+    )
+    normalized["tamper_tests_ms"] = as_float(
+        normalized["tamper_tests_ms"], "tamper_tests_ms", context
+    )
+    require(
+        normalized["tamper_tests_ms"] > 0.0,
+        f"{context}: external tamper attestation tamper_tests_ms must be positive",
+    )
+    return normalized
+
+
+def load_tamper_attestation(
+    project_root: pathlib.Path,
+    path: pathlib.Path,
+    expected_digest: Any,
+    context: str,
+) -> Dict[str, Any]:
+    """Authenticate and parse an external tamper attestation.
+
+    The digest is deliberately an argument supplied by the caller, never a
+    value read from the run manifest or from the attestation itself.
+    """
+    path = _resolve_tamper_attestation_path(project_root, path, context)
+    expected = sha256_string(expected_digest, "tamper_attestation_sha256", context)
+    actual = sha256_file(path)
+    require(
+        actual == expected,
+        f"{context}: tamper attestation bytes do not match the external trusted digest",
+    )
+    value = load_json_object_strict(path, context)
+    normalized = _canonicalize_tamper_attestation(value, context)
+    normalized["tamper_attestation_sha256"] = actual
+    return normalized
+
+
+def check_verified_tamper_attestation(
+    project_root: pathlib.Path,
+    attestation_value: Any,
+    expected_digest: Any,
+    context: str,
+) -> Dict[str, Any]:
+    """Re-authenticate the external attestation for every security consumer.
+
+    A dictionary carrying ``verified=true`` is not an authentication result:
+    callers can construct or mutate it without touching the attestation file.
+    This entry point therefore accepts only a path plus an independently
+    supplied digest and always rereads and validates the canonical bytes.
+    """
+    attestation_path = _resolve_tamper_attestation_path(
+        project_root, attestation_value, context
+    )
+    normalized = load_tamper_attestation(
+        project_root, attestation_path, expected_digest, context
+    )
+    normalized["tamper_attestation_sha256"] = sha256_file(attestation_path)
+    normalized["tamper_attestation_path"] = str(
+        attestation_path.relative_to(project_root.resolve())
+    )
+    normalized["tamper_attestation_verified"] = True
+    return normalized
+
+
+def _resolve_tamper_attestation_path(
+    project_root: pathlib.Path,
+    value: Any,
+    context: str,
+) -> pathlib.Path:
+    """Resolve a producer-compatible attestation path under the repo tests/.
+
+    The C++ producer performs the same lexical containment and component
+    checks before creating its output.  In particular, resolving only the
+    final path would incorrectly allow a symlink inside ``tests/`` to redirect
+    a trusted artifact into a production directory or outside the repository.
+    """
+    root = project_root.resolve()
+    tests_root = root / "tests"
+    require(
+        tests_root.is_dir() and not tests_root.is_symlink(),
+        f"{context}: canonical repository tests directory is unavailable or unsafe",
+    )
+    if isinstance(value, pathlib.Path):
+        encoded = str(value)
+    else:
+        encoded = nonempty_string(value, "tamper_attestation_path", context)
+    candidate = pathlib.Path(encoded)
+    if not candidate.is_absolute():
+        candidate = root / candidate
+    # Match the producer's lexical normalization without following symlinks.
+    candidate = pathlib.Path(os.path.normpath(str(candidate)))
+    try:
+        relative = candidate.relative_to(tests_root)
+    except ValueError as exc:
+        raise ValueError(
+            f"{context}: tamper attestation must be inside the repository tests directory"
+        ) from exc
+    require(
+        relative != pathlib.Path(".") and not relative.is_absolute(),
+        f"{context}: tamper attestation path must name a file below tests/",
+    )
+    forbidden_components = {"results", "paper_secure", "artifacts", "runs"}
+    require(
+        not forbidden_components.intersection(relative.parts),
+        f"{context}: tamper attestation output is forbidden in results, artifacts, or runs",
+    )
+
+    cursor = tests_root
+    parts = relative.parts
+    for index, part in enumerate(parts):
+        require(
+            part not in {"", ".", ".."},
+            f"{context}: tamper attestation path contains an invalid component",
+        )
+        cursor /= part
+        try:
+            mode = cursor.lstat().st_mode
+        except FileNotFoundError:
+            # Let the final regular-file check below report a missing path;
+            # missing intermediate components cannot be traversed successfully.
+            continue
+        except OSError as exc:
+            raise ValueError(
+                f"{context}: cannot inspect tamper attestation path component {cursor}"
+            ) from exc
+        require(
+            not os.path.islink(cursor),
+            f"{context}: tamper attestation path cannot traverse a symlink: {cursor}",
+        )
+        if index != len(parts) - 1:
+            require(
+                cursor.is_dir(),
+                f"{context}: tamper attestation parent is not a directory: {cursor}",
+            )
+        else:
+            require(
+                cursor.is_file(),
+                f"{context}: tamper attestation must be a regular file: {cursor}",
+            )
+    require(
+        candidate.is_file() and not candidate.is_symlink(),
+        f"{context}: tamper attestation must be a regular non-symlink file: {candidate}",
+    )
+    return candidate
+
+
 def _resolve_regular_file(project_root: pathlib.Path, value: Any, field: str, context: str) -> pathlib.Path:
-    path = resolve_input_path(project_root, nonempty_string(value, field, context))
-    require(path.is_file() and not path.is_symlink(), f"{context}: {field} must be a regular non-symlink file")
+    encoded = nonempty_string(value, field, context)
+    candidate = pathlib.Path(encoded)
+    if not candidate.is_absolute():
+        candidate = project_root / candidate
+    require(
+        candidate.is_file() and not candidate.is_symlink(),
+        f"{context}: {field} must be a regular non-symlink file",
+    )
+    path = candidate.resolve()
     try:
         path.relative_to(project_root)
     except ValueError as exc:
@@ -466,11 +791,9 @@ def inspect_registration_artifact(
         completed.returncode == 0,
         f"{context}: independent registry inspection failed: {completed.stderr.strip() or 'non-zero exit'}",
     )
-    try:
-        inspection = json.loads(completed.stdout)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"{context}: registry inspector did not emit JSON") from exc
-    require(isinstance(inspection, dict), f"{context}: registry inspection must be a JSON object")
+    inspection = parse_json_object_strict(
+        completed.stdout, f"{context}: registry inspector output"
+    )
     require(
         set(inspection) == REGISTRY_INSPECTION_KEYS,
         f"{context}: registry inspection has an unexpected or missing field",
@@ -696,10 +1019,70 @@ def check_verifier_report(
     require(as_int(report.get("parsed_output_count"), "parsed_output_count", context) > 0, f"{context}: verifier report parsed output is empty")
     require(as_bool(report.get("verify_result"), "verify_result", context), f"{context}: verifier report verify_result is not true")
     require(as_bool(report.get("reference_consistency_passed"), "reference_consistency_passed", context), f"{context}: verifier report reference consistency did not pass")
-    require(as_bool(report.get("tamper_tests_passed"), "tamper_tests_passed", context), f"{context}: verifier report tamper tests did not pass")
-    report_tamper_map = nonempty_string(report.get("tamper_test_case_map"), "tamper_test_case_map", context)
-    canonical_tamper_case_map(report_tamper_map, "tamper_test_case_map", context)
-    require(report_tamper_map == nonempty_string(run_manifest.get("tamper_test_case_map"), "tamper_test_case_map", context), f"{context}: verifier report tamper map is not manifest-bound")
+    report_tamper_passed = as_bool(
+        report.get("tamper_tests_passed"), "tamper_tests_passed", context
+    )
+    report_tamper_map_value = report.get("tamper_test_case_map")
+    report_tamper_ms = as_float(
+        report.get("tamper_tests_ms"), "tamper_tests_ms", context
+    )
+    if report_tamper_passed:
+        report_tamper_map = canonical_tamper_case_string(
+            report_tamper_map_value, "tamper_test_case_map", context
+        )
+        require(
+            report_tamper_ms > 0.0,
+            f"{context}: verifier report tamper_tests_ms must be positive when passed",
+        )
+    else:
+        # A local report may intentionally be emitted before the external
+        # attestation suite is run.  This is pending, not a security pass.
+        require(
+            report_tamper_map_value == "" and report_tamper_ms == 0.0,
+            f"{context}: verifier report has an invalid pending tamper state",
+        )
+        report_tamper_map = ""
+    manifest_tamper_keys = {
+        "tamper_tests_passed",
+        "tamper_test_case_map",
+        "tamper_tests_ms",
+    }
+    present_manifest_tamper_keys = manifest_tamper_keys & set(run_manifest)
+    require(
+        not present_manifest_tamper_keys
+        or present_manifest_tamper_keys == manifest_tamper_keys,
+        f"{context}: run manifest tamper state is partial",
+    )
+    if present_manifest_tamper_keys:
+        manifest_tamper_passed = as_bool(
+            run_manifest.get("tamper_tests_passed"), "tamper_tests_passed", context
+        )
+        manifest_tamper_ms = as_float(
+            run_manifest.get("tamper_tests_ms"), "tamper_tests_ms", context
+        )
+        if manifest_tamper_passed:
+            manifest_tamper_map = canonical_tamper_case_string(
+                run_manifest.get("tamper_test_case_map"),
+                "tamper_test_case_map",
+                context,
+            )
+            require(
+                manifest_tamper_ms > 0.0,
+                f"{context}: run manifest tamper_tests_ms must be positive when passed",
+            )
+        else:
+            require(
+                run_manifest.get("tamper_test_case_map") == ""
+                and manifest_tamper_ms == 0.0,
+                f"{context}: run manifest has an invalid pending tamper state",
+            )
+            manifest_tamper_map = ""
+        require(
+            manifest_tamper_passed is report_tamper_passed
+            and manifest_tamper_map == report_tamper_map
+            and manifest_tamper_ms == report_tamper_ms,
+            f"{context}: verifier report tamper state is not manifest-bound",
+        )
     require(as_bool(report.get("security_budget_passed"), "security_budget_passed", context), f"{context}: verifier report security budget did not pass")
     require(report.get("security_budget_ledger_digest") == registration["security_budget_ledger_digest"], f"{context}: verifier report SecurityBudgetLedger digest mismatch")
     require(report.get("security_budget_ledger_digest") == sha256_string(run_manifest.get("security_budget_ledger_digest"), "security_budget_ledger_digest", context), f"{context}: verifier report budget digest is not manifest-bound")
@@ -719,8 +1102,9 @@ def check_verifier_report(
         "verifier_report_hash": report_hash,
         "trusted_registry_digest": trusted,
         "parsed_output_digest": parsed_digest,
-        "tamper_tests_passed": True,
+        "tamper_tests_passed": report_tamper_passed,
         "tamper_test_case_map": report_tamper_map,
+        "tamper_tests_ms": report_tamper_ms,
         "reference_consistency_passed": True,
         "security_budget_passed": True,
         "security_budget_ledger_digest": report["security_budget_ledger_digest"],
@@ -869,14 +1253,402 @@ def check_srs_artifacts(
     return {"srs_manifest_hash": recorded_hash, "srs_id": srs_id}
 
 
+def _check_local_tamper_state(
+    manifest: Dict[str, Any],
+    report: Dict[str, Any],
+    attestation: Dict[str, Any],
+    context: str,
+) -> None:
+    """Reject contradictions while keeping the external artifact authoritative."""
+    report_passed = as_bool(report.get("tamper_tests_passed"), "tamper_tests_passed", context)
+    report_map = report.get("tamper_test_case_map")
+    report_ms = as_float(report.get("tamper_tests_ms"), "tamper_tests_ms", context)
+    attestation_map = attestation["tamper_test_case_map"]
+    attestation_ms = attestation["tamper_tests_ms"]
+    if report_passed:
+        require(
+            report_map == attestation_map and report_ms == attestation_ms,
+            f"{context}: completed verifier tamper state disagrees with external attestation",
+        )
+    else:
+        require(
+            report_map == "" and report_ms == 0.0,
+            f"{context}: verifier report pending tamper state is malformed",
+        )
+
+    manifest_keys = {
+        "tamper_tests_passed",
+        "tamper_test_case_map",
+        "tamper_tests_ms",
+    }
+    present = manifest_keys & set(manifest)
+    require(
+        not present or present == manifest_keys,
+        f"{context}: run manifest tamper state is partial",
+    )
+    if present:
+        manifest_passed = as_bool(
+            manifest.get("tamper_tests_passed"), "tamper_tests_passed", context
+        )
+        manifest_ms = as_float(manifest.get("tamper_tests_ms"), "tamper_tests_ms", context)
+        if manifest_passed:
+            manifest_map = canonical_tamper_case_string(
+                manifest.get("tamper_test_case_map"),
+                "tamper_test_case_map",
+                context,
+            )
+            require(
+                manifest_map == attestation_map and manifest_ms == attestation_ms,
+                f"{context}: manifest tamper state disagrees with external attestation",
+            )
+        else:
+            require(
+                manifest.get("tamper_test_case_map") == "" and manifest_ms == 0.0,
+                f"{context}: run manifest pending tamper state is malformed",
+            )
+
+
+def check_manifest_tamper_state(
+    manifest: Dict[str, Any],
+    attestation: Dict[str, Any],
+    context: str,
+) -> None:
+    """Validate optional local tamper fields without treating them as trust roots."""
+    keys = {"tamper_tests_passed", "tamper_test_case_map", "tamper_tests_ms"}
+    present = keys & set(manifest)
+    require(not present or present == keys, f"{context}: run manifest tamper state is partial")
+    if not present:
+        return
+    passed = as_bool(manifest.get("tamper_tests_passed"), "tamper_tests_passed", context)
+    measured = as_float(manifest.get("tamper_tests_ms"), "tamper_tests_ms", context)
+    if not passed:
+        require(
+            manifest.get("tamper_test_case_map") == "" and measured == 0.0,
+            f"{context}: run manifest pending tamper state is malformed",
+        )
+        return
+    mapped = canonical_tamper_case_string(
+        manifest.get("tamper_test_case_map"), "tamper_test_case_map", context
+    )
+    require(measured > 0.0, f"{context}: run manifest tamper_tests_ms must be positive")
+    require(
+        mapped == attestation["tamper_test_case_map"]
+        and measured == attestation["tamper_tests_ms"],
+        f"{context}: run manifest tamper state disagrees with external attestation",
+    )
+
+
+def check_tamper_attestation(
+    project_root: pathlib.Path,
+    run_dir: pathlib.Path,
+    proof_path: pathlib.Path,
+    run_manifest: Dict[str, Any],
+    provenance: Dict[str, str],
+    registration: Dict[str, Any],
+    config_hash: str,
+    srs_info: Dict[str, Any],
+    verifier_report: Dict[str, Any],
+    attestation_value: str | None,
+    attestation_digest: str | None,
+    context: str,
+) -> Dict[str, Any]:
+    """Validate one externally authenticated tamper suite result.
+
+    Every identity field is checked against a recomputed/current producer
+    artifact where available.  The local report is allowed to be pending, but
+    its boolean/map/time never becomes the accepted security result.
+    """
+    require(
+        attestation_value is not None and attestation_digest is not None,
+        f"{context}: external tamper attestation path and digest are required",
+    )
+    attestation_path = _resolve_tamper_attestation_path(
+        project_root,
+        attestation_value,
+        context,
+    )
+    require(
+        not run_manifest.get("tamper_attestation_path")
+        or attestation_path == _resolve_tamper_attestation_path(
+            project_root,
+            run_manifest.get("tamper_attestation_path"),
+            context,
+        ),
+        f"{context}: explicit tamper attestation path is not manifest-bound",
+    )
+    attestation = check_verified_tamper_attestation(
+        project_root, attestation_path, attestation_digest, context
+    )
+
+    expected_fields = {
+        "source_tree_hash": sha256_string(
+            provenance.get("source_tree_hash"), "source_tree_hash", context
+        ),
+        "source_manifest_sha256": sha256_string(
+            provenance.get("source_manifest_hash"), "source_manifest_hash", context
+        ),
+        "build_receipt_sha256": sha256_string(
+            provenance.get("build_receipt_hash"), "build_receipt_hash", context
+        ),
+        "binary_sha256": sha256_string(
+            provenance.get("binary_hash"), "binary_hash", context
+        ),
+        "build_identity": sha256_string(
+            provenance.get("build_identity"), "build_identity", context
+        ),
+        "proof_sha256": sha256_file(proof_path),
+        "srs_manifest_sha256": sha256_string(
+            srs_info.get("srs_manifest_hash"), "srs_manifest_hash", context
+        ),
+        "trusted_registry_digest": sha256_string(
+            registration.get("registry_digest"), "registry_digest", context
+        ),
+        "verifier_registry_digest": sha256_string(
+            registration.get("registry_digest"), "registry_digest", context
+        ),
+        "config_sha256": sha256_string(config_hash, "config_sha256", context),
+        "protocol_schema_id": sha256_string(
+            registration.get("protocol_schema_id"), "protocol_schema_id", context
+        ),
+        "instance_schema_hash": sha256_string(
+            registration.get("instance_schema_hash"), "instance_schema_hash", context
+        ),
+        "public_input_digest": sha256_string(
+            registration.get("public_input_digest"), "public_input_digest", context
+        ),
+        "public_output_digest": sha256_string(
+            run_manifest.get("proof_public_output_hash"),
+            "proof_public_output_hash",
+            context,
+        ),
+        "topology_digest": sha256_string(
+            registration.get("topology_digest"), "topology_digest", context
+        ),
+    }
+    for field, expected in expected_fields.items():
+        require(
+            attestation[field] == expected,
+            f"{context}: external tamper attestation {field} is not bound to the current run",
+        )
+    require(
+        run_manifest.get("proof_hash") == attestation["proof_sha256"],
+        f"{context}: external tamper attestation proof hash is not manifest-bound",
+    )
+    for attestation_field, manifest_field in (
+        ("source_tree_hash", "source_tree_hash"),
+        ("source_manifest_sha256", "source_manifest_hash"),
+        ("binary_sha256", "binary_hash"),
+        ("build_identity", "build_identity"),
+        ("build_receipt_sha256", "build_receipt_hash"),
+        ("srs_manifest_sha256", "srs_manifest_hash"),
+        ("config_sha256", "config_sha256"),
+        ("protocol_schema_id", "protocol_schema_id"),
+        ("instance_schema_hash", "instance_schema_hash"),
+        ("public_input_digest", "public_input_digest"),
+        ("public_output_digest", "proof_public_output_hash"),
+        ("topology_digest", "topology_digest"),
+    ):
+        require(
+            run_manifest.get(manifest_field) == attestation[attestation_field],
+            f"{context}: external tamper attestation {attestation_field} is not manifest-bound",
+        )
+    require(
+        run_manifest.get("trusted_registry_digest") == attestation["trusted_registry_digest"]
+        and run_manifest.get("verifier_registry_digest") == attestation["verifier_registry_digest"],
+        f"{context}: external tamper attestation registry digest is not manifest-bound",
+    )
+    _check_local_tamper_state(run_manifest, verifier_report, attestation, context)
+    attestation["tamper_attestation_path"] = str(attestation_path.relative_to(project_root))
+    attestation["tamper_attestation_verified"] = True
+    return attestation
+
+
+def check_tamper_attestation_manifest_binding(
+    project_root: pathlib.Path,
+    run_dir: pathlib.Path,
+    proof_path: pathlib.Path,
+    run_manifest: Dict[str, Any],
+    attestation_value: str | None,
+    attestation_digest: str | None,
+    context: str,
+) -> Dict[str, Any]:
+    """Lightweight exporter-side binding check with the same strict codec.
+
+    The full aggregator additionally verifies source/build/SRS/registry
+    artifacts independently.  The exporter has no registry inspector input,
+    so it still requires every available manifest/file binding and the
+    external attestation digest before it can emit a benchmark row.
+    """
+    require(
+        attestation_value is not None and attestation_digest is not None,
+        f"{context}: external tamper attestation path and digest are required",
+    )
+    attestation_path = _resolve_tamper_attestation_path(
+        project_root,
+        attestation_value,
+        context,
+    )
+    require(
+        not run_manifest.get("tamper_attestation_path")
+        or attestation_path == _resolve_tamper_attestation_path(
+            project_root,
+            run_manifest.get("tamper_attestation_path"),
+            context,
+        ),
+        f"{context}: explicit tamper attestation path is not manifest-bound",
+    )
+    attestation = check_verified_tamper_attestation(
+        project_root, attestation_path, attestation_digest, context
+    )
+    proof_hash = sha256_file(proof_path)
+    require(
+        attestation["proof_sha256"] == proof_hash == sha256_string(
+            run_manifest.get("proof_hash"), "proof_hash", context
+        ),
+        f"{context}: external tamper attestation proof hash is not bound",
+    )
+    config_path = resolve_config(project_root, run_manifest, context)
+    config_hash = sha256_file(config_path)
+    require(
+        attestation["config_sha256"] == config_hash
+        == sha256_string(run_manifest.get("config_sha256"), "config_sha256", context),
+        f"{context}: external tamper attestation config hash is not bound",
+    )
+    for attestation_field, manifest_field in (
+        ("source_tree_hash", "source_tree_hash"),
+        ("source_manifest_sha256", "source_manifest_hash"),
+        ("build_receipt_sha256", "build_receipt_hash"),
+        ("binary_sha256", "binary_hash"),
+        ("build_identity", "build_identity"),
+        ("srs_manifest_sha256", "srs_manifest_hash"),
+        ("protocol_schema_id", "protocol_schema_id"),
+        ("instance_schema_hash", "instance_schema_hash"),
+        ("public_input_digest", "public_input_digest"),
+        ("public_output_digest", "proof_public_output_hash"),
+        ("topology_digest", "topology_digest"),
+        ("trusted_registry_digest", "trusted_registry_digest"),
+        ("verifier_registry_digest", "verifier_registry_digest"),
+    ):
+        require(
+            attestation[attestation_field]
+            == sha256_string(run_manifest.get(manifest_field), manifest_field, context),
+            f"{context}: external tamper attestation {attestation_field} is not manifest-bound",
+        )
+    manifest_tamper = {
+        "tamper_tests_passed": run_manifest.get("tamper_tests_passed"),
+        "tamper_test_case_map": run_manifest.get("tamper_test_case_map"),
+        "tamper_tests_ms": run_manifest.get("tamper_tests_ms"),
+    }
+    present = {key for key in manifest_tamper if key in run_manifest}
+    require(
+        not present or len(present) == len(manifest_tamper),
+        f"{context}: run manifest tamper state is partial",
+    )
+    if present:
+        passed = as_bool(manifest_tamper["tamper_tests_passed"], "tamper_tests_passed", context)
+        measured = as_float(manifest_tamper["tamper_tests_ms"], "tamper_tests_ms", context)
+        if passed:
+            mapped = canonical_tamper_case_string(
+                manifest_tamper["tamper_test_case_map"],
+                "tamper_test_case_map",
+                context,
+            )
+            require(mapped == attestation["tamper_test_case_map"] and measured == attestation["tamper_tests_ms"], f"{context}: manifest tamper state disagrees with external attestation")
+        else:
+            require(manifest_tamper["tamper_test_case_map"] == "" and measured == 0.0, f"{context}: malformed pending manifest tamper state")
+    attestation["tamper_attestation_path"] = str(attestation_path.relative_to(project_root))
+    attestation["tamper_attestation_verified"] = True
+    return attestation
+
+
 def check_security(
     manifest: Dict[str, Any],
     proof_path: pathlib.Path,
     report: Dict[str, Any],
     registration: Dict[str, Any],
     context: str,
+    attestation_value: Any = None,
+    attestation_digest: Any = None,
+    project_root: pathlib.Path | None = None,
 ) -> Dict[str, Any]:
-    """Validate security from independently bound report/registration data."""
+    """Validate security from a freshly authenticated external attestation.
+
+    ``report`` remains useful for the independent verifier/reference gates,
+    but its tamper fields are never promoted to the final security result.
+    """
+    require(
+        project_root is not None,
+        f"{context}: security gate requires the repository root for attestation authentication",
+    )
+    attestation = check_verified_tamper_attestation(
+        project_root,
+        attestation_value,
+        attestation_digest,
+        context,
+    )
+    expected_attestation_fields = {
+        "source_tree_hash": sha256_string(
+            manifest.get("source_tree_hash"), "source_tree_hash", context
+        ),
+        "source_manifest_sha256": sha256_string(
+            manifest.get("source_manifest_hash"), "source_manifest_hash", context
+        ),
+        "build_receipt_sha256": sha256_string(
+            manifest.get("build_receipt_hash"), "build_receipt_hash", context
+        ),
+        "binary_sha256": sha256_string(
+            manifest.get("binary_hash"), "binary_hash", context
+        ),
+        "build_identity": sha256_string(
+            manifest.get("build_identity"), "build_identity", context
+        ),
+        "proof_sha256": sha256_file(proof_path),
+        "srs_manifest_sha256": sha256_string(
+            manifest.get("srs_manifest_hash"), "srs_manifest_hash", context
+        ),
+        "config_sha256": sha256_string(
+            manifest.get("config_sha256"), "config_sha256", context
+        ),
+        "protocol_schema_id": sha256_string(
+            registration.get("protocol_schema_id"), "protocol_schema_id", context
+        ),
+        "instance_schema_hash": sha256_string(
+            registration.get("instance_schema_hash"), "instance_schema_hash", context
+        ),
+        "public_input_digest": sha256_string(
+            registration.get("public_input_digest"), "public_input_digest", context
+        ),
+        "public_output_digest": sha256_string(
+            manifest.get("proof_public_output_hash"),
+            "proof_public_output_hash",
+            context,
+        ),
+        "topology_digest": sha256_string(
+            registration.get("topology_digest"), "topology_digest", context
+        ),
+        "trusted_registry_digest": sha256_string(
+            registration.get("registry_digest"), "registry_digest", context
+        ),
+        "verifier_registry_digest": sha256_string(
+            registration.get("registry_digest"), "registry_digest", context
+        ),
+    }
+    for field, expected in expected_attestation_fields.items():
+        require(
+            attestation[field] == expected,
+            f"{context}: external tamper attestation {field} is not bound to the current security inputs",
+        )
+    if manifest.get("tamper_attestation_path"):
+        expected_path = _resolve_tamper_attestation_path(
+            project_root,
+            manifest.get("tamper_attestation_path"),
+            context,
+        )
+        require(
+            attestation["tamper_attestation_path"]
+            == str(expected_path.relative_to(project_root.resolve())),
+            f"{context}: external tamper attestation path is not manifest-bound",
+        )
     require(as_bool(manifest.get("verifier_reads_witness"), "verifier_reads_witness", context) is False,
             f"{context}: verifier_reads_witness must be false")
     require(as_int(manifest.get("private_plain_value_count"), "private_plain_value_count", context) == 0,
@@ -884,17 +1656,19 @@ def check_security(
     require(nonempty_string(manifest.get("proof_payload_audit_status"), "proof_payload_audit_status", context) == "passed",
             f"{context}: proof payload audit did not pass")
     require(as_bool(report.get("reference_consistency_passed"), "reference_consistency_passed", context), f"{context}: verifier report reference consistency did not pass")
-    require(as_bool(report.get("tamper_tests_passed"), "tamper_tests_passed", context), f"{context}: verifier report tamper tests did not pass")
-    for field in ("reference_consistency_passed", "tamper_tests_passed"):
-        require(as_bool(manifest.get(field), field, context), f"{context}: {field} must be true")
     require(
-        nonempty_string(manifest.get("tamper_test_case_map"), "tamper_test_case_map", context)
-        == nonempty_string(report.get("tamper_test_case_map"), "tamper_test_case_map", context),
-        f"{context}: manifest tamper map is not independently report-bound",
+        as_bool(manifest.get("reference_consistency_passed"), "reference_consistency_passed", context),
+        f"{context}: reference_consistency_passed must be true",
     )
-    canonical_tamper_case_map(report.get("tamper_test_case_map"), "tamper_test_case_map", context)
-    tamper_ms = as_float(manifest.get("tamper_tests_ms"), "tamper_tests_ms", context)
-    require(tamper_ms > 0.0, f"{context}: tamper_tests_ms must be positive")
+    tamper_map = canonical_tamper_case_string(
+        attestation.get("tamper_test_case_map"), "tamper_test_case_map", context
+    )
+    tamper_ms = as_float(attestation.get("tamper_tests_ms"), "tamper_tests_ms", context)
+    require(
+        as_bool(attestation.get("tamper_tests_passed"), "tamper_tests_passed", context)
+        and tamper_ms > 0.0,
+        f"{context}: external tamper attestation did not pass",
+    )
 
     for field in REQUIRED_HASHES:
         sha256_string(manifest.get(field), field, context)
@@ -933,10 +1707,6 @@ def check_security(
         budget_exact == registration["security_budget_exact"] == report["security_budget_exact"],
         f"{context}: exact SecurityBudgetLedger budget is not registry/report bound",
     )
-    tamper_case_map = nonempty_string(
-        manifest.get("tamper_test_case_map"), "tamper_test_case_map", context
-    )
-    canonical_tamper_case_map(tamper_case_map, "tamper_test_case_map", context)
     actual_proof_hash = sha256_file(proof_path)
     require(manifest["proof_hash"] == actual_proof_hash,
             f"{context}: proof_hash does not match proof.bin ({actual_proof_hash})")
@@ -946,11 +1716,15 @@ def check_security(
         "proof_payload_audit_status": "passed",
         "reference_consistency_passed": True,
         "tamper_tests_passed": True,
-        "tamper_test_case_map": tamper_case_map,
+        "tamper_test_case_map": attestation["tamper_test_case_map"],
         "security_budget_passed": True,
         "security_budget_ledger_digest": manifest["security_budget_ledger_digest"],
         "security_budget_exact": budget_exact,
-        "tamper_tests_ms": tamper_ms,
+        "tamper_tests_ms": attestation["tamper_tests_ms"],
+        "tamper_attestation_sha256": attestation["tamper_attestation_sha256"],
+        "tamper_attestation_path": attestation["tamper_attestation_path"],
+        "tamper_attestation_format": attestation["format"],
+        "tamper_attestation_suite_id": attestation["suite_id"],
         "proof_hash_audit_passed": True,
     }
 
@@ -999,7 +1773,6 @@ def check_formal_acceptance_state(
     check_single_run_acceptance_state(manifest, context)
     for field in (
         "reference_consistency_passed",
-        "tamper_tests_passed",
         "security_budget_passed",
     ):
         require(as_bool(manifest.get(field), field, context), f"{context}: {field} must be true")
@@ -1017,15 +1790,8 @@ def check_formal_acceptance_state(
         f"{context}: proof payload audit did not pass",
     )
 
-    # Security acceptance is not represented by a single boolean.  Keep the
-    # canonical tamper coverage, exact budget, and independent output hashes
-    # attached to the acceptance gate as well.
-    tamper_map = nonempty_string(
-        manifest.get("tamper_test_case_map"), "tamper_test_case_map", context
-    )
-    canonical_tamper_case_map(tamper_map, "tamper_test_case_map", context)
-    tamper_ms = as_float(manifest.get("tamper_tests_ms"), "tamper_tests_ms", context)
-    require(tamper_ms > 0.0, f"{context}: tamper_tests_ms must be positive")
+    # Tamper acceptance is intentionally not decided from the local manifest;
+    # check_tamper_attestation supplies the external trust root later.
     sha256_string(
         manifest.get("security_budget_ledger_digest"),
         "security_budget_ledger_digest",
@@ -1066,6 +1832,8 @@ def check_manifest(
     registry_value: str | None = None,
     registry_digest: str | None = None,
     registry_inspector: str | None = None,
+    attestation_value: str | None = None,
+    attestation_digest: str | None = None,
 ) -> Dict[str, Any]:
     run_dir, proof_path, manifest = load_manifest(project_root, value)
     context = f"{backend}/{dataset} ({run_dir})"
@@ -1154,12 +1922,29 @@ def check_manifest(
         registration,
         context,
     )
+    attestation = check_tamper_attestation(
+        project_root,
+        run_dir,
+        proof_path,
+        manifest,
+        provenance,
+        registration,
+        recorded_config_hash,
+        srs_info,
+        verifier_report,
+        attestation_value,
+        attestation_digest,
+        context,
+    )
     security = check_security(
         manifest,
         proof_path,
         verifier_report,
         registration,
         context,
+        attestation_value,
+        attestation_digest,
+        project_root,
     )
     timings = {
         "commitment_time_ms": as_float(manifest.get("commitment_time_ms"), "commitment_time_ms", context),
@@ -1219,6 +2004,10 @@ def check_manifest(
         "gpu_device": str(manifest.get("gpu_device", "")),
         "gpu_acceleration_status": str(manifest.get("gpu_acceleration_status", "")),
         "tamper_tests_ms": security["tamper_tests_ms"],
+        "tamper_attestation_path": security["tamper_attestation_path"],
+        "tamper_attestation_sha256": security["tamper_attestation_sha256"],
+        "tamper_attestation_format": security["tamper_attestation_format"],
+        "tamper_attestation_suite_id": security["tamper_attestation_suite_id"],
         **timings,
         **security,
     }
@@ -1285,6 +2074,10 @@ def write_outputs(
             "security_budget_ledger_digest": row["security_budget_ledger_digest"],
             "security_budget_exact": row["security_budget_exact"],
             "tamper_tests_ms": row["tamper_tests_ms"],
+            "tamper_attestation_path": row["tamper_attestation_path"],
+            "tamper_attestation_sha256": row["tamper_attestation_sha256"],
+            "tamper_attestation_format": row["tamper_attestation_format"],
+            "tamper_attestation_suite_id": row["tamper_attestation_suite_id"],
         }
         for row in rows
     ]
@@ -1301,6 +2094,7 @@ def write_outputs(
                 and item["proof_payload_audit_status"] == "passed"
                 and item["reference_consistency_passed"]
                 and item["tamper_tests_passed"]
+                and item["tamper_attestation_sha256"]
                 and item["security_budget_passed"]
                 for item in security_rows
             ) and cpu_gpu_reference_consistency_passed,
@@ -1330,6 +2124,8 @@ def write_outputs(
         "build_identity",
         "build_receipt_hash",
         "verifier_report_hash",
+        "tamper_attestation_path",
+        "tamper_attestation_sha256",
         "trusted_registry_digest",
         "verifier_registry_digest",
         "quant_config_hash",
@@ -1421,6 +2217,30 @@ def main() -> None:
         required=True,
         help="path to the independently built gatzk_registry_inspect utility",
     )
+    parser.add_argument(
+        "--cpu-attestation",
+        action="append",
+        default=[],
+        help="dataset=run-local tamper attestation (exactly five)",
+    )
+    parser.add_argument(
+        "--cuda-attestation",
+        action="append",
+        default=[],
+        help="dataset=run-local tamper attestation (exactly five)",
+    )
+    parser.add_argument(
+        "--cpu-attestation-digest",
+        action="append",
+        default=[],
+        help="dataset=external SHA-256 of the CPU tamper attestation (exactly five)",
+    )
+    parser.add_argument(
+        "--cuda-attestation-digest",
+        action="append",
+        default=[],
+        help="dataset=external SHA-256 of the CUDA tamper attestation (exactly five)",
+    )
     args = parser.parse_args()
 
     project_root = pathlib.Path(__file__).resolve().parents[1]
@@ -1442,6 +2262,52 @@ def main() -> None:
         set(registry_digests) == set(DATASET_ORDER),
         "--registry-digest must cover exactly " + ", ".join(DATASET_ORDER),
     )
+    attestation_paths: Dict[str, Dict[str, str]] = {"cpu": {}, "cuda": {}}
+    attestation_digests: Dict[str, Dict[str, str]] = {"cpu": {}, "cuda": {}}
+
+    def load_backend_artifacts(
+        values: List[str],
+        backend: str,
+        flag: str,
+        destination: Dict[str, Dict[str, str]],
+    ) -> None:
+        require(
+            not destination[backend],
+            f"duplicate {backend} attestation assignments through {flag}",
+        )
+        for value in values:
+            dataset, path_value = parse_assignment(value, flag)
+            require(
+                dataset not in destination[backend],
+                f"duplicate {backend} attestation assignment: {dataset}",
+            )
+            destination[backend][dataset] = path_value
+
+    load_backend_artifacts(args.cpu_attestation, "cpu", "--cpu-attestation", attestation_paths)
+    load_backend_artifacts(args.cuda_attestation, "cuda", "--cuda-attestation", attestation_paths)
+    load_backend_artifacts(
+        args.cpu_attestation_digest,
+        "cpu",
+        "--cpu-attestation-digest",
+        attestation_digests,
+    )
+    load_backend_artifacts(
+        args.cuda_attestation_digest,
+        "cuda",
+        "--cuda-attestation-digest",
+        attestation_digests,
+    )
+    for backend in ("cpu", "cuda"):
+        require(
+            set(attestation_paths[backend]) == set(DATASET_ORDER),
+            f"attestation paths for {backend} must cover exactly "
+            + ", ".join(DATASET_ORDER),
+        )
+        require(
+            set(attestation_digests[backend]) == set(DATASET_ORDER),
+            f"attestation digests for {backend} must cover exactly "
+            + ", ".join(DATASET_ORDER),
+        )
     assignments = {"cpu": args.cpu_run, "cuda": args.cuda_run}
     rows: List[Dict[str, Any]] = []
     for backend, values in assignments.items():
@@ -1460,6 +2326,8 @@ def main() -> None:
                     registry_paths[dataset],
                     registry_digests[dataset],
                     args.registry_inspector,
+                    attestation_paths[backend][dataset],
+                    attestation_digests[backend][dataset],
                 )
             )
         require(seen == set(DATASET_ORDER), f"--{backend}-run must cover exactly {', '.join(DATASET_ORDER)}")

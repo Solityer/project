@@ -27,7 +27,7 @@ BUILD_IDENTITY_ALGORITHM = "zkgat:build-identity"
 
 # Generated/runtime trees are never part of a source identity.  ``build*`` is
 # prefix based so local directories such as build_debug are excluded too.
-EXCLUDED_COMPONENTS = {"comparison", "runs", ".git"}
+EXCLUDED_COMPONENTS = {"comparison", "runs", "tests", ".git"}
 
 
 def _excluded(path: pathlib.PurePosixPath) -> bool:

@@ -464,11 +464,11 @@ namespace gatzk::protocol
         const auto build_receipt_hash = sha256_file_hex(
             std::filesystem::path(export_root) / "build_receipt.json");
         // This report is the independent, binary-produced acceptance record
-        // consumed by the aggregate gate.  In particular, the security and
-        // tamper fields are copied from the completed production checks here,
-        // then bound to the proof, authenticated registry, public-input
-        // identity, and exact binary/build provenance.  The aggregate gate
-        // never promotes the corresponding run-manifest fields on their own.
+        // consumed by the aggregate gate.  The formal production run does not
+        // execute the test-only tamper suite: these fields deliberately record
+        // the local pending state.  Final tamper coverage is supplied later by
+        // the separately reviewed external attestation emitted under tests/;
+        // neither this report nor the run manifest is a tamper trust root.
         const std::map<std::string, std::string> verifier_report = {
             {"format", "zkgat_verifier_report"},
             {"trusted_registry_digest", verifier_context.trusted_registry_digest},
@@ -481,6 +481,7 @@ namespace gatzk::protocol
             {"reference_consistency_passed", metrics.reference_consistency_passed ? "true" : "false"},
             {"tamper_tests_passed", metrics.tamper_tests_passed ? "true" : "false"},
             {"tamper_test_case_map", metrics.tamper_test_case_map},
+            {"tamper_tests_ms", format_double(metrics.tamper_tests_ms)},
             {"security_budget_passed", metrics.security_budget_passed ? "true" : "false"},
             {"security_budget_ledger_digest", metrics.security_budget_ledger_digest},
             {"security_budget_exact", metrics.security_budget_exact},
@@ -613,7 +614,7 @@ namespace gatzk::protocol
             {"gpu_used_for", metrics.gpu_used_for},
             {"gpu_fallback_stages", metrics.gpu_fallback_stages},
             {"gpu_fallback_reason", metrics.gpu_fallback_reason},
-            {"gpu_runtime_loaded", metrics.gpu_runtime_present ? "true" : "false"},
+            {"gpu_runtime_loaded", metrics.gpu_runtime_loaded ? "true" : "false"},
             {"gpu_kernel_invocation_count", std::to_string(metrics.gpu_kernel_invocation_count)},
             {"gpu_h2d_bytes", std::to_string(metrics.gpu_h2d_bytes)},
             {"gpu_d2h_bytes", std::to_string(metrics.gpu_d2h_bytes)},

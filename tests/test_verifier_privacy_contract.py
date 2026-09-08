@@ -19,6 +19,8 @@ context_source = read("src/protocol/verifier_context.cpp")
 main = read("src/main.cpp")
 artifact = read("src/protocol/artifact_export.cpp")
 codec_source = read("src/protocol/proof_codec.cpp")
+aggregate = read("scripts/aggregate_secure_results.py")
+exporter = read("scripts/export_benchmark_table.py")
 
 
 verifier_context = proof.split("struct VerifierContext", 1)[1].split(
@@ -59,6 +61,18 @@ assert "public_input_digest" in context_source
 assert "security_budget_ledger_digest" in context_source
 assert "security_budget_exact" in context_source
 assert "tamper_test_case_map" in main
+assert "tamper_tests_ms" in aggregate
+assert "TAMPER_ATTESTATION_CANONICAL_KEYS" in aggregate
+assert "load_tamper_attestation" in aggregate
+assert "check_tamper_attestation_manifest_binding" in exporter
+assert "check_verified_tamper_attestation" in exporter
+assert '{"gpu_runtime_loaded", metrics.gpu_runtime_loaded ? "true" : "false"}' in artifact
+assert '{"gpu_runtime_loaded", metrics.gpu_runtime_present ? "true" : "false"}' not in artifact
+assert "const auto gpu_runtime_available =" in main
+assert "metrics.gpu_runtime_present = gpu_runtime_available;" in main
+assert "metrics.gpu_runtime_loaded = gpu_runtime_available;" in main
+assert "metrics.gpu_runtime_loaded =\n                metrics.gpu_kernel_invocation_count" not in main
+assert "require(invocation_count > 0, f\"{context}: CUDA run reports no kernel invocations\")" in aggregate
 assert "registry_file_body" not in context_source
 assert "read_registry_file" not in context_source
 assert "parse_verifier_registration_artifact" in context_header
