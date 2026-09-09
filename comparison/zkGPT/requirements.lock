@@ -1,3 +1,0 @@
-# Baseline-local runtime lock.  The formal entry point verifies this exact
-# version inside comparison/zkGPT/.venv before importing any NumPy module.
-numpy==2.4.4
