@@ -12,7 +12,6 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(GATZK_ENABLE_CUDA_BACKEND "Enable optional CUDA algebra backend build" OFF)
-option(GATZK_BUILD_TESTS "Build test-only runtime and diagnostic targets" OFF)
 option(GATZK_ENABLE_FAST_MSM_DEFAULT "Enable fast MSM / fixed-base batch route by default" ON)
 option(GATZK_ENABLE_PARALLEL_FFT_DEFAULT "Enable parallel domain/FFT route by default" ON)
 option(GATZK_ENABLE_PACKED_FFT_DEFAULT "Enable packed domain evaluation backend by default" ON)
@@ -212,11 +211,6 @@ target_compile_definitions(
         GATZK_ENABLE_CUDA_BACKEND=$<IF:$<BOOL:${GATZK_ENABLE_CUDA_BACKEND}>,1,0>
         GATZK_CANONICAL_SCALE_CHAIN_PATH="${PROJECT_SOURCE_DIR}/configs/quantization_scale_chain.cfg"
 )
-if(GATZK_BUILD_TESTS)
-    # Keep the targeted materializer seam test-only; tests-OFF production
-    # binaries do not export or compile this helper.
-    target_compile_definitions(gatzkml PRIVATE GATZK_BUILD_TESTS=1)
-endif()
 
 if(GATZK_USE_MCL)
     target_compile_definitions(gatzkml PUBLIC GATZK_USE_MCL=1)
@@ -256,9 +250,3 @@ add_executable(gatzk_srs_setup tools/srs/generate_srs.cpp)
 target_include_directories(gatzk_srs_setup PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(gatzk_srs_setup PRIVATE gatzkml)
 
-if(GATZK_BUILD_TESTS)
-    # CTest requires its top-level test manifest to be enabled here; all
-    # test targets and registrations remain in tests/CMakeLists.txt.
-    enable_testing()
-    add_subdirectory(tests)
-endif()

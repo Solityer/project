@@ -821,25 +821,7 @@ namespace gatzk::protocol
             bool linear_commitment_derived = false;
             bool retain_polynomial = true;
             bool compact = false;
-#if defined(GATZK_BUILD_TESTS) && GATZK_BUILD_TESTS
-            std::optional<std::vector<FieldElement>>
-                zero_domain_blinder_for_tests;
-#endif
         };
-
-#if defined(GATZK_BUILD_TESTS) && GATZK_BUILD_TESTS
-        std::atomic<bool> exact_shared_evaluation_view_reuse_enabled{true};
-#endif
-
-        bool exact_shared_evaluation_view_reuse_enabled_for_execution()
-        {
-#if defined(GATZK_BUILD_TESTS) && GATZK_BUILD_TESTS
-            return exact_shared_evaluation_view_reuse_enabled.load(
-                std::memory_order_relaxed);
-#else
-            return true;
-#endif
-        }
 
         struct PreparedDynamicCommitment
         {
@@ -1688,16 +1670,6 @@ namespace gatzk::protocol
             {
                 throw std::runtime_error("shared dynamic commitment column is missing its owner");
             }
-            if (!exact_shared_evaluation_view_reuse_enabled_for_execution())
-            {
-                // The test-only off lane is the semantic independent-copy
-                // baseline.  It intentionally preserves labels, blinders,
-                // domain metadata, and all production spill validation while
-                // disabling only exact immutable-view reuse.
-                return std::make_shared<const std::vector<FieldElement>>(
-                    values->begin(),
-                    values->end());
-            }
             return std::shared_ptr<const std::vector<FieldElement>>(owner, values);
         }
 
@@ -2029,21 +2001,6 @@ namespace gatzk::protocol
                 }
                 if (!is_public_dynamic_polynomial(spec.name))
                 {
-#if defined(GATZK_BUILD_TESTS) && GATZK_BUILD_TESTS
-                    if (spec.zero_domain_blinder_for_tests.has_value())
-                    {
-                        if (spec.zero_domain_blinder_for_tests->empty())
-                        {
-                            throw std::runtime_error(
-                                "test dynamic commitment blinder is empty: " +
-                                spec.name);
-                        }
-                        out.polynomial->set_zero_domain_blinder(
-                            std::move(
-                                *spec.zero_domain_blinder_for_tests));
-                    }
-                    else
-#endif
                     out.polynomial->set_zero_domain_blinder(
                         sample_trace_blinder(compiler_artifact, spec.name));
                     out.proof_local_blinded = true;
@@ -7197,7 +7154,7 @@ namespace gatzk::protocol
                     throw std::runtime_error(
                         "dynamic commitment is missing from ProofSchema: " + label);
             }
-                        trace.commitment_order = canonical_commitment_order;
+            trace.commitment_order = canonical_commitment_order;
             const auto replayed_pre_quotient =
                 replay_challenges(context, trace.commitments, {}, &trace.public_metadata);
             for (const auto &[label, value] : trace.challenges)
@@ -13191,7 +13148,7 @@ namespace gatzk::protocol
                     elapsed_ms(output_trace_start, Clock::now()) - (metrics->commit_dynamic_ms - output_initial_commit_dynamic_ms));
             }
 
-                        finalize_trace_registry(context, trace, metrics);
+            finalize_trace_registry(context, trace, metrics);
             // Semantic commitment reuse is needed only while dynamic
             // commitments are being produced.  Do not carry its pointer/hash
             // registry into quotient and opening phases.
@@ -13205,356 +13162,7 @@ namespace gatzk::protocol
             }
             return trace;
         }
-
-#if defined(GATZK_BUILD_TESTS) && GATZK_BUILD_TESTS
-        DynamicCommitmentBatchTestResult
-        add_dynamic_commitment_batch_for_tests_impl(
-            TraceArtifacts &trace,
-            const std::vector<DynamicCommitmentBatchTestInput> &inputs,
-            const crypto::KZGKeyPair &key,
-            bool keep_trace_payloads)
-        {
-            if (inputs.empty())
-            {
-                throw std::runtime_error(
-                    "dynamic commitment test batch must not be empty");
-            }
-            if (trace.compiler_artifact == nullptr)
-            {
-                throw std::runtime_error(
-                    "dynamic commitment test batch requires the authenticated compiler artifact");
-            }
-            // build_multihead_trace installs this cache before entering the
-            // production dynamic commitment batches.  Mirror that lifecycle
-            // in the test-only seam so exact shared-view A/B runs exercise
-            // the same KZG semantic-commitment reuse path.
-            if (trace.evaluation_commitment_cache == nullptr)
-            {
-                trace.evaluation_commitment_cache =
-                    std::make_shared<crypto::EvaluationCommitmentCache>();
-            }
-#if defined(GATZK_BUILD_TESTS) && GATZK_BUILD_TESTS
-            if (!exact_shared_evaluation_view_reuse_enabled_for_execution())
-            {
-                // The off lane is an independent production spill baseline:
-                // do not let KZG's content-fingerprint cache turn copied
-                // views back into an accidental semantic reuse hit.
-                trace.evaluation_commitment_cache.reset();
-            }
-#endif
-
-            std::vector<DynamicCommitmentSpec> specs;
-            specs.reserve(inputs.size());
-            for (const auto &input : inputs)
-            {
-                if (input.name.empty() || input.domain == nullptr ||
-                    (input.shared_values == nullptr && input.values.empty()) ||
-                    (input.shared_values != nullptr && !input.values.empty()))
-                {
-                    throw std::runtime_error(
-                        "dynamic commitment test input is incomplete");
-                }
-                const auto &values = input.shared_values != nullptr
-                                         ? *input.shared_values
-                                         : input.values;
-                if (values.empty() || values.size() > input.domain->size)
-                {
-                    throw std::runtime_error(
-                        "dynamic commitment test input exceeds its evaluation domain");
-                }
-                if (input.shared_values != nullptr)
-                {
-                    auto shared_values = input.shared_values;
-                    if (!exact_shared_evaluation_view_reuse_enabled_for_execution())
-                    {
-                        // Keep the test-only off lane as a semantic
-                        // independent-copy baseline even when the seam is fed
-                        // an already-aliased view.  This mirrors the producer
-                        // path's alias_column_values() switch and leaves the
-                        // production materializer/spill implementation intact.
-                        shared_values =
-                            std::make_shared<const std::vector<FieldElement>>(
-                                values.begin(),
-                                values.end());
-                    }
-                    auto spec = column_spec(
-                        input.name,
-                        std::move(shared_values),
-                        input.domain);
-#if defined(GATZK_BUILD_TESTS) && GATZK_BUILD_TESTS
-                    spec.zero_domain_blinder_for_tests =
-                        input.zero_domain_blinder_for_tests;
-#endif
-                    specs.push_back(std::move(spec));
-                }
-                else
-                {
-                    auto spec = column_spec(
-                        input.name,
-                        input.values,
-                        input.domain);
-#if defined(GATZK_BUILD_TESTS) && GATZK_BUILD_TESTS
-                    spec.zero_domain_blinder_for_tests =
-                        input.zero_domain_blinder_for_tests;
-#endif
-                    specs.push_back(std::move(spec));
-                }
-            }
-
-            const auto order_start = trace.commitment_order.size();
-            RunMetrics metrics;
-            const auto start = Clock::now();
-            add_dynamic_commitment_batch(
-                trace,
-                std::move(specs),
-                key,
-                keep_trace_payloads,
-                &metrics);
-
-            if (trace.commitment_order.size() !=
-                order_start + inputs.size())
-            {
-                throw std::runtime_error(
-                    "dynamic commitment test seam changed commitment count");
-            }
-
-            DynamicCommitmentBatchTestResult result;
-            result.commitment_order.assign(
-                trace.commitment_order.begin() +
-                    static_cast<std::ptrdiff_t>(order_start),
-                trace.commitment_order.end());
-            result.commitments.reserve(inputs.size());
-            for (const auto &input : inputs)
-            {
-                const auto commitment_it =
-                    trace.commitments.find(input.name);
-                if (commitment_it == trace.commitments.end())
-                {
-                    throw std::runtime_error(
-                        "dynamic commitment test seam did not produce: " +
-                        input.name);
-                }
-                result.commitments.push_back(commitment_it->second);
-            }
-            result.wall_ms = elapsed_ms(start, Clock::now());
-            result.scoped_commitment_ms = metrics.commitment_time_ms;
-            result.dynamic_commit_ms = metrics.commit_dynamic_ms;
-            result.dynamic_commit_msm_ms = metrics.dynamic_commit_msm_ms;
-            result.object_profiles = std::move(metrics.dynamic_commitment_profiles);
-            return result;
-        }
-
-        DynamicCommitmentBatchTestResult
-        add_dynamic_commitment_matrix_batch_for_tests_impl(
-            TraceArtifacts &trace,
-            const std::vector<DynamicCommitmentMatrixBatchTestInput> &inputs,
-            const crypto::KZGKeyPair &key,
-            bool keep_trace_payloads)
-        {
-            if (inputs.empty())
-            {
-                throw std::runtime_error(
-                    "dynamic matrix commitment test batch must not be empty");
-            }
-            if (trace.compiler_artifact == nullptr)
-            {
-                throw std::runtime_error(
-                    "dynamic matrix commitment test batch requires the authenticated compiler artifact");
-            }
-
-            // Matrix commitments are coefficient-basis objects in the formal
-            // registry.  Validate the exact authenticated proof/ledger entry
-            // before constructing a diagnostic spec so a test cannot silently
-            // reinterpret an evaluation or public object as a private matrix.
-            const auto require_authenticated_private_coef_entry =
-                [&](const std::string &name)
-            {
-                const auto schema_it = std::find_if(
-                    trace.compiler_artifact->proof_schema.entries.begin(),
-                    trace.compiler_artifact->proof_schema.entries.end(),
-                    [&](const auto &entry)
-                    { return entry.tag == name; });
-                if (schema_it == trace.compiler_artifact->proof_schema.entries.end())
-                {
-                    throw std::runtime_error(
-                        "authenticated compiler artifact has no proof-schema entry for matrix: " + name);
-                }
-                if (schema_it->domain != "coef" ||
-                    schema_it->visibility != PolynomialVisibility::PrivateWitness ||
-                    !schema_it->enters_commitment)
-                {
-                    throw std::runtime_error(
-                        "matrix test input is not an authenticated private coefficient commitment: " +
-                        name + " domain=" + schema_it->domain);
-                }
-
-                const auto ledger_it = std::find_if(
-                    trace.compiler_artifact->observation_ledger.begin(),
-                    trace.compiler_artifact->observation_ledger.end(),
-                    [&](const auto &entry)
-                    {
-                        return entry.object_or_challenge == name &&
-                               entry.domain == "coef";
-                    });
-                if (ledger_it == trace.compiler_artifact->observation_ledger.end())
-                {
-                    throw std::runtime_error(
-                        "authenticated observation ledger has no coefficient entry for matrix: " +
-                        name);
-                }
-                return ledger_it;
-            };
-
-            std::vector<DynamicCommitmentSpec> specs;
-            specs.reserve(inputs.size());
-            for (const auto &input : inputs)
-            {
-                if (input.name.empty() || input.matrix.empty() ||
-                    input.matrix.front().empty())
-                {
-                    throw std::runtime_error(
-                        "dynamic matrix commitment test input is incomplete: " + input.name);
-                }
-                const auto width = input.matrix.front().size();
-                for (const auto &row : input.matrix)
-                {
-                    if (row.size() != width)
-                    {
-                        throw std::runtime_error(
-                            "dynamic matrix commitment test input is ragged: " + input.name);
-                    }
-                }
-                if (width > std::numeric_limits<std::size_t>::max() /
-                                input.matrix.size())
-                {
-                    throw std::runtime_error(
-                        "dynamic matrix commitment test input size overflows: " + input.name);
-                }
-                const auto flattened_count = input.matrix.size() * width;
-                const auto ledger_it =
-                    require_authenticated_private_coef_entry(input.name);
-                if (ledger_it->degree_bound == std::numeric_limits<std::size_t>::max() ||
-                    flattened_count > ledger_it->degree_bound + 1)
-                {
-                    throw std::runtime_error(
-                        "dynamic matrix commitment exceeds authenticated coefficient degree bound: " +
-                        input.name + " count=" + std::to_string(flattened_count) +
-                        " degree_bound=" + std::to_string(ledger_it->degree_bound));
-                }
-                specs.push_back(matrix_spec(input.name, input.matrix));
-            }
-
-            const auto order_start = trace.commitment_order.size();
-            RunMetrics metrics;
-            const auto start = Clock::now();
-            add_dynamic_commitment_batch(
-                trace,
-                std::move(specs),
-                key,
-                keep_trace_payloads,
-                &metrics);
-
-            if (trace.commitment_order.size() !=
-                order_start + inputs.size())
-            {
-                throw std::runtime_error(
-                    "dynamic matrix commitment test seam changed commitment count");
-            }
-
-            DynamicCommitmentBatchTestResult result;
-            result.commitment_order.assign(
-                trace.commitment_order.begin() +
-                    static_cast<std::ptrdiff_t>(order_start),
-                trace.commitment_order.end());
-            result.commitments.reserve(inputs.size());
-            for (const auto &input : inputs)
-            {
-                const auto commitment_it =
-                    trace.commitments.find(input.name);
-                if (commitment_it == trace.commitments.end())
-                {
-                    throw std::runtime_error(
-                        "dynamic matrix commitment test seam did not produce: " +
-                        input.name);
-                }
-                result.commitments.push_back(commitment_it->second);
-            }
-            result.wall_ms = elapsed_ms(start, Clock::now());
-            result.scoped_commitment_ms = metrics.commitment_time_ms;
-            result.dynamic_commit_ms = metrics.commit_dynamic_ms;
-            result.dynamic_commit_msm_ms = metrics.dynamic_commit_msm_ms;
-            result.object_profiles = std::move(metrics.dynamic_commitment_profiles);
-            return result;
-        }
-#endif
-
     } // namespace
-
-#if defined(GATZK_BUILD_TESTS) && GATZK_BUILD_TESTS
-    DynamicCommitmentBatchTestResult add_dynamic_commitment_batch_for_tests(
-        TraceArtifacts &trace,
-        const std::vector<DynamicCommitmentBatchTestInput> &inputs,
-        const crypto::KZGKeyPair &key,
-        bool keep_trace_payloads)
-    {
-        return add_dynamic_commitment_batch_for_tests_impl(
-            trace,
-            inputs,
-            key,
-            keep_trace_payloads);
-    }
-
-    DynamicCommitmentBatchTestResult add_dynamic_commitment_matrix_batch_for_tests(
-        TraceArtifacts &trace,
-        const std::vector<DynamicCommitmentMatrixBatchTestInput> &inputs,
-        const crypto::KZGKeyPair &key,
-        bool keep_trace_payloads)
-    {
-        return add_dynamic_commitment_matrix_batch_for_tests_impl(
-            trace,
-            inputs,
-            key,
-            keep_trace_payloads);
-    }
-
-    TraceArtifacts::SpilledEvaluationPolynomial
-    spill_evaluation_polynomial_for_tests(
-        TraceArtifacts &trace,
-        const SpillEvaluationTestInput &input)
-    {
-        if (input.name.empty() || input.shared_values == nullptr ||
-            input.shared_values->empty() || input.domain == nullptr ||
-            input.shared_values->size() > input.domain->size)
-        {
-            throw std::runtime_error(
-                "spill evaluation test input is incomplete or exceeds its domain");
-        }
-
-        auto polynomial = algebra::Polynomial::from_shared_evaluations(
-            input.name,
-            input.shared_values,
-            input.domain);
-        if (!input.zero_domain_blinder.empty())
-        {
-            polynomial.set_zero_domain_blinder(input.zero_domain_blinder);
-        }
-        return spill_evaluation_polynomial(trace, polynomial);
-    }
-
-    void set_exact_shared_evaluation_view_reuse_for_tests(bool enabled)
-    {
-        exact_shared_evaluation_view_reuse_enabled.store(
-            enabled,
-            std::memory_order_relaxed);
-    }
-
-    bool exact_shared_evaluation_view_reuse_for_tests()
-    {
-        return exact_shared_evaluation_view_reuse_enabled.load(
-            std::memory_order_relaxed);
-    }
-#endif
-
     std::vector<std::int64_t> weighted_edge_aggregate_raw_by_destination(
         const std::vector<std::int64_t> &edge_weights,
         const std::vector<std::vector<std::int64_t>> &source_rows,

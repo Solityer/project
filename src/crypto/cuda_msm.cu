@@ -183,7 +183,7 @@ namespace gatzk::crypto
             return output;
         }
 
-                void copy_mcl_canonical_scalars_to_icicle(
+        void copy_mcl_canonical_scalars_to_icicle(
             bls12_381::scalar_t *output,
             const algebra::FieldElement *input,
             std::size_t count)
@@ -2639,8 +2639,8 @@ namespace gatzk::crypto
         }
 
         if (max_count >
-                static_cast<std::size_t>(
-                    std::numeric_limits<int>::max()))
+            static_cast<std::size_t>(
+                std::numeric_limits<int>::max()))
         {
             throw std::runtime_error(
                 "CUDA G1 MSM batch max count exceeds int");
@@ -2891,108 +2891,4 @@ namespace gatzk::crypto
             return true;
         }
     }
-
-#if defined(GATZK_BUILD_TESTS) && GATZK_BUILD_TESTS
-    bool try_cuda_g1_msm_same_bases_batch_for_tests(
-        G1Point *const *outputs,
-        const G1Point *points,
-        const algebra::FieldElement *const *scalar_vectors,
-        const std::size_t *counts,
-        std::size_t max_count,
-        std::size_t batch_size,
-        std::size_t stable_srs_capacity,
-        CudaG1MsmBatchTestRoute route)
-    {
-        if (!util::route2_options().cuda_field_hotspots)
-        {
-            return false;
-        }
-        if (!algebra::cuda_backend_available())
-        {
-            throw std::runtime_error(
-                "CUDA mixed-count test route requested but CUDA runtime "
-                "is unavailable");
-        }
-        if (batch_size == 0)
-        {
-            return true;
-        }
-        if (outputs == nullptr ||
-            points == nullptr ||
-            scalar_vectors == nullptr ||
-            counts == nullptr)
-        {
-            throw std::runtime_error(
-                "CUDA mixed-count test route received null input");
-        }
-        if (max_count == 0 ||
-            max_count >
-                static_cast<std::size_t>(
-                    std::numeric_limits<int>::max()))
-        {
-            throw std::runtime_error(
-                "CUDA mixed-count test route received invalid max count");
-        }
-        if (stable_srs_capacity < max_count)
-        {
-            throw std::runtime_error(
-                "CUDA mixed-count test route SRS capacity is too small");
-        }
-        for (std::size_t batch = 0;
-             batch < batch_size;
-             ++batch)
-        {
-            if (outputs[batch] == nullptr ||
-                scalar_vectors[batch] == nullptr ||
-                counts[batch] == 0 ||
-                counts[batch] > max_count)
-            {
-                throw std::runtime_error(
-                    "CUDA mixed-count test route has invalid member count");
-            }
-        }
-
-        std::unique_lock<std::mutex> execution_lock(
-            cuda_msm_execution_mutex());
-        auto &cache = DeviceBaseCache::instance();
-
-        switch (route)
-        {
-        case CudaG1MsmBatchTestRoute::Resident:
-            execute_resident_cuda_msm_batch(
-                outputs,
-                points,
-                scalar_vectors,
-                counts,
-                max_count,
-                batch_size,
-                stable_srs_capacity,
-                cache);
-            return true;
-        case CudaG1MsmBatchTestRoute::CachedChunked:
-            execute_cached_base_chunked_cuda_msm_batch(
-                outputs,
-                points,
-                scalar_vectors,
-                counts,
-                max_count,
-                batch_size,
-                stable_srs_capacity,
-                cache);
-            return true;
-        case CudaG1MsmBatchTestRoute::Streamed:
-            execute_streamed_cuda_msm_same_bases_batch(
-                outputs,
-                points,
-                scalar_vectors,
-                counts,
-                max_count,
-                batch_size);
-            return true;
-        }
-
-        throw std::runtime_error(
-            "CUDA mixed-count test route is unknown");
-    }
-#endif
 }

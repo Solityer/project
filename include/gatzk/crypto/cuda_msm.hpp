@@ -31,28 +31,6 @@ namespace gatzk::crypto
         std::size_t batch_size,
         std::size_t stable_srs_capacity);
 
-#if defined(GATZK_BUILD_TESTS) && GATZK_BUILD_TESTS
-    enum class CudaG1MsmBatchTestRoute
-    {
-        Resident,
-        CachedChunked,
-        Streamed,
-    };
-
-    // Test-only route pinning for mixed-count zero-fill regression.  This
-    // exposes no production ABI in tests-OFF builds and does not alter route
-    // admission or fallback policy.
-    bool try_cuda_g1_msm_same_bases_batch_for_tests(
-        G1Point *const *outputs,
-        const G1Point *points,
-        const algebra::FieldElement *const *scalar_vectors,
-        const std::size_t *counts,
-        std::size_t max_count,
-        std::size_t batch_size,
-        std::size_t stable_srs_capacity,
-        CudaG1MsmBatchTestRoute route);
-#endif
-
     // Execution-only residency probe used by the scheduling layer.
     // A cold singleton SRS request may remain on CPU instead of paying an
     // unamortized normalization/upload/cache-preparation cost.

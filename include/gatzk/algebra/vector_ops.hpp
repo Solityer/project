@@ -105,14 +105,6 @@ namespace gatzk::algebra
     bool should_use_cuda_coset_transform(
         std::size_t target_size);
 
-#if defined(GATZK_BUILD_TESTS) && GATZK_BUILD_TESTS
-    // Test-only switch used by the quotient materializer A/B harness.  It
-    // gates only the >2^24 generic staged transform route; production
-    // tests-OFF builds do not expose or compile this seam.
-    void set_cuda_generic_staged_route_for_tests(
-        bool enabled);
-#endif
-
     // Exact Montgomery-limb update `target[i] += source[i] * scale`.  Returns
     // true only when the active route executed the update on CUDA; false means
     // that the caller must retain its canonical CPU path.  Once CUDA is

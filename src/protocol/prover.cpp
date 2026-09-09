@@ -12411,34 +12411,6 @@ namespace gatzk::protocol
 
     } // namespace
 
-#if defined(GATZK_BUILD_TESTS) && GATZK_BUILD_TESTS
-    std::vector<std::pair<std::string, algebra::Polynomial>>
-    materialize_quotient_polynomials_for_targeted_benchmark(
-        const ProtocolContext &context,
-        const TraceArtifacts &trace,
-        const std::map<std::string, algebra::FieldElement> &challenges,
-        const std::vector<std::string> &labels,
-        RunMetrics *metrics)
-    {
-        auto result = materialize_quotient_polynomials(
-            context,
-            trace,
-            challenges,
-            labels,
-            metrics);
-
-        // The production prove() boundary releases this workspace after the
-        // complete quotient family.  Keep the targeted seam at the same
-        // safe phase boundary so repeated benchmark processes cannot retain
-        // transform buffers after all synchronous CUDA calls have joined.
-        if (util::route2_options().cuda_field_hotspots)
-        {
-            algebra::release_cuda_ntt_workspace();
-        }
-        return result;
-    }
-#endif
-
     std::vector<algebra::FieldElement>
     evaluate_spilled_evaluation_polynomial_points(
         const TraceArtifacts::SpilledEvaluationPolynomial &spilled,

@@ -60,28 +60,9 @@ namespace gatzk::algebra
             return true;
         }
 
-#if defined(GATZK_BUILD_TESTS) && GATZK_BUILD_TESTS
-        std::atomic<bool>& cached_subset_multi_rotation_candidate_for_tests()
-        {
-            static std::atomic<bool> enabled{true};
-            return enabled;
-        }
-
-        std::atomic<std::uint64_t>& cached_subset_multi_rotation_candidate_invocations()
-        {
-            static std::atomic<std::uint64_t> invocations{0};
-            return invocations;
-        }
-#endif
-
         bool cached_subset_multi_rotation_candidate_enabled()
         {
-#if defined(GATZK_BUILD_TESTS) && GATZK_BUILD_TESTS
-            return cached_subset_multi_rotation_candidate_for_tests().load(
-                std::memory_order_relaxed);
-#else
             return true;
-#endif
         }
 
     }
@@ -229,23 +210,6 @@ namespace gatzk::algebra
     {
         return subset_for(labels).row_indices_u32;
     }
-
-#if defined(GATZK_BUILD_TESTS) && GATZK_BUILD_TESTS
-    std::size_t PackedEvaluationBackend::cached_subset_bytes_for_tests(
-        const std::vector<std::string>& labels) const
-    {
-        const auto key = subset_cache_key(labels);
-        std::lock_guard<std::mutex> lock(subset_cache_state_->mutex);
-        const auto it = subset_cache_state_->subset_cache.find(key);
-        if (it == subset_cache_state_->subset_cache.end() ||
-            it->second.interleaved_values.size() >
-                std::numeric_limits<std::size_t>::max() / sizeof(mcl::Fr))
-        {
-            return 0;
-        }
-        return it->second.interleaved_values.size() * sizeof(mcl::Fr);
-    }
-#endif
 
     // 直接返回指定标签在给定列索引上的多项式值（每个多项式在该点的求值）
     std::vector<FieldElement> PackedEvaluationBackend::values_at_direct_index(
@@ -616,11 +580,6 @@ namespace gatzk::algebra
             use_cached_subset;
         if (candidate_shape)
         {
-#if defined(GATZK_BUILD_TESTS) && GATZK_BUILD_TESTS
-            cached_subset_multi_rotation_candidate_invocations().fetch_add(
-                1,
-                std::memory_order_relaxed);
-#endif
             const bool candidate_ok =
                 weighted_poly_eval_gpu_interleaved_multi_rotations(
                     reinterpret_cast<const uint64_t*>(
@@ -1088,20 +1047,4 @@ namespace gatzk::algebra
         }
         return out;
     }
-
-#if defined(GATZK_BUILD_TESTS) && GATZK_BUILD_TESTS
-    void set_cached_subset_multi_rotation_candidate_for_tests(
-        bool enabled)
-    {
-        cached_subset_multi_rotation_candidate_for_tests().store(
-            enabled,
-            std::memory_order_relaxed);
-    }
-
-    std::uint64_t cached_subset_multi_rotation_candidate_invocations_for_tests()
-    {
-        return cached_subset_multi_rotation_candidate_invocations().load(
-            std::memory_order_relaxed);
-    }
-#endif
 }

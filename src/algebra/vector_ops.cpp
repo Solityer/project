@@ -65,14 +65,6 @@ namespace gatzk::algebra
             return counter;
         }
 
-#if defined(GATZK_BUILD_TESTS) && GATZK_BUILD_TESTS
-        std::atomic<bool> &cuda_generic_staged_route_for_tests()
-        {
-            static std::atomic<bool> enabled{true};
-            return enabled;
-        }
-#endif
-
         struct CudaExecutionCounters
         {
             std::atomic<std::uint64_t> h2d_bytes{0};
@@ -1636,14 +1628,6 @@ namespace gatzk::algebra
             return false;
         }
 
-#if defined(GATZK_BUILD_TESTS) && GATZK_BUILD_TESTS
-        if (size > (std::size_t{1} << 24) &&
-            !cuda_generic_staged_route_for_tests())
-        {
-            return false;
-        }
-#endif
-
 #if GATZK_ENABLE_CUDA_BACKEND
         return cuda_field_hotspots_available();
 #else
@@ -1670,14 +1654,6 @@ namespace gatzk::algebra
             return false;
         }
 
-#if defined(GATZK_BUILD_TESTS) && GATZK_BUILD_TESTS
-        if (size > (std::size_t{1} << 24) &&
-            !cuda_generic_staged_route_for_tests())
-        {
-            return false;
-        }
-#endif
-
 #if GATZK_ENABLE_CUDA_BACKEND
         return cuda_field_hotspots_available();
 #else
@@ -1703,14 +1679,6 @@ namespace gatzk::algebra
         {
             return false;
         }
-
-#if defined(GATZK_BUILD_TESTS) && GATZK_BUILD_TESTS
-        if (size > (std::size_t{1} << 24) &&
-            !cuda_generic_staged_route_for_tests())
-        {
-            return false;
-        }
-#endif
 
 #if GATZK_ENABLE_CUDA_BACKEND
         return cuda_field_hotspots_available();
@@ -1741,26 +1709,8 @@ namespace gatzk::algebra
             return false;
         }
 
-#if defined(GATZK_BUILD_TESTS) && GATZK_BUILD_TESTS
-        if (target_size > (std::size_t{1} << 24) &&
-            !cuda_generic_staged_route_for_tests())
-        {
-            return false;
-        }
-#endif
-
         return true;
     }
-
-#if defined(GATZK_BUILD_TESTS) && GATZK_BUILD_TESTS
-    void set_cuda_generic_staged_route_for_tests(
-        bool enabled)
-    {
-        cuda_generic_staged_route_for_tests().store(
-            enabled,
-            std::memory_order_relaxed);
-    }
-#endif
 
     bool try_cuda_scaled_accumulate_native(
         mcl::Fr *target,
