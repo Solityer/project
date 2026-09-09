@@ -1,6 +1,0 @@
-command: awk '/MemAvailable|MemTotal/ {print}' /proc/meminfo; timeout 180s build_tests_cpu/tests/gatzk_quotient_materializer_targeted_bench --mode materializer --route cpu --domain-log2 24 --repeats 1; rc=$?; awk '/MemAvailable|MemTotal/ {print}' /proc/meminfo; exit $rc
-mem_before: MemTotal=127601388 kB MemAvailable=118828072 kB
-output: no materializer sample emitted before timeout
-result: exit=124 (timeout at 180 seconds)
-mem_after: MemTotal=127601388 kB MemAvailable=119400532 kB
-follow_up: domain24 CUDA probe and measured repeats were not started because the CPU probe did not satisfy the required under-180-second condition.

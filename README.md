@@ -50,14 +50,13 @@ python3 -m venv .venv
 CPU Release：
 
 ```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DGATZK_ENABLE_CUDA_BACKEND=OFF -DGATZK_BUILD_TESTS=OFF
 cmake --build build -j10
 ```
 
 CUDA Release：
 
 ```bash
-cmake -S . -B build_cuda -DCMAKE_BUILD_TYPE=Release -DGATZK_ENABLE_CUDA_BACKEND=ON -DCMAKE_CUDA_ARCHITECTURES=native -DGATZK_BUILD_TESTS=OFF
+cmake -S . -B build_cuda -DCMAKE_BUILD_TYPE=Release -DGATZK_ENABLE_CUDA_BACKEND=ON -DCMAKE_CUDA_ARCHITECTURES=native
 cmake --build build_cuda -j10
 ```
 

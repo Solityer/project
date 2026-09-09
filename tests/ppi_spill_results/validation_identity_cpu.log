@@ -1,1 +1,0 @@
-status=PASS exact_token=1 member_token=2 exact_path=/home/pzh/project/runs/.trace_spill/proof-7a2f364b89ec5c20e0a50c323cd9669b/ppi_identity_exact_a_8f974b7e5c760d25ececd950.bin member_path=/home/pzh/project/runs/.trace_spill/proof-7a2f364b89ec5c20e0a50c323cd9669b/ppi_identity_member_e7bdc054de0de2224d6870dd.bin

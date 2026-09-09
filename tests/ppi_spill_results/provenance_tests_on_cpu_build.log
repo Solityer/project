@@ -1,8 +1,0 @@
-[  2%] Built target gatzk_mcl_build
-[ 94%] Built target gatzkml
-[ 97%] Building CXX object tests/CMakeFiles/gatzk_ppi_spill_targeted_bench.dir/ppi_spill_targeted_bench.cpp.o
-[100%] Linking CXX executable gatzk_ppi_spill_targeted_bench
-[100%] Built target gatzk_ppi_spill_targeted_bench
-[  2%] Built target gatzk_mcl_build
-[ 94%] Built target gatzkml
-[100%] Built target gatzk_ppi_spill_identity_test

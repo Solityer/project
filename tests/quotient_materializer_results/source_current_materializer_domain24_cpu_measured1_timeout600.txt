@@ -1,5 +1,0 @@
-command: awk '/MemAvailable|MemTotal/ {print}' /proc/meminfo; timeout 600s build_tests_cpu/tests/gatzk_quotient_materializer_targeted_bench --mode materializer --route cpu --domain-log2 24 --repeats 1; rc=$?; awk '/MemAvailable|MemTotal/ {print}' /proc/meminfo; exit $rc
-mem_before: MemTotal=127601388 kB MemAvailable=118566852 kB
-output: mode=materializer repeat=0 requested_route=cpu actual_route=cpu route_diagnostic=dedicated_quotient_calls domain_size=16777216 target_size=67108864 leaf_size=33554432 radix=2 batch=2 workspace_bytes=4294967296 production_parent_wall_ms=205820 quotient_t_fh_ms=202120 stage_timing=diagnostic_progress_only prewarm=184953.220866 evaluate=12058.837593 coefficients=4108.544885 kernel_invocations=0 ntt=0 intt=0 quotient_calls=0 h2d_bytes=0 d2h_bytes=0 sync=0 rss_before=543789056 rss_after=4090404864 rss_hwm=41000763392 output_size=67108864 digest=551660a3091b215d2937c83fd9e7ee6fd4f7ceb0dde3f0d44993129a002cf18c
-mem_after: MemTotal=127601388 kB MemAvailable=115836692 kB
-result: exit=0; parent wall 205.820 seconds; second independent measured run intentionally not started after coordinator stop instruction.

@@ -1,2 +1,0 @@
-CUDA_T_EDGE_CAPABILITY_OK target_2^24=1 target_2^25=1 target_2^26=1
-CUDA_T_EDGE_RUNTIME_OK kernels=18
