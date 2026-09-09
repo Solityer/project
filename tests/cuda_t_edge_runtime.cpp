@@ -798,15 +798,73 @@ int main()
             "CUDA t_edge admission accepted an invalid/overflow shape");
     }
 
-    // Exact leaves and final coefficient conversion use paired NTTs of
-    // target_size / 2.  The executor must therefore report this capability
-    // explicitly instead of claiming coverage for the OGBN-sized 2^26 target.
+    // Admission is deliberately exercised before executor construction.  A
+    // checked shape overflow and a deterministic reduced-memory request must
+    // both reject without launching a kernel or creating a partial executor.
+    const auto admission_kernel_before =
+        gatzk::algebra::cuda_kernel_invocation_count();
+
+    gatzk::protocol::CudaTEdgeExecutorAdmissionShape
+        overflow_shape{
+            .domain_size = target_size_2_24,
+            .instruction_count =
+                std::numeric_limits<std::size_t>::max()};
+
+    if (gatzk::protocol::cuda_t_edge_executor_can_admit(
+            target_size_2_24,
+            1,
+            true,
+            overflow_shape))
+    {
+        throw std::runtime_error(
+            "CUDA t_edge admission accepted checked-arithmetic overflow");
+    }
+
+    auto reduced_memory_shape =
+        gatzk::protocol::CudaTEdgeExecutorAdmissionShape{
+            .domain_size = target_size_2_24,
+            .instruction_count = 1,
+            .constant_count = 1,
+            .access_count = 2,
+            .caller_host_bytes =
+                std::size_t{1} << 60};
+
+    if (gatzk::protocol::cuda_t_edge_executor_can_admit(
+            target_size_2_24,
+            1,
+            true,
+            reduced_memory_shape))
+    {
+        throw std::runtime_error(
+            "CUDA t_edge admission accepted reduced-memory shape");
+    }
+
+    const auto admission_kernel_after =
+        gatzk::algebra::cuda_kernel_invocation_count();
+    if (admission_kernel_after != admission_kernel_before)
+    {
+        throw std::runtime_error(
+            "CUDA t_edge admission launched a kernel before allocation");
+    }
+
+    std::cout
+        << "CUDA_T_EDGE_ADMISSION_FAIL_CLOSED_OK overflow=1 reduced_memory=1 "
+        << "kernel_delta=0\n";
+
+    // Exact leaves and final coefficient conversion use the bounded transform
+    // over target_size / 2.  The direct 2^24 lane boundary and the staged
+    // 2^25/2^26 lane extensions must all be advertised, while non-powers and
+    // targets beyond the bounded 2^26 lane remain rejected.
     if (!gatzk::protocol::cuda_t_edge_leaf_exact_ntt_supported(
             target_size_2_24) ||
         !gatzk::protocol::cuda_t_edge_leaf_exact_ntt_supported(
             target_size_2_25) ||
-        gatzk::protocol::cuda_t_edge_leaf_exact_ntt_supported(
+        !gatzk::protocol::cuda_t_edge_leaf_exact_ntt_supported(
             target_size_2_26) ||
+        !gatzk::protocol::cuda_t_edge_leaf_exact_ntt_supported(
+            std::size_t{1} << 27) ||
+        gatzk::protocol::cuda_t_edge_leaf_exact_ntt_supported(
+            std::size_t{1} << 28) ||
         gatzk::protocol::cuda_t_edge_leaf_exact_ntt_supported(3))
     {
         throw std::runtime_error(
@@ -814,9 +872,9 @@ int main()
     }
 
     // Admission must cover both exact leaf materialization and the final
-    // device-resident quotient -> coefficient conversion.  The latter uses
-    // the same target_size / 2 paired-NTT boundary, so an unsupported 2^26
-    // target must fail closed even if a caller supplies a stale true flag.
+    // device-resident quotient -> coefficient conversion.  A stale false
+    // capability flag must still fail closed; resource-dependent true cases
+    // are reported below rather than treated as unconditional pass/fail.
     const auto admit_2_24 =
         gatzk::protocol::cuda_t_edge_executor_can_admit(
             target_size_2_24,
@@ -830,17 +888,14 @@ int main()
     if (gatzk::protocol::cuda_t_edge_executor_can_admit(
             target_size_2_26,
             1,
-            true) ||
-        gatzk::protocol::cuda_t_edge_executor_can_admit(
-            target_size_2_26,
-            1,
             false) ||
         gatzk::protocol::cuda_t_edge_executor_can_admit(
-            target_size_2_26,
-            1))
+            std::size_t{1} << 28,
+            1,
+            true))
     {
         throw std::runtime_error(
-            "CUDA t_edge admission accepted unsupported 2^26 final conversion");
+            "CUDA t_edge admission accepted a stale unsupported capability");
     }
 
     std::cout
@@ -848,7 +903,14 @@ int main()
         << (admit_2_24 ? 1 : 0)
         << " target_2^25="
         << (admit_2_25 ? 1 : 0)
-        << " target_2^26=0\n";
+        << " target_2^26="
+        << (gatzk::protocol::cuda_t_edge_executor_can_admit(
+                target_size_2_26,
+                1,
+                true)
+                ? 1
+                : 0)
+        << "\n";
 
     constexpr std::size_t
         domain_size = 1024;

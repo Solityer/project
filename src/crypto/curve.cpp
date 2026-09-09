@@ -884,7 +884,6 @@ namespace gatzk::crypto
         struct CompatibleGroup
         {
             const G1Point *points = nullptr;
-            std::size_t count = 0;
             std::size_t stable_srs_capacity = 0;
 
             std::vector<
@@ -925,8 +924,6 @@ namespace gatzk::crypto
                         {
                             return candidate.points ==
                                        request->points &&
-                                   candidate.count ==
-                                       request->count &&
                                    candidate.stable_srs_capacity ==
                                        request->stable_srs_capacity;
                         });
@@ -936,8 +933,6 @@ namespace gatzk::crypto
                     CompatibleGroup created;
                     created.points =
                         request->points;
-                    created.count =
-                        request->count;
                     created.stable_srs_capacity =
                         request->stable_srs_capacity;
                     created.requests.push_back(
@@ -1025,6 +1020,12 @@ namespace gatzk::crypto
                             scalar_vectors(
                                 current_batch);
 
+                        std::vector<std::size_t>
+                            counts(
+                                current_batch);
+
+                        std::size_t max_count = 0;
+
                         for (std::size_t batch = 0;
                              batch < current_batch;
                              ++batch)
@@ -1037,13 +1038,22 @@ namespace gatzk::crypto
 
                             scalar_vectors[batch] =
                                 request->scalars;
+
+                            counts[batch] =
+                                request->count;
+
+                            max_count =
+                                std::max(
+                                    max_count,
+                                    counts[batch]);
                         }
 
                         if (!try_cuda_g1_msm_same_bases_batch(
                                 outputs.data(),
                                 group.points,
                                 scalar_vectors.data(),
-                                group.count,
+                                counts.data(),
+                                max_count,
                                 current_batch,
                                 group.stable_srs_capacity))
                         {

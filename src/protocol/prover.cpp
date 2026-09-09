@@ -6571,6 +6571,158 @@ namespace gatzk::protocol
 
                 return slot_count;
             }
+
+            CudaTEdgeExecutorAdmissionShape
+            cuda_t_edge_executor_admission_shape(
+                const TEdgeBoundProgram &program) const
+            {
+                if (domain_ == nullptr ||
+                    domain_->size == 0)
+                {
+                    throw std::runtime_error(
+                        "CUDA t_edge admission is missing domain shape");
+                }
+
+                CudaTEdgeExecutorAdmissionShape shape{
+                    .domain_size = domain_->size,
+                    .instruction_count =
+                        program.instructions.size(),
+                    .constant_count =
+                        program.constants.size(),
+                    .access_count =
+                        program.accesses.size()};
+
+                const auto add_checked =
+                    [](std::size_t lhs,
+                       std::size_t rhs,
+                       std::size_t *out)
+                {
+                    if (out == nullptr ||
+                        lhs >
+                            std::numeric_limits<std::size_t>::max() -
+                                rhs)
+                    {
+                        return false;
+                    }
+                    *out = lhs + rhs;
+                    return true;
+                };
+
+                for (const auto &access :
+                     program.accesses)
+                {
+                    const auto descriptor =
+                        t_edge_derived_linear_descriptor(
+                            access.label);
+                    if (!descriptor.has_value())
+                    {
+                        continue;
+                    }
+
+                    const auto flattened =
+                        flatten_t_edge_descriptor_sources(
+                            *descriptor);
+                    if (flattened.status !=
+                            TEdgeDerivedLinearFlattenStatus::Success ||
+                        flattened.sources.empty())
+                    {
+                        // The resident-linear path does not call
+                        // materialize_linear_leaf() for an unresolved
+                        // descriptor, so it contributes no linear buffer
+                        // shape to admission.
+                        continue;
+                    }
+
+                    shape.max_linear_source_count =
+                        std::max(
+                            shape.max_linear_source_count,
+                            flattened.sources.size());
+
+                    std::size_t packed_blinder_count = 0;
+                    for (const auto &source :
+                         flattened.sources)
+                    {
+                        const auto *blinder =
+                            registered_blinder_data_for_label(
+                                source.label);
+                        const auto blinder_count =
+                            blinder == nullptr
+                                ? std::size_t{0}
+                                : blinder->size();
+                        if (!add_checked(
+                                packed_blinder_count,
+                                blinder_count,
+                                &packed_blinder_count))
+                        {
+                            throw std::runtime_error(
+                                "CUDA t_edge admission blinder shape overflow");
+                        }
+                    }
+
+                    shape.max_linear_source_blinder_count =
+                        std::max(
+                            shape.max_linear_source_blinder_count,
+                            packed_blinder_count);
+                    shape.max_linear_target_blinder_count =
+                        std::max(
+                            shape.max_linear_target_blinder_count,
+                            descriptor
+                                ->target_zero_domain_blinder
+                                .size());
+                }
+
+                constexpr std::size_t
+                    kUploadChunkElements =
+                        std::size_t{1} << 20;
+                const auto staging_elements =
+                    std::min(
+                        target_size_,
+                        kUploadChunkElements);
+
+                std::size_t output_bytes = 0;
+                std::size_t staging_bytes = 0;
+                std::size_t access_slot_bytes = 0;
+                if (!add_checked(
+                        target_size_,
+                        0,
+                        &output_bytes) ||
+                    target_size_ >
+                        std::numeric_limits<std::size_t>::max() /
+                            sizeof(FieldElement) ||
+                    staging_elements >
+                        std::numeric_limits<std::size_t>::max() /
+                            sizeof(FieldElement) ||
+                    program.accesses.size() >
+                        std::numeric_limits<std::size_t>::max() /
+                            sizeof(std::uint32_t))
+                {
+                    throw std::runtime_error(
+                        "CUDA t_edge admission host shape overflow");
+                }
+
+                output_bytes *= sizeof(FieldElement);
+                staging_bytes =
+                    staging_elements * sizeof(FieldElement);
+                access_slot_bytes =
+                    program.accesses.size() *
+                    sizeof(std::uint32_t);
+
+                if (!add_checked(
+                        output_bytes,
+                        staging_bytes,
+                        &shape.caller_host_bytes) ||
+                    !add_checked(
+                        shape.caller_host_bytes,
+                        access_slot_bytes,
+                        &shape.caller_host_bytes))
+                {
+                    throw std::runtime_error(
+                        "CUDA t_edge admission caller shape overflow");
+                }
+
+                return shape;
+            }
+
             bool should_use_cuda_t_edge_engine()
                 const
             {
@@ -6590,6 +6742,15 @@ namespace gatzk::protocol
                     throw std::runtime_error(
                         "CUDA t_edge route "
                         "is missing evaluation plan");
+                }
+
+                // The dedicated executor is intentionally reserved for the
+                // large route.  Smaller/unselected requests remain on the
+                // canonical CPU implementation by contract.
+                if (target_size_ <=
+                    (std::size_t{1} << 24))
+                {
+                    return false;
                 }
 
                 // The executor finalizes through the same exact paired NTT
@@ -6616,16 +6777,28 @@ namespace gatzk::protocol
                     cuda_t_edge_leaf_cache_slot_count(
                         program);
 
+                const auto admission_shape =
+                    cuda_t_edge_executor_admission_shape(
+                        program);
+
                 if (!cuda_t_edge_executor_can_admit(
                         target_size_,
                         cache_slot_count,
-                        leaf_exact_ntt_supported))
+                        leaf_exact_ntt_supported,
+                        admission_shape))
                 {
-                    return false;
+                    throw std::runtime_error(
+                        "CUDA t_edge large route was selected but admission "
+                        "was rejected: target_size=" +
+                        std::to_string(target_size_) +
+                        " domain=" +
+                        (domain_ == nullptr
+                             ? std::string("unknown")
+                             : domain_->name) +
+                        " route=cuda_t_edge_executor");
                 }
 
-                return target_size_ >=
-                       (std::size_t{1} << 25);
+                return true;
             }
 
             void reset_cuda_t_edge_transient_leaf_state()
@@ -6697,6 +6870,9 @@ namespace gatzk::protocol
 
                 executor->prepare_program(
                     program);
+
+                const bool large_cuda_route_selected =
+                    target_size_ > (std::size_t{1} << 24);
 
                 // CUDA t_edge materializes registered derived
                 // linear views directly instead of going through
@@ -7318,6 +7494,18 @@ namespace gatzk::protocol
                             reset_cuda_t_edge_transient_leaf_state();
                             return;
                         }
+                        if (large_cuda_route_selected)
+                        {
+                            throw std::runtime_error(
+                                "CUDA t_edge large route was selected but "
+                                "linear leaf execution failed: target_size=" +
+                                std::to_string(target_size_) +
+                                " domain=" +
+                                (domain_ == nullptr
+                                     ? std::string("unknown")
+                                     : domain_->name) +
+                                " route=cuda_t_edge_linear");
+                        }
                         ++linear_telemetry.host_derived_fallback;
                     }
                     else if (label != "__t_edge_boundary_l0")
@@ -7336,6 +7524,18 @@ namespace gatzk::protocol
                         if (leaf_exact_ntt_supported &&
                             direct_source_exists)
                         {
+                            if (large_cuda_route_selected)
+                            {
+                                throw std::runtime_error(
+                                    "CUDA t_edge large route was selected but "
+                                    "direct leaf execution failed: target_size=" +
+                                    std::to_string(target_size_) +
+                                    " domain=" +
+                                    (domain_ == nullptr
+                                         ? std::string("unknown")
+                                         : domain_->name) +
+                                    " route=cuda_t_edge_direct_leaf");
+                            }
                             ++linear_telemetry.direct_api_declined;
                         }
                         else if (!leaf_exact_ntt_supported)
@@ -8632,8 +8832,8 @@ namespace gatzk::protocol
                 else if (
                     target_size_ >= 2 &&
                     algebra::
-                        should_use_cuda_ntt_pair(
-                            target_size_ / 2))
+                        should_use_cuda_coset_transform(
+                            target_size_))
                 {
                     coefficients.assign(
                         target_size_,
@@ -8661,6 +8861,18 @@ namespace gatzk::protocol
                     }
                     else
                     {
+                        if (target_size_ > (std::size_t{1} << 24))
+                        {
+                            throw std::runtime_error(
+                                "CUDA quotient coset route was selected but "
+                                "materialization was not admitted: target_size=" +
+                                std::to_string(target_size_) +
+                                " domain=" +
+                                (domain_ == nullptr
+                                     ? std::string("unknown")
+                                     : domain_->name) +
+                                " route=cuda_coset_host_to_coefficients");
+                        }
                         coefficients =
                             coefficients_from_coset_evaluations_in_place(
                                 std::move(
@@ -8940,13 +9152,15 @@ namespace gatzk::protocol
                         {
                             bool cuda_materialized =
                                 false;
+                            bool cuda_route_attempted =
+                                false;
 
                             if (util::route2_options()
                                     .cuda_field_hotspots &&
                                 target_size_ >= 2 &&
                                 algebra::
-                                    should_use_cuda_ntt_pair(
-                                        target_size_ / 2))
+                                    should_use_cuda_coset_transform(
+                                        target_size_))
                             {
                                 auto *native_output =
                                     FieldElement::
@@ -8971,6 +9185,7 @@ namespace gatzk::protocol
                                         polynomial
                                             .zero_domain_blinder;
 
+                                    cuda_route_attempted = true;
                                     cuda_materialized =
                                         algebra::
                                             cuda_coset_evaluations_to_host_exact(
@@ -9001,6 +9216,7 @@ namespace gatzk::protocol
                                     const auto &coefficients =
                                         polynomial.values();
 
+                                    cuda_route_attempted = true;
                                     cuda_materialized =
                                         algebra::
                                             cuda_coset_coefficients_to_host_exact(
@@ -9019,6 +9235,19 @@ namespace gatzk::protocol
 
                             if (!cuda_materialized)
                             {
+                                if (cuda_route_attempted &&
+                                    target_size_ > (std::size_t{1} << 24))
+                                {
+                                    throw std::runtime_error(
+                                        "CUDA quotient coset route was selected but "
+                                        "materialization was not admitted: target_size=" +
+                                        std::to_string(target_size_) +
+                                        " domain=" +
+                                        (domain_ == nullptr
+                                             ? std::string("unknown")
+                                             : domain_->name) +
+                                        " route=cuda_coset_to_host");
+                                }
                                 coset_evaluate_polynomial_into(
                                     polynomial,
                                     target_size_,
@@ -9922,6 +10151,7 @@ namespace gatzk::protocol
                     }
                     if (it->domain_name == polynomial->domain->name &&
                         it->size == polynomial->size() &&
+                        retained.get() == polynomial->shared_data.get() &&
                         !retained.owner_before(polynomial->shared_data) &&
                         !polynomial->shared_data.owner_before(retained))
                     {
@@ -12180,6 +12410,34 @@ namespace gatzk::protocol
         }
 
     } // namespace
+
+#if defined(GATZK_BUILD_TESTS) && GATZK_BUILD_TESTS
+    std::vector<std::pair<std::string, algebra::Polynomial>>
+    materialize_quotient_polynomials_for_targeted_benchmark(
+        const ProtocolContext &context,
+        const TraceArtifacts &trace,
+        const std::map<std::string, algebra::FieldElement> &challenges,
+        const std::vector<std::string> &labels,
+        RunMetrics *metrics)
+    {
+        auto result = materialize_quotient_polynomials(
+            context,
+            trace,
+            challenges,
+            labels,
+            metrics);
+
+        // The production prove() boundary releases this workspace after the
+        // complete quotient family.  Keep the targeted seam at the same
+        // safe phase boundary so repeated benchmark processes cannot retain
+        // transform buffers after all synchronous CUDA calls have joined.
+        if (util::route2_options().cuda_field_hotspots)
+        {
+            algebra::release_cuda_ntt_workspace();
+        }
+        return result;
+    }
+#endif
 
     std::vector<algebra::FieldElement>
     evaluate_spilled_evaluation_polynomial_points(

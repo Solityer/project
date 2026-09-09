@@ -1,0 +1,8 @@
+[  0%] Built target gatzk_mcl_build
+[  6%] Built target gatzk_icicle_bls12_381_ntt
+[  9%] Built target gatzk_icicle_bls12_381_msm
+[ 93%] Built target gatzkml
+[ 93%] Building CXX object tests/CMakeFiles/gatzk_ppi_spill_targeted_bench.dir/ppi_spill_targeted_bench.cpp.o
+[ 96%] Linking CUDA device code CMakeFiles/gatzk_ppi_spill_targeted_bench.dir/cmake_device_link.o
+[100%] Linking CXX executable gatzk_ppi_spill_targeted_bench
+[100%] Built target gatzk_ppi_spill_targeted_bench

@@ -246,6 +246,11 @@ namespace gatzk::crypto
         double evaluation_ms = 0.0;
         double msm_ms = 0.0;
         std::vector<CommitObjectProfile> objects;
+        // Execution-only telemetry for the same-SRS CUDA wave planner.  These
+        // flags do not participate in commitments or transcript state; they
+        // make the production guard decision auditable in targeted tests.
+        bool used_same_srs_mixed_prefix = false;
+        bool used_same_srs_exact_count = false;
     };
 
     // 序列化大小直接参与proof_size_bytes统计

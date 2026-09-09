@@ -17,12 +17,28 @@ namespace gatzk::crypto
         G1Point *const *,
         const G1Point *,
         const algebra::FieldElement *const *,
+        const std::size_t *,
         std::size_t,
         std::size_t,
         std::size_t)
     {
         return false;
     }
+
+#if defined(GATZK_BUILD_TESTS) && GATZK_BUILD_TESTS
+    bool try_cuda_g1_msm_same_bases_batch_for_tests(
+        G1Point *const *,
+        const G1Point *,
+        const algebra::FieldElement *const *,
+        const std::size_t *,
+        std::size_t,
+        std::size_t,
+        std::size_t,
+        CudaG1MsmBatchTestRoute)
+    {
+        return false;
+    }
+#endif
 
     bool cuda_g1_msm_resident_prefix_available(
         const G1Point *,

@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -52,5 +53,84 @@ namespace gatzk::protocol
     TraceArtifacts build_trace(
         const ProtocolContext &context,
         RunMetrics *metrics = nullptr);
+
+#if defined(GATZK_BUILD_TESTS) && GATZK_BUILD_TESTS
+    // Test-only production seam.  It accepts the same dense evaluation-column
+    // shape used by trace materialization and forwards synchronously through
+    // add_dynamic_commitment_batch -> KZG::commit_batch.  The type is omitted
+    // from tests-OFF builds so it cannot become a protocol ABI.
+    struct DynamicCommitmentBatchTestInput
+    {
+        std::string name;
+        std::vector<algebra::FieldElement> values;
+        // Optional exact immutable evaluation view used by spill/reuse
+        // regressions.  The shared_ptr may be an aliasing view; production
+        // reuse is valid only when both its control block and get() pointer
+        // match another view.
+        std::shared_ptr<const std::vector<algebra::FieldElement>> shared_values;
+        // Optional deterministic blinder used only to compare tests-only A/B
+        // lanes.  Formal production callers never see this field.
+        std::optional<std::vector<algebra::FieldElement>>
+            zero_domain_blinder_for_tests;
+        std::shared_ptr<algebra::RootOfUnityDomain> domain;
+    };
+
+    // Test-only production seam for dense coefficient-basis matrix objects.
+    // The matrix is flattened by the same materialize_commitment() path used
+    // by hidden concat/output matrices, then forwarded synchronously through
+    // add_dynamic_commitment_batch -> KZG::commit_batch.  Keeping this type
+    // behind GATZK_BUILD_TESTS prevents a diagnostic harness from becoming a
+    // production protocol ABI.
+    struct DynamicCommitmentMatrixBatchTestInput
+    {
+        std::string name;
+        model::Matrix matrix;
+    };
+
+    struct DynamicCommitmentBatchTestResult
+    {
+        std::vector<std::string> commitment_order;
+        std::vector<crypto::Commitment> commitments;
+        double wall_ms = 0.0;
+        double scoped_commitment_ms = 0.0;
+        double dynamic_commit_ms = 0.0;
+        double dynamic_commit_msm_ms = 0.0;
+        std::vector<DynamicCommitmentObjectProfile> object_profiles;
+    };
+
+    // Test-only seam for the production spill materializer.  The input view
+    // may be an aliasing shared_ptr; spill reuse is valid only for the exact
+    // immutable view identity (control block and get() pointer).
+    struct SpillEvaluationTestInput
+    {
+        std::string name;
+        std::shared_ptr<const std::vector<algebra::FieldElement>> shared_values;
+        std::vector<algebra::FieldElement> zero_domain_blinder;
+        std::shared_ptr<algebra::RootOfUnityDomain> domain;
+    };
+
+    DynamicCommitmentBatchTestResult add_dynamic_commitment_batch_for_tests(
+        TraceArtifacts &trace,
+        const std::vector<DynamicCommitmentBatchTestInput> &inputs,
+        const crypto::KZGKeyPair &key,
+        bool keep_trace_payloads = false);
+
+    DynamicCommitmentBatchTestResult add_dynamic_commitment_matrix_batch_for_tests(
+        TraceArtifacts &trace,
+        const std::vector<DynamicCommitmentMatrixBatchTestInput> &inputs,
+        const crypto::KZGKeyPair &key,
+        bool keep_trace_payloads = false);
+
+    TraceArtifacts::SpilledEvaluationPolynomial
+    spill_evaluation_polynomial_for_tests(
+        TraceArtifacts &trace,
+        const SpillEvaluationTestInput &input);
+
+    // Test-only A/B control for the exact immutable-view reuse seam.  The
+    // production build has no mutable switch and always keeps the canonical
+    // exact-view path enabled.
+    void set_exact_shared_evaluation_view_reuse_for_tests(bool enabled);
+    bool exact_shared_evaluation_view_reuse_for_tests();
+#endif
 
 } // namespace gatzk::protocol

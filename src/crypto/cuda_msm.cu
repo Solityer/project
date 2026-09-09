@@ -1219,20 +1219,27 @@ namespace gatzk::crypto
             G1Point *const *outputs,
             const G1Point *points,
             const algebra::FieldElement *const *scalar_vectors,
-            std::size_t count,
+            const std::size_t *counts,
+            std::size_t max_count,
             std::size_t batch_size,
             std::size_t stable_srs_capacity,
             DeviceBaseCache &cache)
         {
+            if (counts == nullptr || max_count == 0)
+            {
+                throw std::runtime_error(
+                    "CUDA resident MSM batch received invalid count metadata");
+            }
+
             release_stream_msm_buffers();
 
             auto *device_points =
                 cache.get_or_prepare(
                     points,
-                    count,
+                    max_count,
                     stable_srs_capacity);
 
-            if (count >
+            if (max_count >
                 std::numeric_limits<std::size_t>::max() /
                     batch_size)
             {
@@ -1241,7 +1248,7 @@ namespace gatzk::crypto
             }
 
             const auto total_scalar_count =
-                count * batch_size;
+                max_count * batch_size;
 
             std::vector<
                 bls12_381::projective_t>
@@ -1261,7 +1268,7 @@ namespace gatzk::crypto
                 msm::default_msm_config();
 
             config.points_size =
-                static_cast<int>(count);
+                static_cast<int>(max_count);
 
             config.batch_size =
                 static_cast<int>(batch_size);
@@ -1283,11 +1290,25 @@ namespace gatzk::crypto
                  batch < batch_size;
                  ++batch)
             {
+                if (counts[batch] > max_count)
+                {
+                    throw std::runtime_error(
+                        "CUDA resident MSM batch request exceeds max count");
+                }
+
                 copy_mcl_canonical_scalars_to_icicle(
                     batched_scalars +
-                        batch * count,
+                        batch * max_count,
                     scalar_vectors[batch],
-                    count);
+                    counts[batch]);
+
+                std::fill(
+                    batched_scalars +
+                        batch * max_count +
+                        counts[batch],
+                    batched_scalars +
+                        (batch + 1) * max_count,
+                    bls12_381::scalar_t{});
             }
 
             if (cuda_msm_device_is_integrated())
@@ -1298,7 +1319,7 @@ namespace gatzk::crypto
                     bls12_381_msm_cuda(
                         batched_scalars,
                         device_points,
-                        static_cast<int>(count),
+                        static_cast<int>(max_count),
                         config,
                         results.data());
             }
@@ -1319,7 +1340,7 @@ namespace gatzk::crypto
                     bls12_381_msm_cuda(
                         device_scalars,
                         device_points,
-                        static_cast<int>(count),
+                        static_cast<int>(max_count),
                         config,
                         results.data());
             }
@@ -1348,7 +1369,7 @@ namespace gatzk::crypto
                     to_mcl_point(
                         results[batch],
                         "resident_batch",
-                        count,
+                        max_count,
                         config.c,
                         batch);
             }
@@ -1359,7 +1380,8 @@ namespace gatzk::crypto
             G1Point *const *outputs,
             const G1Point *points,
             const algebra::FieldElement *const *scalar_vectors,
-            std::size_t count,
+            const std::size_t *counts,
+            std::size_t max_count,
             std::size_t batch_size,
             std::size_t stable_srs_capacity,
             DeviceBaseCache &cache)
@@ -1371,6 +1393,12 @@ namespace gatzk::crypto
             {
                 throw std::runtime_error(
                     "CUDA cached-base chunked MSM received invalid input");
+            }
+
+            if (counts == nullptr || max_count == 0)
+            {
+                throw std::runtime_error(
+                    "CUDA cached-base chunked MSM received invalid count metadata");
             }
 
             if (batch_size >
@@ -1391,35 +1419,27 @@ namespace gatzk::crypto
                     throw std::runtime_error(
                         "CUDA cached-base chunked MSM contains null member");
                 }
-            }
-
-            if (count == 0)
-            {
-                for (std::size_t batch = 0;
-                     batch < batch_size;
-                     ++batch)
+                if (counts[batch] > max_count)
                 {
-                    *outputs[batch] =
-                        g1_zero();
+                    throw std::runtime_error(
+                        "CUDA cached-base chunked MSM request exceeds max count");
                 }
-
-                return;
             }
 
             auto *device_points =
                 cache.get_or_prepare(
                     points,
-                    count,
+                    max_count,
                     stable_srs_capacity);
 
             const auto minimum_chunk =
                 std::min(
-                    count,
+                    max_count,
                     kMinimumStreamMsmChunkSize);
 
             auto chunk_size =
                 std::min(
-                    count,
+                    max_count,
                     kPreferredStreamMsmChunkSize);
 
             std::vector<bls12_381::scalar_t>
@@ -1488,8 +1508,8 @@ namespace gatzk::crypto
 
             util::info(
                 "cuda_msm route=resident_chunked_batch"
-                " count=" +
-                std::to_string(count) +
+                " max_count=" +
+                std::to_string(max_count) +
                 " batch=" +
                 std::to_string(batch_size) +
                 " chunk=" +
@@ -1497,23 +1517,39 @@ namespace gatzk::crypto
 
             std::size_t offset = 0;
 
-            while (offset < count)
+            while (offset < max_count)
             {
                 const auto current_count =
                     std::min(
                         chunk_size,
-                        count - offset);
+                        max_count - offset);
 
                 for (std::size_t batch = 0;
                      batch < batch_size;
                      ++batch)
                 {
+                    const auto valid_count =
+                        offset < counts[batch]
+                            ? std::min(
+                                  current_count,
+                                  counts[batch] - offset)
+                            : std::size_t{0};
+
                     copy_mcl_canonical_scalars_to_icicle(
                         converted_scalars.data() +
                             batch * current_count,
-                        scalar_vectors[batch] +
-                            offset,
-                        current_count);
+                        valid_count == 0
+                            ? nullptr
+                            : scalar_vectors[batch] + offset,
+                        valid_count);
+
+                    std::fill(
+                        converted_scalars.data() +
+                            batch * current_count +
+                            valid_count,
+                        converted_scalars.data() +
+                            (batch + 1) * current_count,
+                        bls12_381::scalar_t{});
                 }
 
                 auto config =
@@ -1574,8 +1610,8 @@ namespace gatzk::crypto
                     util::info(
                         "cuda_msm "
                         "route=resident_chunked_batch_retry"
-                        " count=" +
-                        std::to_string(count) +
+                        " max_count=" +
+                        std::to_string(max_count) +
                         " batch=" +
                         std::to_string(batch_size) +
                         " chunk=" +
@@ -1985,7 +2021,8 @@ namespace gatzk::crypto
             G1Point *const *outputs,
             const G1Point *points,
             const algebra::FieldElement *const *scalar_vectors,
-            std::size_t count,
+            const std::size_t *counts,
+            std::size_t max_count,
             std::size_t batch_size)
         {
             if (outputs == nullptr ||
@@ -1996,6 +2033,12 @@ namespace gatzk::crypto
                 throw std::runtime_error(
                     "CUDA streamed MSM batch "
                     "received invalid input");
+            }
+
+            if (counts == nullptr || max_count == 0)
+            {
+                throw std::runtime_error(
+                    "CUDA streamed MSM batch received invalid count metadata");
             }
 
             if (batch_size >
@@ -2021,29 +2064,21 @@ namespace gatzk::crypto
                         "CUDA streamed MSM batch "
                         "contains null member");
                 }
-            }
-
-            if (count == 0)
-            {
-                for (std::size_t batch = 0;
-                     batch < batch_size;
-                     ++batch)
+                if (counts[batch] > max_count)
                 {
-                    *outputs[batch] =
-                        g1_zero();
+                    throw std::runtime_error(
+                        "CUDA streamed MSM batch request exceeds max count");
                 }
-
-                return;
             }
 
             const auto minimum_chunk =
                 std::min(
-                    count,
+                    max_count,
                     kMinimumStreamMsmChunkSize);
 
             auto chunk_size =
                 std::min(
-                    count,
+                    max_count,
                     kPreferredStreamMsmChunkSize);
             reusable_scalar_staging().release();
 
@@ -2072,8 +2107,8 @@ namespace gatzk::crypto
 
             util::info(
                 "cuda_msm route=streamed_batch"
-                " count=" +
-                std::to_string(count) +
+                " max_count=" +
+                std::to_string(max_count) +
                 " batch=" +
                 std::to_string(batch_size) +
                 " chunk=" +
@@ -2086,12 +2121,12 @@ namespace gatzk::crypto
 
             std::size_t offset = 0;
 
-            while (offset < count)
+            while (offset < max_count)
             {
                 const auto current_count =
                     std::min(
                         chunk_size,
-                        count - offset);
+                        max_count - offset);
 
                 upload_stream_msm_points(
                     buffers,
@@ -2102,15 +2137,35 @@ namespace gatzk::crypto
                      batch < batch_size;
                      ++batch)
                 {
+                    const auto valid_count =
+                        offset < counts[batch]
+                            ? std::min(
+                                  current_count,
+                                  counts[batch] - offset)
+                            : std::size_t{0};
+
                     copy_mcl_canonical_scalars_to_icicle(
                         buffers
                                 .converted_scalars
                                 .data() +
                             batch *
                                 current_count,
-                        scalar_vectors[batch] +
-                            offset,
-                        current_count);
+                        valid_count == 0
+                            ? nullptr
+                            : scalar_vectors[batch] + offset,
+                        valid_count);
+
+                    std::fill(
+                        buffers
+                                .converted_scalars
+                                .data() +
+                            batch * current_count +
+                            valid_count,
+                        buffers
+                                .converted_scalars
+                                .data() +
+                            (batch + 1) * current_count,
+                        bls12_381::scalar_t{});
                 }
 
                 auto config =
@@ -2188,8 +2243,8 @@ namespace gatzk::crypto
                     util::info(
                         "cuda_msm "
                         "route=streamed_batch_retry"
-                        " count=" +
-                        std::to_string(count) +
+                        " max_count=" +
+                        std::to_string(max_count) +
                         " batch=" +
                         std::to_string(
                             batch_size) +
@@ -2491,10 +2546,14 @@ namespace gatzk::crypto
                     scalar_vectors[1] = {
                         scalars};
 
+                const std::size_t counts[1] = {
+                    count};
+
                 execute_cached_base_chunked_cuda_msm_batch(
                     outputs,
                     points,
                     scalar_vectors,
+                    counts,
                     count,
                     1,
                     stable_srs_capacity,
@@ -2547,7 +2606,8 @@ namespace gatzk::crypto
         G1Point *const *outputs,
         const G1Point *points,
         const algebra::FieldElement *const *scalar_vectors,
-        std::size_t count,
+        const std::size_t *counts,
+        std::size_t max_count,
         std::size_t batch_size,
         std::size_t stable_srs_capacity)
     {
@@ -2571,13 +2631,22 @@ namespace gatzk::crypto
 
         if (outputs == nullptr ||
             scalar_vectors == nullptr ||
+            counts == nullptr ||
             points == nullptr)
         {
             throw std::runtime_error(
                 "CUDA G1 MSM batch received null input");
         }
 
-        if (stable_srs_capacity < count)
+        if (max_count >
+                static_cast<std::size_t>(
+                    std::numeric_limits<int>::max()))
+        {
+            throw std::runtime_error(
+                "CUDA G1 MSM batch max count exceeds int");
+        }
+
+        if (stable_srs_capacity < max_count)
         {
             throw std::runtime_error(
                 "CUDA G1 MSM batch immutable SRS capacity "
@@ -2594,9 +2663,15 @@ namespace gatzk::crypto
                 throw std::runtime_error(
                     "CUDA G1 MSM batch contains null member");
             }
+
+            if (counts[batch] > max_count)
+            {
+                throw std::runtime_error(
+                    "CUDA G1 MSM batch request exceeds max count");
+            }
         }
 
-        if (count == 0)
+        if (max_count == 0)
         {
             for (std::size_t batch = 0;
                  batch < batch_size;
@@ -2615,7 +2690,7 @@ namespace gatzk::crypto
                 outputs[0],
                 points,
                 scalar_vectors[0],
-                count,
+                counts[0],
                 true,
                 stable_srs_capacity);
         }
@@ -2634,7 +2709,7 @@ namespace gatzk::crypto
         if (resident_cuda_msm_is_safe(
                 cache,
                 points,
-                count,
+                max_count,
                 stable_srs_capacity,
                 batch_size,
                 false))
@@ -2645,7 +2720,8 @@ namespace gatzk::crypto
                     outputs,
                     points,
                     scalar_vectors,
-                    count,
+                    counts,
+                    max_count,
                     batch_size,
                     stable_srs_capacity,
                     cache);
@@ -2678,12 +2754,12 @@ namespace gatzk::crypto
         if (batch_size > 1 &&
             cache.contains_usable_prefix(
                 points,
-                count,
+                max_count,
                 stable_srs_capacity) &&
             resident_cuda_msm_is_safe(
                 cache,
                 points,
-                count,
+                max_count,
                 stable_srs_capacity,
                 1,
                 false))
@@ -2698,14 +2774,14 @@ namespace gatzk::crypto
                         outputs[batch],
                         points,
                         scalar_vectors[batch],
-                        count,
+                        counts[batch],
                         stable_srs_capacity,
                         cache);
                 }
 
                 util::info(
-                    "cuda_msm route=resident_serial_batch count=" +
-                    std::to_string(count) +
+                    "cuda_msm route=resident_serial_batch max_count=" +
+                    std::to_string(max_count) +
                     " batch=" +
                     std::to_string(batch_size));
 
@@ -2729,7 +2805,7 @@ namespace gatzk::crypto
             resident_cuda_msm_is_safe(
                 cache,
                 points,
-                count,
+                max_count,
                 stable_srs_capacity,
                 batch_size,
                 true))
@@ -2743,7 +2819,8 @@ namespace gatzk::crypto
                     outputs,
                     points,
                     scalar_vectors,
-                    count,
+                    counts,
+                    max_count,
                     batch_size,
                     stable_srs_capacity,
                     cache);
@@ -2769,7 +2846,8 @@ namespace gatzk::crypto
                 outputs,
                 points,
                 scalar_vectors,
-                count,
+                counts,
+                max_count,
                 batch_size);
 
             return true;
@@ -2787,7 +2865,8 @@ namespace gatzk::crypto
                 outputs,
                 points,
                 scalar_vectors,
-                count,
+                counts,
+                max_count,
                 batch_size);
 
             return true;
@@ -2805,10 +2884,115 @@ namespace gatzk::crypto
                 outputs,
                 points,
                 scalar_vectors,
-                count,
+                counts,
+                max_count,
                 batch_size);
 
             return true;
         }
     }
+
+#if defined(GATZK_BUILD_TESTS) && GATZK_BUILD_TESTS
+    bool try_cuda_g1_msm_same_bases_batch_for_tests(
+        G1Point *const *outputs,
+        const G1Point *points,
+        const algebra::FieldElement *const *scalar_vectors,
+        const std::size_t *counts,
+        std::size_t max_count,
+        std::size_t batch_size,
+        std::size_t stable_srs_capacity,
+        CudaG1MsmBatchTestRoute route)
+    {
+        if (!util::route2_options().cuda_field_hotspots)
+        {
+            return false;
+        }
+        if (!algebra::cuda_backend_available())
+        {
+            throw std::runtime_error(
+                "CUDA mixed-count test route requested but CUDA runtime "
+                "is unavailable");
+        }
+        if (batch_size == 0)
+        {
+            return true;
+        }
+        if (outputs == nullptr ||
+            points == nullptr ||
+            scalar_vectors == nullptr ||
+            counts == nullptr)
+        {
+            throw std::runtime_error(
+                "CUDA mixed-count test route received null input");
+        }
+        if (max_count == 0 ||
+            max_count >
+                static_cast<std::size_t>(
+                    std::numeric_limits<int>::max()))
+        {
+            throw std::runtime_error(
+                "CUDA mixed-count test route received invalid max count");
+        }
+        if (stable_srs_capacity < max_count)
+        {
+            throw std::runtime_error(
+                "CUDA mixed-count test route SRS capacity is too small");
+        }
+        for (std::size_t batch = 0;
+             batch < batch_size;
+             ++batch)
+        {
+            if (outputs[batch] == nullptr ||
+                scalar_vectors[batch] == nullptr ||
+                counts[batch] == 0 ||
+                counts[batch] > max_count)
+            {
+                throw std::runtime_error(
+                    "CUDA mixed-count test route has invalid member count");
+            }
+        }
+
+        std::unique_lock<std::mutex> execution_lock(
+            cuda_msm_execution_mutex());
+        auto &cache = DeviceBaseCache::instance();
+
+        switch (route)
+        {
+        case CudaG1MsmBatchTestRoute::Resident:
+            execute_resident_cuda_msm_batch(
+                outputs,
+                points,
+                scalar_vectors,
+                counts,
+                max_count,
+                batch_size,
+                stable_srs_capacity,
+                cache);
+            return true;
+        case CudaG1MsmBatchTestRoute::CachedChunked:
+            execute_cached_base_chunked_cuda_msm_batch(
+                outputs,
+                points,
+                scalar_vectors,
+                counts,
+                max_count,
+                batch_size,
+                stable_srs_capacity,
+                cache);
+            return true;
+        case CudaG1MsmBatchTestRoute::Streamed:
+            execute_streamed_cuda_msm_same_bases_batch(
+                outputs,
+                points,
+                scalar_vectors,
+                counts,
+                max_count,
+                batch_size);
+            return true;
+        }
+
+        throw std::runtime_error(
+            "CUDA mixed-count test route is unknown");
+    }
+#endif
 }

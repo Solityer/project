@@ -83,11 +83,10 @@ namespace gatzk::algebra
         std::size_t index_count,
         std::size_t bucket_count);
 
-    // Production paired-NTT routing.  CUDA remains eligible for the existing
-    // large transform range, except that the 2^24 quotient-coset pair stays on
-    // the CPU implementation on integrated/UMA devices, where explicit
-    // host/device staging duplicates shared-memory traffic and serializes
-    // concurrent prewarm work.
+    // Production paired-NTT routing.  CPUOnly or a false predicate means the
+    // caller owns the canonical CPU path.  After a large CUDA route has been
+    // selected by policy and capability, an exact CUDA execution failure is
+    // fail-closed; callers must not silently retry on CPU.
     bool should_use_cuda_intt(
         std::size_t size);
 
@@ -96,6 +95,23 @@ namespace gatzk::algebra
 
     bool should_use_cuda_ntt_pair(
         std::size_t size);
+
+    // Bounded multi-stage quotient-coset transform route.  This is distinct
+    // from the generic paired-NTT route: it decomposes a target transform into
+    // ICICLE-supported 2^24 subtransforms plus exact radix-2 combine kernels.
+    // The predicate is intentionally size-aware so callers retain the CPU
+    // path only when the CUDA route was not selected.  Once selected, an
+    // admission or execution failure must be surfaced by the caller.
+    bool should_use_cuda_coset_transform(
+        std::size_t target_size);
+
+#if defined(GATZK_BUILD_TESTS) && GATZK_BUILD_TESTS
+    // Test-only switch used by the quotient materializer A/B harness.  It
+    // gates only the >2^24 generic staged transform route; production
+    // tests-OFF builds do not expose or compile this seam.
+    void set_cuda_generic_staged_route_for_tests(
+        bool enabled);
+#endif
 
     // Exact Montgomery-limb update `target[i] += source[i] * scale`.  Returns
     // true only when the active route executed the update on CUDA; false means
@@ -166,6 +182,30 @@ namespace gatzk::algebra
         const std::size_t *rotations,
         std::size_t rotation_count,
         const std::size_t *column_lengths = nullptr);
+
+    // Cached-subset route: upload one interleaved [domain][polynomial] buffer,
+    // transpose it on the device, then feed the resulting device columns to
+    // the same batched multi-rotation evaluator.  This is an execution-only
+    // path; the output order and field operations are identical to the
+    // canonical columnar API above.
+    bool weighted_poly_eval_gpu_interleaved_multi_rotations(
+        const uint64_t *weight_limbs,
+        const uint64_t *interleaved_value_limbs,
+        uint64_t *output_limbs,
+        std::size_t domain_size,
+        std::size_t poly_count,
+        const std::size_t *rotations,
+        std::size_t rotation_count);
+
+    // Admission for the interleaved cached-subset route.  `additional_host_bytes`
+    // is the cache materialization that will happen before the CUDA call.  The
+    // check accounts for the complete transient device peak and for host/device
+    // availability before callers allocate that host cache.
+    bool cuda_interleaved_multi_rotation_admissible(
+        std::size_t domain_size,
+        std::size_t poly_count,
+        std::size_t rotation_count,
+        std::size_t additional_host_bytes);
 
     // CPU 侧域元素点积，是小规模 fallback 和校验路径的通用原语。
     FieldElement dot_product(

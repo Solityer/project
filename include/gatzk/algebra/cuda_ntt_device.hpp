@@ -7,13 +7,27 @@
 
 namespace gatzk::algebra
 {
+    // Snapshot of the thread-local bounded NTT workspace.  Admission callers
+    // use this to account for already resident input/output/scratch buffers;
+    // the snapshot performs no allocation and is safe for fail-closed checks.
+    struct CudaNttWorkspaceResidency
+    {
+        std::size_t capacity_bytes = 0;
+        std::size_t resident_bytes = 0;
+        int device = -1;
+        bool has_input_output = false;
+        bool has_staged_scratch = false;
+    };
+
+    CudaNttWorkspaceResidency cuda_ntt_workspace_residency();
+
     // Evaluation-basis edge-domain polynomial:
     //
     // host evaluations
     //   -> device INTT
     //   -> exact Z_domain * blinder coefficient correction
     //   -> coset shift / even-odd split
-    //   -> paired device NTT
+    //   -> bounded (direct or staged) device NTT
     //   -> caller-owned device output.
     //
     // device_output layout:
@@ -32,7 +46,7 @@ namespace gatzk::algebra
     //
     // host coefficients
     //   -> coset shift / even-odd split
-    //   -> paired device NTT
+    //   -> bounded (direct or staged) device NTT
     //   -> caller-owned device output.
     //
     // Coefficient-basis Polynomial::values() already contains its formal
@@ -48,7 +62,7 @@ namespace gatzk::algebra
     //
     // device evaluations
     //   -> radix-2 split
-    //   -> paired device INTT
+    //   -> bounded (direct or staged) device INTT
     //   -> exact inverse radix-2 combine
     //   -> inverse coset shift
     //   -> one final D2H.

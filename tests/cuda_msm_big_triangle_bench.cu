@@ -699,6 +699,9 @@ namespace
         std::vector<G1Point *> outputs(workload.test_case.batch_size);
         std::vector<const FieldElement *> scalar_inputs(
             workload.test_case.batch_size);
+        std::vector<std::size_t> counts(
+            workload.test_case.batch_size,
+            workload.test_case.count);
         for (std::size_t batch = 0;
              batch < workload.test_case.batch_size;
              ++batch)
@@ -715,6 +718,7 @@ namespace
                 outputs.data(),
                 workload.points.data(),
                 scalar_inputs.data(),
+                counts.data(),
                 workload.test_case.count,
                 workload.test_case.batch_size,
                 workload.test_case.count))

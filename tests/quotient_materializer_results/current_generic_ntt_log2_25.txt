@@ -1,0 +1,2 @@
+small_cpu_log2=12 exact=1 roundtrip_exact=1
+status=ok log2=25 size=33554432 route=generic_staged_cuda intt_exact=1 ntt_exact=1 roundtrip_exact=1 pair_exact=1 batch=2 workspace_bytes=8589934592 kernel_invocations=8 ntt=2 intt=2 h2d_bytes=5368709120 d2h_bytes=5368709120 sync=4 rss_before=5380837376 rss_after=10331258880 rss_after_release=10331258880 rss_hwm=0

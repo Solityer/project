@@ -33,13 +33,14 @@ namespace gatzk::protocol
         constexpr std::size_t
             kMaximumProgramStackDepth = 64;
 
-        // The exact leaf helpers feed the paired CUDA NTT with one lane of
-        // target_size / 2 elements.  Keep this capability boundary local to
-        // the t_edge executor and do not conflate it with the quotient
-        // program, whose pointwise kernel can still run for larger targets.
+        // The exact leaf helpers feed a bounded multi-stage CUDA transform
+        // with one lane of target_size / 2 elements.  The leaf transform is
+        // decomposed into ICICLE-supported 2^24 subtransforms plus exact
+        // radix-2 combines; keep this capability boundary local to the
+        // t_edge executor and do not conflate it with the quotient program.
         constexpr std::size_t
             kMaximumCudaLeafNttSize =
-                std::size_t{1} << 24;
+                std::size_t{1} << 26;
 
         static_assert(
             sizeof(GpuFr) == sizeof(mcl::Fr));
@@ -2236,17 +2237,45 @@ namespace gatzk::protocol
         std::size_t cache_slot_count,
         bool leaf_exact_ntt_supported)
     {
+        // Preserve the shape-only API for small runtime probes.  Production
+        // large-route selection uses the complete overload below so program,
+        // linear-buffer, caller-host, and domain geometry are admitted before
+        // the executor constructor can allocate anything.
+        CudaTEdgeExecutorAdmissionShape shape;
+        shape.domain_size = target_size;
+        return cuda_t_edge_executor_can_admit(
+            target_size,
+            cache_slot_count,
+            leaf_exact_ntt_supported,
+            shape);
+    }
+
+    bool cuda_t_edge_executor_can_admit(
+        std::size_t target_size,
+        std::size_t cache_slot_count,
+        bool leaf_exact_ntt_supported,
+        const CudaTEdgeExecutorAdmissionShape &shape)
+    {
         if (!cuda_t_edge_executor_available() ||
             !leaf_exact_ntt_supported ||
             !cuda_t_edge_leaf_exact_ntt_supported(
                 target_size) ||
-            target_size == 0 ||
+            target_size < 2 ||
             cache_slot_count == 0 ||
             (target_size &
              (target_size - 1U)) != 0U ||
             cache_slot_count >
                 std::numeric_limits<
-                    std::uint32_t>::max())
+                    std::uint32_t>::max() ||
+            shape.domain_size == 0 ||
+            shape.domain_size > target_size ||
+            target_size % shape.domain_size != 0 ||
+            shape.max_linear_source_count >
+                cache_slot_count ||
+            shape.max_linear_source_blinder_count >
+                target_size - shape.domain_size ||
+            shape.max_linear_target_blinder_count >
+                target_size - shape.domain_size)
         {
             return false;
         }
@@ -2269,11 +2298,18 @@ namespace gatzk::protocol
             return false;
         }
 
+        const auto half_size =
+            target_size / 2;
+
+        const bool staged_leaf_ntt =
+            half_size > (std::size_t{1} << 24);
+
+        std::size_t ntt_buffer_count =
+            staged_leaf_ntt ? 4 : 2;
         std::size_t ntt_workspace_bytes = 0;
-        if (leaf_exact_ntt_supported &&
-            !checked_mul_size(
+        if (!checked_mul_size(
                 leaf_bytes,
-                2,
+                ntt_buffer_count,
                 &ntt_workspace_bytes))
         {
             return false;
@@ -2301,6 +2337,9 @@ namespace gatzk::protocol
         constexpr std::size_t kFixedMetadataBytes =
             std::size_t{1} << 20;
 
+        constexpr std::size_t kAdmissionHeadroomBytes =
+            std::size_t{1} << 30;
+
         std::size_t table_bytes = 0;
         if (!checked_mul_size(
                 cache_slot_count,
@@ -2319,30 +2358,174 @@ namespace gatzk::protocol
             return false;
         }
 
-        std::size_t required_bytes = 0;
-        const auto add_required =
-            [&required_bytes](std::size_t value)
+        std::size_t cycle_count = 0;
+        if (!checked_mul_size(
+                target_size / shape.domain_size,
+                sizeof(GpuFr),
+                &cycle_count))
         {
-            return checked_add_size(
-                required_bytes,
-                value,
-                &required_bytes);
+            return false;
+        }
+
+        const auto checked_count_bytes =
+            [](std::size_t count,
+               std::size_t element_size,
+               std::size_t *out)
+        {
+            return checked_mul_size(
+                count,
+                element_size,
+                out);
         };
 
-        // Leaf slots, quotient, the most conservative possible inverse-cycle
-        // vector (domain size >= 1), leaf pointer/layout tables, ICICLE domain
-        // storage and fixed metadata are all live at the same point in the
-        // production route.  The two target-sized NTT buffers are live only
-        // when exact direct leaf materialization is actually supported.
-        if (!add_required(leaf_cache_bytes) ||
-            !add_required(leaf_bytes) ||
-            (leaf_exact_ntt_supported &&
-             !add_required(ntt_workspace_bytes)) ||
-            !add_required(leaf_bytes) ||
-            !add_required(table_bytes) ||
-            !add_required(layout_bytes) ||
-            !add_required(icicle_domain_bytes) ||
-            !add_required(kFixedMetadataBytes))
+        std::size_t device_required_bytes = 0;
+        std::size_t host_required_bytes = 0;
+        const auto add_device =
+            [&device_required_bytes](std::size_t value)
+        {
+            return checked_add_size(
+                device_required_bytes,
+                value,
+                &device_required_bytes);
+        };
+        const auto add_host =
+            [&host_required_bytes](std::size_t value)
+        {
+            return checked_add_size(
+                host_required_bytes,
+                value,
+                &host_required_bytes);
+        };
+
+        std::size_t instruction_bytes = 0;
+        std::size_t constant_bytes = 0;
+        std::size_t access_rotation_bytes = 0;
+        std::size_t access_slot_bytes = 0;
+        if (!checked_count_bytes(
+                shape.instruction_count,
+                sizeof(TEdgeProgramInstruction),
+                &instruction_bytes) ||
+            !checked_count_bytes(
+                shape.constant_count,
+                sizeof(GpuFr),
+                &constant_bytes) ||
+            !checked_count_bytes(
+                shape.access_count,
+                sizeof(std::uint8_t),
+                &access_rotation_bytes) ||
+            !checked_count_bytes(
+                shape.access_count,
+                sizeof(std::uint32_t),
+                &access_slot_bytes))
+        {
+            return false;
+        }
+
+        std::size_t linear_source_slot_bytes = 0;
+        std::size_t linear_source_scale_bytes = 0;
+        std::size_t linear_source_offset_bytes = 0;
+        std::size_t linear_source_count_bytes = 0;
+        std::size_t linear_source_blinder_bytes = 0;
+        std::size_t linear_target_blinder_bytes = 0;
+        if (!checked_count_bytes(
+                shape.max_linear_source_count,
+                sizeof(std::uint32_t),
+                &linear_source_slot_bytes) ||
+            !checked_count_bytes(
+                shape.max_linear_source_count,
+                sizeof(GpuFr),
+                &linear_source_scale_bytes) ||
+            !checked_count_bytes(
+                shape.max_linear_source_count,
+                sizeof(std::size_t),
+                &linear_source_offset_bytes) ||
+            !checked_count_bytes(
+                shape.max_linear_source_count,
+                sizeof(std::size_t),
+                &linear_source_count_bytes) ||
+            !checked_count_bytes(
+                shape.max_linear_source_blinder_count,
+                sizeof(GpuFr),
+                &linear_source_blinder_bytes) ||
+            !checked_count_bytes(
+                shape.max_linear_target_blinder_count,
+                sizeof(GpuFr),
+                &linear_target_blinder_bytes))
+        {
+            return false;
+        }
+
+        // Device allocations owned by the executor, the complete prepare-
+        // program arrays, all linear-buffer arrays used by
+        // ensure_linear_buffers(), the bounded transform workspace, ICICLE's
+        // lazily initialized domain, and conservative metadata/headroom are
+        // admitted together.  This is intentionally the same allocation
+        // shape as the constructor plus materialize_linear_leaf().
+        if (!add_device(leaf_cache_bytes) ||
+            !add_device(table_bytes) ||
+            !add_device(layout_bytes) ||
+            !add_device(leaf_bytes) ||
+            !add_device(cycle_count) ||
+            !add_device(instruction_bytes) ||
+            !add_device(constant_bytes) ||
+            !add_device(access_rotation_bytes) ||
+            !add_device(access_slot_bytes) ||
+            !add_device(linear_source_slot_bytes) ||
+            !add_device(linear_source_scale_bytes) ||
+            !add_device(linear_source_offset_bytes) ||
+            !add_device(linear_source_count_bytes) ||
+            !add_device(linear_source_blinder_bytes) ||
+            !add_device(linear_target_blinder_bytes) ||
+            !add_device(ntt_workspace_bytes) ||
+            !add_device(icicle_domain_bytes) ||
+            !add_device(kFixedMetadataBytes) ||
+            !add_device(kAdmissionHeadroomBytes))
+        {
+            return false;
+        }
+
+        // Host/UMA allocations that are live at the same peak: the
+        // constructor's temporary inverse cycle, persistent slot metadata,
+        // prepare_program's rotated access vector, materialize_linear_leaf's
+        // packed host arrays, and caller-owned output/staging vectors.
+        std::size_t host_slot_bytes = 0;
+        std::size_t host_bound_bytes = 0;
+        std::size_t host_prefix_bytes = 0;
+        std::size_t host_linear_seen_bytes = 0;
+        if (!checked_count_bytes(
+                cache_slot_count,
+                sizeof(std::uint8_t),
+                &host_slot_bytes) ||
+            !checked_count_bytes(
+                cache_slot_count,
+                sizeof(bool),
+                &host_bound_bytes) ||
+            !checked_count_bytes(
+                cache_slot_count,
+                sizeof(std::size_t),
+                &host_prefix_bytes) ||
+            !checked_count_bytes(
+                cache_slot_count,
+                sizeof(std::uint8_t),
+                &host_linear_seen_bytes))
+        {
+            return false;
+        }
+
+        if (!add_host(host_slot_bytes) ||
+            !add_host(host_bound_bytes) ||
+            !add_host(host_prefix_bytes) ||
+            !add_host(cycle_count) ||
+            !add_host(access_rotation_bytes) ||
+            !add_host(host_linear_seen_bytes) ||
+            !add_host(linear_source_slot_bytes) ||
+            !add_host(linear_source_scale_bytes) ||
+            !add_host(linear_source_offset_bytes) ||
+            !add_host(linear_source_count_bytes) ||
+            !add_host(linear_source_blinder_bytes) ||
+            !add_host(linear_target_blinder_bytes) ||
+            !add_host(shape.caller_host_bytes) ||
+            !add_host(kFixedMetadataBytes))
         {
             return false;
         }
@@ -2356,6 +2539,33 @@ namespace gatzk::protocol
         if (status != cudaSuccess)
         {
             (void)cudaGetLastError();
+            return false;
+        }
+
+        const auto workspace =
+            algebra::cuda_ntt_workspace_residency();
+        const bool same_workspace_device =
+            workspace.device == device;
+        const bool workspace_reusable =
+            same_workspace_device &&
+            workspace.capacity_bytes >= leaf_bytes &&
+            workspace.has_input_output &&
+            (!staged_leaf_ntt ||
+             workspace.has_staged_scratch);
+        const auto resident_workspace_bytes =
+            same_workspace_device
+                ? workspace.resident_bytes
+                : std::size_t{0};
+        const auto workspace_peak_bytes =
+            workspace_reusable
+                ? resident_workspace_bytes
+                : ntt_workspace_bytes;
+
+        if (!checked_add_size(
+                device_required_bytes,
+                workspace_peak_bytes,
+                &device_required_bytes))
+        {
             return false;
         }
 
@@ -2396,6 +2606,15 @@ namespace gatzk::protocol
                     std::size_t{3}
                     << 30;
 
+            std::size_t shared_required_bytes = 0;
+            if (!checked_add_size(
+                    device_required_bytes,
+                    host_required_bytes,
+                    &shared_required_bytes))
+            {
+                return false;
+            }
+
             const auto reserve_bytes =
                 std::max(
                     kMinimumIntegratedReserve,
@@ -2415,12 +2634,23 @@ namespace gatzk::protocol
                 return false;
             }
 
+            std::size_t available_with_resident =
+                host.effective_available_bytes;
+            if (resident_workspace_bytes != 0 &&
+                !checked_add_size(
+                    available_with_resident,
+                    resident_workspace_bytes,
+                    &available_with_resident))
+            {
+                return false;
+            }
+
             const auto safely_usable =
-                host.effective_available_bytes -
+                available_with_resident -
                 reserve_bytes -
                 kIntegratedTransformHeadroom;
 
-            return required_bytes <= safely_usable;
+            return shared_required_bytes <= safely_usable;
         }
 
         std::size_t free_bytes = 0;
@@ -2437,6 +2667,17 @@ namespace gatzk::protocol
             return false;
         }
 
+        std::size_t device_available_with_resident =
+            free_bytes;
+        if (resident_workspace_bytes != 0 &&
+            !checked_add_size(
+                device_available_with_resident,
+                resident_workspace_bytes,
+                &device_available_with_resident))
+        {
+            return false;
+        }
+
         constexpr std::size_t
             kMinimumCudaReserveBytes =
                 std::size_t{4} << 30;
@@ -2446,14 +2687,41 @@ namespace gatzk::protocol
                 kMinimumCudaReserveBytes,
                 total_bytes / 8);
 
-        if (free_bytes <= reserve_bytes)
+        if (device_available_with_resident <= reserve_bytes)
         {
             return false;
         }
 
-        return required_bytes <=
-               free_bytes -
-                   reserve_bytes;
+        if (device_required_bytes >
+            device_available_with_resident -
+                reserve_bytes)
+        {
+            return false;
+        }
+
+        const auto host =
+            util::cached_effective_memory_snapshot();
+        if (!host.effective_available_known)
+        {
+            return false;
+        }
+
+        constexpr std::size_t kMinimumHostReserveBytes =
+            std::size_t{8} << 30;
+        const auto host_reserve =
+            std::max(
+                kMinimumHostReserveBytes,
+                host.effective_total_known
+                    ? host.effective_total_bytes / 16
+                    : kMinimumHostReserveBytes);
+        if (host.effective_available_bytes <= host_reserve)
+        {
+            return false;
+        }
+
+        return host_required_bytes <=
+               host.effective_available_bytes -
+                   host_reserve;
     }
     void release_cuda_t_edge_executor_cache()
     {

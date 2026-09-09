@@ -76,10 +76,19 @@ namespace gatzk::algebra
         const std::vector<std::size_t>& subset_row_indices(const std::vector<std::string>& labels) const;
         const std::vector<std::uint32_t>& subset_row_indices_u32(const std::vector<std::string>& labels) const;
 
+#if defined(GATZK_BUILD_TESTS) && GATZK_BUILD_TESTS
+        // Observes an already materialized subset without populating it.
+        std::size_t cached_subset_bytes_for_tests(
+            const std::vector<std::string>& labels) const;
+#endif
+
     private:
         struct SubsetView;
         struct SubsetCacheState;
 
+        SubsetView build_subset_view(
+            const std::vector<std::string>& labels,
+            bool materialize_interleaved) const;
         const SubsetView& subset_for(const std::vector<std::string>& labels) const;
         const mcl::Fr& native_value_at(
             std::size_t polynomial_index,
@@ -90,5 +99,13 @@ namespace gatzk::algebra
         std::unordered_map<std::string, std::size_t> label_to_index_;
         mutable std::shared_ptr<SubsetCacheState> subset_cache_state_;
     };
+
+#if defined(GATZK_BUILD_TESTS) && GATZK_BUILD_TESTS
+    // Test-only A/B control for the cached-subset multi-rotation route.  The
+    // cache itself always follows the production policy; this switch gates
+    // only the candidate implementation.
+    void set_cached_subset_multi_rotation_candidate_for_tests(bool enabled);
+    std::uint64_t cached_subset_multi_rotation_candidate_invocations_for_tests();
+#endif
 
 }

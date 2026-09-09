@@ -1,0 +1,6 @@
+command: nvidia-smi --query-gpu=name,memory.total,memory.used,utilization.gpu --format=csv,noheader,nounits; awk '/MemAvailable|MemTotal/ {print}' /proc/meminfo; timeout 600s build_tests_cuda/tests/gatzk_quotient_materializer_targeted_bench --mode coset --target-log2 24 --repeats 1; rc=$?; nvidia-smi --query-gpu=name,memory.total,memory.used,utilization.gpu --format=csv,noheader,nounits; awk '/MemAvailable|MemTotal/ {print}' /proc/meminfo; exit $rc
+gpu_before: NVIDIA GB10, [N/A], [N/A], 0
+mem_before: MemTotal=127601388 kB MemAvailable=116100464 kB
+output: mode=coset target_size=16777216 leaf_size=8388608 radix=1 layout=interleaved batch=2 workspace_bytes=1073741824 exact=1 roundtrip_exact=1 wall_ms=4920.57 kernel_invocations=4 ntt=1 intt=1 h2d_bytes=536871072 d2h_bytes=1073741824 sync=3 rss_before=14675968 rss_after=1206239232 rss_hwm=1206239232 forward_digest=b73865bf3566fb8ed39d030e76b1e6c53c255a137a2d5ffcaf66e8bc08ee2ae0 roundtrip_digest=1b987d2d8ac4fd2ec3be2dd7cc116e88b4a2d30afad6233d44cbef11eed28d56
+gpu_after: NVIDIA GB10, [N/A], [N/A], 2
+mem_after: MemTotal=127601388 kB MemAvailable=116257864 kB

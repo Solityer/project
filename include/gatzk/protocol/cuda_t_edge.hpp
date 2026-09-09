@@ -101,16 +101,48 @@ namespace gatzk::protocol
 
     bool cuda_t_edge_executor_available();
 
-    // Direct leaf materialization and final coefficient conversion both use
-    // paired NTTs over target_size / 2.  The executor admission path requires
-    // this capability before any target-sized host/device work is started.
+    // Direct leaf materialization and final coefficient conversion both use a
+    // bounded transform over target_size / 2.  Targets above the pinned
+    // ICICLE leaf limit are decomposed into exact radix-2 stages. The executor
+    // admission path requires this capability before any target-sized
+    // host/device work is started.
     bool cuda_t_edge_leaf_exact_ntt_supported(
         std::size_t target_size);
 
+    // Upper bounds for every buffer that the production t_edge executor can
+    // have live before/through materialize_linear_leaf().  The prover fills
+    // this from the bound program and the registered blinder descriptors so
+    // admission and ensure_linear_buffers() use the same allocation shape.
+    // `caller_host_bytes` covers caller-owned output/staging vectors that are
+    // live while the executor is resident.  Zero fields are valid only for
+    // the legacy shape-only overload below; production large-route selection
+    // must pass the complete shape.
+    struct CudaTEdgeExecutorAdmissionShape
+    {
+        std::size_t domain_size = 0;
+        std::size_t instruction_count = 0;
+        std::size_t constant_count = 0;
+        std::size_t access_count = 0;
+        std::size_t max_linear_source_count = 0;
+        std::size_t max_linear_source_blinder_count = 0;
+        std::size_t max_linear_target_blinder_count = 0;
+        std::size_t caller_host_bytes = 0;
+    };
+
+    // CPUOnly or an unselected CUDA route owns the canonical CPU path.  Once
+    // policy, capability, and the complete admission shape select this large
+    // CUDA route, a false admission result is fail-closed and must not be
+    // converted into a silent CPU fallback.
     bool cuda_t_edge_executor_can_admit(
         std::size_t target_size,
         std::size_t cache_slot_count,
         bool leaf_exact_ntt_supported = false);
+
+    bool cuda_t_edge_executor_can_admit(
+        std::size_t target_size,
+        std::size_t cache_slot_count,
+        bool leaf_exact_ntt_supported,
+        const CudaTEdgeExecutorAdmissionShape &shape);
 
     void release_cuda_t_edge_executor_cache();
 

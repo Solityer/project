@@ -13,6 +13,7 @@
 #include "gatzk/algebra/cuda_field.cuh"
 #include "gatzk/algebra/cuda_ntt_device.hpp"
 #include "gatzk/algebra/vector_ops.hpp"
+#include "gatzk/util/effective_memory.hpp"
 
 #include "fields/snark_fields/bls12_381_scalar.cuh"
 #include "gpu-utils/device_context.cuh"
@@ -48,10 +49,40 @@ namespace gatzk::algebra
         constexpr std::size_t kMaximumCudaNttSize =
             std::size_t{1} << 24;
 
+        // Larger quotient cosets are decomposed into radix-2 stages whose
+        // leaf transforms stay at kMaximumCudaNttSize.  Keep the extension
+        // bounded at a 2^26 lane (2^27 total coset) so admission can account
+        // for a fixed, auditable workspace shape.
+        constexpr std::size_t kMaximumCudaStagedNttSize =
+            std::size_t{1} << 26;
+        constexpr std::size_t kMaximumCudaCosetTargetSize =
+            std::size_t{1} << 27;
+
         // Preserve workspace/headroom after persistent ICICLE twiddles and the
         // explicit input/output buffers have been accounted for.
         constexpr std::size_t kCudaNttReserveBytes =
             std::size_t{4} << 30;
+
+        std::size_t checked_ntt_bytes(
+            std::size_t size,
+            std::size_t batch_size);
+
+        struct CudaNttWorkspace;
+
+        bool valid_bounded_coset_target(
+            std::size_t target_size)
+        {
+            return target_size >= 2 &&
+                   (target_size & (target_size - 1U)) == 0U &&
+                   target_size <= kMaximumCudaCosetTargetSize &&
+                   target_size / 2 <= kMaximumCudaStagedNttSize;
+        }
+
+        bool admit_large_coset_workspace(
+            std::size_t target_size,
+            int device,
+            const CudaNttWorkspace &workspace,
+            std::size_t caller_buffer_bytes = 0);
 
         static_assert(
             sizeof(IcicleScalar) == sizeof(mcl::Fr),
@@ -184,6 +215,8 @@ namespace gatzk::algebra
         {
             IcicleScalar *input = nullptr;
             IcicleScalar *output = nullptr;
+            IcicleScalar *scratch_a = nullptr;
+            IcicleScalar *scratch_b = nullptr;
 
             std::size_t capacity_bytes = 0;
             int device = -1;
@@ -196,7 +229,8 @@ namespace gatzk::algebra
 
             bool ensure(
                 std::size_t required_bytes,
-                int current_device)
+                int current_device,
+                bool staged = false)
             {
                 if (stream == nullptr ||
                     device != current_device)
@@ -223,26 +257,29 @@ namespace gatzk::algebra
 
                 if (capacity_bytes >= required_bytes &&
                     input != nullptr &&
-                    output != nullptr)
+                    output != nullptr &&
+                    (!staged ||
+                     (scratch_a != nullptr &&
+                      scratch_b != nullptr)))
                 {
                     return true;
                 }
 
-                if (input != nullptr)
+                const auto release_buffer = [&](IcicleScalar **buffer)
                 {
-                    (void)cudaFreeAsync(
-                        input,
-                        stream);
-                    input = nullptr;
-                }
+                    if (*buffer != nullptr)
+                    {
+                        (void)cudaFreeAsync(
+                            *buffer,
+                            stream);
+                        *buffer = nullptr;
+                    }
+                };
 
-                if (output != nullptr)
-                {
-                    (void)cudaFreeAsync(
-                        output,
-                        stream);
-                    output = nullptr;
-                }
+                release_buffer(&input);
+                release_buffer(&output);
+                release_buffer(&scratch_a);
+                release_buffer(&scratch_b);
 
                 (void)cudaStreamSynchronize(stream);
 
@@ -297,8 +334,110 @@ namespace gatzk::algebra
                         status);
                 }
 
+                if (staged)
+                {
+                    status =
+                        cudaMallocAsync(
+                            reinterpret_cast<void **>(&scratch_a),
+                            required_bytes,
+                            stream);
+
+                    if (status != cudaSuccess)
+                    {
+                        release_buffer(&input);
+                        release_buffer(&output);
+                        (void)cudaStreamSynchronize(stream);
+                        scratch_a = nullptr;
+                        scratch_b = nullptr;
+
+                        if (status == cudaErrorMemoryAllocation)
+                        {
+                            (void)cudaGetLastError();
+                            return false;
+                        }
+
+                        throw_cuda_ntt_error(
+                            "persistent staged scratch-a allocation",
+                            status);
+                    }
+
+                    status =
+                        cudaMallocAsync(
+                            reinterpret_cast<void **>(&scratch_b),
+                            required_bytes,
+                            stream);
+
+                    if (status != cudaSuccess)
+                    {
+                        release_buffer(&input);
+                        release_buffer(&output);
+                        release_buffer(&scratch_a);
+                        (void)cudaStreamSynchronize(stream);
+                        scratch_b = nullptr;
+
+                        if (status == cudaErrorMemoryAllocation)
+                        {
+                            (void)cudaGetLastError();
+                            return false;
+                        }
+
+                        throw_cuda_ntt_error(
+                            "persistent staged scratch-b allocation",
+                            status);
+                    }
+                }
+
                 capacity_bytes = required_bytes;
                 return true;
+            }
+
+            std::size_t resident_bytes() const noexcept
+            {
+                if (capacity_bytes == 0)
+                {
+                    return 0;
+                }
+
+                std::size_t buffer_count = 0;
+                if (input != nullptr)
+                {
+                    ++buffer_count;
+                }
+                if (output != nullptr)
+                {
+                    ++buffer_count;
+                }
+                if (scratch_a != nullptr)
+                {
+                    ++buffer_count;
+                }
+                if (scratch_b != nullptr)
+                {
+                    ++buffer_count;
+                }
+                if (buffer_count == 0 ||
+                    capacity_bytes >
+                        std::numeric_limits<std::size_t>::max() /
+                            buffer_count)
+                {
+                    return std::numeric_limits<std::size_t>::max();
+                }
+                return buffer_count * capacity_bytes;
+            }
+
+            bool can_reuse(
+                std::size_t required_bytes,
+                int current_device,
+                bool staged) const noexcept
+            {
+                return stream != nullptr &&
+                       device == current_device &&
+                       capacity_bytes >= required_bytes &&
+                       input != nullptr &&
+                       output != nullptr &&
+                       (!staged ||
+                        (scratch_a != nullptr &&
+                         scratch_b != nullptr));
             }
 
             void release() noexcept
@@ -319,6 +458,20 @@ namespace gatzk::algebra
                             stream);
                     }
 
+                    if (scratch_a != nullptr)
+                    {
+                        (void)cudaFreeAsync(
+                            scratch_a,
+                            stream);
+                    }
+
+                    if (scratch_b != nullptr)
+                    {
+                        (void)cudaFreeAsync(
+                            scratch_b,
+                            stream);
+                    }
+
                     (void)cudaStreamSynchronize(
                         stream);
 
@@ -328,6 +481,8 @@ namespace gatzk::algebra
 
                 input = nullptr;
                 output = nullptr;
+                scratch_a = nullptr;
+                scratch_b = nullptr;
                 capacity_bytes = 0;
                 stream = nullptr;
                 device = -1;
@@ -338,6 +493,169 @@ namespace gatzk::algebra
         {
             thread_local CudaNttWorkspace workspace;
             return workspace;
+        }
+
+        // ICICLE allocates the pinned 2^24 domain lazily.  The exact allocator
+        // footprint includes implementation tables in addition to the field
+        // vector, so keep a separate fixed allowance in every admission.  It
+        // is deliberately conservative and remains bounded independently of
+        // the caller's graph fan-out.
+        constexpr std::size_t kIcicleDomainHeadroomBytes =
+            std::size_t{1} << 30;
+
+        bool admit_large_coset_workspace(
+            std::size_t target_size,
+            int device,
+            const CudaNttWorkspace &workspace,
+            std::size_t caller_buffer_bytes)
+        {
+            if (target_size < 2 ||
+                (target_size & (target_size - 1U)) != 0U ||
+                target_size > kMaximumCudaCosetTargetSize)
+            {
+                return false;
+            }
+
+            std::size_t one_buffer_bytes = 0;
+            std::size_t icicle_domain_bytes = 0;
+            try
+            {
+                one_buffer_bytes =
+                    checked_ntt_bytes(target_size, 1);
+                icicle_domain_bytes =
+                    checked_ntt_bytes(
+                        kMaximumCudaNttSize + 1,
+                        1);
+            }
+            catch (...)
+            {
+                return false;
+            }
+
+            if (one_buffer_bytes >
+                std::numeric_limits<std::size_t>::max() / 2)
+            {
+                return false;
+            }
+
+            const auto persistent_workspace_bytes =
+                2 * one_buffer_bytes;
+            const bool reusable =
+                workspace.can_reuse(
+                    one_buffer_bytes,
+                    device,
+                    false);
+            const auto resident_workspace_bytes =
+                workspace.device == device
+                    ? workspace.resident_bytes()
+                    : 0;
+
+            // ensure() releases an undersized workspace before allocating the
+            // replacement.  When capacity is reusable, all existing buffers
+            // (including staged scratch) remain live and are already reflected
+            // in the free-memory query.  Otherwise the replacement is the
+            // conservative peak to admit before any allocation occurs.
+            const auto live_workspace_bytes =
+                reusable
+                    ? resident_workspace_bytes
+                    : persistent_workspace_bytes;
+
+            std::size_t required_bytes = live_workspace_bytes;
+            const auto add_required =
+                [&required_bytes](std::size_t value)
+            {
+                if (value >
+                    std::numeric_limits<std::size_t>::max() -
+                        required_bytes)
+                {
+                    return false;
+                }
+                required_bytes += value;
+                return true;
+            };
+
+            // host_output / source buffers are caller-owned but are live for
+            // the complete transform.  Include them in the UMA and discrete
+            // conservative budget so a new large caller buffer cannot bypass
+            // the CUDA admission gate.
+            if (!add_required(caller_buffer_bytes) ||
+                !add_required(icicle_domain_bytes) ||
+                !add_required(kIcicleDomainHeadroomBytes))
+            {
+                return false;
+            }
+
+            int integrated = 0;
+            auto status =
+                cudaDeviceGetAttribute(
+                    &integrated,
+                    cudaDevAttrIntegrated,
+                    device);
+            if (status != cudaSuccess)
+            {
+                (void)cudaGetLastError();
+                return false;
+            }
+
+            if (integrated != 0)
+            {
+                const auto host =
+                    util::cached_effective_memory_snapshot();
+                if (!host.effective_available_known)
+                {
+                    return false;
+                }
+
+                constexpr std::size_t kMinimumIntegratedReserve =
+                    std::size_t{8} << 30;
+                constexpr std::size_t kIntegratedTransformHeadroom =
+                    std::size_t{3} << 30;
+                const auto reserve_bytes =
+                    std::max(
+                        kMinimumIntegratedReserve,
+                        !host.effective_total_known
+                            ? kMinimumIntegratedReserve
+                            : host.effective_total_bytes / 16);
+                if (reserve_bytes >
+                    std::numeric_limits<std::size_t>::max() -
+                        kIntegratedTransformHeadroom)
+                {
+                    return false;
+                }
+                const auto fixed_reserve =
+                    reserve_bytes +
+                    kIntegratedTransformHeadroom;
+                if (host.effective_available_bytes <= fixed_reserve)
+                {
+                    return false;
+                }
+                return required_bytes <=
+                       host.effective_available_bytes -
+                           fixed_reserve;
+            }
+
+            std::size_t free_bytes = 0;
+            std::size_t total_bytes = 0;
+            status =
+                cudaMemGetInfo(
+                    &free_bytes,
+                    &total_bytes);
+            if (status != cudaSuccess)
+            {
+                (void)cudaGetLastError();
+                return false;
+            }
+
+            const auto reserve_bytes =
+                std::max(
+                    kCudaNttReserveBytes,
+                    total_bytes / 8);
+            if (free_bytes <= reserve_bytes)
+            {
+                return false;
+            }
+            return required_bytes <=
+                   free_bytes - reserve_bytes;
         }
 
         using GpuFr =
@@ -633,6 +951,133 @@ namespace gatzk::algebra
             }
         }
 
+        // The pinned ICICLE build is intentionally limited to a 2^24
+        // transform. Quotient cosets can be one or two powers larger. The
+        // kernels below provide the exact radix-2 decomposition needed to
+        // keep every ICICLE call within that bound while retaining the
+        // canonical natural-order transform.
+        __global__ void
+        split_ntt_residues_kernel(
+            const GpuFr *input,
+            GpuFr *output,
+            std::size_t vector_count,
+            std::size_t transform_size,
+            std::size_t base_size,
+            std::size_t radix)
+        {
+            const auto flat_index =
+                static_cast<std::size_t>(
+                    blockIdx.x) * blockDim.x +
+                threadIdx.x;
+
+            const auto total =
+                vector_count * transform_size;
+
+            if (flat_index >= total)
+            {
+                return;
+            }
+
+            const auto vector =
+                flat_index / transform_size;
+            const auto logical =
+                flat_index % transform_size;
+            const auto residue =
+                logical % radix;
+            const auto index =
+                logical / radix;
+
+            output[vector * transform_size +
+                   residue * base_size + index] =
+                input[flat_index];
+        }
+
+        __global__ void
+        combine_radix2_groups_kernel(
+            const GpuFr *input,
+            GpuFr *output,
+            std::size_t vector_count,
+            std::size_t groups_per_vector,
+            std::size_t half_size,
+            std::size_t input_group_stride,
+            std::size_t second_input_offset,
+            std::size_t output_group_stride,
+            std::size_t vector_stride,
+            GpuFr root,
+            GpuFr combine_scale)
+        {
+            const auto chunk_index =
+                static_cast<std::size_t>(
+                    blockIdx.x) * blockDim.x +
+                threadIdx.x;
+
+            const auto group_items =
+                groups_per_vector *
+                ((half_size + kCosetPowerChunkElements - 1) /
+                 kCosetPowerChunkElements);
+            const auto total =
+                vector_count * group_items;
+
+            if (chunk_index >= total)
+            {
+                return;
+            }
+
+            const auto vector =
+                chunk_index / group_items;
+            const auto group_index =
+                (chunk_index % group_items) /
+                ((half_size + kCosetPowerChunkElements - 1) /
+                 kCosetPowerChunkElements);
+            const auto chunk =
+                chunk_index %
+                ((half_size + kCosetPowerChunkElements - 1) /
+                 kCosetPowerChunkElements);
+            const auto begin =
+                chunk * kCosetPowerChunkElements;
+            const auto end =
+                min(
+                    half_size,
+                    begin + kCosetPowerChunkElements);
+
+            const auto input_base =
+                vector * vector_stride +
+                group_index * input_group_stride;
+            const auto output_base =
+                vector * vector_stride +
+                group_index * output_group_stride;
+
+            auto twiddle =
+                fr_pow_u64(root, begin);
+            for (std::size_t index = begin;
+                 index < end;
+                 ++index)
+            {
+                const auto scaled_odd =
+                    algebra::gpu::fr_mul(
+                        input[input_base + second_input_offset + index],
+                        twiddle);
+                const auto even =
+                    input[input_base + index];
+
+                // An in-place combine is safe: each index owns exactly the two
+                // outputs at index and index+half_size, and no other thread
+                // writes either location.
+                output[output_base + index] =
+                    algebra::gpu::fr_mul(
+                        algebra::gpu::fr_add(even, scaled_odd),
+                        combine_scale);
+                output[output_base + half_size + index] =
+                    algebra::gpu::fr_mul(
+                        algebra::gpu::fr_sub(even, scaled_odd),
+                        combine_scale);
+                twiddle =
+                    algebra::gpu::fr_mul(
+                        twiddle,
+                        root);
+            }
+        }
+
         bool run_cuda_ntt_device(
             const IcicleScalar *device_input,
             IcicleScalar *device_output,
@@ -723,6 +1168,438 @@ namespace gatzk::algebra
 
             return true;
         }
+        bool run_bounded_ntt_device(
+            const mcl::Fr *device_input,
+            mcl::Fr *device_output,
+            std::size_t size,
+            std::size_t batch_size,
+            ntt::NTTDir direction,
+            int device,
+            cudaStream_t stream,
+            mcl::Fr *scratch_a,
+            mcl::Fr *scratch_b)
+        {
+            if (device_input == nullptr ||
+                device_output == nullptr ||
+                size < 2 ||
+                (size & (size - 1U)) != 0U ||
+                size > kMaximumCudaStagedNttSize ||
+                batch_size == 0 ||
+                batch_size > 2)
+            {
+                return false;
+            }
+
+            if (size <= kMaximumCudaNttSize)
+            {
+                return run_cuda_ntt_device(
+                    reinterpret_cast<const IcicleScalar *>(
+                        device_input),
+                    reinterpret_cast<IcicleScalar *>(
+                        device_output),
+                    size,
+                    batch_size,
+                    direction,
+                    device,
+                    stream);
+            }
+
+            if (scratch_a == nullptr ||
+                scratch_b == nullptr ||
+                scratch_a == scratch_b)
+            {
+                return false;
+            }
+
+            const auto radix =
+                size / kMaximumCudaNttSize;
+            if (radix != 2 && radix != 4)
+            {
+                return false;
+            }
+
+            if (batch_size >
+                std::numeric_limits<std::size_t>::max() / size)
+            {
+                return false;
+            }
+
+            const auto total_elements =
+                batch_size * size;
+            const auto total_bytes =
+                checked_ntt_bytes(size, batch_size);
+
+            constexpr unsigned kBlockSize = 256;
+            const auto split_blocks_size =
+                (total_elements + kBlockSize - 1) / kBlockSize;
+            if (split_blocks_size >
+                std::numeric_limits<unsigned>::max())
+            {
+                return false;
+            }
+
+            split_ntt_residues_kernel<<<
+                static_cast<unsigned>(split_blocks_size),
+                kBlockSize,
+                0,
+                stream>>>(
+                reinterpret_cast<const GpuFr *>(device_input),
+                reinterpret_cast<GpuFr *>(scratch_a),
+                batch_size,
+                size,
+                kMaximumCudaNttSize,
+                radix);
+
+            auto status = cudaGetLastError();
+            if (status != cudaSuccess)
+            {
+                throw_cuda_ntt_error(
+                    "staged transform residue split",
+                    status);
+            }
+            record_cuda_kernel_invocations(1);
+
+            if (batch_size >
+                std::numeric_limits<std::size_t>::max() / radix)
+            {
+                return false;
+            }
+            const auto subtransform_batch =
+                batch_size * radix;
+
+            if (!run_cuda_ntt_device(
+                    reinterpret_cast<const IcicleScalar *>(scratch_a),
+                    reinterpret_cast<IcicleScalar *>(scratch_b),
+                    kMaximumCudaNttSize,
+                    subtransform_batch,
+                    direction,
+                    device,
+                    stream))
+            {
+                return false;
+            }
+
+            const auto combine_root_for =
+                [&](std::size_t transform_size)
+            {
+                auto root =
+                    FieldElement::root_of_unity(transform_size);
+                if (direction == ntt::NTTDir::kInverse)
+                {
+                    root = root.inv();
+                }
+                return gpu_field(root);
+            };
+
+            const auto combine_scale =
+                direction == ntt::NTTDir::kInverse
+                    ? gpu_field(FieldElement(2).inv())
+                    : gpu_field(FieldElement(1));
+
+            if (radix == 2)
+            {
+                const auto combine_items =
+                    batch_size *
+                    ((kMaximumCudaNttSize +
+                      kCosetPowerChunkElements - 1) /
+                     kCosetPowerChunkElements);
+                const auto combine_blocks_size =
+                    (combine_items + kBlockSize - 1) /
+                    kBlockSize;
+                if (combine_blocks_size >
+                    std::numeric_limits<unsigned>::max())
+                {
+                    return false;
+                }
+
+                combine_radix2_groups_kernel<<<
+                    static_cast<unsigned>(combine_blocks_size),
+                    kBlockSize,
+                    0,
+                    stream>>>(
+                    reinterpret_cast<const GpuFr *>(scratch_b),
+                    reinterpret_cast<GpuFr *>(scratch_b),
+                    batch_size,
+                    1,
+                    kMaximumCudaNttSize,
+                    kMaximumCudaNttSize,
+                    kMaximumCudaNttSize,
+                    size,
+                    size,
+                    combine_root_for(size),
+                    combine_scale);
+
+                status = cudaGetLastError();
+                if (status != cudaSuccess)
+                {
+                    throw_cuda_ntt_error(
+                        "staged transform radix-2 combine",
+                        status);
+                }
+                record_cuda_kernel_invocations(1);
+            }
+            else
+            {
+                const auto first_stage_items =
+                    batch_size * 2 *
+                    ((kMaximumCudaNttSize +
+                      kCosetPowerChunkElements - 1) /
+                     kCosetPowerChunkElements);
+                const auto first_stage_blocks_size =
+                    (first_stage_items + kBlockSize - 1) /
+                    kBlockSize;
+                if (first_stage_blocks_size >
+                    std::numeric_limits<unsigned>::max())
+                {
+                    return false;
+                }
+
+                // Pair residues (0,2) and (1,3) in each vector to form the
+                // two length-2^25 intermediate transforms.
+                combine_radix2_groups_kernel<<<
+                    static_cast<unsigned>(first_stage_blocks_size),
+                    kBlockSize,
+                    0,
+                    stream>>>(
+                    reinterpret_cast<const GpuFr *>(scratch_b),
+                    reinterpret_cast<GpuFr *>(scratch_a),
+                    batch_size,
+                    2,
+                    kMaximumCudaNttSize,
+                    kMaximumCudaNttSize,
+                    2 * kMaximumCudaNttSize,
+                    2 * kMaximumCudaNttSize,
+                    size,
+                    combine_root_for(2 * kMaximumCudaNttSize),
+                    combine_scale);
+
+                status = cudaGetLastError();
+                if (status != cudaSuccess)
+                {
+                    throw_cuda_ntt_error(
+                        "staged transform first radix-2 combine",
+                        status);
+                }
+                record_cuda_kernel_invocations(1);
+
+                const auto final_stage_items =
+                    batch_size * 2 *
+                    ((kMaximumCudaNttSize +
+                      kCosetPowerChunkElements - 1) /
+                     kCosetPowerChunkElements);
+                const auto final_stage_blocks_size =
+                    (final_stage_items + kBlockSize - 1) /
+                    kBlockSize;
+                if (final_stage_blocks_size >
+                    std::numeric_limits<unsigned>::max())
+                {
+                    return false;
+                }
+
+                combine_radix2_groups_kernel<<<
+                    static_cast<unsigned>(final_stage_blocks_size),
+                    kBlockSize,
+                    0,
+                    stream>>>(
+                    reinterpret_cast<const GpuFr *>(scratch_a),
+                    reinterpret_cast<GpuFr *>(scratch_a),
+                    batch_size,
+                    1,
+                    2 * kMaximumCudaNttSize,
+                    2 * kMaximumCudaNttSize,
+                    2 * kMaximumCudaNttSize,
+                    size,
+                    size,
+                    combine_root_for(size),
+                    combine_scale);
+
+                status = cudaGetLastError();
+                if (status != cudaSuccess)
+                {
+                    throw_cuda_ntt_error(
+                        "staged transform final radix-2 combine",
+                        status);
+                }
+                record_cuda_kernel_invocations(1);
+            }
+
+            const auto staged_output =
+                radix == 2 ? scratch_b : scratch_a;
+            if (device_output != staged_output)
+            {
+                status = cudaMemcpyAsync(
+                    device_output,
+                    staged_output,
+                    total_bytes,
+                    cudaMemcpyDeviceToDevice,
+                    stream);
+                if (status != cudaSuccess)
+                {
+                    throw_cuda_ntt_error(
+                        "staged transform output copy",
+                        status);
+                }
+            }
+
+            return true;
+        }
+
+        // Generic production NTTs use the same two persistent buffers as the
+        // direct path.  A staged transform additionally needs two full-size
+        // scratch buffers for residue decomposition and radix combines.  Do
+        // this admission before CudaNttWorkspace::ensure() so an accepted
+        // large route cannot fail halfway through allocation.
+        bool admit_generic_ntt_workspace(
+            std::size_t size,
+            std::size_t batch_size,
+            int device,
+            const CudaNttWorkspace &workspace,
+            std::size_t caller_buffer_bytes)
+        {
+            if (size < 2 ||
+                (size & (size - 1U)) != 0U ||
+                size > kMaximumCudaStagedNttSize ||
+                batch_size == 0 ||
+                batch_size > 2)
+            {
+                return false;
+            }
+
+            std::size_t total_bytes = 0;
+            std::size_t icicle_domain_bytes = 0;
+            try
+            {
+                total_bytes = checked_ntt_bytes(size, batch_size);
+                icicle_domain_bytes =
+                    checked_ntt_bytes(
+                        kMaximumCudaNttSize + 1,
+                        1);
+            }
+            catch (...)
+            {
+                return false;
+            }
+
+            const auto buffer_count =
+                size > kMaximumCudaNttSize
+                    ? std::size_t{4}
+                    : std::size_t{2};
+            if (total_bytes >
+                std::numeric_limits<std::size_t>::max() /
+                    buffer_count)
+            {
+                return false;
+            }
+            const auto required_workspace_bytes =
+                buffer_count * total_bytes;
+            const bool reusable =
+                workspace.can_reuse(
+                    total_bytes,
+                    device,
+                    size > kMaximumCudaNttSize);
+            const auto resident_workspace_bytes =
+                workspace.device == device
+                    ? workspace.resident_bytes()
+                    : 0;
+            const auto live_workspace_bytes =
+                reusable
+                    ? resident_workspace_bytes
+                    : required_workspace_bytes;
+
+            std::size_t required_bytes = live_workspace_bytes;
+            const auto add_required =
+                [&required_bytes](std::size_t value)
+            {
+                if (value >
+                    std::numeric_limits<std::size_t>::max() -
+                        required_bytes)
+                {
+                    return false;
+                }
+                required_bytes += value;
+                return true;
+            };
+            if (!add_required(caller_buffer_bytes) ||
+                !add_required(icicle_domain_bytes) ||
+                !add_required(kIcicleDomainHeadroomBytes))
+            {
+                return false;
+            }
+
+            int integrated = 0;
+            auto status =
+                cudaDeviceGetAttribute(
+                    &integrated,
+                    cudaDevAttrIntegrated,
+                    device);
+            if (status != cudaSuccess)
+            {
+                (void)cudaGetLastError();
+                return false;
+            }
+
+            if (integrated != 0)
+            {
+                const auto host =
+                    util::cached_effective_memory_snapshot();
+                if (!host.effective_available_known)
+                {
+                    return false;
+                }
+
+                constexpr std::size_t kMinimumIntegratedReserve =
+                    std::size_t{8} << 30;
+                constexpr std::size_t kIntegratedTransformHeadroom =
+                    std::size_t{3} << 30;
+                const auto reserve_bytes =
+                    std::max(
+                        kMinimumIntegratedReserve,
+                        !host.effective_total_known
+                            ? kMinimumIntegratedReserve
+                            : host.effective_total_bytes / 16);
+                if (reserve_bytes >
+                    std::numeric_limits<std::size_t>::max() -
+                        kIntegratedTransformHeadroom)
+                {
+                    return false;
+                }
+                const auto fixed_reserve =
+                    reserve_bytes +
+                    kIntegratedTransformHeadroom;
+                if (host.effective_available_bytes <= fixed_reserve)
+                {
+                    return false;
+                }
+                return required_bytes <=
+                       host.effective_available_bytes -
+                           fixed_reserve;
+            }
+
+            std::size_t free_bytes = 0;
+            std::size_t total_device_bytes = 0;
+            status =
+                cudaMemGetInfo(
+                    &free_bytes,
+                    &total_device_bytes);
+            if (status != cudaSuccess)
+            {
+                (void)cudaGetLastError();
+                return false;
+            }
+            const auto reserve_bytes =
+                std::max(
+                    kCudaNttReserveBytes,
+                    total_device_bytes / 8);
+            if (required_bytes >
+                std::numeric_limits<std::size_t>::max() -
+                    reserve_bytes)
+            {
+                return false;
+            }
+            return free_bytes >=
+                   required_bytes + reserve_bytes;
+        }
+
         bool run_cuda_ntt_batch(
             mcl::Fr *first,
             mcl::Fr *second,
@@ -730,9 +1607,9 @@ namespace gatzk::algebra
             std::size_t batch_size,
             ntt::NTTDir direction)
         {
-            if (size == 0 ||
+            if (size < 2 ||
                 (size & (size - 1U)) != 0U ||
-                size > kMaximumCudaNttSize)
+                size > kMaximumCudaStagedNttSize)
             {
                 return false;
             }
@@ -774,66 +1651,26 @@ namespace gatzk::algebra
                     size,
                     batch_size);
 
-            int integrated_device = 0;
-
-            status =
-                cudaDeviceGetAttribute(
-                    &integrated_device,
-                    cudaDevAttrIntegrated,
-                    device);
-
-            if (status != cudaSuccess)
-            {
-                throw_cuda_ntt_error(
-                    "integrated-memory capability query",
-                    status);
-            }
-
-            if (integrated_device == 0)
-            {
-                std::size_t free_bytes = 0;
-                std::size_t total_device_bytes = 0;
-
-                status =
-                    cudaMemGetInfo(
-                        &free_bytes,
-                        &total_device_bytes);
-
-                if (status != cudaSuccess)
-                {
-                    throw_cuda_ntt_error(
-                        "memory query",
-                        status);
-                }
-
-                (void)total_device_bytes;
-
-                if (total_bytes >
-                    (std::numeric_limits<
-                         std::size_t>::max() -
-                     kCudaNttReserveBytes) /
-                        2)
-                {
-                    return false;
-                }
-
-                const auto required_free_bytes =
-                    2 * total_bytes +
-                    kCudaNttReserveBytes;
-
-                if (free_bytes <
-                    required_free_bytes)
-                {
-                    return false;
-                }
-            }
+            const bool staged =
+                size > kMaximumCudaNttSize;
 
             auto &workspace =
                 cuda_ntt_workspace();
 
+            if (!admit_generic_ntt_workspace(
+                    size,
+                    batch_size,
+                    device,
+                    workspace,
+                    total_bytes))
+            {
+                return false;
+            }
+
             if (!workspace.ensure(
                     total_bytes,
-                    device))
+                    device,
+                    staged))
             {
                 return false;
             }
@@ -884,14 +1721,20 @@ namespace gatzk::algebra
                     one_vector_bytes);
             }
 
-            if (!run_cuda_ntt_device(
-                    workspace.input,
-                    workspace.output,
+            if (!run_bounded_ntt_device(
+                    reinterpret_cast<const mcl::Fr *>(
+                        workspace.input),
+                    reinterpret_cast<mcl::Fr *>(
+                        workspace.output),
                     size,
                     batch_size,
                     direction,
                     device,
-                    stream))
+                    stream,
+                    reinterpret_cast<mcl::Fr *>(
+                        workspace.scratch_a),
+                    reinterpret_cast<mcl::Fr *>(
+                        workspace.scratch_b)))
             {
                 return false;
             }
@@ -959,6 +1802,24 @@ namespace gatzk::algebra
 
     }
 
+    CudaNttWorkspaceResidency
+    cuda_ntt_workspace_residency()
+    {
+        const auto &workspace =
+            cuda_ntt_workspace();
+
+        return CudaNttWorkspaceResidency{
+            .capacity_bytes = workspace.capacity_bytes,
+            .resident_bytes = workspace.resident_bytes(),
+            .device = workspace.device,
+            .has_input_output =
+                workspace.input != nullptr &&
+                workspace.output != nullptr,
+            .has_staged_scratch =
+                workspace.scratch_a != nullptr &&
+                workspace.scratch_b != nullptr};
+    }
+
     bool cuda_coset_evaluations_to_device_exact(
         const mcl::Fr *values,
         std::size_t value_count,
@@ -1011,9 +1872,11 @@ namespace gatzk::algebra
             blinder_count;
 
         if (domain_size >
-                kMaximumCudaNttSize ||
+                kMaximumCudaStagedNttSize ||
             half_size >
-                kMaximumCudaNttSize ||
+                kMaximumCudaStagedNttSize ||
+            target_size >
+                kMaximumCudaCosetTargetSize ||
             active_count >
                 half_size)
         {
@@ -1040,6 +1903,14 @@ namespace gatzk::algebra
             checked_ntt_bytes(
                 target_size,
                 1);
+
+        if (!admit_large_coset_workspace(
+                target_size,
+                device,
+                workspace))
+        {
+            return false;
+        }
 
         if (!workspace.ensure(
                 total_bytes,
@@ -1090,14 +1961,16 @@ namespace gatzk::algebra
                     1));
         }
 
-        if (!run_cuda_ntt_device(
-                workspace.input,
-                workspace.output,
+        if (!run_bounded_ntt_device(
+                reinterpret_cast<const mcl::Fr *>(workspace.input),
+                reinterpret_cast<mcl::Fr *>(workspace.output),
                 domain_size,
                 1,
                 ntt::NTTDir::kInverse,
                 device,
-                stream))
+                stream,
+                reinterpret_cast<mcl::Fr *>(workspace.output),
+                reinterpret_cast<mcl::Fr *>(workspace.input)))
         {
             return false;
         }
@@ -1209,16 +2082,18 @@ namespace gatzk::algebra
                 1);
         }
 
-        if (!run_cuda_ntt_device(
-                workspace.input,
+        if (!run_bounded_ntt_device(
+                reinterpret_cast<const mcl::Fr *>(workspace.input),
                 reinterpret_cast<
-                    IcicleScalar *>(
-                    device_output),
+                    mcl::Fr *>(
+                        device_output),
                 half_size,
                 2,
                 ntt::NTTDir::kForward,
                 device,
-                stream))
+                stream,
+                reinterpret_cast<mcl::Fr *>(workspace.output),
+                reinterpret_cast<mcl::Fr *>(workspace.input)))
         {
             return false;
         }
@@ -1265,7 +2140,9 @@ namespace gatzk::algebra
             target_size / 2;
 
         if (half_size >
-                kMaximumCudaNttSize ||
+                kMaximumCudaStagedNttSize ||
+            target_size >
+                kMaximumCudaCosetTargetSize ||
             coefficient_count >
                 half_size)
         {
@@ -1292,6 +2169,14 @@ namespace gatzk::algebra
             checked_ntt_bytes(
                 target_size,
                 1);
+
+        if (!admit_large_coset_workspace(
+                target_size,
+                device,
+                workspace))
+        {
+            return false;
+        }
 
         if (!workspace.ensure(
                 total_bytes,
@@ -1406,16 +2291,18 @@ namespace gatzk::algebra
                 1);
         }
 
-        if (!run_cuda_ntt_device(
-                workspace.input,
+        if (!run_bounded_ntt_device(
+                reinterpret_cast<const mcl::Fr *>(workspace.input),
                 reinterpret_cast<
-                    IcicleScalar *>(
-                    device_output),
+                    mcl::Fr *>(
+                        device_output),
                 half_size,
                 2,
                 ntt::NTTDir::kForward,
                 device,
-                stream))
+                stream,
+                reinterpret_cast<mcl::Fr *>(workspace.output),
+                reinterpret_cast<mcl::Fr *>(workspace.input)))
         {
             return false;
         }
@@ -1455,7 +2342,9 @@ namespace gatzk::algebra
             size / 2;
 
         if (half_size >
-            kMaximumCudaNttSize)
+                kMaximumCudaStagedNttSize ||
+            size >
+                kMaximumCudaCosetTargetSize)
         {
             return false;
         }
@@ -1480,6 +2369,14 @@ namespace gatzk::algebra
             checked_ntt_bytes(
                 size,
                 1);
+
+        if (!admit_large_coset_workspace(
+                size,
+                device,
+                workspace))
+        {
+            return false;
+        }
 
         if (!workspace.ensure(
                 total_bytes,
@@ -1530,14 +2427,16 @@ namespace gatzk::algebra
         record_cuda_kernel_invocations(
             1);
 
-        if (!run_cuda_ntt_device(
-                workspace.input,
-                workspace.output,
+        if (!run_bounded_ntt_device(
+                reinterpret_cast<const mcl::Fr *>(workspace.input),
+                reinterpret_cast<mcl::Fr *>(workspace.output),
                 half_size,
                 2,
                 ntt::NTTDir::kInverse,
                 device,
-                stream))
+                stream,
+                reinterpret_cast<mcl::Fr *>(workspace.output),
+                reinterpret_cast<mcl::Fr *>(workspace.input)))
         {
             return false;
         }
@@ -1655,10 +2554,35 @@ namespace gatzk::algebra
         bool preserve_split_lane)
     {
         if (host_output == nullptr ||
-            target_size < 2)
+            !valid_bounded_coset_target(target_size) ||
+            domain_size == 0 ||
+            (domain_size & (domain_size - 1U)) != 0U ||
+            domain_size > kMaximumCudaStagedNttSize ||
+            value_count > domain_size ||
+            domain_size >
+                std::numeric_limits<std::size_t>::max() -
+                    blinder_count ||
+            domain_size + blinder_count > target_size / 2)
         {
             return false;
         }
+
+        if (value_count != 0 && values == nullptr)
+        {
+            throw std::runtime_error(
+                "CUDA coset evaluation received null values");
+        }
+
+        if (blinder_count != 0 && zero_domain_blinder == nullptr)
+        {
+            throw std::runtime_error(
+                "CUDA coset evaluation received null blinder");
+        }
+
+        const auto total_bytes =
+            checked_ntt_bytes(
+                target_size,
+                1);
 
         int device = 0;
 
@@ -1676,10 +2600,14 @@ namespace gatzk::algebra
         auto &workspace =
             cuda_ntt_workspace();
 
-        const auto total_bytes =
-            checked_ntt_bytes(
+        if (!admit_large_coset_workspace(
                 target_size,
-                1);
+                device,
+                workspace,
+                total_bytes))
+        {
+            return false;
+        }
 
         if (!workspace.ensure(
                 total_bytes,
@@ -1797,10 +2725,22 @@ namespace gatzk::algebra
         bool preserve_split_lane)
     {
         if (host_output == nullptr ||
-            target_size < 2)
+            !valid_bounded_coset_target(target_size) ||
+            coefficient_count > target_size / 2)
         {
             return false;
         }
+
+        if (coefficient_count != 0 && coefficients == nullptr)
+        {
+            throw std::runtime_error(
+                "CUDA coefficient coset received null coefficients");
+        }
+
+        const auto total_bytes =
+            checked_ntt_bytes(
+                target_size,
+                1);
 
         int device = 0;
 
@@ -1818,10 +2758,14 @@ namespace gatzk::algebra
         auto &workspace =
             cuda_ntt_workspace();
 
-        const auto total_bytes =
-            checked_ntt_bytes(
+        if (!admit_large_coset_workspace(
                 target_size,
-                1);
+                device,
+                workspace,
+                total_bytes))
+        {
+            return false;
+        }
 
         if (!workspace.ensure(
                 total_bytes,
@@ -1935,10 +2879,15 @@ namespace gatzk::algebra
     {
         if (host_values == nullptr ||
             host_coefficients == nullptr ||
-            size < 2)
+            !valid_bounded_coset_target(size))
         {
             return false;
         }
+
+        const auto total_bytes =
+            checked_ntt_bytes(
+                size,
+                1);
 
         int device = 0;
 
@@ -1956,10 +2905,14 @@ namespace gatzk::algebra
         auto &workspace =
             cuda_ntt_workspace();
 
-        const auto total_bytes =
-            checked_ntt_bytes(
+        if (!admit_large_coset_workspace(
                 size,
-                1);
+                device,
+                workspace,
+                total_bytes))
+        {
+            return false;
+        }
 
         if (!workspace.ensure(
                 total_bytes,

@@ -1,6 +1,7 @@
 #include "gatzk/algebra/eval_backend.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <future>
 #include <limits>
@@ -42,6 +43,45 @@ namespace gatzk::algebra
                 return 1U << 27U;
             }
             return kDefaultThreshold;
+        }
+
+        bool checked_size_mul(
+            std::size_t lhs,
+            std::size_t rhs,
+            std::size_t *result)
+        {
+            if (result == nullptr ||
+                (rhs != 0 &&
+                 lhs > std::numeric_limits<std::size_t>::max() / rhs))
+            {
+                return false;
+            }
+            *result = lhs * rhs;
+            return true;
+        }
+
+#if defined(GATZK_BUILD_TESTS) && GATZK_BUILD_TESTS
+        std::atomic<bool>& cached_subset_multi_rotation_candidate_for_tests()
+        {
+            static std::atomic<bool> enabled{true};
+            return enabled;
+        }
+
+        std::atomic<std::uint64_t>& cached_subset_multi_rotation_candidate_invocations()
+        {
+            static std::atomic<std::uint64_t> invocations{0};
+            return invocations;
+        }
+#endif
+
+        bool cached_subset_multi_rotation_candidate_enabled()
+        {
+#if defined(GATZK_BUILD_TESTS) && GATZK_BUILD_TESTS
+            return cached_subset_multi_rotation_candidate_for_tests().load(
+                std::memory_order_relaxed);
+#else
+            return true;
+#endif
         }
 
     }
@@ -94,18 +134,10 @@ namespace gatzk::algebra
             : zero.native();
     }
 
-    const PackedEvaluationBackend::SubsetView& PackedEvaluationBackend::subset_for(const std::vector<std::string>& labels) const
+    PackedEvaluationBackend::SubsetView PackedEvaluationBackend::build_subset_view(
+        const std::vector<std::string>& labels,
+        bool materialize_interleaved) const
     {
-        const auto key = subset_cache_key(labels);
-        {
-            std::lock_guard<std::mutex> lock(subset_cache_state_->mutex);
-            if (const auto it = subset_cache_state_->subset_cache.find(key);
-                it != subset_cache_state_->subset_cache.end())
-            {
-                return it->second;
-            }
-        }
-
         SubsetView subset;
         subset.row_indices.reserve(labels.size());
         subset.row_indices_u32.reserve(labels.size());
@@ -125,9 +157,22 @@ namespace gatzk::algebra
         }
 
         const auto row_count = subset.row_indices.size();
-        const auto interleaved_term_count = domain_->size * row_count;
+        std::size_t interleaved_term_count = 0;
+        std::size_t interleaved_bytes = 0;
         const auto subset_cache_threshold = subset_cache_threshold_for(domain_, row_count);
-        if (interleaved_term_count <= subset_cache_threshold && row_count > 1)
+        const bool cache_size_valid =
+            checked_size_mul(
+                domain_->size,
+                row_count,
+                &interleaved_term_count) &&
+            checked_size_mul(
+                interleaved_term_count,
+                sizeof(mcl::Fr),
+                &interleaved_bytes);
+        if (materialize_interleaved &&
+            cache_size_valid &&
+            interleaved_term_count <= subset_cache_threshold &&
+            row_count > 1)
         {
             subset.interleaved_values.resize(interleaved_term_count);
             for (std::size_t column = 0; column < domain_->size; ++column)
@@ -140,6 +185,24 @@ namespace gatzk::algebra
                 }
             }
         }
+
+        (void)interleaved_bytes;
+        return subset;
+    }
+
+    const PackedEvaluationBackend::SubsetView& PackedEvaluationBackend::subset_for(const std::vector<std::string>& labels) const
+    {
+        const auto key = subset_cache_key(labels);
+        {
+            std::lock_guard<std::mutex> lock(subset_cache_state_->mutex);
+            if (const auto it = subset_cache_state_->subset_cache.find(key);
+                it != subset_cache_state_->subset_cache.end())
+            {
+                return it->second;
+            }
+        }
+
+        auto subset = build_subset_view(labels, true);
 
         std::lock_guard<std::mutex> lock(subset_cache_state_->mutex);
         auto [it, inserted] = subset_cache_state_->subset_cache.emplace(key, std::move(subset));
@@ -166,6 +229,23 @@ namespace gatzk::algebra
     {
         return subset_for(labels).row_indices_u32;
     }
+
+#if defined(GATZK_BUILD_TESTS) && GATZK_BUILD_TESTS
+    std::size_t PackedEvaluationBackend::cached_subset_bytes_for_tests(
+        const std::vector<std::string>& labels) const
+    {
+        const auto key = subset_cache_key(labels);
+        std::lock_guard<std::mutex> lock(subset_cache_state_->mutex);
+        const auto it = subset_cache_state_->subset_cache.find(key);
+        if (it == subset_cache_state_->subset_cache.end() ||
+            it->second.interleaved_values.size() >
+                std::numeric_limits<std::size_t>::max() / sizeof(mcl::Fr))
+        {
+            return 0;
+        }
+        return it->second.interleaved_values.size() * sizeof(mcl::Fr);
+    }
+#endif
 
     // 直接返回指定标签在给定列索引上的多项式值（每个多项式在该点的求值）
     std::vector<FieldElement> PackedEvaluationBackend::values_at_direct_index(
@@ -475,10 +555,115 @@ namespace gatzk::algebra
             && should_use_cuda_weighted_evaluation(
                 domain_->size, row_count, point_count);
 
-        // Unified-memory CUDA uses the canonical evaluation columns directly.
-        // This avoids materializing an interleaved subset (or copying it back
-        // into column buffers) before every group of rotated opening points.
-        if (try_gpu && cuda_backend_unified_addressing_available())
+        const bool unified_addressing =
+            cuda_backend_unified_addressing_available();
+
+        // Establish the cache policy and all host-side sizes before asking
+        // subset_for() to materialize the interleaved cache.  Overflow or a
+        // failed CUDA/host admission deliberately selects an uncached route;
+        // it must never allocate the large host vector first and discover the
+        // peak violation afterwards.
+        std::size_t interleaved_term_count = 0;
+        std::size_t subset_cache_bytes = 0;
+        const bool cache_policy_eligible =
+            row_count > 1 &&
+            checked_size_mul(
+                domain_->size,
+                row_count,
+                &interleaved_term_count) &&
+            checked_size_mul(
+                interleaved_term_count,
+                sizeof(mcl::Fr),
+                &subset_cache_bytes) &&
+            interleaved_term_count <=
+                subset_cache_threshold_for(domain_, row_count);
+
+        const bool cache_admission =
+            try_gpu &&
+            cache_policy_eligible &&
+            cuda_interleaved_multi_rotation_admissible(
+                domain_->size,
+                row_count,
+                point_count,
+                subset_cache_bytes);
+
+        SubsetView uncached_subset;
+        const SubsetView *subset_ptr = nullptr;
+        if (!try_gpu || !cache_policy_eligible || cache_admission)
+        {
+            subset_ptr = &subset_for(labels);
+        }
+        else if (!unified_addressing)
+        {
+            // A discrete device can still use the existing uncached path when
+            // the extra candidate peak is not admissible.  Keep row resolution
+            // and validation, but do not retain a host interleaved cache.
+            uncached_subset = build_subset_view(labels, false);
+            subset_ptr = &uncached_subset;
+        }
+
+        const bool use_cached_subset =
+            subset_ptr != nullptr &&
+            !subset_ptr->interleaved_values.empty();
+        const bool candidate_shape =
+            try_gpu &&
+            cached_subset_multi_rotation_candidate_enabled() &&
+            point_count >= 2 &&
+            domain_->size >= (1ULL << 18) &&
+            cache_policy_eligible &&
+            interleaved_term_count >= (1ULL << 24) &&
+            cache_admission &&
+            use_cached_subset;
+        if (candidate_shape)
+        {
+#if defined(GATZK_BUILD_TESTS) && GATZK_BUILD_TESTS
+            cached_subset_multi_rotation_candidate_invocations().fetch_add(
+                1,
+                std::memory_order_relaxed);
+#endif
+            const bool candidate_ok =
+                weighted_poly_eval_gpu_interleaved_multi_rotations(
+                    reinterpret_cast<const uint64_t*>(
+                        representative_weights.data()),
+                    reinterpret_cast<const uint64_t*>(
+                        subset_ptr->interleaved_values.data()),
+                    reinterpret_cast<uint64_t*>(native_out.data()),
+                    domain_->size,
+                    row_count,
+                    rotations.data(),
+                    point_count);
+            if (candidate_ok)
+            {
+                std::vector<std::vector<FieldElement>> out(
+                    point_count,
+                    std::vector<FieldElement>(
+                        row_count,
+                        FieldElement::zero()));
+                for (std::size_t point_index = 0;
+                     point_index < point_count;
+                     ++point_index)
+                {
+                    for (std::size_t row = 0;
+                         row < row_count;
+                         ++row)
+                    {
+                        out[point_index][row] =
+                            FieldElement::from_native(
+                                native_out[
+                                    point_index * row_count + row]);
+                    }
+                }
+                return out;
+            }
+            // A declined candidate is intentionally not fatal.  The
+            // canonical cached-subset loop below remains the exact fallback.
+        }
+
+        // Unified-memory CUDA uses canonical evaluation columns directly only
+        // when the production cache policy did not admit a subset.  When the
+        // subset exists, candidate=off intentionally exercises the legacy
+        // cached-subset path on the same production route.
+        if (try_gpu && unified_addressing && !use_cached_subset)
         {
             std::vector<const uint64_t*> direct_column_ptrs;
             std::vector<std::size_t> direct_column_lengths;
@@ -562,8 +747,11 @@ namespace gatzk::algebra
             return out;
         }
 
-        const auto& subset = subset_for(labels);
-        const bool use_cached_subset = !subset.interleaved_values.empty();
+        if (subset_ptr == nullptr)
+        {
+            subset_ptr = &subset_for(labels);
+        }
+        const auto& subset = *subset_ptr;
 
         // ---- GPU path for rotated evaluations ----
         if (try_gpu)
@@ -900,4 +1088,20 @@ namespace gatzk::algebra
         }
         return out;
     }
+
+#if defined(GATZK_BUILD_TESTS) && GATZK_BUILD_TESTS
+    void set_cached_subset_multi_rotation_candidate_for_tests(
+        bool enabled)
+    {
+        cached_subset_multi_rotation_candidate_for_tests().store(
+            enabled,
+            std::memory_order_relaxed);
+    }
+
+    std::uint64_t cached_subset_multi_rotation_candidate_invocations_for_tests()
+    {
+        return cached_subset_multi_rotation_candidate_invocations().load(
+            std::memory_order_relaxed);
+    }
+#endif
 }

@@ -1,0 +1,15 @@
+run_id=edge_targeted_p1_cpu_ab_20260908T225405Z_144767
+start_utc=2026-09-08T22:54:05Z
+end_utc=2026-09-08T22:58:40Z
+elapsed_wall_s=275
+exit_code=0
+timed_out=false
+binary=./build_tests_cpu/tests/gatzk_ppi_spill_targeted_bench
+log=tests/ppi_spill_results/edge_targeted_p1_cpu_ab_20260908T225405Z_144767.log
+provenance=tests/ppi_spill_results/edge_targeted_p1_cpu_ab_20260908T225405Z_144767.provenance
+time_elapsed_s=275.71 time_max_rss_kb=6193352 time_exit_status=0
+timeout_s=600
+route=cpu
+pairs=1
+warmups=1
+repeats=5

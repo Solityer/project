@@ -2679,14 +2679,12 @@ namespace gatzk::crypto
         struct SameSrsCommitWaveKey
         {
             const G1Point *points = nullptr;
-            std::size_t scalar_count = 0;
             std::size_t storage_capacity = 0;
 
             bool operator==(
                 const SameSrsCommitWaveKey &other) const
             {
                 return points == other.points &&
-                       scalar_count == other.scalar_count &&
                        storage_capacity == other.storage_capacity;
             }
         };
@@ -2694,7 +2692,14 @@ namespace gatzk::crypto
         struct SameSrsCommitWave
         {
             SameSrsCommitWaveKey key;
+            std::size_t max_scalar_count = 0;
             std::vector<std::size_t> indices;
+        };
+
+        struct SameSrsCommitWaveProfile
+        {
+            bool used_mixed_prefix = false;
+            bool used_exact_count = false;
         };
 
         std::optional<SameSrsCommitWaveKey>
@@ -2755,8 +2760,6 @@ namespace gatzk::crypto
                 return SameSrsCommitWaveKey{
                     .points =
                         pk.powers_g1->data(),
-                    .scalar_count =
-                        polynomial.size(),
                     .storage_capacity =
                         pk.powers_g1->size(),
                 };
@@ -2779,8 +2782,6 @@ namespace gatzk::crypto
             return SameSrsCommitWaveKey{
                 .points =
                     lagrange_srs->data(),
-                .scalar_count =
-                    polynomial.size(),
                 .storage_capacity =
                     lagrange_srs->size(),
             };
@@ -2799,7 +2800,8 @@ namespace gatzk::crypto
                 &estimated_work,
             const std::vector<bool>
                 &excluded,
-            CommitOne &&commit_one)
+            CommitOne &&commit_one,
+            SameSrsCommitWaveProfile *wave_profile = nullptr)
         {
             if (named_polynomials.size() !=
                     estimated_work.size() ||
@@ -2879,6 +2881,8 @@ namespace gatzk::crypto
                     waves.push_back(
                         SameSrsCommitWave{
                             .key = *key,
+                            .max_scalar_count =
+                                polynomial->size(),
                             .indices = {
                                 index},
                         });
@@ -2888,6 +2892,10 @@ namespace gatzk::crypto
                     found->indices
                         .push_back(
                             index);
+                    found->max_scalar_count =
+                        std::max(
+                            found->max_scalar_count,
+                            polynomial->size());
                 }
             }
 
@@ -2900,8 +2908,8 @@ namespace gatzk::crypto
                 [](const SameSrsCommitWave &lhs,
                    const SameSrsCommitWave &rhs)
                 {
-                    return lhs.key.scalar_count >
-                           rhs.key.scalar_count;
+                    return lhs.max_scalar_count >
+                           rhs.max_scalar_count;
                 });
 
             constexpr std::size_t
@@ -2914,41 +2922,217 @@ namespace gatzk::crypto
                     continue;
                 }
 
-                std::size_t offset = 0;
-
-                while (offset + 1 <
-                       wave.indices.size())
+                // Compare the actual launch count and scalar padding before
+                // using a mixed-length prefix batch.  All arithmetic here is
+                // checked because this planner runs on production metadata,
+                // not only the small targeted fixtures.
+                const auto checked_add =
+                    [](std::size_t lhs,
+                       std::size_t rhs,
+                       const char *what)
                 {
-                    const auto batch_size =
-                        std::min<std::size_t>(
-                            kMaximumCudaSameSrsWaveSize,
-                            wave.indices.size() -
-                                offset);
-
-                    if (batch_size < 2)
+                    if (rhs >
+                        std::numeric_limits<std::size_t>::max() - lhs)
                     {
-                        break;
+                        throw std::runtime_error(
+                            std::string("same-SRS wave ") +
+                            what + " overflows");
+                    }
+                    return lhs + rhs;
+                };
+                const auto checked_mul =
+                    [](std::size_t lhs,
+                       std::size_t rhs,
+                       const char *what)
+                {
+                    if (lhs != 0 &&
+                        rhs >
+                            std::numeric_limits<std::size_t>::max() / lhs)
+                    {
+                        throw std::runtime_error(
+                            std::string("same-SRS wave ") +
+                            what + " overflows");
+                    }
+                    return lhs * rhs;
+                };
+                const auto ceil_wave_calls =
+                    [](std::size_t count,
+                       std::size_t wave_size)
+                {
+                    return count / wave_size +
+                           (count % wave_size != 0 ? 1 : 0);
+                };
+
+                std::unordered_map<std::size_t, std::size_t>
+                    exact_group_counts;
+                exact_group_counts.reserve(wave.indices.size());
+                std::size_t total_scalar_count = 0;
+                for (const auto index : wave.indices)
+                {
+                    const auto *polynomial =
+                        named_polynomials[index].second;
+                    if (polynomial == nullptr)
+                    {
+                        throw std::runtime_error(
+                            "null polynomial in same-SRS wave accounting");
+                    }
+                    total_scalar_count = checked_add(
+                        total_scalar_count,
+                        polynomial->size(),
+                        "scalar-count sum");
+                    auto &group_count =
+                        exact_group_counts[polynomial->size()];
+                    group_count = checked_add(
+                        group_count,
+                        1,
+                        "exact-count group size");
+                }
+
+                const auto candidate_calls =
+                    ceil_wave_calls(
+                        wave.indices.size(),
+                        kMaximumCudaSameSrsWaveSize);
+                std::size_t legacy_calls = 0;
+                for (const auto &[scalar_count, group_count] :
+                     exact_group_counts)
+                {
+                    (void)scalar_count;
+                    legacy_calls = checked_add(
+                        legacy_calls,
+                        ceil_wave_calls(
+                            group_count,
+                            kMaximumCudaSameSrsWaveSize),
+                        "legacy call count");
+                }
+
+                const auto padded_scalar_count =
+                    checked_mul(
+                        wave.indices.size(),
+                        wave.max_scalar_count,
+                        "padded scalar count");
+                if (total_scalar_count > padded_scalar_count)
+                {
+                    throw std::runtime_error(
+                        "same-SRS wave scalar count exceeds padded capacity");
+                }
+                const auto padding_scalar_count =
+                    padded_scalar_count - total_scalar_count;
+                const bool padding_within_half =
+                    padding_scalar_count <=
+                        std::numeric_limits<std::size_t>::max() / 2 &&
+                    checked_mul(
+                        padding_scalar_count,
+                        2,
+                        "padding ratio") <=
+                        padded_scalar_count;
+                const bool use_mixed_prefix =
+                    candidate_calls < legacy_calls &&
+                    padding_within_half;
+
+                if (use_mixed_prefix)
+                {
+                    if (wave_profile != nullptr)
+                    {
+                        wave_profile->used_mixed_prefix = true;
                     }
 
-                    g1_parallel_msm_batch_workers(
-                        batch_size,
-                        [&](std::size_t worker)
+                    std::size_t offset = 0;
+                    while (offset < wave.indices.size())
+                    {
+                        const auto batch_size =
+                            std::min<std::size_t>(
+                                kMaximumCudaSameSrsWaveSize,
+                                wave.indices.size() - offset);
+
+                        if (batch_size < 2)
                         {
-                            commit_one(
-                                wave.indices[offset +
-                                             worker]);
-                        });
+                            break;
+                        }
 
-                    for (std::size_t local = 0;
-                         local < batch_size;
-                         ++local)
+                        g1_parallel_msm_batch_workers(
+                            batch_size,
+                            [&](std::size_t worker)
+                            {
+                                commit_one(
+                                    wave.indices[offset + worker]);
+                            });
+
+                        for (std::size_t local = 0;
+                             local < batch_size;
+                             ++local)
+                        {
+                            completed[wave.indices[offset + local]] = true;
+                        }
+
+                        offset += batch_size;
+                    }
+                    continue;
+                }
+
+                // The prefix candidate is not worthwhile when it saves no
+                // launch, or when it would pad more than half the scalars.
+                // Preserve the former exact-count wave behavior inside this
+                // same immutable-SRS owner instead of sending these objects
+                // to the unrelated outer fallback scheduler.
+                if (wave_profile != nullptr)
+                {
+                    wave_profile->used_exact_count = true;
+                }
+                std::vector<std::size_t> exact_order = wave.indices;
+                std::stable_sort(
+                    exact_order.begin(),
+                    exact_order.end(),
+                    [&](std::size_t lhs, std::size_t rhs)
                     {
-                        completed[wave.indices[offset +
-                                               local]] = true;
+                        return named_polynomials[lhs].second->size() >
+                               named_polynomials[rhs].second->size();
+                    });
+
+                std::size_t offset = 0;
+                while (offset < exact_order.size())
+                {
+                    const auto exact_count =
+                        named_polynomials[exact_order[offset]]
+                            .second->size();
+                    std::size_t group_end = offset + 1;
+                    while (group_end < exact_order.size() &&
+                           named_polynomials[exact_order[group_end]]
+                                   .second->size() == exact_count)
+                    {
+                        ++group_end;
                     }
 
-                    offset +=
-                        batch_size;
+                    while (offset < group_end)
+                    {
+                        const auto batch_size =
+                            std::min<std::size_t>(
+                                kMaximumCudaSameSrsWaveSize,
+                                group_end - offset);
+                        if (batch_size >= 2)
+                        {
+                            g1_parallel_msm_batch_workers(
+                                batch_size,
+                                [&](std::size_t worker)
+                                {
+                                    commit_one(
+                                        exact_order[offset + worker]);
+                                });
+                        }
+                        else
+                        {
+                            // A singleton is still part of the exact-count
+                            // plan and must not be left to outer scheduling.
+                            commit_one(exact_order[offset]);
+                        }
+
+                        for (std::size_t local = 0;
+                             local < batch_size;
+                             ++local)
+                        {
+                            completed[exact_order[offset + local]] = true;
+                        }
+                        offset += batch_size;
+                    }
                 }
             }
 
@@ -6995,6 +7179,8 @@ namespace gatzk::crypto
                 .max_worker_count = 1,
             };
 
+        SameSrsCommitWaveProfile wave_profile;
+
         const auto wave_completed =
             execute_cuda_same_srs_commit_waves(
                 named_polynomials,
@@ -7003,10 +7189,11 @@ namespace gatzk::crypto
                 wave_excluded,
                 [&](std::size_t index)
                 {
-                    commit_one(
-                        index,
-                        &wave_msm_options);
-                });
+                        commit_one(
+                            index,
+                            &wave_msm_options);
+                },
+                &wave_profile);
 
         for (std::size_t index = 0;
              index < object_count;
@@ -7206,6 +7393,12 @@ namespace gatzk::crypto
 
         if (profile != nullptr)
         {
+            profile->used_same_srs_mixed_prefix =
+                profile->used_same_srs_mixed_prefix ||
+                wave_profile.used_mixed_prefix;
+            profile->used_same_srs_exact_count =
+                profile->used_same_srs_exact_count ||
+                wave_profile.used_exact_count;
             profile->msm_ms +=
                 elapsed_ms(
                     msm_start,
@@ -7433,6 +7626,8 @@ namespace gatzk::crypto
                 .max_worker_count = 1,
             };
 
+        SameSrsCommitWaveProfile wave_profile;
+
         auto completed =
             execute_cuda_same_srs_commit_waves(
                 view,
@@ -7441,10 +7636,11 @@ namespace gatzk::crypto
                 excluded,
                 [&](std::size_t index)
                 {
-                    commit_one(
-                        index,
-                        &wave_msm_options);
-                });
+                        commit_one(
+                            index,
+                            &wave_msm_options);
+                },
+                &wave_profile);
 
         std::vector<std::size_t>
             remaining_indices;
@@ -7585,6 +7781,12 @@ namespace gatzk::crypto
 
         if (profile != nullptr)
         {
+            profile->used_same_srs_mixed_prefix =
+                profile->used_same_srs_mixed_prefix ||
+                wave_profile.used_mixed_prefix;
+            profile->used_same_srs_exact_count =
+                profile->used_same_srs_exact_count ||
+                wave_profile.used_exact_count;
             profile->msm_ms +=
                 elapsed_ms(
                     msm_start,

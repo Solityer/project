@@ -97,6 +97,13 @@ assert "maximum_coefficient_count" in shape
 # Capability and telemetry remain execution-only and do not add proof fields.
 assert "cuda_t_edge_leaf_exact_ntt_supported" in CUDA_HEADER
 assert "target_size / 2" in CUDA_SOURCE
+assert "CudaTEdgeExecutorAdmissionShape" in CUDA_HEADER
+assert "cuda_t_edge_executor_can_admit(" in CUDA_SOURCE
+assert "CUDA t_edge large route was selected but admission " in PROVER
+assert "CUDA t_edge large route was selected but " in PROVER
+assert "direct leaf execution failed: target_size=" in PROVER
+assert "linear leaf execution failed: target_size=" in PROVER
+assert "CPUOnly or an unselected CUDA route" in CUDA_HEADER
 for token in (
     "descriptor_requests",
     "descriptor_eligible",

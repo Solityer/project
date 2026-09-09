@@ -3,7 +3,10 @@
 // 负责 context 构建、proof 生成、proof 大小统计与 artifact 导出。
 
 #include <cstddef>
+#include <map>
 #include <memory>
+#include <string>
+#include <utility>
 #include <vector>
 
 #include "gatzk/algebra/domain_evaluation.hpp"
@@ -56,6 +59,23 @@ namespace gatzk::protocol
         const ProtocolContext &context,
         const TraceArtifacts &trace,
         RunMetrics *metrics = nullptr);
+
+#if defined(GATZK_BUILD_TESTS) && GATZK_BUILD_TESTS
+    // Test-only execution seam used by targeted quotient benchmarks.  The
+    // implementation calls the same production materializer used by prove;
+    // it does not construct an alternate quotient evaluator or alter proof
+    // semantics.  CPUOnly/unselected CUDA routes remain on the canonical CPU
+    // path; a selected large CUDA route is fail-closed on admission or exact
+    // execution failure.  It is absent from tests-OFF builds and therefore
+    // cannot become part of the production ABI.
+    std::vector<std::pair<std::string, algebra::Polynomial>>
+    materialize_quotient_polynomials_for_targeted_benchmark(
+        const ProtocolContext &context,
+        const TraceArtifacts &trace,
+        const std::map<std::string, algebra::FieldElement> &challenges,
+        const std::vector<std::string> &labels,
+        RunMetrics *metrics = nullptr);
+#endif
 
     // 统计正式 canonical proof 序列化口径。
     std::size_t proof_size_bytes(const Proof &proof);

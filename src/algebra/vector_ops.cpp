@@ -65,6 +65,14 @@ namespace gatzk::algebra
             return counter;
         }
 
+#if defined(GATZK_BUILD_TESTS) && GATZK_BUILD_TESTS
+        std::atomic<bool> &cuda_generic_staged_route_for_tests()
+        {
+            static std::atomic<bool> enabled{true};
+            return enabled;
+        }
+#endif
+
         struct CudaExecutionCounters
         {
             std::atomic<std::uint64_t> h2d_bytes{0};
@@ -1618,7 +1626,7 @@ namespace gatzk::algebra
 
         constexpr std::size_t
             kCudaInttMaximumSize =
-                std::size_t{1} << 24;
+                std::size_t{1} << 26;
 
         if (!util::route2_options()
                  .cuda_field_hotspots ||
@@ -1627,6 +1635,14 @@ namespace gatzk::algebra
         {
             return false;
         }
+
+#if defined(GATZK_BUILD_TESTS) && GATZK_BUILD_TESTS
+        if (size > (std::size_t{1} << 24) &&
+            !cuda_generic_staged_route_for_tests())
+        {
+            return false;
+        }
+#endif
 
 #if GATZK_ENABLE_CUDA_BACKEND
         return cuda_field_hotspots_available();
@@ -1644,7 +1660,7 @@ namespace gatzk::algebra
 
         constexpr std::size_t
             kCudaNttMaximumSize =
-                std::size_t{1} << 24;
+                std::size_t{1} << 26;
 
         if (!util::route2_options()
                  .cuda_field_hotspots ||
@@ -1653,6 +1669,14 @@ namespace gatzk::algebra
         {
             return false;
         }
+
+#if defined(GATZK_BUILD_TESTS) && GATZK_BUILD_TESTS
+        if (size > (std::size_t{1} << 24) &&
+            !cuda_generic_staged_route_for_tests())
+        {
+            return false;
+        }
+#endif
 
 #if GATZK_ENABLE_CUDA_BACKEND
         return cuda_field_hotspots_available();
@@ -1670,7 +1694,7 @@ namespace gatzk::algebra
 
         constexpr std::size_t
             kCudaPairMaximumSize =
-                std::size_t{1} << 24;
+                std::size_t{1} << 26;
 
         if (!util::route2_options()
                  .cuda_field_hotspots ||
@@ -1680,12 +1704,64 @@ namespace gatzk::algebra
             return false;
         }
 
+#if defined(GATZK_BUILD_TESTS) && GATZK_BUILD_TESTS
+        if (size > (std::size_t{1} << 24) &&
+            !cuda_generic_staged_route_for_tests())
+        {
+            return false;
+        }
+#endif
+
 #if GATZK_ENABLE_CUDA_BACKEND
         return cuda_field_hotspots_available();
 #else
         return false;
 #endif
     }
+
+    bool should_use_cuda_coset_transform(
+        std::size_t target_size)
+    {
+        // Quotient cosets use two lanes of target_size / 2 elements.  The
+        // bounded CUDA implementation supports the existing direct range and
+        // staged radix-2/radix-4 extensions up to a 2^26 lane (2^27 target).
+        // Keep the historical lower admission boundary so small transforms do
+        // not pay a CUDA launch and pageable staging cost.
+        constexpr std::size_t kMinimumTargetSize =
+            std::size_t{1} << 24;
+        constexpr std::size_t kMaximumTargetSize =
+            std::size_t{1} << 27;
+
+        if (!cuda_field_route_enabled() ||
+            target_size < kMinimumTargetSize ||
+            target_size > kMaximumTargetSize ||
+            target_size < 2 ||
+            (target_size & (target_size - 1U)) != 0U)
+        {
+            return false;
+        }
+
+#if defined(GATZK_BUILD_TESTS) && GATZK_BUILD_TESTS
+        if (target_size > (std::size_t{1} << 24) &&
+            !cuda_generic_staged_route_for_tests())
+        {
+            return false;
+        }
+#endif
+
+        return true;
+    }
+
+#if defined(GATZK_BUILD_TESTS) && GATZK_BUILD_TESTS
+    void set_cuda_generic_staged_route_for_tests(
+        bool enabled)
+    {
+        cuda_generic_staged_route_for_tests().store(
+            enabled,
+            std::memory_order_relaxed);
+    }
+#endif
+
     bool try_cuda_scaled_accumulate_native(
         mcl::Fr *target,
         const mcl::Fr *source,
@@ -1802,6 +1878,11 @@ namespace gatzk::algebra
         const uint64_t *, const uint64_t *const *, uint64_t *,
         std::size_t, std::size_t, const std::size_t *, std::size_t,
         const std::size_t *) { return false; }
+    bool weighted_poly_eval_gpu_interleaved_multi_rotations(
+        const uint64_t *, const uint64_t *, uint64_t *,
+        std::size_t, std::size_t, const std::size_t *, std::size_t) { return false; }
+    bool cuda_interleaved_multi_rotation_admissible(
+        std::size_t, std::size_t, std::size_t, std::size_t) { return false; }
 #endif
 
     // 点积是 polynomial / KZG / verifier 会反复调用的基础热路径。

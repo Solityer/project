@@ -212,6 +212,11 @@ target_compile_definitions(
         GATZK_ENABLE_CUDA_BACKEND=$<IF:$<BOOL:${GATZK_ENABLE_CUDA_BACKEND}>,1,0>
         GATZK_CANONICAL_SCALE_CHAIN_PATH="${PROJECT_SOURCE_DIR}/configs/quantization_scale_chain.cfg"
 )
+if(GATZK_BUILD_TESTS)
+    # Keep the targeted materializer seam test-only; tests-OFF production
+    # binaries do not export or compile this helper.
+    target_compile_definitions(gatzkml PRIVATE GATZK_BUILD_TESTS=1)
+endif()
 
 if(GATZK_USE_MCL)
     target_compile_definitions(gatzkml PUBLIC GATZK_USE_MCL=1)

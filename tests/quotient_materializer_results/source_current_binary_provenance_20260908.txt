@@ -1,0 +1,12 @@
+rebuild_command: cmake --build build_tests_cpu --target gatzk_quotient_materializer_targeted_bench -j2
+rebuild_result: exit=0; wall=1.788302323s; target built successfully
+source path=tests/quotient_materializer_targeted_bench.cpp mtime=2026-09-08 23:18:36.760161123 +0800 size=23180 sha256=7b9f0d4bf505e06cc90a4498ed439491bfc37881708402cabe18e36b23cbb491
+source path=src/algebra/cuda_ntt.cu mtime=2026-09-08 23:12:25.753737549 +0800 size=76073 sha256=ca38da6d8b737ecb90c53dcb54a2011477d9c7d83134412429afac2a8ae7e32a
+source path=src/algebra/vector_ops.cpp mtime=2026-09-08 22:16:20.898310099 +0800 size=58557 sha256=68eb9b429089ebb289c4bcebae2acfdf90cce0ddcff3735d109d4a652271c48c
+source path=src/protocol/prover.cpp mtime=2026-09-08 23:11:49.175663313 +0800 size=663444 sha256=6cb2045ef9e519c938e560f3df4847b4dc0b062a0f2d080fe095ef941cf8d027
+source path=include/gatzk/algebra/vector_ops.hpp mtime=2026-09-08 22:16:09.874784626 +0800 size=10644 sha256=4e705f176d7dbb1a1e150e09cbc7dfd31c5ccd5cc5f5dad13ad7ae8a58e68de9
+source path=include/gatzk/protocol/prover.hpp mtime=2026-09-08 23:11:55.192675308 +0800 size=3737 sha256=13b66fc8a04cd922f9c851a8278b677220cd3393b4ed3a4776dd7c3683d9521f
+source path=CMakeLists.txt mtime=2026-09-08 23:11:49.176663315 +0800 size=11073 sha256=1ae41f199278def4cd7eb11ba30b2d88d1ab5649fb71f6a94fec7ee010a047b7
+source path=tests/CMakeLists.txt mtime=2026-09-08 23:11:49.176663315 +0800 size=7863 sha256=dac3c2971020e5ef8dcf5cf6d1b8197ecc96ed1113175d8721a65c73d97675b3
+binary path=build_tests_cpu/tests/gatzk_quotient_materializer_targeted_bench mtime=2026-09-08 23:46:13.658158638 +0800 size=21474024 sha256=e5a0d6a161134734c3381891463d19888453cf4c68cbabc02da1a2e4be3bc760
+binary path=build_tests_cuda/tests/gatzk_quotient_materializer_targeted_bench mtime=2026-09-08 23:18:48.278057368 +0800 size=27212552 sha256=ca6604d4dcf0449c95564be243f76e4d2f7fa75ba4a5463886ec03aece5eb9d4

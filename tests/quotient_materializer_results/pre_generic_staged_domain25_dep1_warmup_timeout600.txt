@@ -1,0 +1,10 @@
+phase: pre-production generic-large-INTT baseline; dependency-count fixture only; source-current after dependency-count patch
+source_benchmark_sha256: 030f65c9d19e4ed5bf46705d73ad7f90e9c8b5bc35d53844582fb9a376a46c34
+binary_cuda_sha256: f38c170eac2b0f1ae7718fcc41e0cc182119a1b01b357e4fc1669c3a516e70df
+command: nvidia-smi --query-gpu=name,memory.total,memory.used,utilization.gpu --format=csv,noheader,nounits; awk '/MemAvailable|MemTotal/ {print}' /proc/meminfo; timeout 600s build_tests_cuda/tests/gatzk_quotient_materializer_targeted_bench --mode materializer --route cuda --domain-log2 25 --dependency-count 1 --repeats 3; rc=$?; nvidia-smi --query-gpu=name,memory.total,memory.used,utilization.gpu --format=csv,noheader,nounits; awk '/MemAvailable|MemTotal/ {print}' /proc/meminfo; exit $rc
+gpu_before: NVIDIA GB10, [N/A], [N/A], 0
+mem_before: MemTotal=127601388 kB MemAvailable=118811112 kB
+warmup_output: mode=materializer repeat=0 requested_route=cuda dependency_count=1 scaled_fanout=1/15 actual_route=cuda_quotient route_diagnostic=dedicated_quotient_calls domain_size=33554432 target_size=134217728 leaf_size=67108864 radix=4 batch=2 workspace_bytes=8589934592 production_parent_wall_ms=464711 quotient_t_fh_ms=459971 stage_timing=diagnostic_progress_only prewarm=398421.727670 evaluate=39118.052707 coefficients=20614.906499 kernel_invocations=5 ntt=0 intt=1 quotient_calls=1 h2d_bytes=4294967296 d2h_bytes=4294967296 sync=1 rss_before=1088614400 rss_after=6177021952 rss_hwm=55107624960 output_size=134217728 digest=28268477506756000efa1d5a2c59f09497c8a1f8579c1c139011615cb4654bbe
+termination: after warmup exceeded 240 seconds, remaining repeats terminated at approximately 520 seconds elapsed; shell exit=143 after explicit SIGTERM/SIGKILL of timeout child.
+gpu_after: NVIDIA GB10, [N/A], [N/A], 0
+mem_after: MemTotal=127601388 kB MemAvailable=120818796 kB
