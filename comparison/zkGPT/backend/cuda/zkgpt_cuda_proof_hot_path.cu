@@ -1,6 +1,7 @@
 #include <cuda_runtime.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <fstream>
@@ -65,6 +66,100 @@ struct OperationResult {
     bool complete = true;
     FieldWord terminal = {{0ULL, 0ULL, 0ULL, 0ULL}};
 };
+
+struct KernelCounters {
+    std::size_t total = 0;
+    std::size_t lasso = 0;
+    std::size_t matmul_sumcheck = 0;
+    std::size_t gkr_relation = 0;
+    std::size_t hyrax = 0;
+    std::size_t transcript = 0;
+};
+
+struct TimingCounters {
+    double memory_copy_h2d_ms = 0.0;
+    double memory_copy_d2h_ms = 0.0;
+    double synchronization_time_ms = 0.0;
+};
+
+static void check(cudaError_t error, const char* what);
+
+static KernelCounters g_kernel_counters;
+static TimingCounters g_timing_counters;
+
+enum class KernelClass {
+    Lasso,
+    MatMulSumcheck,
+    GkrRelation,
+    Hyrax,
+    Transcript,
+};
+
+static KernelClass g_product_kernel_class = KernelClass::GkrRelation;
+
+static void classify_product_kernel(const std::string& label)
+{
+    if (label.find("/matmul") != std::string::npos || label.find("matmul") != std::string::npos) {
+        g_product_kernel_class = KernelClass::MatMulSumcheck;
+    } else if (label.find("/gkr") != std::string::npos || label.find("gkr") != std::string::npos) {
+        g_product_kernel_class = KernelClass::GkrRelation;
+    } else {
+        // Product operations without an explicit native relation label are
+        // not accepted as a formal GPU claim; the counter remains useful for
+        // probe diagnostics while Python-side evidence rejects the unknown
+        // relation identity.
+        g_product_kernel_class = KernelClass::GkrRelation;
+    }
+}
+
+static void note_kernel(KernelClass kind)
+{
+    ++g_kernel_counters.total;
+    switch (kind) {
+    case KernelClass::Lasso: ++g_kernel_counters.lasso; break;
+    case KernelClass::MatMulSumcheck: ++g_kernel_counters.matmul_sumcheck; break;
+    case KernelClass::GkrRelation: ++g_kernel_counters.gkr_relation; break;
+    case KernelClass::Hyrax: ++g_kernel_counters.hyrax; break;
+    case KernelClass::Transcript: ++g_kernel_counters.transcript; break;
+    }
+}
+
+static double elapsed_ms(std::chrono::steady_clock::time_point start)
+{
+    return std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - start).count();
+}
+
+static void timed_device_synchronize(const char* what)
+{
+    const auto start = std::chrono::steady_clock::now();
+    check(cudaDeviceSynchronize(), what);
+    g_timing_counters.synchronization_time_ms += elapsed_ms(start);
+}
+
+static void timed_event_synchronize(cudaEvent_t event, const char* what)
+{
+    const auto start = std::chrono::steady_clock::now();
+    check(cudaEventSynchronize(event), what);
+    g_timing_counters.synchronization_time_ms += elapsed_ms(start);
+}
+
+static void timed_memcpy(
+    void* destination,
+    const void* source,
+    std::size_t bytes,
+    cudaMemcpyKind kind,
+    const char* what)
+{
+    const auto start = std::chrono::steady_clock::now();
+    check(cudaMemcpy(destination, source, bytes, kind), what);
+    const double duration = elapsed_ms(start);
+    if (kind == cudaMemcpyHostToDevice) {
+        g_timing_counters.memory_copy_h2d_ms += duration;
+    } else if (kind == cudaMemcpyDeviceToHost) {
+        g_timing_counters.memory_copy_d2h_ms += duration;
+    }
+}
 
 __host__ __device__ __forceinline__ FieldWord word_zero()
 {
@@ -444,23 +539,25 @@ static FieldWord run_lasso_gpu(const Operation& operation, OperationResult* resu
         check(cudaMalloc(&device_values, sizeof(FieldWord) * count), "cudaMalloc(lasso values)");
         check(cudaMalloc(&device_tree_a, sizeof(FieldWord) * padded), "cudaMalloc(lasso tree a)");
         check(cudaMalloc(&device_tree_b, sizeof(FieldWord) * padded), "cudaMalloc(lasso tree b)");
-        check(cudaMemcpy(device_values, operation.values.data(), sizeof(FieldWord) * count, cudaMemcpyHostToDevice), "cudaMemcpy(lasso values)");
+        timed_memcpy(device_values, operation.values.data(), sizeof(FieldWord) * count, cudaMemcpyHostToDevice, "cudaMemcpy(lasso values)");
+        note_kernel(KernelClass::Lasso);
         lasso_product_tree_init_kernel<<<grid_for(padded), 256>>>(
             device_values, count, operation.beta, device_tree_a, padded);
         check(cudaGetLastError(), "lasso_product_tree_init_kernel launch");
-        check(cudaDeviceSynchronize(), "lasso_product_tree_init_kernel synchronize");
+        timed_device_synchronize("lasso_product_tree_init_kernel synchronize");
         std::size_t current_count = padded;
         FieldWord* current = device_tree_a;
         FieldWord* next = device_tree_b;
         while (current_count > 1) {
+            note_kernel(KernelClass::Lasso);
             lasso_product_tree_level_kernel<<<grid_for(current_count >> 1), 256>>>(current, next, current_count);
             check(cudaGetLastError(), "lasso_product_tree_level_kernel launch");
-            check(cudaDeviceSynchronize(), "lasso_product_tree_level_kernel synchronize");
+            timed_device_synchronize("lasso_product_tree_level_kernel synchronize");
             std::swap(current, next);
             current_count >>= 1;
         }
         FieldWord terminal = word_zero();
-        check(cudaMemcpy(&terminal, current, sizeof(FieldWord), cudaMemcpyDeviceToHost), "cudaMemcpy(lasso root)");
+        timed_memcpy(&terminal, current, sizeof(FieldWord), cudaMemcpyDeviceToHost, "cudaMemcpy(lasso root)");
         check(cudaFree(device_values), "cudaFree(lasso values)");
         check(cudaFree(device_tree_a), "cudaFree(lasso tree a)");
         check(cudaFree(device_tree_b), "cudaFree(lasso tree b)");
@@ -495,27 +592,29 @@ static OperationResult run_sumcheck_gpu(const Operation& operation)
         check(cudaMalloc(&device_current, sizeof(FieldWord) * count), "cudaMalloc(sumcheck current)");
         check(cudaMalloc(&device_next, sizeof(FieldWord) * count), "cudaMalloc(sumcheck next)");
         check(cudaMalloc(&device_coefficients, sizeof(FieldWord) * 2), "cudaMalloc(sumcheck coefficients)");
-        check(cudaMemcpy(device_current, operation.values.data(), sizeof(FieldWord) * count, cudaMemcpyHostToDevice), "cudaMemcpy(sumcheck values)");
+        timed_memcpy(device_current, operation.values.data(), sizeof(FieldWord) * count, cudaMemcpyHostToDevice, "cudaMemcpy(sumcheck values)");
         std::size_t current_count = count;
         for (const FieldWord challenge : operation.challenges) {
+            note_kernel(KernelClass::GkrRelation);
             sumcheck_round_coefficients_kernel<<<1, 256>>>(device_current, current_count, device_coefficients);
             check(cudaGetLastError(), "sumcheck_round_coefficients_kernel launch");
-            check(cudaDeviceSynchronize(), "sumcheck_round_coefficients_kernel synchronize");
+            timed_device_synchronize("sumcheck_round_coefficients_kernel synchronize");
             FieldWord coefficients[2] = {word_zero(), word_zero()};
-            check(cudaMemcpy(coefficients, device_coefficients, sizeof(coefficients), cudaMemcpyDeviceToHost), "cudaMemcpy(sumcheck coefficients)");
+            timed_memcpy(coefficients, device_coefficients, sizeof(coefficients), cudaMemcpyDeviceToHost, "cudaMemcpy(sumcheck coefficients)");
+            note_kernel(KernelClass::GkrRelation);
             multilinear_fold_kernel<<<grid_for(current_count >> 1), 256>>>(
                 device_current, current_count, challenge, device_next);
             check(cudaGetLastError(), "sumcheck multilinear_fold_kernel launch");
-            check(cudaDeviceSynchronize(), "sumcheck multilinear_fold_kernel synchronize");
+            timed_device_synchronize("sumcheck multilinear_fold_kernel synchronize");
             RoundResult round{};
             round.challenge = challenge;
             round.coefficients.assign(coefficients, coefficients + 2);
             std::swap(device_current, device_next);
             current_count >>= 1;
-            check(cudaMemcpy(&round.folded_claim, device_current, sizeof(FieldWord), cudaMemcpyDeviceToHost), "cudaMemcpy(sumcheck folded claim)");
+            timed_memcpy(&round.folded_claim, device_current, sizeof(FieldWord), cudaMemcpyDeviceToHost, "cudaMemcpy(sumcheck folded claim)");
             result.rounds.push_back(round);
         }
-        check(cudaMemcpy(&result.terminal, device_current, sizeof(FieldWord), cudaMemcpyDeviceToHost), "cudaMemcpy(sumcheck terminal)");
+        timed_memcpy(&result.terminal, device_current, sizeof(FieldWord), cudaMemcpyDeviceToHost, "cudaMemcpy(sumcheck terminal)");
         check(cudaFree(device_current), "cudaFree(sumcheck current)");
         check(cudaFree(device_next), "cudaFree(sumcheck next)");
         check(cudaFree(device_coefficients), "cudaFree(sumcheck coefficients)");
@@ -567,50 +666,57 @@ static OperationResult run_product_sumcheck_gpu(const Operation& operation, bool
         check(cudaMalloc(&device_coefficients, sizeof(FieldWord) * coefficient_count), "cudaMalloc(product Sumcheck coefficients)");
         check(cudaMalloc(&device_claim, sizeof(FieldWord)), "cudaMalloc(product Sumcheck terminal claim)");
         if (cubic) {
-            check(cudaMemcpy(device_a, operation.values.data(), sizeof(FieldWord) * count, cudaMemcpyHostToDevice), "cudaMemcpy(product Sumcheck selector)");
-            check(cudaMemcpy(device_b, operation.values_right.data(), sizeof(FieldWord) * count, cudaMemcpyHostToDevice), "cudaMemcpy(product Sumcheck left)");
-            check(cudaMemcpy(device_c, operation.values_third.data(), sizeof(FieldWord) * count, cudaMemcpyHostToDevice), "cudaMemcpy(product Sumcheck right)");
+            timed_memcpy(device_a, operation.values.data(), sizeof(FieldWord) * count, cudaMemcpyHostToDevice, "cudaMemcpy(product Sumcheck selector)");
+            timed_memcpy(device_b, operation.values_right.data(), sizeof(FieldWord) * count, cudaMemcpyHostToDevice, "cudaMemcpy(product Sumcheck left)");
+            timed_memcpy(device_c, operation.values_third.data(), sizeof(FieldWord) * count, cudaMemcpyHostToDevice, "cudaMemcpy(product Sumcheck right)");
         } else {
-            check(cudaMemcpy(device_a, operation.values.data(), sizeof(FieldWord) * count, cudaMemcpyHostToDevice), "cudaMemcpy(product Sumcheck left)");
-            check(cudaMemcpy(device_b, operation.values_right.data(), sizeof(FieldWord) * count, cudaMemcpyHostToDevice), "cudaMemcpy(product Sumcheck right)");
+            timed_memcpy(device_a, operation.values.data(), sizeof(FieldWord) * count, cudaMemcpyHostToDevice, "cudaMemcpy(product Sumcheck left)");
+            timed_memcpy(device_b, operation.values_right.data(), sizeof(FieldWord) * count, cudaMemcpyHostToDevice, "cudaMemcpy(product Sumcheck right)");
         }
         std::size_t current_count = count;
         for (const FieldWord challenge : operation.challenges) {
             if (cubic) {
+                note_kernel(g_product_kernel_class);
                 product3_round_coefficients_kernel<<<1, 256>>>(device_a, device_b, device_c, current_count, device_coefficients);
             } else {
+                note_kernel(g_product_kernel_class);
                 product2_round_coefficients_kernel<<<1, 256>>>(device_a, device_b, current_count, device_coefficients);
             }
             check(cudaGetLastError(), "product Sumcheck coefficient kernel launch");
-            check(cudaDeviceSynchronize(), "product Sumcheck coefficient kernel synchronize");
+            timed_device_synchronize("product Sumcheck coefficient kernel synchronize");
             std::vector<FieldWord> coefficients(coefficient_count, word_zero());
-            check(cudaMemcpy(coefficients.data(), device_coefficients, sizeof(FieldWord) * coefficient_count, cudaMemcpyDeviceToHost), "cudaMemcpy(product Sumcheck coefficients)");
+            timed_memcpy(coefficients.data(), device_coefficients, sizeof(FieldWord) * coefficient_count, cudaMemcpyDeviceToHost, "cudaMemcpy(product Sumcheck coefficients)");
+            note_kernel(g_product_kernel_class);
             multilinear_fold_kernel<<<grid_for(current_count >> 1), 256>>>(device_a, current_count, challenge, device_a_next);
             check(cudaGetLastError(), "product Sumcheck fold a launch");
+            note_kernel(g_product_kernel_class);
             multilinear_fold_kernel<<<grid_for(current_count >> 1), 256>>>(device_b, current_count, challenge, device_b_next);
             check(cudaGetLastError(), "product Sumcheck fold b launch");
             if (cubic) {
+                note_kernel(g_product_kernel_class);
                 multilinear_fold_kernel<<<grid_for(current_count >> 1), 256>>>(device_c, current_count, challenge, device_c_next);
                 check(cudaGetLastError(), "product Sumcheck fold c launch");
             }
-            check(cudaDeviceSynchronize(), "product Sumcheck fold synchronize");
+            timed_device_synchronize("product Sumcheck fold synchronize");
             std::swap(device_a, device_a_next);
             std::swap(device_b, device_b_next);
             if (cubic) std::swap(device_c, device_c_next);
             current_count >>= 1;
+            note_kernel(g_product_kernel_class);
             product_terminal_claim_kernel<<<1, 1>>>(device_a, device_b, device_c, cubic, device_claim);
             check(cudaGetLastError(), "product Sumcheck terminal claim launch");
-            check(cudaDeviceSynchronize(), "product Sumcheck terminal claim synchronize");
+            timed_device_synchronize("product Sumcheck terminal claim synchronize");
             RoundResult round{};
             round.challenge = challenge;
             round.coefficients = std::move(coefficients);
-            check(cudaMemcpy(&round.folded_claim, device_claim, sizeof(FieldWord), cudaMemcpyDeviceToHost), "cudaMemcpy(product Sumcheck folded claim)");
+            timed_memcpy(&round.folded_claim, device_claim, sizeof(FieldWord), cudaMemcpyDeviceToHost, "cudaMemcpy(product Sumcheck folded claim)");
             result.rounds.push_back(std::move(round));
         }
+        note_kernel(g_product_kernel_class);
         product_terminal_claim_kernel<<<1, 1>>>(device_a, device_b, device_c, cubic, device_claim);
         check(cudaGetLastError(), "product Sumcheck final claim launch");
-        check(cudaDeviceSynchronize(), "product Sumcheck final claim synchronize");
-        check(cudaMemcpy(&result.terminal, device_claim, sizeof(FieldWord), cudaMemcpyDeviceToHost), "cudaMemcpy(product Sumcheck terminal)");
+        timed_device_synchronize("product Sumcheck final claim synchronize");
+        timed_memcpy(&result.terminal, device_claim, sizeof(FieldWord), cudaMemcpyDeviceToHost, "cudaMemcpy(product Sumcheck terminal)");
         check(cudaFree(device_a), "cudaFree(product Sumcheck a)");
         check(cudaFree(device_a_next), "cudaFree(product Sumcheck a next)");
         check(cudaFree(device_b), "cudaFree(product Sumcheck b)");
@@ -654,21 +760,22 @@ static OperationResult run_hyrax_gpu(const Operation& operation)
         const std::size_t count = operation.values.size();
         check(cudaMalloc(&device_current, sizeof(FieldWord) * count), "cudaMalloc(Hyrax current)");
         check(cudaMalloc(&device_next, sizeof(FieldWord) * count), "cudaMalloc(Hyrax next)");
-        check(cudaMemcpy(device_current, operation.values.data(), sizeof(FieldWord) * count, cudaMemcpyHostToDevice), "cudaMemcpy(Hyrax values)");
+        timed_memcpy(device_current, operation.values.data(), sizeof(FieldWord) * count, cudaMemcpyHostToDevice, "cudaMemcpy(Hyrax values)");
         std::size_t current_count = count;
         for (const FieldWord challenge : operation.challenges) {
+            note_kernel(KernelClass::Hyrax);
             multilinear_fold_kernel<<<grid_for(current_count >> 1), 256>>>(
                 device_current, current_count, challenge, device_next);
             check(cudaGetLastError(), "Hyrax multilinear_fold_kernel launch");
-            check(cudaDeviceSynchronize(), "Hyrax multilinear_fold_kernel synchronize");
+            timed_device_synchronize("Hyrax multilinear_fold_kernel synchronize");
             std::swap(device_current, device_next);
             current_count >>= 1;
             RoundResult round{};
             round.challenge = challenge;
-            check(cudaMemcpy(&round.folded_claim, device_current, sizeof(FieldWord), cudaMemcpyDeviceToHost), "cudaMemcpy(Hyrax folded claim)");
+            timed_memcpy(&round.folded_claim, device_current, sizeof(FieldWord), cudaMemcpyDeviceToHost, "cudaMemcpy(Hyrax folded claim)");
             result.rounds.push_back(round);
         }
-        check(cudaMemcpy(&result.terminal, device_current, sizeof(FieldWord), cudaMemcpyDeviceToHost), "cudaMemcpy(Hyrax terminal)");
+        timed_memcpy(&result.terminal, device_current, sizeof(FieldWord), cudaMemcpyDeviceToHost, "cudaMemcpy(Hyrax terminal)");
         check(cudaFree(device_current), "cudaFree(Hyrax current)");
         check(cudaFree(device_next), "cudaFree(Hyrax next)");
         return result;
@@ -686,13 +793,14 @@ static FieldWord run_transcript_gpu(const std::vector<FieldWord>& stream)
     try {
         check(cudaMalloc(&device_stream, sizeof(FieldWord) * stream.size()), "cudaMalloc(transcript stream)");
         check(cudaMalloc(&device_output, sizeof(FieldWord)), "cudaMalloc(transcript output)");
-        check(cudaMemcpy(device_stream, stream.data(), sizeof(FieldWord) * stream.size(), cudaMemcpyHostToDevice), "cudaMemcpy(transcript stream)");
+        timed_memcpy(device_stream, stream.data(), sizeof(FieldWord) * stream.size(), cudaMemcpyHostToDevice, "cudaMemcpy(transcript stream)");
         const FieldWord base = {{0x9e3779b97f4a7c15ULL, 0ULL, 0ULL, 0ULL}};
+        note_kernel(KernelClass::Transcript);
         transcript_field_accumulator_kernel<<<1, 1>>>(device_stream, stream.size(), base, device_output);
         check(cudaGetLastError(), "transcript_field_accumulator_kernel launch");
-        check(cudaDeviceSynchronize(), "transcript_field_accumulator_kernel synchronize");
+        timed_device_synchronize("transcript_field_accumulator_kernel synchronize");
         FieldWord output = word_zero();
-        check(cudaMemcpy(&output, device_output, sizeof(FieldWord), cudaMemcpyDeviceToHost), "cudaMemcpy(transcript output)");
+        timed_memcpy(&output, device_output, sizeof(FieldWord), cudaMemcpyDeviceToHost, "cudaMemcpy(transcript output)");
         check(cudaFree(device_stream), "cudaFree(transcript stream)");
         check(cudaFree(device_output), "cudaFree(transcript output)");
         return output;
@@ -907,6 +1015,9 @@ int main(int argc, char** argv)
             std::cerr << "usage: zkgpt_cuda_native_prover <gpu-batch-input> <output-json> <label>\n";
             return 2;
         }
+        g_kernel_counters = KernelCounters{};
+        g_timing_counters = TimingCounters{};
+        classify_product_kernel(argv[3]);
         int device_count = 0;
         check(cudaGetDeviceCount(&device_count), "cudaGetDeviceCount");
         if (device_count <= 0) {
@@ -974,7 +1085,7 @@ int main(int argc, char** argv)
         }
         const FieldWord transcript = run_transcript_gpu(transcript_stream);
         check(cudaEventRecord(event_stop, 0), "cudaEventRecord(stop)");
-        check(cudaEventSynchronize(event_stop), "cudaEventSynchronize(stop)");
+        timed_event_synchronize(event_stop, "cudaEventSynchronize(stop)");
         float cuda_event_elapsed_ms = 0.0f;
         check(cudaEventElapsedTime(&cuda_event_elapsed_ms, event_start, event_stop), "cudaEventElapsedTime");
 
@@ -994,11 +1105,23 @@ int main(int argc, char** argv)
                << "  \"device_count\": " << device_count << ",\n"
                << "  \"device_name\": \"" << json_escape(device.name) << "\",\n"
                << "  \"gpu_uuid\": \"" << device_uuid_hex(device) << "\",\n"
+               << "  \"gpu_compute_capability\": \"" << device.major << "." << device.minor << "\",\n"
+               << "  \"gpu_arch\": \"sm_" << device.major << device.minor << "\",\n"
                << "  \"cuda_event_timing\": \"cudaEventElapsedTime\",\n"
                << "  \"cuda_event_elapsed_ms\": " << cuda_event_elapsed_ms << ",\n"
+               << "  \"transfer_timing\": \"host_steady_clock\",\n"
+               << "  \"memory_copy_h2d_ms\": " << g_timing_counters.memory_copy_h2d_ms << ",\n"
+               << "  \"memory_copy_d2h_ms\": " << g_timing_counters.memory_copy_d2h_ms << ",\n"
+               << "  \"synchronization_time_ms\": " << g_timing_counters.synchronization_time_ms << ",\n"
                << "  \"label\": \"" << json_escape(argv[3]) << "\",\n"
                << "  \"wire_version\": \"ZKGPT_GPU_BATCH_V3\",\n"
                << "  \"field_words_processed\": " << input_field_count << ",\n"
+               << "  \"kernel_invocation_count\": " << g_kernel_counters.total << ",\n"
+               << "  \"kernel_invocation_counts\": {\"lasso\": " << g_kernel_counters.lasso
+               << ", \"matmul_sumcheck\": " << g_kernel_counters.matmul_sumcheck
+               << ", \"gkr_relation\": " << g_kernel_counters.gkr_relation
+               << ", \"hyrax\": " << g_kernel_counters.hyrax
+               << ", \"transcript\": " << g_kernel_counters.transcript << "},\n"
                << "  \"primitive_counts\": {\"lasso\": " << lasso_count
                << ", \"matmul_sumcheck\": " << sumcheck_round_count
                << ", \"gkr_relation\": " << sumcheck_round_count

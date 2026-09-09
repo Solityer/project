@@ -8,7 +8,27 @@ from pathlib import Path
 from typing import Any
 
 from zkgpt_gat.constants import COMMITMENT_BACKEND_ID
-from zkgpt_gat.native_hyrax import MASK_DOMAIN, MASK_PROTOCOL_ID, MASK_VERSION
+from zkgpt_gat.native_hyrax import (
+    AFFINE_MASK_DOMAIN,
+    AFFINE_MASK_PROTOCOL_ID,
+    AFFINE_MASK_VERSION,
+    MASK_DOMAIN,
+    MASK_HEADER_SCHEMA,
+    MASK_PROTOCOL_ID,
+    MASK_VERSION,
+    PROTOCOL_ID as HYRAX_MLE_PROTOCOL_ID,
+    build_mask_header,
+)
+from zkgpt_gat.bn254 import G1Point, hash_point
+from zkgpt_gat.field import BN254_FR_MODULUS
+from zkgpt_gat.value_commitment import (
+    CrossParamsSameValueProof,
+    MultiplicationProof,
+    RepresentationProof,
+    SameValueProof,
+    ValueCommitment,
+)
+from zkgpt_gat.zk_sumcheck import COMMITTED_SUMCHECK_PROTOCOL
 from zkgpt_gat.privacy import (
     PROFILE_ID,
     PROFILE_STATUS,
@@ -22,47 +42,180 @@ from zkgpt_gat.privacy import (
 from zkgpt_gat.util import digest_json, read_json, write_json
 
 
+def _point_json(seed: object, *, identity: bool = False) -> dict[str, object]:
+    if identity:
+        return G1Point.zero().to_json()
+    return hash_point("zkGPT/tests/privacy/point", {"seed": str(seed)}).to_json()
+
+
 def _registration(label: str, value: int) -> dict[str, object]:
-    """Return the public portion of a native Hyrax registration."""
+    """Return a v2-shaped public native Hyrax registration fixture."""
 
     return {
         "backend": COMMITMENT_BACKEND_ID,
         "parameter_id": "test-params",
         "vector_length": 4,
         "label": label,
-        "commitment": {"x": str(value), "y": str(value + 1), "infinity": False},
+        "commitment": _point_json(("registration", label, value)),
     }
 
 
 def _opening(value: int, transcript_digest: str, *, identity_mask: bool = False) -> dict[str, object]:
-    """A serialized native masked opening with no private blinder/scalar."""
+    """A v2 affine-masked native opening fixture with no private scalar."""
 
+    masked = _point_json(("masked", value, transcript_digest))
+    affine_mask = _point_json(("affine-mask", value, transcript_digest), identity=identity_mask)
     return {
-        "evaluation_commitment": {"x": str(value), "y": str(value + 1), "infinity": False},
+        "protocol": HYRAX_MLE_PROTOCOL_ID,
+        "parameter_id": "test-params",
+        "vector_length": 4,
+        "evaluation_commitment": masked,
+        "affine_mask_protocol_id": AFFINE_MASK_PROTOCOL_ID,
+        "affine_mask_domain": AFFINE_MASK_DOMAIN,
+        "affine_mask_version": AFFINE_MASK_VERSION,
+        "masked_evaluation_commitment": masked,
+        "mask_evaluation_commitment": affine_mask,
+        "mask_evaluation_pok": {"fixture": f"affine-mask-{value}-{transcript_digest}"},
         "ipa": {
-            "rounds": [{"L": {"x": str(value + 10), "y": str(value + 11), "infinity": False}}],
+            "rounds": [{"L": _point_json(("ipa", value, transcript_digest))}],
             "final_a": str(value + 12),
         },
         "mask_protocol_id": MASK_PROTOCOL_ID,
         "mask_domain": MASK_DOMAIN,
         "mask_version": MASK_VERSION,
-        "mask_commitment": {
-            "x": str(value + 2),
-            "y": str(value + 3),
-            "infinity": identity_mask,
-        },
+        "mask_commitment": _point_json(("vector-mask", value, transcript_digest), identity=identity_mask),
         "mask_challenge": str(value + 4),
         "transcript_digest": transcript_digest,
     }
 
 
-def _lasso(index: int, transcript_digest: str) -> dict[str, object]:
-    """Small proof-shaped Lasso object containing LC_f and GP_f registrations."""
+def _representation(seed: object) -> dict[str, str]:
+    return RepresentationProof(
+        hash_point("zkGPT/tests/privacy/representation", {"seed": str(seed)}),
+        1,
+        2,
+        3,
+    ).to_dict()
+
+
+def _same_value(seed: object) -> dict[str, str]:
+    return SameValueProof(
+        hash_point("zkGPT/tests/privacy/same-value", {"seed": str(seed)}),
+        1,
+        2,
+    ).to_dict()
+
+
+def _cross_value(seed: object) -> dict[str, str]:
+    point = lambda side: hash_point(
+        "zkGPT/tests/privacy/cross-value", {"seed": str(seed), "side": side}
+    )
+    return CrossParamsSameValueProof(
+        point("first"), point("second"), 1, 2, 3, 4
+    ).to_dict()
+
+
+def _multiplication(seed: object) -> dict[str, str]:
+    point = lambda role: hash_point(
+        "zkGPT/tests/privacy/multiplication", {"seed": str(seed), "role": role}
+    )
+    return MultiplicationProof(
+        point("a"), point("b"), point("product"), point("cross"),
+        1, 2, 3, 4, 5, 6, 7,
+    ).to_dict()
+
+
+def _value_commitment(seed: object) -> dict[str, str]:
+    return ValueCommitment(
+        hash_point("zkGPT/tests/privacy/value-commitment", {"seed": str(seed)})
+    ).to_dict()
+
+
+def _seed_digest(seed: object, role: str) -> str:
+    return digest_json({"seed": str(seed), "role": role})
+
+
+def _sumcheck(seed: object) -> dict[str, object]:
+    return {
+        "protocol": COMMITTED_SUMCHECK_PROTOCOL,
+        "field_modulus": str(BN254_FR_MODULUS),
+        "variable_count": 1,
+        "degree": 1,
+        "initial_claim_commitment": _value_commitment((seed, "initial"))["point"],
+        "rounds": [{
+            "round": 0,
+            "coefficient_commitments": [
+                _value_commitment((seed, "coefficient", index)) for index in range(2)
+            ],
+            "coefficient_mask_commitments": [
+                _value_commitment((seed, "coefficient-mask", index)) for index in range(2)
+            ],
+            "coefficient_poks": [_representation((seed, "coefficient-pok", index)) for index in range(2)],
+            "coefficient_mask_poks": [_representation((seed, "coefficient-mask-pok", index)) for index in range(2)],
+            "group_equality_pok": _representation((seed, "group-equality")),
+            "mask_recurrence": "zero_sum",
+            "mask_recurrence_pok": _representation((seed, "mask-recurrence")),
+            "challenge": "00" * 32,
+        }],
+        "terminal_claim_commitment": _value_commitment((seed, "terminal"))["point"],
+        "terminal_mask_commitment": _value_commitment((seed, "terminal-mask"))["point"],
+    }
+
+
+def _linear_gate(label: str, seed: object, header: Mapping[str, object]) -> dict[str, object]:
+    return {
+        "protocol": "zkGPT/native-gkr-linear-gate-v1",
+        "spec": {"label": label},
+        "point": ["1"],
+        "target_opening": {"proof": _opening(1000 + hash(str(seed)) % 100, _seed_digest(seed, label + "/target"))},
+        "term_openings": [{"proof": _opening(1100 + hash(str(seed)) % 100, _seed_digest(seed, label + "/term"))}],
+        "linear_equality": _representation((seed, "linear-equality")),
+        "mask_header": dict(header),
+    }
+
+
+def _product_gate(label: str, seed: object, header: Mapping[str, object]) -> dict[str, object]:
+    digest = _seed_digest(seed, label + "/target")
+    return {
+        "protocol": "zkGPT/native-gkr-product-gate-v1",
+        "spec": {"label": label},
+        "output_point": ["1"],
+        "target_opening": {"proof": _opening(1200 + hash(str(seed)) % 100, digest)},
+        "sumcheck": _sumcheck((seed, "product")),
+        "left_opening": {"proof": _opening(1300 + hash(str(seed)) % 100, _seed_digest(seed, label + "/left"))},
+        "right_opening": {"proof": _opening(1400 + hash(str(seed)) % 100, _seed_digest(seed, label + "/right"))},
+        "product_commitment": _value_commitment((seed, "product-commitment")),
+        "operand_product": _multiplication((seed, "operand-product")),
+        "terminal_product": _multiplication((seed, "terminal-product")),
+        "mask_header": dict(header),
+    }
+
+
+def _lasso(index: int, transcript_digest: str, session_nonce: str) -> dict[str, object]:
+    """Small v2 proof-shaped Lasso object covering every native sub-relation."""
 
     family = "T_range"
+    value_offset = index * 1000
+    header = build_mask_header(
+        "lasso",
+        {"session_nonce": session_nonce},
+        ("LC_f", "GP_f", "M_f", "ell_f", "membership-sumcheck", "lookup-input-consistency"),
+    )
+    gate_header = build_mask_header(
+        "lasso-gates",
+        {"session_nonce": session_nonce},
+        ("target-evaluation", "term-evaluations", "linear-equality"),
+    )
+    product_header = build_mask_header(
+        "lasso-products",
+        {"session_nonce": session_nonce},
+        ("target-evaluation", "product-sumcheck", "left-evaluation", "right-evaluation", "terminal-relation"),
+    )
+    membership_booleanity = _product_gate("lasso/T_range/membership/booleanity", (index, "booleanity"), product_header)
     return {
         "protocol": "zkGPT/native-lasso-memory-v1",
         "transcript_digest": transcript_digest,
+        "mask_header": header,
         "lc_header": [{
             "index": 0,
             "family": family,
@@ -71,10 +224,58 @@ def _lasso(index: int, transcript_digest: str) -> dict[str, object]:
         "families": [{
             "index": 0,
             "family": family,
+            "descriptor": {"family": family, "kind": "function", "table_id": "T_range", "padded_count": 2},
+            "table_id": "T_range",
+            "query_count": 2,
+            "beta": str(150 + index),
             "gp_registration": _registration(f"GP_f/0/{family}", 110 + index),
             "query_link": {
-                "lc_claim": _opening(120 + index, transcript_digest),
-                "canonical_claim": _opening(130 + index, transcript_digest),
+                "point": ["1"],
+                "lc_form": {"kind": "lasso-lc-query"},
+                "lc_claim": _opening(value_offset + 120 + index, transcript_digest),
+                "canonical_form": {"kind": "lasso-canonical-query"},
+                "canonical_claim": _opening(value_offset + 130 + index, transcript_digest),
+                "same_value": _cross_value((index, "query-link")),
+            },
+            "membership": {
+                "matrix_registration": _registration(f"M_f/0/{family}", 160 + index),
+                "padding_row": {"row": 1, "address": 0},
+                "booleanity": membership_booleanity,
+                "one_hot": {
+                    "point": ["1"],
+                    "linear_form": {"kind": "lasso-membership-row-sum"},
+                    "claim": _opening(value_offset + 170 + index, transcript_digest),
+                    "same_value": _same_value((index, "one-hot")),
+                },
+                "ell_f": _opening(value_offset + 180 + index, transcript_digest),
+                "ell_link": _cross_value((index, "ell-link")),
+                "sumcheck": _sumcheck((index, "membership")),
+                "matrix_opening": {
+                    "linear_form": {"kind": "lasso-membership-matrix"},
+                    "proof": _opening(value_offset + 190 + index, transcript_digest),
+                },
+                "terminal_product": _multiplication((index, "membership-terminal")),
+            },
+            "gates": [
+                {"kind": "linear", "proof": _linear_gate("memory/write-timestamp", (index, "write"), gate_header)},
+                {"kind": "product", "proof": _product_gate("memory/left/accumulator-recurrence", (index, "left"), product_header)},
+                {"kind": "product", "proof": _product_gate("memory/right/accumulator-recurrence", (index, "right"), product_header)},
+                {"kind": "linear", "proof": _linear_gate("memory/grand-product-equality", (index, "grand"), gate_header)},
+            ],
+            "local_combine": {
+                "sources": [],
+                "initial_claim_commitment": _value_commitment((index, "local-initial")),
+                "sumcheck": _sumcheck((index, "local-combine")),
+                "selector_point": ["1"],
+                "point": ["1"],
+                "openings": {
+                    "LC": _opening(value_offset + 200 + index, transcript_digest),
+                    "GP": _opening(value_offset + 210 + index, transcript_digest),
+                },
+                "combined_commitment": _value_commitment((index, "combined")),
+                "coefficient_evaluation": str(220 + index),
+                "terminal_product": _multiplication((index, "local-terminal")),
+                "transcript_digest": transcript_digest,
             },
         }],
     }
@@ -83,6 +284,7 @@ def _lasso(index: int, transcript_digest: str) -> dict[str, object]:
 def _components(
     index: int,
     *,
+    session_nonce: str,
     dynamic_index: int | None = None,
     transcript_index: int | None = None,
     identity_mask: bool = False,
@@ -90,36 +292,70 @@ def _components(
     dynamic_index = index if dynamic_index is None else dynamic_index
     transcript_index = index if transcript_index is None else transcript_index
     digest = f"{transcript_index + 1:064x}"
+    lasso = _lasso(index, digest, session_nonce)
+    relation_header = lambda label, coverage: build_mask_header(
+        label, {"session_nonce": session_nonce}, coverage
+    )
+    matmul_header = relation_header(
+        "matmul",
+        ("output-evaluation", "residual-evaluation", "inner-product-sumcheck", "left-evaluation", "right-evaluation", "terminal-relation"),
+    )
+    gkr_header = relation_header(
+        "gkr",
+        ("linear-equality", "product-sumcheck", "operand-product", "terminal-selector", "lookup-input-consistency"),
+    )
+    combine_header = relation_header(
+        "input_combine",
+        ("source-claims", "combine-sumcheck", "Open_W", "Open_Aux", "Open_L", "terminal-relation"),
+    )
     components: dict[str, dict[str, Any]] = {
-        "lasso": _lasso(index, digest),
+        "lasso": lasso,
         "matmul": {
-            "active": _opening(200 + index, digest, identity_mask=identity_mask),
-            "linear_equality": {"commitment": f"matmul-{index}"},
+            "mask_header": matmul_header,
+            "claims": [{
+                "spec": {"label": f"matmul/claim/{index}"},
+                "output_opening": {"linear_form": {}, "proof": _opening(300 + index * 1000, digest, identity_mask=identity_mask)},
+                "residual_opening": {"linear_form": {}, "proof": _opening(310 + index * 1000, digest, identity_mask=identity_mask)},
+                "left_opening": {"linear_form": {}, "proof": _opening(320 + index * 1000, digest, identity_mask=identity_mask)},
+                "right_opening": {"linear_form": {}, "proof": _opening(330 + index * 1000, digest, identity_mask=identity_mask)},
+                "residual_binding": _representation((index, "matmul-residual")),
+                "sumcheck": _sumcheck((index, "matmul")),
+                "terminal_multiplication": _multiplication((index, "matmul-terminal")),
+            }],
             "transcript_digest": digest,
         },
         "gkr": {
-            "active": _opening(300 + index, digest, identity_mask=identity_mask),
-            "terminal_product": {"commitment": f"gkr-{index}"},
+            "mask_header": gkr_header,
+            "claims": [
+                {"kind": "linear", "proof": _linear_gate(f"lasso/T_range/packed_query", (index, "lookup"), relation_header("gkr-linear", ("target-evaluation", "term-evaluations", "linear-equality")))},
+                {"kind": "product", "proof": _product_gate(f"gkr/product/{index}", (index, "gkr-product"), relation_header("gkr-product", ("target-evaluation", "product-sumcheck", "left-evaluation", "right-evaluation", "terminal-relation")))},
+            ],
             "transcript_digest": digest,
         },
         "input_combine": {
-            "active": _opening(400 + index, digest, identity_mask=identity_mask),
-            "same_value": {"commitment": f"combine-{index}"},
+            "mask_header": combine_header,
+            "sources": [
+                {"segment": "com_W", "linear_form": {}, "weight": "1", "evaluation_claim": _opening(400 + index * 1000, digest, identity_mask=identity_mask)},
+                {"segment": "com_Aux", "linear_form": {}, "weight": "1", "evaluation_claim": _opening(410 + index * 1000, digest, identity_mask=identity_mask)},
+                {"segment": "com_L", "linear_form": {}, "weight": "1", "evaluation_claim": _opening(420 + index * 1000, digest, identity_mask=identity_mask)},
+            ],
+            "sumcheck": _sumcheck((index, "input-combine")),
+            "terminal_product": _multiplication((index, "input-combine-terminal")),
             "transcript_digest": digest,
         },
         "terminal_openings": {
             "items": {
                 "com_W": {
                     "registration": _registration("com_W", 11),
-                    "proof": _opening(500 + index, digest, identity_mask=identity_mask),
+                    "proof": _opening(500 + index * 1000, digest, identity_mask=identity_mask),
                 },
                 "com_Aux": {
                     "registration": _registration("com_Aux", 20 + dynamic_index),
-                    "proof": _opening(510 + index, digest, identity_mask=identity_mask),
+                    "proof": _opening(510 + index * 1000, digest, identity_mask=identity_mask),
                 },
                 "com_L": {
                     "registration": _registration("com_L", 30 + dynamic_index),
-                    "proof": _opening(520 + index, digest, identity_mask=identity_mask),
+                    "proof": _opening(520 + index * 1000, digest, identity_mask=identity_mask),
                 },
             },
             "transcript_digest": digest,
@@ -141,16 +377,11 @@ def _session(
 
     dynamic_index = index if dynamic_index is None else dynamic_index
     mask_index = index if mask_index is None else mask_index
-    components = _components(
-        mask_index,
-        dynamic_index=dynamic_index,
-        transcript_index=transcript_index,
-        identity_mask=identity_mask,
-    )
+    session_nonce = fresh_session_nonce()
     metadata: dict[str, Any] = {
         "privacy_extension_profile_id": PROFILE_ID,
         "privacy_profile_status": PROFILE_STATUS,
-        "session_nonce": fresh_session_nonce(),
+        "session_nonce": session_nonce,
     }
     commitments: dict[str, Any] = {
         "items": {
@@ -161,6 +392,13 @@ def _session(
             "com_L": _registration("com_L", 30 + dynamic_index),
         }
     }
+    components = _components(
+        mask_index,
+        session_nonce=session_nonce,
+        dynamic_index=dynamic_index,
+        transcript_index=transcript_index,
+        identity_mask=identity_mask,
+    )
     metadata["privacy_profile_anchor"] = build_profile_anchor(metadata, commitments)
     pre_digest = f"{index + 1:064x}"
     profile = build_privacy_profile(
@@ -314,7 +552,10 @@ class PrivacyProfileTests(unittest.TestCase):
             for item in rebuilt_profile["evidence"]
             if item["component"] == "lasso" and item["role"] == "registration_commitment"
         ]
-        self.assertEqual(lasso_registrations, ["GP_f/0/T_range", "LC_f/0/T_range"])
+        self.assertEqual(
+            lasso_registrations,
+            ["GP_f/0/T_range", "M_f/0/T_range", "LC_f/0/T_range"],
+        )
 
         check = verify_privacy_profile(
             reordered["metadata"],
@@ -431,8 +672,9 @@ class PrivacyProfileTests(unittest.TestCase):
     def test_unmasked_opening_and_private_blinder_fail_closed(self) -> None:
         bundle = _session(0)
         components = copy.deepcopy(bundle["proof_payload"]["Pi_GKR"])
+        active = components["claims"][0]["proof"]["target_opening"]["proof"]
         for field in ("mask_protocol_id", "mask_domain", "mask_version", "mask_commitment", "mask_challenge"):
-            components["active"].pop(field)
+            active.pop(field)
         with self.assertRaises(PrivacyProfileError):
             build_privacy_profile(
                 bundle["metadata"], bundle["commitments"],
@@ -450,6 +692,22 @@ class PrivacyProfileTests(unittest.TestCase):
         bad_commitments["items"]["com_Aux"] = private_registration
         with self.assertRaises(PrivacyProfileError):
             build_profile_anchor(bundle["metadata"], bad_commitments)
+
+    def test_masked_claim_rejects_unclassified_nested_secret_field(self) -> None:
+        bundle = _session(0)
+        components = copy.deepcopy(bundle["proof_payload"]["Pi_GKR"])
+        claim = components["claims"][0]["proof"]["target_opening"]["proof"]
+        claim["blind"] = "must-not-serialize"
+        with self.assertRaises(PrivacyProfileError):
+            build_privacy_profile(
+                bundle["metadata"], bundle["commitments"],
+                lasso=bundle["proof_payload"]["Pi_Lasso"],
+                matrix=bundle["proof_payload"]["Pi_MatMul"],
+                gkr=components,
+                input_combine=bundle["proof_payload"]["Pi_combine"],
+                terminal_openings=bundle["proof_payload"]["Open_in"],
+                pre_profile_transcript_digest=bundle["pre_profile_transcript_digest"],
+            )
 
 
 if __name__ == "__main__":

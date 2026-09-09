@@ -11,6 +11,31 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
+def _lexical(path: pathlib.Path | str) -> pathlib.Path:
+    value = pathlib.Path(path).expanduser()
+    if not value.is_absolute():
+        value = pathlib.Path.cwd() / value
+    return pathlib.Path(os.path.abspath(os.path.normpath(os.fspath(value))))
+
+
+def _strict_project_root(raw: pathlib.Path | str) -> pathlib.Path:
+    """Accept only the canonical, real baseline root spelling."""
+    supplied = pathlib.Path(raw).expanduser()
+    if not supplied.is_absolute() or any(part in {".", ".."} for part in supplied.parts):
+        raise ValueError("--project-root must be an absolute canonical path without aliases")
+    lexical = _lexical(supplied)
+    if lexical != ROOT:
+        raise ValueError(f"--project-root must equal canonical zkGPT baseline root: {ROOT}")
+    current = pathlib.Path(lexical.anchor)
+    for part in lexical.parts[1:]:
+        current /= part
+        if current.is_symlink():
+            raise ValueError(f"--project-root contains a symlink component: {current}")
+    if lexical.is_symlink() or not lexical.is_dir():
+        raise ValueError(f"--project-root must be a real directory: {lexical}")
+    return lexical
+
+
 def _bootstrap_local_python() -> None:
     """Ensure formal execution imports only the baseline-local environment."""
     helper = ROOT / "scripts" / "ensure_environment.py"
@@ -25,7 +50,6 @@ def _bootstrap_local_python() -> None:
     if completed.returncode != 0:
         raise SystemExit(completed.returncode)
     local = pathlib.Path(os.path.abspath(completed.stdout.strip()))
-    expected_root = ROOT.resolve()
     if local.parent.parent != ROOT / ".venv" or local != ROOT / ".venv" / "bin" / "python":
         raise SystemExit("ensure_environment returned a non-baseline-local interpreter")
     current = pathlib.Path(os.path.abspath(sys.executable))
@@ -93,8 +117,10 @@ def main() -> int:
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--setup-only", action="store_true", help="register canonical model commitments without proving")
     args = parser.parse_args()
-    if pathlib.Path(args.project_root).expanduser().resolve() != ROOT.resolve():
-        parser.error("--project-root must equal comparison/zkGPT")
+    try:
+        project_root = _strict_project_root(args.project_root)
+    except ValueError as exc:
+        parser.error(str(exc))
     try:
         results_dir = resolve_results_dir(ROOT, args.results_dir)
     except ResultValidationError as exc:
@@ -107,7 +133,7 @@ def main() -> int:
     run_many(
         datasets,
         backends,
-        pathlib.Path(args.project_root).resolve(),
+        project_root,
         ROOT,
         results_dir,
         args.force,

@@ -25,6 +25,8 @@ from .constants import (
     PADDING_RULE_ID,
     PROOF_BACKEND_ID,
     PROTOCOL_ID,
+    PUBLIC_Y_SCHEMA,
+    REFERENCE_FORWARD_PROFILE_ID,
 )
 from .data import GraphDataset, LocalGraph
 from .field import (
@@ -45,7 +47,14 @@ from .gpu_execution import (
 from .forward import ForwardTrace, HeadTrace, SignedRoundDivTrace, _elu_table_value, _exp_map_fixed, canonical_input_integers
 from .layout import build_input_layout
 from .input_oracle import equality_weights
-from .model import AttentionHead, Model, QUANT_SCALE_PROFILES
+from .model import AttentionHead, Model
+from .quantization import (
+    CANONICAL_QUANT_CFG_ID,
+    canonical_scale_profile,
+    resolve_quant_scale_profile,
+    scale_chain_from_profile,
+    validate_scale_profile,
+)
 from .native_matmul import MatMulSpec, TensorSource, _ProductProvider, prove_matmul, verify_matmul
 from .native_gkr import (
     LinearGateSpec,
@@ -58,7 +67,17 @@ from .native_gkr import (
     verify_linear_gate,
     verify_product_gate,
 )
-from .native_hyrax import NativeHyrax, _point, hyrax_value_params, verify_open_payload
+from .native_hyrax import (
+    NativeHyrax,
+    PROTOCOL_ID as HYRAX_REGISTRATION_BACKEND_ID,
+    _point,
+    absorb_mask_header,
+    build_mask_header,
+    evaluation_commitment_from_payload,
+    hyrax_value_params,
+    masked_evaluation_claim_from_payload,
+    verify_open_payload,
+)
 from .native_lasso import prove_lasso as prove_native_lasso, verify_lasso as verify_native_lasso
 from .privacy import (
     PROFILE_ID,
@@ -69,7 +88,7 @@ from .privacy import (
     transcript_domain,
     verify_privacy_profile,
 )
-from .registry import ensure_model_registry
+from .registry import canonical_com_w_identity, ensure_model_registry, public_output_binding_digest
 from .resources import canonical_dataset_name, validate_static_table_descriptor
 from .rounding import validate_rounding_mode
 from .bound_ledger import build_integer_bound_ledger
@@ -82,7 +101,12 @@ from .value_commitment import (
 )
 from .zk_sumcheck import prove_committed_sumcheck, verify_committed_sumcheck
 from .util import canonical_json, canonical_json_file_bytes, digest_file, digest_json, ensure_dir, file_id, write_json
-from .verifier_context import make_external_context, validate_external_context
+from .verifier_context import (
+    canonical_graph_identity,
+    make_external_context,
+    validate_external_context,
+)
+from .reference_forward import REFERENCE_FORWARD_ENGINE, reference_forward_source_sha256
 
 
 FUNCTION_LOOKUP_DOMAIN_BITS = 63
@@ -364,7 +388,17 @@ def make_metadata(
         "static_table_id": model.static_table_id,
         "quant_cfg_id": model.quant_cfg_id,
         "input_preprocess_id": model_preprocess,
-        "quant_scale_chain": model.manifest.get("quant_scale_chain", dict(model.quant_scales)),
+        "quant_scale_chain": scale_chain_from_profile(
+            model.quant_scales,
+            hidden_profile=hidden_profile,
+            k_out=int(model.k_out),
+            quant_cfg_id=model.quant_cfg_id,
+        ),
+        "authenticated_quant_scales": validate_scale_profile(
+            model.quant_scales,
+            quant_cfg_id=model.quant_cfg_id,
+            require_canonical=model.quant_cfg_id == "gat_l3_scale_chain",
+        ),
         "rounding_mode": rounding_mode,
         "static_table_descriptor_schema": static_descriptor["schema"],
         "static_table_content_digest": static_descriptor["content_digest"],
@@ -427,6 +461,119 @@ def make_metadata(
         "Layout_in": input_layout,
         "Layout_in_digest": input_layout["layout_digest"],
     }
+    metadata["model_architecture"] = {
+        "model_arch_id": model.manifest.get("model_arch_id", model.model_arch_id),
+        "model_param_id": model.manifest.get("model_param_id", model.model_param_id),
+        "quant_cfg_id": model.manifest.get("quant_cfg_id", model.quant_cfg_id),
+        "input_preprocess_id": model.manifest.get("input_preprocess_id", model_preprocess),
+        "rounding_mode": model.manifest.get("rounding_mode", model.rounding_mode),
+        "static_table_id": model.manifest.get("static_table_id", model.static_table_id),
+        "hidden_layers": [
+            {
+                "layer_index": int(layer.layer_index),
+                "input_dim": int(layer.input_dim),
+                "head_count": int(layer.head_count),
+                "head_dim": int(layer.head_dim),
+            }
+            for layer in model.hidden_layers
+        ],
+        "output_head_specs": [{"head_index": int(index)} for index in range(int(model.k_out))],
+        "C": int(model.class_count),
+        "K_out": int(model.k_out),
+        "L": len(model.hidden_layers) + 1,
+        "d_in_profile": [int(value) for value in d_in_profile],
+        "output_average_rule": model.output_average_rule,
+        "dataset": config.entries.get("dataset"),
+        "quant_scale_chain": metadata["quant_scale_chain"],
+    }
+    bundle = (
+        pathlib.Path(config.checkpoint_bundle)
+        if config.entries.get("checkpoint_bundle")
+        else None
+    )
+    provenance_files = (
+        {
+            "manifest_sha256": bundle / "manifest.json",
+            "npz_sha256": bundle / "tensors.npz",
+            "tensors_sha256": bundle / "tensors.txt",
+        }
+        if bundle is not None
+        else {}
+    )
+    if provenance_files and all(path.is_file() for path in provenance_files.values()):
+        cache_digest = hashlib.sha256()
+        cache_dir = config.cache_dir
+        if cache_dir.is_dir():
+            cache_files = sorted(
+                (path for path in cache_dir.rglob("*") if path.is_file()),
+                key=lambda path: path.relative_to(cache_dir).as_posix(),
+            )
+            for path in cache_files:
+                cache_digest.update(path.relative_to(cache_dir).as_posix().encode("utf-8"))
+                cache_digest.update(bytes((0,)))
+                cache_digest.update(str(path.stat().st_size).encode("ascii"))
+                cache_digest.update(bytes((0,)))
+                with path.open("rb") as handle:
+                    for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                        cache_digest.update(chunk)
+                cache_digest.update(b"\n")
+        metadata["checkpoint_provenance"] = {
+            key: digest_file(path) for key, path in provenance_files.items()
+        } | {
+            "cache_tree_sha256": cache_digest.hexdigest(),
+            "resource_identity": str(bundle.relative_to(config.project_root)),
+        }
+    else:
+        metadata["checkpoint_provenance"] = {}
+    # The long-lived model registry is bound to the canonical public output
+    # resource, not merely to the private model parameters.  Load only the
+    # descriptor here; the runner performs the authoritative pre-build value
+    # equality check before entering this function.
+    public_y_path = pathlib.Path(config.public_y_path)
+    metadata["public_y_schema"] = PUBLIC_Y_SCHEMA
+    metadata["public_y_path"] = str(
+        public_y_path.relative_to(config.project_root)
+        if public_y_path.is_absolute() and public_y_path.is_relative_to(config.project_root)
+        else config.entries.get("public_y_path", "")
+    )
+    metadata["public_y_shape"] = [int(graph.num_nodes), int(model.class_count)]
+    metadata["reference_forward_profile_id"] = REFERENCE_FORWARD_PROFILE_ID
+    metadata["reference_forward_engine"] = REFERENCE_FORWARD_ENGINE
+    metadata["reference_forward_source_sha256"] = reference_forward_source_sha256()
+    metadata["full_dataset"] = bool(graph.num_nodes == dataset.num_nodes)
+    graph_dataset_identity = (
+        canonical_dataset_name(config.dataset)
+        if not str(config.dataset).startswith("synthetic-")
+        else str(config.dataset)
+    )
+    metadata["graph_identity"] = canonical_graph_identity(
+        graph,
+        graph_dataset_identity,
+        full_dataset=graph.num_nodes == dataset.num_nodes,
+    )
+    if public_y_path.is_file():
+        try:
+            descriptor = json.loads(public_y_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(f"cannot read canonical public Y descriptor: {public_y_path}") from exc
+        if not isinstance(descriptor, dict) or descriptor.get("schema") != PUBLIC_Y_SCHEMA:
+            raise ValueError("canonical public Y descriptor schema is invalid")
+        descriptor_without_digest = dict(descriptor)
+        descriptor_digest = descriptor_without_digest.pop("descriptor_digest", None)
+        if descriptor_digest != digest_json(descriptor_without_digest):
+            raise ValueError("canonical public Y descriptor digest is invalid")
+        metadata["public_y_descriptor_digest"] = descriptor_digest
+        metadata["public_y_digest"] = descriptor.get("y_digest", "")
+        metadata["reference_y_digest"] = descriptor.get("reference_y_digest", "")
+        metadata["independent_reference_forward"] = descriptor.get("independent_reference_forward") is True
+    else:
+        # Synthetic unit fixtures may construct the proof before writing their
+        # test output.  They still receive explicit fields; formal execution
+        # is rejected later by the runner's canonical-Y precheck.
+        metadata["public_y_descriptor_digest"] = ""
+        metadata["public_y_digest"] = ""
+        metadata["reference_y_digest"] = ""
+        metadata["independent_reference_forward"] = False
     metadata["integer_bound_ledger"] = _integer_bound_ledger(metadata, model, graph)
     metadata["integer_bound_ledger_digest"] = digest_json(metadata["integer_bound_ledger"])
     metadata["static_table_registry"] = _static_lookup_registry(metadata, config.range_bits)
@@ -671,7 +818,15 @@ def _canonical_lasso_segment(
         table = fixed_tables[table_name]
         real = [_pair_key(table, int(a), int(b)) for a, b in zip(np.ravel(x), np.ravel(y))]
         domain_min = int(table["certified_domain"][0])
-        a_pad = _pair_key(table, domain_min, _fixed_table_eval_q(table_name, domain_min))
+        a_pad = _pair_key(
+            table,
+            domain_min,
+            _fixed_table_eval_q(
+                table_name,
+                domain_min,
+                ledger.get("authenticated_quant_scales"),
+            ),
+        )
         padded = _pad_lasso_family(real, a_pad)
         arrays.append((label, np.asarray(padded, dtype=object)))
         registry.append({
@@ -696,6 +851,8 @@ def _canonical_lasso_segment(
             raise ValueError(f"range-family bit width differs from authenticated ledger: {label}")
         limb_count = int(policy.get("limb_count", 0))
         bit_width = int(policy.get("bit_width", 0))
+        encoding = str(policy.get("encoding", "magnitude"))
+        encoding_offset = int(policy.get("encoding_offset", 0))
         if limb_count <= 0 or bit_width <= 0:
             raise ValueError(f"invalid canonical range-family policy: {label}")
         real: List[int] = []
@@ -703,13 +860,24 @@ def _canonical_lasso_segment(
             value = int(raw)
             if not signed and value < 0:
                 raise ValueError(f"negative value in unsigned range family {label}")
-            current = abs(value) if signed else value
+            if encoding == "offset":
+                if not signed:
+                    raise ValueError(f"offset encoding requires signed range family: {label}")
+                current = value + encoding_offset
+            else:
+                current = abs(value) if signed else value
+            if current < 0:
+                raise ValueError(f"range family {label} encoding underflow")
             for _ in range(limb_count):
                 real.append(current % limb_base)
                 current //= limb_base
             if current:
                 raise ValueError(f"range family {label} exceeds public ledger width")
-        padded = _pad_lasso_family(real, 0)
+        # Padding is a limb query, not a signed source value.  It must remain
+        # the canonical zero row of T_range even when real values use an
+        # offset encoding.
+        pad_value = 0
+        padded = _pad_lasso_family(real, pad_value)
         arrays.append((label, np.asarray(padded, dtype=object)))
         registry.append({
             "family": label,
@@ -718,34 +886,49 @@ def _canonical_lasso_segment(
             "offset": offset,
             "real_count": len(real),
             "padded_count": len(padded),
-            "a_pad": "0",
+            "a_pad": str(pad_value),
             "Q_pad": {"zero_prefix": len(real), "one_suffix": len(padded) - len(real)},
             "range_bits": int(range_bits),
             "bit_width": bit_width,
             "limbs_per_value": limb_count,
             "bound": int(policy.get("bound", -1)),
             "signed_magnitude": bool(signed),
+            "encoded_bound": int(policy.get("encoded_bound", policy.get("bound", -1))),
+            "encoding": encoding,
+            "encoding_offset": encoding_offset,
         })
         offset += len(padded)
 
     for layer in trace.hidden_layers:
         for head in layer.heads:
             add_range(f"{head.tag}.range_delta", head.delta)
+            add_range(f"{head.tag}.M_range", head.m, signed=True)
             add_function(f"{head.tag}.LeakyReLU", "T_LReLU", head.s, head.z)
+            add_range(f"{head.tag}.LeakyReLU.x_range", head.s, signed=True)
+            add_range(f"{head.tag}.LeakyReLU.y_range", head.z, signed=True)
             add_function(f"{head.tag}.ExpMap", "T_exp", head.delta, head.u)
+            add_range(f"{head.tag}.ExpMap.x_range", head.delta)
+            add_range(f"{head.tag}.ExpMap.y_range", head.u)
             add_function(f"{head.tag}.ELU", "T_ELU", head.elu_in, head.h_agg)
+            add_range(f"{head.tag}.ELU.x_range", head.elu_in, signed=True)
+            add_range(f"{head.tag}.ELU.y_range", head.h_agg, signed=True)
             if head.aggregate_division is not None:
-                add_range(f"{head.tag}.SignedRoundDiv.aggregate.range", _division_range_values(head.aggregate_division))
+                add_range(f"{head.tag}.SignedRoundDiv.aggregate.range", _division_range_values(head.aggregate_division), signed=True)
     for head in trace.output_heads:
         add_range(f"{head.tag}.range_delta", head.delta)
+        add_range(f"{head.tag}.M_range", head.m, signed=True)
         add_function(f"{head.tag}.LeakyReLU", "T_LReLU", head.s, head.z)
+        add_range(f"{head.tag}.LeakyReLU.x_range", head.s, signed=True)
+        add_range(f"{head.tag}.LeakyReLU.y_range", head.z, signed=True)
         add_function(f"{head.tag}.ExpMap", "T_exp", head.delta, head.u)
+        add_range(f"{head.tag}.ExpMap.x_range", head.delta)
+        add_range(f"{head.tag}.ExpMap.y_range", head.u)
         if head.aggregate_division is not None:
-            add_range(f"{head.tag}.SignedRoundDiv.aggregate.range", _division_range_values(head.aggregate_division))
+            add_range(f"{head.tag}.SignedRoundDiv.aggregate.range", _division_range_values(head.aggregate_division), signed=True)
         if head.scale_alignment_division is not None:
-            add_range(f"{head.tag}.SignedRoundDiv.scale_alignment.range", _division_range_values(head.scale_alignment_division))
+            add_range(f"{head.tag}.SignedRoundDiv.scale_alignment.range", _division_range_values(head.scale_alignment_division), signed=True)
     if trace.output_average_division is not None:
-        add_range("output.final_average.SignedRoundDiv.range", _division_range_values(trace.output_average_division))
+        add_range("output.final_average.SignedRoundDiv.range", _division_range_values(trace.output_average_division), signed=True)
     residual_values = [
         int(value)
         for _, residual in _matrix_rescale_residual_arrays(trace, model)
@@ -902,6 +1085,19 @@ def _open_terminal_segments(
     n_in = int(metadata["Layout_in"]["N_in"])
     if len(public_x) != n_in:
         raise ValueError("public X segment is not padded to canonical N_in")
+    mask_header = build_mask_header(
+        "input_combine",
+        {
+            "session_nonce": metadata.get("session_nonce", ""),
+            "metadata_digest": commitments.get("metadata_digest", ""),
+        },
+        (
+            "source-claims", "combine-sumcheck", "Open_W", "Open_Aux",
+            "Open_L", "terminal-relation",
+        ),
+    )
+    # Bind coverage before deriving any source-combine challenge.
+    absorb_mask_header(transcript, mask_header)
     sources = [item for item in state.hyrax.opening_log if item.get("kind") == "linear"]
     if not sources:
         raise ValueError("input combine has no authenticated relation terminal claims")
@@ -937,7 +1133,7 @@ def _open_terminal_segments(
             "label": source["label"],
             "segment": registration_label,
             "linear_form": source["linear_form"],
-            "evaluation_commitment": opening_state.evaluation_commitment.to_dict(),
+            "evaluation_claim": masked_evaluation_claim_from_payload(opening_state.proof),
             "weight": str(weight),
         })
     if initial_point is None or sum(a * b for a, b in zip(coefficients, unified)) % BN254_FR_MODULUS != initial_value:
@@ -979,6 +1175,11 @@ def _open_terminal_segments(
         public_registration = {
             key: value for key, value in state.registrations[name].items() if key != "blind"
         }
+        # ``commitments.items`` is the canonical segment-registration
+        # namespace consumed by the independent verifier.  Keep the terminal
+        # public descriptor in that same namespace; the native Hyrax protocol
+        # id remains authenticated inside the opening proof itself.
+        public_registration["backend"] = COMMITMENT_BACKEND_ID
         openings["items"][name] = {
             "registration": public_registration,
             "proof": opening.proof,
@@ -1012,6 +1213,7 @@ def _open_terminal_segments(
     )
     combine = {
         "protocol": "zkGPT/canonical-input-claim-reduction-v1",
+        "mask_header": mask_header,
         "sources": source_descriptors,
         "initial_claim_commitment": initial_commitment.to_dict(),
         "sumcheck": reduction.proof.to_dict(),
@@ -1041,6 +1243,21 @@ def _verify_terminal_segments_and_combine(
             return {"status": "VERIFY_FAILED", "reason": "public X length mismatch"}
         if not verified_sources:
             return {"status": "VERIFY_FAILED", "reason": "no verified input claim sources"}
+        expected_mask_header = build_mask_header(
+            "input_combine",
+            {
+                "session_nonce": metadata.get("session_nonce", ""),
+                "metadata_digest": commitments.get("metadata_digest", ""),
+            },
+            (
+                "source-claims", "combine-sumcheck", "Open_W", "Open_Aux",
+                "Open_L", "terminal-relation",
+            ),
+        )
+        if combine.get("mask_header") != expected_mask_header:
+            return {"status": "VERIFY_FAILED", "reason": "input combine mask header mismatch"}
+        # Replay exactly the prover's transcript prefix before source challenges.
+        absorb_mask_header(transcript, expected_mask_header)
         source_payloads = combine.get("sources", [])
         if not isinstance(source_payloads, list) or len(source_payloads) != len(verified_sources):
             return {"status": "VERIFY_FAILED", "reason": "input claim source count mismatch"}
@@ -1054,7 +1271,7 @@ def _verify_terminal_segments_and_combine(
                 "label": source["label"],
                 "segment": source["segment"],
                 "linear_form": source["linear_form"],
-                "evaluation_commitment": source["evaluation_commitment"].to_dict(),
+                "evaluation_claim": source["evaluation_claim"],
                 "weight": str(weight),
             }
             if payload != expected_payload or source["segment"] not in block:
@@ -1114,9 +1331,7 @@ def _verify_terminal_segments_and_combine(
                 public_context=context,
             )
             opening_results.append(result.get("status") == "VERIFY_OK")
-            evaluation_commitments[name] = ValueCommitment(
-                _point(payload["proof"]["evaluation_commitment"])
-            )
+            evaluation_commitments[name] = evaluation_commitment_from_payload(payload["proof"])
         x_eval = sum(
             to_field_int(value) * weight
             for value, weight in zip(public_x, equality_weights(point))
@@ -1132,7 +1347,7 @@ def _verify_terminal_segments_and_combine(
         ) % BN254_FR_MODULUS
         shape_ok = (
             set(combine) == {
-                "protocol", "sources", "initial_claim_commitment", "sumcheck",
+                "protocol", "mask_header", "sources", "initial_claim_commitment", "sumcheck",
                 "selector_point", "r_minus", "public_x_evaluation",
                 "combined_commitment", "coefficient_terminal_evaluation",
                 "terminal_product", "transcript_digest",
@@ -1168,7 +1383,13 @@ def _static_lookup_registry(metadata: Dict[str, Any], range_bits: int) -> Dict[s
     common = {
         "quant_cfg_id": metadata["quant_cfg_id"],
         "rounding_mode": validate_rounding_mode(metadata.get("rounding_mode")),
-        "quant_scale_chain": dict(ledger.get("scales", {})),
+        "quant_scale_chain": dict(
+            ledger.get("scale_chain")
+            or metadata.get("quant_scale_chain")
+            or ledger.get("scales", {})
+        ),
+        "authenticated_quant_scales": dict(ledger.get("authenticated_quant_scales", {})),
+        "certified_function_bounds": dict(ledger.get("function_bounds", {})),
         "static_table_id": metadata["static_table_id"],
         "static_table_descriptor_schema": metadata.get("static_table_descriptor_schema"),
         "static_table_content_digest": metadata.get("static_table_content_digest"),
@@ -1196,7 +1417,15 @@ def _native_lasso_table_rows(metadata: Dict[str, Any]) -> Dict[str, List[int]]:
         table = registry[table_id]
         domain_min, domain_max = (int(value) for value in table["certified_domain"])
         values = [
-            _pair_key(table, x_value, _fixed_table_eval_q(table_id, x_value))
+            _pair_key(
+                table,
+                x_value,
+                _fixed_table_eval_q(
+                    table_id,
+                    x_value,
+                    table.get("authenticated_quant_scales"),
+                ),
+            )
             for x_value in range(domain_min, domain_max + 1)
         ]
         if len(values) != int(table["row_count"]):
@@ -1257,8 +1486,20 @@ def _integer_bound_ledger(metadata: Dict[str, Any], model: Model, graph: LocalGr
     )
 
 
-def _structured_function_vk(table_id: str, function: str, rule: str) -> Dict[str, Any]:
-    input_scale = {"T_LReLU": 256, "T_ELU": 16, "T_exp": 256}.get(table_id)
+def _structured_function_vk(
+    table_id: str,
+    function: str,
+    rule: str,
+    scale_profile: Mapping[str, Any] | None = None,
+) -> Dict[str, Any]:
+    scales = canonical_scale_profile() if scale_profile is None else validate_scale_profile(scale_profile)
+    scale_names = {
+        "T_LReLU": ("lrelu_input", "lrelu_output"),
+        "T_ELU": ("elu_input", "elu_output"),
+        "T_exp": ("exp_input", "exp_output"),
+    }
+    names = scale_names.get(table_id)
+    input_scale = int(scales[names[0]]) if names else None
     if input_scale is None:
         raise ValueError(f"unknown structured table {table_id}")
     vk = {
@@ -1285,10 +1526,16 @@ def _structured_function_vk(table_id: str, function: str, rule: str) -> Dict[str
     return vk
 
 
-def _verify_structured_function_vk(table_id: str, function: str, rule: str, vk: Any) -> bool:
+def _verify_structured_function_vk(
+    table_id: str,
+    function: str,
+    rule: str,
+    vk: Any,
+    scale_profile: Mapping[str, Any] | None = None,
+) -> bool:
     if not isinstance(vk, dict):
         return False
-    expected = _structured_function_vk(table_id, function, rule)
+    expected = _structured_function_vk(table_id, function, rule, scale_profile)
     return vk == expected
 
 
@@ -1297,19 +1544,29 @@ def _canonical_function_rows_digest(
     domain_min: int,
     domain_max: int,
     tuple_encoding: Dict[str, Any],
+    scale_profile: Mapping[str, Any] | None = None,
 ) -> str:
     h = hashlib.sha256()
     for x_value in range(int(domain_min), int(domain_max) + 1):
-        y_value = _fixed_table_eval_q(table_id, x_value)
+        y_value = _fixed_table_eval_q(table_id, x_value, scale_profile)
         packed = _pair_key({"tuple_encoding": tuple_encoding}, x_value, y_value)
         h.update(f"{x_value},{y_value},{packed}\n".encode("ascii"))
     return h.hexdigest()
 
 
 def _fixed_function_table(table_id: str, function: str, rule: str, common: Dict[str, Any]) -> Dict[str, Any]:
-    vk = _structured_function_vk(table_id, function, rule)
-    scales = {"T_LReLU": (256, 256), "T_ELU": (16, 16), "T_exp": (256, 16)}
-    input_scale, output_scale = scales[table_id]
+    profile = resolve_quant_scale_profile(
+        str(common["quant_cfg_id"]),
+        common.get("authenticated_quant_scales"),
+    )
+    vk = _structured_function_vk(table_id, function, rule, profile)
+    scale_names = {
+        "T_LReLU": ("lrelu_input", "lrelu_output"),
+        "T_ELU": ("elu_input", "elu_output"),
+        "T_exp": ("exp_input", "exp_output"),
+    }
+    input_name, output_name = scale_names[table_id]
+    input_scale, output_scale = int(profile[input_name]), int(profile[output_name])
     certified_domain = common.get("certified_table_domains", {}).get(
         {"T_LReLU": "lrelu", "T_ELU": "elu", "T_exp": "exp"}.get(table_id, table_id),
         [],
@@ -1317,9 +1574,17 @@ def _fixed_function_table(table_id: str, function: str, rule: str, common: Dict[
     if not isinstance(certified_domain, list) or len(certified_domain) != 2:
         raise ValueError(f"missing certified domain for {table_id}")
     domain_min, domain_max = int(certified_domain[0]), int(certified_domain[1])
-    endpoint_outputs = [_fixed_table_eval_q(table_id, value) for value in {domain_min, domain_max, 0} if domain_min <= value <= domain_max]
+    endpoint_outputs = [
+        _fixed_table_eval_q(table_id, value, profile)
+        for value in {domain_min, domain_max, 0}
+        if domain_min <= value <= domain_max
+    ]
     x_bound = max(abs(domain_min), abs(domain_max))
-    y_bound = max((abs(int(value)) for value in endpoint_outputs), default=0)
+    certified_bounds = common.get("certified_function_bounds", {})
+    bound_entry = certified_bounds.get(table_id, {}) if isinstance(certified_bounds, Mapping) else {}
+    y_bound = int(bound_entry.get("output_bound", max((abs(int(value)) for value in endpoint_outputs), default=0)))
+    if y_bound < max((abs(int(value)) for value in endpoint_outputs), default=0):
+        raise ValueError(f"{table_id} certified y range is smaller than its evaluator output")
     pack_base = 2 * y_bound + 1
     max_packed = 2 * x_bound * pack_base + 2 * y_bound
     if max_packed >= (BN254_FR_MODULUS - 1) // 2:
@@ -1360,6 +1625,7 @@ def _fixed_function_table(table_id: str, function: str, rule: str, common: Dict[
         domain_min,
         domain_max,
         descriptor["tuple_encoding"],
+        profile,
     )
     digest = digest_json(descriptor)
     descriptor["table_digest"] = digest
@@ -1410,6 +1676,13 @@ def _verify_fixed_table_descriptor(table: Dict[str, Any]) -> bool:
     descriptor = {key: value for key, value in table.items() if key not in {"table_digest", "table_commitment"}}
     digest = digest_json(descriptor)
     if table.get("table_kind") == "structured_fixed_function_table":
+        try:
+            profile = resolve_quant_scale_profile(
+                str(table.get("quant_cfg_id", "")),
+                table.get("authenticated_quant_scales"),
+            )
+        except (TypeError, ValueError):
+            return False
         vk = table.get("structured_verification_key", {})
         commitment = digest_json(
             {
@@ -1419,7 +1692,13 @@ def _verify_fixed_table_descriptor(table: Dict[str, Any]) -> bool:
                 "chunk_roots": table.get("chunks", []),
             }
         )
-        vk_ok = _verify_structured_function_vk(table.get("table_id", ""), table.get("function", ""), table.get("evaluation_rule", ""), vk)
+        vk_ok = _verify_structured_function_vk(
+            table.get("table_id", ""),
+            table.get("function", ""),
+            table.get("evaluation_rule", ""),
+            vk,
+            profile,
+        )
     elif table.get("table_kind") == "materialized_fixed_range_table":
         commitment = digest_json(
             {
@@ -1447,6 +1726,18 @@ def _verify_fixed_table_descriptor(table: Dict[str, Any]) -> bool:
             expected_scale = int(table.get("input_scale", -1))
             if int(vk_domain.get("fixed_scale", -2)) != expected_scale:
                 return False
+            scale_names = {
+                "T_LReLU": ("lrelu_input", "lrelu_output"),
+                "T_ELU": ("elu_input", "elu_output"),
+                "T_exp": ("exp_input", "exp_output"),
+            }
+            input_name, output_name = scale_names.get(
+                str(table.get("table_id", "")), (None, None)
+            )
+            if input_name is None or expected_scale != int(profile[input_name]):
+                return False
+            if int(table.get("output_scale", -1)) != int(profile[output_name]):
+                return False
             if not table.get("integer_bound_ledger_digest"):
                 return False
             encoding = table.get("tuple_encoding", {})
@@ -1460,7 +1751,11 @@ def _verify_fixed_table_descriptor(table: Dict[str, Any]) -> bool:
             if int(table.get("row_count", -1)) != certified_max - certified_min + 1:
                 return False
             if table.get("rows_digest") != _canonical_function_rows_digest(
-                table.get("table_id", ""), certified_min, certified_max, encoding
+                table.get("table_id", ""),
+                certified_min,
+                certified_max,
+                encoding,
+                table.get("authenticated_quant_scales"),
             ):
                 return False
         except (TypeError, ValueError):
@@ -1489,9 +1784,14 @@ def _verify_integer_bound_ledger(metadata: Dict[str, Any]) -> bool:
         if ledger.get("rounding_mode") != mode:
             return False
         quant_cfg_id = str(metadata.get("quant_cfg_id", ""))
-        if quant_cfg_id not in QUANT_SCALE_PROFILES or ledger.get("quant_cfg_id") != quant_cfg_id:
+        if ledger.get("quant_cfg_id") != quant_cfg_id:
             return False
-        if ledger.get("authenticated_quant_scales") != QUANT_SCALE_PROFILES[quant_cfg_id]:
+        profile = resolve_quant_scale_profile(
+            quant_cfg_id,
+            metadata.get("authenticated_quant_scales")
+            or ledger.get("authenticated_quant_scales"),
+        )
+        if ledger.get("authenticated_quant_scales") != profile:
             return False
         dims = metadata.get("dim_cfg", {})
         hidden_profile = dims.get("hidden_profile", [])
@@ -1510,7 +1810,7 @@ def _verify_integer_bound_ledger(metadata: Dict[str, Any]) -> bool:
         expected = build_integer_bound_ledger(
             mode=mode,
             quant_cfg_id=quant_cfg_id,
-            authenticated_quant_scales=QUANT_SCALE_PROFILES[quant_cfg_id],
+            authenticated_quant_scales=profile,
             registered_model_bounds=registered,
             hidden_profile=[
                 {"layer_index": int(index), "head_count": int(item["head_count"]), "head_dim": int(item["head_dim"])}
@@ -1567,35 +1867,40 @@ def _verify_integer_bound_ledger(metadata: Dict[str, Any]) -> bool:
             return False
         policy = ledger.get("range_family_policy", {})
         families = policy.get("families") if isinstance(policy, dict) else None
-        expected_range_families = {
-            f"{item['id']}.range" for item in divisions
-            if str(item["id"]) != "output.final_average.SignedRoundDiv"
-        } | {
-            "output.final_average.SignedRoundDiv.range",
-            *(
-                (f"hidden.l{item['layer']}.h{item['head']}.range_delta" if item["kind"] == "hidden" else f"output.h{item['head']}.range_delta")
-                for item in ledger.get("heads", [])
-            ),
-            "rescale_rounding_range",
-        }
+        expected_range_families = set(expected["range_family_policy"]["families"])
         if not isinstance(families, dict) or set(families) != expected_range_families:
             return False
         for name, item in families.items():
-            if not isinstance(item, dict) or int(item.get("bound", -1)) < 0 or int(item.get("bit_width", 0)) <= 0 or int(item.get("range_bits", 0)) != int(dims.get("B", 0)) or int(item.get("limb_count", 0)) != max(1, (int(item["bit_width"]) + int(dims["B"]) - 1) // int(dims["B"])):
+            if not isinstance(item, dict) or int(item.get("bound", -1)) < 0 or int(item.get("encoded_bound", -1)) < int(item.get("bound", -1)) or int(item.get("bit_width", 0)) <= 0 or int(item.get("range_bits", 0)) != int(dims.get("B", 0)) or int(item.get("limb_count", 0)) != max(1, (int(item["bit_width"]) + int(dims["B"]) - 1) // int(dims["B"])):
+                return False
+            if int(item.get("encoded_bound", -1)) + 1 > (1 << int(item["bit_width"])):
                 return False
         return True
     except (KeyError, TypeError, ValueError, OverflowError):
         return False
 
 
-def _fixed_table_eval_q(table_id: str, x_value: int) -> int:
+def _fixed_table_eval_q(
+    table_id: str,
+    x_value: int,
+    scale_profile: Mapping[str, Any] | None = None,
+) -> int:
     x_signed = _signed_field(x_value)
+    profile = canonical_scale_profile() if scale_profile is None else validate_scale_profile(scale_profile)
     if table_id == "T_LReLU":
         return _fixed_lrelu(x_signed)
     elif table_id == "T_ELU":
-        return _elu_table_value(x_signed)
+        return _elu_table_value(
+            x_signed,
+            input_scale=int(profile["elu_input"]),
+            output_scale=int(profile["elu_output"]),
+        )
     elif table_id == "T_exp":
-        return _fixed_exp(x_signed)
+        return _fixed_exp(
+            x_signed,
+            input_scale=int(profile["exp_input"]),
+            output_scale=int(profile["exp_output"]),
+        )
     else:
         raise ValueError(f"unsupported fixed function table: {table_id}")
 
@@ -1608,8 +1913,15 @@ def _fixed_lrelu(value: int) -> int:
     return -((magnitude + 2) // 5)
 
 
-def _fixed_exp(value: int) -> int:
-    return _exp_map_fixed(int(value))
+def _fixed_exp(
+    value: int,
+    *,
+    input_scale: int | None = None,
+    output_scale: int | None = None,
+) -> int:
+    return _exp_map_fixed(
+        int(value), input_scale=input_scale, output_scale=output_scale
+    )
 
 
 def _pair_key(table: Dict[str, Any], x_value: int, y_value: int) -> int:
@@ -1858,6 +2170,21 @@ def _prove_native_matrix(
         "session_nonce": metadata["session_nonce"],
         "relation": "Pi_MatMul",
     }
+    # Bind the complete MatMul masking coverage before deriving the first
+    # claim challenge.  Individual native MatMul claims carry their own
+    # headers as well; this aggregate header prevents a verifier from
+    # accepting a truncated/reordered claim family under an inventory-only
+    # digest.
+    mask_header = build_mask_header(
+        "matmul",
+        context,
+        (
+            "output-evaluation", "residual-evaluation",
+            "inner-product-sumcheck", "left-evaluation", "right-evaluation",
+            "terminal-relation",
+        ),
+    )
+    absorb_mask_header(transcript, mask_header)
     vectors = {"W": state.vectors["com_W"], "Aux": state.vectors["com_Aux"]}
     registrations = {"W": state.registrations["com_W"], "Aux": state.registrations["com_Aux"]}
     public_arrays = {"X_pub.H_input": np.asarray(trace.input_features, dtype=object)}
@@ -1874,7 +2201,12 @@ def _prove_native_matrix(
         )
         for spec, left, right, output, residual in plan
     ]
-    return {"protocol": "zkGPT/exact-integer-matmul-batch-v1", "claims": claims, "transcript_digest": transcript.digest.hex()}
+    return {
+        "protocol": "zkGPT/exact-integer-matmul-batch-v1",
+        "mask_header": mask_header,
+        "claims": claims,
+        "transcript_digest": transcript.digest.hex(),
+    }
 
 
 def _verify_native_matrix(
@@ -1901,6 +2233,20 @@ def _verify_native_matrix(
             "session_nonce": metadata["session_nonce"],
             "relation": "Pi_MatMul",
         }
+        expected_mask_header = build_mask_header(
+            "matmul",
+            context,
+            (
+                "output-evaluation", "residual-evaluation",
+                "inner-product-sumcheck", "left-evaluation", "right-evaluation",
+                "terminal-relation",
+            ),
+        )
+        if set(matrix) != {"protocol", "mask_header", "claims", "transcript_digest"}:
+            return {"status": "VERIFY_FAILED", "reason": "MatMul masking header is missing or has extra fields", "claims": []}
+        if matrix.get("mask_header") != expected_mask_header:
+            return {"status": "VERIFY_FAILED", "reason": "MatMul masking header mismatch", "claims": []}
+        absorb_mask_header(transcript, expected_mask_header)
         results = [
             verify_matmul(
                 proof, spec, layout=metadata["Layout_in"], public_arrays=public_arrays,
@@ -2111,7 +2457,7 @@ def _native_lasso_consistency_specs(metadata: Dict[str, Any]) -> List[Tuple[str,
             policy = metadata.get("integer_bound_ledger", {}).get("range_family_policy", {}).get("families", {}).get(label)
             if not isinstance(policy, dict):
                 raise ValueError(f"range family is absent from authenticated ledger: {label}")
-            if any(int(family.get(key, -1)) != int(policy.get(source, -2)) for key, source in (("range_bits", "range_bits"), ("bit_width", "bit_width"), ("limbs_per_value", "limb_count"), ("bound", "bound"))):
+            if any(int(family.get(key, -1)) != int(policy.get(source, -2)) for key, source in (("range_bits", "range_bits"), ("bit_width", "bit_width"), ("limbs_per_value", "limb_count"), ("bound", "bound"), ("encoded_bound", "encoded_bound"), ("encoding_offset", "encoding_offset"))):
                 raise ValueError(f"range family geometry differs from authenticated ledger: {label}")
             limb_count = int(family["limbs_per_value"])
             base = 1 << int(family["range_bits"])
@@ -2141,6 +2487,27 @@ def _native_lasso_consistency_specs(metadata: Dict[str, Any]) -> List[Tuple[str,
             elif label.endswith(".range_delta"):
                 prefix = label.removesuffix(".range_delta")
                 sources = [(f"{prefix}.Delta", aux_length(f"{prefix}.Delta"))]
+            elif label.endswith(".M_range"):
+                prefix = label.removesuffix(".M_range")
+                sources = [(f"{prefix}.M", aux_length(f"{prefix}.M"))]
+            elif label.endswith(".LeakyReLU.x_range"):
+                prefix = label.removesuffix(".LeakyReLU.x_range")
+                sources = [(f"{prefix}.S", aux_length(f"{prefix}.S"))]
+            elif label.endswith(".LeakyReLU.y_range"):
+                prefix = label.removesuffix(".LeakyReLU.y_range")
+                sources = [(f"{prefix}.Z", aux_length(f"{prefix}.Z"))]
+            elif label.endswith(".ExpMap.x_range"):
+                prefix = label.removesuffix(".ExpMap.x_range")
+                sources = [(f"{prefix}.Delta", aux_length(f"{prefix}.Delta"))]
+            elif label.endswith(".ExpMap.y_range"):
+                prefix = label.removesuffix(".ExpMap.y_range")
+                sources = [(f"{prefix}.U", aux_length(f"{prefix}.U"))]
+            elif label.endswith(".ELU.x_range"):
+                prefix = label.removesuffix(".ELU.x_range")
+                sources = [(f"{prefix}.SignedRoundDiv.output", aux_length(f"{prefix}.SignedRoundDiv.output"))]
+            elif label.endswith(".ELU.y_range"):
+                prefix = label.removesuffix(".ELU.y_range")
+                sources = [(f"{prefix}.H_agg", aux_length(f"{prefix}.H_agg"))]
             elif label.endswith(".range"):
                 prefix = label.removesuffix(".range")
                 if prefix == "output.final_average.SignedRoundDiv":
@@ -2159,7 +2526,8 @@ def _native_lasso_consistency_specs(metadata: Dict[str, Any]) -> List[Tuple[str,
                 )
                 specs.append(("linear", LinearGateSpec(
                     f"lasso/{label}/reconstruct/{source_name}",
-                    identity_oracle("Aux", source_name, count), terms, (0,) * count,
+                    identity_oracle("Aux", source_name, count), terms,
+                    (-int(family.get("encoding_offset", 0)),) * count,
                 )))
                 cursor += count * limb_count
             if cursor != real_count:
@@ -2179,6 +2547,19 @@ def _native_gkr_specs(
     """Derive the accepted ordered gate list from public graph/layout data."""
     layout = metadata["Layout_in"]
     rounding_mode = validate_rounding_mode(metadata.get("rounding_mode"))
+    ledger = metadata.get("integer_bound_ledger", {})
+    scale_profile = resolve_quant_scale_profile(
+        str(metadata.get("quant_cfg_id", "")),
+        metadata.get("authenticated_quant_scales")
+        or ledger.get("authenticated_quant_scales"),
+    )
+    hidden_profile = metadata["dim_cfg"]["hidden_profile"]
+    scale_chain = scale_chain_from_profile(
+        scale_profile,
+        hidden_profile=hidden_profile,
+        k_out=int(metadata["dim_cfg"]["K_out"]),
+        quant_cfg_id=str(metadata.get("quant_cfg_id", "")),
+    )
     graph_src = graph.get("src", []) if isinstance(graph, dict) else graph.src
     graph_dst = graph.get("dst", []) if isinstance(graph, dict) else graph.dst
     src = tuple(int(value) for value in graph_src)
@@ -2304,7 +2685,7 @@ def _native_gkr_specs(
         repeated_nodes = tuple(row for row in range(node_count) for _ in range(width))
         specs.extend([
             ("linear", LinearGateSpec(f"{aggregate_prefix}.numerator_wiring", identity_oracle("Aux", f"{aggregate_prefix}.x", aggregate_count), (
-                LinearTerm(int(16), identity_oracle("Aux", f"{prefix}.H_or_Y_agg_num", aggregate_count)),
+                LinearTerm(int(scale_profile["aggregate_output"]), identity_oracle("Aux", f"{prefix}.H_or_Y_agg_num", aggregate_count)),
             ), (0,) * aggregate_count)),
             ("linear", LinearGateSpec(f"{aggregate_prefix}.denominator_wiring", identity_oracle("Aux", f"{aggregate_prefix}.d", aggregate_count), (
                 LinearTerm(int(h_prime_scale), aux("Sum", repeated_nodes)),
@@ -2320,9 +2701,9 @@ def _native_gkr_specs(
             specs.extend(_native_division_specs(alignment_prefix, alignment_count, rounding_mode))
             specs.extend([
                 ("linear", LinearGateSpec(f"{alignment_prefix}.numerator_wiring", identity_oracle("Aux", f"{alignment_prefix}.x", alignment_count), (
-                    LinearTerm(16, identity_oracle("Aux", f"{prefix}.SignedRoundDiv.output", alignment_count)),
+                    LinearTerm(int(scale_profile["output_head"]), identity_oracle("Aux", f"{prefix}.SignedRoundDiv.output", alignment_count)),
                 ), (0,) * alignment_count)),
-                ("linear", LinearGateSpec(f"{alignment_prefix}.denominator_wiring", identity_oracle("Aux", f"{alignment_prefix}.d", alignment_count), (), (16,) * alignment_count)),
+                ("linear", LinearGateSpec(f"{alignment_prefix}.denominator_wiring", identity_oracle("Aux", f"{alignment_prefix}.d", alignment_count), (), (int(scale_profile["aggregate_output"]),) * alignment_count)),
                 ("linear", LinearGateSpec(f"{alignment_prefix}.output_wiring", identity_oracle("Aux", f"{prefix}.Y_pre_aligned", alignment_count), (
                     LinearTerm(1, identity_oracle("Aux", f"{alignment_prefix}.y", alignment_count)),
                 ), (0,) * alignment_count)),
@@ -2344,7 +2725,7 @@ def _native_gkr_specs(
         for head_index in range(int(layer["head_count"])):
             add_head(
                 f"hidden.l{layer_position}.h{head_index}", width,
-                output=False, h_prime_scale=16 if layer_position == 1 else 256,
+                output=False, h_prime_scale=int(scale_chain["s_h_prime_hidden"][layer_position - 1][head_index]),
             )
         concat_width = int(layer["head_count"]) * width
         for head_index in range(int(layer["head_count"])):
@@ -2360,7 +2741,12 @@ def _native_gkr_specs(
             )))
     class_count = int(metadata["dim_cfg"]["C"])
     for head_index in range(int(metadata["dim_cfg"]["K_out"])):
-        add_head(f"output.h{head_index}", class_count, output=True, h_prime_scale=256)
+        add_head(
+            f"output.h{head_index}",
+            class_count,
+            output=True,
+            h_prime_scale=int(scale_chain["s_y_prime"][head_index]),
+        )
     final_prefix = "output.final_average"
     final_count = _native_gkr_array_length(layout, "Aux", f"{final_prefix}.x")
     public_y_values = tuple(to_field_int(value) for value in public_y)
@@ -2437,6 +2823,19 @@ def _prove_native_gkr(
         "session_nonce": metadata["session_nonce"],
         "relation": "Pi_GKR",
     }
+    # The aggregate GKR coverage is absorbed before any gate point or
+    # equality challenge.  Per-gate native headers remain in each claim and
+    # bind its exact target/operand/terminal view; this prefix additionally
+    # makes the relation-level lookup-consistency coverage explicit.
+    mask_header = build_mask_header(
+        "gkr",
+        context,
+        (
+            "linear-equality", "product-sumcheck", "operand-product",
+            "terminal-selector", "lookup-input-consistency",
+        ),
+    )
+    absorb_mask_header(transcript, mask_header)
     vectors = {"W": state.vectors["com_W"], "Aux": state.vectors["com_Aux"], "L_qry": state.vectors["com_L"]}
     registrations = {"W": state.registrations["com_W"], "Aux": state.registrations["com_Aux"], "L_qry": state.registrations["com_L"]}
     claims = []
@@ -2451,6 +2850,7 @@ def _prove_native_gkr(
     return {
         "protocol": "zkGPT/native-gkr-bound-gates-v1",
         "rounding_mode": validate_rounding_mode(metadata.get("rounding_mode")),
+        "mask_header": mask_header,
         "claims": claims,
         "transcript_digest": transcript.digest.hex(),
     }
@@ -2489,11 +2889,30 @@ def _formal_transcript_prefix(metadata: Dict[str, Any], commitments: Dict[str, A
             ],
         },
     )
+    # Every native component is covered by one versioned prefix message before
+    # any component challenge is derived.  The public header is reproduced by
+    # the verifier from the authenticated session nonce and commitment
+    # statement; it is also carried in ``Transcript`` so an old transcript
+    # cannot be accepted by a consumer that knows only the legacy prefix.
+    formal_mask_header = build_mask_header(
+        "formal-proof",
+        {
+            "session_nonce": metadata.get("session_nonce", ""),
+            "metadata_digest": digest_json(metadata),
+            "commitments_digest": digest_json(commitments),
+        },
+        (
+            "Pi_Lasso", "Pi_MatMul", "Pi_GKR", "Pi_combine",
+            "Open_W", "Open_Aux", "Open_L", "terminal-relation",
+        ),
+    )
+    absorb_mask_header(transcript, formal_mask_header)
     return transcript
 
 
 def _formal_transcript_descriptor(
-    metadata: Dict[str, Any], transcript: Transcript, privacy_profile_digest: str | None = None,
+    metadata: Dict[str, Any], commitments: Dict[str, Any], transcript: Transcript,
+    privacy_profile_digest: str | None = None,
     pre_profile_transcript_digest: str | None = None,
 ) -> Dict[str, Any]:
     """Public descriptor for the one global Fiat--Shamir transcript."""
@@ -2501,6 +2920,18 @@ def _formal_transcript_descriptor(
         "protocol": "zkGPT/GAT/formal-proof-session/v1",
         "transcript_domain": transcript_domain(metadata["session_nonce"]),
         "session_nonce": metadata["session_nonce"],
+        "mask_header": build_mask_header(
+            "formal-proof",
+            {
+                "session_nonce": metadata.get("session_nonce", ""),
+                "metadata_digest": digest_json(metadata),
+                "commitments_digest": digest_json(commitments),
+            },
+            (
+                "Pi_Lasso", "Pi_MatMul", "Pi_GKR", "Pi_combine",
+                "Open_W", "Open_Aux", "Open_L", "terminal-relation",
+            ),
+        ),
         "final_digest": transcript.digest.hex(),
     }
     if privacy_profile_digest is not None:
@@ -2549,6 +2980,21 @@ def _verify_gkr(
             "session_nonce": metadata["session_nonce"],
             "relation": "Pi_GKR",
         }
+        expected_mask_header = build_mask_header(
+            "gkr",
+            context,
+            (
+                "linear-equality", "product-sumcheck", "operand-product",
+                "terminal-selector", "lookup-input-consistency",
+            ),
+        )
+        if set(gkr) != {
+            "protocol", "rounding_mode", "mask_header", "claims", "transcript_digest"
+        }:
+            return {"status": "VERIFY_FAILED", "reason": "GKR masking header is missing or has extra fields", "claims": []}
+        if gkr.get("mask_header") != expected_mask_header:
+            return {"status": "VERIFY_FAILED", "reason": "GKR masking header mismatch", "claims": []}
+        absorb_mask_header(transcript, expected_mask_header)
         results: List[bool] = []
         for claim, (kind, spec) in zip(claims, expected):
             if not isinstance(claim, dict) or set(claim) != {"kind", "proof"} or claim["kind"] != kind:
@@ -2583,6 +3029,8 @@ def _verify_registered_model_commitment(metadata: Dict[str, Any], commitments: D
             return False
         if registry.get("registry_digest") != registry_digest:
             return False
+        if descriptor_full.get("schema") != "zkGPT-model-registry-v2" or descriptor_full.get("protocol") != "zkGPT-native-model-registration-v2":
+            return False
         if descriptor_full.get("commitment_backend") != COMMITMENT_BACKEND_ID:
             return False
         binding = descriptor_full.get("registration_binding", {})
@@ -2590,10 +3038,33 @@ def _verify_registered_model_commitment(metadata: Dict[str, Any], commitments: D
             return False
         if registry.get("registration_binding_digest") != descriptor_full.get("registration_binding_digest"):
             return False
+        if binding.get("schema") != "zkGPT-model-registration-binding-v2" or binding.get("protocol") != "zkGPT-native-model-registration-v2":
+            return False
+        if binding.get("public_output_binding_digest") != public_output_binding_digest(binding):
+            return False
+        if binding.get("public_y_digest") != metadata.get("public_y_digest"):
+            return False
+        if binding.get("public_y_descriptor_digest") != metadata.get("public_y_descriptor_digest"):
+            return False
+        if binding.get("public_y_shape") != metadata.get("public_y_shape"):
+            return False
+        if binding.get("X_pub_digest") != metadata.get("X_pub_digest") or binding.get("full_dataset") != (metadata.get("full_dataset") is True):
+            return False
+        if binding.get("graph_identity") != metadata.get("graph_identity"):
+            return False
+        if binding.get("reference_y_digest") != metadata.get("reference_y_digest") or binding.get("independent_reference_forward") != (metadata.get("independent_reference_forward") is True):
+            return False
+        for key in ("reference_forward_profile_id", "reference_forward_engine", "reference_forward_source_sha256"):
+            if binding.get(key) != metadata.get(key):
+                return False
         for key in ("model_arch_id", "model_param_id", "quant_cfg_id", "input_preprocess_id", "rounding_mode", "static_table_id"):
             if binding.get(key) != metadata.get(key):
                 return False
         if binding.get("quant_scale_chain_digest") != digest_json(metadata.get("quant_scale_chain", {})):
+            return False
+        if binding.get("quant_scale_chain") != metadata.get("quant_scale_chain"):
+            return False
+        if binding.get("authenticated_quant_scales") != metadata.get("authenticated_quant_scales"):
             return False
         if binding.get("integer_bound_ledger_digest") != metadata.get("integer_bound_ledger_digest"):
             return False
@@ -2639,7 +3110,9 @@ def _verify_registered_model_commitment(metadata: Dict[str, Any], commitments: D
                 return False
             if int(binding_entry.get("length", -1)) != int(chunk.get("vector_length", -2)):
                 return False
-            if entry.get("backend") != COMMITMENT_BACKEND_ID or entry.get("label") != label:
+            if entry.get("backend") != HYRAX_REGISTRATION_BACKEND_ID or entry.get("label") != label:
+                return False
+            if label == "com_W" and canonical_com_w_identity(entry) != binding.get("com_W_identity"):
                 return False
         return True
     except (TypeError, ValueError, KeyError):
@@ -2700,7 +3173,8 @@ def _verify_input_layout(metadata: Dict[str, Any], commitments: Dict[str, Any]) 
                     if not isinstance(family, dict) or set(family) - {
                         "family", "kind", "table_id", "offset", "real_count", "padded_count",
                         "a_pad", "Q_pad", "tuple_encoding", "range_bits", "bit_width",
-                        "limbs_per_value", "bound", "signed_magnitude",
+                        "limbs_per_value", "bound", "encoded_bound", "encoding",
+                        "encoding_offset", "signed_magnitude",
                     }:
                         return False
                     name = family.get("family")
@@ -2726,7 +3200,19 @@ def _verify_input_layout(metadata: Dict[str, Any], commitments: Dict[str, Any]) 
                         policy = metadata.get("integer_bound_ledger", {}).get("range_family_policy", {}).get("families", {}).get(name)
                         if not isinstance(policy, dict):
                             return False
-                        if any(int(family.get(key, -1)) != int(policy.get(source, -2)) for key, source in (("range_bits", "range_bits"), ("bit_width", "bit_width"), ("limbs_per_value", "limb_count"), ("bound", "bound"))):
+                        if any(int(family.get(key, -1)) != int(policy.get(source, -2)) for key, source in (("range_bits", "range_bits"), ("bit_width", "bit_width"), ("limbs_per_value", "limb_count"), ("bound", "bound"), ("encoded_bound", "encoded_bound"), ("encoding_offset", "encoding_offset"))):
+                            return False
+                        encoding = str(family.get("encoding", ""))
+                        if encoding not in {"magnitude", "offset"}:
+                            return False
+                        if encoding == "magnitude" and int(family.get("encoding_offset", -1)) != 0:
+                            return False
+                        if encoding == "offset" and int(family.get("encoding_offset", 0)) <= 0:
+                            return False
+                        expected_signed = encoding == "offset" or name == "rescale_rounding_range"
+                        if bool(family.get("signed_magnitude")) != expected_signed:
+                            return False
+                        if family.get("encoding") != policy.get("encoding") or family.get("a_pad") != "0":
                             return False
                     else:
                         return False
@@ -2863,7 +3349,7 @@ def _verify_formal(
         "commitment_metadata_binding": commitments.get("metadata_digest") == digest_json(metadata),
         "registered_model_commitment": _verify_registered_model_commitment(metadata, commitments),
         "transcript_replay": transcript == _formal_transcript_descriptor(
-            metadata,
+            metadata, commitments,
             matrix_transcript,
             privacy_profile.get("profile_digest") if isinstance(privacy_profile, dict) else None,
             pre_profile_transcript_digest,
@@ -2912,13 +3398,28 @@ def build_proof(
         config, dataset, graph, model, trace
     )
     metadata = make_metadata(config, dataset, graph, model, backend, gpu_state, input_layout)
-    metadata["public_output_digest"] = _array_digest("Y", trace.y)
+    trace_y_digest = _array_digest("Y", trace.y)
+    if metadata.get("public_y_digest") and metadata["public_y_digest"] != trace_y_digest:
+        raise ValueError("prover trace.Y does not match the canonical public-Y descriptor")
+    metadata["public_output_digest"] = trace_y_digest
+    metadata["public_y_digest"] = trace_y_digest
+    if not metadata.get("reference_y_digest"):
+        metadata["reference_y_digest"] = trace_y_digest
+    if not metadata.get("public_y_shape"):
+        metadata["public_y_shape"] = [int(value) for value in np.asarray(trace.y).shape]
 
     model_registry = ensure_model_registry(
         zk_root,
         metadata,
         list(_padded_segment_chunks("com_W", padded_segments["W"])),
     )
+    # These identities are produced by the trusted registry ceremony.  Bind
+    # them into the source-current metadata before its digest seeds the formal
+    # transcript and before the external setup context is reconstructed.
+    registry_binding = model_registry["public"]["registration_binding"]
+    metadata["com_W_identity"] = dict(registry_binding["com_W_identity"])
+    metadata["public_output_binding_digest"] = registry_binding["public_output_binding_digest"]
+    metadata["registration_binding_digest"] = model_registry["public"]["registration_binding_digest"]
     metadata["model_registry"] = {
         "protocol": model_registry["public"]["protocol"],
         "registry_digest": model_registry["public"]["registry_digest"],
@@ -2981,7 +3482,7 @@ def build_proof(
             )
             bind_privacy_profile(formal_transcript, privacy_profile)
             transcript = _formal_transcript_descriptor(
-                metadata, formal_transcript, privacy_profile["profile_digest"],
+                metadata, commitments, formal_transcript, privacy_profile["profile_digest"],
                 privacy_profile["pre_profile_transcript_digest"],
             )
             gpu_claim = execution.evidence(formal_transcript.digest.hex())

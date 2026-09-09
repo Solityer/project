@@ -9,6 +9,32 @@ BN254_FR_MODULUS = 2188824287183927522224640574525727508854836440041603434369820
 DEFAULT_FIXED_SCALE = 1_000_000
 
 
+def parse_canonical_decimal(
+    value: object,
+    *,
+    label: str = "decimal",
+    nonnegative: bool = False,
+) -> int:
+    """Parse the only decimal wire spelling accepted by zkGPT.
+
+    JSON integer aliases such as 01, +1, -0, and surrounding whitespace are
+    rejected before conversion. Native proof serializers always emit strings,
+    so accepting Python integers here would create a second wire grammar.
+    """
+
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{label} must be canonical decimal text")
+    if value == "0":
+        return 0
+    negative = value.startswith("-")
+    digits = value[1:] if negative else value
+    if negative and nonnegative:
+        raise ValueError(f"{label} must be nonnegative")
+    if not digits or not digits.isascii() or not digits.isdigit() or digits[0] == "0":
+        raise ValueError(f"{label} is not canonical decimal text")
+    return -int(digits) if negative else int(digits)
+
+
 def to_field_int(value: int) -> int:
     return int(value) % BN254_FR_MODULUS
 

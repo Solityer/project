@@ -13,9 +13,18 @@ import secrets
 import shutil
 import stat
 import tempfile
-from typing import Any, Dict, Sequence, Tuple
+import json
+from typing import Any, Dict, Mapping, Sequence, Tuple
 
-from .native_hyrax import NativeHyrax
+from .constants import (
+    MODEL_REGISTRY_BINDING_SCHEMA,
+    MODEL_REGISTRY_PROTOCOL,
+    MODEL_REGISTRY_SCHEMA,
+    PUBLIC_OUTPUT_BINDING_DOMAIN,
+    PUBLIC_Y_SCHEMA,
+    REFERENCE_FORWARD_PROFILE_ID,
+)
+from .native_hyrax import NativeHyrax, PROTOCOL_ID as HYRAX_REGISTRATION_BACKEND_ID
 from .field import log2_power_of_two
 from .transcript import Transcript
 from .util import digest_json, ensure_dir, lexical_path, read_json, require_dir, write_json
@@ -23,24 +32,29 @@ from .util import digest_json, ensure_dir, lexical_path, read_json, require_dir,
 
 MODEL_REGISTRY_ROOT = pathlib.Path("results") / "model_registry"
 PRIVATE_MODEL_SETUP_ROOT = pathlib.Path("artifacts") / "private_setup" / "model_registry"
-_REGISTRY_PROTOCOL = "zkGPT-native-model-registration-v1"
+_REGISTRY_PROTOCOL = MODEL_REGISTRY_PROTOCOL
 _TRANSACTION_ID_RE = re.compile(r"^[0-9a-f]{64}$")
 _PUBLIC_REGISTRY_KEYS = {
-    "protocol", "model_param_id", "model_arch_id", "registration_binding",
+    "schema", "protocol", "model_param_id", "model_arch_id", "registration_binding",
     "registration_binding_digest", "registration_transaction_id", "commitment_backend",
     "entries", "registry_digest",
 }
 _PUBLIC_BINDING_KEYS = {
-    "protocol", "model_arch_id", "model_param_id", "quant_cfg_id",
-    "input_preprocess_id", "quant_scale_chain_digest", "rounding_mode", "static_table_id", "layout", "segment_order",
+    "schema", "protocol", "model_arch_id", "model_param_id", "quant_cfg_id",
+    "input_preprocess_id", "quant_scale_chain_digest", "authenticated_quant_scales", "quant_scale_chain", "model_architecture", "checkpoint_provenance", "rounding_mode", "static_table_id", "layout", "segment_order",
     "padding_rule_id", "integer_bound_ledger_digest", "Layout_in_digest",
     "N_in", "registered_model_bounds", "arrays",
+    "public_y_schema", "public_y_path", "public_y_digest", "public_y_descriptor_digest",
+    "public_y_shape", "reference_y_digest", "independent_reference_forward",
+    "reference_forward_profile_id", "reference_forward_engine", "reference_forward_source_sha256",
+    "X_pub_digest", "full_dataset", "graph_identity", "com_W_identity",
+    "public_output_binding_digest",
 }
 _PUBLIC_ENTRY_KEYS = {
     "backend", "parameter_id", "label", "vector_length", "commitment", "padded_length",
 }
 _SECRET_REGISTRY_KEYS = {
-    "protocol", "model_param_id", "registration_binding_digest",
+    "schema", "protocol", "model_param_id", "registration_binding_digest",
     "registration_transaction_id", "entries",
 }
 _SECRET_ENTRY_KEYS = {"backend", "parameter_id", "label", "vector_length", "commitment", "blind"}
@@ -48,6 +62,108 @@ _FORBIDDEN_PUBLIC_KEY_PARTS = {
     "blind", "value", "tensor", "private_path", "secret_path", "checkpoint_path",
     "witness_path", "model_path", "raw_witness", "private_witness",
 }
+
+
+def _sha256_text(value: str) -> str:
+    import hashlib
+
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def canonical_com_w_identity(entry: Mapping[str, Any] | Dict[str, Any]) -> Dict[str, Any]:
+    """Build the public identity of the long-lived ``com_W`` commitment.
+
+    The persisted Hyrax registration contains a secret blinder.  It is
+    intentionally excluded from this descriptor; the commitment point,
+    generator parameter id, label, and canonical domain are sufficient for a
+    verifier-facing identity and do not expose the blinding scalar.
+    """
+
+    if not isinstance(entry, Mapping):
+        raise ValueError("com_W registration entry must be an object")
+    required = ("backend", "parameter_id", "label", "vector_length", "padded_length", "commitment")
+    if any(key not in entry for key in required):
+        raise ValueError("com_W registration entry is incomplete")
+    if str(entry.get("label")) != "com_W":
+        raise ValueError("com_W registration label is invalid")
+    identity: Dict[str, Any] = {
+        "schema": "zkGPT-com_W-identity-v1",
+        "segment": "W",
+        "label": "com_W",
+        "backend": str(entry["backend"]),
+        "parameter_id": str(entry["parameter_id"]),
+        "vector_length": int(entry["vector_length"]),
+        "padded_length": int(entry["padded_length"]),
+        "commitment": entry["commitment"],
+    }
+    if identity["vector_length"] <= 0 or identity["vector_length"] != identity["padded_length"]:
+        raise ValueError("com_W registration domain is invalid")
+    identity["identity_digest"] = digest_json(identity)
+    return identity
+
+
+def _default_graph_identity(metadata: Mapping[str, Any]) -> Dict[str, Any]:
+    """Derive a public graph identity from producer metadata when available."""
+
+    supplied = metadata.get("graph_identity")
+    if isinstance(supplied, Mapping):
+        return dict(supplied)
+    dims = metadata.get("dim_cfg") if isinstance(metadata.get("dim_cfg"), Mapping) else {}
+    return {
+        "dataset": metadata.get("dataset"),
+        "full_dataset": metadata.get("full_dataset") is True,
+        "graph_count": int(dims.get("G_batch", metadata.get("graph_count", 0))),
+        "node_count": int(dims.get("N", metadata.get("N", 0))),
+        "edge_count": int(dims.get("E", metadata.get("E", 0))),
+        "feature_count": int(dims.get("num_features", metadata.get("num_features", 0))),
+        "topology_digest": metadata.get("graph_digest", ""),
+        "task_type": metadata.get("task_type", ""),
+        "report_unit": metadata.get("report_unit", ""),
+        "batching_rule": metadata.get("batching_rule", ""),
+        "self_loop_rule": metadata.get("self_loop_rule", ""),
+        "edge_sort_rule": metadata.get("edge_sort_rule", ""),
+        "chunking_rule": metadata.get("chunking_rule", ""),
+    }
+
+
+def public_output_binding_payload(binding: Mapping[str, Any]) -> Dict[str, Any]:
+    """Return the domain-separated canonical public-output binding payload."""
+
+    required = (
+        "public_y_schema", "public_y_path", "public_y_digest",
+        "public_y_descriptor_digest", "public_y_shape", "reference_y_digest",
+        "independent_reference_forward", "reference_forward_profile_id",
+        "reference_forward_engine", "reference_forward_source_sha256",
+        "X_pub_digest", "full_dataset", "graph_identity", "model_arch_id",
+        "model_param_id", "com_W_identity",
+    )
+    if any(key not in binding for key in required):
+        raise ValueError("public-output binding is incomplete")
+    return {
+        "domain": PUBLIC_OUTPUT_BINDING_DOMAIN,
+        "public_y_schema": binding["public_y_schema"],
+        "public_y_path": binding["public_y_path"],
+        "public_y_digest": binding["public_y_digest"],
+        "public_y_descriptor_digest": binding["public_y_descriptor_digest"],
+        "public_y_shape": list(binding["public_y_shape"]),
+        "reference_y_digest": binding["reference_y_digest"],
+        "independent_reference_forward": binding["independent_reference_forward"],
+        "reference_forward_profile_id": binding["reference_forward_profile_id"],
+        "reference_forward_engine": binding["reference_forward_engine"],
+        "reference_forward_source_sha256": binding["reference_forward_source_sha256"],
+        "X_pub_digest": binding["X_pub_digest"],
+        "full_dataset": binding["full_dataset"],
+        "graph_identity": dict(binding["graph_identity"]),
+        "model_arch_id": binding["model_arch_id"],
+        "model_param_id": binding["model_param_id"],
+        "com_W_identity": dict(binding["com_W_identity"]),
+    }
+
+
+def public_output_binding_digest(binding: Mapping[str, Any]) -> str:
+    """Compute the digest that binds canonical public Y to setup context."""
+
+    return digest_json(public_output_binding_payload(binding))
 
 
 def canonical_registry_dir(zk_root: pathlib.Path, model_param_id: str) -> pathlib.Path:
@@ -168,7 +284,13 @@ def _assert_public_payload(public: Dict[str, Any], *, expected_labels: Sequence[
         if isinstance(value, dict):
             for key, child in value.items():
                 key_lower = str(key).lower()
-                if any(part in key_lower for part in _FORBIDDEN_PUBLIC_KEY_PARTS):
+                # A SHA-256 provenance label for the canonical tensor bundle
+                # is public identity; raw tensor/value material is not.  The
+                # narrow exception avoids rejecting the required checkpoint
+                # provenance while retaining the recursive private-field
+                # guard for every other tensor-like key.
+                allowed_digest_key = key_lower in {"tensors_sha256", "checkpoint_tensors_sha256"}
+                if not allowed_digest_key and any(part in key_lower for part in _FORBIDDEN_PUBLIC_KEY_PARTS):
                     raise RuntimeError("public model registry contains private tensor material")
                 scan(child)
         elif isinstance(value, list):
@@ -178,12 +300,28 @@ def _assert_public_payload(public: Dict[str, Any], *, expected_labels: Sequence[
     scan(public)
     if set(public) != _PUBLIC_REGISTRY_KEYS:
         raise RuntimeError("public model registry schema contains private or unsupported fields")
+    if public.get("schema") != MODEL_REGISTRY_SCHEMA:
+        raise RuntimeError("public model registry schema is unsupported")
     if public.get("protocol") != _REGISTRY_PROTOCOL:
         raise RuntimeError("public model registry protocol mismatch")
     require_registry_transaction_id(public.get("registration_transaction_id"))
     binding = public.get("registration_binding")
     if not isinstance(binding, dict) or set(binding) != _PUBLIC_BINDING_KEYS:
         raise RuntimeError("public model registry binding contains private or unsupported fields")
+    if binding.get("schema") != MODEL_REGISTRY_BINDING_SCHEMA or binding.get("protocol") != _REGISTRY_PROTOCOL:
+        raise RuntimeError("public model registry binding schema/protocol mismatch")
+    try:
+        if binding.get("public_output_binding_digest") != public_output_binding_digest(binding):
+            raise RuntimeError("public model registry public-output binding digest is invalid")
+        com_identity = binding.get("com_W_identity")
+        if not isinstance(com_identity, dict):
+            raise RuntimeError("public model registry com_W identity is missing")
+        if "blind" in json.dumps(com_identity, sort_keys=True).lower():
+            raise RuntimeError("public model registry com_W identity contains secret blinding")
+        if com_identity.get("identity_digest") != digest_json({key: value for key, value in com_identity.items() if key != "identity_digest"}):
+            raise RuntimeError("public model registry com_W identity digest is invalid")
+    except (TypeError, ValueError, KeyError) as exc:
+        raise RuntimeError("public model registry public-output binding is malformed") from exc
     entries = public.get("entries")
     if not isinstance(entries, dict) or sorted(entries) != sorted(expected_labels):
         raise RuntimeError("public model registry chunk set does not match canonical W layout")
@@ -195,6 +333,8 @@ def _assert_public_payload(public: Dict[str, Any], *, expected_labels: Sequence[
 
 def _assert_secret_payload(secret: Dict[str, Any], *, expected_labels: Sequence[str]) -> None:
     if set(secret) != _SECRET_REGISTRY_KEYS:
+        raise RuntimeError("private model registry schema is unsupported")
+    if secret.get("schema") != MODEL_REGISTRY_SCHEMA:
         raise RuntimeError("private model registry schema is unsupported")
     if secret.get("protocol") != _REGISTRY_PROTOCOL:
         raise RuntimeError("private model registry protocol mismatch")
@@ -387,14 +527,47 @@ def validate_registry_pair(
     }
 
 
-def registration_binding(metadata: Dict[str, Any], arrays: Sequence[Tuple[str, Sequence[int]]]) -> Dict[str, Any]:
-    return {
-        "protocol": "zkGPT-native-model-registration-v1",
+def registration_binding(
+    metadata: Dict[str, Any],
+    arrays: Sequence[Tuple[str, Sequence[int]]],
+    *,
+    com_w_identity: Mapping[str, Any] | None = None,
+) -> Dict[str, Any]:
+    """Build the strict v2 trusted setup binding.
+
+    ``com_w_identity`` is supplied only after the commitment is created (or
+    reconstructed from an existing public registry).  The secret ``blind``
+    value is never accepted here and can therefore not enter the public
+    binding digest.
+    """
+
+    scales = metadata.get("quant_scale_chain", metadata.get("integer_bound_ledger", {}).get("scales", {}))
+    public_y_shape = metadata.get("public_y_shape")
+    if public_y_shape is None:
+        dim_cfg = metadata.get("dim_cfg") if isinstance(metadata.get("dim_cfg"), Mapping) else {}
+        public_y_shape = [int(dim_cfg.get("N", 0)), int(dim_cfg.get("C", 0))]
+    public_y_shape = [int(value) for value in public_y_shape]
+    graph_identity = _default_graph_identity(metadata)
+    # This placeholder is only used while validating an existing registry;
+    # publication below always replaces it with the authenticated commitment
+    # identity.  Keeping the field explicit makes missing setup provenance
+    # fail closed instead of silently dropping it from the digest.
+    identity = dict(com_w_identity or metadata.get("com_W_identity") or {})
+    binding: Dict[str, Any] = {
+        "schema": MODEL_REGISTRY_BINDING_SCHEMA,
+        "protocol": MODEL_REGISTRY_PROTOCOL,
         "model_arch_id": metadata.get("model_arch_id"),
         "model_param_id": metadata.get("model_param_id"),
         "quant_cfg_id": metadata.get("quant_cfg_id"),
         "input_preprocess_id": metadata.get("input_preprocess_id"),
-        "quant_scale_chain_digest": digest_json(metadata.get("quant_scale_chain", metadata.get("integer_bound_ledger", {}).get("scales", {}))),
+        "quant_scale_chain_digest": digest_json(scales),
+        "authenticated_quant_scales": dict(
+            metadata.get("authenticated_quant_scales")
+            or metadata.get("integer_bound_ledger", {}).get("authenticated_quant_scales", {})
+        ),
+        "quant_scale_chain": metadata.get("quant_scale_chain", {}),
+        "model_architecture": metadata.get("model_architecture", {}),
+        "checkpoint_provenance": metadata.get("checkpoint_provenance", {}),
         "rounding_mode": metadata.get("rounding_mode"),
         "static_table_id": metadata.get("static_table_id"),
         "layout": metadata.get("private_input_layout"),
@@ -408,7 +581,32 @@ def registration_binding(metadata: Dict[str, Any], arrays: Sequence[Tuple[str, S
             {"name": name, "length": len(values)}
             for name, values in arrays
         ],
+        "public_y_schema": metadata.get("public_y_schema", PUBLIC_Y_SCHEMA),
+        "public_y_path": metadata.get("public_y_path", metadata.get("canonical_public_y_path", "")),
+        "public_y_digest": metadata.get("public_y_digest", metadata.get("public_output_digest", "")),
+        "public_y_descriptor_digest": metadata.get("public_y_descriptor_digest", ""),
+        "public_y_shape": public_y_shape,
+        "reference_y_digest": metadata.get("reference_y_digest", metadata.get("public_y_digest", metadata.get("public_output_digest", ""))),
+        "independent_reference_forward": metadata.get("independent_reference_forward", False),
+        "reference_forward_profile_id": metadata.get("reference_forward_profile_id", REFERENCE_FORWARD_PROFILE_ID),
+        "reference_forward_engine": metadata.get("reference_forward_engine", ""),
+        "reference_forward_source_sha256": metadata.get("reference_forward_source_sha256", ""),
+        "X_pub_digest": metadata.get("X_pub_digest", ""),
+        "full_dataset": metadata.get("full_dataset") is True,
+        "graph_identity": graph_identity,
+        "com_W_identity": identity,
     }
+    # The output binding is domain-separated from the general setup digest;
+    # this prevents a future registry field from accidentally changing the
+    # meaning of the canonical public output without changing its binding.
+    try:
+        binding["public_output_binding_digest"] = public_output_binding_digest(binding)
+    except (TypeError, ValueError):
+        # The caller is still assembling a new setup.  The final publication
+        # path calls this function again after all required identities exist;
+        # an explicit empty digest is preferable to a guessed one here.
+        binding["public_output_binding_digest"] = ""
+    return binding
 
 
 def _registry_dir(zk_root: pathlib.Path, model_param_id: str, layout_digest: str) -> pathlib.Path:
@@ -425,8 +623,9 @@ def ensure_model_registry(
     arrays: Sequence[Tuple[str, Sequence[int]]],
 ) -> Dict[str, Any]:
     """Create or validate a model registry and return public+secret handles."""
-    binding = registration_binding(metadata, arrays)
-    binding_digest = digest_json(binding)
+    # For an existing registry the public commitment identity is taken from
+    # the already trusted entry; for a new registry it is inserted only after
+    # the commitment has been made.
     layout_digest = str(metadata.get("Layout_in_digest", ""))
     if len(layout_digest) != 64:
         raise ValueError("model registration requires a canonical Layout_in digest")
@@ -488,6 +687,15 @@ def ensure_model_registry(
         if not public_registry_digest or public_registry_digest != digest_json(public_payload):
             raise RuntimeError("existing model registry public digest is invalid")
         public_entries = public["entries"]
+        try:
+            expected_binding = registration_binding(
+                metadata,
+                arrays,
+                com_w_identity=canonical_com_w_identity(public_entries["com_W"]),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise RuntimeError("existing model registry com_W identity is invalid") from exc
+        expected_binding_digest = digest_json(expected_binding)
         for label, values in arrays:
             entry = public_entries.get(label)
             try:
@@ -496,7 +704,7 @@ def ensure_model_registry(
             except (TypeError, ValueError, OverflowError) as exc:
                 raise RuntimeError("existing model registry public lengths are invalid") from exc
             if (
-                entry.get("backend") != metadata.get("commitment_backend_id")
+                entry.get("backend") != HYRAX_REGISTRATION_BACKEND_ID
                 or entry.get("label") != label
                 or vector_length != len(values)
                 or padded_length != vector_length
@@ -506,7 +714,9 @@ def ensure_model_registry(
             raise RuntimeError("existing model registry secret identity mismatch")
         if public.get("registration_transaction_id") != secret.get("registration_transaction_id"):
             raise RuntimeError("public/private model registry transaction id mismatch")
-        if public.get("registration_binding_digest") != binding_digest or secret.get("registration_binding_digest") != binding_digest:
+        if public.get("registration_binding") != expected_binding:
+            raise RuntimeError("existing model registry does not match canonical public-output binding")
+        if public.get("registration_binding_digest") != expected_binding_digest or secret.get("registration_binding_digest") != expected_binding_digest:
             raise RuntimeError("existing model registry does not match model/layout/bound-ledger identity")
         entries = secret["entries"]
         validation_dir = secret_dir / ".validation_work"
@@ -521,7 +731,7 @@ def ensure_model_registry(
                     entries[label],
                     validation_dir,
                     transcript=Transcript("zkGPT/model-registry/validation-v1"),
-                    public_context={"registry_validation": binding_digest},
+                    public_context={"registry_validation": expected_binding_digest},
                 )
         finally:
             shutil.rmtree(validation_dir, ignore_errors=True)
@@ -555,22 +765,33 @@ def ensure_model_registry(
         # Setup material is not part of the proof artifacts.  The exact
         # registry secret remains in its dedicated local file only.
         shutil.rmtree(work_dir, ignore_errors=True)
+    try:
+        final_binding = registration_binding(
+            metadata,
+            arrays,
+            com_w_identity=canonical_com_w_identity(public_entries["com_W"]),
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError("cannot construct canonical com_W public identity") from exc
+    final_binding_digest = digest_json(final_binding)
     public = {
+        "schema": MODEL_REGISTRY_SCHEMA,
         "protocol": _REGISTRY_PROTOCOL,
         "model_param_id": metadata["model_param_id"],
         "model_arch_id": metadata["model_arch_id"],
         "registration_transaction_id": secrets.token_hex(32),
-        "registration_binding": binding,
-        "registration_binding_digest": binding_digest,
+        "registration_binding": final_binding,
+        "registration_binding_digest": final_binding_digest,
         "commitment_backend": metadata["commitment_backend_id"],
         "entries": public_entries,
     }
     public["registry_digest"] = digest_json(public)
     secret = {
+        "schema": public["schema"],
         "protocol": public["protocol"],
         "model_param_id": public["model_param_id"],
         "registration_transaction_id": public["registration_transaction_id"],
-        "registration_binding_digest": binding_digest,
+        "registration_binding_digest": final_binding_digest,
         "entries": secret_entries,
     }
     _assert_public_payload(public, expected_labels=[label for label, _ in arrays])

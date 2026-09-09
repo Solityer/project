@@ -39,15 +39,34 @@ from .constants import (
     STATIC_TABLE_FAMILY_IDS,
     VERIFIER_SETUP_FIELDS,
     VERIFIER_SETUP_SCHEMA,
+    MODEL_REGISTRY_BINDING_SCHEMA,
+    MODEL_REGISTRY_PROTOCOL,
+    MODEL_REGISTRY_SCHEMA,
+    PUBLIC_OUTPUT_BINDING_DOMAIN,
+    PUBLIC_Y_SCHEMA,
+    REFERENCE_FORWARD_PROFILE_ID,
 )
 from .data import GraphDataset, LocalGraph, load_dataset, normalize_graph
 from .field import BN254_FR_MODULUS, next_power_of_two, to_field_int
 from .forward import _exp_map_fixed, _elu_table_value
 from .native_gkr import LinearGateSpec, LinearTerm, OracleRef, ProductGateSpec, identity_oracle
-from .model import QUANT_SCALE_PROFILES, _validate_canonical_manifest
-from .quantization import CANONICAL_QUANT_CFG_ID, canonical_input_preprocess_id, quantize_ties_away
+from .native_hyrax import PROTOCOL_ID as HYRAX_REGISTRATION_BACKEND_ID
+from .quantization import (
+    CANONICAL_QUANT_CFG_ID,
+    canonical_scale_profile,
+    canonical_input_preprocess_id,
+    quantize_ties_away,
+    resolve_quant_scale_profile,
+    scale_chain_from_profile,
+    validate_scale_profile,
+)
 from .reference_forward import REFERENCE_FORWARD_ENGINE, reference_forward_source_sha256
-from .registry import canonical_registry_public_path, require_registry_transaction_id
+from .registry import (
+    canonical_com_w_identity,
+    canonical_registry_public_path,
+    public_output_binding_digest,
+    require_registry_transaction_id,
+)
 from .resources import STATIC_TABLE_DESCRIPTOR_RELATIVE_PATH, canonical_dataset_name, required_resource_paths, validate_static_table_descriptor
 from .rounding import (
     validate_rounding_mode,
@@ -56,8 +75,7 @@ from .bound_ledger import build_integer_bound_ledger
 from .util import digest_json
 
 _FIELD_HALF = (BN254_FR_MODULUS - 1) // 2
-_HYRAX_BACKEND = COMMITMENT_BACKEND_ID
-PUBLIC_Y_SCHEMA = "zkGPT_public_y_v1"
+_HYRAX_BACKEND = HYRAX_REGISTRATION_BACKEND_ID
 
 class ContextError(ValueError):
     """The external statement or a trust-boundary path is invalid."""
@@ -122,7 +140,12 @@ def _array_digest(label: str, value: Any) -> str:
     return h.hexdigest()
 
 
-def _structured_function_vk(table_id: str, function: str, rule: str) -> Dict[str, Any]:
+def _structured_function_vk(
+    table_id: str,
+    function: str,
+    rule: str,
+    scale_profile: Mapping[str, Any] | None = None,
+) -> Dict[str, Any]:
     """Rebuild the native fixed-function verification-key descriptor.
 
     This is intentionally kept in the external-context module instead of
@@ -130,7 +153,14 @@ def _structured_function_vk(table_id: str, function: str, rule: str) -> Dict[str
     has one source of truth for the tuple encoding, evaluator identity, and
     complete function-table domain.
     """
-    input_scale = {"T_LReLU": 256, "T_ELU": 16, "T_exp": 256}.get(table_id)
+    profile = canonical_scale_profile() if scale_profile is None else validate_scale_profile(scale_profile)
+    scale_names = {
+        "T_LReLU": ("lrelu_input", "lrelu_output"),
+        "T_ELU": ("elu_input", "elu_output"),
+        "T_exp": ("exp_input", "exp_output"),
+    }
+    names = scale_names.get(table_id)
+    input_scale = int(profile[names[0]]) if names else None
     if input_scale is None:
         raise ContextError(f"unknown structured table {table_id}")
     vk = {
@@ -157,16 +187,33 @@ def _structured_function_vk(table_id: str, function: str, rule: str) -> Dict[str
     return vk
 
 
-def _fixed_table_eval_q(table_id: str, x_value: int) -> int:
+def _fixed_table_eval_q(
+    table_id: str,
+    x_value: int,
+    scale_profile: Mapping[str, Any] | None = None,
+) -> int:
     value = int(x_value)
     if value > _FIELD_HALF:
         value -= BN254_FR_MODULUS
+    profile = canonical_scale_profile() if scale_profile is None else validate_scale_profile(scale_profile)
     if table_id == "T_LReLU":
         return _fixed_lrelu(value)
     if table_id == "T_ELU":
-        return int(_elu_table_value(value))
+        return int(
+            _elu_table_value(
+                value,
+                input_scale=int(profile["elu_input"]),
+                output_scale=int(profile["elu_output"]),
+            )
+        )
     if table_id == "T_exp":
-        return int(_exp_map_fixed(value))
+        return int(
+            _exp_map_fixed(
+                value,
+                input_scale=int(profile["exp_input"]),
+                output_scale=int(profile["exp_output"]),
+            )
+        )
     raise ContextError(f"unsupported fixed function table {table_id}")
 
 
@@ -175,13 +222,14 @@ def _canonical_function_rows_digest(
     domain_min: int,
     domain_max: int,
     tuple_encoding: Mapping[str, Any],
+    scale_profile: Mapping[str, Any] | None = None,
 ) -> str:
     h = hashlib.sha256()
     base = int(tuple_encoding["base"])
     x_bound = int(tuple_encoding["x_bound"])
     y_bound = int(tuple_encoding["y_bound"])
     for x_value in range(int(domain_min), int(domain_max) + 1):
-        y_value = _fixed_table_eval_q(table_id, x_value)
+        y_value = _fixed_table_eval_q(table_id, x_value, scale_profile)
         packed = (x_value + x_bound) * base + (y_value + y_bound)
         h.update(f"{x_value},{y_value},{packed}\n".encode("ascii"))
     return h.hexdigest()
@@ -220,7 +268,9 @@ def _canonical_static_table_registry(metadata: Mapping[str, Any]) -> Dict[str, A
     common = {
         "quant_cfg_id": metadata["quant_cfg_id"],
         "rounding_mode": rounding_mode,
-        "quant_scale_chain": dict(ledger.get("scales", {})),
+        "quant_scale_chain": dict(ledger.get("scale_chain") or ledger.get("scales", {})),
+        "authenticated_quant_scales": dict(ledger.get("authenticated_quant_scales", {})),
+        "certified_function_bounds": dict(ledger.get("function_bounds", {})),
         "static_table_id": metadata["static_table_id"],
         "static_table_descriptor_schema": metadata["static_table_descriptor_schema"],
         "static_table_content_digest": metadata["static_table_content_digest"],
@@ -235,8 +285,16 @@ def _canonical_static_table_registry(metadata: Mapping[str, Any]) -> Dict[str, A
         raise ContextError("static-table tuple encoding identity mismatch")
 
     def function_table(table_id: str, function: str, rule: str) -> Dict[str, Any]:
-        vk = _structured_function_vk(table_id, function, rule)
-        scales = {"T_LReLU": (256, 256), "T_ELU": (16, 16), "T_exp": (256, 16)}
+        scales_profile = resolve_quant_scale_profile(
+            str(common["quant_cfg_id"]),
+            common.get("authenticated_quant_scales"),
+        )
+        vk = _structured_function_vk(table_id, function, rule, scales_profile)
+        scale_names = {
+            "T_LReLU": ("lrelu_input", "lrelu_output"),
+            "T_ELU": ("elu_input", "elu_output"),
+            "T_exp": ("exp_input", "exp_output"),
+        }
         domain_key = {"T_LReLU": "lrelu", "T_ELU": "elu", "T_exp": "exp"}[table_id]
         domain = common["certified_table_domains"].get(domain_key)
         if not isinstance(domain, (list, tuple)) or len(domain) != 2:
@@ -245,14 +303,23 @@ def _canonical_static_table_registry(metadata: Mapping[str, Any]) -> Dict[str, A
         domain_min, domain_max = certified_domain
         if domain_max < domain_min:
             raise ContextError(f"invalid certified domain for {table_id}")
-        endpoint_outputs = [_fixed_table_eval_q(table_id, value) for value in {domain_min, domain_max, 0} if domain_min <= value <= domain_max]
+        endpoint_outputs = [
+            _fixed_table_eval_q(table_id, value, scales_profile)
+            for value in {domain_min, domain_max, 0}
+            if domain_min <= value <= domain_max
+        ]
         x_bound = max(abs(domain_min), abs(domain_max))
-        y_bound = max((abs(int(value)) for value in endpoint_outputs), default=0)
+        certified_bounds = common.get("certified_function_bounds", {})
+        bound_entry = certified_bounds.get(table_id, {}) if isinstance(certified_bounds, Mapping) else {}
+        y_bound = int(bound_entry.get("output_bound", max((abs(int(value)) for value in endpoint_outputs), default=0)))
+        if y_bound < max((abs(int(value)) for value in endpoint_outputs), default=0):
+            raise ContextError(f"certified y range is smaller than evaluator output: {table_id}")
         pack_base = 2 * y_bound + 1
         max_packed = 2 * x_bound * pack_base + 2 * y_bound
         if max_packed >= _FIELD_HALF:
             raise ContextError(f"{table_id} tuple packing exceeds BN254 signed field range")
-        input_scale, output_scale = scales[table_id]
+        input_name, output_name = scale_names[table_id]
+        input_scale, output_scale = int(scales_profile[input_name]), int(scales_profile[output_name])
         descriptor: Dict[str, Any] = {
             "table_id": table_id,
             "table_kind": "structured_fixed_function_table",
@@ -284,7 +351,13 @@ def _canonical_static_table_registry(metadata: Mapping[str, Any]) -> Dict[str, A
             "chunks": [{"chunk_index": 0, "count": 1, "sha256": digest_json({"structured_table_vk": vk})}],
             **common,
         }
-        descriptor["rows_digest"] = _canonical_function_rows_digest(table_id, domain_min, domain_max, descriptor["tuple_encoding"])
+        descriptor["rows_digest"] = _canonical_function_rows_digest(
+            table_id,
+            domain_min,
+            domain_max,
+            descriptor["tuple_encoding"],
+            scales_profile,
+        )
         descriptor["table_digest"] = digest_json(descriptor)
         descriptor["table_commitment"] = digest_json({
             "commitment_backend": "structured-fixed-function-vk-commitment-v2",
@@ -336,6 +409,36 @@ def _authenticated_static_table_registry(metadata: Mapping[str, Any]) -> Tuple[D
 
 def _graph_digest(graph: LocalGraph) -> str:
     return digest_json({"absolute_ids": _array_digest("absolute_ids", graph.absolute_ids), "src": _array_digest("src", graph.src), "dst": _array_digest("dst", graph.dst), "node_ptr": graph.node_ptr.tolist(), "edge_ptr": graph.edge_ptr.tolist()})
+
+
+def canonical_graph_identity(
+    graph: LocalGraph,
+    dataset: str,
+    *,
+    full_dataset: bool,
+) -> Dict[str, Any]:
+    """Return the public graph identity used by setup and Y binding.
+
+    This contains only graph shape/topology and preprocessing policy.  It is
+    intentionally independent of model tensors and therefore can be rebuilt
+    by the fresh verifier from the canonical cache alone.
+    """
+
+    return {
+        "dataset": str(dataset),
+        "full_dataset": bool(full_dataset),
+        "graph_count": int(graph.graph_count),
+        "node_count": int(graph.num_nodes),
+        "edge_count": int(graph.src.size),
+        "feature_count": int(graph.num_features),
+        "topology_digest": _graph_digest(graph),
+        "task_type": str(graph.task_type),
+        "report_unit": str(graph.report_unit),
+        "batching_rule": str(graph.batching_rule),
+        "self_loop_rule": str(graph.self_loop_rule),
+        "edge_sort_rule": str(graph.edge_sort_rule),
+        "chunking_rule": str(graph.chunking_rule),
+    }
 
 
 def _round_feature(value: float, scale: int = 1) -> int:
@@ -429,13 +532,14 @@ def _public_y_provenance(
     public_y_path: pathlib.Path,
     output: np.ndarray,
     y_digest: str,
+    registry_provenance: Mapping[str, Any],
+    dataset: GraphDataset | None = None,
 ) -> Dict[str, Any]:
     """Authenticate the descriptor/provenance of the external public Y.
 
-    The verifier never loads private tensor values or replays the producer
-    forward.  It does authenticate the independently generated descriptor,
-    its exact Y digest, source implementation digest, checkpoint/cache
-    identities, and all numerical/model fields that bind the statement.
+    The verifier never loads a checkpoint manifest or private tensor bytes.
+    Checkpoint/cache digests were registered by the prover and are compared
+    here as public provenance claims.
     """
     try:
         payload = _json(_owned_file(public_y_path, "public Y descriptor"), "public Y descriptor")
@@ -449,17 +553,26 @@ def _public_y_provenance(
         raise ContextError("public Y descriptor digest is invalid")
     canonical = canonical_dataset_name(config.dataset)
     paths = required_resource_paths(root, canonical)
-    checkpoint_manifest = paths["checkpoint_bundle"] / "manifest.json"
-    checkpoint_npz = paths["checkpoint_bundle"] / "tensors.npz"
-    checkpoint_tensors = paths["checkpoint_bundle"] / "tensors.txt"
-    expected_scale_chain = {key: int(value) for key, value in QUANT_SCALE_PROFILES[CANONICAL_QUANT_CFG_ID].items()}
+    full_dataset = bool(dataset is not None and graph.num_nodes == dataset.num_nodes)
+    hidden, classes, k_out, layers = _dimensions(manifest)
+    expected_graph_identity = canonical_graph_identity(
+        graph,
+        canonical,
+        full_dataset=full_dataset,
+    )
+    expected_x_digest = _x_digest(graph, layers, classes, k_out, int(registry_provenance.get("authenticated_quant_scales", {}).get("input", 1)))
+    expected_scale_chain = {
+        key: int(value)
+        for key, value in registry_provenance.get("authenticated_quant_scales", {}).items()
+    }
     expected = {
+        "public_y_schema": PUBLIC_Y_SCHEMA,
         "dataset": canonical,
         "config_dataset": config.dataset,
         "model_arch_id": config.entries.get("model_arch_id"),
         "model_param_id": config.entries.get("model_param_id"),
         "quant_cfg_id": CANONICAL_QUANT_CFG_ID,
-        "source_quant_cfg_id": manifest.get("quant_cfg_id"),
+        "source_quant_cfg_id": manifest.get("source_quant_cfg_id", manifest.get("quant_cfg_id")),
         "rounding_mode": config.rounding_mode,
         "L": int(manifest.get("L", -1)),
         "hidden_profile": manifest.get("hidden_profile"),
@@ -479,10 +592,17 @@ def _public_y_provenance(
         "forward_engine": "zkgpt_gat.forward.forward_public_y",
         "reference_forward_engine": REFERENCE_FORWARD_ENGINE,
         "reference_forward_source_sha256": reference_forward_source_sha256(),
-        "checkpoint_manifest_sha256": _file_sha256(checkpoint_manifest),
-        "checkpoint_npz_sha256": _file_sha256(checkpoint_npz),
-        "checkpoint_tensors_sha256": _file_sha256(checkpoint_tensors),
-        "cache_tree_sha256": _cache_tree_sha256(paths["cache_dir"]),
+        "checkpoint_manifest_sha256": registry_provenance.get("manifest_sha256"),
+        "checkpoint_npz_sha256": registry_provenance.get("npz_sha256"),
+        "checkpoint_tensors_sha256": registry_provenance.get("tensors_sha256"),
+        "cache_tree_sha256": registry_provenance.get("cache_tree_sha256"),
+        "public_y_path": str(paths["public_y_path"].relative_to(root)),
+        "public_y_digest": y_digest,
+        "public_y_shape": [int(value) for value in output.shape],
+        "reference_forward_profile_id": REFERENCE_FORWARD_PROFILE_ID,
+        "X_pub_digest": expected_x_digest,
+        "full_dataset": full_dataset,
+        "graph_identity": expected_graph_identity,
     }
     checks: Dict[str, bool] = {}
     for key, value in expected.items():
@@ -491,6 +611,24 @@ def _public_y_provenance(
     checks["reference_y_digest"] = payload.get("reference_y_digest") == y_digest
     checks["independent_reference_forward"] = payload.get("independent_reference_forward") is True
     checks["descriptor_digest"] = True
+    checks["trusted_public_y_descriptor_digest"] = payload.get("descriptor_digest") == registry_provenance.get("public_y_descriptor_digest")
+    checks["trusted_public_y_binding"] = all(
+        payload.get(key) == value
+        for key, value in {
+            "public_y_schema": registry_provenance.get("public_y_schema"),
+            "public_y_path": registry_provenance.get("public_y_path"),
+            "public_y_digest": registry_provenance.get("public_y_digest"),
+            "public_y_shape": registry_provenance.get("public_y_shape"),
+            "reference_y_digest": registry_provenance.get("reference_y_digest"),
+            "independent_reference_forward": registry_provenance.get("independent_reference_forward"),
+            "reference_forward_profile_id": registry_provenance.get("reference_forward_profile_id"),
+            "reference_forward_engine": registry_provenance.get("reference_forward_engine"),
+            "reference_forward_source_sha256": registry_provenance.get("reference_forward_source_sha256"),
+            "X_pub_digest": registry_provenance.get("X_pub_digest"),
+            "full_dataset": registry_provenance.get("full_dataset"),
+            "graph_identity": registry_provenance.get("graph_identity"),
+        }.items()
+    )
     if payload.get("values") is None or not np.array_equal(load_public_y(public_y_path), output):
         checks["values"] = False
     else:
@@ -626,9 +764,11 @@ def _validate_registry(path: pathlib.Path, artifact: pathlib.Path, root: pathlib
     if path.resolve() != expected_path:
         raise ContextError(f"trusted model registry path is not canonical for config model identity: {expected_path}")
     registry = _json(path, "trusted model registry")
-    if registry.get("protocol") != "zkGPT-native-model-registration-v1": raise ContextError("trusted registry protocol mismatch")
+    if registry.get("schema") != MODEL_REGISTRY_SCHEMA:
+        raise ContextError("trusted registry schema mismatch")
+    if registry.get("protocol") != MODEL_REGISTRY_PROTOCOL: raise ContextError("trusted registry protocol mismatch")
     if set(registry) != {
-        "protocol", "model_param_id", "model_arch_id", "registration_binding",
+        "schema", "protocol", "model_param_id", "model_arch_id", "registration_binding",
         "registration_binding_digest", "registration_transaction_id", "commitment_backend",
         "entries", "registry_digest",
     }:
@@ -642,20 +782,101 @@ def _validate_registry(path: pathlib.Path, artifact: pathlib.Path, root: pathlib
     binding = registry.get("registration_binding", {})
     if not isinstance(binding, dict) or registry.get("registration_binding_digest") != digest_json(binding): raise ContextError("trusted registry binding digest is invalid")
     if set(binding) != {
-        "protocol", "model_arch_id", "model_param_id", "quant_cfg_id", "input_preprocess_id", "quant_scale_chain_digest", "rounding_mode",
+        "schema", "protocol", "model_arch_id", "model_param_id", "quant_cfg_id", "input_preprocess_id", "quant_scale_chain_digest", "authenticated_quant_scales", "quant_scale_chain", "model_architecture", "checkpoint_provenance", "rounding_mode",
         "static_table_id", "layout", "segment_order", "padding_rule_id",
         "integer_bound_ledger_digest", "Layout_in_digest", "N_in",
         "registered_model_bounds", "arrays",
+        "public_y_schema", "public_y_path", "public_y_digest", "public_y_descriptor_digest",
+        "public_y_shape", "reference_y_digest", "independent_reference_forward",
+        "reference_forward_profile_id", "reference_forward_engine", "reference_forward_source_sha256",
+        "X_pub_digest", "full_dataset", "graph_identity", "com_W_identity",
+        "public_output_binding_digest",
     }:
         raise ContextError("trusted registry binding schema contains private or unsupported fields")
+    if binding.get("schema") != MODEL_REGISTRY_BINDING_SCHEMA or binding.get("protocol") != MODEL_REGISTRY_PROTOCOL:
+        raise ContextError("trusted registry binding schema/protocol mismatch")
+    try:
+        if binding.get("public_output_binding_digest") != public_output_binding_digest(binding):
+            raise ContextError("trusted registry public-output binding digest is invalid")
+        com_identity = binding.get("com_W_identity")
+        if not isinstance(com_identity, Mapping) or "blind" in json.dumps(dict(com_identity), sort_keys=True).lower():
+            raise ContextError("trusted registry com_W identity is missing or private")
+        if com_identity.get("identity_digest") != digest_json({key: value for key, value in com_identity.items() if key != "identity_digest"}):
+            raise ContextError("trusted registry com_W identity digest is invalid")
+    except (TypeError, ValueError, KeyError) as exc:
+        raise ContextError("trusted registry public-output binding is malformed") from exc
+    if binding.get("public_y_schema") != PUBLIC_Y_SCHEMA:
+        raise ContextError("trusted registry public-Y schema mismatch")
+    for key in (
+        "public_y_digest", "public_y_descriptor_digest", "reference_y_digest",
+        "reference_forward_source_sha256", "X_pub_digest",
+    ):
+        value = binding.get(key)
+        if not isinstance(value, str) or len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
+            raise ContextError(f"trusted registry {key} is not a canonical SHA-256 identity")
+    if binding.get("public_y_shape") != [int(value) for value in binding.get("public_y_shape", [])] or len(binding.get("public_y_shape", [])) != 2 or any(int(value) <= 0 for value in binding.get("public_y_shape", [])):
+        raise ContextError("trusted registry public-Y shape is invalid")
+    if binding.get("independent_reference_forward") is not True:
+        raise ContextError("trusted registry independent-reference evidence is missing")
+    if binding.get("reference_forward_profile_id") != REFERENCE_FORWARD_PROFILE_ID or not isinstance(binding.get("reference_forward_engine"), str) or not binding.get("reference_forward_engine"):
+        raise ContextError("trusted registry reference-forward profile is invalid")
+    if binding.get("full_dataset") is not True or not isinstance(binding.get("graph_identity"), Mapping):
+        raise ContextError("trusted registry is not bound to a full canonical graph")
+    graph_identity = binding["graph_identity"]
+    graph_keys = {"dataset", "full_dataset", "graph_count", "node_count", "edge_count", "feature_count", "topology_digest", "task_type", "report_unit", "batching_rule", "self_loop_rule", "edge_sort_rule", "chunking_rule"}
+    if set(graph_identity) != graph_keys or graph_identity.get("full_dataset") is not True:
+        raise ContextError("trusted registry graph identity schema is invalid")
     for key in ("model_arch_id", "model_param_id", "quant_cfg_id", "static_table_id"):
         top_level = registry.get(key)
         if top_level is not None and str(top_level) != str(identities[key]): raise ContextError(f"trusted registry {key} mismatch")
         if str(binding.get(key, "")) != str(identities[key]): raise ContextError(f"trusted registry binding {key} mismatch")
     if str(binding.get("input_preprocess_id", "")) != canonical_input_preprocess_id(str(manifest.get("dataset", ""))):
         raise ContextError("trusted registry input_preprocess_id mismatch")
-    if binding.get("quant_scale_chain_digest") != digest_json(manifest.get("quant_scale_chain", {})):
+    try:
+        profile = resolve_quant_scale_profile(
+            identities["quant_cfg_id"],
+            binding.get("authenticated_quant_scales"),
+        )
+    except (TypeError, ValueError) as exc:
+        raise ContextError(f"trusted registry quantization profile is invalid: {exc}") from exc
+    expected_chain = scale_chain_from_profile(
+        profile,
+        hidden_profile=manifest.get("hidden_layers", []),
+        k_out=int(manifest.get("K_out", 0)),
+        quant_cfg_id=identities["quant_cfg_id"],
+    )
+    if binding.get("quant_scale_chain_digest") != digest_json(binding.get("quant_scale_chain", {})):
         raise ContextError("trusted registry quant_scale_chain identity mismatch")
+    if binding.get("quant_scale_chain") != expected_chain:
+        raise ContextError("trusted registry quant_scale_chain derivation mismatch")
+    if binding.get("model_architecture"):
+        registered_arch = _canonical_model_architecture(binding["model_architecture"])
+        expected_arch = _canonical_model_architecture(manifest)
+        for key in set(registered_arch) | set(expected_arch):
+            if key == "quant_scale_chain":
+                continue
+            if registered_arch.get(key) != expected_arch.get(key):
+                raise ContextError("trusted registry public model architecture mismatch")
+    provenance = binding.get("checkpoint_provenance")
+    if not isinstance(provenance, dict) or set(provenance) != {
+        "manifest_sha256", "npz_sha256", "tensors_sha256", "cache_tree_sha256",
+        "resource_identity",
+    } or any(
+        not isinstance(provenance.get(key), str) or len(provenance[key]) != 64
+        for key in ("manifest_sha256", "npz_sha256", "tensors_sha256", "cache_tree_sha256")
+    ):
+        raise ContextError("trusted registry checkpoint provenance is missing or malformed")
+    try:
+        expected_resource_identity = str(
+            required_resource_paths(
+                root,
+                canonical_dataset_name(str(manifest.get("dataset", ""))),
+            )["checkpoint_bundle"].relative_to(root)
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ContextError("trusted registry checkpoint resource identity is unavailable") from exc
+    if provenance.get("resource_identity") != expected_resource_identity:
+        raise ContextError("trusted registry checkpoint resource identity mismatch")
     if registry.get("commitment_backend") != COMMITMENT_BACKEND_ID or binding.get("layout") != "X_pub|W|Aux|L_qry" or binding.get("segment_order") != ["X_pub", "W", "Aux", "L_qry"]: raise ContextError("trusted registry commitment/layout binding mismatch")
     arrays = _model_arrays(manifest); names = ["com_W"]; model_names = [item["name"] for item in arrays]
     binding_arrays = binding.get("arrays", [])
@@ -675,6 +896,11 @@ def _validate_registry(path: pathlib.Path, artifact: pathlib.Path, root: pathlib
         raise ContextError("trusted registry com_W entry contains private or unsupported fields")
     if not isinstance(entry, dict) or str(entry.get("label", "com_W")) != "com_W" or int(entry.get("vector_length", -1)) != int(binding.get("N_in", -2)) or int(entry.get("padded_length", -1)) != int(entry.get("vector_length", -2)): raise ContextError("trusted registry com_W entry mismatch")
     if entry.get("backend") not in {None, _HYRAX_BACKEND}: raise ContextError("trusted registry com_W backend mismatch")
+    try:
+        if canonical_com_w_identity(entry) != binding.get("com_W_identity"):
+            raise ContextError("trusted registry com_W identity does not match public entry")
+    except (TypeError, ValueError, KeyError) as exc:
+        raise ContextError("trusted registry com_W identity is malformed") from exc
     return registry
 
 
@@ -689,6 +915,7 @@ def _ledger(
     quant_cfg_id: str,
     rounding_mode: str,
     range_bits: int = 12,
+    scale_profile: Mapping[str, Any] | None = None,
 ) -> Dict[str, Any]:
     """Rebuild the exact producer ledger from external public inputs."""
     mode = validate_rounding_mode(rounding_mode)
@@ -697,17 +924,23 @@ def _ledger(
         {"layer_index": int(item["layer_index"]), "head_count": int(item["head_count"]), "head_dim": int(item["head_dim"])}
         for item in hidden
     ]
+    profile = resolve_quant_scale_profile(
+        quant_cfg_id,
+        scale_profile
+        or manifest.get("authenticated_quant_scales")
+        or manifest.get("quant_scales"),
+    )
     return build_integer_bound_ledger(
         mode=mode,
         quant_cfg_id=quant_cfg_id,
-        authenticated_quant_scales=dict(QUANT_SCALE_PROFILES[quant_cfg_id]),
+        authenticated_quant_scales=profile,
         registered_model_bounds=bounds,
         hidden_profile=hidden_profile,
         d_in=[int(manifest["d_in_profile"][0])] + [int(item["head_count"]) * int(item["head_dim"]) for item in hidden],
         classes=int(classes),
         k_out=int(k_out),
         max_degree=max((int(v) for v in np.bincount(graph.dst, minlength=graph.num_nodes)), default=1),
-        feature_bound=max((abs(_round_feature(float(v), QUANT_SCALE_PROFILES[quant_cfg_id]["input"])) for v in np.ravel(graph.features)), default=0),
+        feature_bound=max((abs(_round_feature(float(v), profile["input"])) for v in np.ravel(graph.features)), default=0),
         node_count=int(graph.num_nodes),
         range_bits=int(range_bits),
     )
@@ -869,8 +1102,17 @@ def _families(graph: LocalGraph, manifest: Mapping[str, Any], bits: int, ledger:
             limbs = int(policy.get("limb_count", 0))
             bit_width = int(policy.get("bit_width", 0))
             bound = int(policy.get("bound", -1))
-            if limbs <= 0 or bit_width <= 0 or bound < 0:
+            encoded_bound = int(policy.get("encoded_bound", -1))
+            encoding = str(policy.get("encoding", "magnitude"))
+            encoding_offset = int(policy.get("encoding_offset", 0))
+            if limbs <= 0 or bit_width <= 0 or bound < 0 or encoded_bound < bound or encoding_offset < 0:
                 raise ContextError(f"invalid canonical range-family policy: {label}")
+            if encoding not in {"magnitude", "offset"}:
+                raise ContextError(f"invalid range-family encoding: {label}")
+            if (encoding == "magnitude" and encoding_offset != 0) or (
+                encoding == "offset" and encoding_offset <= 0
+            ):
+                raise ContextError(f"invalid range-family encoding offset: {label}")
         else:
             limbs = 1; bit_width = 0; bound = 0
         real = int(count) if kind == "function" else int(count) * limbs
@@ -879,15 +1121,42 @@ def _families(graph: LocalGraph, manifest: Mapping[str, Any], bits: int, ledger:
         # synthetic family.
         padded = next_power_of_two(max(2, real))
         item = {"family": label, "kind": kind, "table_id": table, "offset": offset, "real_count": real, "padded_count": padded, "shape": [padded]}
-        if kind == "range": item.update({"range_bits": int(bits), "bit_width": bit_width, "limbs_per_value": limbs, "bound": bound, "signed_magnitude": bool(signed), "a_pad": "0", "Q_pad": {"zero_prefix": real, "one_suffix": padded - real}})
-        else: item.update({"a_pad": "0", "Q_pad": {"zero_prefix": real, "one_suffix": padded - real}})
+        if kind == "range":
+            expected_signed = encoding == "offset" or label == "rescale_rounding_range"
+            if bool(signed) != expected_signed:
+                raise ContextError(f"range-family signedness does not match encoding: {label}")
+            item.update({
+                "range_bits": int(bits),
+                "bit_width": bit_width,
+                "limbs_per_value": limbs,
+                "bound": bound,
+                "encoded_bound": encoded_bound,
+                "encoding": encoding,
+                "encoding_offset": encoding_offset,
+                "signed_magnitude": bool(signed),
+                "a_pad": "0",
+                "Q_pad": {"zero_prefix": real, "one_suffix": padded - real},
+            })
+        else:
+            base, x_bound, y_bound, pad = _function_tuple_encoding(table, ledger)
+            item.update({
+                "a_pad": str(pad),
+                "Q_pad": {"zero_prefix": real, "one_suffix": padded - real},
+                "tuple_encoding": {
+                    "encoding_id": LOOKUP_TUPLE_ENCODING_ID,
+                    "x_bound": int(x_bound),
+                    "y_bound": int(y_bound),
+                    "base": int(base),
+                    "max_packed": 2 * int(x_bound) * int(base) + 2 * int(y_bound),
+                },
+            })
         families.append(item); offset += padded
     for layer in hidden:
         for index in range(layer["head_count"]):
-            tag, d = f"hidden.l{layer['layer_index'] + 1}.h{index}", layer["head_dim"]; add(f"{tag}.range_delta", "range", e, "T_range"); add(f"{tag}.LeakyReLU", "function", e, "T_LReLU"); add(f"{tag}.ExpMap", "function", e, "T_exp"); add(f"{tag}.ELU", "function", n * d, "T_ELU"); add(f"{tag}.SignedRoundDiv.aggregate.range", "range", 5 * n * d, "T_range")
+            tag, d = f"hidden.l{layer['layer_index'] + 1}.h{index}", layer["head_dim"]; add(f"{tag}.range_delta", "range", e, "T_range"); add(f"{tag}.M_range", "range", n, "T_range", signed=True); add(f"{tag}.LeakyReLU", "function", e, "T_LReLU"); add(f"{tag}.LeakyReLU.x_range", "range", e, "T_range", signed=True); add(f"{tag}.LeakyReLU.y_range", "range", e, "T_range", signed=True); add(f"{tag}.ExpMap", "function", e, "T_exp"); add(f"{tag}.ExpMap.x_range", "range", e, "T_range"); add(f"{tag}.ExpMap.y_range", "range", e, "T_range"); add(f"{tag}.ELU", "function", n * d, "T_ELU"); add(f"{tag}.ELU.x_range", "range", n * d, "T_range", signed=True); add(f"{tag}.ELU.y_range", "range", n * d, "T_range", signed=True); add(f"{tag}.SignedRoundDiv.aggregate.range", "range", 5 * n * d, "T_range", signed=True)
     for index in range(k_out):
-        tag = f"output.h{index}"; add(f"{tag}.range_delta", "range", e, "T_range"); add(f"{tag}.LeakyReLU", "function", e, "T_LReLU"); add(f"{tag}.ExpMap", "function", e, "T_exp"); add(f"{tag}.SignedRoundDiv.aggregate.range", "range", 5 * n * classes, "T_range"); add(f"{tag}.SignedRoundDiv.scale_alignment.range", "range", 5 * n * classes, "T_range")
-    add("output.final_average.SignedRoundDiv.range", "range", 5 * n * classes, "T_range")
+        tag = f"output.h{index}"; add(f"{tag}.range_delta", "range", e, "T_range"); add(f"{tag}.M_range", "range", n, "T_range", signed=True); add(f"{tag}.LeakyReLU", "function", e, "T_LReLU"); add(f"{tag}.LeakyReLU.x_range", "range", e, "T_range", signed=True); add(f"{tag}.LeakyReLU.y_range", "range", e, "T_range", signed=True); add(f"{tag}.ExpMap", "function", e, "T_exp"); add(f"{tag}.ExpMap.x_range", "range", e, "T_range"); add(f"{tag}.ExpMap.y_range", "range", e, "T_range"); add(f"{tag}.SignedRoundDiv.aggregate.range", "range", 5 * n * classes, "T_range", signed=True); add(f"{tag}.SignedRoundDiv.scale_alignment.range", "range", 5 * n * classes, "T_range", signed=True)
+    add("output.final_average.SignedRoundDiv.range", "range", 5 * n * classes, "T_range", signed=True)
     residual_values = sum(layer["head_count"] * (n * layer["head_dim"] + 2 * n) for layer in hidden) + k_out * (n * classes + 2 * n)
     add("rescale_rounding_range", "range", residual_values, "T_range", signed=True)
     return families
@@ -984,17 +1253,24 @@ def _function_tuple_encoding(table_id: str, ledger: Mapping[str, Any]) -> Tuple[
     if not isinstance(domain, (list, tuple)) or len(domain) != 2:
         raise ContextError(f"missing certified domain for {table_id}")
     domain_min, domain_max = int(domain[0]), int(domain[1])
-    def evaluate(value: int) -> int:
-        if table_id == "T_LReLU":
-            return _fixed_lrelu(value)
-        if table_id == "T_ELU":
-            return int(_elu_table_value(value))
-        return int(_exp_map_fixed(value))
-    endpoint_values = [evaluate(value) for value in (domain_min, domain_max, 0) if domain_min <= value <= domain_max]
+    profile = resolve_quant_scale_profile(
+        str(ledger.get("quant_cfg_id", CANONICAL_QUANT_CFG_ID)),
+        ledger.get("authenticated_quant_scales"),
+    )
+    endpoint_values = [
+        _fixed_table_eval_q(table_id, value, profile)
+        for value in (domain_min, domain_max, 0)
+        if domain_min <= value <= domain_max
+    ]
     x_bound = max(abs(domain_min), abs(domain_max))
-    y_bound = max((abs(value) for value in endpoint_values), default=0)
+    certified = ledger.get("function_bounds", {}).get(table_id, {})
+    y_bound = int(certified.get("output_bound", max((abs(value) for value in endpoint_values), default=0)))
+    if y_bound < max((abs(value) for value in endpoint_values), default=0):
+        raise ContextError(f"certified y range is smaller than evaluator output: {table_id}")
     base = 2 * y_bound + 1
-    pad = (domain_min + x_bound) * base + (evaluate(domain_min) + y_bound)
+    pad = (domain_min + x_bound) * base + (
+        _fixed_table_eval_q(table_id, domain_min, profile) + y_bound
+    )
     return base, x_bound, y_bound, pad
 
 
@@ -1041,7 +1317,7 @@ def _native_lasso_consistency_records(
         policy = ledger.get("range_family_policy", {}).get("families", {}).get(label)
         if not isinstance(policy, Mapping):
             raise ContextError(f"range family is absent from authenticated ledger: {label}")
-        if any(int(family.get(key, -1)) != int(policy.get(source, -2)) for key, source in (("range_bits", "range_bits"), ("bit_width", "bit_width"), ("limbs_per_value", "limb_count"), ("bound", "bound"))):
+        if any(int(family.get(key, -1)) != int(policy.get(source, -2)) for key, source in (("range_bits", "range_bits"), ("bit_width", "bit_width"), ("limbs_per_value", "limb_count"), ("bound", "bound"), ("encoded_bound", "encoded_bound"), ("encoding_offset", "encoding_offset"))):
             raise ContextError(f"range family geometry differs from authenticated ledger: {label}")
         limb_count = int(family["limbs_per_value"])
         base = 1 << int(family["range_bits"])
@@ -1060,6 +1336,27 @@ def _native_lasso_consistency_records(
         elif label.endswith(".range_delta"):
             prefix = label.removesuffix(".range_delta")
             sources = [(f"{prefix}.Delta", aux_arrays[f"{prefix}.Delta"])]
+        elif label.endswith(".M_range"):
+            prefix = label.removesuffix(".M_range")
+            sources = [(f"{prefix}.M", aux_arrays[f"{prefix}.M"])]
+        elif label.endswith(".LeakyReLU.x_range"):
+            prefix = label.removesuffix(".LeakyReLU.x_range")
+            sources = [(f"{prefix}.S", aux_arrays[f"{prefix}.S"])]
+        elif label.endswith(".LeakyReLU.y_range"):
+            prefix = label.removesuffix(".LeakyReLU.y_range")
+            sources = [(f"{prefix}.Z", aux_arrays[f"{prefix}.Z"])]
+        elif label.endswith(".ExpMap.x_range"):
+            prefix = label.removesuffix(".ExpMap.x_range")
+            sources = [(f"{prefix}.Delta", aux_arrays[f"{prefix}.Delta"])]
+        elif label.endswith(".ExpMap.y_range"):
+            prefix = label.removesuffix(".ExpMap.y_range")
+            sources = [(f"{prefix}.U", aux_arrays[f"{prefix}.U"])]
+        elif label.endswith(".ELU.x_range"):
+            prefix = label.removesuffix(".ELU.x_range")
+            sources = [(f"{prefix}.SignedRoundDiv.output", aux_arrays[f"{prefix}.SignedRoundDiv.output"])]
+        elif label.endswith(".ELU.y_range"):
+            prefix = label.removesuffix(".ELU.y_range")
+            sources = [(f"{prefix}.H_agg", aux_arrays[f"{prefix}.H_agg"])]
         elif label.endswith(".range"):
             prefix = label.removesuffix(".range")
             if prefix == "output.final_average.SignedRoundDiv":
@@ -1074,14 +1371,16 @@ def _native_lasso_consistency_records(
                 OracleRef("L_qry", label, tuple(cursor + index * limb_count + limb for index in range(count))),
             ) for limb in range(limb_count))
             records.append(_gkr_record("linear", LinearGateSpec(
-                f"lasso/{label}/reconstruct/{source_name}", identity_oracle("Aux", source_name, count), terms, (0,) * count,
+                f"lasso/{label}/reconstruct/{source_name}", identity_oracle("Aux", source_name, count), terms,
+                (-int(family.get("encoding_offset", 0)),) * count,
             )))
             cursor += count * limb_count
         if cursor != real_count:
             raise ContextError(f"range lookup limb layout differs from certified family: {label}")
         if padded_count > real_count:
             records.append(_gkr_record("linear", LinearGateSpec(
-                f"lasso/{label}/padding", OracleRef("L_qry", label, tuple(range(real_count, padded_count))), (), (0,) * (padded_count - real_count),
+                f"lasso/{label}/padding", OracleRef("L_qry", label, tuple(range(real_count, padded_count))), (),
+                (to_field_int(int(family.get("a_pad", 0))),) * (padded_count - real_count),
             )))
     return records
 
@@ -1104,6 +1403,18 @@ def _gkr_families(
     """
     hidden, classes, k_out, _ = _dimensions(manifest)
     rounding_mode = validate_rounding_mode((ledger or {}).get("rounding_mode"))
+    if ledger is None:
+        raise ContextError("GKR family reconstruction requires the authenticated ledger")
+    scale_profile = resolve_quant_scale_profile(
+        str(ledger.get("quant_cfg_id", CANONICAL_QUANT_CFG_ID)),
+        ledger.get("authenticated_quant_scales"),
+    )
+    scale_chain = scale_chain_from_profile(
+        scale_profile,
+        hidden_profile=hidden,
+        k_out=int(k_out),
+        quant_cfg_id=str(ledger.get("quant_cfg_id", CANONICAL_QUANT_CFG_ID)),
+    )
     n, e = int(graph.num_nodes), int(graph.src.size)
     src = tuple(int(value) for value in graph.src)
     dst = tuple(int(value) for value in graph.dst)
@@ -1183,7 +1494,7 @@ def _gkr_families(
         aggregate_count = n * width
         repeated_nodes = tuple(row for row in range(n) for _ in range(width))
         records.extend([
-            _gkr_record("linear", LinearGateSpec(f"{aggregate_prefix}.numerator_wiring", identity_oracle("Aux", f"{aggregate_prefix}.x", aggregate_count), (LinearTerm(16, identity_oracle("Aux", f"{prefix}.H_or_Y_agg_num", aggregate_count)),), (0,) * aggregate_count)),
+            _gkr_record("linear", LinearGateSpec(f"{aggregate_prefix}.numerator_wiring", identity_oracle("Aux", f"{aggregate_prefix}.x", aggregate_count), (LinearTerm(int(scale_profile["aggregate_output"]), identity_oracle("Aux", f"{prefix}.H_or_Y_agg_num", aggregate_count)),), (0,) * aggregate_count)),
             _gkr_record("linear", LinearGateSpec(f"{aggregate_prefix}.denominator_wiring", identity_oracle("Aux", f"{aggregate_prefix}.d", aggregate_count), (LinearTerm(h_prime_scale, aux("Sum", repeated_nodes)),), (0,) * aggregate_count)),
             _gkr_record("linear", LinearGateSpec(f"{aggregate_prefix}.output_wiring", identity_oracle("Aux", f"{prefix}.SignedRoundDiv.output", aggregate_count), (LinearTerm(1, identity_oracle("Aux", f"{aggregate_prefix}.y", aggregate_count)),), (0,) * aggregate_count)),
         ])
@@ -1193,8 +1504,8 @@ def _gkr_families(
             alignment_count = n * width
             records.extend(_native_division_records(alignment_prefix, alignment_count, rounding_mode))
             records.extend([
-                _gkr_record("linear", LinearGateSpec(f"{alignment_prefix}.numerator_wiring", identity_oracle("Aux", f"{alignment_prefix}.x", alignment_count), (LinearTerm(16, identity_oracle("Aux", f"{prefix}.SignedRoundDiv.output", alignment_count)),), (0,) * alignment_count)),
-                _gkr_record("linear", LinearGateSpec(f"{alignment_prefix}.denominator_wiring", identity_oracle("Aux", f"{alignment_prefix}.d", alignment_count), (), (16,) * alignment_count)),
+                _gkr_record("linear", LinearGateSpec(f"{alignment_prefix}.numerator_wiring", identity_oracle("Aux", f"{alignment_prefix}.x", alignment_count), (LinearTerm(int(scale_profile["output_head"]), identity_oracle("Aux", f"{prefix}.SignedRoundDiv.output", alignment_count)),), (0,) * alignment_count)),
+                _gkr_record("linear", LinearGateSpec(f"{alignment_prefix}.denominator_wiring", identity_oracle("Aux", f"{alignment_prefix}.d", alignment_count), (), (int(scale_profile["aggregate_output"]),) * alignment_count)),
                 _gkr_record("linear", LinearGateSpec(f"{alignment_prefix}.output_wiring", identity_oracle("Aux", f"{prefix}.Y_pre_aligned", alignment_count), (LinearTerm(1, identity_oracle("Aux", f"{alignment_prefix}.y", alignment_count)),), (0,) * alignment_count)),
             ])
             value_count = n * width
@@ -1204,13 +1515,13 @@ def _gkr_families(
     for layer in hidden:
         position, width = int(layer["layer_index"]) + 1, int(layer["head_dim"])
         for index in range(int(layer["head_count"])):
-            add_head(f"hidden.l{position}.h{index}", width, output=False, h_prime_scale=16 if position == 1 else 256)
+            add_head(f"hidden.l{position}.h{index}", width, output=False, h_prime_scale=int(scale_chain["s_h_prime_hidden"][position - 1][index]))
         concat_width = int(layer["head_count"]) * width
         for head_index in range(int(layer["head_count"])):
             target_map = tuple(row * concat_width + head_index * width + column for row in range(n) for column in range(width))
             records.append(_gkr_record("linear", LinearGateSpec(f"hidden.l{position}.concat.h{head_index}", OracleRef("Aux", f"hidden.l{position}.concat", target_map), (LinearTerm(1, identity_oracle("Aux", f"hidden.l{position}.h{head_index}.H_agg", n * width)),), (0,) * (n * width))))
     for index in range(int(k_out)):
-        add_head(f"output.h{index}", int(classes), output=True, h_prime_scale=256)
+        add_head(f"output.h{index}", int(classes), output=True, h_prime_scale=int(scale_chain["s_y_prime"][index]))
 
     final_prefix, final_count = "output.final_average", n * int(classes)
     values = tuple(to_field_int(value) for value in (public_y if public_y is not None else [0] * final_count))
@@ -1345,7 +1656,7 @@ class VerifierContext:
                 if labels != expected_labels or len(labels) != len(set(labels)): errors.append("metadata Lasso family labels/order/cardinality mismatch")
                 else:
                     for item, expected in zip(actual, self.expected_lasso_families):
-                        for field in ("family", "kind", "table_id", "offset", "real_count", "padded_count", "range_bits", "bit_width", "limbs_per_value", "bound", "signed_magnitude"):
+                        for field in ("family", "kind", "table_id", "offset", "real_count", "padded_count", "range_bits", "bit_width", "limbs_per_value", "bound", "encoded_bound", "encoding", "encoding_offset", "signed_magnitude", "a_pad", "Q_pad"):
                             if field not in item and field not in expected:
                                 continue
                             if item.get(field) != expected.get(field): errors.append(f"metadata Lasso family {expected['family']} {field} mismatch")
@@ -1399,6 +1710,46 @@ class VerifierContext:
         return {"status": "VERIFY_OK" if not errors else "VERIFY_FAILED", "errors": errors, "context_digest": self.context_digest}
 
 
+def _config_architecture_projection(config: AppConfig) -> Dict[str, Any]:
+    """Build the public shape projection without opening checkpoint files."""
+    hidden = [
+        {
+            "layer_index": int(index),
+            "input_dim": int(config.d_in_profile[index]),
+            "head_count": int(shape.head_count),
+            "head_dim": int(shape.head_dim),
+        }
+        for index, shape in enumerate(config.hidden_profile)
+    ]
+    quant_cfg_id = str(config.entries.get("quant_cfg_id", ""))
+    try:
+        quant_chain = scale_chain_from_profile(
+            canonical_scale_profile(),
+            hidden_profile=hidden,
+            k_out=int(config.k_out),
+            quant_cfg_id=quant_cfg_id,
+        )
+    except (KeyError, TypeError, ValueError):
+        quant_chain = {}
+    return {
+        "dataset": config.dataset,
+        "input_preprocess_id": config.input_preprocess_id,
+        "quant_cfg_id": quant_cfg_id,
+        "source_quant_cfg_id": quant_cfg_id,
+        "quant_scale_chain": quant_chain,
+        "model_arch_id": str(config.entries.get("model_arch_id", "")),
+        "hidden_layers": hidden,
+        "output_head_specs": [{"head_index": index} for index in range(int(config.k_out))],
+        "C": int(config.num_classes),
+        "K_out": int(config.k_out),
+        "L": int(config.layer_count),
+        "d_in_profile": [int(value) for value in config.d_in_profile],
+        "output_average_rule": "per_head_bias_then_arithmetic_mean",
+        "static_table_id": str(config.entries.get("static_table_id", "")),
+        "rounding_mode": config.rounding_mode,
+    }
+
+
 def build_verifier_context(project_root: pathlib.Path, config_path: pathlib.Path, registry_public_path: pathlib.Path, artifact_dir: pathlib.Path, public_y_path: pathlib.Path) -> VerifierContext:
     root, artifact, config_path = _directory(project_root, "project-root"), _directory(artifact_dir, "artifact directory"), _file(config_path, "config")
     if _inside(config_path, artifact): raise ContextError("config must not be loaded from proof artifact")
@@ -1407,17 +1758,10 @@ def build_verifier_context(project_root: pathlib.Path, config_path: pathlib.Path
     static_descriptor = validate_static_table_descriptor(root)
     if config.entries.get("static_table_descriptor_digest") != static_descriptor["descriptor_digest"]:
         raise ContextError("formal config is not bound to the canonical static-table descriptor")
-    raw_manifest = _manifest(config.checkpoint_bundle)
-    try:
-        _validate_canonical_manifest(raw_manifest)
-    except (TypeError, ValueError) as exc:
-        raise ContextError(f"checkpoint manifest is not canonical: {exc}") from exc
-    manifest = _canonical_model_architecture(raw_manifest)
     identities = {}
     configured_arch = str(config.entries.get("model_arch_id", ""))
-    raw_arch = str(manifest.get("model_arch_id", ""))
-    if not configured_arch or not raw_arch or configured_arch != raw_arch:
-        raise ContextError("formal model architecture does not match the raw checkpoint manifest")
+    if not configured_arch:
+        raise ContextError("formal config is missing model_arch_id")
     # The public manifest supplies only the canonical architecture.  Model
     # parameter/value binding is taken from the trusted public registry below;
     # no raw tensor identity is used as a verifier input.
@@ -1428,20 +1772,48 @@ def build_verifier_context(project_root: pathlib.Path, config_path: pathlib.Path
         identities[key] = value
     if identities["quant_cfg_id"] != "gat_l3_scale_chain":
         raise ContextError("formal verifier requires the registered GAT scale chain")
-    if config.input_preprocess_id != canonical_input_preprocess_id(str(raw_manifest.get("dataset", ""))):
-        raise ContextError("formal config/checkpoint input_preprocess_id mismatch")
-    hidden_profile = config.hidden_profile
-    manifest_hidden = _dimensions(manifest)[0]
-    if [(int(item.head_count), int(item.head_dim)) for item in hidden_profile] != [(int(item["head_count"]), int(item["head_dim"])) for item in manifest_hidden]:
-        raise ContextError("formal hidden_profile does not match raw checkpoint architecture")
-    if config.d_in_profile and [int(value) for value in config.d_in_profile] != [int(value) for value in manifest.get("d_in_profile", [])]:
-        raise ContextError("formal d_in_profile does not match raw checkpoint architecture")
-    if int(config.k_out) != int(manifest.get("K_out", -1)) or int(config.num_classes) != int(manifest.get("C", -1)):
-        raise ContextError("formal output cardinality does not match raw checkpoint architecture")
+    config_architecture = _config_architecture_projection(config)
+    manifest = config_architecture
     dataset, graph = load_dataset(config), None
-    graph = normalize_graph(dataset, config); registry = _validate_registry(registry_public_path, artifact, root, manifest, identities)
+    graph = normalize_graph(dataset, config)
+    registry = _validate_registry(registry_public_path, artifact, root, manifest, identities)
+    registered_architecture = registry.get("registration_binding", {}).get("model_architecture")
+    if not isinstance(registered_architecture, dict):
+        raise ContextError("trusted registry is missing the public model architecture projection")
+    manifest = _canonical_model_architecture(registered_architecture)
+    if manifest.get("model_arch_id") != configured_arch:
+        raise ContextError("trusted registry model architecture does not match formal config")
     if registry.get("registration_binding", {}).get("rounding_mode") != config.rounding_mode:
         raise ContextError("trusted registry SignedRoundDiv rounding_mode mismatch")
+    binding = registry["registration_binding"]
+    try:
+        profile = resolve_quant_scale_profile(
+            identities["quant_cfg_id"], binding.get("authenticated_quant_scales")
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ContextError("trusted registry quantization profile is invalid") from exc
+    expected_graph_identity = canonical_graph_identity(
+        graph,
+        canonical_dataset_name(config.dataset),
+        full_dataset=graph.num_nodes == dataset.num_nodes,
+    )
+    if binding.get("graph_identity") != expected_graph_identity:
+        raise ContextError("trusted registry graph identity mismatch")
+    if binding.get("full_dataset") is not True or graph.num_nodes != dataset.num_nodes:
+        raise ContextError("trusted registry/full-dataset identity mismatch")
+    if binding.get("public_y_path") != str(required_resource_paths(root, canonical_dataset_name(config.dataset))["public_y_path"].relative_to(root)):
+        raise ContextError("trusted registry public-Y path is not canonical")
+    if binding.get("public_y_shape") != [int(graph.num_nodes), int(manifest.get("C", -1))]:
+        raise ContextError("trusted registry public-Y shape mismatch")
+    expected_x_digest = _x_digest(
+        graph,
+        int(manifest.get("L", 0)),
+        int(manifest.get("C", 0)),
+        int(manifest.get("K_out", 0)),
+        int(profile["input"]),
+    )
+    if binding.get("X_pub_digest") != expected_x_digest:
+        raise ContextError("trusted registry X_pub digest mismatch")
     y_path = _file(public_y_path, "public Y")
     if _inside(y_path, artifact): raise ContextError("public Y must be outside proof artifact")
     if not _inside(y_path, root):
@@ -1452,11 +1824,21 @@ def build_verifier_context(project_root: pathlib.Path, config_path: pathlib.Path
     output = load_public_y(y_path); hidden, classes, k_out, layers = _dimensions(manifest); expected_shape = (graph.num_nodes, classes)
     if tuple(output.shape) != expected_shape: raise ContextError(f"public Y shape {tuple(output.shape)} != expected {expected_shape}")
     y_digest = _array_digest("Y", output)
-    public_y_provenance = _public_y_provenance(root, config, graph, raw_manifest, y_path, output, y_digest)
+    public_y_provenance = _public_y_provenance(
+        root,
+        config,
+        graph,
+        manifest,
+        y_path,
+        output,
+        y_digest,
+        registry["registration_binding"],
+        dataset,
+    )
     if public_y_provenance.get("status") != "VERIFY_OK":
         failed = sorted(key for key, value in public_y_provenance.get("checks", {}).items() if value is not True)
         raise ContextError("public Y independent-reference provenance is invalid: " + ",".join(failed))
-    binding = registry["registration_binding"]; bounds = binding.get("registered_model_bounds", {}); rounding_mode = config.rounding_mode; ledger = _ledger(graph, manifest, bounds, identities["quant_cfg_id"], rounding_mode, config.range_bits)
+    binding = registry["registration_binding"]; bounds = binding.get("registered_model_bounds", {}); rounding_mode = config.rounding_mode; ledger = _ledger(graph, manifest, bounds, identities["quant_cfg_id"], rounding_mode, config.range_bits, scale_profile=binding.get("authenticated_quant_scales"))
     if binding.get("integer_bound_ledger_digest") != digest_json(ledger): raise ContextError("trusted registry bound ledger does not match external graph/model context")
     n_in, layout_digest = int(binding.get("N_in", 0)), str(binding.get("Layout_in_digest", ""))
     if n_in <= 0 or n_in & (n_in - 1) or len(layout_digest) != 64: raise ContextError("trusted registry has invalid Layout_in identity")
@@ -1470,14 +1852,16 @@ def build_verifier_context(project_root: pathlib.Path, config_path: pathlib.Path
         raise ContextError("trusted registry public file must be inside baseline project-root")
     public_path = str(registry_path.relative_to(zk_root))
     registry_metadata = {"protocol": registry["protocol"], "registry_digest": registry["registry_digest"], "registration_binding_digest": registry["registration_binding_digest"], "public_path": public_path, "commitment_backend": registry["commitment_backend"], "public_descriptor": copy.deepcopy(registry)}
-    expected = {"protocol_id": PROTOCOL_ID, "proof_backend_id": PROOF_BACKEND_ID, "commitment_backend_id": COMMITMENT_BACKEND_ID, **identities, "input_preprocess_id": config.input_preprocess_id, "quant_scale_chain": raw_manifest["quant_scale_chain"], "static_table_descriptor_schema": static_descriptor["schema"], "static_table_content_digest": static_descriptor["content_digest"], "static_table_descriptor_digest": static_descriptor["descriptor_digest"], "static_table_descriptor_path": STATIC_TABLE_DESCRIPTOR_RELATIVE_PATH, "domain_cfg": domain, "dim_cfg": dims, "encoding_id": ENCODING_ID, "padding_rule_id": PADDING_RULE_ID, "circuit_layout_id": CIRCUIT_LAYOUT_ID, "lasso_cfg_id": LASSO_CFG_ID, "matrix_proof_cfg_id": MATRIX_PROOF_CFG_ID, "dataset": config.entries.get("dataset"), "dataset_display_name": dataset.name, "task_type": graph.task_type, "report_unit": graph.report_unit, "batching_rule": graph.batching_rule, "self_loop_rule": graph.self_loop_rule, "edge_sort_rule": graph.edge_sort_rule, "chunking_rule": graph.chunking_rule, "full_dataset": graph.num_nodes == dataset.num_nodes, "X_pub_digest": _x_digest(graph, layers, classes, k_out, QUANT_SCALE_PROFILES[identities["quant_cfg_id"]]["input"]), "public_input_layout": "X_pub=features+topology+selectors; X_pub is verifier-reconstructed and uncommitted", "public_output_policy": "Y is a public statement output claim and is not part of X_pub or any private commitment", "private_input_layout": "X_pub|W|Aux|L_qry", "segment_order": ["X_pub", "W", "Aux", "L_qry"], "privacy_extension_profile_id": "masked_full_multi_session_v1", "privacy_profile_status": "supported_multi_session_masked_full", "registered_model_commitment_scope": "canonical_integer_GAT_model_weights_with_layout_and_bound_ledger", "Layout_in_digest": layout_digest, "integer_bound_ledger": ledger, "integer_bound_ledger_digest": digest_json(ledger), "public_output_digest": y_digest, "model_registry": registry_metadata, "model_registry_digest": digest_json(registry_metadata), "identities": identities}
+    profile = resolve_quant_scale_profile(identities["quant_cfg_id"], binding.get("authenticated_quant_scales"))
+    expected_chain = binding.get("quant_scale_chain")
+    expected = {"protocol_id": PROTOCOL_ID, "proof_backend_id": PROOF_BACKEND_ID, "commitment_backend_id": COMMITMENT_BACKEND_ID, **identities, "input_preprocess_id": config.input_preprocess_id, "quant_scale_chain": expected_chain, "authenticated_quant_scales": profile, "model_architecture": binding.get("model_architecture"), "checkpoint_provenance": binding.get("checkpoint_provenance"), "static_table_descriptor_schema": static_descriptor["schema"], "static_table_content_digest": static_descriptor["content_digest"], "static_table_descriptor_digest": static_descriptor["descriptor_digest"], "static_table_descriptor_path": STATIC_TABLE_DESCRIPTOR_RELATIVE_PATH, "domain_cfg": domain, "dim_cfg": dims, "encoding_id": ENCODING_ID, "padding_rule_id": PADDING_RULE_ID, "circuit_layout_id": CIRCUIT_LAYOUT_ID, "lasso_cfg_id": LASSO_CFG_ID, "matrix_proof_cfg_id": MATRIX_PROOF_CFG_ID, "dataset": config.entries.get("dataset"), "dataset_display_name": dataset.name, "task_type": graph.task_type, "report_unit": graph.report_unit, "batching_rule": graph.batching_rule, "self_loop_rule": graph.self_loop_rule, "edge_sort_rule": graph.edge_sort_rule, "chunking_rule": graph.chunking_rule, "full_dataset": graph.num_nodes == dataset.num_nodes, "X_pub_digest": _x_digest(graph, layers, classes, k_out, profile["input"]), "public_input_layout": "X_pub=features+topology+selectors; X_pub is verifier-reconstructed and uncommitted", "public_output_policy": "Y is a public statement output claim and is not part of X_pub or any private commitment", "private_input_layout": "X_pub|W|Aux|L_qry", "segment_order": ["X_pub", "W", "Aux", "L_qry"], "privacy_extension_profile_id": "masked_full_multi_session_v1", "privacy_profile_status": "supported_multi_session_masked_full", "registered_model_commitment_scope": "canonical_integer_GAT_model_weights_with_layout_and_bound_ledger", "Layout_in_digest": layout_digest, "integer_bound_ledger": ledger, "integer_bound_ledger_digest": digest_json(ledger), "public_output_digest": y_digest, "public_y_schema": binding.get("public_y_schema"), "public_y_path": binding.get("public_y_path"), "public_y_digest": binding.get("public_y_digest"), "public_y_descriptor_digest": binding.get("public_y_descriptor_digest"), "public_y_shape": binding.get("public_y_shape"), "graph_identity": binding.get("graph_identity"), "com_W_identity": binding.get("com_W_identity"), "reference_y_digest": binding.get("reference_y_digest"), "independent_reference_forward": binding.get("independent_reference_forward"), "reference_forward_profile_id": binding.get("reference_forward_profile_id"), "reference_forward_engine": binding.get("reference_forward_engine"), "reference_forward_source_sha256": binding.get("reference_forward_source_sha256"), "public_output_binding_digest": binding.get("public_output_binding_digest"), "registration_binding_digest": registry.get("registration_binding_digest"), "model_registry": registry_metadata, "model_registry_digest": digest_json(registry_metadata), "identities": identities}
     expected["rounding_mode"] = rounding_mode
     # Static tables are verifier setup reconstructed from authenticated
     # baseline resources, never a proof-selected artifact sidecar.
     canonical_tables = _canonical_static_table_registry(expected)
     expected["static_table_registry"] = copy.deepcopy(canonical_tables)
     expected["static_table_registry_digest"] = digest_json(canonical_tables)
-    features = np.asarray([_round_feature(value) for value in np.ravel(graph.features)], dtype=np.int64).reshape(graph.features.shape)
+    features = np.asarray([_round_feature(value, profile["input"]) for value in np.ravel(graph.features)], dtype=np.int64).reshape(graph.features.shape)
     # Use the same canonical statement constructor as the producer path.  The
     # richer context material remains authenticated in model_registry,
     # static_table_vk, and setup_context below; it is not duplicated in the
@@ -1546,6 +1930,22 @@ def _canonical_public_statement(
         "input_preprocess_id": str(metadata["input_preprocess_id"]),
         "rounding_mode": validate_rounding_mode(metadata.get("rounding_mode")),
         "integer_bound_ledger_digest": metadata["integer_bound_ledger_digest"],
+        "public_y_schema": metadata.get("public_y_schema", PUBLIC_Y_SCHEMA),
+        "public_y_path": metadata.get("public_y_path", ""),
+        "public_y_digest": metadata.get("public_y_digest", metadata.get("public_output_digest", "")),
+        "public_y_descriptor_digest": metadata.get("public_y_descriptor_digest", ""),
+        "public_y_shape": [int(value) for value in output_array.shape],
+        "X_pub_digest": metadata.get("X_pub_digest", ""),
+        "full_dataset": metadata.get("full_dataset") is True,
+        "graph_identity": copy.deepcopy(metadata.get("graph_identity", {})),
+        "com_W_identity": copy.deepcopy(
+            metadata.get("com_W_identity", metadata.get("model_registry", {}).get("public_descriptor", {}).get("registration_binding", {}).get("com_W_identity", {}))
+        ),
+        "reference_forward_profile_id": metadata.get("reference_forward_profile_id", REFERENCE_FORWARD_PROFILE_ID),
+        "reference_forward_engine": metadata.get("reference_forward_engine", REFERENCE_FORWARD_ENGINE),
+        "reference_forward_source_sha256": metadata.get("reference_forward_source_sha256", ""),
+        "public_output_binding_digest": metadata.get("public_output_binding_digest", metadata.get("model_registry", {}).get("public_descriptor", {}).get("registration_binding", {}).get("public_output_binding_digest", "")),
+        "registration_binding_digest": metadata.get("registration_binding_digest", metadata.get("model_registry", {}).get("registration_binding_digest", "")),
     }
     if set(statement) != PUBLIC_STATEMENT_FIELDS:
         raise ContextError("canonical public statement field set is invalid")
@@ -1588,6 +1988,17 @@ def setup_context(metadata: Mapping[str, Any], registry: Mapping[str, Any], tabl
     expected_vk = static_table_vk(metadata)
     if dict(table_vk) != expected_vk:
         raise ContextError("setup context static-table VK is not canonical")
+    binding = registry.get("registration_binding")
+    if not isinstance(binding, Mapping):
+        raise ContextError("setup context is missing trusted model binding")
+    for key in (
+        "public_y_schema", "public_y_path", "public_y_digest", "public_y_descriptor_digest",
+        "public_y_shape", "X_pub_digest", "full_dataset", "graph_identity", "com_W_identity",
+        "reference_forward_profile_id", "reference_forward_engine", "reference_forward_source_sha256",
+        "public_output_binding_digest",
+    ):
+        if metadata.get(key) != binding.get(key):
+            raise ContextError(f"setup context {key} is not bound to trusted registry")
     setup = {
         "schema": VERIFIER_SETUP_SCHEMA,
         "protocol_id": PROTOCOL_ID,
@@ -1605,6 +2016,20 @@ def setup_context(metadata: Mapping[str, Any], registry: Mapping[str, Any], tabl
         "domain_cfg": metadata["domain_cfg"],
         "dim_cfg": metadata["dim_cfg"],
         "integer_bound_ledger_digest": metadata["integer_bound_ledger_digest"],
+        "public_y_schema": metadata["public_y_schema"],
+        "public_y_path": metadata["public_y_path"],
+        "public_y_digest": metadata["public_y_digest"],
+        "public_y_descriptor_digest": metadata["public_y_descriptor_digest"],
+        "public_y_shape": metadata["public_y_shape"],
+        "X_pub_digest": metadata["X_pub_digest"],
+        "full_dataset": metadata["full_dataset"],
+        "graph_identity": copy.deepcopy(metadata["graph_identity"]),
+        "com_W_identity": copy.deepcopy(registry["registration_binding"]["com_W_identity"]),
+        "reference_forward_profile_id": metadata["reference_forward_profile_id"],
+        "reference_forward_engine": metadata["reference_forward_engine"],
+        "reference_forward_source_sha256": metadata["reference_forward_source_sha256"],
+        "public_output_binding_digest": registry["registration_binding"]["public_output_binding_digest"],
+        "registration_binding_digest": registry["registration_binding_digest"],
     }
     if set(setup) | {"setup_digest"} != set(VERIFIER_SETUP_FIELDS):
         raise ContextError("verifier setup schema contains unsupported fields")
@@ -1723,6 +2148,20 @@ def validate_external_context(metadata: Mapping[str, Any], context: Mapping[str,
             and statement.get("input_preprocess_id") == metadata.get("input_preprocess_id")
             and statement.get("rounding_mode") == metadata.get("rounding_mode")
             and statement.get("integer_bound_ledger_digest") == metadata.get("integer_bound_ledger_digest")
+            and statement.get("public_y_schema") == metadata.get("public_y_schema")
+            and statement.get("public_y_path") == metadata.get("public_y_path")
+            and statement.get("public_y_digest") == metadata.get("public_y_digest")
+            and statement.get("public_y_descriptor_digest") == metadata.get("public_y_descriptor_digest")
+            and statement.get("public_y_shape") == metadata.get("public_y_shape")
+            and statement.get("X_pub_digest") == metadata.get("X_pub_digest")
+            and (statement.get("full_dataset") is True) == (metadata.get("full_dataset") is True)
+            and statement.get("graph_identity") == metadata.get("graph_identity")
+            and statement.get("com_W_identity") == metadata.get("model_registry", {}).get("public_descriptor", {}).get("registration_binding", {}).get("com_W_identity")
+            and statement.get("reference_forward_profile_id") == metadata.get("reference_forward_profile_id")
+            and statement.get("reference_forward_engine") == metadata.get("reference_forward_engine")
+            and statement.get("reference_forward_source_sha256") == metadata.get("reference_forward_source_sha256")
+            and statement.get("public_output_binding_digest") == metadata.get("model_registry", {}).get("public_descriptor", {}).get("registration_binding", {}).get("public_output_binding_digest")
+            and statement.get("registration_binding_digest") == metadata.get("model_registry", {}).get("registration_binding_digest")
             and metadata.get("X_pub_digest") == x_digest
             and metadata.get("public_output_digest") == _array_digest("Y", output_values)
             and output_shape == expected_shape
@@ -1782,6 +2221,12 @@ def validate_external_context(metadata: Mapping[str, Any], context: Mapping[str,
             "circuit_layout_id", "model_arch_id", "model_param_id", "quant_cfg_id", "input_preprocess_id",
             "rounding_mode", "static_table_id", "registry_digest", "Layout_in_digest",
             "domain_cfg", "dim_cfg", "integer_bound_ledger_digest",
+            "public_y_schema", "public_y_path", "public_y_digest",
+            "public_y_descriptor_digest", "public_y_shape", "X_pub_digest",
+            "full_dataset", "graph_identity", "com_W_identity",
+            "reference_forward_profile_id", "reference_forward_engine",
+            "reference_forward_source_sha256", "public_output_binding_digest",
+            "registration_binding_digest",
         }
         result["external_setup_context"] = bool(
             set(setup_payload) == expected_setup_fields
@@ -1803,10 +2248,24 @@ def validate_external_context(metadata: Mapping[str, Any], context: Mapping[str,
             and setup_payload.get("domain_cfg") == metadata.get("domain_cfg")
             and setup_payload.get("dim_cfg") == metadata.get("dim_cfg")
             and setup_payload.get("integer_bound_ledger_digest") == metadata.get("integer_bound_ledger_digest")
+            and setup_payload.get("public_y_schema") == metadata.get("public_y_schema")
+            and setup_payload.get("public_y_path") == metadata.get("public_y_path")
+            and setup_payload.get("public_y_digest") == metadata.get("public_y_digest")
+            and setup_payload.get("public_y_descriptor_digest") == metadata.get("public_y_descriptor_digest")
+            and setup_payload.get("public_y_shape") == metadata.get("public_y_shape")
+            and setup_payload.get("X_pub_digest") == metadata.get("X_pub_digest")
+            and setup_payload.get("full_dataset") == metadata.get("full_dataset")
+            and setup_payload.get("graph_identity") == metadata.get("graph_identity")
+            and setup_payload.get("com_W_identity") == metadata.get("model_registry", {}).get("public_descriptor", {}).get("registration_binding", {}).get("com_W_identity")
+            and setup_payload.get("reference_forward_profile_id") == metadata.get("reference_forward_profile_id")
+            and setup_payload.get("reference_forward_engine") == metadata.get("reference_forward_engine")
+            and setup_payload.get("reference_forward_source_sha256") == metadata.get("reference_forward_source_sha256")
+            and setup_payload.get("public_output_binding_digest") == metadata.get("model_registry", {}).get("public_descriptor", {}).get("registration_binding", {}).get("public_output_binding_digest")
+            and setup_payload.get("registration_binding_digest") == metadata.get("model_registry", {}).get("registration_binding_digest")
         )
         return result
     except (KeyError, TypeError, ValueError, OverflowError, IndexError):
         return result
 
 
-__all__ = ["ContextError", "EXTERNAL_PUBLIC_STATEMENT_SCHEMA", "VerifierContext", "build_verifier_context", "load_public_y", "public_statement", "static_table_vk", "setup_context", "make_external_context", "validate_external_context"]
+__all__ = ["ContextError", "EXTERNAL_PUBLIC_STATEMENT_SCHEMA", "VerifierContext", "build_verifier_context", "canonical_graph_identity", "load_public_y", "public_statement", "static_table_vk", "setup_context", "make_external_context", "validate_external_context"]

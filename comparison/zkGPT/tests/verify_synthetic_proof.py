@@ -54,10 +54,16 @@ from zkgpt_gat.verifier_context import (  # noqa: E402
     _aux_arrays,
     _dimensions,
     _families,
-    _ledger,
+    _ledger as _production_ledger,
     _matrix_families,
     _model_arrays,
 )
+
+
+def _ledger(*args: Any, **kwargs: Any) -> Dict[str, Any]:
+    """Bind the test-only synthetic identity to its explicit scale profile."""
+    kwargs.setdefault("scale_profile", TEST_QUANT_SCALE_PROFILE)
+    return _production_ledger(*args, **kwargs)
 
 
 PROOF_FILES = (
@@ -496,7 +502,11 @@ def _expected_layout(
                 proof_module._pair_key(
                     dict(table),
                     domain_min,
-                    proof_module._fixed_table_eval_q(table_id, domain_min),
+                    proof_module._fixed_table_eval_q(
+                        table_id,
+                        domain_min,
+                        table.get("authenticated_quant_scales"),
+                    ),
                 )
             )
             family["tuple_encoding"] = copy.deepcopy(dict(tuple_encoding))
@@ -552,6 +562,9 @@ def _public_statement(graph: LocalGraph, public_y: np.ndarray, metadata: Mapping
     statement: Dict[str, Any] = {
         "schema": PUBLIC_STATEMENT_SCHEMA,
         "protocol_id": metadata["protocol_id"],
+        "dataset": metadata["dataset"],
+        "dataset_display_name": metadata["dataset_display_name"],
+        "task_type": metadata["task_type"],
         "rounding_mode": validate_rounding_mode(metadata.get("rounding_mode")),
         "integer_bound_ledger_digest": metadata["integer_bound_ledger_digest"],
         "features": {
@@ -573,6 +586,21 @@ def _public_statement(graph: LocalGraph, public_y: np.ndarray, metadata: Mapping
             "shape": list(public_y.shape),
             "values": [str(int(value)) for value in public_y.ravel()],
         },
+        "input_preprocess_id": metadata["input_preprocess_id"],
+        "public_y_schema": metadata["public_y_schema"],
+        "public_y_path": metadata["public_y_path"],
+        "public_y_digest": metadata["public_y_digest"],
+        "public_y_descriptor_digest": metadata["public_y_descriptor_digest"],
+        "public_y_shape": [int(value) for value in public_y.shape],
+        "X_pub_digest": metadata["X_pub_digest"],
+        "full_dataset": metadata["full_dataset"] is True,
+        "graph_identity": copy.deepcopy(metadata["graph_identity"]),
+        "com_W_identity": copy.deepcopy(metadata["com_W_identity"]),
+        "reference_forward_profile_id": metadata["reference_forward_profile_id"],
+        "reference_forward_engine": metadata["reference_forward_engine"],
+        "reference_forward_source_sha256": metadata["reference_forward_source_sha256"],
+        "public_output_binding_digest": metadata["public_output_binding_digest"],
+        "registration_binding_digest": metadata["registration_binding_digest"],
     }
     # The digest is over the canonical statement object without the digest
     # member itself.  This mirrors ``verifier_context.validate_external_context``
@@ -606,12 +634,12 @@ def _build_external_context(
         "rounding_mode": validate_rounding_mode(metadata.get("rounding_mode")),
         "static_table_id": metadata["static_table_id"],
         "quant_cfg_id": metadata["quant_cfg_id"],
+        "input_preprocess_id": metadata["input_preprocess_id"],
         "static_table_descriptor_schema": metadata["static_table_descriptor_schema"],
         "static_table_content_digest": metadata["static_table_content_digest"],
         "static_table_descriptor_digest": metadata["static_table_descriptor_digest"],
         "integer_bound_ledger_digest": metadata["integer_bound_ledger_digest"],
         "table_registry_digest": metadata["static_table_registry_digest"],
-        "tables": copy.deepcopy(metadata["static_table_registry"]),
     }
     static_vk["vk_digest"] = digest_json(static_vk)
     setup: Dict[str, Any] = {
@@ -623,18 +651,28 @@ def _build_external_context(
         "model_arch_id": metadata["model_arch_id"],
         "model_param_id": metadata["model_param_id"],
         "quant_cfg_id": metadata["quant_cfg_id"],
+        "input_preprocess_id": metadata["input_preprocess_id"],
         "rounding_mode": validate_rounding_mode(metadata.get("rounding_mode")),
         "static_table_id": metadata["static_table_id"],
-        "static_table_descriptor_schema": metadata["static_table_descriptor_schema"],
-        "static_table_content_digest": metadata["static_table_content_digest"],
-        "static_table_descriptor_digest": metadata["static_table_descriptor_digest"],
         "registry_digest": registry["registry_digest"],
-        "Layout_in": metadata["Layout_in"],
         "Layout_in_digest": metadata["Layout_in_digest"],
         "domain_cfg": metadata["domain_cfg"],
         "dim_cfg": metadata["dim_cfg"],
-        "integer_bound_ledger": metadata["integer_bound_ledger"],
         "integer_bound_ledger_digest": metadata["integer_bound_ledger_digest"],
+        "public_y_schema": metadata["public_y_schema"],
+        "public_y_path": metadata["public_y_path"],
+        "public_y_digest": metadata["public_y_digest"],
+        "public_y_descriptor_digest": metadata["public_y_descriptor_digest"],
+        "public_y_shape": metadata["public_y_shape"],
+        "X_pub_digest": metadata["X_pub_digest"],
+        "full_dataset": metadata["full_dataset"],
+        "graph_identity": copy.deepcopy(metadata["graph_identity"]),
+        "com_W_identity": copy.deepcopy(metadata["com_W_identity"]),
+        "reference_forward_profile_id": metadata["reference_forward_profile_id"],
+        "reference_forward_engine": metadata["reference_forward_engine"],
+        "reference_forward_source_sha256": metadata["reference_forward_source_sha256"],
+        "public_output_binding_digest": metadata["public_output_binding_digest"],
+        "registration_binding_digest": metadata["registration_binding_digest"],
     }
     setup["setup_digest"] = digest_json(setup)
     context = {
@@ -765,7 +803,10 @@ def verify_serialized_bundle(bundle_root: pathlib.Path) -> Dict[str, Any]:
         if registry_path != canonical_registry or registry_path.parent == artifact:
             raise SyntheticVerificationError("synthetic registry path is not the canonical public com_W registry")
         registry = _read_json(audit, registry_path, label="trusted public com_W registry", allowed_relative={registry_relative}, scan_fields=True)
-        if registry.get("protocol") != "zkGPT-native-model-registration-v1":
+        if (
+            registry.get("schema") != "zkGPT-model-registry-v2"
+            or registry.get("protocol") != "zkGPT-native-model-registration-v2"
+        ):
             raise SyntheticVerificationError("synthetic registry protocol mismatch")
         registry_without_digest = dict(registry)
         registry_digest = registry_without_digest.pop("registry_digest", None)
@@ -822,6 +863,7 @@ def verify_serialized_bundle(bundle_root: pathlib.Path) -> Dict[str, Any]:
             str(config_payload["quant_cfg_id"]),
             config_rounding_mode,
             range_bits=range_bits,
+            scale_profile=TEST_QUANT_SCALE_PROFILE,
         )
         # Construct the expected fixed-table registry using only the trusted
         # descriptor identity and the public bound ledger.  The same public
@@ -861,6 +903,7 @@ def verify_serialized_bundle(bundle_root: pathlib.Path) -> Dict[str, Any]:
             "edge_ptr": graph.edge_ptr.tolist(),
             "L": layers,
             "d_in": [int(manifest["d_in_profile"][0])] + dcat,
+            "d_in_profile": [int(value) for value in manifest["d_in_profile"]],
             "d_h": [int(item["head_dim"]) for item in hidden],
             "d_cat": dcat,
             "C": classes,

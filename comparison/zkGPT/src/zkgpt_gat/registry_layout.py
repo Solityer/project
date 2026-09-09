@@ -75,6 +75,10 @@ def _head_aux_shapes(tag: str, node_count: int, edge_count: int, width: int, out
     ]
     for name in ("x", "d", "y", "sigma", "z", "a", "a_inv", "d_inv", "q", "r", "delta"):
         shapes.append((f"{tag}.SignedRoundDiv.aggregate.{name}", matrix_n))
+    if output:
+        for name in ("x", "d", "y", "sigma", "z", "a", "a_inv", "d_inv", "q", "r", "delta"):
+            shapes.append((f"{tag}.SignedRoundDiv.scale_alignment.{name}", matrix_n))
+        shapes.append((f"{tag}.Y_pre_aligned", matrix_n))
     for name in (
         "gkr.sum_inv",
         "gkr.s_max_delta",
@@ -86,6 +90,11 @@ def _head_aux_shapes(tag: str, node_count: int, edge_count: int, width: int, out
         "sigma_a", "sigma_q", "a_a_inv", "d_d_inv", "d_q", "z_a", "z_sigma", "z_a_inv"
     ):
         shapes.append((f"{tag}.SignedRoundDiv.aggregate.gkr.{name}", matrix_n))
+    if output:
+        for name in (
+            "sigma_a", "sigma_q", "a_a_inv", "d_d_inv", "d_q", "z_a", "z_sigma", "z_a_inv"
+        ):
+            shapes.append((f"{tag}.SignedRoundDiv.scale_alignment.gkr.{name}", matrix_n))
     for name, shape in (
         ("one_minus_Q", scalar_e),
         ("R_U_prev", scalar_e),
@@ -101,14 +110,6 @@ def _head_aux_shapes(tag: str, node_count: int, edge_count: int, width: int, out
         ("Alpha_H", matrix_e),
     ):
         shapes.append((f"{tag}.gkr.{name}", shape))
-    if output:
-        for name in ("x", "d", "y", "sigma", "z", "a", "a_inv", "d_inv", "q", "r", "delta"):
-            shapes.append((f"{tag}.SignedRoundDiv.scale_alignment.{name}", matrix_n))
-        for name in (
-            "sigma_a", "sigma_q", "a_a_inv", "d_d_inv", "d_q", "z_a", "z_sigma", "z_a_inv"
-        ):
-            shapes.append((f"{tag}.SignedRoundDiv.scale_alignment.gkr.{name}", matrix_n))
-        shapes.append((f"{tag}.Y_pre_aligned", matrix_n))
     return shapes
 
 
@@ -124,7 +125,15 @@ def _append_function_family(
     real_count = int(real_count)
     padded_count = next_power_of_two(max(2, real_count))
     domain_min = int(table["certified_domain"][0])
-    a_pad = _pair_key(table, domain_min, _fixed_table_eval_q(table_name, domain_min))
+    a_pad = _pair_key(
+        table,
+        domain_min,
+        _fixed_table_eval_q(
+            table_name,
+            domain_min,
+            table.get("authenticated_quant_scales"),
+        ),
+    )
     arrays.append((label, (padded_count,)))
     registry.append(
         {
@@ -155,8 +164,19 @@ def _append_range_family(
 ) -> int:
     limb_count = int(policy.get("limb_count", 0))
     bit_width = int(policy.get("bit_width", 0))
+    encoding = str(policy.get("encoding", "magnitude"))
+    encoding_offset = int(policy.get("encoding_offset", 0))
     if limb_count <= 0 or bit_width <= 0:
         raise ValueError(f"invalid canonical range-family policy: {label}")
+    if encoding not in {"magnitude", "offset"}:
+        raise ValueError(f"invalid range-family encoding: {label}")
+    if (encoding == "magnitude" and encoding_offset != 0) or (
+        encoding == "offset" and encoding_offset <= 0
+    ):
+        raise ValueError(f"invalid range-family encoding offset: {label}")
+    expected_signed = encoding == "offset" or label == "rescale_rounding_range"
+    if bool(signed) != expected_signed:
+        raise ValueError(f"range-family signedness does not match encoding: {label}")
     real_count = int(value_count) * limb_count
     padded_count = next_power_of_two(max(2, real_count))
     arrays.append((label, (padded_count,)))
@@ -175,6 +195,9 @@ def _append_range_family(
             "limbs_per_value": limb_count,
             "bound": int(policy.get("bound", -1)),
             "signed_magnitude": bool(signed),
+            "encoded_bound": int(policy.get("encoded_bound", policy.get("bound", -1))),
+            "encoding": encoding,
+            "encoding_offset": encoding_offset,
         }
     )
     return int(offset) + padded_count
@@ -212,24 +235,31 @@ def _shape_only_lasso(
 
     def add_head(tag: str, width: int, output: bool) -> None:
         add_range(f"{tag}.range_delta", e)
+        add_range(f"{tag}.M_range", n, signed=True)
         add_function(f"{tag}.LeakyReLU", "T_LReLU", e)
+        add_range(f"{tag}.LeakyReLU.x_range", e, signed=True)
+        add_range(f"{tag}.LeakyReLU.y_range", e, signed=True)
         add_function(f"{tag}.ExpMap", "T_exp", e)
+        add_range(f"{tag}.ExpMap.x_range", e)
+        add_range(f"{tag}.ExpMap.y_range", e)
         if not output:
             add_function(f"{tag}.ELU", "T_ELU", n * int(width))
-        add_range(f"{tag}.SignedRoundDiv.aggregate.range", n * int(width) * 5)
+            add_range(f"{tag}.ELU.x_range", n * int(width), signed=True)
+            add_range(f"{tag}.ELU.y_range", n * int(width), signed=True)
+        add_range(f"{tag}.SignedRoundDiv.aggregate.range", n * int(width) * 5, signed=True)
         if output:
-            add_range(f"{tag}.SignedRoundDiv.scale_alignment.range", n * int(width) * 5)
+            add_range(f"{tag}.SignedRoundDiv.scale_alignment.range", n * int(width) * 5, signed=True)
 
     for layer in model.hidden_layers:
         for head_index in range(int(layer.head_count)):
             add_head(f"hidden.l{int(layer.layer_index) + 1}.h{head_index}", int(layer.head_dim), False)
     for head_index in range(int(model.k_out)):
         add_head(f"output.h{head_index}", int(model.class_count), True)
-    add_range("output.final_average.SignedRoundDiv.range", n * int(model.class_count) * 5)
+    add_range("output.final_average.SignedRoundDiv.range", n * int(model.class_count) * 5, signed=True)
     residual_count = 0
     for layer in model.hidden_layers:
-        for head in layer.heads:
-            residual_count += n * (int(head.head_dim) + 2)
+        for _head in layer.heads:
+            residual_count += n * (int(layer.head_dim) + 2)
     residual_count += sum(n * (int(head.output_bias.size) + 2) for head in model.output_heads)
     add_range("rescale_rounding_range", residual_count, signed=True)
     return arrays, registry
@@ -241,19 +271,19 @@ def _shape_only_aux(model: Model, graph: LocalGraph) -> ShapeArrayList:
     arrays: ShapeArrayList = []
     for layer in model.hidden_layers:
         arrays.append((f"hidden.l{int(layer.layer_index) + 1}.concat", (n, int(layer.head_count) * int(layer.head_dim))))
-        for head_index, head in enumerate(layer.heads):
+        for head_index, _head in enumerate(layer.heads):
             tag = f"hidden.l{int(layer.layer_index) + 1}.h{head_index}"
-            arrays.extend(_head_aux_shapes(tag, n, e, int(head.head_dim), False))
+            arrays.extend(_head_aux_shapes(tag, n, e, int(layer.head_dim), False))
     for head_index, head in enumerate(model.output_heads):
         arrays.extend(_head_aux_shapes(f"output.h{head_index}", n, e, int(head.output_bias.size), True))
 
     residual_arrays: ShapeArrayList = []
     for layer in model.hidden_layers:
-        for head_index, head in enumerate(layer.heads):
+        for head_index, _head in enumerate(layer.heads):
             tag = f"hidden.l{int(layer.layer_index) + 1}.h{head_index}"
             residual_arrays.extend(
                 [
-                    (f"{tag}.projection.rescale_residual", (n, int(head.head_dim))),
+                    (f"{tag}.projection.rescale_residual", (n, int(layer.head_dim))),
                     (f"{tag}.attention_src.rescale_residual", (n,)),
                     (f"{tag}.attention_dst.rescale_residual", (n,)),
                 ]

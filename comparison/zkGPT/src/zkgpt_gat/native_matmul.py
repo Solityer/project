@@ -10,7 +10,14 @@ import numpy as np
 from .field import BN254_FR_MODULUS, next_power_of_two, sumcheck_domain, to_field_int
 from .gpu_execution import active_product_coefficients
 from .input_oracle import equality_weights, public_array_mle
-from .native_hyrax import NativeHyrax, _point, verify_batched_linear_claim_payload
+from .native_hyrax import (
+    NativeHyrax,
+    absorb_mask_header,
+    build_mask_header,
+    evaluation_commitment_from_payload,
+    masked_evaluation_claim_from_payload,
+    verify_batched_linear_claim_payload,
+)
 from .transcript import Transcript
 from .value_commitment import (
     MultiplicationProof,
@@ -238,6 +245,12 @@ def prove_matmul(
     transcript: Transcript,
     context: Mapping[str, Any],
 ) -> dict[str, Any]:
+    mask_header = build_mask_header(
+        spec.label,
+        context,
+        ("output-evaluation", "residual-evaluation", "inner-product-sumcheck", "left-evaluation", "right-evaluation", "terminal-relation"),
+    )
+    absorb_mask_header(transcript, mask_header)
     n, k, m = spec.shape
     if left.shape != (n, k) or right.shape != (k, m) or output.shape != (n, m) or residual.shape != (n, m):
         raise ValueError(f"MatMul witness shape mismatch: {spec.label}")
@@ -344,6 +357,7 @@ def prove_matmul(
         "left_opening": left_opening,
         "right_opening": {"linear_form": right_form, "proof": right_state.proof},
         "terminal_multiplication": multiplication.to_dict(),
+        "mask_header": mask_header,
     }
 
 
@@ -376,13 +390,14 @@ def _verify_private(
     )
     if result.get("status") != "VERIFY_OK":
         return None
-    commitment = ValueCommitment(_point(payload["proof"]["evaluation_commitment"]))
+    commitment = evaluation_commitment_from_payload(payload["proof"])
     if source_sink is not None:
         source_sink.append({
             "label": label,
             "segment": {"W": "com_W", "Aux": "com_Aux", "L_qry": "com_L"}[source.segment],
             "linear_form": form,
             "evaluation_commitment": commitment,
+            "evaluation_claim": masked_evaluation_claim_from_payload(payload["proof"]),
             "weights": weights,
         })
     return commitment
@@ -404,11 +419,20 @@ def verify_matmul(
         required = {
             "protocol", "spec", "row_point", "col_point", "output_opening", "residual_opening",
             "sumcheck", "left_opening", "right_opening", "terminal_multiplication", "residual_binding",
+            "mask_header",
         }
         if not isinstance(proof, Mapping) or set(proof) != required:
             return False
         if proof["protocol"] != PROTOCOL_ID or proof["spec"] != expected_spec.to_dict():
             return False
+        expected_header = build_mask_header(
+            expected_spec.label,
+            context,
+            ("output-evaluation", "residual-evaluation", "inner-product-sumcheck", "left-evaluation", "right-evaluation", "terminal-relation"),
+        )
+        if proof.get("mask_header") != expected_header:
+            return False
+        absorb_mask_header(transcript, expected_header)
         n, k, m = expected_spec.shape
         expected_residual_binding = {
             "protocol": "zkGPT/native-matmul-exact-zero-residual-v1",

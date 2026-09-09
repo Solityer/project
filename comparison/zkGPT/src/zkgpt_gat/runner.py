@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import math
 import os
 import pathlib
@@ -10,7 +11,9 @@ import subprocess
 import sys
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Mapping
+
+import numpy as np
 
 from .backend import backend_state
 from .config import generated_config, load_app_config
@@ -19,6 +22,7 @@ from .data import load_dataset, normalize_graph
 from .forward import forward_full
 from .formal_gate import require_formal_experiment
 from .model import load_model
+from .quantization import resolve_quant_scale_profile
 from .proof import artifact_ids, build_proof
 from .resources import check_resource_layout, required_resource_paths, resolve_local
 from .registry import (
@@ -39,6 +43,7 @@ from .result_validation import (
     validate_canonical_cell_dir_from_path,
 )
 from .util import digest_file, digest_json, ensure_dir, read_json, require_dir, write_json, write_text_atomic
+from .verifier_context import _array_digest, _x_digest, canonical_graph_identity, load_public_y
 
 
 def selected_datasets(value: str) -> List[str]:
@@ -59,6 +64,40 @@ def selected_backends(value: str) -> List[str]:
     if bad:
         raise ValueError(f"unsupported backends: {bad}")
     return out
+
+
+def _same_quantization(
+    config: Any,
+    registry_binding: Mapping[str, Any],
+    proof_metadata: Mapping[str, Any],
+) -> bool:
+    """Compare authenticated quantization identity across all run inputs."""
+
+    try:
+        config_id = str(config.entries.get("quant_cfg_id", ""))
+        proof_id = str(proof_metadata.get("quant_cfg_id", ""))
+        registered_profile = registry_binding.get("authenticated_quant_scales")
+        proof_profile = proof_metadata.get("authenticated_quant_scales")
+        if not isinstance(registered_profile, Mapping) or not isinstance(
+            proof_profile, Mapping
+        ):
+            return False
+        registered = resolve_quant_scale_profile(
+            config_id,
+            registered_profile,
+        )
+        proved = resolve_quant_scale_profile(
+            proof_id,
+            proof_profile,
+        )
+        return (
+            config_id == proof_id
+            and registered == proved
+            and registry_binding.get("quant_scale_chain")
+            == proof_metadata.get("quant_scale_chain")
+        )
+    except (KeyError, TypeError, ValueError):
+        return False
 
 
 def _ensure_real_directory(path: pathlib.Path) -> None:
@@ -152,6 +191,48 @@ def _resolve_public_y(config: Any, baseline_root: pathlib.Path, dataset: str) ->
     return configured
 
 
+def _load_and_check_public_y_descriptor(
+    path: pathlib.Path,
+    baseline: pathlib.Path,
+    dataset: str,
+    registry_binding: Mapping[str, Any],
+) -> tuple[pathlib.Path, Dict[str, Any], Any]:
+    """Load the canonical Y descriptor and compare trusted setup identities."""
+
+    try:
+        raw = path.read_text(encoding="utf-8")
+        payload = json.loads(raw)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"cannot read canonical public-Y descriptor: {path}") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError("canonical public-Y descriptor must be an object")
+    descriptor = dict(payload)
+    digest = descriptor.pop("descriptor_digest", None)
+    if not isinstance(digest, str) or digest != digest_json(descriptor):
+        raise RuntimeError("canonical public-Y descriptor digest is invalid")
+    expected_path = str(required_resource_paths(baseline, dataset)["public_y_path"].relative_to(baseline))
+    checks = {
+        "schema": payload.get("schema") == registry_binding.get("public_y_schema"),
+        "public_y_schema": payload.get("public_y_schema") == registry_binding.get("public_y_schema"),
+        "public_y_path": payload.get("public_y_path") == expected_path == registry_binding.get("public_y_path"),
+        "descriptor_digest": digest == registry_binding.get("public_y_descriptor_digest"),
+        "y_digest": payload.get("y_digest") == registry_binding.get("public_y_digest"),
+        "reference_y_digest": payload.get("reference_y_digest") == registry_binding.get("reference_y_digest"),
+        "shape": payload.get("public_y_shape") == registry_binding.get("public_y_shape"),
+        "reference_forward_profile_id": payload.get("reference_forward_profile_id") == registry_binding.get("reference_forward_profile_id"),
+        "reference_forward_engine": payload.get("reference_forward_engine") == registry_binding.get("reference_forward_engine"),
+        "reference_forward_source_sha256": payload.get("reference_forward_source_sha256") == registry_binding.get("reference_forward_source_sha256"),
+        "X_pub_digest": payload.get("X_pub_digest") == registry_binding.get("X_pub_digest"),
+        "full_dataset": payload.get("full_dataset") == registry_binding.get("full_dataset"),
+        "graph_identity": payload.get("graph_identity") == registry_binding.get("graph_identity"),
+        "independent_reference_forward": payload.get("independent_reference_forward") == registry_binding.get("independent_reference_forward") is True,
+    }
+    if not all(checks.values()):
+        raise RuntimeError("canonical public-Y descriptor does not match trusted registry: " + ",".join(sorted(key for key, value in checks.items() if not value)))
+    output = load_public_y(path)
+    return path, payload, output
+
+
 def _baseline_root(project_root: pathlib.Path, zk_root: pathlib.Path) -> pathlib.Path:
     project = require_dir(project_root, label="formal project root")
     baseline = require_dir(zk_root, label="formal zkGPT root")
@@ -201,6 +282,13 @@ def run_one(
         ) from exc
     registry_path = registry_pair["public_path"]
     registry_transaction_id = registry_pair["transaction_id"]
+    public_y_path = _resolve_public_y(config, baseline, dataset_name)
+    _public_y_path, public_y_descriptor, public_y_values = _load_and_check_public_y_descriptor(
+        public_y_path,
+        baseline,
+        dataset_name,
+        registry_pair["public"]["registration_binding"],
+    )
     artifact_dir = canonical_artifact_dir(baseline, backend, dataset_name)
     artifact_dir = _prepare_artifact_directory(baseline, results_root, artifact_dir, force)
     started = time.perf_counter()
@@ -216,6 +304,25 @@ def run_one(
         static_table_id=config.entries.get("static_table_id"),
         rounding_mode=config.rounding_mode,
     )
+    registry_binding = registry_pair["public"]["registration_binding"]
+    expected_graph_identity = canonical_graph_identity(
+        graph,
+        dataset_name,
+        full_dataset=graph.num_nodes == dataset.num_nodes,
+    )
+    if registry_binding.get("graph_identity") != expected_graph_identity or registry_binding.get("full_dataset") is not True:
+        raise RuntimeError(f"{dataset_name}/{backend} graph/full-dataset identity does not match trusted setup")
+    expected_x_digest = _x_digest(
+        graph,
+        len(model.hidden_layers) + 1,
+        model.class_count,
+        model.k_out,
+        int(model.quant_scales["input"]),
+    )
+    if registry_binding.get("X_pub_digest") != expected_x_digest:
+        raise RuntimeError(f"{dataset_name}/{backend} X_pub digest does not match trusted setup")
+    if tuple(public_y_values.shape) != (int(graph.num_nodes), int(model.class_count)):
+        raise RuntimeError(f"{dataset_name}/{backend} canonical public-Y shape does not match model/graph")
     gpu_seed = {
         "dataset": dataset_name,
         "backend": backend,
@@ -227,6 +334,11 @@ def run_one(
     forward_started = time.perf_counter()
     trace = forward_full(graph, model, config.rounding_mode)
     forward_ms = (time.perf_counter() - forward_started) * 1000.0
+    trace_y = np.asarray(trace.y, dtype=object)
+    if not np.array_equal(trace_y, public_y_values):
+        raise RuntimeError(f"{dataset_name}/{backend} prover trace.Y does not match canonical public Y")
+    if _array_digest("Y", trace_y) != registry_binding.get("public_y_digest"):
+        raise RuntimeError(f"{dataset_name}/{backend} prover trace.Y digest does not match trusted setup")
     ids = artifact_ids(config, dataset)
     paths = {"artifact_dir": artifact_dir, "zk_root": baseline}
     proof = build_proof(config, dataset, graph, model, trace, backend, gpu_info, paths)
@@ -274,6 +386,11 @@ def run_one(
     )
     if final_registry_pair["transaction_id"] != registry_transaction_id:
         raise RuntimeError("model registry transaction changed during formal run")
+    same_quantization = _same_quantization(
+        config,
+        final_registry_pair["public"]["registration_binding"],
+        proof.metadata,
+    )
     registry_path = final_registry_pair["public_path"]
     public_y_path = _resolve_public_y(config, baseline, dataset_name)
     replay = subprocess.run(
@@ -412,6 +529,20 @@ def run_one(
         "verifier_reads_witness": verified_fields["verifier_reads_witness"],
         "witness_included_in_proof": verified_fields["witness_included_in_proof"],
         "public_output_digest": verified_fields["public_output_digest"],
+        "public_y_schema": verified_fields.get("public_y_schema"),
+        "public_y_path": verified_fields.get("public_y_path"),
+        "public_y_digest": verified_fields.get("public_y_digest"),
+        "public_y_descriptor_digest": verified_fields.get("public_y_descriptor_digest"),
+        "public_y_shape": verified_fields.get("public_y_shape"),
+        "X_pub_digest": verified_fields.get("X_pub_digest"),
+        "graph_identity": verified_fields.get("graph_identity"),
+        "com_W_identity": verified_fields.get("com_W_identity"),
+        "reference_y_digest": verified_fields.get("reference_y_digest"),
+        "reference_forward_profile_id": verified_fields.get("reference_forward_profile_id"),
+        "reference_forward_engine": verified_fields.get("reference_forward_engine"),
+        "reference_forward_source_sha256": verified_fields.get("reference_forward_source_sha256"),
+        "public_output_binding_digest": verified_fields.get("public_output_binding_digest"),
+        "registration_binding_digest": verified_fields.get("registration_binding_digest"),
         "gpu_hot_path": verified_fields["gpu_hot_path"],
         "proof_schema_scan": verified_fields["proof_schema_scan"],
         "privacy_masking_verified": verified_fields["privacy_masking_verified"],
@@ -454,11 +585,26 @@ def run_one(
         "verifier_reads_witness": verified_fields["verifier_reads_witness"],
         "witness_included_in_proof": verified_fields["witness_included_in_proof"],
         "public_input_layout": verified_fields.get("public_input_layout", ""),
+        "public_y_schema": verified_fields.get("public_y_schema", ""),
+        "public_y_path": verified_fields.get("public_y_path", ""),
+        "public_y_digest": verified_fields.get("public_y_digest", ""),
+        "public_y_descriptor_digest": verified_fields.get("public_y_descriptor_digest", ""),
+        "public_y_shape": str(verified_fields.get("public_y_shape", "")),
+        "X_pub_digest": verified_fields.get("X_pub_digest", ""),
+        "graph_identity": str(verified_fields.get("graph_identity", "")),
+        "com_W_identity": str(verified_fields.get("com_W_identity", "")),
+        "reference_y_digest": verified_fields.get("reference_y_digest", ""),
+        "reference_forward_profile_id": verified_fields.get("reference_forward_profile_id", ""),
+        "reference_forward_engine": verified_fields.get("reference_forward_engine", ""),
+        "reference_forward_source_sha256": verified_fields.get("reference_forward_source_sha256", ""),
+        "public_output_binding_digest": verified_fields.get("public_output_binding_digest", ""),
+        "registration_binding_digest": verified_fields.get("registration_binding_digest", ""),
         "task_type": verified_fields.get("task_type", proof.metadata.get("task_type", "")),
         "model_arch": verified_fields.get("model_arch", ""),
         "model_params": verified_fields.get("model_params", ""),
         "model_registry_digest": verified_fields.get("model_registry_digest", ""),
         "same_checkpoint": verified_fields.get("same_checkpoint", ""),
+        "same_quantization": "true" if same_quantization else "false",
         "same_graph_preprocessing": verified_fields.get("same_graph_preprocessing", ""),
         "same_self_loop_rule": verified_fields.get("same_self_loop_rule", ""),
         "same_edge_sort_rule": verified_fields.get("same_edge_sort_rule", ""),
@@ -516,6 +662,20 @@ def write_summary(
         "verifier_reads_witness",
         "witness_included_in_proof",
         "public_input_layout",
+        "public_y_schema",
+        "public_y_path",
+        "public_y_digest",
+        "public_y_descriptor_digest",
+        "public_y_shape",
+        "X_pub_digest",
+        "graph_identity",
+        "com_W_identity",
+        "reference_y_digest",
+        "reference_forward_profile_id",
+        "reference_forward_engine",
+        "reference_forward_source_sha256",
+        "public_output_binding_digest",
+        "registration_binding_digest",
         "task_type",
         "model_arch",
         "model_params",

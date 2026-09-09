@@ -15,8 +15,8 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Any, Callable, Optional, Sequence
 
-from .bn254 import G1Point
-from .field import BN254_FR_MODULUS
+from .bn254 import G1Point, scalar_random
+from .field import BN254_FR_MODULUS, f_inv
 from .transcript import EncodingError, Transcript, decode_point, decode_scalar, encode_point, encode_scalar
 from .value_commitment import (
     CommitmentError,
@@ -29,7 +29,7 @@ from .value_commitment import (
 )
 
 
-COMMITTED_SUMCHECK_PROTOCOL = "zkGPT/committed-coefficient-sumcheck-v1"
+COMMITTED_SUMCHECK_PROTOCOL = "zkGPT/committed-coefficient-sumcheck-v2-masked"
 
 
 class SumcheckVerificationError(CommitmentError):
@@ -78,6 +78,7 @@ class CommittedSumcheckProof:
     initial_claim_commitment: G1Point
     rounds: tuple[dict[str, Any], ...]
     terminal_claim_commitment: G1Point
+    terminal_mask_commitment: G1Point
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -88,6 +89,7 @@ class CommittedSumcheckProof:
             "initial_claim_commitment": _point_wire(self.initial_claim_commitment),
             "rounds": [dict(item) for item in self.rounds],
             "terminal_claim_commitment": _point_wire(self.terminal_claim_commitment),
+            "terminal_mask_commitment": _point_wire(self.terminal_mask_commitment),
         }
 
     @classmethod
@@ -97,6 +99,7 @@ class CommittedSumcheckProof:
         required = {
             "protocol", "field_modulus", "variable_count", "degree",
             "initial_claim_commitment", "rounds", "terminal_claim_commitment",
+            "terminal_mask_commitment",
         }
         if set(value) != required:
             raise CommitmentError("Sumcheck proof has missing or extra fields")
@@ -118,6 +121,7 @@ class CommittedSumcheckProof:
             _parse_point(value["initial_claim_commitment"]),
             tuple(dict(item) for item in rounds),
             _parse_point(value["terminal_claim_commitment"]),
+            _parse_point(value["terminal_mask_commitment"]),
         )
 
 
@@ -140,6 +144,7 @@ class VerifierState:
     challenges: tuple[int, ...]
     round_consistent: bool = True
     terminal_bound: bool = False
+    terminal_mask_commitment: ValueCommitment | None = None
 
     @property
     def terminal_commitment(self) -> ValueCommitment:
@@ -232,6 +237,15 @@ def _sum_commitments(commitments: Sequence[G1Point]) -> G1Point:
     return result
 
 
+def _fresh_mask_scalar_pair() -> tuple[int, int]:
+    """Sample one coefficient mask and its independent blinding scalar."""
+
+    # The scalar source is the BN254 native OS-CSPRNG.  A nonzero blinder
+    # prevents an accidental all-public mask representation while retaining
+    # the full affine mask distribution for the coefficient value.
+    return scalar_random(nonzero=False), scalar_random(nonzero=True)
+
+
 def prove_committed_sumcheck(
     label: str,
     initial_claim: int | ValueCommitment,
@@ -270,6 +284,9 @@ def prove_committed_sumcheck(
     )
     _absorb_statement(transcript, label, params, initial_commitment, variable_count, degree)
     current_point = initial_commitment.point
+    current_mask_point = G1Point.zero()
+    current_mask_blind = 0
+    current_mask_value = 0
     rounds: list[dict[str, Any]] = []
     challenges: list[int] = []
 
@@ -281,26 +298,82 @@ def prove_committed_sumcheck(
         if (coefficients[0] + sum(coefficients)) % BN254_FR_MODULUS != current_claim:
             raise CommitmentError("round polynomial does not satisfy the current claim")
 
+        # Each coefficient gets an independent affine mask commitment.  The
+        # masked commitment and the mask commitment are both public, while
+        # their scalar openings remain prover-local.  ``raw_commitments`` is
+        # used only for the group equations below and is never serialized.
         commitments: list[ValueCommitment] = []
-        blinds: list[int] = []
-        poks: list[RepresentationProof] = []
+        raw_blinds: list[int] = []
+        mask_commitments: list[ValueCommitment] = []
+        mask_blinds: list[int] = []
+        mask_values: list[int] = [0] * (degree + 1)
+        for coefficient_index in range(1, degree + 1):
+            mask_values[coefficient_index] = scalar_random(nonzero=False)
+        # g_mask(0)+g_mask(1) = 2*m_0 + m_1 + ... + m_d.  Constrain that
+        # public group relation to the mask evaluation carried from the
+        # previous round (zero in the first round).
+        mask_values[0] = (
+            (current_mask_value - sum(mask_values[1:])) * f_inv(2)
+        ) % BN254_FR_MODULUS
+        coefficient_poks: list[RepresentationProof] = []
+        mask_poks: list[RepresentationProof] = []
         for coefficient_index, coefficient in enumerate(coefficients):
-            commitment, blind = commit_value(params, coefficient)
-            commitments.append(commitment)
-            blinds.append(blind)
-            poks.append(
+            raw_commitment, blind = commit_value(params, coefficient)
+            mask_value = mask_values[coefficient_index]
+            # The recurrence fixes the mask value; its blinder remains fresh
+            # and independent for every coefficient commitment.
+            mask_blind = scalar_random(nonzero=True)
+            mask_commitment, _ = commit_value(params, mask_value, mask_blind)
+            if mask_commitment.point.infinity:
+                raise CommitmentError("mask coefficient commitment is the identity")
+            masked_commitment = ValueCommitment(raw_commitment.point + mask_commitment.point)
+            commitments.append(masked_commitment)
+            raw_blinds.append(blind)
+            mask_commitments.append(mask_commitment)
+            mask_blinds.append(mask_blind)
+
+        # Bind the complete public coefficient/mask commitment arrays before
+        # any representation-PoK challenge is derived.  Absorbing only the
+        # current coefficient would leave later mask commitments outside the
+        # Fiat--Shamir statement.
+        transcript.absorb(
+            f"{label}/round/{round_index}/coefficient-header",
+            {
+                "coefficient_commitments": [item.point for item in commitments],
+                "coefficient_mask_commitments": [item.point for item in mask_commitments],
+            },
+        )
+        for coefficient_index, (coefficient, masked_commitment, mask_commitment, raw_blind, mask_value, mask_blind) in enumerate(
+            zip(coefficients, commitments, mask_commitments, raw_blinds, mask_values, mask_blinds)
+        ):
+            coefficient_poks.append(
                 prove_representation(
                     params,
-                    commitment,
-                    coefficient,
-                    blind,
+                    masked_commitment,
+                    (coefficient + mask_value) % BN254_FR_MODULUS,
+                    (raw_blind + mask_blind) % BN254_FR_MODULUS,
                     label=f"{label}/round/{round_index}/coefficient/{coefficient_index}",
                     transcript=transcript,
                 )
             )
+            mask_poks.append(
+                prove_representation(
+                    params,
+                    mask_commitment,
+                    mask_value,
+                    mask_blind,
+                    label=f"{label}/round/{round_index}/mask-coefficient/{coefficient_index}",
+                    transcript=transcript,
+                )
+            )
 
-        equality_point = _sum_commitments([item.point for item in commitments]) - current_point + commitments[0].point
-        equality_blind = (sum(blinds) + blinds[0] - current_blind) % BN254_FR_MODULUS
+        raw_points = [
+            commitment.point - mask.point
+            for commitment, mask in zip(commitments, mask_commitments)
+        ]
+        raw_commitment_sum = _sum_commitments(raw_points)
+        equality_point = raw_commitment_sum - current_point + raw_points[0]
+        equality_blind = (sum(raw_blinds) + raw_blinds[0] - current_blind) % BN254_FR_MODULUS
         equality = prove_representation(
             params,
             ValueCommitment(equality_point),
@@ -310,14 +383,38 @@ def prove_committed_sumcheck(
             transcript=transcript,
         )
 
+        # The mask polynomial is itself a committed polynomial.  Its first
+        # round must sum to zero, and each later round must sum to the mask
+        # evaluation carried by the preceding challenge.  This is the native
+        # cancellation relation that lets the verifier recover a raw
+        # terminal commitment instead of trusting a masked terminal scalar.
+        mask_sum_point = _sum_commitments([item.point for item in mask_commitments]) + mask_commitments[0].point
+        mask_current_point = current_mask_point if round_index else G1Point.zero()
+        mask_sum_blind = (sum(mask_blinds) + mask_blinds[0] - current_mask_blind) % BN254_FR_MODULUS
+        mask_recurrence = prove_representation(
+            params,
+            ValueCommitment(mask_sum_point - mask_current_point),
+            0,
+            mask_sum_blind,
+            label=f"{label}/round/{round_index}/mask-recurrence",
+            transcript=transcript,
+        )
+
         challenge = transcript.challenge_scalar(f"{label}/round/{round_index}/challenge", nonzero=True)
         challenges.append(challenge)
-        current_point = _evaluate_commitments([item.point for item in commitments], challenge)
+        current_point = _evaluate_commitments(raw_points, challenge)
+        current_mask_point = _evaluate_commitments([item.point for item in mask_commitments], challenge)
         current_blind = 0
+        current_mask_blind = 0
         power = 1
-        for blind in blinds:
-            current_blind = (current_blind + power * blind) % BN254_FR_MODULUS
+        for raw_blind, mask_blind in zip(raw_blinds, mask_blinds):
+            current_blind = (current_blind + power * raw_blind) % BN254_FR_MODULUS
+            current_mask_blind = (current_mask_blind + power * mask_blind) % BN254_FR_MODULUS
             power = (power * challenge) % BN254_FR_MODULUS
+        current_mask_value = sum(
+            mask_value * pow(challenge, coefficient_index, BN254_FR_MODULUS)
+            for coefficient_index, mask_value in enumerate(mask_values)
+        ) % BN254_FR_MODULUS
         current_claim = sum(
             coefficient * pow(challenge, coefficient_index, BN254_FR_MODULUS)
             for coefficient_index, coefficient in enumerate(coefficients)
@@ -329,8 +426,12 @@ def prove_committed_sumcheck(
             {
                 "round": round_index,
                 "coefficient_commitments": [item.to_dict() for item in commitments],
-                "coefficient_poks": [item.to_dict() for item in poks],
+                "coefficient_mask_commitments": [item.to_dict() for item in mask_commitments],
+                "coefficient_poks": [item.to_dict() for item in coefficient_poks],
+                "coefficient_mask_poks": [item.to_dict() for item in mask_poks],
                 "group_equality_pok": equality.to_dict(),
+                "mask_recurrence": "zero_sum" if round_index == 0 else "challenge_recurrence",
+                "mask_recurrence_pok": mask_recurrence.to_dict(),
                 "challenge": _scalar_wire(challenge),
             }
         )
@@ -341,8 +442,11 @@ def prove_committed_sumcheck(
         degree,
         initial_commitment.point,
         tuple(rounds),
-        current_point,
+        current_point + current_mask_point,
+        current_mask_point,
     )
+    if current_mask_point.infinity:
+        raise CommitmentError("terminal mask commitment is the identity")
     return ProverState(
         proof=proof,
         terminal_value=current_claim,
@@ -420,12 +524,15 @@ def verify_committed_sumcheck(
             raise SumcheckVerificationError("proof initial commitment differs from external statement")
         _absorb_statement(transcript, label, params, initial_commitment, expected_variable_count, degree)
         current_point = initial_commitment.point
+        current_mask_point = G1Point.zero()
         challenges: list[int] = []
         seen_rounds: set[int] = set()
 
         for expected_round, round_message in enumerate(proof.rounds):
             if not isinstance(round_message, dict) or set(round_message) != {
-                "round", "coefficient_commitments", "coefficient_poks", "group_equality_pok", "challenge"
+                "round", "coefficient_commitments", "coefficient_mask_commitments",
+                "coefficient_poks", "coefficient_mask_poks", "group_equality_pok",
+                "mask_recurrence", "mask_recurrence_pok", "challenge",
             }:
                 raise SumcheckVerificationError("round has missing or extra fields")
             round_index = round_message["round"]
@@ -433,14 +540,27 @@ def verify_committed_sumcheck(
                 raise SumcheckVerificationError("round index is missing, duplicated, or out of order")
             seen_rounds.add(round_index)
             commitment_wires = round_message["coefficient_commitments"]
+            mask_commitment_wires = round_message["coefficient_mask_commitments"]
             pok_wires = round_message["coefficient_poks"]
-            if not isinstance(commitment_wires, list) or not isinstance(pok_wires, list):
+            mask_pok_wires = round_message["coefficient_mask_poks"]
+            if not all(isinstance(item, list) for item in (commitment_wires, mask_commitment_wires, pok_wires, mask_pok_wires)):
                 raise SumcheckVerificationError("round commitments/PoKs must be lists")
-            if len(commitment_wires) != degree + 1 or len(pok_wires) != degree + 1:
+            if any(len(item) != degree + 1 for item in (commitment_wires, mask_commitment_wires, pok_wires, mask_pok_wires)):
                 raise SumcheckVerificationError("round coefficient width differs from public degree")
             commitments = [ValueCommitment.from_dict(item) for item in commitment_wires]
+            mask_commitments = [ValueCommitment.from_dict(item) for item in mask_commitment_wires]
+            if any(item.point.infinity for item in mask_commitments):
+                raise SumcheckVerificationError("mask coefficient commitment is the identity")
             poks = [RepresentationProof.from_dict(item) for item in pok_wires]
-            for coefficient_index, (commitment, pok) in enumerate(zip(commitments, poks)):
+            mask_poks = [RepresentationProof.from_dict(item) for item in mask_pok_wires]
+            transcript.absorb(
+                f"{label}/round/{expected_round}/coefficient-header",
+                {
+                    "coefficient_commitments": [item.point for item in commitments],
+                    "coefficient_mask_commitments": [item.point for item in mask_commitments],
+                },
+            )
+            for coefficient_index, (commitment, mask_commitment, pok, mask_pok) in enumerate(zip(commitments, mask_commitments, poks, mask_poks)):
                 if not verify_representation(
                     params,
                     commitment,
@@ -449,7 +569,19 @@ def verify_committed_sumcheck(
                     transcript=transcript,
                 ):
                     raise SumcheckVerificationError("coefficient representation PoK failed")
-            equality_point = _sum_commitments([item.point for item in commitments]) - current_point + commitments[0].point
+                if not verify_representation(
+                    params,
+                    mask_commitment,
+                    mask_pok,
+                    label=f"{label}/round/{expected_round}/mask-coefficient/{coefficient_index}",
+                    transcript=transcript,
+                ):
+                    raise SumcheckVerificationError("mask coefficient representation PoK failed")
+            raw_points = [
+                commitment.point - mask_commitment.point
+                for commitment, mask_commitment in zip(commitments, mask_commitments)
+            ]
+            equality_point = _sum_commitments(raw_points) - current_point + raw_points[0]
             equality = RepresentationProof.from_dict(round_message["group_equality_pok"])
             if not verify_representation(
                 params,
@@ -459,17 +591,38 @@ def verify_committed_sumcheck(
                 transcript=transcript,
             ):
                 raise SumcheckVerificationError("round group equality failed")
+            mask_sum_point = _sum_commitments([item.point for item in mask_commitments]) + mask_commitments[0].point
+            expected_mask_relation = "zero_sum" if expected_round == 0 else "challenge_recurrence"
+            if round_message.get("mask_recurrence") != expected_mask_relation:
+                raise SumcheckVerificationError("mask recurrence kind mismatch")
+            if not verify_representation(
+                params,
+                ValueCommitment(mask_sum_point - current_mask_point),
+                RepresentationProof.from_dict(round_message["mask_recurrence_pok"]),
+                label=f"{label}/round/{expected_round}/mask-recurrence",
+                transcript=transcript,
+            ):
+                raise SumcheckVerificationError("mask recurrence relation failed")
             challenge = _parse_scalar(round_message["challenge"])
             expected_challenge = transcript.challenge_scalar(f"{label}/round/{expected_round}/challenge", nonzero=True)
             if challenge != expected_challenge:
                 raise SumcheckVerificationError("Fiat--Shamir challenge mismatch")
             challenges.append(challenge)
-            current_point = _evaluate_commitments([item.point for item in commitments], challenge)
+            current_point = _evaluate_commitments(raw_points, challenge)
+            current_mask_point = _evaluate_commitments([item.point for item in mask_commitments], challenge)
 
-        terminal = ValueCommitment(_check_point(proof.terminal_claim_commitment))
-        if terminal.point != current_point or len(seen_rounds) != expected_variable_count:
+        terminal_mask = ValueCommitment(_check_point(proof.terminal_mask_commitment))
+        if terminal_mask.point.infinity:
+            raise SumcheckVerificationError("terminal mask commitment is the identity")
+        terminal = ValueCommitment(_check_point(proof.terminal_claim_commitment) - terminal_mask.point)
+        if terminal.point != current_point or terminal_mask.point != current_mask_point or len(seen_rounds) != expected_variable_count:
             raise SumcheckVerificationError("terminal commitment does not match round evaluation")
-        state = VerifierState(terminal_claim=terminal, challenges=tuple(challenges), round_consistent=True)
+        state = VerifierState(
+            terminal_claim=terminal,
+            challenges=tuple(challenges),
+            round_consistent=True,
+            terminal_mask_commitment=terminal_mask,
+        )
         return _terminal_predicate_result(state, terminal_predicate)
     except SumcheckVerificationError:
         raise

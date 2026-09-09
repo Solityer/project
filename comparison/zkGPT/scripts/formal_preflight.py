@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import pathlib
 import shutil
 import sys
@@ -21,6 +22,7 @@ from zkgpt_gat.constants import (  # noqa: E402
     FORMAL_GAT_MODEL_ARCH_IDS,
 )
 from zkgpt_gat.formal_gate import formal_gate_status  # noqa: E402
+from zkgpt_gat.build_identity import verify_build_manifest  # noqa: E402
 from zkgpt_gat.resources import check_resource_layout, read_resource_manifest, validate_static_table_descriptor  # noqa: E402
 from zkgpt_gat.config import load_app_config  # noqa: E402
 from zkgpt_gat.util import assert_contained_path, lexical_path, require_dir, write_json  # noqa: E402
@@ -46,6 +48,7 @@ def main() -> int:
         "python3": shutil.which("python3") is not None,
         "numpy": False,
         "nvcc": shutil.which("nvcc") is not None,
+        "baseline_local_python": os.path.abspath(sys.executable) == os.path.abspath(str(ROOT / ".venv" / "bin" / "python")),
     }
     try:
         import numpy  # noqa: F401
@@ -69,6 +72,7 @@ def main() -> int:
         "cuda_backend_source": (ROOT / "backend" / "cuda" / "zkgpt_cuda_proof_hot_path.cu").is_file(),
         "cuda_build_entrypoint": (ROOT / "scripts" / "build_cuda_backend.sh").is_file(),
         "static_table_descriptor": (ROOT / "resources" / "static_tables" / "exact_integer_gat.json").is_file(),
+        "baseline_local_python": environment["baseline_local_python"],
     }
     config_errors: list[str] = []
     for config_path in sorted((ROOT / "configs" / "formal").glob("*.cfg")) + sorted((ROOT / "configs" / "generated").glob("*/*.cfg")):
@@ -93,6 +97,25 @@ def main() -> int:
         except (OSError, ValueError) as exc:
             config_errors.append(f"config_invalid:{config_path.relative_to(ROOT)}:{exc}")
     source_checks["formal_configs"] = not config_errors
+    build_identity_report: dict[str, object]
+    if args.source_only:
+        build_identity_report = {"status": "deferred_until_gpu_build"}
+        source_checks["cuda_build_manifest"] = True
+    else:
+        try:
+            manifest = verify_build_manifest(ROOT, require_nvcc=True)
+            build_identity_report = {
+                "status": "verified",
+                "manifest_digest": manifest.get("manifest_digest"),
+                "build_identity": manifest.get("build_identity"),
+                "binary_sha256": manifest.get("binary", {}).get("sha256"),
+                "source_manifest_sha256": manifest.get("source", {}).get("manifest_sha256"),
+                "target": manifest.get("target"),
+            }
+            source_checks["cuda_build_manifest"] = True
+        except (OSError, ValueError, RuntimeError, TypeError) as exc:
+            build_identity_report = {"status": "invalid", "error": str(exc)}
+            source_checks["cuda_build_manifest"] = False
     try:
         read_resource_manifest(ROOT)
         validate_static_table_descriptor(ROOT)
@@ -143,6 +166,7 @@ def main() -> int:
         "module_checks": module_checks,
         "source_incomplete": source_missing,
         "resource_check": resource_report,
+        "cuda_build_identity": build_identity_report,
         "blockers": blockers,
         "mode": "source_only" if args.source_only else "formal",
     }

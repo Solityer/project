@@ -8,6 +8,8 @@ checks, not runtime fallbacks.
 from __future__ import annotations
 
 import contextvars
+import hashlib
+import os
 import pathlib
 import re
 from dataclasses import dataclass, field
@@ -22,6 +24,7 @@ from .backend import (
     recompute_gpu_proof_batch,
     validate_gpu_proof_state,
 )
+from .build_identity import verify_build_manifest
 from .field import BN254_FR_MODULUS, to_field_int
 from .util import digest_json
 
@@ -32,12 +35,68 @@ _ACTIVE: contextvars.ContextVar["ProofExecution | None"] = contextvars.ContextVa
 GPU_EXECUTION_SCHEMA = "zkGPT_gpu_proof_execution_v3"
 GPU_EXECUTION_SEMANTICS = "zkgpt_cuda_authors_bn254_fr_proof_messages_v3"
 GPU_COMPONENTS = frozenset({"sumcheck_product", "lasso_grand_product", "hyrax_mle_fold"})
+GPU_PRIMITIVES = frozenset({"MatMul", "GKR", "Lasso", "Hyrax"})
 _UUID_RE = re.compile(r"^[0-9a-fA-F]{32}$")
 _COMPONENT_KINDS = {
     "sumcheck_product": {"sumcheck_mle_fold", "sumcheck_product2_fold", "sumcheck_product3_fold"},
-    "lasso_grand_product": {"lasso_product_tree"},
+    "lasso_grand_product": {"lasso_product_tree", "sumcheck_product2_fold", "sumcheck_product3_fold"},
     "hyrax_mle_fold": {"hyrax_linear_eval_fold"},
 }
+
+
+def _relation_identity(label: str, component: str, kind: str) -> dict[str, str]:
+    """Classify one native operation by the relation that consumes it."""
+    normalized = str(label).lower()
+    if component == "lasso_grand_product":
+        if kind == "lasso_product_tree":
+            return {
+                "primitive": "Lasso",
+                "relation_id": "zkGPT/lasso-grand-product-bn254-fr-v3",
+                "operation_id": "lasso_product_tree",
+            }
+        if "local-combine" in normalized:
+            return {
+                "primitive": "Lasso",
+                "relation_id": "zkGPT/lasso-input-combine-sumcheck-bn254-fr-v3",
+                "operation_id": kind,
+            }
+    if component == "sumcheck_product":
+        if "/matmul" in normalized or normalized.startswith("matmul"):
+            return {
+                "primitive": "MatMul",
+                "relation_id": "zkGPT/matmul-sumcheck-bn254-fr-v3",
+                "operation_id": kind,
+            }
+        if (
+            "/gkr" in normalized
+            or normalized.startswith("gkr")
+            or normalized.startswith("product2")
+            or "input-combine" in normalized
+            or "relation-claim" in normalized
+        ):
+            return {
+                "primitive": "GKR",
+                "relation_id": "zkGPT/gkr-product-sumcheck-bn254-fr-v3",
+                "operation_id": kind,
+            }
+    if component == "hyrax_mle_fold" and kind == "hyrax_linear_eval_fold":
+        return {
+            "primitive": "Hyrax",
+            "relation_id": "zkGPT/hyrax-terminal-mle-bn254-fr-v3",
+            "operation_id": kind,
+        }
+    return {
+        "primitive": "unclassified",
+        "relation_id": "unclassified",
+        "operation_id": kind,
+    }
+
+
+def _component_for_label(component: str, label: str) -> str:
+    """Keep Lasso's local combine under the Lasso evidence family."""
+    if component == "sumcheck_product" and "local-combine" in str(label).lower():
+        return "lasso_grand_product"
+    return component
 
 
 def _scalar(value: str) -> int:
@@ -111,11 +170,22 @@ def _public_invocation(state: Mapping[str, Any], label: str, component: str, sha
     primitive_counts = state.get("primitive_counts")
     if not isinstance(primitive_counts, Mapping):
         raise RuntimeError("CUDA proof primitive omitted primitive counts")
-    # Raw operation outputs, output digests, and aggregate field values are
-    # deliberately not serialized: they are witness-dependent proof messages
-    # and must remain in the masked proof payload.  The public record carries
-    # their exact slot/cardinality contract; the formal verifier checks the
-    # actual values and equations at their native proof positions.
+    relation = _relation_identity(label, component, str(operation.get("kind", "")))
+    proof_use = {
+        "label": label,
+        "component": component,
+        "primitive": relation["primitive"],
+        "relation_id": relation["relation_id"],
+        "operation_id": relation["operation_id"],
+        "operation_digest": state.get("operation_digest"),
+        "wire_input_sha256": state.get("wire_input_sha256"),
+        "operation_output_digest": state.get("operation_output_digest"),
+        "proof_message_binding_digest": state.get("proof_message_binding_digest"),
+    }
+    # The input and output digests are not a replacement for protocol checks;
+    # they are an explicit bridge from the exact operation fed to the native
+    # kernel to the proof slot that consumed its messages.  The verifier also
+    # replays the native equations at their original proof positions.
     descriptor = {
         "label": label,
         "component": component,
@@ -140,12 +210,29 @@ def _public_invocation(state: Mapping[str, Any], label: str, component: str, sha
         "cuda_kernel_version": state.get("cuda_kernel_version"),
         "binary_sha256": state.get("binary_sha256"),
         "build_identity": state.get("build_identity"),
+        "build_manifest_schema": state.get("build_manifest_schema"),
+        "build_manifest_digest": state.get("build_manifest_digest"),
+        "source_manifest_sha256": state.get("source_manifest_sha256"),
+        "cuda_target": state.get("cuda_target"),
+        "gpu_compute_capability": state.get("gpu_compute_capability"),
+        "gpu_arch": state.get("gpu_arch"),
+        "native_primitive": relation["primitive"],
+        "relation_id": relation["relation_id"],
+        "operation_id": relation["operation_id"],
+        "operation_digest": state.get("operation_digest"),
+        "wire_input_sha256": state.get("wire_input_sha256"),
+        "operation_output_digest": state.get("operation_output_digest"),
+        "proof_message_binding_digest": state.get("proof_message_binding_digest"),
+        "proof_use_binding_digest": digest_json(proof_use),
+        "kernel_invocation_count": state.get("kernel_invocation_count"),
+        "kernel_invocation_counts": dict(state.get("kernel_invocation_counts", {})),
         "cuda_event_timing": state.get("cuda_event_timing"),
         "cuda_event_elapsed_ms": float(state.get("cuda_event_elapsed_ms", -1.0)),
+        "transfer_timing": state.get("transfer_timing"),
         "kernel_time_ms": float(state.get("kernel_time_ms", 0.0)),
-        "memory_copy_h2d_ms": float(state.get("memory_copy_h2d_ms", 0.0)),
-        "memory_copy_d2h_ms": float(state.get("memory_copy_d2h_ms", 0.0)),
-        "synchronization_time_ms": float(state.get("synchronization_time_ms", 0.0)),
+        "memory_copy_h2d_ms": state.get("memory_copy_h2d_ms"),
+        "memory_copy_d2h_ms": state.get("memory_copy_d2h_ms"),
+        "synchronization_time_ms": state.get("synchronization_time_ms"),
         "field_words_processed": int(state.get("field_words_processed", 0)),
         "primitive_counts": dict(primitive_counts),
         "cuda_kernel_executed": state.get("cuda_kernel_executed") is True,
@@ -165,13 +252,18 @@ class ProofExecution:
     def __post_init__(self) -> None:
         if self.backend not in {"cpu", "gpu"}:
             raise ValueError("proof execution backend must be cpu or gpu")
-        self.zk_root = pathlib.Path(self.zk_root).resolve()
+        # Keep the root lexical. Resolving here would erase a caller-supplied
+        # symlink alias before the backend can reject it at the trust boundary.
+        self.zk_root = pathlib.Path(os.path.abspath(os.path.normpath(os.fspath(self.zk_root))))
+        if self.zk_root.is_symlink() or not self.zk_root.is_dir():
+            raise ValueError(f"proof execution root must be a real directory: {self.zk_root}")
 
     @property
     def gpu(self) -> bool:
         return self.backend == "gpu"
 
     def _invoke(self, operation: Mapping[str, Any], label: str, component: str, shape: Sequence[int]) -> Mapping[str, Any]:
+        evidence_component = _component_for_label(component, label)
         state = gpu_proof_message_batch(self.zk_root, [operation], label)
         expected = recompute_gpu_proof_batch([operation])
         valid, errors = validate_gpu_proof_state(
@@ -184,7 +276,9 @@ class ProofExecution:
             raise RuntimeError("CUDA proof primitive failed strict message validation: " + ";".join(errors))
         if state.get("operations") != expected.get("operations"):
             raise RuntimeError(f"CUDA {component} output differs from the independent BN254-Fr reference")
-        invocation = _public_invocation(state, label, component, shape)
+        invocation = _public_invocation(state, label, evidence_component, shape)
+        if invocation["native_primitive"] == "unclassified":
+            raise RuntimeError(f"CUDA proof-authoring label has no registered relation identity: {label}")
         if not invocation["cuda_kernel_executed"] or invocation["cpu_fallback"]:
             raise RuntimeError("CUDA proof-authoring invocation did not execute fail-closed")
         self.invocations.append(invocation)
@@ -239,6 +333,9 @@ class ProofExecution:
         components = {item["component"] for item in self.invocations}
         if components != GPU_COMPONENTS:
             raise RuntimeError(f"GPU proof path has wrong native components: {sorted(components)}")
+        primitives = {item["native_primitive"] for item in self.invocations}
+        if primitives != GPU_PRIMITIVES:
+            raise RuntimeError(f"GPU proof path has wrong native primitives: {sorted(primitives)}")
         payload = {
             "schema": GPU_EXECUTION_SCHEMA,
             "semantic_id": GPU_EXECUTION_SEMANTICS,
@@ -253,6 +350,7 @@ class ProofExecution:
             "proof_hot_path": True,
             "invocation_count": len(self.invocations),
             "components": sorted(components),
+            "native_primitives": sorted(primitives),
             "invocations": list(self.invocations),
         }
         payload["transcript_binding_digest"] = digest_json(gpu_execution_transcript_binding(payload))
@@ -265,6 +363,9 @@ class ProofExecution:
         components = {item["component"] for item in self.invocations}
         if not self.invocations or components != GPU_COMPONENTS:
             raise RuntimeError("GPU transcript binding is incomplete")
+        primitives = {item["native_primitive"] for item in self.invocations}
+        if primitives != GPU_PRIMITIVES:
+            raise RuntimeError("GPU transcript binding is missing a native relation family")
         return gpu_execution_transcript_binding({
             "schema": GPU_EXECUTION_SCHEMA,
             "semantic_id": GPU_EXECUTION_SEMANTICS,
@@ -275,6 +376,7 @@ class ProofExecution:
             "proof_hot_path": True,
             "invocation_count": len(self.invocations),
             "components": sorted(components),
+            "native_primitives": sorted(primitives),
             "invocations": list(self.invocations),
         })
 
@@ -291,6 +393,7 @@ def gpu_execution_transcript_binding(evidence: Mapping[str, Any]) -> dict[str, A
         "proof_hot_path": evidence.get("proof_hot_path"),
         "invocation_count": evidence.get("invocation_count"),
         "components": evidence.get("components"),
+        "native_primitives": evidence.get("native_primitives"),
         "invocations": evidence.get("invocations"),
     }
 
@@ -298,6 +401,7 @@ def gpu_execution_transcript_binding(evidence: Mapping[str, Any]) -> dict[str, A
 def validate_gpu_execution_evidence(
     evidence: Mapping[str, Any], *, session_nonce: str | None = None,
     final_transcript_digest: str | None = None,
+    zk_root: pathlib.Path | None = None,
 ) -> tuple[bool, list[str]]:
     """Validate public, run-scoped GPU proof-authoring evidence.
 
@@ -339,12 +443,37 @@ def validate_gpu_execution_evidence(
     components = evidence.get("components")
     if not isinstance(components, list) or set(components) != GPU_COMPONENTS or len(components) != len(GPU_COMPONENTS):
         errors.append("components_invalid")
+    primitives = evidence.get("native_primitives")
+    if not isinstance(primitives, list) or set(primitives) != GPU_PRIMITIVES or len(primitives) != len(GPU_PRIMITIVES):
+        errors.append("native_primitives_invalid")
     invocations = evidence.get("invocations")
     if not isinstance(invocations, list) or not invocations:
         errors.append("invocations_missing")
         invocations = []
     if evidence.get("invocation_count") != len(invocations):
         errors.append("invocation_count_invalid")
+    authenticated_manifest: Mapping[str, Any] | None = None
+    if zk_root is not None:
+        try:
+            authenticated_manifest = verify_build_manifest(pathlib.Path(zk_root))
+        except (OSError, ValueError, RuntimeError) as exc:
+            errors.append(f"build_manifest_invalid:{exc}")
+    manifest_build_identity = authenticated_manifest.get("build_identity") if authenticated_manifest else None
+    manifest_binary_sha = (
+        authenticated_manifest.get("binary", {}).get("sha256")
+        if authenticated_manifest and isinstance(authenticated_manifest.get("binary"), Mapping)
+        else None
+    )
+    manifest_digest = authenticated_manifest.get("manifest_digest") if authenticated_manifest else None
+    source_manifest_sha = (
+        authenticated_manifest.get("source", {}).get("manifest_sha256")
+        if authenticated_manifest and isinstance(authenticated_manifest.get("source"), Mapping)
+        else None
+    )
+    manifest_target = authenticated_manifest.get("target") if authenticated_manifest else None
+    if manifest_target is not None and not isinstance(manifest_target, Mapping):
+        errors.append("build_manifest_target_invalid")
+        manifest_target = None
     labels: set[str] = set()
     for index, invocation in enumerate(invocations):
         prefix = f"invocations[{index}]"
@@ -362,6 +491,19 @@ def validate_gpu_execution_evidence(
             labels.add(label)
         if invocation.get("component") not in GPU_COMPONENTS:
             errors.append(f"{prefix}_component_invalid")
+        relation = _relation_identity(
+            str(invocation.get("label", "")),
+            str(invocation.get("component", "")),
+            str(invocation.get("operation_kind", "")),
+        )
+        if invocation.get("native_primitive") != relation["primitive"]:
+            errors.append(f"{prefix}_native_primitive_invalid")
+        if invocation.get("relation_id") != relation["relation_id"]:
+            errors.append(f"{prefix}_relation_id_invalid")
+        if invocation.get("operation_id") != relation["operation_id"]:
+            errors.append(f"{prefix}_operation_id_invalid")
+        if relation["primitive"] == "unclassified":
+            errors.append(f"{prefix}_relation_unclassified")
         if invocation.get("backend") != "gpu":
             errors.append(f"{prefix}_backend_invalid")
         for name in ("device_name", "gpu_uuid", "device_uuid", "cuda_kernel", "cuda_kernel_version"):
@@ -372,8 +514,22 @@ def validate_gpu_execution_evidence(
             errors.append(f"{prefix}_binary_sha256_invalid")
         elif any(char not in "0123456789abcdef" for char in binary_sha256):
             errors.append(f"{prefix}_binary_sha256_invalid")
-        if invocation.get("build_identity") != digest_json({"kernel": _GPU_KERNEL, "binary_sha256": binary_sha256}):
+        build_identity_value = invocation.get("build_identity")
+        if not isinstance(build_identity_value, str) or len(build_identity_value) != 64 or build_identity_value.lower() != build_identity_value or any(char not in "0123456789abcdef" for char in build_identity_value):
             errors.append(f"{prefix}_build_identity_invalid")
+        if authenticated_manifest is not None:
+            if build_identity_value != manifest_build_identity:
+                errors.append(f"{prefix}_build_identity_manifest_mismatch")
+            if binary_sha256 != manifest_binary_sha:
+                errors.append(f"{prefix}_binary_manifest_mismatch")
+            if invocation.get("build_manifest_digest") != manifest_digest:
+                errors.append(f"{prefix}_build_manifest_digest_mismatch")
+            if invocation.get("source_manifest_sha256") != source_manifest_sha:
+                errors.append(f"{prefix}_source_manifest_digest_mismatch")
+            if invocation.get("cuda_target") != manifest_target:
+                errors.append(f"{prefix}_cuda_target_manifest_mismatch")
+            if invocation.get("gpu_compute_capability") != manifest_target.get("compute_capability") or invocation.get("gpu_arch") != manifest_target.get("code"):
+                errors.append(f"{prefix}_device_target_manifest_mismatch")
         if not isinstance(invocation.get("gpu_uuid"), str) or not _UUID_RE.fullmatch(str(invocation.get("gpu_uuid", ""))):
             errors.append(f"{prefix}_gpu_uuid_format_invalid")
         if invocation.get("device_uuid") != invocation.get("gpu_uuid"):
@@ -386,6 +542,23 @@ def validate_gpu_execution_evidence(
             errors.append(f"{prefix}_wire_version_invalid")
         if invocation.get("cuda_kernel") != _GPU_KERNEL or invocation.get("cuda_kernel_version") != _GPU_KERNEL:
             errors.append(f"{prefix}_kernel_contract_invalid")
+        for digest_name in ("operation_digest", "wire_input_sha256", "operation_output_digest", "proof_message_binding_digest"):
+            digest_value = invocation.get(digest_name)
+            if not isinstance(digest_value, str) or len(digest_value) != 64 or digest_value.lower() != digest_value or any(char not in "0123456789abcdef" for char in digest_value):
+                errors.append(f"{prefix}_{digest_name}_invalid")
+        proof_use = {
+            "label": invocation.get("label"),
+            "component": invocation.get("component"),
+            "primitive": invocation.get("native_primitive"),
+            "relation_id": invocation.get("relation_id"),
+            "operation_id": invocation.get("operation_id"),
+            "operation_digest": invocation.get("operation_digest"),
+            "wire_input_sha256": invocation.get("wire_input_sha256"),
+            "operation_output_digest": invocation.get("operation_output_digest"),
+            "proof_message_binding_digest": invocation.get("proof_message_binding_digest"),
+        }
+        if invocation.get("proof_use_binding_digest") != digest_json(proof_use):
+            errors.append(f"{prefix}_proof_use_binding_digest_invalid")
         if invocation.get("cuda_event_timing") != "cudaEventElapsedTime":
             errors.append(f"{prefix}_cuda_event_timing_invalid")
         event_ms = invocation.get("cuda_event_elapsed_ms")
@@ -395,6 +568,18 @@ def validate_gpu_execution_evidence(
             errors.append(f"{prefix}_kernel_not_executed")
         if invocation.get("cpu_fallback") is not False:
             errors.append(f"{prefix}_cpu_fallback")
+        kernel_count = invocation.get("kernel_invocation_count")
+        if not isinstance(kernel_count, int) or isinstance(kernel_count, bool) or kernel_count <= 0:
+            errors.append(f"{prefix}_kernel_invocation_count_invalid")
+        kernel_counts = invocation.get("kernel_invocation_counts")
+        if not isinstance(kernel_counts, Mapping):
+            errors.append(f"{prefix}_kernel_invocation_counts_missing")
+        else:
+            names = ("lasso", "matmul_sumcheck", "gkr_relation", "hyrax", "transcript")
+            if any(not isinstance(kernel_counts.get(name), int) or isinstance(kernel_counts.get(name), bool) or kernel_counts.get(name) < 0 for name in names):
+                errors.append(f"{prefix}_kernel_invocation_counts_invalid")
+            elif isinstance(kernel_count, int) and sum(int(kernel_counts[name]) for name in names) != kernel_count:
+                errors.append(f"{prefix}_kernel_invocation_counts_total_mismatch")
         shape = invocation.get("shape")
         if not isinstance(shape, list) or not shape or any(
             not isinstance(value, int) or isinstance(value, bool) or value <= 0 for value in shape
@@ -463,6 +648,8 @@ def validate_gpu_execution_evidence(
             errors.append(f"{prefix}_primitive_counts_missing")
         elif any(not isinstance(counts.get(name), int) or isinstance(counts.get(name), bool) or counts.get(name) < 0 for name in ("lasso", "matmul_sumcheck", "gkr_relation", "transcript")):
             errors.append(f"{prefix}_primitive_counts_invalid")
+        if invocation.get("transfer_timing") != "host_steady_clock":
+            errors.append(f"{prefix}_transfer_timing_invalid")
         for name in ("kernel_time_ms", "memory_copy_h2d_ms", "memory_copy_d2h_ms", "synchronization_time_ms"):
             value = invocation.get(name)
             if isinstance(value, bool) or not isinstance(value, (int, float)) or float(value) < 0.0:

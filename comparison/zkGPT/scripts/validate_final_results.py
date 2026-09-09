@@ -158,7 +158,7 @@ def main() -> int:
             try:
                 row = validate_artifact(ROOT, manifest_path, dataset, backend)
                 expected = row_map[key]
-                for field in ("status", "verified", "proof_generated", "run_digest", "proof_digest", "proof_size_bytes"):
+                for field in ("status", "verified", "proof_generated", "run_digest", "proof_digest", "proof_size_bytes", "build_identity", "build_manifest_digest", "source_manifest_sha256", "cuda_target", "public_y_schema", "public_y_path", "public_y_digest", "public_y_descriptor_digest", "public_y_shape", "X_pub_digest", "graph_identity", "com_W_identity", "reference_y_digest", "reference_forward_profile_id", "reference_forward_engine", "reference_forward_source_sha256", "public_output_binding_digest", "registration_binding_digest"):
                     if expected.get(field) != row.get(field):
                         raise ResultValidationError(f"matrix row {field} mismatch")
                 replay_error = _replay(ROOT, manifest_path.parent, row["manifest"])

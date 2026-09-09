@@ -10,9 +10,13 @@ from zkgpt_gat.native_hyrax import (
     MASK_PROTOCOL_ID,
     MASK_VERSION,
     NativeHyrax,
+    _point,
+    evaluation_commitment_from_payload,
+    masked_evaluation_claim_from_payload,
     verify_linear_payload,
     verify_open_payload,
 )
+from zkgpt_gat.bn254 import G1Point
 from zkgpt_gat.field import log2_power_of_two, next_power_of_two, to_field_int
 from zkgpt_gat.transcript import Transcript
 
@@ -110,6 +114,10 @@ class MaskedHyraxTests(unittest.TestCase):
             )
             self.assertNotEqual(first.proof["ipa"]["rounds"][0]["L"], second.proof["ipa"]["rounds"][0]["L"])
             self.assertNotEqual(first.proof["mask_commitment"], second.proof["mask_commitment"])
+            self.assertNotEqual(
+                first.proof["mask_evaluation_commitment"],
+                second.proof["mask_evaluation_commitment"],
+            )
             self.assertNotEqual(first.proof["ipa"]["final_a"], second.proof["ipa"]["final_a"])
             for state in (first, second):
                 result = verify_open_payload(
@@ -121,6 +129,44 @@ class MaskedHyraxTests(unittest.TestCase):
                     transcript=Transcript("tests/masked-registered"),
                 )
                 self.assertEqual(result["status"], "VERIFY_OK")
+
+    def test_affine_evaluation_claim_recovers_raw_group_commitment(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="zkgpt-affine-claim-") as tmp:
+            root = pathlib.Path(tmp)
+            hyrax = NativeHyrax(root)
+            values = [3, 5, 7, 11]
+            registration = hyrax.commit_vector("v", values, root)
+            state = hyrax.open_registered(
+                "v/affine", values, [13, 17], registration, root,
+                transcript=Transcript("tests/affine-claim"),
+            )
+            proof = state.proof
+            self.assertEqual(proof["evaluation_commitment"], proof["masked_evaluation_commitment"])
+            raw = evaluation_commitment_from_payload(proof)
+            masked = _point(proof["masked_evaluation_commitment"])
+            mask = _point(proof["mask_evaluation_commitment"])
+            self.assertEqual(raw.point, masked - mask)
+            self.assertNotEqual(raw.point, masked)
+            self.assertEqual(
+                masked_evaluation_claim_from_payload(proof)["evaluation_commitment"],
+                proof["evaluation_commitment"],
+            )
+            self.assertFalse(_walk_wire(proof), _walk_wire(proof))
+
+            tampered = copy.deepcopy(proof)
+            tampered["mask_evaluation_commitment"] = G1Point.generator().to_json()
+            result = verify_open_payload(
+                "v/affine", tampered, [13, 17], _public_registration(registration),
+                len(values), transcript=Transcript("tests/affine-claim"),
+            )
+            self.assertEqual(result["status"], "VERIFY_FAILED")
+            tampered_alias = copy.deepcopy(proof)
+            tampered_alias["evaluation_commitment"] = G1Point.generator().to_json()
+            result = verify_open_payload(
+                "v/affine", tampered_alias, [13, 17], _public_registration(registration),
+                len(values), transcript=Transcript("tests/affine-claim"),
+            )
+            self.assertEqual(result["status"], "VERIFY_FAILED")
 
     def test_linear_opening_round_trip_and_wire_privacy(self) -> None:
         with tempfile.TemporaryDirectory(prefix="zkgpt-masked-linear-") as tmp:

@@ -7,7 +7,11 @@ import tempfile
 import unittest
 
 from zkgpt_gat.bn254 import BN254_FR_MODULUS, G1Point, generator_vector, multi_scalar_mul
-from zkgpt_gat.constants import COMMITMENT_BACKEND_ID
+from zkgpt_gat.constants import (
+    COMMITMENT_BACKEND_ID,
+    PUBLIC_Y_SCHEMA,
+    REFERENCE_FORWARD_PROFILE_ID,
+)
 from zkgpt_gat.registry import (
     canonical_registry_dir,
     canonical_registry_public_path,
@@ -16,8 +20,14 @@ from zkgpt_gat.registry import (
     registration_binding,
 )
 from zkgpt_gat.transcript import Transcript
+from zkgpt_gat.reference_forward import REFERENCE_FORWARD_ENGINE, reference_forward_source_sha256
 from zkgpt_gat.value_commitment import PedersenParams
 from zkgpt_gat.proof import _verify_registered_model_commitment
+from zkgpt_gat.quantization import (
+    CANONICAL_QUANT_CFG_ID,
+    canonical_scale_profile,
+    scale_chain_from_profile,
+)
 from zkgpt_gat.zk_sumcheck import (
     SumcheckVerificationError,
     bind_terminal_commitment,
@@ -98,14 +108,56 @@ class NativeArithmeticRegressionTests(unittest.TestCase):
 class RegistrySchemaRegressionTests(unittest.TestCase):
     @staticmethod
     def _metadata() -> dict[str, object]:
+        profile = canonical_scale_profile()
+        chain = scale_chain_from_profile(
+            profile,
+            hidden_profile=[{"head_count": 8, "head_dim": 8}],
+            k_out=2,
+            quant_cfg_id=CANONICAL_QUANT_CFG_ID,
+        )
         return {
             "model_arch_id": "tests-registry-arch-v1",
             "model_param_id": "tests-registry-model-v1",
-            "quant_cfg_id": "exact_integer_gat",
+            "quant_cfg_id": CANONICAL_QUANT_CFG_ID,
+            "authenticated_quant_scales": profile,
+            "quant_scale_chain": chain,
             "static_table_id": "tables:test-v1",
             "private_input_layout": "X_pub|W|Aux|L_qry",
             "segment_order": ["X_pub", "W", "Aux", "L_qry"],
             "padding_rule_id": "power_of_two_zero_extension_v1",
+            "input_preprocess_id": "row_normalize",
+            "rounding_mode": "nearest_ties_away",
+            "model_architecture": {
+                "model_arch_id": "tests-registry-arch-v1",
+                "model_param_id": "tests-registry-model-v1",
+            },
+            "checkpoint_provenance": {},
+            "public_y_schema": PUBLIC_Y_SCHEMA,
+            "public_y_path": "resources/public_y/tests-registry-model-v1.json",
+            "public_y_digest": "c" * 64,
+            "public_y_descriptor_digest": "d" * 64,
+            "public_y_shape": [1, 1],
+            "reference_y_digest": "e" * 64,
+            "independent_reference_forward": True,
+            "reference_forward_profile_id": REFERENCE_FORWARD_PROFILE_ID,
+            "reference_forward_engine": REFERENCE_FORWARD_ENGINE,
+            "reference_forward_source_sha256": reference_forward_source_sha256(),
+            "X_pub_digest": "f" * 64,
+            "full_dataset": True,
+            "graph_identity": {
+                "dataset": "tests",
+                "full_dataset": True,
+                "graph_count": 1,
+                "node_count": 1,
+                "edge_count": 1,
+                "feature_count": 1,
+                "task_type": "transductive_node_classification",
+                "report_unit": "node",
+                "batching_rule": "whole_graph_single",
+                "self_loop_rule": "per_node",
+                "edge_sort_rule": "edge_gid_then_dst_stable",
+                "chunking_rule": "none",
+            },
             "integer_bound_ledger_digest": "a" * 64,
             "Layout_in_digest": "b" * 64,
             "Layout_in": {"N_in": 2},
@@ -138,7 +190,7 @@ class RegistrySchemaRegressionTests(unittest.TestCase):
             self.assertEqual(
                 set(public),
                 {
-                    "protocol", "model_param_id", "model_arch_id", "registration_binding",
+                    "schema", "protocol", "model_param_id", "model_arch_id", "registration_binding",
                     "registration_binding_digest", "registration_transaction_id", "commitment_backend",
                     "entries", "registry_digest",
                 },

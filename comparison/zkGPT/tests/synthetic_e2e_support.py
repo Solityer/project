@@ -55,7 +55,11 @@ SYNTHETIC_PROOF_FILES = (
     "proof_payload.json",
     "verification.json",
 )
-SYNTHETIC_RANGE_BITS = 4
+# The opt-in fixture must instantiate every native protocol family while
+# remaining small enough for a bounded developer E2E.  Two-bit limbs minimize
+# the largest authenticated range-family Lasso domain for the unit-scale test
+# profile; formal configs never consume this value.
+SYNTHETIC_RANGE_BITS = 2
 SYNTHETIC_DATASET = "synthetic-e2e"
 MODEL_ARCH_ID = "zkgpt-test-gat-n1-h1-c1-v1"
 MODEL_PARAM_ID = "zkgpt-test-model-zero-small-v1"
@@ -66,19 +70,19 @@ QUANT_CFG_ID = "exact_integer_gat"
 # reintroducing a production alias/fallback.
 TEST_QUANT_SCALE_PROFILE = {
     "input": 1,
-    "hidden_weight": 16,
-    "hidden_attention": 16,
-    "output_weight": 16,
+    "hidden_weight": 1,
+    "hidden_attention": 1,
+    "output_weight": 1,
     "output_attention": 1,
-    "output_bias": 16,
-    "lrelu_input": 256,
-    "lrelu_output": 256,
-    "exp_input": 256,
-    "exp_output": 16,
-    "elu_input": 16,
-    "elu_output": 16,
-    "aggregate_output": 16,
-    "output_head": 16,
+    "output_bias": 1,
+    "lrelu_input": 1,
+    "lrelu_output": 1,
+    "exp_input": 1,
+    "exp_output": 1,
+    "elu_input": 1,
+    "elu_output": 1,
+    "aggregate_output": 1,
+    "output_head": 1,
 }
 
 
@@ -369,9 +373,17 @@ class SyntheticBundleVerificationError(ValueError):
 
 
 def make_static_descriptor(root: pathlib.Path) -> pathlib.Path:
-    """Create an authenticated test-only copy with a four-bit range table."""
+    """Create an authenticated test-only copy with a two-bit range table."""
     source = _read_json(ROOT / "resources" / "static_tables" / "exact_integer_gat.json")
     descriptor = copy.deepcopy(source)
+    # The source descriptor belongs to the canonical formal resource bundle
+    # and carries the historical scale-chain quantization id.  This fixture
+    # intentionally uses the explicit unit-scale profile above, so bind the
+    # test-only descriptor to the same public identity that is written into
+    # ``public_config.json``.  The proof-side loader is patched only inside
+    # this test fixture; the fresh-process verifier still checks this id and
+    # the recomputed canonical digests below.
+    descriptor["quant_cfg_id"] = QUANT_CFG_ID
     descriptor["content"]["range_table"]["range_bits"] = SYNTHETIC_RANGE_BITS
     descriptor["content_digest"] = digest_json(descriptor["content"])
     without_digest = dict(descriptor)

@@ -155,8 +155,27 @@ def _expand_message_xmd(message: bytes, domain: bytes, length: int) -> bytes:
     bias.
     """
 
-    if not isinstance(message, bytes) or not isinstance(domain, bytes):
+    return _expand_message_xmd_parts((message,), domain, length)
+
+
+def _expand_message_xmd_parts(
+    message_parts: tuple[bytes | bytearray | memoryview, ...],
+    domain: bytes,
+    length: int,
+) -> bytes:
+    """Expand a sequence of message buffers without concatenating them.
+
+    The RFC 9380 XMD input is the concatenation of ``message_parts``.  Keeping
+    the parts separate is byte-for-byte equivalent, but avoids copying the
+    complete (and growing) transcript into a temporary object for every
+    challenge.  This is deliberately an implementation-only optimization;
+    transcript labels, state bytes, and challenge outputs are unchanged.
+    """
+
+    if not isinstance(domain, bytes) or not isinstance(message_parts, tuple):
         raise EncodingError("XMD inputs must be bytes")
+    if any(not isinstance(part, (bytes, bytearray, memoryview)) for part in message_parts):
+        raise EncodingError("XMD message parts must be bytes-like")
     if length <= 0 or length >= 1 << 16:
         raise EncodingError("invalid XMD output length")
     if len(domain) > 255:
@@ -167,7 +186,14 @@ def _expand_message_xmd(message: bytes, domain: bytes, length: int) -> bytes:
         raise EncodingError("XMD output is too long")
     length_bytes = length.to_bytes(2, "big")
     z_pad = b"\x00" * SHA256_BLOCK_BYTES
-    b0 = hashlib.sha256(z_pad + message + length_bytes + b"\x00" + domain_prime).digest()
+    b0_hash = hashlib.sha256()
+    b0_hash.update(z_pad)
+    for part in message_parts:
+        b0_hash.update(part)
+    b0_hash.update(length_bytes)
+    b0_hash.update(b"\x00")
+    b0_hash.update(domain_prime)
+    b0 = b0_hash.digest()
     blocks = [hashlib.sha256(b0 + b"\x01" + domain_prime).digest()]
     for block_index in range(2, ell + 1):
         previous = bytes(left ^ right for left, right in zip(b0, blocks[-1]))
@@ -178,12 +204,25 @@ def _expand_message_xmd(message: bytes, domain: bytes, length: int) -> bytes:
 def _hash_to_fr(message: bytes, domain: bytes, *, nonzero: bool) -> int:
     """Uniformly map an arbitrary transcript message to BN254 Fr."""
 
+    return _hash_to_fr_parts((message,), domain, nonzero=nonzero)
+
+
+def _hash_to_fr_parts(
+    message_parts: tuple[bytes | bytearray | memoryview, ...],
+    domain: bytes,
+    *,
+    nonzero: bool,
+) -> int:
+    """Hash concatenated message buffers to Fr without materializing them."""
+
     modulus = BN254_FR_MODULUS
     sample_space = 1 << (8 * SCALAR_BYTES)
     rejection_limit = sample_space - (sample_space % modulus)
     counter = 0
     while True:
-        expanded = _expand_message_xmd(message + counter.to_bytes(4, "big"), domain, SCALAR_BYTES)
+        expanded = _expand_message_xmd_parts(
+            (*message_parts, counter.to_bytes(4, "big")), domain, SCALAR_BYTES
+        )
         candidate = int.from_bytes(expanded, "big")
         if candidate < rejection_limit:
             result = candidate % modulus
@@ -208,12 +247,19 @@ class Transcript:
         else:
             raise EncodingError("transcript domain must be text or bytes")
         self._state = bytearray(TRANSCRIPT_VERSION)
+        # ``digest`` is queried at every proof phase boundary.  Maintain an
+        # incremental hash alongside the canonical byte state so those
+        # queries do not repeatedly re-hash the complete transcript.  The
+        # byte state remains authoritative for challenge derivation, hence
+        # this does not alter any transcript or proof bytes.
+        self._state_hash = hashlib.sha256(TRANSCRIPT_VERSION)
         self._challenge_index = 0
         self._append(b"D", domain_bytes)
 
     def _append(self, tag: bytes, payload: bytes) -> None:
-        self._state.extend(tag)
-        self._state.extend(_length_prefix(payload))
+        encoded = tag + _length_prefix(payload)
+        self._state.extend(encoded)
+        self._state_hash.update(encoded)
 
     def absorb(self, label: str, message: Any) -> "Transcript":
         if not isinstance(label, str) or not label:
@@ -241,13 +287,16 @@ class Transcript:
             raise EncodingError("challenge label must be non-empty text")
         label_bytes = label.encode("utf-8")
         index = self._challenge_index
-        material = (
+        material_prefix = (
             TRANSCRIPT_VERSION
             + _length_prefix(label_bytes)
             + index.to_bytes(8, "big")
-            + bytes(self._state)
         )
-        value = _hash_to_fr(material, TRANSCRIPT_VERSION + b"/challenge", nonzero=nonzero)
+        value = _hash_to_fr_parts(
+            (material_prefix, self._state),
+            TRANSCRIPT_VERSION + b"/challenge",
+            nonzero=nonzero,
+        )
         self.absorb(
             f"challenge/{index}",
             {"label": label, "value": encode_scalar(value)},
@@ -263,11 +312,12 @@ class Transcript:
 
     @property
     def digest(self) -> bytes:
-        return hashlib.sha256(bytes(self._state)).digest()
+        return self._state_hash.copy().digest()
 
     def copy(self) -> "Transcript":
         other = object.__new__(Transcript)
         other.domain = self.domain
         other._state = bytearray(self._state)
+        other._state_hash = self._state_hash.copy()
         other._challenge_index = self._challenge_index
         return other

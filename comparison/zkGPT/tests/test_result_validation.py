@@ -18,8 +18,10 @@ from zkgpt_gat.constants import (
     FORMAL_GAT_HIDDEN_PROFILE,
     FORMAL_GAT_K_OUT,
     FORMAL_GAT_LAYER_COUNT,
+    PUBLIC_Y_SCHEMA,
     PROOF_BACKEND_ID,
     PROTOCOL_ID,
+    REFERENCE_FORWARD_PROFILE_ID,
 )
 from zkgpt_gat.formal_gate import formal_gate_status, load_capabilities, validate_capabilities
 from zkgpt_gat.reference_forward import REFERENCE_FORWARD_ENGINE, reference_forward_source_sha256
@@ -172,6 +174,20 @@ class ResultValidationTests(unittest.TestCase):
             "K_out": 2,
             "C": 7,
             "independent_reference_forward": True,
+            "public_y_schema": PUBLIC_Y_SCHEMA,
+            "public_y_path": "resources/public_y/cora.json",
+            "public_y_digest": "a" * 64,
+            "public_y_descriptor_digest": "b" * 64,
+            "public_y_shape": [1, 1],
+            "X_pub_digest": "c" * 64,
+            "graph_identity": {"dataset": "cora", "full_dataset": True},
+            "com_W_identity": {"model_param_id": "test-model-param"},
+            "reference_y_digest": "d" * 64,
+            "reference_forward_profile_id": REFERENCE_FORWARD_PROFILE_ID,
+            "reference_forward_engine": REFERENCE_FORWARD_ENGINE,
+            "reference_forward_source_sha256": reference_forward_source_sha256(),
+            "public_output_binding_digest": "e" * 64,
+            "registration_binding_digest": "f" * 64,
             "independent_reference_provenance": {
                 "status": "VERIFY_OK",
                 "checks": {"independent_reference_forward": True},
@@ -215,7 +231,12 @@ class ResultValidationTests(unittest.TestCase):
             "verifier_reads_witness", "witness_included_in_proof",
             "public_output_digest", "proof_contribution", "gpu_hot_path",
             "proof_schema_scan", "privacy_masking_verified", "verifier_input_boundary",
-            "independent_reference_forward",
+            "independent_reference_forward", "public_y_schema", "public_y_path",
+            "public_y_digest", "public_y_descriptor_digest", "public_y_shape",
+            "X_pub_digest", "graph_identity", "com_W_identity", "reference_y_digest",
+            "reference_forward_profile_id", "reference_forward_engine",
+            "reference_forward_source_sha256", "public_output_binding_digest",
+            "registration_binding_digest",
         ):
             manifest[key] = fields[key]
         manifest["full_dataset"] = fields["full_dataset"]
@@ -245,6 +266,10 @@ class ResultValidationTests(unittest.TestCase):
                 "model_param_id": "test-model-param",
                 "quant_cfg_id": "gat_l3_scale_chain",
                 "input_preprocess_id": "row_normalize",
+                "gpu_backend_state": {
+                    "source_manifest_sha256": digest_json([]),
+                    "build_manifest_schema": "zkGPT_cuda_build_manifest_v1",
+                },
                 "dim_cfg": {
                     "L": 3,
                     "hidden_profile": [
@@ -262,9 +287,10 @@ class ResultValidationTests(unittest.TestCase):
                 patch("zkgpt_gat.result_validation.load_canonical_manifest", return_value=(cell, manifest)),
                 patch("zkgpt_gat.result_validation.validate_required_artifacts"),
                 patch("zkgpt_gat.result_validation.sha256_file", return_value="artifact-digest"),
+                patch("zkgpt_gat.result_validation.source_inventory", return_value=[]),
             ):
                 with self.assertRaisesRegex(
-                    ResultValidationError, "producer verifier report is not successful"
+                    ResultValidationError, "metadata trusted model registry is missing"
                 ):
                     validate_artifact(root, manifest_path)
 

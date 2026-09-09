@@ -24,20 +24,97 @@ from functools import lru_cache
 from typing import Any, Dict, Iterable, List, Mapping, Sequence
 
 from .bn254 import BN254_FQ_MODULUS, G1Point, generator_vector, hash_point, multi_scalar_mul, scalar_random
-from .field import BN254_FR_MODULUS, f_inv, log2_power_of_two, to_field_int
+from .field import BN254_FR_MODULUS, f_inv, log2_power_of_two, parse_canonical_decimal, to_field_int
 from .gpu_execution import active_mle_fold
 from .transcript import Transcript
-from .util import ensure_dir, read_json, write_json
-from .value_commitment import PedersenParams, ValueCommitment
+from .util import digest_json, ensure_dir, read_json, write_json
+from .value_commitment import (
+    PedersenParams,
+    RepresentationProof,
+    ValueCommitment,
+    commit_value,
+    prove_representation,
+    verify_representation,
+)
 
 
-PROTOCOL_ID = "zkGPT-hyrax-mle-evaluation-commitment-v2"
-LINEAR_PROTOCOL_ID = "zkGPT-hyrax-linear-evaluation-commitment-v1"
-BATCHED_LINEAR_PROTOCOL_ID = "zkGPT-hyrax-batched-linear-claim-v1"
+PROTOCOL_ID = "zkGPT-hyrax-mle-evaluation-commitment-v3-masked-affine"
+LINEAR_PROTOCOL_ID = "zkGPT-hyrax-linear-evaluation-commitment-v2-masked-affine"
+BATCHED_LINEAR_PROTOCOL_ID = "zkGPT-hyrax-batched-linear-claim-v2-masked-affine"
 PARAMETER_ID = "zkGPT-bn254-hyrax-generators-v2"
-MASK_PROTOCOL_ID = "zkGPT-hyrax-masked-ipa-v1"
+MASK_PROTOCOL_ID = "zkGPT-hyrax-masked-ipa-v2"
 MASK_DOMAIN = "zkGPT/Hyrax/Mask/V_mask/v1"
 MASK_VERSION = 1
+
+# An evaluation commitment is itself a private scalar commitment.  The
+# masked wire carries only an affine sum and a separately committed mask;
+# the verifier subtracts the latter in G1 before replaying the native Hyrax
+# relation.  This is deliberately distinct from the vector-level V_mask used
+# by the IPA below.
+AFFINE_MASK_PROTOCOL_ID = "zkGPT/value-commitment-affine-mask-v1"
+AFFINE_MASK_DOMAIN = "zkGPT/Hyrax/Mask/evaluation/v1"
+AFFINE_MASK_VERSION = 1
+AFFINE_MASK_FIELDS = {
+    "affine_mask_protocol_id",
+    "affine_mask_domain",
+    "affine_mask_version",
+    "masked_evaluation_commitment",
+    "mask_evaluation_commitment",
+    "mask_evaluation_pok",
+}
+MASK_HEADER_SCHEMA = "zkGPT/masking-header-v1"
+MASK_HEADER_VERSION = 1
+
+
+def build_mask_header(
+    label: str,
+    context: Mapping[str, Any] | None,
+    coverage: Sequence[str],
+) -> Dict[str, Any]:
+    """Build a public, versioned coverage header for a native component.
+
+    The session nonce is the only proof-instance entropy used for these
+    deterministic coverage commitments.  It is sampled from the OS CSPRNG
+    before the formal transcript is created; no model blinder, prior
+    transcript state, or predictable label is used as randomness.
+    """
+
+    if not isinstance(label, str) or not label:
+        raise ValueError("mask header label must be non-empty")
+    context = dict(context or {})
+    nonce = str(context.get("session_nonce") or context.get("transcript_domain") or "standalone")
+    ordered = [str(item) for item in coverage]
+    if not ordered or len(set(ordered)) != len(ordered):
+        raise ValueError("mask header coverage must be non-empty and unique")
+    commitments = {
+        item: hash_point(
+            AFFINE_MASK_DOMAIN + "/coverage",
+            {"session_nonce": nonce, "component": label, "coverage": item},
+        ).to_json()
+        for item in ordered
+    }
+    header: Dict[str, Any] = {
+        "schema": MASK_HEADER_SCHEMA,
+        "version": MASK_HEADER_VERSION,
+        "component": label,
+        "session_nonce": nonce,
+        "coverage": ordered,
+        "coverage_commitments": commitments,
+    }
+    header["header_digest"] = digest_json(header)
+    return header
+
+
+def absorb_mask_header(transcript: Transcript, header: Mapping[str, Any]) -> None:
+    """Absorb a complete MaskHeader before any component challenge."""
+
+    if not isinstance(header, Mapping):
+        raise ValueError("mask header must be a mapping")
+    if header.get("schema") != MASK_HEADER_SCHEMA or header.get("version") != MASK_HEADER_VERSION:
+        raise ValueError("mask header schema/version mismatch")
+    if header.get("header_digest") != digest_json({key: value for key, value in header.items() if key != "header_digest"}):
+        raise ValueError("mask header digest mismatch")
+    transcript.absorb("masking/MaskHeader", dict(header))
 
 
 def _eq_table(point: Sequence[int]) -> List[int]:
@@ -70,14 +147,10 @@ def _point(value: Any) -> G1Point:
     else:
         if not isinstance(value, Mapping) or set(value) != {"x", "y", "infinity"}:
             raise ValueError("non-canonical BN254 G1 encoding")
-        if not isinstance(value["x"], str) or not value["x"].isdigit():
-            raise ValueError("non-canonical BN254 G1 x coordinate")
-        if not isinstance(value["y"], str) or not value["y"].isdigit():
-            raise ValueError("non-canonical BN254 G1 y coordinate")
         if not isinstance(value["infinity"], bool):
             raise ValueError("non-canonical BN254 G1 infinity flag")
-        x = int(value["x"])
-        y = int(value["y"])
+        x = parse_canonical_decimal(value["x"], label="G1.x", nonnegative=True)
+        y = parse_canonical_decimal(value["y"], label="G1.y", nonnegative=True)
         infinity = value["infinity"]
         if infinity:
             if x != 0 or y != 0:
@@ -85,6 +158,11 @@ def _point(value: Any) -> G1Point:
         elif x >= BN254_FQ_MODULUS or y >= BN254_FQ_MODULUS:
             raise ValueError("BN254 coordinate is outside the base field")
         point = G1Point(x, y, infinity)
+    if point.infinity:
+        if point.x != 0 or point.y != 0:
+            raise ValueError("non-canonical BN254 infinity coordinates")
+    elif not (0 <= point.x < BN254_FQ_MODULUS and 0 <= point.y < BN254_FQ_MODULUS):
+        raise ValueError("BN254 coordinate is outside the base field")
     if not point.is_on_curve():
         raise ValueError("invalid BN254 G1 point")
     return point
@@ -406,9 +484,10 @@ def _verify_ipa(
             for left_generator, right_generator in zip(hs[:half], hs[half:])
         ]
     final_a_raw = proof["final_a"]
-    if not isinstance(final_a_raw, str) or not final_a_raw.isdigit():
+    try:
+        final_a = parse_canonical_decimal(final_a_raw, label="Hyrax IPA final_a", nonnegative=True)
+    except ValueError:
         return False
-    final_a = int(final_a_raw)
     if final_a >= BN254_FR_MODULUS:
         return False
     transcript.absorb("hyrax/ipa/final", {"a": final_a})
@@ -458,6 +537,211 @@ def _absorb_mask_and_challenge(
     challenge = transcript.challenge_scalar("hyrax/mask/challenge", nonzero=True)
     fields["mask_challenge"] = str(challenge)
     return fields, challenge
+
+
+def _affine_mask_wire(
+    masked_commitment: G1Point,
+    mask_commitment: G1Point,
+    mask_pok: RepresentationProof,
+) -> Dict[str, Any]:
+    """Return the public affine evaluation-mask envelope.
+
+    ``masked_commitment`` is the only commitment to the evaluation exposed by
+    the proof.  The raw evaluation commitment is intentionally reconstructed
+    as ``masked_commitment - mask_commitment`` by the verifier and is never a
+    serialized field.  The representation proof is a Schnorr PoK for the
+    fresh mask commitment; its responses do not reveal the mask opening.
+    """
+
+    return {
+        "affine_mask_protocol_id": AFFINE_MASK_PROTOCOL_ID,
+        "affine_mask_domain": AFFINE_MASK_DOMAIN,
+        "affine_mask_version": AFFINE_MASK_VERSION,
+        "masked_evaluation_commitment": masked_commitment.to_json(),
+        "mask_evaluation_commitment": mask_commitment.to_json(),
+        "mask_evaluation_pok": mask_pok.to_dict(),
+    }
+
+
+def _absorb_affine_mask_header(
+    transcript: Transcript,
+    label: str,
+    masked_commitment: G1Point,
+    mask_commitment: G1Point,
+) -> None:
+    """Absorb both affine mask commitments before deriving any challenge."""
+
+    transcript.absorb(
+        f"{label}/affine-mask/header",
+        {
+            "protocol": AFFINE_MASK_PROTOCOL_ID,
+            "domain": AFFINE_MASK_DOMAIN,
+            "version": AFFINE_MASK_VERSION,
+            "masked_evaluation_commitment": masked_commitment,
+            "mask_evaluation_commitment": mask_commitment,
+        },
+    )
+
+
+def _prove_affine_mask(
+    transcript: Transcript,
+    label: str,
+    raw_commitment: G1Point,
+    params: PedersenParams,
+) -> tuple[G1Point, Dict[str, Any]]:
+    """Create a fresh affine mask and a PoK for its commitment."""
+
+    # A nonzero blind is not required for correctness, but rejecting an
+    # identity mask makes accidental zero masking fail closed and gives the
+    # privacy verifier an unambiguous finite point to audit.
+    for _ in range(64):
+        mask_value = scalar_random(nonzero=False)
+        mask_blind = scalar_random(nonzero=True)
+        mask, _ = commit_value(params, mask_value, mask_blind)
+        if mask.point.infinity:
+            continue
+        masked = raw_commitment + mask.point
+        if masked.infinity:
+            continue
+        _absorb_affine_mask_header(transcript, label, masked, mask.point)
+        pok = prove_representation(
+            params,
+            mask,
+            mask_value,
+            mask_blind,
+            label=f"{label}/affine-mask/representation",
+            transcript=transcript,
+        )
+        return masked, _affine_mask_wire(masked, mask.point, pok)
+    raise RuntimeError("affine evaluation mask sampling produced only identity points")
+
+
+def _recover_affine_masked_commitment(
+    proof: Mapping[str, Any],
+    *,
+    params: PedersenParams,
+) -> tuple[ValueCommitment, G1Point, G1Point]:
+    """Parse a masked evaluation envelope and recover its raw commitment."""
+
+    if not isinstance(proof, Mapping) or not AFFINE_MASK_FIELDS.issubset(proof):
+        raise ValueError("masked Hyrax evaluation envelope is incomplete")
+    if (
+        proof.get("affine_mask_protocol_id") != AFFINE_MASK_PROTOCOL_ID
+        or proof.get("affine_mask_domain") != AFFINE_MASK_DOMAIN
+        or proof.get("affine_mask_version") != AFFINE_MASK_VERSION
+    ):
+        raise ValueError("masked Hyrax affine schema mismatch")
+    masked = _point(proof.get("masked_evaluation_commitment"))
+    mask = _point(proof.get("mask_evaluation_commitment"))
+    if mask.infinity:
+        raise ValueError("affine evaluation mask must be finite")
+    # The historical field name remains part of the canonical wire for
+    # compatibility with the native opening schema, but it is not an
+    # independent statement.  Refuse an alias/tamper instead of letting a
+    # caller compose a different public point than the one authenticated by
+    # the affine mask header.
+    if "evaluation_commitment" in proof and _point(proof["evaluation_commitment"]) != masked:
+        raise ValueError("affine evaluation commitment does not equal masked point")
+    # ``mask_evaluation_pok`` is checked by the transcript-aware verifier;
+    # this parser only performs strict point/schema validation and derives the
+    # raw group element used by the algebraic caller.
+    raw = masked - mask
+    return ValueCommitment(raw), masked, mask
+
+
+def evaluation_commitment_from_payload(
+    proof: Mapping[str, Any],
+    *,
+    params: PedersenParams | None = None,
+) -> ValueCommitment:
+    """Recover the raw evaluation commitment from a public masked claim.
+
+    The helper is intentionally group-only.  Callers that need acceptance
+    must separately run :func:`verify_representation` through the opening
+    verifier; this function exists so native GKR/MatMul/Lasso composition uses
+    the recovered raw commitment instead of accidentally composing masked
+    points.
+    """
+
+    raw, _masked, _mask = _recover_affine_masked_commitment(proof, params=params)
+    return raw
+
+
+def masked_evaluation_claim_from_payload(proof: Mapping[str, Any]) -> Dict[str, Any]:
+    """Extract the canonical public masked-claim fields from a proof wire."""
+
+    fields = (
+        "evaluation_commitment",
+        "affine_mask_protocol_id",
+        "affine_mask_domain",
+        "affine_mask_version",
+        "masked_evaluation_commitment",
+        "mask_evaluation_commitment",
+        "mask_evaluation_pok",
+    )
+    if not isinstance(proof, Mapping) or any(key not in proof for key in fields):
+        raise ValueError("evaluation proof has no canonical masked claim envelope")
+    if _point(proof["evaluation_commitment"]) != _point(proof["masked_evaluation_commitment"]):
+        raise ValueError("evaluation claim historical field is not the masked point")
+    return {key: proof[key] for key in fields}
+
+
+def _verify_affine_mask(
+    transcript: Transcript,
+    label: str,
+    proof: Mapping[str, Any],
+    params: PedersenParams,
+) -> tuple[ValueCommitment, G1Point, G1Point]:
+    """Verify the affine mask PoK and return the recovered raw commitment."""
+
+    raw, masked, mask = _recover_affine_masked_commitment(proof, params=params)
+    _absorb_affine_mask_header(transcript, label, masked, mask)
+    mask_pok = proof.get("mask_evaluation_pok")
+    if not verify_representation(
+        params,
+        ValueCommitment(mask),
+        mask_pok,
+        label=f"{label}/affine-mask/representation",
+        transcript=transcript,
+    ):
+        raise ValueError("affine evaluation mask representation proof failed")
+    return raw, masked, mask
+
+
+def prove_masked_scalar_claim(
+    label: str,
+    value: int,
+    params: PedersenParams,
+    transcript: Transcript,
+    *,
+    blind: int | None = None,
+) -> tuple[ValueCommitment, int, Dict[str, Any]]:
+    """Commit one private scalar and expose only its affine-masked claim."""
+
+    raw, opening_blind = commit_value(params, value, blind)
+    masked, affine = _prove_affine_mask(transcript, label, raw.point, params)
+    proof = {
+        "protocol": "zkGPT/masked-scalar-claim-v1",
+        "evaluation_commitment": masked.to_json(),
+        **affine,
+    }
+    return raw, opening_blind, proof
+
+
+def verify_masked_scalar_claim(
+    label: str,
+    proof: Mapping[str, Any],
+    params: PedersenParams,
+    transcript: Transcript,
+) -> ValueCommitment:
+    """Verify and recover a private scalar commitment from its public claim."""
+
+    if not isinstance(proof, Mapping) or proof.get("protocol") != "zkGPT/masked-scalar-claim-v1":
+        raise ValueError("masked scalar claim protocol mismatch")
+    raw, masked, _mask = _verify_affine_mask(transcript, label, proof, params)
+    if proof.get("evaluation_commitment") != masked.to_json():
+        raise ValueError("masked scalar claim commitment mismatch")
+    return raw
 
 
 def _prove_masked_ipa(
@@ -564,7 +848,9 @@ def _verify_masked_ipa(
     ):
         return False
     challenge_raw = proof.get("mask_challenge")
-    if not isinstance(challenge_raw, str) or not challenge_raw.isdigit():
+    try:
+        parse_canonical_decimal(challenge_raw, label="Hyrax mask_challenge", nonnegative=True)
+    except ValueError:
         return False
     mask_commitment = _point(proof.get("mask_commitment"))
     if mask_commitment.infinity:
@@ -842,6 +1128,9 @@ class NativeHyrax:
             evaluation = gpu_evaluation
         tau = scalar_random(nonzero=False)
         evaluation_commitment = evaluation * params["evaluation_generator"] + tau * params["blind_generator"]
+        masked_evaluation_commitment, affine_fields = _prove_affine_mask(
+            transcript, label, evaluation_commitment, hyrax_value_params(n)
+        )
         a = vector + [(blind - tau) % BN254_FR_MODULUS] + [0] * (n - 1)
         b = weights + [0] * n
         inner_product_generator = -params["evaluation_generator"]
@@ -862,8 +1151,13 @@ class NativeHyrax:
             "protocol": PROTOCOL_ID,
             "parameter_id": params["parameter_id"],
             "vector_length": n,
-            "evaluation_commitment": evaluation_commitment.to_json(),
+            # ``evaluation_commitment`` is retained as the historical field
+            # name, but now carries the affine-masked point.  The raw point
+            # is reconstructed from the two explicit mask commitments and is
+            # never serialized.
+            "evaluation_commitment": masked_evaluation_commitment.to_json(),
             "ipa": ipa,
+            **affine_fields,
             **mask_fields,
             "transcript_digest": transcript.digest.hex(),
         }
@@ -913,6 +1207,9 @@ class NativeHyrax:
         evaluation = _dot(vector, linear_weights)
         tau = scalar_random(nonzero=False)
         evaluation_commitment = evaluation * params["evaluation_generator"] + tau * params["blind_generator"]
+        masked_evaluation_commitment, affine_fields = _prove_affine_mask(
+            transcript, label, evaluation_commitment, hyrax_value_params(n)
+        )
         a = vector + [(blind - tau) % BN254_FR_MODULUS] + [0] * (n - 1)
         b = linear_weights + [0] * n
         statement_point = expected_commitment - evaluation_commitment + multi_scalar_mul(params["equality_generators"], b)
@@ -940,8 +1237,9 @@ class NativeHyrax:
             "protocol": LINEAR_PROTOCOL_ID,
             "parameter_id": params["parameter_id"],
             "vector_length": n,
-            "evaluation_commitment": evaluation_commitment.to_json(),
+            "evaluation_commitment": masked_evaluation_commitment.to_json(),
             "ipa": ipa,
+            **affine_fields,
             **mask_fields,
             "transcript_digest": transcript.digest.hex(),
         }
@@ -1002,6 +1300,9 @@ class NativeHyrax:
         commitment = cached.commitment
         tau = scalar_random(nonzero=False)
         evaluation_commitment = evaluation * params["evaluation_generator"] + tau * params["blind_generator"]
+        masked_evaluation_commitment, affine_fields = _prove_affine_mask(
+            transcript, label, evaluation_commitment, hyrax_value_params(n)
+        )
         context = dict(public_context or {})
         _batched_linear_statement_transcript(
             transcript, label, n, commitment, linear_form, evaluation_commitment, context,
@@ -1010,7 +1311,8 @@ class NativeHyrax:
             "protocol": BATCHED_LINEAR_PROTOCOL_ID,
             "parameter_id": params["parameter_id"],
             "vector_length": n,
-            "evaluation_commitment": evaluation_commitment.to_json(),
+            "evaluation_commitment": masked_evaluation_commitment.to_json(),
+            **affine_fields,
             "transcript_digest": transcript.digest.hex(),
         }
         state = HyraxOpeningState(
@@ -1089,7 +1391,7 @@ def verify_open_payload(
         if not isinstance(proof, Mapping) or set(proof) != {
             "protocol", "parameter_id", "vector_length", "evaluation_commitment", "ipa",
             "mask_protocol_id", "mask_domain", "mask_version", "mask_commitment",
-            "mask_challenge", "transcript_digest",
+            "mask_challenge", "transcript_digest", *AFFINE_MASK_FIELDS,
         }:
             return _failed(label, "malformed_proof_shape")
         n = _require_power_of_two(int(vector_length), "Hyrax vector length")
@@ -1105,17 +1407,22 @@ def verify_open_payload(
         point_values = [to_field_int(value) for value in point]
         if len(point_values) != log2_power_of_two(n):
             return _failed(label, "opening_point_dimension_mismatch")
-        evaluation_commitment = _point(proof["evaluation_commitment"])
+        # The historical ``evaluation_commitment`` slot now contains the
+        # affine-masked evaluation point.  Verify the mask PoK and recover the
+        # raw commitment exclusively by subtraction in G1.
+        raw_evaluation_commitment, _masked, _mask = _verify_affine_mask(
+            transcript, label, proof, hyrax_value_params(n)
+        )
         weights = _eq_table(point_values)
         b = weights + [0] * n
-        statement_point = commitment - evaluation_commitment + multi_scalar_mul(params["equality_generators"], b)
+        statement_point = commitment - raw_evaluation_commitment.point + multi_scalar_mul(params["equality_generators"], b)
         _statement_transcript(
             transcript,
             label,
             n,
             commitment,
             point_values,
-            evaluation_commitment,
+            raw_evaluation_commitment.point,
             dict(public_context or {}),
         )
         ok = _verify_masked_ipa(
@@ -1157,7 +1464,7 @@ def verify_linear_payload(
         if not isinstance(proof, Mapping) or set(proof) != {
             "protocol", "parameter_id", "vector_length", "evaluation_commitment", "ipa",
             "mask_protocol_id", "mask_domain", "mask_version", "mask_commitment",
-            "mask_challenge", "transcript_digest",
+            "mask_challenge", "transcript_digest", *AFFINE_MASK_FIELDS,
         }:
             return _failed(label, "malformed_linear_proof_shape")
         n = _require_power_of_two(int(vector_length), "Hyrax vector length")
@@ -1173,16 +1480,18 @@ def verify_linear_payload(
         linear_weights = [to_field_int(value) for value in weights]
         if len(linear_weights) != n:
             return _failed(label, "linear_weight_domain_mismatch")
-        evaluation_commitment = _point(proof["evaluation_commitment"])
+        raw_evaluation_commitment, _masked, _mask = _verify_affine_mask(
+            transcript, label, proof, hyrax_value_params(n)
+        )
         b = linear_weights + [0] * n
-        statement_point = commitment - evaluation_commitment + multi_scalar_mul(params["equality_generators"], b)
+        statement_point = commitment - raw_evaluation_commitment.point + multi_scalar_mul(params["equality_generators"], b)
         _linear_statement_transcript(
             transcript,
             label,
             n,
             commitment,
             linear_form,
-            evaluation_commitment,
+            raw_evaluation_commitment.point,
             dict(public_context or {}),
         )
         ok = _verify_masked_ipa(
@@ -1222,7 +1531,8 @@ def verify_batched_linear_claim_payload(
     """Authenticate a pending claim message for the final batch reduction."""
     try:
         if not isinstance(proof, Mapping) or set(proof) != {
-            "protocol", "parameter_id", "vector_length", "evaluation_commitment", "transcript_digest"
+            "protocol", "parameter_id", "vector_length", "evaluation_commitment", "transcript_digest",
+            *AFFINE_MASK_FIELDS,
         }:
             return _failed(label, "malformed_batched_linear_claim_shape")
         n = _require_power_of_two(int(vector_length), "Hyrax vector length")
@@ -1245,10 +1555,12 @@ def verify_batched_linear_claim_payload(
         if isinstance(expected_commitment, Mapping) and "commitment" in expected_commitment:
             commitment_value = expected_commitment["commitment"]
         commitment = _point(commitment_value)
-        evaluation_commitment = _point(proof["evaluation_commitment"])
+        raw_evaluation_commitment, _masked, _mask = _verify_affine_mask(
+            transcript, label, proof, hyrax_value_params(n)
+        )
         _batched_linear_statement_transcript(
             transcript, label, n, commitment, linear_form,
-            evaluation_commitment, dict(public_context or {}),
+            raw_evaluation_commitment.point, dict(public_context or {}),
         )
         digest_ok = proof["transcript_digest"] == transcript.digest.hex()
         return {

@@ -25,16 +25,20 @@ from .constants import (
     FORMAL_GAT_MODEL_ARCH_IDS,
     PROOF_BACKEND_ID,
     PROTOCOL_ID,
+    PUBLIC_Y_SCHEMA,
+    REFERENCE_FORWARD_PROFILE_ID,
 )
 from .model import CANONICAL_CHECKPOINT_SCHEMA, _validate_canonical_manifest
 from .quantization import CANONICAL_QUANT_CFG_ID, canonical_input_preprocess_id
 from .gpu_execution import validate_gpu_execution_evidence
-from .registry import canonical_registry_public_path
+from .build_identity import source_inventory, source_manifest_digest, verify_build_manifest
+from .registry import canonical_registry_public_path, public_output_binding_digest
 from .privacy import verify_privacy_profile
 from .resources import (
     STATIC_TABLE_DESCRIPTOR_RELATIVE_PATH,
     STATIC_TABLE_DESCRIPTOR_SCHEMA,
     canonical_dataset_name,
+    required_resource_paths,
     read_resource_manifest,
     validate_static_table_descriptor,
 )
@@ -679,6 +683,12 @@ def _verified_fields(report: Mapping[str, Any]) -> Dict[str, Any]:
         "model_arch_id", "model_param_id", "quant_cfg_id", "input_preprocess_id",
         "L", "hidden_profile", "d_in_profile", "K_out", "C",
         "independent_reference_forward",
+        "public_y_schema", "public_y_path", "public_y_digest",
+        "public_y_descriptor_digest", "public_y_shape", "X_pub_digest",
+        "graph_identity", "com_W_identity", "reference_y_digest",
+        "reference_forward_profile_id", "reference_forward_engine",
+        "reference_forward_source_sha256", "public_output_binding_digest",
+        "registration_binding_digest",
     )
     missing = [key for key in required if key not in fields]
     if missing:
@@ -707,6 +717,21 @@ def _verified_fields(report: Mapping[str, Any]) -> Dict[str, Any]:
         _require_bool(fields, key, "verified_fields")
     for key in ("proof_schema_scan", "privacy_masking_verified", "independent_reference_forward"):
         _require_bool(fields, key, "verified_fields")
+    if fields.get("public_y_schema") != PUBLIC_Y_SCHEMA:
+        raise ResultValidationError("independent verifier public-Y schema is invalid")
+    for key in ("public_y_digest", "public_y_descriptor_digest", "reference_y_digest", "X_pub_digest", "reference_forward_source_sha256", "public_output_binding_digest", "registration_binding_digest"):
+        value = fields.get(key)
+        if not isinstance(value, str) or len(value) != 64:
+            raise ResultValidationError(f"independent verifier {key} is not a SHA-256 identity")
+    if fields.get("reference_forward_profile_id") != REFERENCE_FORWARD_PROFILE_ID or not isinstance(fields.get("reference_forward_engine"), str) or not fields.get("reference_forward_engine"):
+        raise ResultValidationError("independent verifier reference-forward identity is invalid")
+    if not isinstance(fields.get("public_y_path"), str) or not fields["public_y_path"]:
+        raise ResultValidationError("independent verifier canonical public-Y path is missing")
+    shape = fields.get("public_y_shape")
+    if not isinstance(shape, list) or len(shape) != 2 or any(not isinstance(value, int) or value <= 0 for value in shape):
+        raise ResultValidationError("independent verifier public-Y shape is invalid")
+    if not isinstance(fields.get("graph_identity"), dict) or not isinstance(fields.get("com_W_identity"), dict):
+        raise ResultValidationError("independent verifier graph/com_W identity is missing")
     boundary = fields.get("verifier_input_boundary")
     if not isinstance(boundary, dict) or boundary.get("private_input_files_read") != []:
         raise ResultValidationError("independent verifier input boundary is not witness-free")
@@ -789,7 +814,12 @@ def validate_artifact(
         "verifier_reads_witness", "witness_included_in_proof",
         "public_output_digest", "proof_contribution", "gpu_hot_path",
         "proof_schema_scan", "privacy_masking_verified", "verifier_input_boundary",
-        "independent_reference_forward",
+        "independent_reference_forward", "public_y_schema", "public_y_path",
+        "public_y_digest", "public_y_descriptor_digest", "public_y_shape",
+        "X_pub_digest", "graph_identity", "com_W_identity", "reference_y_digest",
+        "reference_forward_profile_id", "reference_forward_engine",
+        "reference_forward_source_sha256", "public_output_binding_digest",
+        "registration_binding_digest",
     ):
         if manifest.get(key) != fields.get(key):
             raise ResultValidationError(f"manifest {key} does not match independent verifier report")
@@ -802,6 +832,27 @@ def validate_artifact(
     for key in ("L", "hidden_profile", "d_in_profile", "K_out", "C"):
         if fields.get(key) != dim_cfg.get(key):
             raise ResultValidationError(f"independent verifier {key} does not match metadata dimensions")
+    metadata_registry = metadata.get("model_registry")
+    if not isinstance(metadata_registry, Mapping):
+        raise ResultValidationError("metadata trusted model registry is missing")
+    metadata_binding = metadata_registry.get("public_descriptor", {}).get("registration_binding", {})
+    if not isinstance(metadata_binding, Mapping):
+        raise ResultValidationError("metadata trusted model binding is missing")
+    for key in (
+        "public_y_schema", "public_y_path", "public_y_digest", "public_y_descriptor_digest",
+        "public_y_shape", "X_pub_digest", "graph_identity", "com_W_identity",
+        "reference_y_digest", "reference_forward_profile_id", "reference_forward_engine",
+        "reference_forward_source_sha256", "public_output_binding_digest",
+    ):
+        if fields.get(key) != metadata_binding.get(key):
+            raise ResultValidationError(f"independent verifier {key} does not match trusted setup")
+    if fields.get("registration_binding_digest") != metadata_registry.get("registration_binding_digest"):
+        raise ResultValidationError("independent verifier registration binding digest mismatch")
+    try:
+        if metadata_binding.get("public_output_binding_digest") != public_output_binding_digest(metadata_binding):
+            raise ResultValidationError("trusted public-output binding digest is invalid")
+    except (TypeError, ValueError, KeyError) as exc:
+        raise ResultValidationError("trusted public-output binding is malformed") from exc
     if manifest.get("status") != "VERIFY_OK" or fields.get("status") != "VERIFY_OK":
         raise ResultValidationError("production result status is not verifier-derived VERIFY_OK")
     if manifest.get("full_dataset") is not True:
@@ -843,6 +894,21 @@ def validate_artifact(
     benchmark = read_object(required_artifact_file(artifact_dir, "benchmark_summary.json"), "benchmark summary")
     if canonical_dataset_name(str(metadata.get("dataset", ""))) != dataset or metadata.get("backend") != backend:
         raise ResultValidationError("metadata dataset/backend mismatch")
+    backend_identity = metadata.get("gpu_backend_state")
+    if not isinstance(backend_identity, Mapping):
+        raise ResultValidationError("metadata backend source identity is missing")
+    expected_source_manifest = source_manifest_digest(source_inventory(root))
+    if backend_identity.get("source_manifest_sha256") != expected_source_manifest:
+        raise ResultValidationError("metadata source identity is stale for the current proof path")
+    if backend_identity.get("build_manifest_schema") != "zkGPT_cuda_build_manifest_v1":
+        raise ResultValidationError("metadata build manifest schema is missing")
+    if backend == "gpu":
+        try:
+            current_build = verify_build_manifest(root)
+        except (OSError, ValueError, RuntimeError, TypeError) as exc:
+            raise ResultValidationError(f"authenticated CUDA build is invalid: {exc}") from exc
+        if backend_identity.get("build_identity") != current_build.get("build_identity") or backend_identity.get("build_manifest_digest") != current_build.get("manifest_digest"):
+            raise ResultValidationError("metadata CUDA build identity does not match current build")
     if metadata.get("protocol_id") != PROTOCOL_ID or metadata.get("proof_backend_id") != PROOF_BACKEND_ID:
         raise ResultValidationError("metadata protocol identity mismatch")
     if verification.get("status") != "VERIFY_OK":
@@ -911,6 +977,42 @@ def validate_artifact(
     metadata_registry_path = metadata.get("model_registry", {}).get("public_path", "")
     if metadata_registry_path != relative_path(root, expected_registry):
         raise ResultValidationError("metadata model registry path is not canonical for config identity")
+    expected_public_y = required_resource_paths(root, dataset)["public_y_path"]
+    if metadata_binding.get("public_y_path") != relative_path(root, expected_public_y):
+        raise ResultValidationError("metadata canonical public-Y path is not baseline-local")
+    try:
+        y_payload = read_object(expected_public_y, "canonical public Y")
+    except (OSError, ValueError) as exc:
+        raise ResultValidationError(f"canonical public Y is invalid: {exc}") from exc
+    y_without_digest = dict(y_payload)
+    y_descriptor_digest = y_without_digest.pop("descriptor_digest", None)
+    if not isinstance(y_descriptor_digest, str) or y_descriptor_digest != digest_json(y_without_digest):
+        raise ResultValidationError("canonical public-Y descriptor digest mismatch")
+    for key in (
+        "schema", "public_y_schema", "public_y_path", "public_y_shape", "y_digest",
+        "reference_y_digest", "independent_reference_forward", "reference_forward_profile_id",
+        "reference_forward_engine", "reference_forward_source_sha256", "X_pub_digest",
+        "full_dataset", "graph_identity",
+    ):
+        expected_value = {
+            "schema": PUBLIC_Y_SCHEMA,
+            "public_y_schema": metadata_binding.get("public_y_schema"),
+            "public_y_path": metadata_binding.get("public_y_path"),
+            "public_y_shape": metadata_binding.get("public_y_shape"),
+            "y_digest": metadata_binding.get("public_y_digest"),
+            "reference_y_digest": metadata_binding.get("reference_y_digest"),
+            "independent_reference_forward": metadata_binding.get("independent_reference_forward"),
+            "reference_forward_profile_id": metadata_binding.get("reference_forward_profile_id"),
+            "reference_forward_engine": metadata_binding.get("reference_forward_engine"),
+            "reference_forward_source_sha256": metadata_binding.get("reference_forward_source_sha256"),
+            "X_pub_digest": metadata_binding.get("X_pub_digest"),
+            "full_dataset": metadata_binding.get("full_dataset"),
+            "graph_identity": metadata_binding.get("graph_identity"),
+        }[key]
+        if y_payload.get(key) != expected_value:
+            raise ResultValidationError(f"canonical public-Y {key} does not match trusted setup")
+    if y_descriptor_digest != metadata_binding.get("public_y_descriptor_digest"):
+        raise ResultValidationError("canonical public-Y descriptor is not bound to registry")
     for key in ("cache_dir", "checkpoint_bundle"):
         raw = data_id.get(key) if key == "cache_dir" else model_id.get(key)
         path = resolve_inside(root, raw or "", f"{label} resource path")
@@ -956,7 +1058,7 @@ def validate_artifact(
 
     gpu_errors: list[str] = []
     if backend == "gpu":
-        gpu_errors = _validate_gpu_artifact_closure(artifact_dir, metadata, transcript, proof_payload)
+        gpu_errors = _validate_gpu_artifact_closure(root, artifact_dir, metadata, transcript, proof_payload)
         if gpu_errors or fields.get("gpu_hot_path") is not True:
             raise ResultValidationError("GPU execution evidence is incomplete: " + ";".join(gpu_errors))
     elif fields.get("gpu_hot_path") is not False:
@@ -964,6 +1066,9 @@ def validate_artifact(
 
     if manifest.get("run_digest") != manifest_run_digest(manifest):
         raise ResultValidationError("run manifest digest mismatch")
+    backend_identity = metadata.get("gpu_backend_state")
+    if not isinstance(backend_identity, Mapping):
+        backend_identity = {}
     return {
         "dataset": dataset,
         "backend": backend,
@@ -976,7 +1081,25 @@ def validate_artifact(
         "proof_digest": str(manifest.get("proof_digest")),
         "proof_size_bytes": int(manifest["proof_size_bytes"]),
         "timings_ms": dict(manifest["timings_ms"]),
+        "build_identity": backend_identity.get("build_identity"),
+        "build_manifest_digest": backend_identity.get("build_manifest_digest"),
+        "source_manifest_sha256": backend_identity.get("source_manifest_sha256"),
+        "cuda_target": backend_identity.get("cuda_target"),
         "gpu_contract_errors": ";".join(gpu_errors),
+        "public_y_schema": manifest.get("public_y_schema"),
+        "public_y_path": manifest.get("public_y_path"),
+        "public_y_digest": manifest.get("public_y_digest"),
+        "public_y_descriptor_digest": manifest.get("public_y_descriptor_digest"),
+        "public_y_shape": manifest.get("public_y_shape"),
+        "X_pub_digest": manifest.get("X_pub_digest"),
+        "graph_identity": manifest.get("graph_identity"),
+        "com_W_identity": manifest.get("com_W_identity"),
+        "reference_y_digest": manifest.get("reference_y_digest"),
+        "reference_forward_profile_id": manifest.get("reference_forward_profile_id"),
+        "reference_forward_engine": manifest.get("reference_forward_engine"),
+        "reference_forward_source_sha256": manifest.get("reference_forward_source_sha256"),
+        "public_output_binding_digest": manifest.get("public_output_binding_digest"),
+        "registration_binding_digest": manifest.get("registration_binding_digest"),
         "manifest": manifest,
     }
 
@@ -1034,6 +1157,7 @@ def _validate_static_table_closure(
 
 
 def _validate_gpu_artifact_closure(
+    root: pathlib.Path,
     artifact_dir: pathlib.Path,
     metadata: Mapping[str, Any],
     transcript: Mapping[str, Any],
@@ -1052,6 +1176,7 @@ def _validate_gpu_artifact_closure(
         hot_path,
         session_nonce=str(metadata.get("session_nonce", "")),
         final_transcript_digest=str(transcript.get("final_digest", "")),
+        zk_root=root,
     )
     if not valid:
         errors.extend(validation_errors)

@@ -118,6 +118,7 @@ def _fresh_independent_replay(manifest_path: pathlib.Path) -> None:
             gpu,
             session_nonce=str(metadata.get("session_nonce", "")),
             final_transcript_digest=str(transcript.get("final_digest", "")),
+            zk_root=ROOT,
         )
         if not valid:
             raise ValueError("fresh replay GPU nonce/transcript evidence invalid: " + ";".join(errors))
@@ -242,7 +243,7 @@ def _write_outputs(
         "rows": rows,
     }
     write_json(results_dir / "final_zkgpt_results.json", payload)
-    fields = ["dataset", "backend", "status", "proof_generated", "verified", "formal_experiment_eligible", "artifact_path", "run_digest", "proof_digest", "proof_size_bytes", "gpu_contract_errors", "privacy_session_status", "privacy_profile_schema", "privacy_profile_id", "privacy_profile_digest", "privacy_profile_status", "privacy_session_nonce", "privacy_com_W_fingerprint"]
+    fields = ["dataset", "backend", "status", "proof_generated", "verified", "formal_experiment_eligible", "artifact_path", "run_digest", "proof_digest", "proof_size_bytes", "build_identity", "build_manifest_digest", "source_manifest_sha256", "cuda_target", "gpu_contract_errors", "public_y_schema", "public_y_path", "public_y_digest", "public_y_descriptor_digest", "public_y_shape", "X_pub_digest", "graph_identity", "com_W_identity", "reference_y_digest", "reference_forward_profile_id", "reference_forward_engine", "reference_forward_source_sha256", "public_output_binding_digest", "registration_binding_digest", "privacy_session_status", "privacy_profile_schema", "privacy_profile_id", "privacy_profile_digest", "privacy_profile_status", "privacy_session_nonce", "privacy_com_W_fingerprint"]
     csv_buffer = io.StringIO(newline="")
     writer = csv.DictWriter(csv_buffer, fieldnames=fields, lineterminator="\n")
     writer.writeheader()

@@ -56,6 +56,19 @@ LASSO_CFG_ID = "gat-zkgpt-native-lasso-packed-tuples-range-padding-v1"
 MATRIX_PROOF_CFG_ID = "gat-zkgpt-dedicated-exact-integer-matmul-sumcheck-v1"
 COMMITMENT_BACKEND_ID = "zkGPT-hyrax-mle-evaluation-commitment-v2"
 
+# Trust-boundary identities for the baseline-local model registration.  These
+# are intentionally kept out of the proof implementation so the setup owner,
+# producer, and independent verifier all consume one schema/version string.
+# Bumping the registration protocol is deliberate: a v1 registry did not bind
+# the canonical public output and therefore must never be accepted by a v2
+# verifier.
+MODEL_REGISTRY_PROTOCOL = "zkGPT-native-model-registration-v2"
+MODEL_REGISTRY_SCHEMA = "zkGPT-model-registry-v2"
+MODEL_REGISTRY_BINDING_SCHEMA = "zkGPT-model-registration-binding-v2"
+PUBLIC_Y_SCHEMA = "zkGPT_public_y_v1"
+PUBLIC_OUTPUT_BINDING_DOMAIN = "zkGPT/canonical-public-output-binding/v1"
+REFERENCE_FORWARD_PROFILE_ID = "zkGPT-independent-reference-forward-v1"
+
 # Cross-module wire/schema identities.  Keep these in one production module
 # so the producer, fresh verifier, and result chain cannot silently drift to
 # different historical strings.
@@ -88,6 +101,20 @@ PUBLIC_STATEMENT_FIELDS = frozenset(
         "input_preprocess_id",
         "rounding_mode",
         "integer_bound_ledger_digest",
+        "public_y_schema",
+        "public_y_path",
+        "public_y_digest",
+        "public_y_descriptor_digest",
+        "public_y_shape",
+        "X_pub_digest",
+        "full_dataset",
+        "graph_identity",
+        "com_W_identity",
+        "reference_forward_profile_id",
+        "reference_forward_engine",
+        "reference_forward_source_sha256",
+        "public_output_binding_digest",
+        "registration_binding_digest",
     }
 )
 PUBLIC_STATEMENT_ENVELOPE_FIELDS = PUBLIC_STATEMENT_FIELDS | {"statement_digest"}
@@ -124,6 +151,20 @@ VERIFIER_SETUP_FIELDS = frozenset(
         "domain_cfg",
         "dim_cfg",
         "integer_bound_ledger_digest",
+        "public_y_schema",
+        "public_y_path",
+        "public_y_digest",
+        "public_y_descriptor_digest",
+        "public_y_shape",
+        "X_pub_digest",
+        "full_dataset",
+        "graph_identity",
+        "com_W_identity",
+        "reference_forward_profile_id",
+        "reference_forward_engine",
+        "reference_forward_source_sha256",
+        "public_output_binding_digest",
+        "registration_binding_digest",
         "setup_digest",
     }
 )

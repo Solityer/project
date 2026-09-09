@@ -42,7 +42,7 @@ from zkgpt_gat.result_validation import (  # noqa: E402
     validate_artifact_inventory,
     validate_canonical_cell_dir_from_path,
 )
-from zkgpt_gat.util import canonical_json, digest_json, write_json  # noqa: E402
+from zkgpt_gat.util import assert_contained_path, canonical_json, digest_json, write_json  # noqa: E402
 from zkgpt_gat.verifier_context import ContextError, VerifierContext, build_verifier_context  # noqa: E402
 
 
@@ -137,6 +137,7 @@ def _validate_static_table_closure(
 
 
 def _validate_gpu_artifact_closure(
+    project_root: pathlib.Path,
     metadata: Dict[str, Any],
     transcript: Dict[str, Any],
     proof_payload: Dict[str, Any],
@@ -151,6 +152,7 @@ def _validate_gpu_artifact_closure(
         contribution,
         session_nonce=str(metadata.get("session_nonce", "")),
         final_transcript_digest=str(transcript.get("final_digest", "")),
+        zk_root=project_root,
     )
     if not valid:
         errors.extend(f"gpu_hot_path:{item}" for item in validation_errors)
@@ -165,17 +167,15 @@ def _canonical_public_y(project_root: pathlib.Path, config_path: pathlib.Path, p
     canonical resource layout, including the relative config spelling, before
     the independent verifier context is constructed.
     """
-    root = pathlib.Path(project_root).expanduser().resolve()
-    config = pathlib.Path(config_path).expanduser().resolve()
-    if config != root and root not in config.parents:
-        raise ValueError(f"config must stay inside baseline root: {config}")
+    root = _strict_baseline_root(project_root)
+    config = assert_contained_path(root, pathlib.Path(config_path).expanduser(), "config", allow_missing=False)
     entries = load_app_config(config, root).entries
     dataset = canonical_dataset_name(entries.get("dataset", ""))
     expected = required_resource_paths(root, dataset)["public_y_path"]
     configured = resolve_local(root, entries.get("public_y_path", ""), "config public_y_path")
     if configured != expected or entries.get("public_y_path", "") != str(expected.relative_to(root)):
         raise ValueError(f"config public_y_path must be canonical baseline-local path: {expected.relative_to(root)}")
-    supplied = pathlib.Path(public_y_path).expanduser().resolve()
+    supplied = assert_contained_path(root, pathlib.Path(public_y_path).expanduser(), "public Y", allow_missing=False)
     if supplied != expected:
         raise ValueError(f"--public-y must equal canonical baseline-local path: {expected}")
     if not expected.is_file():
@@ -306,7 +306,7 @@ def verify_artifact_directory(artifact_dir: pathlib.Path, context: VerifierConte
     gpu_closure_ok, gpu_closure_errors = (True, [])
     if backend == "gpu":
         gpu_closure_ok, gpu_closure_errors = _validate_gpu_artifact_closure(
-            metadata, transcript, proof_payload,
+            context.project_root, metadata, transcript, proof_payload,
         )
     privacy_errors: list[str] = []
     payload_profile = proof_payload.get("PrivacyProfile")
@@ -440,9 +440,15 @@ def verify_artifact_directory(artifact_dir: pathlib.Path, context: VerifierConte
         "private_input_files_read": sorted(private_input_files),
     }
     masking_ok = (
-        checks.get("privacy_profile") is True
+        result.get("status") == "VERIFY_OK"
+        and checks.get("privacy_profile") is True
         and isinstance(result.get("subproof_verification", {}).get("privacy_profile"), dict)
         and result["subproof_verification"]["privacy_profile"].get("status") == "VERIFY_OK"
+        and result["subproof_verification"]["privacy_profile"].get("relation_coverage_verified") is True
+        and all(
+            checks.get(name) is True
+            for name in ("lasso", "matrix_sumcheck", "gkr", "combine", "hyrax_openings")
+        )
         and isinstance(proof_payload.get("Open_in"), dict)
         and isinstance(proof_payload.get("PrivacyProfile"), dict)
         and proof_payload.get("privacy_profile_digest") == proof_payload["PrivacyProfile"].get("profile_digest")
@@ -488,6 +494,20 @@ def verify_artifact_directory(artifact_dir: pathlib.Path, context: VerifierConte
         "verifier_reads_witness": bool(private_input_files),
         "witness_included_in_proof": witness_included,
         "public_output_digest": metadata.get("public_output_digest"),
+        "public_y_schema": metadata.get("public_y_schema"),
+        "public_y_path": metadata.get("public_y_path"),
+        "public_y_digest": metadata.get("public_y_digest"),
+        "public_y_descriptor_digest": metadata.get("public_y_descriptor_digest"),
+        "public_y_shape": metadata.get("public_y_shape"),
+        "X_pub_digest": metadata.get("X_pub_digest"),
+        "graph_identity": metadata.get("graph_identity"),
+        "com_W_identity": metadata.get("model_registry", {}).get("public_descriptor", {}).get("registration_binding", {}).get("com_W_identity"),
+        "reference_y_digest": metadata.get("reference_y_digest"),
+        "reference_forward_profile_id": metadata.get("reference_forward_profile_id"),
+        "reference_forward_engine": metadata.get("reference_forward_engine"),
+        "reference_forward_source_sha256": metadata.get("reference_forward_source_sha256"),
+        "public_output_binding_digest": metadata.get("model_registry", {}).get("public_descriptor", {}).get("registration_binding", {}).get("public_output_binding_digest"),
+        "registration_binding_digest": metadata.get("model_registry", {}).get("registration_binding_digest"),
         "proof_contribution": contribution,
         "gpu_hot_path": backend == "gpu" and checks.get("gpu_hot_path") is True,
         "proof_schema_scan": proof_schema_scan,
@@ -545,16 +565,17 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError(
                 "metadata dataset/backend does not match canonical artifact path"
             )
-        config_entries = load_app_config(args.config.expanduser().resolve(), project_root).entries
+        config_path = assert_contained_path(project_root, args.config.expanduser(), "config", allow_missing=False)
+        config_entries = load_app_config(config_path, project_root).entries
         model_param_id = config_entries.get("model_param_id", "")
         expected_registry = canonical_registry_public_path(project_root, model_param_id)
-        supplied_registry = args.registry_public.expanduser().resolve()
-        if supplied_registry != expected_registry.resolve():
+        supplied_registry = assert_contained_path(project_root, args.registry_public.expanduser(), "trusted registry", allow_missing=False)
+        if supplied_registry != expected_registry:
             raise ValueError(
                 f"--trusted-registry-public must equal canonical config/model registry: {expected_registry}"
             )
         public_y = _canonical_public_y(project_root, args.config, args.public_y)
-        context = build_verifier_context(project_root, args.config, args.registry_public, artifact_dir, public_y)
+        context = build_verifier_context(project_root, config_path, supplied_registry, artifact_dir, public_y)
         result = verify_artifact_directory(artifact_dir, context)
     except (OSError, ValueError, KeyError, TypeError, RuntimeError, ContextError, ResultValidationError) as exc:
         result = {"status": "VERIFY_FAILED", "reason": str(exc), "checks": {"external_context": False}}

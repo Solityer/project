@@ -256,6 +256,24 @@ class CryptoPrimitiveTests(unittest.TestCase):
         self.assertFalse(verifier_state.terminal_bound)
         self.assertEqual(verifier_state.challenges, prover_state.challenges)
         self.assertEqual(verifier_state.terminal_claim, prover_state.terminal_commitment)
+        self.assertEqual(
+            verifier_state.terminal_mask_commitment.point,
+            prover_state.proof.terminal_mask_commitment,
+        )
+        self.assertNotEqual(
+            prover_state.proof.terminal_claim_commitment,
+            prover_state.proof.terminal_mask_commitment,
+        )
+        for round_message in wire["rounds"]:
+            self.assertEqual(
+                len(round_message["coefficient_commitments"]),
+                len(round_message["coefficient_mask_commitments"]),
+            )
+            self.assertEqual(
+                len(round_message["coefficient_poks"]),
+                len(round_message["coefficient_mask_poks"]),
+            )
+            self.assertIn(round_message["mask_recurrence"], {"zero_sum", "challenge_recurrence"})
         self.assertTrue(bind_terminal_claim(
             verifier_state,
             lambda actual, _challenges: actual == prover_state.terminal_commitment,
@@ -307,6 +325,21 @@ class CryptoPrimitiveTests(unittest.TestCase):
                     assert_wire_clean(item)
 
         assert_wire_clean(wire)
+
+        tampered_mask = copy.deepcopy(wire)
+        tampered_mask["rounds"][0]["coefficient_mask_commitments"][0] = copy.deepcopy(
+            tampered_mask["rounds"][0]["coefficient_commitments"][0]
+        )
+        with self.assertRaises(SumcheckVerificationError):
+            verify_committed_sumcheck(
+                "tests/sumcheck",
+                tampered_mask,
+                15,
+                2,
+                2,
+                params=self.params,
+                transcript=Transcript("tests/sumcheck-session"),
+            )
 
     def test_sumcheck_witness_initial_and_external_statement(self) -> None:
         initial, initial_blind = commit_value(self.params, 15, 29)

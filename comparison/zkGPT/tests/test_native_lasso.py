@@ -73,10 +73,26 @@ class NativeLassoTest(unittest.TestCase):
                 transcript=Transcript("native-lasso-test"), canonical_source_sink=sources,
             ))
             self.assertEqual(len(sources), 1)
+            membership = proof["families"][0]["membership"]
+            self.assertEqual(membership["matrix_shape"], [2, 2])
+            self.assertEqual(membership["matrix_registration"]["label"], "M_f/0/toy.range")
+            self.assertEqual(membership["padding_row"]["value"], "0")
+            self.assertEqual(membership["booleanity"]["protocol"], "zkGPT/native-gkr-product-gate-v1")
+            self.assertEqual(
+                membership["one_hot"]["linear_form"]["kind"],
+                "lasso-membership-row-sum",
+            )
+            self.assertIn("terminal_mask_commitment", membership["sumcheck"])
             tampered = copy.deepcopy(proof)
             tampered["families"][0]["beta"] = str(int(tampered["families"][0]["beta"]) + 1)
             self.assertFalse(verify_lasso(
                 tampered, metadata, tables, public_registration,
+                transcript=Transcript("native-lasso-test"), canonical_source_sink=[],
+            ))
+            tampered_booleanity = copy.deepcopy(proof)
+            tampered_booleanity["families"][0]["membership"]["booleanity"]["mask_header"]["version"] = 2
+            self.assertFalse(verify_lasso(
+                tampered_booleanity, metadata, tables, public_registration,
                 transcript=Transcript("native-lasso-test"), canonical_source_sink=[],
             ))
 

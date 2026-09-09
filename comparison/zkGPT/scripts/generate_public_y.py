@@ -32,6 +32,8 @@ from zkgpt_gat.constants import (  # noqa: E402
     FORMAL_GAT_K_OUT,
     FORMAL_GAT_LAYER_COUNT,
     FORMAL_GAT_MODEL_ARCH_IDS,
+    PUBLIC_Y_SCHEMA,
+    REFERENCE_FORWARD_PROFILE_ID,
 )
 from zkgpt_gat.data import load_dataset, normalize_graph  # noqa: E402
 from zkgpt_gat.forward import forward_public_y  # noqa: E402
@@ -43,10 +45,7 @@ from zkgpt_gat.resources import (  # noqa: E402
     required_resource_paths,
 )
 from zkgpt_gat.util import digest_file, digest_json, write_json  # noqa: E402
-from zkgpt_gat.verifier_context import load_public_y  # noqa: E402
-
-
-PUBLIC_Y_SCHEMA = "zkGPT_public_y_v1"
+from zkgpt_gat.verifier_context import _x_digest, canonical_graph_identity, load_public_y  # noqa: E402
 
 
 def _owned_regular(path: pathlib.Path, label: str) -> pathlib.Path:
@@ -174,6 +173,12 @@ def _validate_public_y(path: pathlib.Path, contract: dict[str, Any], values: np.
         raise RuntimeError("generated public Y digest does not match its integer values")
     if payload.get("reference_y_digest") != expected_digest or payload.get("independent_reference_forward") is not True:
         raise RuntimeError("generated public Y lacks independent reference-forward evidence")
+    if payload.get("public_y_schema") != PUBLIC_Y_SCHEMA or payload.get("public_y_shape") != [int(item) for item in values.shape]:
+        raise RuntimeError("generated public Y canonical schema/shape binding is invalid")
+    if payload.get("public_y_path") != str(path.relative_to(ROOT)):
+        raise RuntimeError("generated public Y path binding is not canonical")
+    if payload.get("reference_forward_profile_id") != REFERENCE_FORWARD_PROFILE_ID:
+        raise RuntimeError("generated public Y reference-forward profile is not canonical")
     descriptor = dict(payload)
     descriptor_digest = descriptor.pop("descriptor_digest", None)
     if descriptor_digest != digest_json(descriptor):
@@ -241,6 +246,23 @@ def generate_one(dataset_name: str) -> dict[str, Any]:
         "forward_engine": "zkgpt_gat.forward.forward_public_y",
         "reference_forward_engine": REFERENCE_FORWARD_ENGINE,
         "reference_forward_source_sha256": reference_forward_source_sha256(),
+        "reference_forward_profile_id": REFERENCE_FORWARD_PROFILE_ID,
+        "public_y_schema": PUBLIC_Y_SCHEMA,
+        "public_y_path": str(paths["public_y_path"].relative_to(ROOT)),
+        "public_y_shape": [int(value) for value in values.shape],
+        "X_pub_digest": _x_digest(
+            graph,
+            int(model.layer_count if hasattr(model, "layer_count") else len(model.hidden_layers) + 1),
+            int(model.class_count),
+            int(model.k_out),
+            int(model.quant_scales["input"]),
+        ),
+        "full_dataset": bool(graph.num_nodes == dataset.num_nodes),
+        "graph_identity": canonical_graph_identity(
+            graph,
+            canonical,
+            full_dataset=graph.num_nodes == dataset.num_nodes,
+        ),
         "reference_y_digest": _array_digest(reference_values),
         "independent_reference_forward": bool(np.array_equal(values, reference_values)),
         "y_digest": _array_digest(values),
@@ -248,6 +270,13 @@ def generate_one(dataset_name: str) -> dict[str, Any]:
     }
     payload["descriptor_digest"] = digest_json(payload)
     output_path = paths["public_y_path"]
+    # Public Y is a trusted setup input.  A second invocation must never
+    # replace the registered statement (even with an atomically written file);
+    # the operator may remove an explicitly invalid staging result before a
+    # fresh setup, but this script itself is non-overwriting.
+    if os.path.lexists(output_path):
+        _owned_regular(output_path, f"existing {canonical} public Y")
+        raise RuntimeError(f"canonical public Y already exists; refusing overwrite: {output_path}")
     write_json(output_path, payload, root=ROOT, label=f"{canonical} public Y")
     _validate_public_y(output_path, payload | {"descriptor_digest": payload["descriptor_digest"]}, values)
     elapsed_ms = (time.perf_counter() - started) * 1000.0

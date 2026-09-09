@@ -8,7 +8,15 @@ from typing import Any, Mapping, Sequence
 from .field import BN254_FR_MODULUS, next_power_of_two, sumcheck_domain, to_field_int
 from .gpu_execution import active_product_coefficients
 from .input_oracle import equality_weights
-from .native_hyrax import NativeHyrax, _point, verify_batched_linear_claim_payload
+from .native_hyrax import (
+    NativeHyrax,
+    absorb_mask_header,
+    build_mask_header,
+    evaluation_commitment_from_payload,
+    masked_evaluation_claim_from_payload,
+    verify_batched_linear_claim_payload,
+    verify_open_payload,
+)
 from .transcript import Transcript
 from .util import digest_json
 from .value_commitment import (
@@ -204,18 +212,37 @@ def _open(
     work_dir: pathlib.Path,
     transcript: Transcript,
     context: Mapping[str, Any],
+    full_opening: bool = False,
+    opening_point: Sequence[int] | None = None,
 ):
     weights, form = _weights_and_form(layout, oracle, output_weights)
-    state = hyrax.commit_linear_claim_registered(
-        label,
-        vectors[oracle.segment],
-        weights,
-        registrations[oracle.segment],
-        work_dir,
-        transcript=transcript,
-        linear_form=form,
-        public_context=context,
-    )
+    if full_opening:
+        # A full MLE opening is reserved for relations whose oracle is the
+        # complete registered vector.  In particular, the Lasso membership
+        # Booleanity claim must carry an IPA; a batched claim alone is only a
+        # pending message and is not bound to its registration.
+        if opening_point is None or tuple(oracle.index_map) != tuple(range(len(oracle.index_map))):
+            raise ValueError("full Hyrax opening requires a complete registered oracle")
+        state = hyrax.open_registered(
+            label,
+            vectors[oracle.segment],
+            opening_point,
+            registrations[oracle.segment],
+            work_dir,
+            transcript=transcript,
+            public_context=context,
+        )
+    else:
+        state = hyrax.commit_linear_claim_registered(
+            label,
+            vectors[oracle.segment],
+            weights,
+            registrations[oracle.segment],
+            work_dir,
+            transcript=transcript,
+            linear_form=form,
+            public_context=context,
+        )
     return state, form
 
 
@@ -231,6 +258,12 @@ def prove_linear_gate(
     transcript: Transcript,
     context: Mapping[str, Any],
 ) -> dict[str, Any]:
+    mask_header = build_mask_header(
+        spec.label,
+        context,
+        ("target-evaluation", "term-evaluations", "linear-equality"),
+    )
+    absorb_mask_header(transcript, mask_header)
     count = len(spec.target.index_map)
     point = [transcript.challenge_scalar(f"{spec.label}/point/{index}") for index in range(next_power_of_two(count).bit_length() - 1)]
     output_weights = equality_weights(point)[:count]
@@ -281,6 +314,7 @@ def prove_linear_gate(
         "target_opening": {"linear_form": target_form, "proof": target.proof},
         "term_openings": term_payloads,
         "linear_equality": equality.to_dict(),
+        "mask_header": mask_header,
     }
 
 
@@ -295,17 +329,35 @@ def _verify_opening(
     transcript: Transcript,
     context: Mapping[str, Any],
     source_sink: list[dict[str, Any]] | None = None,
+    full_opening: bool = False,
+    opening_point: Sequence[int] | None = None,
 ) -> ValueCommitment | None:
     weights, form = _weights_and_form(layout, oracle, output_weights)
     if payload.get("linear_form") != form:
         return None
-    result = verify_batched_linear_claim_payload(
-        label, payload.get("proof", {}), weights, registrations[oracle.segment], int(layout["N_in"]),
-        transcript=transcript, linear_form=form, public_context=context,
-    )
+    if full_opening:
+        if opening_point is None or tuple(oracle.index_map) != tuple(range(len(oracle.index_map))):
+            return None
+        result = verify_open_payload(
+            label,
+            payload.get("proof", {}),
+            opening_point,
+            registrations[oracle.segment],
+            int(layout["N_in"]),
+            transcript=transcript,
+            public_context=context,
+        )
+    else:
+        result = verify_batched_linear_claim_payload(
+            label, payload.get("proof", {}), weights, registrations[oracle.segment], int(layout["N_in"]),
+            transcript=transcript, linear_form=form, public_context=context,
+        )
     if result.get("status") != "VERIFY_OK":
         return None
-    commitment = ValueCommitment(_point(payload["proof"]["evaluation_commitment"]))
+    # The wire carries an affine-masked evaluation commitment.  Compose the
+    # relation using the raw commitment recovered by G1 subtraction only
+    # after the mask PoK/transcript has been checked above.
+    commitment = evaluation_commitment_from_payload(payload["proof"])
     if source_sink is not None:
         source_sink.append({
             "label": label,
@@ -314,6 +366,7 @@ def _verify_opening(
             ),
             "linear_form": form,
             "evaluation_commitment": commitment,
+            "evaluation_claim": masked_evaluation_claim_from_payload(payload["proof"]),
             "weights": weights,
         })
     return commitment
@@ -332,11 +385,19 @@ def verify_linear_gate(
 ) -> bool:
     try:
         if not isinstance(proof, Mapping) or set(proof) != {
-            "protocol", "spec", "point", "target_opening", "term_openings", "linear_equality"
+            "protocol", "spec", "point", "target_opening", "term_openings", "linear_equality", "mask_header"
         }:
             return False
         if proof["protocol"] != PROTOCOL_ID or proof["spec"] != spec.descriptor():
             return False
+        expected_header = build_mask_header(
+            spec.label,
+            context,
+            ("target-evaluation", "term-evaluations", "linear-equality"),
+        )
+        if proof.get("mask_header") != expected_header:
+            return False
+        absorb_mask_header(transcript, expected_header)
         count = len(spec.target.index_map)
         point = [transcript.challenge_scalar(f"{spec.label}/point/{index}") for index in range(next_power_of_two(count).bit_length() - 1)]
         if proof["point"] != [str(value) for value in point]:
@@ -397,7 +458,14 @@ def prove_product_gate(
     work_dir: pathlib.Path,
     transcript: Transcript,
     context: Mapping[str, Any],
+    full_openings: bool = False,
 ) -> dict[str, Any]:
+    mask_header = build_mask_header(
+        spec.label,
+        context,
+        ("target-evaluation", "product-sumcheck", "left-evaluation", "right-evaluation", "terminal-relation"),
+    )
+    absorb_mask_header(transcript, mask_header)
     count = len(spec.target.index_map)
     domain = sumcheck_domain(count)
     variables = domain.bit_length() - 1
@@ -410,6 +478,7 @@ def prove_product_gate(
         f"{spec.label}/target", spec.target, output_weights[:count],
         layout=layout, vectors=vectors, registrations=registrations,
         hyrax=hyrax, work_dir=work_dir, transcript=transcript, context=context,
+        full_opening=full_openings, opening_point=output_point,
     )
     left_values = _oracle_values(layout, spec.left, vectors) + [0] * (domain - count)
     right_values = _oracle_values(layout, spec.right, vectors) + [0] * (domain - count)
@@ -438,11 +507,13 @@ def prove_product_gate(
         f"{spec.label}/left", spec.left, terminal_weights,
         layout=layout, vectors=vectors, registrations=registrations,
         hyrax=hyrax, work_dir=work_dir, transcript=transcript, context=context,
+        full_opening=full_openings, opening_point=terminal_point,
     )
     right, right_form = _open(
         f"{spec.label}/right", spec.right, terminal_weights,
         layout=layout, vectors=vectors, registrations=registrations,
         hyrax=hyrax, work_dir=work_dir, transcript=transcript, context=context,
+        full_opening=full_openings, opening_point=terminal_point,
     )
     selector_eval = sum(
         left_weight * right_weight
@@ -479,6 +550,7 @@ def prove_product_gate(
         "product_commitment": product_commitment.to_dict(),
         "operand_product": operand_product.to_dict(),
         "terminal_product": terminal_product.to_dict(),
+        "mask_header": mask_header,
     }
 
 
@@ -492,17 +564,26 @@ def verify_product_gate(
     transcript: Transcript,
     context: Mapping[str, Any],
     source_sink: list[dict[str, Any]] | None = None,
+    full_openings: bool = False,
 ) -> bool:
     try:
         required = {
             "protocol", "spec", "output_point", "target_opening", "sumcheck",
             "left_opening", "right_opening", "product_commitment",
-            "operand_product", "terminal_product",
+            "operand_product", "terminal_product", "mask_header",
         }
         if not isinstance(proof, Mapping) or set(proof) != required:
             return False
         if proof["protocol"] != PRODUCT_PROTOCOL_ID or proof["spec"] != spec.descriptor():
             return False
+        expected_header = build_mask_header(
+            spec.label,
+            context,
+            ("target-evaluation", "product-sumcheck", "left-evaluation", "right-evaluation", "terminal-relation"),
+        )
+        if proof.get("mask_header") != expected_header:
+            return False
+        absorb_mask_header(transcript, expected_header)
         count = len(spec.target.index_map)
         domain = sumcheck_domain(count)
         variables = domain.bit_length() - 1
@@ -516,7 +597,7 @@ def verify_product_gate(
         target = _verify_opening(
             f"{spec.label}/target", spec.target, output_weights[:count], proof["target_opening"],
             layout=layout, registrations=registrations, transcript=transcript, context=context,
-            source_sink=source_sink,
+            source_sink=source_sink, full_opening=full_openings, opening_point=output_point,
         )
         if target is None:
             return False
@@ -529,12 +610,12 @@ def verify_product_gate(
         left = _verify_opening(
             f"{spec.label}/left", spec.left, terminal_weights, proof["left_opening"],
             layout=layout, registrations=registrations, transcript=transcript, context=context,
-            source_sink=source_sink,
+            source_sink=source_sink, full_opening=full_openings, opening_point=terminal_point,
         )
         right = _verify_opening(
             f"{spec.label}/right", spec.right, terminal_weights, proof["right_opening"],
             layout=layout, registrations=registrations, transcript=transcript, context=context,
-            source_sink=source_sink,
+            source_sink=source_sink, full_opening=full_openings, opening_point=terminal_point,
         )
         if left is None or right is None:
             return False

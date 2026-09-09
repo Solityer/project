@@ -14,7 +14,12 @@ import secrets
 from dataclasses import dataclass
 from typing import Any, Iterable, List, Sequence
 
-from .field import BN254_FR_MODULUS, f_inv, to_field_int
+from .field import BN254_FR_MODULUS, f_inv, parse_canonical_decimal, to_field_int
+
+try:
+    from ._openssl_msm import ACCELERATOR as _OPENSSL_MSM_ACCELERATOR
+except (ImportError, OSError, RuntimeError):  # pragma: no cover - host capability gate
+    _OPENSSL_MSM_ACCELERATOR = None
 
 # BN254 base-field modulus (the scalar modulus is kept in field.py).
 BN254_FQ_MODULUS = 21888242871839275222246405745257275088696311157297823662689037894645226208583
@@ -74,6 +79,10 @@ class G1Point:
         n = int(scalar) % BN254_FR_MODULUS
         if self.infinity or n == 0:
             return G1Point.zero()
+        if _OPENSSL_MSM_ACCELERATOR is not None:
+            accelerated = _OPENSSL_MSM_ACCELERATOR.scalar_mul(self, n)
+            if accelerated is not None:
+                return accelerated
         # Keep the wire representation affine, but perform the scalar ladder
         # in Jacobian coordinates so setup/opening does not pay one field
         # inversion per bit of every generator multiplication.
@@ -97,7 +106,15 @@ class G1Point:
     def from_json(value: Any) -> "G1Point":
         if not isinstance(value, dict):
             raise ValueError("invalid G1 point encoding")
-        point = G1Point(int(value.get("x", 0)), int(value.get("y", 0)), bool(value.get("infinity", False))).normalized()
+        if set(value) != {"x", "y", "infinity"} or not isinstance(value["infinity"], bool):
+            raise ValueError("invalid G1 point encoding")
+        x = parse_canonical_decimal(value["x"], label="G1.x", nonnegative=True)
+        y = parse_canonical_decimal(value["y"], label="G1.y", nonnegative=True)
+        if x >= BN254_FQ_MODULUS or y >= BN254_FQ_MODULUS:
+            raise ValueError("non-canonical G1 coordinate")
+        if value["infinity"] and (x != 0 or y != 0):
+            raise ValueError("non-canonical infinity coordinates")
+        point = G1Point(x, y, value["infinity"])
         if not point.infinity and not point.is_on_curve():
             raise ValueError("G1 point is not on BN254 curve")
         return point
@@ -171,9 +188,33 @@ def multi_scalar_mul(points: Sequence[G1Point], scalars: Iterable[int]) -> G1Poi
     if not entries:
         return G1Point.zero()
 
-    # Four-bit windows keep the bucket table small for the short vectors used
-    # by the native proof while avoiding a large setup-time allocation.
-    window = 4
+    # The optional OpenSSL implementation uses the same short-Weierstrass
+    # BN254 curve and returns the same affine G1 value.  Keep very short MSMs
+    # on the local Jacobian path because ctypes setup dominates them; larger
+    # Hyrax/IPA MSMs are the hot path for which the native implementation is
+    # materially faster.  The environment switch is useful for the arithmetic
+    # equivalence test and for hosts without a compatible libcrypto.
+    if _OPENSSL_MSM_ACCELERATOR is not None and len(entries) >= 64:
+        accelerated = _OPENSSL_MSM_ACCELERATOR.msm(entries)
+        if accelerated is not None:
+            return accelerated
+
+    # Select the fallback Pippenger window from the number of nonzero terms.
+    # Four-bit buckets are best for the short local vectors used by the
+    # per-family proofs, while larger vectors benefit from a wider window.
+    # This is only an arithmetic implementation choice: the same native G1
+    # linear combination is returned and the serialized protocol is unchanged.
+    entry_count = len(entries)
+    if entry_count < 128:
+        window = 4
+    elif entry_count < 256:
+        window = 5
+    elif entry_count < 512:
+        window = 6
+    elif entry_count < 2048:
+        window = 7
+    else:
+        window = 8
     mask = (1 << window) - 1
     max_bits = max(scalar.bit_length() for _, scalar in entries)
     max_shift = ((max_bits + window - 1) // window - 1) * window

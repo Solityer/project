@@ -10,6 +10,7 @@ from numbers import Integral
 from typing import Any, Dict, List, Mapping, Sequence
 
 from .field import BN254_FR_MODULUS
+from .build_identity import source_inventory, source_manifest_digest, verify_build_manifest
 from .util import digest_json, ensure_dir, read_json, stable_env, write_text_atomic
 
 
@@ -60,9 +61,10 @@ def _check_lexical_components(path: pathlib.Path, root: pathlib.Path, *, allow_m
             raise RuntimeError(f"CUDA path component must be a directory: {current}")
 
 
-def _authenticated_cuda_binary(zk_root: pathlib.Path) -> tuple[pathlib.Path, str, str]:
+def _authenticated_cuda_binary(zk_root: pathlib.Path) -> tuple[pathlib.Path, str, str, Dict[str, Any]]:
     """Authenticate the baseline-local CUDA executable before invocation."""
     root = _lexical(zk_root)
+    manifest = verify_build_manifest(root)
     binary = _lexical(gpu_proof_hot_path_binary(root))
     _check_lexical_components(binary, root, allow_missing=False)
     try:
@@ -81,8 +83,12 @@ def _authenticated_cuda_binary(zk_root: pathlib.Path) -> tuple[pathlib.Path, str
     except OSError as exc:
         raise RuntimeError(f"cannot resolve CUDA proof primitive binary: {binary}") from exc
     digest = hashlib.sha256(binary.read_bytes()).hexdigest()
-    identity = digest_json({"kernel": _GPU_KERNEL, "binary_sha256": digest})
-    return binary, digest, identity
+    if manifest.get("binary", {}).get("sha256") != digest:
+        raise RuntimeError("CUDA proof primitive binary digest differs from build manifest")
+    identity = str(manifest.get("build_identity", ""))
+    if not identity:
+        raise RuntimeError("CUDA build manifest omitted build identity")
+    return binary, digest, identity, manifest
 
 
 def _as_field(value: Any, label: str) -> int:
@@ -250,8 +256,9 @@ def _run_gpu_primitives_file(
     zk_root: pathlib.Path,
     input_path: pathlib.Path,
     label: str,
+    operations: Sequence[Mapping[str, Any]],
 ) -> Dict[str, Any]:
-    binary, binary_sha256, build_identity = _authenticated_cuda_binary(zk_root)
+    binary, binary_sha256, build_identity, authenticated_manifest = _authenticated_cuda_binary(zk_root)
     out_path = input_path.with_suffix(".gpu_backend.json")
     env = stable_env()
     env.setdefault("CUDA_MODULE_LOADING", "LAZY")
@@ -292,18 +299,45 @@ def _run_gpu_primitives_file(
         raise RuntimeError("CUDA backend returned no canonical device UUID")
     if isinstance(event_ms, bool) or not isinstance(event_ms, (int, float)) or event_ms < 0:
         raise RuntimeError("CUDA backend returned no CUDA-event execution time")
+    expected = recompute_gpu_proof_batch(operations)
+    if state.get("operations") != expected.get("operations"):
+        raise RuntimeError("CUDA backend output does not match the independent BN254-Fr reference")
+    wire_bytes = ("\n".join(_wire_lines(operations)) + "\n").encode("utf-8")
+    operation_digest = digest_json(_canonical_operations(operations))
+    state["operation_digest"] = operation_digest
+    state["wire_input_sha256"] = hashlib.sha256(wire_bytes).hexdigest()
+    state["operation_output_digest"] = digest_json(state["operations"])
+    state["proof_message_binding_digest"] = digest_json(
+        {
+            "operation_digest": operation_digest,
+            "wire_input_sha256": state["wire_input_sha256"],
+            "operation_output_digest": state["operation_output_digest"],
+            "operations": state["operations"],
+        }
+    )
     # Public proof-execution records use one normalized identity/timing name;
     # retain the raw CUDA fields for the low-level message contract as well.
     state["device_uuid"] = gpu_uuid
     state["kernel_time_ms"] = float(event_ms)
     state["binary_sha256"] = binary_sha256
     state["build_identity"] = build_identity
+    state["build_manifest_schema"] = authenticated_manifest.get("schema")
+    state["build_manifest_digest"] = authenticated_manifest.get("manifest_digest")
+    state["source_manifest_sha256"] = authenticated_manifest.get("source", {}).get("manifest_sha256")
+    state["cuda_target"] = authenticated_manifest.get("target")
+    target = authenticated_manifest.get("target", {})
+    if state.get("gpu_compute_capability") != target.get("compute_capability") or state.get("gpu_arch") != target.get("code"):
+        raise RuntimeError("CUDA device architecture does not match the authenticated build target")
     state["cuda_stdout"] = completed.stdout.strip()
-    state.setdefault("memory_copy_h2d_ms", 0.0)
-    state.setdefault("memory_copy_d2h_ms", 0.0)
-    state.setdefault("synchronization_time_ms", 0.0)
+    for timing_name in ("memory_copy_h2d_ms", "memory_copy_d2h_ms", "synchronization_time_ms"):
+        timing_value = state.get(timing_name)
+        if isinstance(timing_value, bool) or not isinstance(timing_value, (int, float)) or timing_value < 0:
+            raise RuntimeError(f"CUDA backend returned invalid measured timing: {timing_name}")
     state.setdefault("total_time_ms", elapsed_ms)
-    state.setdefault("kernel_count", 1)
+    kernel_count = state.get("kernel_invocation_count")
+    if isinstance(kernel_count, bool) or not isinstance(kernel_count, int) or kernel_count <= 0:
+        raise RuntimeError("CUDA backend returned no native kernel invocation count")
+    state["kernel_count"] = kernel_count
     return state
 
 
@@ -345,7 +379,7 @@ def gpu_proof_message_batch(
             label="CUDA proof input",
             root=zk_root,
         )
-        state = _run_gpu_primitives_file(zk_root, input_path, label)
+        state = _run_gpu_primitives_file(zk_root, input_path, label, canonical)
     state["proof_hot_path"] = True
     state["hot_path_semantics"] = _HOT_PATH_SEMANTICS
     state["hot_path_components"] = [
@@ -357,7 +391,7 @@ def gpu_proof_message_batch(
     state["cuda_kernel"] = _GPU_KERNEL
     state["input_encoding"] = _GPU_WIRE_VERSION.lower()
     state["operation_digest"] = digest_json(canonical)
-    state["input_digest"] = state["operation_digest"]
+    state["input_digest"] = state["wire_input_sha256"]
     state["primitive_input_count"] = int(state.get("field_words_processed", 0))
     state["verifier_binding"] = (
         "operation outputs bind the exact canonical BN254-Fr values, beta/challenges, "
@@ -609,6 +643,44 @@ def validate_gpu_proof_state(
         errors.append("cuda_event_elapsed_ms_invalid")
     if state.get("cuda_event_timing") != "cudaEventElapsedTime":
         errors.append("cuda_event_timing_invalid")
+    if state.get("transfer_timing") != "host_steady_clock":
+        errors.append("transfer_timing_invalid")
+    build_identity_value = state.get("build_identity")
+    if not isinstance(build_identity_value, str) or len(build_identity_value) != 64 or any(
+        char not in "0123456789abcdef" for char in build_identity_value
+    ):
+        errors.append("build_identity_invalid")
+    binary_sha = state.get("binary_sha256")
+    if not isinstance(binary_sha, str) or len(binary_sha) != 64 or binary_sha.lower() != binary_sha or any(
+        char not in "0123456789abcdef" for char in binary_sha
+    ):
+        errors.append("binary_sha256_invalid")
+    if state.get("build_manifest_schema") != "zkGPT_cuda_build_manifest_v1":
+        errors.append("build_manifest_schema_invalid")
+    for identity_name in ("build_manifest_digest", "source_manifest_sha256"):
+        value = state.get(identity_name)
+        if not isinstance(value, str) or len(value) != 64 or value.lower() != value or any(
+            char not in "0123456789abcdef" for char in value
+        ):
+            errors.append(f"{identity_name}_invalid")
+    target = state.get("cuda_target")
+    if not isinstance(target, Mapping) or any(not isinstance(target.get(key), str) or not target.get(key) for key in ("compute_capability", "arch", "code", "gencode")):
+        errors.append("cuda_target_invalid")
+    elif (
+        str(target.get("compute_capability")).count(".") != 1
+        or any(not part.isdigit() for part in str(target.get("compute_capability")).split("."))
+    ):
+        errors.append("cuda_target_compute_capability_invalid")
+    elif (
+        target.get("arch") != f"compute_{str(target['compute_capability']).replace('.', '')}"
+        or target.get("code") != f"sm_{str(target['compute_capability']).replace('.', '')}"
+        or target.get("gencode") != f"arch=compute_{str(target['compute_capability']).replace('.', '')},code=sm_{str(target['compute_capability']).replace('.', '')}"
+    ):
+        errors.append("cuda_target_internal_mismatch")
+    if state.get("gpu_compute_capability") != (target.get("compute_capability") if isinstance(target, Mapping) else None):
+        errors.append("gpu_compute_capability_mismatch")
+    if state.get("gpu_arch") != (target.get("code") if isinstance(target, Mapping) else None):
+        errors.append("gpu_arch_mismatch")
 
     operations = state.get("operations")
     if not isinstance(operations, list) or not operations:
@@ -664,7 +736,7 @@ def validate_gpu_proof_state(
             if not isinstance(rounds, list):
                 errors.append(f"{prefix}_rounds_missing")
                 rounds = []
-            if operation.get("complete") is True and padded_count and len(rounds) != _log2_power_of_two(padded_count):
+            if operation.get("complete") is True and padded_count and _is_power_of_two(padded_count) and len(rounds) != _log2_power_of_two(padded_count):
                 errors.append(f"{prefix}_round_count_invalid")
             expected_degree = {
                 "sumcheck_mle_fold": 2,
@@ -691,7 +763,7 @@ def validate_gpu_proof_state(
             if not isinstance(rounds, list):
                 errors.append(f"{prefix}_rounds_missing")
                 rounds = []
-            if operation.get("complete") is True and padded_count and len(rounds) != _log2_power_of_two(padded_count):
+            if operation.get("complete") is True and padded_count and _is_power_of_two(padded_count) and len(rounds) != _log2_power_of_two(padded_count):
                 errors.append(f"{prefix}_round_count_invalid")
             for round_index, round_message in enumerate(rounds):
                 round_prefix = f"{prefix}.rounds[{round_index}]"
@@ -725,6 +797,48 @@ def validate_gpu_proof_state(
         errors.append("transcript_count_invalid")
     if state.get("field_words_processed") != operation_input_fields:
         errors.append("field_words_processed_mismatch")
+    kernel_count = state.get("kernel_invocation_count")
+    if not isinstance(kernel_count, int) or isinstance(kernel_count, bool) or kernel_count <= 0:
+        errors.append("kernel_invocation_count_invalid")
+    kernel_counts = state.get("kernel_invocation_counts")
+    if not isinstance(kernel_counts, Mapping):
+        errors.append("kernel_invocation_counts_missing")
+    else:
+        kernel_names = ("lasso", "matmul_sumcheck", "gkr_relation", "hyrax", "transcript")
+        for name in kernel_names:
+            value = kernel_counts.get(name)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                errors.append(f"kernel_invocation_counts_{name}_invalid")
+        if all(isinstance(kernel_counts.get(name), int) and not isinstance(kernel_counts.get(name), bool) for name in kernel_names) and isinstance(kernel_count, int):
+            if sum(int(kernel_counts[name]) for name in kernel_names) != kernel_count:
+                errors.append("kernel_invocation_counts_total_mismatch")
+        expected_kernel_counts = {name: 0 for name in kernel_names}
+        product_bucket = "matmul_sumcheck" if "matmul" in str(state.get("label", "")).lower() else "gkr_relation"
+        for operation in operations:
+            if not isinstance(operation, Mapping):
+                continue
+            kind = operation.get("kind")
+            padded = operation.get("padded_count")
+            rounds = operation.get("rounds")
+            round_count = len(rounds) if isinstance(rounds, list) else 0
+            if kind == "lasso_product_tree" and isinstance(padded, int) and _is_power_of_two(padded):
+                expected_kernel_counts["lasso"] += 1 + _log2_power_of_two(padded)
+            elif kind == "sumcheck_mle_fold":
+                expected_kernel_counts["gkr_relation"] += 2 * round_count
+            elif kind == "sumcheck_product2_fold":
+                expected_kernel_counts[product_bucket] += 4 * round_count + 1
+            elif kind == "sumcheck_product3_fold":
+                expected_kernel_counts[product_bucket] += 5 * round_count + 1
+            elif kind == "hyrax_linear_eval_fold":
+                expected_kernel_counts["hyrax"] += round_count
+        expected_kernel_counts["transcript"] = 1
+        if all(isinstance(kernel_counts.get(name), int) and not isinstance(kernel_counts.get(name), bool) for name in kernel_names):
+            if {name: int(kernel_counts[name]) for name in kernel_names} != expected_kernel_counts:
+                errors.append("kernel_invocation_counts_operation_mismatch")
+    for timing_name in ("memory_copy_h2d_ms", "memory_copy_d2h_ms", "synchronization_time_ms"):
+        timing_value = state.get(timing_name)
+        if isinstance(timing_value, bool) or not isinstance(timing_value, (int, float)) or timing_value < 0:
+            errors.append(f"{timing_name}_invalid")
     for field_name in (
         "lasso_grand_product_fr_hex",
         "matmul_sumcheck_fr_hex",
@@ -735,7 +849,8 @@ def validate_gpu_proof_state(
         hex64(state.get(field_name), field_name)
     if expected_operations is not None:
         try:
-            expected = recompute_gpu_proof_batch(expected_operations)
+            canonical_expected = _canonical_operations(expected_operations)
+            expected = recompute_gpu_proof_batch(canonical_expected)
             for field_name in (
                 "operations",
                 "field_words_processed",
@@ -748,6 +863,24 @@ def validate_gpu_proof_state(
             ):
                 if state.get(field_name) != expected.get(field_name):
                     errors.append(f"{field_name}_does_not_match_independent_reference")
+            expected_operation_digest = digest_json(canonical_expected)
+            expected_wire_digest = hashlib.sha256(("\n".join(_wire_lines(canonical_expected)) + "\n").encode("utf-8")).hexdigest()
+            if state.get("operation_digest") != expected_operation_digest:
+                errors.append("operation_digest_does_not_match_expected_input")
+            if state.get("wire_input_sha256") != expected_wire_digest:
+                errors.append("wire_input_sha256_does_not_match_expected_input")
+            if state.get("operation_output_digest") != digest_json(expected.get("operations")):
+                errors.append("operation_output_digest_does_not_match_expected_output")
+            expected_binding = digest_json(
+                {
+                    "operation_digest": expected_operation_digest,
+                    "wire_input_sha256": expected_wire_digest,
+                    "operation_output_digest": digest_json(expected.get("operations")),
+                    "operations": expected.get("operations"),
+                }
+            )
+            if state.get("proof_message_binding_digest") != expected_binding:
+                errors.append("proof_message_binding_digest_invalid")
         except (TypeError, ValueError, KeyError) as exc:
             errors.append(f"independent_reference_invalid:{exc}")
     return not errors, errors
@@ -768,10 +901,16 @@ def run_gpu_primitives_probe(zk_root: pathlib.Path, seed_payload: Dict[str, Any]
 
 def backend_state(backend: str, zk_root: pathlib.Path, seed_payload: Dict[str, Any]) -> Dict[str, Any]:
     if backend == "cpu":
+        source_digest = source_manifest_digest(source_inventory(_lexical(pathlib.Path(zk_root))))
         return {
             "backend": "cpu",
             "cuda_kernel_executed": False,
             "gpu_runtime_present": False,
+            "build_manifest_schema": "zkGPT_cuda_build_manifest_v1",
+            "build_identity": None,
+            "build_manifest_digest": None,
+            "source_manifest_sha256": source_digest,
+            "source_identity_schema": "zkGPT_cuda_source_inventory_v1",
             "note": "CPU proof path",
         }
     if backend == "gpu":

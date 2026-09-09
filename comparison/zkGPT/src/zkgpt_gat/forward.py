@@ -3,13 +3,13 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP, localcontext
-from typing import Dict, List
+from typing import Dict, List, Mapping
 
 import numpy as np
 
 from .data import LocalGraph
 from .model import AttentionHead, Model
-from .quantization import quantize_ties_away
+from .quantization import canonical_scale_profile, quantize_ties_away, validate_scale_profile
 from .field import BN254_FR_MODULUS, to_field_int
 from .util import TimerBook, timed, update_digest_np
 from .rounding import (
@@ -58,8 +58,8 @@ class HeadTrace:
     elu_in: np.ndarray | None = None
     field_agg: np.ndarray | None = None
     denominator: np.ndarray | None = None
-    h_prime_scale: int = 16
-    aggregate_output_scale: int = 16
+    h_prime_scale: int | None = None
+    aggregate_output_scale: int | None = None
     aggregate_division: SignedRoundDivTrace | None = None
     scale_alignment_division: SignedRoundDivTrace | None = None
     output_aligned: np.ndarray | None = None
@@ -116,16 +116,40 @@ def leaky_relu(values: np.ndarray, alpha: float = 0.2) -> np.ndarray:
     return out
 
 
-def elu(values: np.ndarray) -> np.ndarray:
+def _function_scale_profile(scale_profile: Mapping[str, int] | None = None) -> dict[str, int]:
+    """Resolve the authenticated function-table scales used by this forward.
+
+    The default is the registered canonical profile for compatibility with
+    the small scalar helpers.  Production forward callers pass the model's
+    already-authenticated profile, so ELU/ExpMap cannot silently use a stale
+    denominator when a fixture or registered model has a different identity.
+    """
+
+    profile = canonical_scale_profile() if scale_profile is None else scale_profile
+    normalized = validate_scale_profile(profile)
+    return {
+        "exp_input": int(normalized["exp_input"]),
+        "exp_output": int(normalized["exp_output"]),
+        "elu_input": int(normalized["elu_input"]),
+        "elu_output": int(normalized["elu_output"]),
+    }
+
+
+def elu(values: np.ndarray, scale_profile: Mapping[str, int] | None = None) -> np.ndarray:
     value_dtype = np.asarray(values).dtype
     if not (np.issubdtype(value_dtype, np.integer) or value_dtype == object):
         raise TypeError("formal ELU accepts canonical integers only")
+    function_scales = _function_scale_profile(scale_profile)
     arr = np.asarray(values, dtype=object)
     out = arr.copy()
     for index in np.ndindex(arr.shape):
         value = int(arr[index])
         if value < 0:
-            out[index] = _elu_table_value(value)
+            out[index] = _elu_table_value(
+                value,
+                input_scale=function_scales["elu_input"],
+                output_scale=function_scales["elu_output"],
+            )
     return out
 
 
@@ -231,17 +255,41 @@ def _decimal_exp(value: Decimal) -> Decimal:
         return context.exp(value)
 
 
-def _elu_table_value(value: int) -> int:
+def _elu_table_value(
+    value: int,
+    *,
+    input_scale: int | None = None,
+    output_scale: int | None = None,
+) -> int:
     if int(value) >= 0:
         return int(value)
-    raw = Decimal(16) * (_decimal_exp(Decimal(int(value)) / Decimal(16)) - Decimal(1))
+    canonical = canonical_scale_profile()
+    input_scale = int(canonical["elu_input"] if input_scale is None else input_scale)
+    output_scale = int(canonical["elu_output"] if output_scale is None else output_scale)
+    if input_scale <= 0 or output_scale <= 0:
+        raise ValueError("ELU scales must be positive")
+    raw = Decimal(output_scale) * (
+        _decimal_exp(Decimal(int(value)) / Decimal(input_scale)) - Decimal(1)
+    )
     return int(raw.to_integral_value(rounding=ROUND_HALF_UP))
 
 
-def _exp_map_fixed(delta: int) -> int:
+def _exp_map_fixed(
+    delta: int,
+    *,
+    input_scale: int | None = None,
+    output_scale: int | None = None,
+) -> int:
     if int(delta) < 0:
         raise ValueError("ExpMap input must be nonnegative")
-    value = Decimal(16) * _decimal_exp(-Decimal(int(delta)) / Decimal(256))
+    canonical = canonical_scale_profile()
+    input_scale = int(canonical["exp_input"] if input_scale is None else input_scale)
+    output_scale = int(canonical["exp_output"] if output_scale is None else output_scale)
+    if input_scale <= 0 or output_scale <= 0:
+        raise ValueError("ExpMap scales must be positive")
+    value = Decimal(output_scale) * _decimal_exp(
+        -Decimal(int(delta)) / Decimal(input_scale)
+    )
     return max(1, int(value.to_integral_value(rounding=ROUND_HALF_UP)))
 
 
@@ -257,6 +305,7 @@ def attention_head_forward(
     aggregate_output_scale: int,
     output_head_scale: int,
     rounding_mode: str,
+    scale_profile: Mapping[str, int] | None = None,
 ) -> HeadTrace:
     src = graph.src
     dst = graph.dst
@@ -272,6 +321,7 @@ def attention_head_forward(
     )
     if not integer_path:
         raise TypeError("formal GAT forward requires canonical integer features and model parameters")
+    function_scales = _function_scale_profile(scale_profile)
     if integer_path:
         with timed(timers, f"{tag}.projection_ms"):
             h_prime = _safe_int_matmul(np.asarray(features, dtype=np.int64), np.asarray(head.seq_kernel, dtype=np.int64))
@@ -283,7 +333,14 @@ def attention_head_forward(
             max_values = np.maximum.reduceat(z, starts)
             m = _scatter_group_values(starts, dst, graph.num_nodes, max_values)
             delta = m[dst] - z
-            u = np.asarray([_exp_map_fixed(int(value)) for value in delta], dtype=np.int64)
+            u = np.asarray([
+                _exp_map_fixed(
+                    int(value),
+                    input_scale=function_scales["exp_input"],
+                    output_scale=function_scales["exp_output"],
+                )
+                for value in delta
+            ], dtype=np.int64)
             sum_values = np.add.reduceat(u, starts)
             sum_ = _scatter_group_values(starts, dst, graph.num_nodes, sum_values)
             inv = np.asarray([pow(int(value), BN254_FR_MODULUS - 2, BN254_FR_MODULUS) for value in sum_], dtype=object)
@@ -341,7 +398,7 @@ def attention_head_forward(
             else:
                 scale_alignment_division = None
                 aligned = None
-                h_agg = elu(elu_in)
+                h_agg = elu(elu_in, scale_profile=scale_profile)
         return HeadTrace(
             tag=tag,
             h_prime=h_prime,
@@ -436,6 +493,7 @@ def forward_full(
                 aggregate_output_scale=int(scales["aggregate_output"]),
                 output_head_scale=int(scales["output_head"]),
                 rounding_mode=rounding_mode,
+                scale_profile=scales,
             )
             heads.append(trace)
             outputs.append(trace.h_agg)
@@ -446,8 +504,8 @@ def forward_full(
         update_digest_np(base_hash, f"hidden.l{layer.layer_index + 1}.H_cat", concat)
         hidden_layers.append(LayerTrace(layer_index=layer.layer_index + 1, input=layer_input, heads=heads, concat=concat))
         layer_input = concat
-        # The registered ELU output scale is S_agg=16 and concat does not
-        # change a coordinate's scale.
+        # The authenticated ELU output scale is the aggregate scale, and
+        # concatenation does not change a coordinate's scale.
         layer_input_scale = int(scales["elu_output"])
 
     output_heads: List[HeadTrace] = []
@@ -467,6 +525,7 @@ def forward_full(
             aggregate_output_scale=int(scales["aggregate_output"]),
             output_head_scale=int(scales["output_head"]),
             rounding_mode=rounding_mode,
+            scale_profile=scales,
         )
         output_heads.append(trace)
         output_pre_bias.append(trace.output_aligned if trace.output_aligned is not None else trace.elu_in)
@@ -515,21 +574,44 @@ def forward_full(
     )
 
 
-def _cached_exp_map(values: np.ndarray) -> np.ndarray:
+def _cached_exp_map(
+    values: np.ndarray,
+    scale_profile: Mapping[str, int] | None = None,
+) -> np.ndarray:
     """Evaluate the canonical ExpMap table once per distinct integer input."""
     array = np.asarray(values)
     unique, inverse = np.unique(array.astype(np.int64, copy=False), return_inverse=True)
-    mapped = np.asarray([_exp_map_fixed(int(value)) for value in unique], dtype=np.int64)
+    function_scales = _function_scale_profile(scale_profile)
+    mapped = np.asarray([
+        _exp_map_fixed(
+            int(value),
+            input_scale=function_scales["exp_input"],
+            output_scale=function_scales["exp_output"],
+        )
+        for value in unique
+    ], dtype=np.int64)
     return mapped[inverse].reshape(array.shape)
 
 
-def _cached_elu(values: np.ndarray) -> np.ndarray:
+def _cached_elu(
+    values: np.ndarray,
+    scale_profile: Mapping[str, int] | None = None,
+) -> np.ndarray:
     """Evaluate the canonical integer ELU table once per distinct value."""
     array = np.asarray(values)
     flat = np.asarray(array, dtype=np.int64).ravel()
     unique, inverse = np.unique(flat, return_inverse=True)
+    function_scales = _function_scale_profile(scale_profile)
     mapped = np.asarray(
-        [_elu_table_value(int(value)) if int(value) < 0 else int(value) for value in unique],
+        [
+            _elu_table_value(
+                int(value),
+                input_scale=function_scales["elu_input"],
+                output_scale=function_scales["elu_output"],
+            )
+            if int(value) < 0 else int(value)
+            for value in unique
+        ],
         dtype=np.int64,
     )
     return mapped[inverse].reshape(array.shape)
@@ -619,6 +701,7 @@ def _attention_head_values(
     aggregate_output_scale: int,
     output_head_scale: int,
     rounding_mode: str,
+    scale_profile: Mapping[str, int] | None = None,
 ) -> np.ndarray:
     """Compute one canonical integer head while retaining only its output."""
     source = np.asarray(features, dtype=np.int64)
@@ -640,7 +723,7 @@ def _attention_head_values(
     maxima = np.zeros(graph.num_nodes, dtype=np.int64)
     maxima[graph.dst[starts]] = max_values
     delta = maxima[graph.dst] - z
-    weights = _cached_exp_map(delta)
+    weights = _cached_exp_map(delta, scale_profile=scale_profile)
     sum_values = np.add.reduceat(weights, starts)
     denominators = np.zeros(graph.num_nodes, dtype=np.int64)
     denominators[graph.dst[starts]] = sum_values
@@ -657,7 +740,7 @@ def _attention_head_values(
             rounding_mode,
         )
         return np.asarray(aligned, dtype=object) + np.asarray(head.output_bias, dtype=object)[None, :]
-    return _cached_elu(elu_input)
+    return _cached_elu(elu_input, scale_profile=scale_profile)
 
 
 def forward_public_y(
@@ -689,6 +772,7 @@ def forward_public_y(
                 aggregate_output_scale=int(scales["aggregate_output"]),
                 output_head_scale=int(scales["output_head"]),
                 rounding_mode=rounding_mode,
+                scale_profile=scales,
             )
             for head in layer.heads
         ]
@@ -704,6 +788,7 @@ def forward_public_y(
             aggregate_output_scale=int(scales["aggregate_output"]),
             output_head_scale=int(scales["output_head"]),
             rounding_mode=rounding_mode,
+            scale_profile=scales,
         )
         for head in model.output_heads
     ]

@@ -73,6 +73,10 @@ class AppConfig:
     @property
     def range_bits(self) -> int:
         value = int(self.entries.get("range_bits", "-1"))
+        if str(self.dataset).startswith("synthetic-"):
+            if value <= 0 or value > 16:
+                raise ValueError("synthetic range_bits must be in [1,16]")
+            return value
         if value != canonical_range_bits(self.dataset):
             raise ValueError(
                 f"formal config range_bits mismatch: {value} != {canonical_range_bits(self.dataset)}"

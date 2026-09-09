@@ -44,6 +44,38 @@ ADAPTER = pathlib.Path(__file__).with_name("verify_synthetic_proof.py")
 RUN_E2E = os.environ.get("ZKGPT_RUN_SYNTHETIC_E2E") == "1"
 
 
+def _statement_test_metadata() -> dict[str, object]:
+    """Return the complete v2 external-statement metadata fixture.
+
+    The statement builder intentionally requires every authenticated public
+    binding field.  Keep this schema fixture explicit so its canonical-digest
+    tests exercise the same v2 shape as the fresh-process verifier instead of
+    relying on production-only metadata defaults.
+    """
+    return {
+        "protocol_id": "zkGPT-gat-v1",
+        "dataset": "synthetic-e2e",
+        "dataset_display_name": "Synthetic E2E",
+        "task_type": "transductive_node_classification",
+        "rounding_mode": "nearest_ties_away",
+        "integer_bound_ledger_digest": "0" * 64,
+        "input_preprocess_id": "feature_int64_identity_v1",
+        "public_y_schema": "zkGPT_test_public_output_v1",
+        "public_y_path": "public_y.json",
+        "public_y_digest": "1" * 64,
+        "public_y_descriptor_digest": "2" * 64,
+        "X_pub_digest": "3" * 64,
+        "full_dataset": True,
+        "graph_identity": {"graph_digest": "4" * 64},
+        "com_W_identity": {"commitment_digest": "5" * 64},
+        "reference_forward_profile_id": "synthetic-test-v1",
+        "reference_forward_engine": "test-forward",
+        "reference_forward_source_sha256": "6" * 64,
+        "public_output_binding_digest": "7" * 64,
+        "registration_binding_digest": "8" * 64,
+    }
+
+
 class SyntheticAdapterSchemaTests(unittest.TestCase):
     """Boundary tests which never invoke ``build_proof``."""
 
@@ -93,11 +125,7 @@ class SyntheticAdapterSchemaTests(unittest.TestCase):
         statement = _public_statement(
             graph,
             np.asarray([[0]], dtype=object),
-            {
-                "protocol_id": "zkGPT-gat-v1",
-                "rounding_mode": "nearest_ties_away",
-                "integer_bound_ledger_digest": "0" * 64,
-            },
+            _statement_test_metadata(),
         )
         validated = _validate_public_statement(statement)
         self.assertEqual(validated["schema"], PUBLIC_STATEMENT_SCHEMA)
@@ -109,11 +137,7 @@ class SyntheticAdapterSchemaTests(unittest.TestCase):
         statement = _public_statement(
             graph,
             np.asarray([[0]], dtype=object),
-            {
-                "protocol_id": "zkGPT-gat-v1",
-                "rounding_mode": "nearest_ties_away",
-                "integer_bound_ledger_digest": "0" * 64,
-            },
+            _statement_test_metadata(),
         )
         statement["schema"] = "zkGPT_attacker_statement_v1"
         with self.assertRaises(SyntheticVerificationError):
