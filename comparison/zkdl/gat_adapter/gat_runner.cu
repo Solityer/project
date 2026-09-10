@@ -4507,9 +4507,9 @@ int produce(const Config& config, const CliOptions& options) {
             return 5;
         }
         bind_envelope_identity(&result.envelope, statement);
-        if (result.envelope.status != "VERIFIED" || result.envelope.proof_id.empty() ||
+        if (result.envelope.status != "PROVED" || result.envelope.proof_id.empty() ||
             result.proof_bytes.empty() || result.envelope.native_core_api != "zkdl_native_gat_bridge_v1") {
-            const std::string message = "native proof envelope is not a complete verified proof artifact";
+            const std::string message = "native proof envelope is not a complete proved proof artifact";
             write_envelope(envelope_path, result.envelope);
             write_run_record(record_path, rejected_record(run_config, options.backend, &statement, message, kernel_executed));
             return 6;
@@ -4615,7 +4615,7 @@ int verify_only(const Config& config, const CliOptions& options) {
         statement_loaded = true;
         envelope = read_envelope(envelope_path);
         envelope_loaded = true;
-        if (envelope.schema_id != "zkDL_gat_proof_envelope_v1" || envelope.status != "VERIFIED" ||
+        if (envelope.schema_id != "zkDL_gat_proof_envelope_v1" || envelope.status != "PROVED" ||
             envelope.native_core_api != "zkdl_native_gat_bridge_v1" || envelope.proof_id.empty() ||
             envelope.statement_id != statement.statement_id || envelope.proof_scope != statement.proof_scope ||
             envelope.verifier_reads_witness || envelope.silent_fallback || !envelope.output_bound ||
@@ -4668,6 +4668,7 @@ int verify_only(const Config& config, const CliOptions& options) {
         request.relation = &relation;
         request.tables = &tables;
         if (!zkdl_gat_native_verify(request, &error)) fail(error.empty() ? "native verifier rejected proof" : error);
+        write_envelope(envelope_path, envelope);
         std::ofstream result(directory / "verification.result");
         if (!result) fail("cannot write verification.result");
         result << "status=VERIFIED\nstatement_id=" << statement.statement_id << "\nproof_id=" << envelope.proof_id << "\n";

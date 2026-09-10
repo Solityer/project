@@ -2,6 +2,7 @@
 // 本文件定义 formal 主线使用的工作域与多项式表示，
 // 负责把 trace / table / quotient 列统一到 coefficient 或 evaluation 语义上。
 
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
@@ -43,11 +44,32 @@ namespace gatzk::algebra
         std::optional<std::size_t> rotation_shift(const FieldElement& from, const FieldElement& to) const;
     };
 
+struct CudaResidentCoefficientBuffer
+    {
+        // Owns execution-only CUDA storage. The deleter is installed by the
+        // CUDA producer and never participates in Polynomial semantics.
+        std::shared_ptr<void> allocation;
+
+        // Device pointer to mcl-compatible Montgomery limbs.
+        const std::uint64_t *device_montgomery_limbs =
+            nullptr;
+
+        std::size_t capacity = 0;
+
+        int device = -1;
+    };
+
     enum class PolynomialBasis
     {
         Coefficient, // 系数形式
         Evaluation // 求值形式
     };
+
+    // Execution-only hint. It is deliberately excluded from every
+        // serialization, transcript, equality and proof object.
+        std::shared_ptr<
+            const CudaResidentCoefficientBuffer>
+            cuda_resident_coefficients;
 
     struct Polynomial
     {

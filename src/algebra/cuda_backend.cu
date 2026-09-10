@@ -1094,154 +1094,876 @@ namespace gatzk::algebra
             return result;
         }
 
+namespace
+    {
+        constexpr unsigned
+            kBarycentricScanBlockSize = 256;
+
+        __device__ __forceinline__
+        gpu::GpuFr barycentric_pow_u64(
+            gpu::GpuFr base,
+            std::size_t exponent)
+        {
+            auto result =
+                gpu::fr_one();
+
+            while (exponent != 0)
+            {
+                if ((exponent & 1U) != 0U)
+                {
+                    result =
+                        gpu::fr_mul(
+                            result,
+                            base);
+                }
+
+                base =
+                    gpu::fr_sqr(
+                        base);
+
+                exponent >>=
+                    1U;
+            }
+
+            return result;
+        }
+
         __global__ void
-        barycentric_prepare_chunk_kernel(
+        barycentric_prepare_parallel_kernel(
             const gpu::GpuFr omega,
             const gpu::GpuFr x,
             gpu::GpuFr *__restrict__ omega_powers,
             gpu::GpuFr *__restrict__ denominators,
-            gpu::GpuFr *__restrict__ prefix_within,
-            gpu::GpuFr *__restrict__ chunk_products,
-            std::size_t domain_size,
-            std::size_t chunk_size)
+            std::size_t domain_size)
         {
-            const auto chunk_id =
+            const auto lane =
+                static_cast<unsigned>(
+                    threadIdx.x);
+
+            const auto block_begin =
                 static_cast<std::size_t>(
                     blockIdx.x) *
-                    blockDim.x +
-                threadIdx.x;
+                blockDim.x;
 
-            const auto begin =
-                chunk_id *
-                chunk_size;
+            const auto index =
+                block_begin +
+                lane;
 
-            if (begin >= domain_size)
+            __shared__ gpu::GpuFr
+                lane_powers[
+                    kBarycentricScanBlockSize];
+
+            __shared__ gpu::GpuFr
+                block_power;
+
+            lane_powers[lane] =
+                lane == 0
+                    ? gpu::fr_one()
+                    : omega;
+
+            __syncthreads();
+
+            for (unsigned offset = 1;
+                 offset <
+                     kBarycentricScanBlockSize;
+                 offset <<= 1U)
+            {
+                auto value =
+                    lane_powers[lane];
+
+                if (lane >= offset)
+                {
+                    value =
+                        gpu::fr_mul(
+                            lane_powers[
+                                lane - offset],
+                            value);
+                }
+
+                __syncthreads();
+
+                lane_powers[lane] =
+                    value;
+
+                __syncthreads();
+            }
+
+            if (lane == 0)
+            {
+                block_power =
+                    barycentric_pow_u64(
+                        omega,
+                        block_begin);
+            }
+
+            __syncthreads();
+
+            if (index >= domain_size)
             {
                 return;
             }
 
-            const auto end =
-                begin + chunk_size <
-                        domain_size
-                    ? begin +
-                          chunk_size
-                    : domain_size;
+            const auto omega_power =
+                gpu::fr_mul(
+                    block_power,
+                    lane_powers[lane]);
 
-            auto omega_power =
-                barycentric_pow_u64(
-                    omega,
-                    begin);
+            omega_powers[index] =
+                omega_power;
 
-            auto accumulator =
-                gpu::fr_one();
-
-            for (std::size_t index = begin;
-                 index < end;
-                 ++index)
-            {
-                omega_powers[index] =
-                    omega_power;
-
-                const auto denominator =
-                    gpu::fr_sub(
-                        x,
-                        omega_power);
-
-                denominators[index] =
-                    denominator;
-
-                prefix_within[index] =
-                    accumulator;
-
-                accumulator =
-                    gpu::fr_mul(
-                        accumulator,
-                        denominator);
-
-                omega_power =
-                    gpu::fr_mul(
-                        omega_power,
-                        omega);
-            }
-
-            chunk_products[chunk_id] =
-                accumulator;
+            denominators[index] =
+                gpu::fr_sub(
+                    x,
+                    omega_power);
         }
 
         __global__ void
-        barycentric_weights_finalize_kernel(
-            const gpu::GpuFr *__restrict__ omega_powers,
-            const gpu::GpuFr *__restrict__ denominators,
-            const gpu::GpuFr *__restrict__ prefix_within,
-            const gpu::GpuFr *__restrict__ chunk_outer_inv,
-            const gpu::GpuFr zero_eval,
-            const gpu::GpuFr inv_n,
-            gpu::GpuFr *__restrict__ weights,
-            std::size_t domain_size,
-            std::size_t chunk_size)
+        product_exclusive_scan_block_kernel(
+            const gpu::GpuFr *__restrict__ input,
+            gpu::GpuFr *__restrict__ output,
+            gpu::GpuFr *__restrict__ block_products,
+            std::size_t count,
+            bool reverse)
         {
-            const auto chunk_id =
+            const auto lane =
+                static_cast<unsigned>(
+                    threadIdx.x);
+
+            const auto traversal_begin =
+                static_cast<std::size_t>(
+                    blockIdx.x) *
+                blockDim.x;
+
+            const auto traversal_index =
+                traversal_begin +
+                lane;
+
+            const bool active =
+                traversal_index < count;
+
+            const auto input_index =
+                reverse
+                    ? count - 1U -
+                          traversal_index
+                    : traversal_index;
+
+            __shared__ gpu::GpuFr
+                scan[
+                    kBarycentricScanBlockSize];
+
+            scan[lane] =
+                active
+                    ? input[input_index]
+                    : gpu::fr_one();
+
+            __syncthreads();
+
+            for (unsigned offset = 1;
+                 offset <
+                     kBarycentricScanBlockSize;
+                 offset <<= 1U)
+            {
+                auto value =
+                    scan[lane];
+
+                if (lane >= offset)
+                {
+                    value =
+                        gpu::fr_mul(
+                            scan[lane - offset],
+                            value);
+                }
+
+                __syncthreads();
+
+                scan[lane] =
+                    value;
+
+                __syncthreads();
+            }
+
+            if (active)
+            {
+                output[input_index] =
+                    lane == 0
+                        ? gpu::fr_one()
+                        : scan[lane - 1U];
+            }
+
+            if (lane == 0 &&
+                block_products != nullptr)
+            {
+                const auto remaining =
+                    count - traversal_begin;
+
+                const auto valid_count =
+                    static_cast<unsigned>(
+                        remaining <
+                                blockDim.x
+                            ? remaining
+                            : blockDim.x);
+
+                block_products[
+                    blockIdx.x] =
+                        scan[
+                            valid_count - 1U];
+            }
+        }
+
+        __global__ void
+        apply_product_block_prefix_kernel(
+            gpu::GpuFr *__restrict__ output,
+            const gpu::GpuFr *__restrict__
+                block_prefixes,
+            std::size_t count,
+            bool reverse)
+        {
+            const auto traversal_index =
                 static_cast<std::size_t>(
                     blockIdx.x) *
                     blockDim.x +
                 threadIdx.x;
 
-            const auto begin =
-                chunk_id *
-                chunk_size;
-
-            if (begin >= domain_size)
+            if (traversal_index >= count)
             {
                 return;
             }
 
-            const auto end =
-                begin + chunk_size <
-                        domain_size
-                    ? begin +
-                          chunk_size
-                    : domain_size;
+            const auto block_index =
+                traversal_index /
+                blockDim.x;
 
-            auto running_suffix =
-                gpu::fr_one();
+            const auto output_index =
+                reverse
+                    ? count - 1U -
+                          traversal_index
+                    : traversal_index;
 
-            for (std::size_t index = end;
-                 index-- > begin;)
+            output[output_index] =
+                gpu::fr_mul(
+                    block_prefixes[
+                        block_index],
+                    output[output_index]);
+        }
+
+        __global__ void
+        barycentric_invert_product_kernel(
+            const gpu::GpuFr *__restrict__
+                denominators,
+            const gpu::GpuFr *__restrict__
+                prefixes,
+            gpu::GpuFr *__restrict__
+                global_inverse,
+            std::size_t domain_size)
+        {
+            if (blockIdx.x != 0 ||
+                threadIdx.x != 0)
             {
-                auto inverse =
-                    gpu::fr_mul(
-                        chunk_outer_inv[chunk_id],
-                        prefix_within[index]);
+                return;
+            }
 
-                inverse =
-                    gpu::fr_mul(
-                        inverse,
-                        running_suffix);
+            const auto last =
+                domain_size - 1U;
 
-                auto scaled =
-                    gpu::fr_mul(
-                        omega_powers[index],
-                        inv_n);
+            const auto total_product =
+                gpu::fr_mul(
+                    prefixes[last],
+                    denominators[last]);
 
-                auto weight =
+            global_inverse[0] =
+                gpu::fr_inv(
+                    total_product);
+        }
+
+        __global__ void
+        barycentric_finalize_parallel_kernel(
+            const gpu::GpuFr *__restrict__
+                omega_powers,
+            const gpu::GpuFr *__restrict__
+                prefixes,
+            const gpu::GpuFr *__restrict__
+                suffixes,
+            const gpu::GpuFr *__restrict__
+                global_inverse,
+            const gpu::GpuFr zero_eval,
+            const gpu::GpuFr inv_n,
+            gpu::GpuFr *__restrict__ weights,
+            std::size_t domain_size)
+        {
+            const auto index =
+                static_cast<std::size_t>(
+                    blockIdx.x) *
+                    blockDim.x +
+                threadIdx.x;
+
+            if (index >= domain_size)
+            {
+                return;
+            }
+
+            const auto denominator_inverse =
+                gpu::fr_mul(
+                    gpu::fr_mul(
+                        prefixes[index],
+                        suffixes[index]),
+                    global_inverse[0]);
+
+            const auto scaled_point =
+                gpu::fr_mul(
+                    omega_powers[index],
+                    inv_n);
+
+            weights[index] =
+                gpu::fr_mul(
                     gpu::fr_mul(
                         zero_eval,
-                        scaled);
-
-                weight =
-                    gpu::fr_mul(
-                        weight,
-                        inverse);
-
-                weights[index] =
-                    weight;
-
-                running_suffix =
-                    gpu::fr_mul(
-                        running_suffix,
-                        denominators[index]);
-            }
+                        scaled_point),
+                    denominator_inverse);
         }
+
+        struct BarycentricScanLevel
+        {
+            gpu::GpuFr *block_products =
+                nullptr;
+
+            gpu::GpuFr *block_prefixes =
+                nullptr;
+
+            std::size_t block_count = 0;
+        };
+
+        void release_barycentric_scan_levels(
+            std::vector<
+                BarycentricScanLevel> *levels)
+        {
+            if (levels == nullptr)
+            {
+                return;
+            }
+
+            for (auto &level : *levels)
+            {
+                if (level.block_products !=
+                    nullptr)
+                {
+                    (void)cudaFree(
+                        level.block_products);
+
+                    level.block_products =
+                        nullptr;
+                }
+
+                if (level.block_prefixes !=
+                    nullptr)
+                {
+                    (void)cudaFree(
+                        level.block_prefixes);
+
+                    level.block_prefixes =
+                        nullptr;
+                }
+            }
+
+            levels->clear();
+        }
+
+        bool allocate_barycentric_scan_levels(
+            std::size_t count,
+            std::vector<
+                BarycentricScanLevel> *levels)
+        {
+            if (levels == nullptr)
+            {
+                return false;
+            }
+
+            levels->clear();
+
+            auto current_count =
+                count;
+
+            while (current_count >
+                   kBarycentricScanBlockSize)
+            {
+                const auto block_count =
+                    (current_count +
+                     kBarycentricScanBlockSize -
+                     1U) /
+                    kBarycentricScanBlockSize;
+
+                BarycentricScanLevel level;
+                level.block_count =
+                    block_count;
+
+                const auto byte_count =
+                    block_count *
+                    sizeof(gpu::GpuFr);
+
+                auto status =
+                    cudaMalloc(
+                        reinterpret_cast<void **>(
+                            &level.block_products),
+                        byte_count);
+
+                if (status != cudaSuccess)
+                {
+                    if (status ==
+                        cudaErrorMemoryAllocation)
+                    {
+                        (void)cudaGetLastError();
+                    }
+
+                    release_barycentric_scan_levels(
+                        levels);
+
+                    return false;
+                }
+
+                status =
+                    cudaMalloc(
+                        reinterpret_cast<void **>(
+                            &level.block_prefixes),
+                        byte_count);
+
+                if (status != cudaSuccess)
+                {
+                    if (status ==
+                        cudaErrorMemoryAllocation)
+                    {
+                        (void)cudaGetLastError();
+                    }
+
+                    (void)cudaFree(
+                        level.block_products);
+
+                    release_barycentric_scan_levels(
+                        levels);
+
+                    return false;
+                }
+
+                levels->push_back(
+                    level);
+
+                current_count =
+                    block_count;
+            }
+
+            return true;
+        }
+
+        bool launch_exclusive_product_scan(
+            const gpu::GpuFr *input,
+            gpu::GpuFr *output,
+            std::size_t count,
+            bool reverse,
+            std::vector<
+                BarycentricScanLevel> &levels,
+            std::size_t level_index,
+            std::size_t *kernel_count)
+        {
+            if (count == 0)
+            {
+                return true;
+            }
+
+            const auto block_count_size =
+                (count +
+                 kBarycentricScanBlockSize -
+                 1U) /
+                kBarycentricScanBlockSize;
+
+            if (block_count_size >
+                std::numeric_limits<
+                    unsigned>::max())
+            {
+                return false;
+            }
+
+            gpu::GpuFr *block_products =
+                nullptr;
+
+            if (block_count_size > 1)
+            {
+                if (level_index >=
+                    levels.size() ||
+                    levels[level_index]
+                            .block_count !=
+                        block_count_size)
+                {
+                    return false;
+                }
+
+                block_products =
+                    levels[level_index]
+                        .block_products;
+            }
+
+            product_exclusive_scan_block_kernel<<<
+                static_cast<unsigned>(
+                    block_count_size),
+                kBarycentricScanBlockSize>>>(
+                input,
+                output,
+                block_products,
+                count,
+                reverse);
+
+            if (cudaGetLastError() !=
+                cudaSuccess)
+            {
+                return false;
+            }
+
+            if (kernel_count != nullptr)
+            {
+                ++(*kernel_count);
+            }
+
+            if (block_count_size <= 1)
+            {
+                return true;
+            }
+
+            auto &level =
+                levels[level_index];
+
+            if (!launch_exclusive_product_scan(
+                    level.block_products,
+                    level.block_prefixes,
+                    block_count_size,
+                    false,
+                    levels,
+                    level_index + 1U,
+                    kernel_count))
+            {
+                return false;
+            }
+
+            apply_product_block_prefix_kernel<<<
+                static_cast<unsigned>(
+                    block_count_size),
+                kBarycentricScanBlockSize>>>(
+                output,
+                level.block_prefixes,
+                count,
+                reverse);
+
+            if (cudaGetLastError() !=
+                cudaSuccess)
+            {
+                return false;
+            }
+
+            if (kernel_count != nullptr)
+            {
+                ++(*kernel_count);
+            }
+
+            return true;
+        }
+    } // namespace
+
+    bool barycentric_weights_gpu(
+        const uint64_t omega_limbs[4],
+        const uint64_t x_limbs[4],
+        const uint64_t zero_eval_limbs[4],
+        const uint64_t inv_n_limbs[4],
+        uint64_t *output_weight_limbs,
+        std::size_t domain_size)
+    {
+        if (domain_size == 0)
+        {
+            return true;
+        }
+
+        if (output_weight_limbs == nullptr)
+        {
+            return false;
+        }
+
+        gpu::GpuFr omega{};
+        gpu::GpuFr x{};
+        gpu::GpuFr zero_eval{};
+        gpu::GpuFr inv_n{};
+
+        std::memcpy(
+            omega.d,
+            omega_limbs,
+            sizeof(omega.d));
+
+        std::memcpy(
+            x.d,
+            x_limbs,
+            sizeof(x.d));
+
+        std::memcpy(
+            zero_eval.d,
+            zero_eval_limbs,
+            sizeof(zero_eval.d));
+
+        std::memcpy(
+            inv_n.d,
+            inv_n_limbs,
+            sizeof(inv_n.d));
+
+        if ((zero_eval.d[0] |
+             zero_eval.d[1] |
+             zero_eval.d[2] |
+             zero_eval.d[3]) == 0ULL)
+        {
+            // Domain points must have been handled by direct_index.
+            // Do not attempt inversion of a zero denominator.
+            return false;
+        }
+
+        if (domain_size >
+            std::numeric_limits<
+                std::size_t>::max() /
+                sizeof(gpu::GpuFr))
+        {
+            return false;
+        }
+
+        const auto element_bytes =
+            domain_size *
+            sizeof(gpu::GpuFr);
+
+        gpu::GpuFr *d_omega_powers =
+            nullptr;
+
+        gpu::GpuFr *d_denominators =
+            nullptr;
+
+        gpu::GpuFr *d_prefixes =
+            nullptr;
+
+        gpu::GpuFr *d_suffixes =
+            nullptr;
+
+        gpu::GpuFr *d_global_inverse =
+            nullptr;
+
+        gpu::GpuFr *d_weights =
+            nullptr;
+
+        std::vector<
+            BarycentricScanLevel>
+            scan_levels;
+
+        const auto cleanup =
+            [&]() noexcept
+        {
+            release_barycentric_scan_levels(
+                &scan_levels);
+
+            if (d_omega_powers != nullptr)
+            {
+                (void)cudaFree(
+                    d_omega_powers);
+            }
+
+            if (d_denominators != nullptr)
+            {
+                (void)cudaFree(
+                    d_denominators);
+            }
+
+            if (d_prefixes != nullptr)
+            {
+                (void)cudaFree(
+                    d_prefixes);
+            }
+
+            if (d_suffixes != nullptr)
+            {
+                (void)cudaFree(
+                    d_suffixes);
+            }
+
+            if (d_global_inverse != nullptr)
+            {
+                (void)cudaFree(
+                    d_global_inverse);
+            }
+
+            if (d_weights != nullptr)
+            {
+                (void)cudaFree(
+                    d_weights);
+            }
+        };
+
+        const auto allocate_vector =
+            [&](gpu::GpuFr **pointer,
+                std::size_t byte_count)
+        {
+            const auto status =
+                cudaMalloc(
+                    reinterpret_cast<void **>(
+                        pointer),
+                    byte_count);
+
+            if (status ==
+                cudaErrorMemoryAllocation)
+            {
+                (void)cudaGetLastError();
+                return false;
+            }
+
+            return status ==
+                   cudaSuccess;
+        };
+
+        if (!allocate_vector(
+                &d_omega_powers,
+                element_bytes) ||
+            !allocate_vector(
+                &d_denominators,
+                element_bytes) ||
+            !allocate_vector(
+                &d_prefixes,
+                element_bytes) ||
+            !allocate_vector(
+                &d_suffixes,
+                element_bytes) ||
+            !allocate_vector(
+                &d_global_inverse,
+                sizeof(gpu::GpuFr)) ||
+            !allocate_vector(
+                &d_weights,
+                element_bytes) ||
+            !allocate_barycentric_scan_levels(
+                domain_size,
+                &scan_levels))
+        {
+            cleanup();
+            return false;
+        }
+
+        const auto block_count_size =
+            (domain_size +
+             kBarycentricScanBlockSize -
+             1U) /
+            kBarycentricScanBlockSize;
+
+        if (block_count_size >
+            std::numeric_limits<
+                unsigned>::max())
+        {
+            cleanup();
+            return false;
+        }
+
+        std::size_t kernel_count = 0;
+
+        barycentric_prepare_parallel_kernel<<<
+            static_cast<unsigned>(
+                block_count_size),
+            kBarycentricScanBlockSize>>>(
+            omega,
+            x,
+            d_omega_powers,
+            d_denominators,
+            domain_size);
+
+        if (cudaGetLastError() !=
+            cudaSuccess)
+        {
+            cleanup();
+            return false;
+        }
+
+        ++kernel_count;
+
+        if (!launch_exclusive_product_scan(
+                d_denominators,
+                d_prefixes,
+                domain_size,
+                false,
+                scan_levels,
+                0,
+                &kernel_count))
+        {
+            cleanup();
+            return false;
+        }
+
+        if (!launch_exclusive_product_scan(
+                d_denominators,
+                d_suffixes,
+                domain_size,
+                true,
+                scan_levels,
+                0,
+                &kernel_count))
+        {
+            cleanup();
+            return false;
+        }
+
+        barycentric_invert_product_kernel<<<
+            1,
+            1>>>(
+            d_denominators,
+            d_prefixes,
+            d_global_inverse,
+            domain_size);
+
+        if (cudaGetLastError() !=
+            cudaSuccess)
+        {
+            cleanup();
+            return false;
+        }
+
+        ++kernel_count;
+
+        barycentric_finalize_parallel_kernel<<<
+            static_cast<unsigned>(
+                block_count_size),
+            kBarycentricScanBlockSize>>>(
+            d_omega_powers,
+            d_prefixes,
+            d_suffixes,
+            d_global_inverse,
+            zero_eval,
+            inv_n,
+            d_weights,
+            domain_size);
+
+        if (cudaGetLastError() !=
+            cudaSuccess)
+        {
+            cleanup();
+            return false;
+        }
+
+        ++kernel_count;
+
+        const auto status =
+            cudaMemcpy(
+                output_weight_limbs,
+                d_weights,
+                element_bytes,
+                cudaMemcpyDeviceToHost);
+
+        if (status != cudaSuccess)
+        {
+            cleanup();
+            return false;
+        }
+
+        record_cuda_d2h(
+            element_bytes);
+
+        record_cuda_kernel_invocations(
+            kernel_count);
+
+        cleanup();
+
+        return true;
+    }
     } // namespace
 
     bool barycentric_weights_gpu(
@@ -1430,140 +2152,6 @@ namespace gatzk::algebra
             cleanup();
             return false;
         }
-
-        std::vector<gpu::GpuFr>
-            host_chunk_products(
-                num_chunks);
-
-        std::vector<gpu::GpuFr>
-            host_chunk_outer_inv(
-                num_chunks);
-
-        status =
-            cudaMemcpy(
-                host_chunk_products.data(),
-                d_chunk_products,
-                chunk_bytes,
-                cudaMemcpyDeviceToHost);
-
-        if (status != cudaSuccess)
-        {
-            cleanup();
-            return false;
-        }
-
-        record_cuda_d2h(
-            chunk_bytes);
-
-        auto gpu_to_mcl =
-            [](const gpu::GpuFr &source)
-        {
-            mcl::Fr output;
-            output.clear();
-
-            std::memcpy(
-                &output,
-                source.d,
-                sizeof(source.d));
-
-            return output;
-        };
-
-        auto mcl_to_gpu =
-            [](const mcl::Fr &source)
-        {
-            gpu::GpuFr output{};
-
-            std::memcpy(
-                output.d,
-                &source,
-                sizeof(output.d));
-
-            return output;
-        };
-
-        std::vector<mcl::Fr>
-            chunk_products(
-                num_chunks);
-
-        for (std::size_t chunk = 0;
-             chunk < num_chunks;
-             ++chunk)
-        {
-            chunk_products[chunk] =
-                gpu_to_mcl(
-                    host_chunk_products[chunk]);
-        }
-
-        std::vector<mcl::Fr>
-            cross_prefix(
-                num_chunks + 1);
-
-        cross_prefix[0] =
-            mcl::Fr(1);
-
-        for (std::size_t chunk = 0;
-             chunk < num_chunks;
-             ++chunk)
-        {
-            mcl::Fr::mul(
-                cross_prefix[chunk + 1],
-                cross_prefix[chunk],
-                chunk_products[chunk]);
-        }
-
-        mcl::Fr global_inverse;
-
-        mcl::Fr::inv(
-            global_inverse,
-            cross_prefix[num_chunks]);
-
-        mcl::Fr cross_suffix =
-            mcl::Fr(1);
-
-        for (std::size_t chunk =
-                 num_chunks;
-             chunk-- > 0;)
-        {
-            mcl::Fr partial;
-
-            mcl::Fr::mul(
-                partial,
-                global_inverse,
-                cross_prefix[chunk]);
-
-            mcl::Fr outer_inverse;
-
-            mcl::Fr::mul(
-                outer_inverse,
-                partial,
-                cross_suffix);
-
-            host_chunk_outer_inv[chunk] =
-                mcl_to_gpu(
-                    outer_inverse);
-
-            mcl::Fr::mul(
-                cross_suffix,
-                cross_suffix,
-                chunk_products[chunk]);
-        }
-
-        status =
-            cudaMemcpy(
-                d_chunk_outer_inv,
-                host_chunk_outer_inv.data(),
-                chunk_bytes,
-                cudaMemcpyHostToDevice);
-
-        if (status != cudaSuccess)
-        {
-            cleanup();
-            return false;
-        }
-
-        record_cuda_h2d(
-            chunk_bytes);
 
         barycentric_weights_finalize_kernel<<<
             block_count,

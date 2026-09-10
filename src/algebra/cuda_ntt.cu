@@ -2462,12 +2462,13 @@ namespace gatzk::algebra
         return true;
     }
 
-    bool cuda_coset_device_to_coefficients_exact(
+bool cuda_coset_device_to_coefficients_exact(
         const mcl::Fr *device_values,
         std::size_t size,
         const FieldElement &shift,
         mcl::Fr *host_coefficients,
-        bool wait_for_default_stream)
+        bool wait_for_default_stream,
+        mcl::Fr *device_coefficients)
     {
         if (device_values == nullptr ||
             host_coefficients == nullptr ||
@@ -2654,6 +2655,27 @@ namespace gatzk::algebra
 
         record_cuda_kernel_invocations(
             1);
+
+        if (device_coefficients != nullptr &&
+            device_coefficients !=
+                reinterpret_cast<mcl::Fr *>(
+                    workspace.input))
+        {
+            status =
+                cudaMemcpyAsync(
+                    device_coefficients,
+                    workspace.input,
+                    total_bytes,
+                    cudaMemcpyDeviceToDevice,
+                    stream);
+
+            if (status != cudaSuccess)
+            {
+                throw_cuda_ntt_error(
+                    "resident coefficient copy",
+                    status);
+            }
+        }
 
         status =
             cudaMemcpyAsync(

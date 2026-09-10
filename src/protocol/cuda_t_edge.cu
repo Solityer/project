@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "gatzk/algebra/cuda_ntt_device.hpp"
+#include "gatzk/algebra/polynomial.hpp"
 #include "gatzk/util/effective_memory.hpp"
 
 #include "gatzk/algebra/cuda_field.cuh"
@@ -32,6 +33,167 @@ namespace gatzk::protocol
 
         constexpr std::size_t
             kMaximumProgramStackDepth = 64;
+
+        constexpr unsigned
+            kTEdgeExecutionBlockSize = 256;
+
+        struct CudaTEdgeCompiledInstruction
+        {
+            TEdgeProgramOpcode opcode =
+                TEdgeProgramOpcode::
+                    LoadConstant;
+
+            std::uint8_t dst = 0;
+            std::uint8_t lhs = 0;
+            std::uint8_t rhs = 0;
+            std::uint8_t reserved = 0;
+
+            std::uint32_t operand = 0;
+        };
+
+        std::vector<
+            CudaTEdgeCompiledInstruction>
+        compile_t_edge_execution_plan(
+            const TEdgeBoundProgram &program)
+        {
+            std::vector<
+                CudaTEdgeCompiledInstruction>
+                compiled(
+                    program.instructions.size());
+
+            for (const auto &term :
+                 program.terms)
+            {
+                if (term.instruction_begin >
+                        term.instruction_end ||
+                    term.instruction_end >
+                        program.instructions.size())
+                {
+                    throw std::runtime_error(
+                        "CUDA t_edge term instruction range is invalid");
+                }
+
+                std::size_t depth = 0;
+                std::size_t maximum_depth = 0;
+
+                for (std::size_t index =
+                         term.instruction_begin;
+                     index <
+                         term.instruction_end;
+                     ++index)
+                {
+                    const auto &source =
+                        program.instructions[
+                            index];
+
+                    auto &target =
+                        compiled[index];
+
+                    target.opcode =
+                        source.opcode;
+
+                    target.operand =
+                        source.operand;
+
+                    switch (source.opcode)
+                    {
+                    case TEdgeProgramOpcode::
+                        LoadAccess:
+                    case TEdgeProgramOpcode::
+                        LoadConstant:
+                    {
+                        if (depth >=
+                            kMaximumProgramStackDepth)
+                        {
+                            throw std::runtime_error(
+                                "CUDA t_edge compiled register depth overflow");
+                        }
+
+                        target.dst =
+                            static_cast<
+                                std::uint8_t>(
+                                depth);
+
+                        ++depth;
+
+                        maximum_depth =
+                            std::max(
+                                maximum_depth,
+                                depth);
+
+                        break;
+                    }
+
+                    case TEdgeProgramOpcode::Add:
+                    case TEdgeProgramOpcode::
+                        Subtract:
+                    case TEdgeProgramOpcode::
+                        Multiply:
+                    {
+                        if (depth < 2)
+                        {
+                            throw std::runtime_error(
+                                "CUDA t_edge binary instruction underflows stack");
+                        }
+
+                        target.lhs =
+                            static_cast<
+                                std::uint8_t>(
+                                depth - 2U);
+
+                        target.rhs =
+                            static_cast<
+                                std::uint8_t>(
+                                depth - 1U);
+
+                        target.dst =
+                            target.lhs;
+
+                        --depth;
+
+                        break;
+                    }
+
+                    case TEdgeProgramOpcode::
+                        Negate:
+                    {
+                        if (depth == 0)
+                        {
+                            throw std::runtime_error(
+                                "CUDA t_edge negate instruction underflows stack");
+                        }
+
+                        target.lhs =
+                            static_cast<
+                                std::uint8_t>(
+                                depth - 1U);
+
+                        target.dst =
+                            target.lhs;
+
+                        break;
+                    }
+                    }
+                }
+
+                if (depth != 1)
+                {
+                    throw std::runtime_error(
+                        "CUDA t_edge compiled term does not leave exactly one value");
+                }
+
+                if (maximum_depth >
+                        program.maximum_stack_depth ||
+                    maximum_depth >
+                        kMaximumProgramStackDepth)
+                {
+                    throw std::runtime_error(
+                        "CUDA t_edge compiled register plan exceeds declared stack depth");
+                }
+            }
+
+            return compiled;
+        }
 
         // The exact leaf helpers feed a bounded multi-stage CUDA transform
         // with one lane of target_size / 2 elements.  The leaf transform is

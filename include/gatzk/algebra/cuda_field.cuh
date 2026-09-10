@@ -193,6 +193,21 @@ GpuFr fr_sqr(const GpuFr &a) {
     return fr_mul(a, a);
 }
 
+// 把 Montgomery 表示 aR 转换为 canonical 表示 a。
+// 注意：返回值只用于导出到 ICICLE scalar，不得再参与下面的
+// Montgomery Fr 算术。
+// fr_mul(aR, 1) = aR * 1 * R^{-1} = a.
+__device__ __forceinline__
+GpuFr fr_to_canonical_limbs(const GpuFr &a) {
+    const GpuFr raw_one = {{
+        1ULL,
+        0ULL,
+        0ULL,
+        0ULL
+    }};
+    return fr_mul(a, raw_one);
+}
+
 // 幂运算采用平方乘，指数以 4 个小端 64-bit limb 给出。
 __device__ __forceinline__
 GpuFr fr_pow(const GpuFr &base, const uint64_t exp[4]) {

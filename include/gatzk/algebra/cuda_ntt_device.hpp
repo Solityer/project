@@ -42,12 +42,13 @@ namespace gatzk::algebra
         bool make_default_stream_wait = false,
         bool wait_for_default_stream_before_output = false);
 
-    bool cuda_coset_device_to_coefficients_exact(
+bool cuda_coset_device_to_coefficients_exact(
         const mcl::Fr *device_values,
         std::size_t size,
         const FieldElement &shift,
         mcl::Fr *host_coefficients,
-        bool wait_for_default_stream = false);
+        bool wait_for_default_stream = false,
+        mcl::Fr *device_coefficients = nullptr);
 
     bool cuda_coset_evaluations_to_host_exact(
         const mcl::Fr *values,

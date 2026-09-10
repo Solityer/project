@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <fstream>
 #include <filesystem>
 #include <initializer_list>
@@ -28,6 +29,14 @@ std::string digest_hex(const std::array<zkdl::byte, 32>& digest) {
         out.push_back(hex[byte & 0x0fU]);
     }
     return out;
+}
+
+std::size_t serialized_commitment_section_size(const relation::Proof& proof) {
+    std::vector<zkdl::byte> section;
+    zkdl::append_u64(section, static_cast<std::uint64_t>(proof.commitments.size()));
+    for (const auto& commitment : proof.commitments)
+        relation::append_commitment(section, commitment);
+    return section.size();
 }
 
 bool parse_digest(const std::string& text, std::array<zkdl::byte, 32>& digest) {
@@ -2809,10 +2818,13 @@ bool zkdl_gat_native_core_prove(const NativeProveRequest& request,
         return reject(result, error,
                       "BLOCKED: native GPU GAT proof provenance is not implemented; CPU fallback is forbidden",
                       request.config, request.statement, request.backend);
+    const auto prove_start = std::chrono::steady_clock::now();
     relation::ProverContext context;
     if (!context_from_request(request, context, error))
         return reject(result, error, error ? *error : "native relation context rejected",
                       request.config, request.statement, request.backend);
+    double commitment_open_seconds = 0.0;
+    context.commitment_open_time_seconds = &commitment_open_seconds;
     relation::Proof proof;
     if (!relation::prove(context, proof, error))
         return reject(result, error, error ? *error : "native relation prover rejected witness",
@@ -2823,14 +2835,18 @@ bool zkdl_gat_native_core_prove(const NativeProveRequest& request,
     result->envelope.proof_id = digest_hex(zkdl::sha256(result->proof_bytes));
     result->envelope.backend = backend_name(request.backend);
     result->envelope.proof_scope = request.statement->proof_scope;
-    result->envelope.status = "VERIFIED";
+    result->envelope.status = "PROVED";
     result->envelope.static_table_descriptor_digest = request.statement->static_table_descriptor_digest;
     result->envelope.scale_chain_digest = request.statement->scale_chain_digest;
     result->envelope.integer_bound_ledger_id = request.statement->integer_bound_ledger_id;
     result->envelope.integer_bound_ledger_digest = request.statement->integer_bound_ledger_digest;
     result->envelope.integer_bound_ledger_descriptor_digest = request.statement->integer_bound_ledger_descriptor_digest;
     result->envelope.proof_size_bytes = result->proof_bytes.size();
-    result->envelope.commitment_size_bytes = proof.commitments.size();
+    result->envelope.commitment_size_bytes = serialized_commitment_section_size(proof);
+    result->envelope.commitment_time_seconds = commitment_open_seconds;
+    result->envelope.prove_time_seconds = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - prove_start).count();
+    result->envelope.verify_time_seconds = 0.0;
     result->envelope.verifier_reads_witness = false;
     result->envelope.gpu_kernel_executed = false;
     result->envelope.silent_fallback = false;
@@ -2841,6 +2857,7 @@ bool zkdl_gat_native_core_prove(const NativeProveRequest& request,
 
 bool zkdl_gat_native_core_verify(const NativeVerifyRequest& request,
                                  std::string* error) {
+    const auto verify_start = std::chrono::steady_clock::now();
     if (!request.config || !request.statement || !request.envelope || !request.proof_bytes)
         return reject(nullptr, error, "native verify request lacks proof envelope/bytes",
                       request.config, request.statement, request.backend);
@@ -2852,7 +2869,7 @@ bool zkdl_gat_native_core_verify(const NativeVerifyRequest& request,
         request.envelope->statement_id != request.statement->statement_id ||
         request.envelope->backend != backend_name(request.backend) ||
         request.envelope->proof_scope != kProofScope ||
-        request.envelope->status != "VERIFIED" || request.envelope->silent_fallback ||
+        request.envelope->status != "PROVED" || request.envelope->silent_fallback ||
         request.envelope->verifier_reads_witness || !request.envelope->output_bound ||
         request.envelope->native_core_api != kBridgeApi ||
         request.envelope->static_table_descriptor_digest != request.statement->static_table_descriptor_digest ||
@@ -2881,6 +2898,8 @@ bool zkdl_gat_native_core_verify(const NativeVerifyRequest& request,
     if (!relation::verify(proof, context, error))
         return reject(nullptr, error, error ? *error : "native relation verifier rejected proof",
                       request.config, request.statement, request.backend);
+    request.envelope->verify_time_seconds = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - verify_start).count();
     return true;
 }
 

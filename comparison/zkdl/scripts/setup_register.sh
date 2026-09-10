@@ -26,7 +26,7 @@ case "$srs_rel" in
   /*|*..*) echo "setup-register: SRS path must be baseline-local" >&2; exit 3 ;;
 esac
 srs="$root/$srs_rel"
-if [[ ! -f "$srs" ]]; then
+if [[ ! -d "$srs" ]]; then
   echo "setup-register: authenticated SRS artifact is absent: $srs" >&2
   echo "setup-register: refusing to generate or register an untrusted replacement" >&2
   exit 3

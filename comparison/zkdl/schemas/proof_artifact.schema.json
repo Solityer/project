@@ -12,7 +12,7 @@
     "backend": {"type": "string", "enum": ["cpu", "gpu"]},
     "proof_scope": {"const": "full_gat_forward"},
     "native_core_api": {"type": "string", "minLength": 1},
-    "status": {"type": "string", "enum": ["VERIFIED", "BLOCKED", "UNAVAILABLE"]},
+    "status": {"type": "string", "enum": ["PROVED", "BLOCKED", "UNAVAILABLE"]},
     "static_table_descriptor_digest": {"type": "string", "pattern": "^(?:[0-9a-f]{64}|UNAVAILABLE)$"},
     "scale_chain_digest": {"type": "string", "pattern": "^(?:[0-9a-f]{64}|UNAVAILABLE)$"},
     "integer_bound_ledger_id": {"type": "string", "minLength": 1},

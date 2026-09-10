@@ -39,7 +39,7 @@ struct NativeProofResult {
 struct NativeVerifyRequest {
     const Config* config = nullptr;
     const PublicStatement* statement = nullptr;
-    const ProofEnvelope* envelope = nullptr;
+    ProofEnvelope* envelope = nullptr;
     const std::vector<std::uint8_t>* proof_bytes = nullptr;
     Backend backend = Backend::Cpu;
     // The graph is public verifier input.  Native route descriptors are

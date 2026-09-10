@@ -87,7 +87,9 @@ namespace gatzk::protocol
             algebra::FieldElement *output,
             std::size_t output_count) = 0;
 
-        virtual void finalize_coefficients(
+        virtual std::shared_ptr<
+            const algebra::CudaResidentCoefficientBuffer>
+        finalize_coefficients(
             algebra::FieldElement *output,
             std::size_t output_count) = 0;
     };

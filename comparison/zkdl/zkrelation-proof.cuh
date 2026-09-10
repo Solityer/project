@@ -23,6 +23,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <limits>
 #include <map>
@@ -702,6 +703,9 @@ struct ProverContext {
     // caller-supplied private values.
     std::set<std::string> graph_public_tensor_ids;
     std::map<std::string, std::vector<FrWire>> public_tensor_values;
+    // Optional native-core timing sink for the relation's commitment/opening
+    // stage.  It is instrumentation only and never affects proof equations.
+    double* commitment_open_time_seconds = nullptr;
 };
 
 struct VerifierContext {
@@ -3108,6 +3112,7 @@ inline bool prove(const ProverContext& context, Proof& proof, std::string* error
         }
         proof.statement.public_output_digest = expected_public_digest;
         proof.hiding_commitment_records = context.hiding_commitment_records;
+        const auto commitment_open_start = std::chrono::steady_clock::now();
         for (const auto& tensor : context.tensors) {
             const std::uint32_t domain = tensor.domain_size;
             if (context.generators.size() < domain) {
@@ -3286,6 +3291,9 @@ inline bool prove(const ProverContext& context, Proof& proof, std::string* error
         std::vector<byte> public_bytes;
         zkdl::serialize_opening(proof.public_output_opening, public_bytes);
         transcript.absorb("gat.public_output.opening", public_bytes);
+        if (context.commitment_open_time_seconds != nullptr)
+            *context.commitment_open_time_seconds = std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - commitment_open_start).count();
         proof.transcript_digest = transcript.digest();
         return true;
     } catch (const std::exception& exception) {
