@@ -18,7 +18,7 @@ NVCC_FLAGS := -arch=sm_80
 SRCS := $(wildcard *.cu)
 TARGETS := $(SRCS:.cu=)
 GAT_TARGET := gat_runner
-GAT_SRC := gat_adapter/gat_runner.cu gat_adapter/gat_native_bridge.cu
+GAT_SRC := gat_adapter/gat_runner.cu gat_adapter/gat_native_bridge.cu gat_adapter/gat_native_core.cu
 
 .PHONY: all baseline-local-build test-short clean
 
@@ -37,7 +37,7 @@ tests/core_smoke: tests/core_smoke.cu proof.cuh commitment.cuh fr-tensor.cuh g1-
 %: %.cu
 	$(NVCC)  $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $< -o $@
 
-$(GAT_TARGET): $(GAT_SRC) gat_adapter/gat_adapter.hpp gat_adapter/gat_native_bridge.hpp commitment.cuh proof.cuh fr-tensor.cuh g1-tensor.cuh zkmatmul.cuh zkprod.cuh
+$(GAT_TARGET): $(GAT_SRC) gat_adapter/gat_adapter.hpp gat_adapter/gat_native_bridge.hpp gat_adapter/gat_native_core.cuh zkrelation-proof.cuh commitment.cuh proof.cuh fr-tensor.cuh g1-tensor.cuh zkmatmul.cuh zkprod.cuh
 	$(NVCC) $(NVCC_FLAGS) -std=c++17 $(INCLUDES) $(LIBS) -I. -Igat_adapter $(GAT_SRC) -o $@
 	
 clean:

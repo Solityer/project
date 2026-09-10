@@ -15,6 +15,8 @@
 
 namespace zkdl_gat {
 
+struct NativeRelationWitness;
+
 struct NativeProveRequest {
     const Config* config = nullptr;
     const Graph* graph = nullptr;
@@ -24,6 +26,10 @@ struct NativeProveRequest {
     const GatTrace* trace = nullptr;
     const PublicStatement* statement = nullptr;
     Backend backend = Backend::Cpu;
+    // Field-MLE tensors/selectors/public-Y and authenticated SRS/registry
+    // identity.  The adapter must populate this explicitly; the native core
+    // never reconstructs field values from int64/double metadata.
+    const NativeRelationWitness* witness = nullptr;
 };
 
 struct NativeProofResult {
@@ -37,6 +43,14 @@ struct NativeVerifyRequest {
     const ProofEnvelope* envelope = nullptr;
     const std::vector<std::uint8_t>* proof_bytes = nullptr;
     Backend backend = Backend::Cpu;
+    // Public relation descriptors, public Y, authenticated SRS generators,
+    // and registry identity for an independent verifier.  This context must
+    // not contain private witness tensors.
+    const NativeRelationWitness* public_context = nullptr;
+    // Authenticated relation plan used to reconstruct operation descriptors;
+    // the verifier must not take relation equations from proof bytes.
+    const RelationPlan* relation = nullptr;
+    const StaticTables* tables = nullptr;
 };
 
 // The core worker supplies these functions when the native bridge is linked.
