@@ -1449,6 +1449,12 @@ namespace gatzk::crypto
             auto config =
                 msm::default_msm_config();
 
+            // ICICLE v2.8.0's specialized large-bucket path is not
+            // correctness-stable for every legal scalar distribution.
+            // Keep the complete MSM on ICICLE/CUDA, but route every bucket
+            // through the regular accumulation path.
+            config.large_bucket_factor = 0;
+
             config.are_points_on_device = true;
             config.are_points_montgomery_form = false;
             config.are_scalars_montgomery_form = false;
@@ -1576,6 +1582,11 @@ namespace gatzk::crypto
             }
             auto config =
                 msm::default_msm_config();
+
+            // Disable only ICICLE v2.8.0's distribution-sensitive
+            // large-bucket specialization. The batched MSM itself remains
+            // entirely on the ICICLE/CUDA backend.
+            config.large_bucket_factor = 0;
 
             config.points_size =
                 static_cast<int>(max_count);
@@ -1864,6 +1875,11 @@ namespace gatzk::crypto
 
                 auto config =
                     msm::default_msm_config();
+
+                // The cached-SRS chunked path must use the same
+                // correctness-stable ICICLE configuration as the direct
+                // resident path.
+                config.large_bucket_factor = 0;
 
                 config.points_size =
                     static_cast<int>(
@@ -2269,6 +2285,11 @@ namespace gatzk::crypto
                 auto config =
                     msm::default_msm_config();
 
+                // Keep streamed fallback on ICICLE/CUDA while avoiding the
+                // v2.8.0 large-bucket specialization that is sensitive to
+                // non-uniform scalar distributions.
+                config.large_bucket_factor = 0;
+
                 config.are_points_on_device = true;
                 config.are_points_montgomery_form = false;
 
@@ -2523,6 +2544,10 @@ namespace gatzk::crypto
                 auto config =
                     msm::default_msm_config();
 
+                // Use one correctness-stable ICICLE configuration for all
+                // shared-base batch routes, including streamed fallback.
+                config.large_bucket_factor = 0;
+
                 config.points_size =
                     static_cast<int>(
                         current_count);
@@ -2545,7 +2570,6 @@ namespace gatzk::crypto
 
                 config.are_results_on_device =
                     false;
-
                 std::vector<
                     bls12_381::projective_t>
                     results(
