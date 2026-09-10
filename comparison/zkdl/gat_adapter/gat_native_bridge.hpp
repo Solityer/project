@@ -43,6 +43,10 @@ struct NativeVerifyRequest {
     const ProofEnvelope* envelope = nullptr;
     const std::vector<std::uint8_t>* proof_bytes = nullptr;
     Backend backend = Backend::Cpu;
+    // The graph is public verifier input.  Native route descriptors are
+    // rebuilt from its canonical src/dst arrays; they are never accepted
+    // from prover-selected witness metadata.
+    const Graph* graph = nullptr;
     // Public relation descriptors, public Y, authenticated SRS generators,
     // and registry identity for an independent verifier.  This context must
     // not contain private witness tensors.

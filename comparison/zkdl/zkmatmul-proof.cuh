@@ -10,6 +10,52 @@
 
 #include "cpu-backend.cuh"
 
+// This header is also consumed directly by the adapter runner, before the
+// legacy zkmatmul.cuh implementation is deliberately suppressed in that
+// translation unit.  Keep only the original Commitment type and phase-1
+// kernel declarations available in that case; the definitions remain owned
+// by the native core's zkmatmul.cuh include.  When zkmatmul.cuh is included
+// first its normal guards make this fallback inert.
+#ifndef COMMITMENT_CUH
+#define COMMITMENT_CUH
+#include "fr-tensor.cuh"
+#include "g1-tensor.cuh"
+
+class Commitment: public G1TensorJacobian {
+public:
+    using G1TensorJacobian::G1TensorJacobian;
+    using G1TensorJacobian::operator+;
+    using G1TensorJacobian::operator-;
+    using G1TensorJacobian::operator*;
+    using G1TensorJacobian::operator*=;
+
+    G1TensorJacobian commit(const FrTensor& t) const;
+    static Commitment random_generators(uint size);
+    Fr_t open(const FrTensor& t, const G1TensorJacobian& c,
+              const vector<Fr_t>& u, uint& proof_size_count) const;
+    zkdl::EvaluationOpeningProof open_with_proof(
+        const FrTensor& t, const G1TensorJacobian& c,
+        const vector<Fr_t>& u) const;
+    Fr_t open(const FrTensor& t, const G1TensorJacobian& c,
+              const vector<Fr_t>& u, uint& proof_size_count,
+              zkdl::EvaluationOpeningProof* retained) const;
+    bool verify_opening_gpu(const zkdl::EvaluationOpeningProof& opening,
+                            const G1Jacobian_t& expected_commitment_eval,
+                            std::string* error = nullptr) const;
+    static Fr_t me_open(const FrTensor& t, const Commitment& generators,
+                        vector<Fr_t>::const_iterator begin,
+                        vector<Fr_t>::const_iterator end,
+                        vector<G1Jacobian_t>& proof);
+};
+#endif
+
+#ifndef ZK_MATMUL_H
+KERNEL void zkMatMul_phase1_step(GLOBAL Fr_t *a, GLOBAL Fr_t *b,
+                                 GLOBAL Fr_t *out0, GLOBAL Fr_t *out1,
+                                 GLOBAL Fr_t *out2, uint in_num,
+                                 uint out_num, uint n);
+#endif
+
 #include <algorithm>
 #include <array>
 #include <cstdint>

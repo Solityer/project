@@ -46,6 +46,48 @@ bool parse_digest(const std::string& text, std::array<zkdl::byte, 32>& digest) {
     return true;
 }
 
+std::string graph_digest(const Graph& graph) {
+    std::vector<zkdl::byte> encoded;
+    const auto append_u64 = [&](std::uint64_t value) { zkdl::append_u64(encoded, value); };
+    append_u64(graph.total_nodes);
+    append_u64(graph.nodes);
+    append_u64(graph.edges);
+    append_u64(graph.graphs);
+    append_u64(graph.features);
+    append_u64(graph.absolute_ids.size());
+    for (const auto value : graph.absolute_ids) append_u64(value);
+    append_u64(graph.node_ptr.size());
+    for (const auto value : graph.node_ptr) append_u64(value);
+    append_u64(graph.edge_ptr.size());
+    for (const auto value : graph.edge_ptr) append_u64(value);
+    append_u64(graph.node_edge_ptr.size());
+    for (const auto value : graph.node_edge_ptr) append_u64(value);
+    append_u64(graph.src.size());
+    for (std::size_t i = 0U; i < graph.src.size(); ++i) {
+        append_u64(graph.src[i]);
+        if (i >= graph.dst.size()) return std::string();
+        append_u64(graph.dst[i]);
+    }
+    if (graph.dst.size() != graph.src.size()) return std::string();
+    return digest_hex(zkdl::sha256(encoded));
+}
+
+std::string graph_boundary_digest(const Graph& graph) {
+    std::vector<zkdl::byte> encoded;
+    const auto append_u64 = [&](std::uint64_t value) { zkdl::append_u64(encoded, value); };
+    const std::string tag = "zkDL_gat_graph_boundaries_v1";
+    append_u64(tag.size());
+    encoded.insert(encoded.end(), tag.begin(), tag.end());
+    const auto append_vector = [&](const std::vector<std::uint64_t>& values) {
+        append_u64(values.size());
+        for (const auto value : values) append_u64(value);
+    };
+    append_vector(graph.node_ptr);
+    append_vector(graph.edge_ptr);
+    append_vector(graph.node_edge_ptr);
+    return digest_hex(zkdl::sha256(encoded));
+}
+
 bool read_file(const std::filesystem::path& path, std::vector<zkdl::byte>& bytes,
                std::string* error) {
     std::ifstream input(path, std::ios::binary);
@@ -219,6 +261,13 @@ bool statement_from_adapter(const Config& config, const Graph& graph,
         if (error) *error = "relation statement/proof scope mismatch";
         return false;
     }
+    const std::string expected_topology = graph_digest(graph);
+    const std::string expected_boundaries = graph_boundary_digest(graph);
+    if (expected_topology.empty() || statement.topology_id != expected_topology ||
+        statement.topology_boundary_digest != expected_boundaries) {
+        if (error) *error = "adapter graph src/dst or boundary digest is not statement-bound";
+        return false;
+    }
     if (!tables.authenticated || !plan.integer_bound_ledger.authenticated ||
         statement.static_table_digest != tables.digest ||
         statement.static_table_descriptor_digest != tables.descriptor_digest ||
@@ -257,7 +306,12 @@ bool statement_from_adapter(const Config& config, const Graph& graph,
         return false;
     }
     out.public_output = relation::encode_public_field_vector(public_it->values);
-    (void)graph;
+    out.public_output_digest = zkdl::sha256(out.public_output);
+    if (statement.public_output_digest.empty() ||
+        statement.public_output_digest != digest_hex(out.public_output_digest)) {
+        if (error) *error = "public_Y digest is not bound to the canonical field vector";
+        return false;
+    }
     return true;
 }
 
@@ -408,6 +462,41 @@ std::uint32_t ceil_log2(std::size_t value) {
     return bits;
 }
 
+std::uint32_t padded_domain(std::uint64_t value, std::string* error,
+                            const std::string& label) {
+    if (value == 0U || value > (1ULL << 30U)) {
+        if (error) *error = "BLOCKED: " + label + " has no bounded power-of-two domain";
+        return 0U;
+    }
+    std::uint64_t domain = 1U;
+    while (domain < value) domain <<= 1U;
+    return static_cast<std::uint32_t>(domain);
+}
+
+std::uint64_t flattened_feature_domain(const TensorFamily& family,
+                                       std::string* error,
+                                       const std::string& label) {
+    if (family.padded_shape.size() < 2U || family.padded_shape.size() > 3U ||
+        family.padded_shape[0] == 0U) {
+        if (error) *error = "BLOCKED: " + label + " has no canonical outer/feature shape";
+        return 0U;
+    }
+    std::uint64_t feature = family.padded_shape[1];
+    if (family.padded_shape.size() == 3U) {
+        if (family.padded_shape[2] == 0U ||
+            feature > std::numeric_limits<std::uint64_t>::max() / family.padded_shape[2]) {
+            if (error) *error = "BLOCKED: " + label + " feature shape overflows";
+            return 0U;
+        }
+        feature *= family.padded_shape[2];
+    }
+    if (feature == 0U || (feature & (feature - 1U)) != 0U) {
+        if (error) *error = "BLOCKED: " + label + " feature domain is not a power of two";
+        return 0U;
+    }
+    return feature;
+}
+
 const std::vector<std::int64_t>& lookup_table(const StaticTables& tables,
                                               const OperationFamily& operation,
                                               std::int64_t& minimum,
@@ -543,6 +632,89 @@ relation::OperationDescriptor table_operation(
     return operation;
 }
 
+const TensorFamily* tensor_family(
+    const std::map<std::string, const TensorFamily*>& families,
+    const std::string& id) {
+    const auto found = families.find(id);
+    return found == families.end() ? nullptr : found->second;
+}
+
+bool padded_matrix_shape(
+    const std::map<std::string, const TensorFamily*>& families,
+    const std::string& input_id, const std::string& kernel_id,
+    const std::string& output_id, relation::PrimitiveDescriptor& primitive,
+    std::string* error) {
+    const TensorFamily* input = tensor_family(families, input_id);
+    const TensorFamily* kernel = tensor_family(families, kernel_id);
+    const TensorFamily* output = tensor_family(families, output_id);
+    if (input == nullptr || kernel == nullptr || output == nullptr ||
+        (input->padded_shape.size() != 1U && input->padded_shape.size() != 2U &&
+         input->padded_shape.size() != 3U) ||
+        (kernel->padded_shape.size() != 1U && kernel->padded_shape.size() != 3U) ||
+        (output->padded_shape.size() != 1U && output->padded_shape.size() != 2U)) {
+        if (error) *error = "BLOCKED: matrix relation lacks canonical padded input/kernel/output shapes";
+        return false;
+    }
+    if (input->padded_shape.size() == 1U || output->padded_shape.size() == 1U) {
+        if (input->padded_shape.size() != 2U && input->padded_shape.size() != 3U) {
+            if (error) *error = "BLOCKED: matrix input view must expose row and inner dimensions";
+            return false;
+        }
+    }
+    const std::uint64_t kernel_inner = kernel->padded_shape.size() == 1U
+        ? kernel->padded_shape[0] : kernel->padded_shape[1];
+    const std::uint64_t kernel_output = kernel->padded_shape.size() == 1U
+        ? 1U : kernel->padded_shape[2];
+    const std::uint64_t output_rows = output->padded_shape[0];
+    const std::uint64_t output_cols = output->padded_shape.size() == 1U
+        ? 1U : output->padded_shape[1];
+    if (kernel->padded_shape.size() == 3U && kernel->padded_shape[0] != 1U) {
+        if (error) *error = "BLOCKED: matrix kernel batch dimension is not one";
+        return false;
+    }
+    if (input->padded_shape.size() == 3U &&
+        (input->padded_shape[1] == 0U ||
+         input->padded_shape[2] > std::numeric_limits<std::uint64_t>::max() /
+                                     input->padded_shape[1])) {
+        if (error) *error = "BLOCKED: canonical padded matrix inner dimension overflows";
+        return false;
+    }
+    const std::uint64_t input_inner = input->padded_shape.size() == 2U
+        ? input->padded_shape[1]
+        : input->padded_shape[1] * input->padded_shape[2];
+    if (input_inner != kernel_inner ||
+        output_rows != input->padded_shape[0] || output_cols != kernel_output ||
+        input_inner > std::numeric_limits<std::uint32_t>::max()) {
+        if (error) *error = "BLOCKED: canonical padded matrix inner dimension does not match kernel";
+        return false;
+    }
+    primitive.kind = 1U;
+    primitive.matmul_shape.num = 1U;
+    primitive.matmul_shape.m = static_cast<std::uint32_t>(input->padded_shape[0]);
+    primitive.matmul_shape.n = static_cast<std::uint32_t>(input_inner);
+    primitive.matmul_shape.k = static_cast<std::uint32_t>(output_cols);
+    primitive.tensor_refs = {input_id, kernel_id, output_id};
+    std::string shape_error;
+    if (!primitive.matmul_shape.valid(&shape_error)) {
+        if (error) *error = "BLOCKED: canonical padded matrix shape is invalid: " + shape_error;
+        return false;
+    }
+    return true;
+}
+
+relation::ConstraintDescriptor primitive_anchor_constraint(
+    const relation::OperationDescriptor& operation,
+    const std::string& ref) {
+    relation::ConstraintDescriptor constraint;
+    constraint.id = operation.id + "/primitive-anchor";
+    constraint.degree = 1U;
+    const std::uint32_t index = local_ref(operation, ref);
+    const FrWire one = zkdl::fr_from_u32(1U);
+    constraint.terms.push_back(monomial(one, {index}));
+    constraint.terms.push_back(monomial(zkdl::fr_neg(one), {index}));
+    return constraint;
+}
+
 std::string required_view(const OperationFamily& plan_operation,
                           const std::map<std::string, std::uint32_t>& domains,
                           const std::string& role, const std::string& fallback,
@@ -555,13 +727,222 @@ std::string required_view(const OperationFamily& plan_operation,
     return std::string();
 }
 
+bool same_domain_refs(const std::map<std::string, std::uint32_t>& domains,
+                      const std::vector<std::string>& refs,
+                      std::uint32_t* domain, std::string* error,
+                      const std::string& operation_id) {
+    if (refs.empty()) {
+        if (error) *error = "BLOCKED: relation " + operation_id + " has no canonical views";
+        return false;
+    }
+    const auto first = domains.find(refs.front());
+    if (first == domains.end()) {
+        if (error) *error = "BLOCKED: relation " + operation_id + " is missing view " + refs.front();
+        return false;
+    }
+    for (const auto& ref : refs) {
+        const auto found = domains.find(ref);
+        if (found == domains.end() || found->second != first->second) {
+            if (error) *error = "BLOCKED: relation " + operation_id +
+                                " canonical views have different MLE domains";
+            return false;
+        }
+    }
+    if (domain) *domain = first->second;
+    return true;
+}
+
+relation::ConstraintDescriptor recurrence_constraint(
+    const relation::OperationDescriptor& operation, const std::string& id,
+    const std::string& prefix, const std::string& prefix_prev,
+    const std::string& input, const std::string& group_new) {
+    relation::ConstraintDescriptor constraint;
+    constraint.id = id;
+    constraint.degree = 2U;
+    const FrWire one = zkdl::fr_from_u32(1U);
+    constraint.terms.push_back(monomial(one, {local_ref(operation, prefix)}));
+    constraint.terms.push_back(monomial(relation::fr_from_signed_i64(-1),
+                                        {local_ref(operation, prefix_prev)}));
+    constraint.terms.push_back(monomial(relation::fr_from_signed_i64(-1),
+                                        {local_ref(operation, input)}));
+    constraint.terms.push_back(monomial(one, {local_ref(operation, group_new),
+                                              local_ref(operation, prefix_prev)}));
+    return constraint;
+}
+
+relation::OperationDescriptor grouped_sum_operation(
+    const OperationFamily& plan_operation,
+    const std::map<std::string, std::uint32_t>& domains,
+    std::string* error) {
+    relation::OperationDescriptor operation;
+    operation.id = plan_operation.id;
+    operation.kind = relation::RelationKind::GroupSum;
+    operation.degree = 2U;
+    operation.mapping = plan_operation.mapping;
+    operation.terminal_claim = plan_operation.terminal_claim;
+    operation.terminal_point = plan_operation.terminal_point;
+    operation.padding = "all-padding-values-zero;group-boundary-masked";
+    operation.public_route = plan_operation.public_route;
+    operation.requires_reindex = plan_operation.requires_reindex;
+    for (const auto& ref : plan_operation.inputs) append_unique(operation.source_refs, ref);
+    for (const auto& ref : plan_operation.outputs) append_unique(operation.source_refs, ref);
+    const std::string group_new = required_view(plan_operation, domains, "group_new", "", error);
+    const std::string group_end = required_view(plan_operation, domains, "group_end", "", error);
+    if (group_new.empty() || group_end.empty()) return relation::OperationDescriptor{};
+    add_ref(operation, group_new);
+    add_ref(operation, group_end);
+    std::vector<std::string> all_refs{group_new, group_end};
+    if (plan_operation.inputs.empty() || plan_operation.outputs.empty()) {
+        if (error) *error = "BLOCKED: grouped sum requires canonical input/output views";
+        return relation::OperationDescriptor{};
+    }
+    for (std::size_t index = 0U; index < plan_operation.outputs.size(); ++index) {
+        const std::string input = required_view(plan_operation, domains,
+                                                "input" + std::to_string(index),
+                                                plan_operation.inputs[std::min(index, plan_operation.inputs.size() - 1U)], error);
+        const std::string output = required_view(plan_operation, domains,
+                                                 "output" + std::to_string(index),
+                                                 plan_operation.outputs[index], error);
+        const std::string prefix = required_view(plan_operation, domains,
+                                                 "prefix" + std::to_string(index), "", error);
+        const std::string prefix_prev = required_view(plan_operation, domains,
+                                                      "prefix_prev" + std::to_string(index), "", error);
+        if (input.empty() || output.empty() || prefix.empty() || prefix_prev.empty())
+            return relation::OperationDescriptor{};
+        add_ref(operation, input); add_ref(operation, output);
+        add_ref(operation, prefix); add_ref(operation, prefix_prev);
+        all_refs.insert(all_refs.end(), {input, output, prefix, prefix_prev});
+        operation.constraints.push_back(recurrence_constraint(
+            operation, operation.id + "/prefix/" + std::to_string(index),
+            prefix, prefix_prev, input, group_new));
+        relation::ConstraintDescriptor reset;
+        reset.id = operation.id + "/prefix-reset/" + std::to_string(index);
+        reset.degree = 2U;
+        reset.terms.push_back(monomial(zkdl::fr_from_u32(1U),
+                                       {local_ref(operation, group_new), local_ref(operation, prefix_prev)}));
+        operation.constraints.push_back(std::move(reset));
+        relation::ConstraintDescriptor terminal;
+        terminal.id = operation.id + "/group-terminal/" + std::to_string(index);
+        terminal.degree = 2U;
+        terminal.terms.push_back(monomial(zkdl::fr_from_u32(1U),
+                                          {local_ref(operation, group_end), local_ref(operation, output)}));
+        terminal.terms.push_back(monomial(zkdl::fr_neg(zkdl::fr_from_u32(1U)),
+                                          {local_ref(operation, group_end), local_ref(operation, prefix)}));
+        operation.constraints.push_back(std::move(terminal));
+    }
+    std::uint32_t domain = 0U;
+    if (!same_domain_refs(domains, all_refs, &domain, error, operation.id))
+        return relation::OperationDescriptor{};
+    (void)domain;
+    std::string validation_error;
+    if (!operation.valid(&validation_error)) {
+        if (error) *error = "BLOCKED: grouped sum descriptor rejected: " + validation_error;
+        return relation::OperationDescriptor{};
+    }
+    return operation;
+}
+
+relation::OperationDescriptor max_range_operation(
+    const Config& config, const OperationFamily& plan_operation,
+    const std::map<std::string, std::uint32_t>& domains,
+    std::string* error) {
+    relation::OperationDescriptor operation;
+    operation.id = plan_operation.id;
+    operation.kind = relation::RelationKind::MaxSelector;
+    operation.degree = 2U;
+    operation.mapping = plan_operation.mapping;
+    operation.terminal_claim = plan_operation.terminal_claim;
+    operation.terminal_point = plan_operation.terminal_point;
+    operation.padding = "all-padding-values-zero;group-boundary-masked";
+    operation.public_route = plan_operation.public_route;
+    operation.requires_reindex = plan_operation.requires_reindex;
+    for (const auto& ref : plan_operation.inputs) append_unique(operation.source_refs, ref);
+    for (const auto& ref : plan_operation.outputs) append_unique(operation.source_refs, ref);
+    if (plan_operation.outputs.size() < 3U || plan_operation.inputs.empty()) {
+        if (error) *error = "BLOCKED: max/range relation requires value, maximum, selector and delta";
+        return relation::OperationDescriptor{};
+    }
+    const std::string value = required_view(plan_operation, domains, "value", plan_operation.inputs.front(), error);
+    const std::string maximum = required_view(plan_operation, domains, "maximum_broadcast", "", error);
+    const std::string selector = required_view(plan_operation, domains, "selector", "", error);
+    const std::string delta = required_view(plan_operation, domains, "delta", "", error);
+    const std::string group_new = required_view(plan_operation, domains, "group_new", "", error);
+    const std::string group_end = required_view(plan_operation, domains, "group_end", "", error);
+    const std::string selector_prefix = required_view(plan_operation, domains, "selector_prefix", "", error);
+    const std::string selector_prev = required_view(plan_operation, domains, "selector_prev", "", error);
+    for (const auto& ref : {value, maximum, selector, delta, group_new, group_end,
+                            selector_prefix, selector_prev}) {
+        if (ref.empty()) return relation::OperationDescriptor{};
+        add_ref(operation, ref);
+    }
+    std::uint32_t width = static_cast<std::uint32_t>(config.range_bits);
+    if (width == 0U || width >= 31U) {
+        if (error) *error = "BLOCKED: max/range relation has an unbounded range width";
+        return relation::OperationDescriptor{};
+    }
+    std::vector<std::string> all_refs{value, maximum, selector, delta, group_new,
+                                      group_end, selector_prefix, selector_prev};
+    relation::ConstraintDescriptor max_delta;
+    max_delta.id = operation.id + "/delta";
+    max_delta.degree = 1U;
+    max_delta.terms.push_back(monomial(zkdl::fr_from_u32(1U), {local_ref(operation, maximum)}));
+    max_delta.terms.push_back(monomial(zkdl::fr_neg(zkdl::fr_from_u32(1U)), {local_ref(operation, value)}));
+    max_delta.terms.push_back(monomial(zkdl::fr_neg(zkdl::fr_from_u32(1U)), {local_ref(operation, delta)}));
+    operation.constraints.push_back(std::move(max_delta));
+    relation::ConstraintDescriptor selected;
+    selected.id = operation.id + "/selector-delta";
+    selected.degree = 2U;
+    selected.terms.push_back(monomial(zkdl::fr_from_u32(1U),
+                                      {local_ref(operation, selector), local_ref(operation, delta)}));
+    operation.constraints.push_back(std::move(selected));
+    operation.constraints.push_back(boolean_constraint(operation.id + "/selector-boolean", operation, selector));
+    operation.constraints.push_back(recurrence_constraint(
+        operation, operation.id + "/one-hot-prefix", selector_prefix, selector_prev,
+        selector, group_new));
+    relation::ConstraintDescriptor prefix_reset;
+    prefix_reset.id = operation.id + "/one-hot-reset";
+    prefix_reset.degree = 2U;
+    prefix_reset.terms.push_back(monomial(zkdl::fr_from_u32(1U),
+                                          {local_ref(operation, group_new), local_ref(operation, selector_prev)}));
+    operation.constraints.push_back(std::move(prefix_reset));
+    relation::ConstraintDescriptor one_hot;
+    one_hot.id = operation.id + "/one-hot-terminal";
+    one_hot.degree = 2U;
+    one_hot.terms.push_back(monomial(zkdl::fr_from_u32(1U),
+                                     {local_ref(operation, group_end), local_ref(operation, selector_prefix)}));
+    one_hot.terms.push_back(monomial(zkdl::fr_neg(zkdl::fr_from_u32(1U)),
+                                     {local_ref(operation, group_end)}));
+    operation.constraints.push_back(std::move(one_hot));
+    std::vector<std::string> bits;
+    bits.reserve(width);
+    for (std::uint32_t bit = 0U; bit < width; ++bit) {
+        const std::string ref = required_view(plan_operation, domains,
+                                              "range_bit/" + std::to_string(bit), "", error);
+        if (ref.empty()) return relation::OperationDescriptor{};
+        bits.push_back(ref); add_ref(operation, ref); all_refs.push_back(ref);
+        operation.constraints.push_back(boolean_constraint(
+            operation.id + "/range-bit/" + std::to_string(bit), operation, ref));
+    }
+    operation.constraints.push_back(reconstruction_constraint(
+        operation.id + "/range", operation, delta, bits, width));
+    if (!same_domain_refs(domains, all_refs, nullptr, error, operation.id))
+        return relation::OperationDescriptor{};
+    std::string validation_error;
+    if (!operation.valid(&validation_error)) {
+        if (error) *error = "BLOCKED: max/range descriptor rejected: " + validation_error;
+        return relation::OperationDescriptor{};
+    }
+    return operation;
+}
+
 relation::OperationDescriptor signed_round_operation(
     const Config& config, const OperationFamily& plan_operation,
     const std::map<std::string, std::uint32_t>& domains,
     std::string* error) {
     relation::OperationDescriptor operation;
     operation.id = plan_operation.id;
-    operation.kind = relation::RelationKind::SignedRoundDiv;
+    operation.kind = plan_operation.id == "final_average"
+        ? relation::RelationKind::FinalAverage : relation::RelationKind::SignedRoundDiv;
     operation.degree = 2U;
     operation.mapping = plan_operation.mapping;
     operation.terminal_claim = plan_operation.terminal_claim;
@@ -668,10 +1049,90 @@ relation::OperationDescriptor signed_round_operation(
     return operation;
 }
 
+relation::OperationDescriptor sparse_route_operation(
+    const Graph& graph, const OperationFamily& plan_operation,
+    const std::map<std::string, std::uint32_t>& domains,
+    const std::map<std::string, const TensorFamily*>& families,
+    std::string* error) {
+    relation::OperationDescriptor operation;
+    if (plan_operation.inputs.size() != 2U || plan_operation.outputs.size() != 1U) {
+        if (error) *error = "BLOCKED: sparse route requires public route input, canonical source, and one output view";
+        return operation;
+    }
+    const std::string source_ref = plan_operation.inputs.back();
+    const std::string output_ref = plan_operation.outputs.front();
+    const TensorFamily* source_family = tensor_family(families, source_ref);
+    const TensorFamily* output_family = tensor_family(families, output_ref);
+    if (source_family == nullptr || output_family == nullptr) {
+        if (error) *error = "BLOCKED: sparse route source/output family is not in the authenticated RelationPlan";
+        return operation;
+    }
+    if (graph.nodes == 0U || graph.edges == 0U || graph.src.size() != graph.edges ||
+        graph.dst.size() != graph.edges) {
+        if (error) *error = "BLOCKED: sparse route graph has incomplete public src/dst arrays";
+        return operation;
+    }
+    const std::uint32_t node_domain = padded_domain(source_family->padded_shape.front(), error,
+                                                     plan_operation.id + "/node");
+    const std::uint32_t edge_domain = padded_domain(output_family->padded_shape.front(), error,
+                                                     plan_operation.id + "/edge");
+    const std::uint64_t source_feature = flattened_feature_domain(*source_family, error,
+                                                                  plan_operation.id + "/source");
+    const std::uint64_t output_feature = flattened_feature_domain(*output_family, error,
+                                                                  plan_operation.id + "/output");
+    if (node_domain == 0U || edge_domain == 0U || source_feature == 0U ||
+        output_feature == 0U || source_feature != output_feature ||
+        source_feature > std::numeric_limits<std::uint32_t>::max() ||
+        graph.nodes > node_domain || graph.edges > edge_domain ||
+        domains.find(source_ref) == domains.end() || domains.find(output_ref) == domains.end() ||
+        domains.at(source_ref) != static_cast<std::uint64_t>(node_domain) * source_feature ||
+        domains.at(output_ref) != static_cast<std::uint64_t>(edge_domain) * output_feature) {
+        if (error) *error = "BLOCKED: sparse route source/output shape is not fixed zero-padded and aligned";
+        return operation;
+    }
+    operation.id = plan_operation.id;
+    operation.kind = relation::RelationKind::SparseRoute;
+    operation.degree = 2U;
+    operation.mapping = plan_operation.mapping + ";public-selector-mle:src-dst";
+    operation.terminal_claim = plan_operation.terminal_claim;
+    operation.terminal_point = plan_operation.terminal_point;
+    operation.padding = "fixed-zero-padding;public-equality-selector-mle;fac4dnn-line8";
+    operation.public_route = true;
+    operation.requires_reindex = true;
+    for (const auto& input : plan_operation.inputs) append_unique(operation.source_refs, input);
+    for (const auto& output : plan_operation.outputs) append_unique(operation.source_refs, output);
+    for (const auto& auxiliary : plan_operation.auxiliary) operation.selector_refs.push_back(auxiliary);
+    operation.selector_edge_domain = edge_domain;
+    operation.selector_node_domain = node_domain;
+    operation.selector_feature_domain = static_cast<std::uint32_t>(source_feature);
+    operation.selector_src.assign(edge_domain, 0U);
+    operation.selector_dst.assign(edge_domain, 0U);
+    operation.selector_active.assign(edge_domain, 0U);
+    for (std::uint64_t edge = 0U; edge < graph.edges; ++edge) {
+        if (graph.src[edge] >= graph.nodes || graph.dst[edge] >= graph.nodes) {
+            if (error) *error = "BLOCKED: sparse route graph src/dst index is out of bounds";
+            return relation::OperationDescriptor{};
+        }
+        operation.selector_src[edge] = graph.src[edge];
+        operation.selector_dst[edge] = graph.dst[edge];
+        operation.selector_active[edge] = 1U;
+    }
+    operation.selector_source_ref = source_ref;
+    operation.selector_output_ref = output_ref;
+    // The route relation itself owns the sparse selector polynomial.  The
+    // canonical tensor relation only anchors the routed output; source is
+    // intentionally kept in source_refs and in the route proof opening.
+    set_tensor_refs(operation, {output_ref});
+    operation.constraints.push_back(primitive_anchor_constraint(operation, output_ref));
+    return operation;
+}
+
 relation::OperationDescriptor canonical_operation(
     const Config& config, const StaticTables& tables,
     const OperationFamily& plan_operation,
     const std::map<std::string, std::uint32_t>& domains,
+    const std::map<std::string, const TensorFamily*>& families,
+    const Graph* graph,
     std::string* error) {
     relation::OperationDescriptor operation;
     operation.id = plan_operation.id;
@@ -695,14 +1156,11 @@ relation::OperationDescriptor canonical_operation(
     try {
         if (plan_operation.kind == "field_addition" ||
             plan_operation.kind == "tensor_sumcheck" ||
-            plan_operation.kind == "tensor_reindex_sumcheck" ||
             plan_operation.kind == "output_bias") {
             operation.kind = plan_operation.kind == "output_bias"
                 ? relation::RelationKind::Bias
-                : (plan_operation.kind == "tensor_reindex_sumcheck"
-                   ? relation::RelationKind::Reindex
-                   : (plan_operation.kind == "tensor_sumcheck"
-                      ? relation::RelationKind::HeadSum : relation::RelationKind::Add));
+                : (plan_operation.kind == "tensor_sumcheck"
+                   ? relation::RelationKind::HeadSum : relation::RelationKind::Add);
             if (plan_operation.outputs.size() != 1U || plan_operation.inputs.empty())
                 return unsupported("one output and aligned input MLE tensors");
             const std::vector<std::string> inputs = aligned_inputs(plan_operation, domains);
@@ -712,6 +1170,27 @@ relation::OperationDescriptor canonical_operation(
             set_tensor_refs(operation, refs);
             operation.constraints.push_back(linear_constraint(
                 operation.id + "/linear", operation, inputs, output));
+        } else if (plan_operation.kind == "tensor_reindex_sumcheck") {
+            operation.kind = plan_operation.id.find("/concat") != std::string::npos
+                ? relation::RelationKind::Concat : relation::RelationKind::Reindex;
+            if (plan_operation.outputs.size() != 1U || plan_operation.inputs.empty())
+                return unsupported("canonical reindex input/output views");
+            std::vector<std::string> inputs;
+            inputs.reserve(plan_operation.inputs.size());
+            for (std::size_t index = 0U; index < plan_operation.inputs.size(); ++index) {
+                const std::string input = required_view(
+                    plan_operation, domains, "input" + std::to_string(index), "", error);
+                if (input.empty()) return relation::OperationDescriptor{};
+                inputs.push_back(input);
+            }
+            const std::string output = required_view(plan_operation, domains, "output", "", error);
+            if (output.empty()) return relation::OperationDescriptor{};
+            std::vector<std::string> refs = inputs;
+            refs.push_back(output);
+            set_tensor_refs(operation, refs);
+            operation.padding = "fixed-zero-padding;explicit-fac4dnn-reindex-view";
+            operation.constraints.push_back(linear_constraint(
+                operation.id + "/reindex", operation, inputs, output));
         } else if (plan_operation.kind == "tensor_product_sumcheck" &&
                    (plan_operation.id.find("/consistency") != std::string::npos ||
                     plan_operation.inputs.size() >= 3U)) {
@@ -761,18 +1240,9 @@ relation::OperationDescriptor canonical_operation(
                 operation.id + "/alpha", operation, inputs[1], inverse_view,
                 alpha_view));
         } else if (plan_operation.kind == "public_selector_reindex") {
-            operation.kind = relation::RelationKind::SparseRoute;
-            if (plan_operation.inputs.size() < 2U || plan_operation.outputs.size() != 1U)
-                return unsupported("canonical route selector and aligned reindexed witness");
-            // The public route tensor is not a pointwise field value.  The
-            // native runner must provide the already reindexed input view;
-            // this copy equation then binds that view to the output.
-            const std::string source_view = view_or_ref(plan_operation, domains, "route_source",
-                                                        plan_operation.inputs.back());
-            const std::string output_view = aligned_output(plan_operation, domains);
-            set_tensor_refs(operation, {source_view, output_view});
-            operation.constraints.push_back(linear_constraint(
-                operation.id + "/route", operation, {source_view}, output_view));
+            if (graph == nullptr) return unsupported("public canonical graph src/dst route descriptor");
+            operation = sparse_route_operation(*graph, plan_operation, domains, families, error);
+            if (operation.id.empty()) return operation;
         } else if (plan_operation.kind == "hyrax_terminal_evaluation") {
             operation.kind = relation::RelationKind::PublicOutput;
             if (plan_operation.inputs.size() != 1U || plan_operation.outputs.size() != 1U ||
@@ -784,13 +1254,55 @@ relation::OperationDescriptor canonical_operation(
             operation.constraints.push_back(std::move(constraint));
         } else if (plan_operation.kind == "indexed_public_table_sumcheck") {
             return table_operation(config, tables, plan_operation, domains, error);
+        } else if (plan_operation.kind == "segmented_max_range_sumcheck") {
+            return max_range_operation(config, plan_operation, domains, error);
         } else if (plan_operation.kind == "segmented_sumcheck") {
-            return unsupported("canonical segmented MLE/reindex witness views");
+            return grouped_sum_operation(plan_operation, domains, error);
         } else if (plan_operation.kind == "signed_round_div_sumcheck") {
             return signed_round_operation(config, plan_operation, domains, error);
-        } else if (plan_operation.kind == "tensor_matmul_sumcheck" ||
-                   plan_operation.kind == "inner_product_sumcheck") {
-            return unsupported("zkMatMul/inner-product native shaped witness adapter");
+        } else if (plan_operation.kind == "tensor_matmul_sumcheck") {
+            if (plan_operation.inputs.size() != 2U || plan_operation.outputs.size() != 1U)
+                return unsupported("one input, model kernel, and output tensor");
+            relation::PrimitiveDescriptor primitive;
+            if (!padded_matrix_shape(families, plan_operation.inputs[0],
+                                     plan_operation.inputs[1], plan_operation.outputs[0],
+                                     primitive, error)) return relation::OperationDescriptor{};
+            operation.kind = relation::RelationKind::Projection;
+            operation.degree = 2U;
+            const std::string output = plan_operation.outputs[0];
+            set_tensor_refs(operation, {output});
+            for (const auto& ref : primitive.tensor_refs) append_unique(operation.source_refs, ref);
+            operation.primitives.push_back(std::move(primitive));
+            operation.padding = "fixed-zero-padding;zkMatMul;shape-bound";
+        } else if (plan_operation.kind == "inner_product_sumcheck") {
+            if (plan_operation.inputs.size() != 3U || plan_operation.outputs.size() != 2U)
+                return unsupported("src/dst routed matrices, kernels, and two edge outputs");
+            const std::string src_matrix = required_view(plan_operation, domains, "src_matrix", "", error);
+            const std::string dst_matrix = required_view(plan_operation, domains, "dst_matrix", "", error);
+            const std::string src_kernel = required_view(plan_operation, domains, "src_kernel",
+                                                         plan_operation.inputs[1], error);
+            const std::string dst_kernel = required_view(plan_operation, domains, "dst_kernel",
+                                                         plan_operation.inputs[2], error);
+            const std::string src_output = required_view(plan_operation, domains, "src_output", "", error);
+            const std::string dst_output = required_view(plan_operation, domains, "dst_output", "", error);
+            if (src_matrix.empty() || dst_matrix.empty() || src_kernel.empty() || dst_kernel.empty() ||
+                src_output.empty() || dst_output.empty())
+                return relation::OperationDescriptor{};
+            relation::PrimitiveDescriptor src_primitive, dst_primitive;
+            if (!padded_matrix_shape(families, src_matrix, src_kernel, src_output,
+                                     src_primitive, error) ||
+                !padded_matrix_shape(families, dst_matrix, dst_kernel, dst_output,
+                                     dst_primitive, error)) return relation::OperationDescriptor{};
+            if (src_primitive.matmul_shape.k != 1U || dst_primitive.matmul_shape.k != 1U)
+                return unsupported("scalar inner-product output shape");
+            operation.kind = relation::RelationKind::AttentionInnerProduct;
+            operation.degree = 2U;
+            set_tensor_refs(operation, {plan_operation.outputs[0], plan_operation.outputs[1]});
+            for (const auto& ref : src_primitive.tensor_refs) append_unique(operation.source_refs, ref);
+            for (const auto& ref : dst_primitive.tensor_refs) append_unique(operation.source_refs, ref);
+            operation.primitives.push_back(std::move(src_primitive));
+            operation.primitives.push_back(std::move(dst_primitive));
+            operation.padding = "fixed-zero-padding;zkMatMul;shape-bound;src-dst-route";
         } else {
             return unsupported("an authenticated operation-family mapping");
         }
@@ -810,13 +1322,21 @@ bool build_canonical_operations(const Config& config, const StaticTables& tables
                                 const RelationPlan& relation,
                                 const std::vector<relation::TensorWitness>& tensors,
                                 std::vector<relation::OperationDescriptor>& operations,
+                                const Graph* graph,
                                 std::string* error) {
     std::map<std::string, std::uint32_t> domains;
     for (const auto& tensor : tensors) domains.emplace(tensor.id, tensor.domain_size);
+    std::map<std::string, const TensorFamily*> families;
+    for (const auto& family : relation.tensor_families)
+        if (!families.emplace(family.id, &family).second) {
+            if (error) *error = "duplicate canonical tensor family: " + family.id;
+            return false;
+        }
     operations.clear();
     std::set<std::string> ids;
     for (const auto& plan_operation : relation.operation_families) {
-        relation::OperationDescriptor operation = canonical_operation(config, tables, plan_operation, domains, error);
+        relation::OperationDescriptor operation = canonical_operation(
+            config, tables, plan_operation, domains, families, graph, error);
         if (operation.id.empty()) return false;
         for (const auto& ref : operation.tensor_refs) {
             const auto found = domains.find(ref);
@@ -826,14 +1346,38 @@ bool build_canonical_operations(const Config& config, const StaticTables& tables
                 return false;
             }
         }
-        if (operation.tensor_refs.empty()) return false;
-        const std::uint32_t domain = domains.at(operation.tensor_refs.front());
-        for (const auto& ref : operation.tensor_refs)
-            if (domains.at(ref) != domain) {
-                if (error) *error = "BLOCKED: operation " + operation.id +
-                                    " has non-aligned MLE domains; explicit FAC4DNN reindex witness is required";
+        for (const auto& primitive : operation.primitives) {
+            for (const auto& ref : primitive.tensor_refs) {
+                const auto found = domains.find(ref);
+                if (found == domains.end()) {
+                    if (error) *error = "BLOCKED: native relation witness is missing primitive tensor " + ref +
+                                        " required by " + operation.id;
+                    return false;
+                }
+            }
+            const auto& shape = primitive.matmul_shape;
+            if (domains.at(primitive.tensor_refs[0]) != shape.a_size() ||
+                domains.at(primitive.tensor_refs[1]) != shape.b_size() ||
+                domains.at(primitive.tensor_refs[2]) != shape.c_size()) {
+                if (error) *error = "BLOCKED: primitive tensor domains do not match fixed padded zkMatMul shape for " +
+                                    operation.id;
                 return false;
             }
+        }
+        if (operation.tensor_refs.empty()) return false;
+        // SparseRoute is deliberately allowed to span source-node and
+        // edge-view domains; its public selector-MLE proof carries both
+        // canonical openings.  All other relation families still require
+        // same-domain MLE views here.
+        if (operation.kind != relation::RelationKind::SparseRoute) {
+            const std::uint32_t domain = domains.at(operation.tensor_refs.front());
+            for (const auto& ref : operation.tensor_refs)
+                if (domains.at(ref) != domain) {
+                    if (error) *error = "BLOCKED: operation " + operation.id +
+                                        " has non-aligned MLE domains; explicit FAC4DNN reindex witness is required";
+                    return false;
+                }
+        }
         if (!ids.insert(operation.id).second) {
             if (error) *error = "duplicate canonical native operation id: " + operation.id;
             return false;
@@ -858,6 +1402,16 @@ bool operation_set_matches_plan(const RelationPlan& plan,
         return false;
     }
     for (const auto& expected : plan.operation_families) {
+        const bool canonical_root = expected.id == "head_sum" ||
+                                    expected.id == "final_average" ||
+                                    expected.id == "terminal_opening";
+        if ((expected.id.find('/') == std::string::npos && !canonical_root) ||
+            (expected.id == "head_sum" && expected.kind != "tensor_sumcheck") ||
+            (expected.id == "final_average" && expected.kind != "signed_round_div_sumcheck") ||
+            (expected.id == "terminal_opening" && expected.kind != "hyrax_terminal_evaluation")) {
+            if (error) *error = "BLOCKED: RelationPlan operation id is not a canonical stage/root id: " + expected.id;
+            return false;
+        }
         const auto found = supplied.find(expected.id);
         if (found == supplied.end()) {
             if (error) *error = "BLOCKED: native relation descriptor is missing: " + expected.id;
@@ -866,10 +1420,14 @@ bool operation_set_matches_plan(const RelationPlan& plan,
         const auto& actual = *found->second;
         const bool low_degree_tree = expected.kind.find("indexed_public_table") != std::string::npos ||
                                      expected.kind.find("signed_round_div") != std::string::npos ||
-                                     expected.kind.find("segmented_") != std::string::npos;
+                                     expected.kind.find("segmented_") != std::string::npos ||
+                                     expected.kind == "public_selector_reindex";
+        const bool route_mapping = expected.kind == "public_selector_reindex" &&
+                                   (actual.mapping == expected.mapping ||
+                                    actual.mapping == expected.mapping + ";public-selector-mle:src-dst");
         if ((!low_degree_tree && actual.degree != expected.degree) ||
             (low_degree_tree && (actual.degree < expected.degree || actual.degree > 2U)) ||
-            actual.mapping != expected.mapping ||
+            (!route_mapping && actual.mapping != expected.mapping) ||
             actual.terminal_point != expected.terminal_point ||
             actual.terminal_claim != expected.terminal_claim ||
             actual.requires_reindex != expected.requires_reindex ||
@@ -898,6 +1456,127 @@ bool operation_set_matches_plan(const RelationPlan& plan,
     return true;
 }
 
+std::uint32_t descriptor_visibility(const std::string& visibility) {
+    return visibility == "public" ? 1U : (visibility == "witness" ? 3U : 0U);
+}
+
+bool shape_contract_from_plan(
+    const RelationPlan& plan, const std::vector<NativeRelationWitness::TensorShape>& supplied,
+    std::vector<relation::TensorDescriptor>& descriptors, std::string* error) {
+    std::map<std::string, const TensorFamily*> families;
+    for (const auto& family : plan.tensor_families)
+        if (!families.emplace(family.id, &family).second) {
+            if (error) *error = "duplicate tensor family in authenticated RelationPlan: " + family.id;
+            return false;
+        }
+    std::set<std::string> seen;
+    descriptors.clear();
+    for (const auto& shape : supplied) {
+        const auto found = families.find(shape.id);
+        if (found == families.end() || !seen.insert(shape.id).second) {
+            if (error) *error = "public tensor shape is not an authenticated RelationPlan family: " + shape.id;
+            return false;
+        }
+        relation::TensorDescriptor descriptor;
+        descriptor.id = shape.id;
+        descriptor.visibility = shape.visibility;
+        descriptor.domain_size = shape.domain_size;
+        descriptor.logical_shape = shape.logical_shape;
+        descriptor.padded_shape = shape.padded_shape;
+        descriptor.mle_order = shape.mle_order;
+        descriptor.stack_axis = shape.stack_axis;
+        descriptor.mapping = shape.mapping;
+        descriptor.padding_rule = shape.padding_rule;
+        descriptor.registry_id = shape.registry_id;
+        std::string descriptor_error;
+        if (!descriptor.valid(&descriptor_error)) {
+            if (error) *error = "public tensor shape contract rejected: " + shape.id + ": " + descriptor_error;
+            return false;
+        }
+        const TensorFamily& family = *found->second;
+        const std::uint32_t family_visibility = descriptor_visibility(family.visibility);
+        if (descriptor.logical_shape != family.logical_shape ||
+            descriptor.padded_shape != family.padded_shape ||
+            descriptor.mle_order != family.mle_order ||
+            descriptor.stack_axis != family.stack_axis ||
+            descriptor.mapping != family.mapping ||
+            descriptor.padding_rule != family.padding_rule ||
+            (family_visibility == 1U && descriptor.visibility != 1U) ||
+            (family_visibility == 3U && (descriptor.visibility != 2U && descriptor.visibility != 3U))) {
+            if (error) *error = "public tensor shape/mapping/padding differs from authenticated RelationPlan: " + shape.id;
+            return false;
+        }
+        descriptors.push_back(std::move(descriptor));
+    }
+    for (const auto& family : plan.tensor_families)
+        if (!seen.count(family.id)) {
+            if (error) *error = "public tensor shape contract omits RelationPlan family: " + family.id;
+            return false;
+        }
+    return true;
+}
+
+bool shape_contract_from_witness(
+    const RelationPlan& plan, const NativeRelationWitness& witness,
+    std::vector<relation::TensorDescriptor>& descriptors, std::string* error) {
+    if (witness.tensor_shapes.empty()) {
+        if (error) *error = "BLOCKED: native relation witness lacks canonical tensor shape/padding descriptors";
+        return false;
+    }
+    return shape_contract_from_plan(plan, witness.tensor_shapes, descriptors, error);
+}
+
+bool graph_public_values(const Graph& graph, const relation::TensorDescriptor& descriptor,
+                         std::vector<FrWire>& values, std::string* error) {
+    values.assign(descriptor.domain_size, FrWire{});
+    const auto from_u64 = [&](std::uint64_t value, FrWire& out) {
+        if (value > std::numeric_limits<std::uint32_t>::max()) return false;
+        out = zkdl::fr_from_u32(static_cast<std::uint32_t>(value));
+        return true;
+    };
+    if (descriptor.id == "sparse_route" || descriptor.id == "group_selectors") {
+        if (descriptor.padded_shape.size() != 2U || descriptor.padded_shape[1] != 2U ||
+            descriptor.padded_shape[0] < graph.edges || graph.src.size() != graph.edges ||
+            graph.dst.size() != graph.edges) {
+            if (error) *error = "public graph tensor shape is incompatible with src/dst selector material";
+            return false;
+        }
+        for (std::uint64_t edge = 0U; edge < graph.edges; ++edge) {
+            const std::uint64_t base = edge * 2U;
+            if (descriptor.id == "sparse_route") {
+                if (!from_u64(graph.src[edge], values[base]) ||
+                    !from_u64(graph.dst[edge], values[base + 1U])) return false;
+            } else {
+                const std::uint32_t destination = graph.dst[edge];
+                if (destination >= graph.nodes || graph.node_edge_ptr.size() != graph.nodes + 1U) {
+                    if (error) *error = "public group selector graph boundary is malformed";
+                    return false;
+                }
+                const bool first = edge == graph.node_edge_ptr[destination];
+                const bool last = edge + 1U == graph.node_edge_ptr[destination + 1U];
+                values[base] = zkdl::fr_from_u32(first ? 1U : 0U);
+                values[base + 1U] = zkdl::fr_from_u32(last ? 1U : 0U);
+            }
+        }
+        return true;
+    }
+    const std::vector<std::uint64_t>* source = nullptr;
+    if (descriptor.id == "node_ptr") source = &graph.node_ptr;
+    else if (descriptor.id == "edge_ptr") source = &graph.edge_ptr;
+    else if (descriptor.id == "node_edge_ptr") source = &graph.node_edge_ptr;
+    if (source == nullptr) return false;
+    if (source->size() > values.size()) {
+        if (error) *error = "public graph boundary tensor exceeds its padded domain";
+        return false;
+    }
+    for (std::size_t i = 0U; i < source->size(); ++i)
+        if (!from_u64((*source)[i], values[i])) {
+            if (error) *error = "public graph boundary exceeds field wire range";
+            return false;
+        }
+    return true;
+}
+
 bool context_from_request(const NativeProveRequest& request,
                           relation::ProverContext& context, std::string* error) {
     if (!request.config || !request.graph || !request.model || !request.tables ||
@@ -912,7 +1591,9 @@ bool context_from_request(const NativeProveRequest& request,
     context.tensors = request.witness->tensors;
     if (!build_canonical_operations(*request.config, *request.tables, *request.relation,
                                     context.tensors,
-                                    context.operations, error)) return false;
+                                    context.operations, request.graph, error)) return false;
+    if (!shape_contract_from_witness(*request.relation, *request.witness,
+                                     context.tensor_descriptors, error)) return false;
     // If the adapter supplied descriptors, treat them only as a consistency
     // witness.  Equations used by the proof are reconstructed above from the
     // authenticated plan and never taken from this optional vector.
@@ -932,6 +1613,30 @@ bool context_from_request(const NativeProveRequest& request,
         }
     }
     context.generators = request.witness->generators;
+    context.registered_model_commitments = request.witness->registered_model_commitments;
+    for (const auto& tensor : context.tensors)
+        if (tensor.visibility == 1U) context.public_tensor_values.emplace(tensor.id, tensor.values);
+    for (const auto& descriptor : context.tensor_descriptors) {
+        if (descriptor.visibility != 1U) continue;
+        std::vector<FrWire> expected;
+        if (!graph_public_values(*request.graph, descriptor, expected, error)) continue;
+        const auto found = context.public_tensor_values.find(descriptor.id);
+        if (found == context.public_tensor_values.end()) {
+            context.public_tensor_values.emplace(descriptor.id, std::move(expected));
+        } else if (found->second != expected) {
+            if (error) *error = "public graph selector tensor witness differs from Graph::src/dst/CSR";
+            return false;
+        }
+    }
+    for (const auto& tensor : context.tensors) {
+        const relation::TensorDescriptor* descriptor = relation::find_tensor_descriptor(
+            context.tensor_descriptors, tensor.id);
+        if (descriptor == nullptr || descriptor->domain_size != tensor.domain_size ||
+            descriptor->visibility != tensor.visibility) {
+            if (error) *error = "native tensor witness does not match its authenticated shape descriptor: " + tensor.id;
+            return false;
+        }
+    }
     std::string shape_error;
     for (const auto& tensor : context.tensors)
         if (!tensor.valid(&shape_error)) {
@@ -943,9 +1648,9 @@ bool context_from_request(const NativeProveRequest& request,
 
 bool context_from_verify(const NativeVerifyRequest& request,
                          relation::VerifierContext& context, std::string* error) {
-    if (!request.config || !request.statement || !request.public_context ||
+    if (!request.config || !request.graph || !request.statement || !request.public_context ||
         !request.relation || !request.tables) {
-        if (error) *error = "BLOCKED: independent verifier lacks public RelationPlan/context/SRS/registry";
+        if (error) *error = "BLOCKED: independent verifier lacks public graph/RelationPlan/context/SRS/registry";
         return false;
     }
     const auto& supplied = *request.public_context;
@@ -955,6 +1660,13 @@ bool context_from_verify(const NativeVerifyRequest& request,
     }
     if (request.statement->proof_scope != kProofScope || request.relation->proof_scope != kProofScope) {
         if (error) *error = "independent verifier proof scope is not full_gat_forward";
+        return false;
+    }
+    const std::string expected_topology = graph_digest(*request.graph);
+    const std::string expected_boundaries = graph_boundary_digest(*request.graph);
+    if (expected_topology.empty() || request.statement->topology_id != expected_topology ||
+        request.statement->topology_boundary_digest != expected_boundaries) {
+        if (error) *error = "independent verifier graph src/dst or boundary digest is not statement-bound";
         return false;
     }
     if (!request.tables->authenticated || !request.relation->integer_bound_ledger.authenticated ||
@@ -977,6 +1689,12 @@ bool context_from_verify(const NativeVerifyRequest& request,
     // as proving. It intentionally ends in an explicit BLOCKED result until
     // the restored tree provides its canonical compressed-G1/Fr loader.
     if (!resource_admission(*request.config, supplied, error)) return false;
+    if (supplied.tensor_shapes.empty()) {
+        if (error) *error = "BLOCKED: independent verifier lacks canonical tensor shape/padding descriptors";
+        return false;
+    }
+    if (!shape_contract_from_plan(*request.relation, supplied.tensor_shapes,
+                                  context.tensor_descriptors, error)) return false;
     for (const auto& tensor : supplied.tensors)
         if (tensor.visibility != 1U) {
             if (error) *error = "independent verifier context contains private witness tensor";
@@ -995,11 +1713,12 @@ bool context_from_verify(const NativeVerifyRequest& request,
     // are shape-only.  The canonical plan builder uses only ids/domains here;
     // it never asks the independent verifier for private values.
     for (const auto& tensor : supplied.tensors) {
-        if (std::find_if(shape_tensors.begin(), shape_tensors.end(),
-                         [&](const relation::TensorWitness& shape) { return shape.id == tensor.id; }) == shape_tensors.end()) {
-            relation::TensorWitness shape = tensor;
-            shape.values.clear();
-            shape_tensors.push_back(std::move(shape));
+        const relation::TensorDescriptor* descriptor = relation::find_tensor_descriptor(
+            context.tensor_descriptors, tensor.id);
+        if (descriptor == nullptr || descriptor->visibility != tensor.visibility ||
+            descriptor->domain_size != tensor.domain_size) {
+            if (error) *error = "independent verifier public tensor does not match shape contract: " + tensor.id;
+            return false;
         }
     }
     const std::filesystem::path registry(supplied.registry_path);
@@ -1034,9 +1753,15 @@ bool context_from_verify(const NativeVerifyRequest& request,
         if (error) *error = "BLOCKED: independent verifier lacks public_Y field witness";
         return false;
     }
+    context.statement.public_output_digest = zkdl::sha256(context.statement.public_output);
+    if (request.statement->public_output_digest.empty() ||
+        request.statement->public_output_digest != digest_hex(context.statement.public_output_digest)) {
+        if (error) *error = "independent verifier public_Y digest mismatch";
+        return false;
+    }
     if (!build_canonical_operations(*request.config, *request.tables, *request.relation,
                                     shape_tensors,
-                                    context.operations, error)) return false;
+                                    context.operations, request.graph, error)) return false;
     if (!supplied.operations.empty()) {
         if (!operation_set_matches_plan(*request.relation, supplied.operations, error)) return false;
         std::map<std::string, const relation::OperationDescriptor*> supplied_operations;
@@ -1053,6 +1778,21 @@ bool context_from_verify(const NativeVerifyRequest& request,
         }
     }
     context.generators = supplied.generators;
+    context.registered_model_commitments = supplied.registered_model_commitments;
+    for (const auto& tensor : supplied.tensors)
+        context.public_tensor_values.emplace(tensor.id, tensor.values);
+    for (const auto& descriptor : context.tensor_descriptors) {
+        if (descriptor.visibility != 1U) continue;
+        std::vector<FrWire> expected;
+        if (!graph_public_values(*request.graph, descriptor, expected, error)) continue;
+        const auto found = context.public_tensor_values.find(descriptor.id);
+        if (found == context.public_tensor_values.end()) {
+            context.public_tensor_values.emplace(descriptor.id, std::move(expected));
+        } else if (found->second != expected) {
+            if (error) *error = "independent verifier graph selector values differ from public Graph::src/dst/CSR";
+            return false;
+        }
+    }
     context.tensor_ids.clear();
     context.tensor_ids.reserve(shape_tensors.size());
     context.tensor_visibility.clear();

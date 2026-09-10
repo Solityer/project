@@ -23,6 +23,13 @@ struct NativeRelationWitness {
         std::string id;
         std::uint32_t domain_size = 0U;
         std::uint32_t visibility = 0U;
+        std::vector<std::uint64_t> logical_shape;
+        std::vector<std::uint64_t> padded_shape;
+        std::string mle_order;
+        std::string stack_axis;
+        std::string mapping;
+        std::string padding_rule;
+        std::string registry_id;
     };
     // Shape-only public registry used by the independent verifier; it never
     // carries private tensor values.
@@ -31,6 +38,11 @@ struct NativeRelationWitness {
     // adapter.  The core never invents a selector/reindex mapping when this
     // vector is present.
     std::vector<relation::OperationDescriptor> operations;
+    // Commitments for visibility=2 model tensors, parsed from the
+    // authenticated registry/VK map by the adapter.  The core compares these
+    // points with the generated canonical commitments; it never invents a
+    // model commitment from metadata.
+    std::vector<relation::CommitmentWire> registered_model_commitments;
     std::vector<zkdl::CpuG1Point> generators;
     std::string registry_path;
     std::array<zkdl::byte, 32> srs_digest{};

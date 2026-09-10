@@ -38,6 +38,22 @@ namespace relation {
 using byte = zkdl::byte;
 using FrWire = zkdl::FrWire;
 
+// The native CPU backend keeps transcript/opening claims as Fr_t while the
+// relation wire format uses FrWire.  Compare through the canonical wire
+// representation so mixed verifier checks do not depend on an implicit
+// conversion that the field implementation intentionally does not provide.
+inline int fr_compare_mixed(const Fr_t& a, const Fr_t& b) noexcept {
+    return zkdl::fr_compare(zkdl::fr_wire(a), zkdl::fr_wire(b));
+}
+
+inline int fr_compare_mixed(const Fr_t& a, const FrWire& b) noexcept {
+    return zkdl::fr_compare(zkdl::fr_wire(a), b);
+}
+
+inline int fr_compare_mixed(const FrWire& a, const Fr_t& b) noexcept {
+    return zkdl::fr_compare(a, zkdl::fr_wire(b));
+}
+
 enum class RelationKind : std::uint32_t {
     Projection = 1U,
     AttentionInnerProduct = 2U,
@@ -143,7 +159,7 @@ struct PrimitiveDescriptor {
     zkdl::MatMulShape matmul_shape;
     std::vector<std::string> tensor_refs;  // A, B, C in native layout order
 
-    bool valid(const std::vector<std::string>& operation_refs,
+    bool valid(const std::vector<std::string>& /*operation_refs*/,
                std::string* error = nullptr) const {
         if (kind != 1U || !matmul_shape.valid(error) || tensor_refs.size() != 3U) {
             if (error && error->empty()) *error = "relation primitive descriptor is not canonical";
@@ -151,9 +167,8 @@ struct PrimitiveDescriptor {
         }
         std::set<std::string> refs;
         for (const auto& ref : tensor_refs) {
-            if (ref.empty() || !refs.insert(ref).second ||
-                std::find(operation_refs.begin(), operation_refs.end(), ref) == operation_refs.end()) {
-                if (error) *error = "relation primitive tensor reference is not in operation";
+            if (ref.empty() || !refs.insert(ref).second) {
+                if (error) *error = "relation primitive tensor reference is not canonical";
                 return false;
             }
         }
@@ -193,9 +208,31 @@ struct OperationDescriptor {
     std::vector<FrWire> constants;
     std::vector<ConstraintDescriptor> constraints;
     std::vector<PrimitiveDescriptor> primitives;
+    // Public selector/equality-MLE descriptor.  For sparse route this is
+    // reconstructed from Graph::src/dst by the adapter on both sides.
+    std::uint32_t selector_edge_domain = 0U;
+    std::uint32_t selector_node_domain = 0U;
+    std::uint32_t selector_feature_domain = 0U;
+    std::vector<std::uint32_t> selector_src;
+    std::vector<std::uint32_t> selector_dst;
+    // Public graph slots.  Inactive slots are fixed zero padding and must
+    // carry src=dst=0; they contribute no selector mass.
+    std::vector<std::uint8_t> selector_active;
+    std::string selector_source_ref;
+    std::string selector_output_ref;
 
     bool valid(std::string* error = nullptr) const {
-        if (id.empty() || id.find('/') == std::string::npos ||
+        const bool canonical_root = id == "head_sum" || id == "final_average" ||
+                                    id == "terminal_opening";
+        const bool stage_qualified = id.find('/') != std::string::npos;
+        const bool root_kind = (id == "head_sum" && kind == RelationKind::HeadSum) ||
+                               (id == "final_average" && kind == RelationKind::FinalAverage) ||
+                               (id == "terminal_opening" && kind == RelationKind::PublicOutput);
+        const auto power_of_two = [](std::uint32_t value) {
+            return value != 0U && (value & (value - 1U)) == 0U;
+        };
+        if (id.empty() || (!stage_qualified && !canonical_root) ||
+            (canonical_root && !root_kind) ||
             !relation_kind_valid(static_cast<std::uint32_t>(kind)) || degree == 0U || degree > 8U) {
             if (error) *error = "relation operation descriptor is not canonical";
             return false;
@@ -204,7 +241,8 @@ struct OperationDescriptor {
             if (error) *error = "relation operation descriptor is missing mapping/padding/terminal identity";
             return false;
         }
-        if (source_refs.empty() || tensor_refs.empty() || constraints.empty()) {
+        if (source_refs.empty() || tensor_refs.empty() ||
+            (constraints.empty() && primitives.empty())) {
             if (error) *error = "relation operation descriptor has no tensor/constraint body";
             return false;
         }
@@ -239,6 +277,50 @@ struct OperationDescriptor {
             }
         for (const auto& primitive : primitives)
             if (!primitive.valid(tensor_refs, error)) return false;
+        const bool route_relation = kind == RelationKind::SparseRoute;
+        if (route_relation) {
+            if (selector_edge_domain == 0U || selector_node_domain == 0U ||
+                selector_feature_domain == 0U ||
+                !power_of_two(selector_edge_domain) || !power_of_two(selector_node_domain) ||
+                !power_of_two(selector_feature_domain) ||
+                selector_src.size() != selector_edge_domain ||
+                selector_dst.size() != selector_edge_domain ||
+                selector_active.size() != selector_edge_domain ||
+                selector_source_ref.empty() || selector_output_ref.empty()) {
+                if (error) *error = "sparse route selector descriptor is incomplete";
+                return false;
+            }
+            if (std::find(tensor_refs.begin(), tensor_refs.end(), selector_output_ref) == tensor_refs.end()) {
+                if (error) *error = "sparse route output is not a canonical relation tensor";
+                return false;
+            }
+            std::set<std::uint32_t> source_values;
+            std::set<std::uint32_t> destination_values;
+            for (std::uint32_t edge = 0U; edge < selector_edge_domain; ++edge) {
+                if (selector_active[edge] > 1U ||
+                    (!selector_active[edge] &&
+                     (selector_src[edge] != 0U || selector_dst[edge] != 0U)) ||
+                    (selector_active[edge] &&
+                     (selector_src[edge] >= selector_node_domain ||
+                      selector_dst[edge] >= selector_node_domain))) {
+                    if (error) *error = "sparse route selector index is out of bounds";
+                    return false;
+                }
+                if (selector_active[edge]) {
+                    source_values.insert(selector_src[edge]);
+                    destination_values.insert(selector_dst[edge]);
+                }
+            }
+            (void)source_values;
+            (void)destination_values;
+        } else if (selector_edge_domain != 0U || selector_node_domain != 0U ||
+                   selector_feature_domain != 0U || !selector_src.empty() ||
+                   !selector_dst.empty() || !selector_active.empty() ||
+                   !selector_source_ref.empty() ||
+                   !selector_output_ref.empty()) {
+            if (error) *error = "non-route operation carries an unexpected selector descriptor";
+            return false;
+        }
         return true;
     }
 };
@@ -265,6 +347,51 @@ struct TensorWitness {
     }
 };
 
+/* Public shape/padding contract used by the independent verifier.  Values are
+ * intentionally absent: only the authenticated public graph/table material
+ * may be supplied separately through VerifierContext::public_tensor_values. */
+struct TensorDescriptor {
+    std::string id;
+    std::uint32_t visibility = 0U;
+    std::uint32_t domain_size = 0U;
+    std::vector<std::uint64_t> logical_shape;
+    std::vector<std::uint64_t> padded_shape;
+    std::string mle_order;
+    std::string stack_axis;
+    std::string mapping;
+    std::string padding_rule;
+    std::string registry_id;
+
+    bool valid(std::string* error = nullptr) const {
+        if (id.empty() || visibility == 0U || visibility > 3U || domain_size == 0U ||
+            logical_shape.empty() || logical_shape.size() != padded_shape.size() ||
+            mle_order.empty() || stack_axis.empty() || mapping.empty() ||
+            padding_rule.empty()) {
+            if (error) *error = "relation tensor descriptor is incomplete";
+            return false;
+        }
+        std::uint64_t product = 1U;
+        for (std::size_t i = 0U; i < logical_shape.size(); ++i) {
+            if (logical_shape[i] == 0U || padded_shape[i] < logical_shape[i] ||
+                padded_shape[i] == 0U || (padded_shape[i] & (padded_shape[i] - 1U)) != 0U ||
+                product > std::numeric_limits<std::uint64_t>::max() / padded_shape[i]) {
+                if (error) *error = "relation tensor descriptor has invalid logical/padded shape";
+                return false;
+            }
+            product *= padded_shape[i];
+        }
+        if (product != domain_size || (domain_size & (domain_size - 1U)) != 0U) {
+            if (error) *error = "relation tensor descriptor domain does not match padded shape";
+            return false;
+        }
+        if (visibility == 2U && registry_id.empty()) {
+            if (error) *error = "model tensor descriptor has no authenticated registry id";
+            return false;
+        }
+        return true;
+    }
+};
+
 struct RelationStatement {
     std::array<byte, 32> statement_digest{};
     std::array<byte, 32> model_digest{};
@@ -272,6 +399,7 @@ struct RelationStatement {
     std::array<byte, 32> ledger_digest{};
     std::array<byte, 32> srs_digest{};
     std::array<byte, 32> registry_digest{};
+    std::array<byte, 32> public_output_digest{};
     std::vector<byte> public_output;
 };
 
@@ -294,6 +422,55 @@ struct OperationProof {
     std::vector<ConstraintProof> constraints;
     // One serialized proof per descriptor primitive, in descriptor order.
     std::vector<std::vector<byte>> primitive_proofs;
+    // One binding record per primitive.  Each canonical opening is made
+    // against the outer tensor commitment at the exact point used by the
+    // official zkMatMul row commitment/opening.
+    struct PrimitiveBinding {
+        std::uint32_t a_commitment_index = std::numeric_limits<std::uint32_t>::max();
+        std::uint32_t b_commitment_index = std::numeric_limits<std::uint32_t>::max();
+        std::uint32_t c_commitment_index = std::numeric_limits<std::uint32_t>::max();
+        zkdl::EvaluationOpeningProof opening_a;
+        zkdl::EvaluationOpeningProof opening_b;
+        zkdl::EvaluationOpeningProof opening_c;
+    };
+    std::vector<PrimitiveBinding> primitive_bindings;
+    std::vector<byte> route_proof;
+};
+
+/* Proof of the public sparse gather relation
+
+       R(e,f) = S(src[e],f).
+
+ * The selector is a public equality-MLE derived from selector_src.  The
+ * Sumcheck runs over the source-node coordinates after the edge/feature
+ * verifier challenges are fixed, and the two Hyrax openings close the source
+ * and routed-output claims against their canonical commitments. */
+struct SparseRouteProof {
+    static const std::uint32_t kVersion = 1U;
+    std::uint32_t version = kVersion;
+    std::uint32_t source_commitment_index = std::numeric_limits<std::uint32_t>::max();
+    std::uint32_t output_commitment_index = std::numeric_limits<std::uint32_t>::max();
+    std::uint32_t edge_domain = 0U;
+    std::uint32_t node_domain = 0U;
+    std::uint32_t feature_domain = 0U;
+    std::vector<Fr_t> edge_point;
+    std::vector<Fr_t> feature_point;
+    // FS challenges for the source-node Sumcheck variables.  They are part
+    // of the wire so the verifier never has to replay or trust prover state.
+    std::vector<Fr_t> node_point;
+    Fr_t output_claim{};
+    Fr_t source_sum_claim{};
+    Fr_t dst_selector_claim{};
+    Fr_t rho{};
+    Fr_t compressed_claim{};
+    zkdl::SumcheckProof sumcheck;
+    zkdl::EvaluationOpeningProof source_opening;
+    zkdl::EvaluationOpeningProof output_opening;
+
+    std::vector<byte> serialize() const;
+    static bool deserialize(const std::vector<byte>& bytes,
+                            SparseRouteProof& proof,
+                            std::string* error = nullptr);
 };
 
 struct Proof {
@@ -314,8 +491,15 @@ struct Proof {
 struct ProverContext {
     RelationStatement statement;
     std::vector<TensorWitness> tensors;
+    std::vector<TensorDescriptor> tensor_descriptors;
     std::vector<OperationDescriptor> operations;
     std::vector<zkdl::CpuG1Point> generators;
+    std::vector<CommitmentWire> registered_model_commitments;
+    // Private/model tensors are committed through the native hiding
+    // commitment object.  The record is public metadata plus a Schnorr
+    // knowledge proof; values/randomness never cross this context boundary.
+    std::vector<zkdl::CommitmentRecord> hiding_commitment_records;
+    std::map<std::string, std::vector<FrWire>> public_tensor_values;
 };
 
 struct VerifierContext {
@@ -328,6 +512,10 @@ struct VerifierContext {
     // the operation references are the conservative expected set.
     std::vector<std::string> tensor_ids;
     std::map<std::string, std::uint32_t> tensor_visibility;
+    std::vector<TensorDescriptor> tensor_descriptors;
+    std::vector<CommitmentWire> registered_model_commitments;
+    std::vector<zkdl::CommitmentRecord> hiding_commitment_records;
+    std::map<std::string, std::vector<FrWire>> public_tensor_values;
     std::vector<zkdl::CpuG1Point> generators;
 };
 
@@ -510,6 +698,17 @@ inline void append_operation(std::vector<byte>& out, const OperationDescriptor& 
     zkdl::append_u32(out, descriptor.public_route ? 1U : 0U);
     zkdl::append_u32(out, descriptor.requires_reindex ? 1U : 0U);
     append_fr_vector(out, descriptor.constants);
+    zkdl::append_u32(out, descriptor.selector_edge_domain);
+    zkdl::append_u32(out, descriptor.selector_node_domain);
+    zkdl::append_u32(out, descriptor.selector_feature_domain);
+    zkdl::append_u64(out, static_cast<std::uint64_t>(descriptor.selector_src.size()));
+    for (const auto value : descriptor.selector_src) zkdl::append_u32(out, value);
+    zkdl::append_u64(out, static_cast<std::uint64_t>(descriptor.selector_dst.size()));
+    for (const auto value : descriptor.selector_dst) zkdl::append_u32(out, value);
+    zkdl::append_u64(out, static_cast<std::uint64_t>(descriptor.selector_active.size()));
+    for (const auto value : descriptor.selector_active) zkdl::append_u32(out, value);
+    zkdl::append_string(out, descriptor.selector_source_ref);
+    zkdl::append_string(out, descriptor.selector_output_ref);
     zkdl::append_u64(out, static_cast<std::uint64_t>(descriptor.primitives.size()));
     for (const auto& primitive : descriptor.primitives) append_primitive(out, primitive);
     zkdl::append_u64(out, static_cast<std::uint64_t>(descriptor.constraints.size()));
@@ -535,11 +734,32 @@ inline bool read_operation_strict(const std::vector<byte>& in, size_t& offset,
         !zkdl::read_u32(in, offset, public_route) || public_route > 1U ||
         !zkdl::read_u32(in, offset, reindex) || reindex > 1U ||
         !read_fr_vector(in, offset, descriptor.constants) ||
+        !zkdl::read_u32(in, offset, descriptor.selector_edge_domain) ||
+        !zkdl::read_u32(in, offset, descriptor.selector_node_domain) ||
+        !zkdl::read_u32(in, offset, descriptor.selector_feature_domain) ||
+        !zkdl::read_u64(in, offset, count) || count > (1U << 20)) return false;
+    descriptor.selector_src.resize(static_cast<size_t>(count));
+    for (auto& value : descriptor.selector_src)
+        if (!zkdl::read_u32(in, offset, value)) return false;
+    if (!zkdl::read_u64(in, offset, count) || count > (1U << 20)) return false;
+    descriptor.selector_dst.resize(static_cast<size_t>(count));
+    for (auto& value : descriptor.selector_dst)
+        if (!zkdl::read_u32(in, offset, value)) return false;
+    if (!zkdl::read_u64(in, offset, count) || count > (1U << 20)) return false;
+    descriptor.selector_active.resize(static_cast<size_t>(count));
+    for (auto& value : descriptor.selector_active) {
+        std::uint32_t active = 0U;
+        if (!zkdl::read_u32(in, offset, active) || active > 1U) return false;
+        value = static_cast<std::uint8_t>(active);
+    }
+    if (!zkdl::read_string(in, offset, descriptor.selector_source_ref) ||
+        !zkdl::read_string(in, offset, descriptor.selector_output_ref) ||
         !zkdl::read_u64(in, offset, count) || count > 8U) return false;
     descriptor.primitives.resize(static_cast<size_t>(count));
     for (auto& primitive : descriptor.primitives)
         if (!read_primitive(in, offset, primitive)) return false;
-    if (!zkdl::read_u64(in, offset, count) || count == 0U || count > 64U) return false;
+    if (!zkdl::read_u64(in, offset, count) || count > 64U ||
+        (count == 0U && descriptor.primitives.empty())) return false;
     descriptor.kind = static_cast<RelationKind>(kind);
     descriptor.public_route = public_route != 0U;
     descriptor.requires_reindex = reindex != 0U;
@@ -571,6 +791,7 @@ inline void append_statement(std::vector<byte>& out, const RelationStatement& st
     append_digest(out, statement.ledger_digest);
     append_digest(out, statement.srs_digest);
     append_digest(out, statement.registry_digest);
+    append_digest(out, statement.public_output_digest);
     zkdl::append_u64(out, static_cast<std::uint64_t>(statement.public_output.size()));
     out.insert(out.end(), statement.public_output.begin(), statement.public_output.end());
 }
@@ -584,6 +805,7 @@ inline bool read_statement(const std::vector<byte>& in, size_t& offset,
         !read_digest(in, offset, statement.ledger_digest) ||
         !read_digest(in, offset, statement.srs_digest) ||
         !read_digest(in, offset, statement.registry_digest) ||
+        !read_digest(in, offset, statement.public_output_digest) ||
         !zkdl::read_u64(in, offset, bytes) || bytes > in.size() - offset) return false;
     statement.public_output.assign(in.begin() + static_cast<std::ptrdiff_t>(offset),
                                    in.begin() + static_cast<std::ptrdiff_t>(offset + bytes));
@@ -624,6 +846,27 @@ inline bool read_constraint_proof(const std::vector<byte>& in, size_t& offset,
     return true;
 }
 
+inline void append_primitive_binding(
+    std::vector<byte>& out, const OperationProof::PrimitiveBinding& binding) {
+    zkdl::append_u32(out, binding.a_commitment_index);
+    zkdl::append_u32(out, binding.b_commitment_index);
+    zkdl::append_u32(out, binding.c_commitment_index);
+    zkdl::serialize_opening(binding.opening_a, out);
+    zkdl::serialize_opening(binding.opening_b, out);
+    zkdl::serialize_opening(binding.opening_c, out);
+}
+
+inline bool read_primitive_binding(
+    const std::vector<byte>& in, size_t& offset,
+    OperationProof::PrimitiveBinding& binding) {
+    return zkdl::read_u32(in, offset, binding.a_commitment_index) &&
+           zkdl::read_u32(in, offset, binding.b_commitment_index) &&
+           zkdl::read_u32(in, offset, binding.c_commitment_index) &&
+           zkdl::deserialize_opening(in, offset, binding.opening_a) &&
+           zkdl::deserialize_opening(in, offset, binding.opening_b) &&
+           zkdl::deserialize_opening(in, offset, binding.opening_c);
+}
+
 inline void append_operation_proof(std::vector<byte>& out, const OperationProof& proof) {
     append_operation(out, proof.descriptor);
     zkdl::append_u64(out, static_cast<std::uint64_t>(proof.primitive_proofs.size()));
@@ -631,6 +874,11 @@ inline void append_operation_proof(std::vector<byte>& out, const OperationProof&
         zkdl::append_u64(out, static_cast<std::uint64_t>(primitive.size()));
         out.insert(out.end(), primitive.begin(), primitive.end());
     }
+    zkdl::append_u64(out, static_cast<std::uint64_t>(proof.primitive_bindings.size()));
+    for (const auto& binding : proof.primitive_bindings)
+        append_primitive_binding(out, binding);
+    zkdl::append_u64(out, static_cast<std::uint64_t>(proof.route_proof.size()));
+    out.insert(out.end(), proof.route_proof.begin(), proof.route_proof.end());
     zkdl::append_u64(out, static_cast<std::uint64_t>(proof.constraints.size()));
     for (const auto& constraint : proof.constraints) append_constraint_proof(out, constraint);
 }
@@ -648,10 +896,132 @@ inline bool read_operation_proof(const std::vector<byte>& in, size_t& offset,
                          in.begin() + static_cast<std::ptrdiff_t>(offset + bytes));
         offset += static_cast<size_t>(bytes);
     }
-    if (!zkdl::read_u64(in, offset, count) || count == 0U || count > 64U) return false;
+    if (!zkdl::read_u64(in, offset, count) || count > 8U) return false;
+    proof.primitive_bindings.resize(static_cast<size_t>(count));
+    for (auto& binding : proof.primitive_bindings)
+        if (!read_primitive_binding(in, offset, binding)) return false;
+    if (!zkdl::read_u64(in, offset, bytes) || bytes > in.size() - offset) return false;
+    proof.route_proof.assign(in.begin() + static_cast<std::ptrdiff_t>(offset),
+                             in.begin() + static_cast<std::ptrdiff_t>(offset + bytes));
+    offset += static_cast<size_t>(bytes);
+    if (!proof.route_proof.empty()) {
+        SparseRouteProof route;
+        if (!SparseRouteProof::deserialize(proof.route_proof, route)) return false;
+    }
+    if (!zkdl::read_u64(in, offset, count) || count > 64U ||
+        (count == 0U && proof.primitive_proofs.empty() && proof.route_proof.empty())) return false;
     proof.constraints.resize(static_cast<size_t>(count));
     for (auto& constraint : proof.constraints)
         if (!read_constraint_proof(in, offset, constraint)) return false;
+    return true;
+}
+
+inline void append_native_fr_vector(std::vector<byte>& out,
+                                    const std::vector<Fr_t>& values) {
+    zkdl::append_u64(out, static_cast<std::uint64_t>(values.size()));
+    for (const auto& value : values) zkdl::append_fr(out, value);
+}
+
+inline bool read_native_fr_vector(const std::vector<byte>& in, size_t& offset,
+                                  std::vector<Fr_t>& values) {
+    std::uint64_t count = 0U;
+    if (!zkdl::read_u64(in, offset, count) || count > (1U << 20)) return false;
+    values.resize(static_cast<size_t>(count));
+    for (auto& value : values)
+        if (!zkdl::read_fr(in, offset, value)) return false;
+    return true;
+}
+
+inline std::vector<byte> serialize_route_sumcheck(const zkdl::SumcheckProof& proof) {
+    std::vector<byte> encoded;
+    zkdl::serialize_sumcheck(proof, encoded);
+    return encoded;
+}
+
+inline std::vector<byte> SparseRouteProof::serialize() const {
+    std::vector<byte> out;
+    out.reserve(1024U);
+    out.push_back('S'); out.push_back('R'); out.push_back('P'); out.push_back('1');
+    zkdl::append_u32(out, version);
+    zkdl::append_u32(out, source_commitment_index);
+    zkdl::append_u32(out, output_commitment_index);
+    zkdl::append_u32(out, edge_domain);
+    zkdl::append_u32(out, node_domain);
+    zkdl::append_u32(out, feature_domain);
+    append_native_fr_vector(out, edge_point);
+    append_native_fr_vector(out, feature_point);
+    append_native_fr_vector(out, node_point);
+    zkdl::append_fr(out, output_claim);
+    zkdl::append_fr(out, source_sum_claim);
+    zkdl::append_fr(out, dst_selector_claim);
+    zkdl::append_fr(out, rho);
+    zkdl::append_fr(out, compressed_claim);
+    const std::vector<byte> sumcheck_bytes = serialize_route_sumcheck(this->sumcheck);
+    zkdl::append_u64(out, static_cast<std::uint64_t>(sumcheck_bytes.size()));
+    out.insert(out.end(), sumcheck_bytes.begin(), sumcheck_bytes.end());
+    zkdl::serialize_opening(source_opening, out);
+    zkdl::serialize_opening(output_opening, out);
+    return out;
+}
+
+inline bool SparseRouteProof::deserialize(const std::vector<byte>& bytes,
+                                          SparseRouteProof& proof,
+                                          std::string* error) {
+    SparseRouteProof parsed;
+    size_t offset = 0U;
+    std::uint64_t sumcheck_bytes = 0U;
+    if (bytes.size() < 4U || bytes[0] != 'S' || bytes[1] != 'R' ||
+        bytes[2] != 'P' || bytes[3] != '1') {
+        if (error) *error = "invalid sparse route proof magic";
+        return false;
+    }
+    offset = 4U;
+    if (!zkdl::read_u32(bytes, offset, parsed.version) || parsed.version != kVersion ||
+        !zkdl::read_u32(bytes, offset, parsed.source_commitment_index) ||
+        !zkdl::read_u32(bytes, offset, parsed.output_commitment_index) ||
+        !zkdl::read_u32(bytes, offset, parsed.edge_domain) ||
+        !zkdl::read_u32(bytes, offset, parsed.node_domain) ||
+        !zkdl::read_u32(bytes, offset, parsed.feature_domain) ||
+        !read_native_fr_vector(bytes, offset, parsed.edge_point) ||
+        !read_native_fr_vector(bytes, offset, parsed.feature_point) ||
+        !read_native_fr_vector(bytes, offset, parsed.node_point) ||
+        !zkdl::read_fr(bytes, offset, parsed.output_claim) ||
+        !zkdl::read_fr(bytes, offset, parsed.source_sum_claim) ||
+        !zkdl::read_fr(bytes, offset, parsed.dst_selector_claim) ||
+        !zkdl::read_fr(bytes, offset, parsed.rho) ||
+        !zkdl::read_fr(bytes, offset, parsed.compressed_claim) ||
+        !zkdl::read_u64(bytes, offset, sumcheck_bytes) ||
+        sumcheck_bytes == 0U || sumcheck_bytes > bytes.size() - offset) {
+        if (error) *error = "truncated sparse route proof header";
+        return false;
+    }
+    std::vector<byte> sumcheck_bytes_vector(
+        bytes.begin() + static_cast<std::ptrdiff_t>(offset),
+        bytes.begin() + static_cast<std::ptrdiff_t>(offset + sumcheck_bytes));
+    offset += static_cast<size_t>(sumcheck_bytes);
+    size_t inner = 0U;
+    if (!zkdl::deserialize_sumcheck(sumcheck_bytes_vector, inner, parsed.sumcheck) ||
+        inner != sumcheck_bytes_vector.size() ||
+        !zkdl::deserialize_opening(bytes, offset, parsed.source_opening) ||
+        !zkdl::deserialize_opening(bytes, offset, parsed.output_opening) ||
+        offset != bytes.size()) {
+        if (error) *error = "truncated or trailing sparse route proof";
+        return false;
+    }
+    const auto power_of_two = [](std::uint32_t value) {
+        return value != 0U && (value & (value - 1U)) == 0U;
+    };
+    if (!power_of_two(parsed.edge_domain) || !power_of_two(parsed.node_domain) ||
+        !power_of_two(parsed.feature_domain) || parsed.edge_point.size() >= 32U ||
+        parsed.feature_point.size() >= 32U || parsed.node_point.size() >= 32U ||
+        parsed.edge_point.size() != log2_exact(parsed.edge_domain) ||
+        parsed.node_point.size() != log2_exact(parsed.node_domain) ||
+        parsed.feature_point.size() != log2_exact(parsed.feature_domain) ||
+        parsed.sumcheck.terminal_claims.size() != 2U) {
+        if (error) *error = "sparse route proof shape is not canonical";
+        return false;
+    }
+    proof = std::move(parsed);
     return true;
 }
 
@@ -901,6 +1271,829 @@ inline bool descriptor_vector_valid(const std::vector<OperationDescriptor>& oper
     return !operations.empty();
 }
 
+inline const TensorDescriptor* find_tensor_descriptor(
+    const std::vector<TensorDescriptor>& descriptors, const std::string& id) {
+    const auto found = std::find_if(descriptors.begin(), descriptors.end(),
+                                    [&](const TensorDescriptor& descriptor) {
+                                        return descriptor.id == id;
+                                    });
+    return found == descriptors.end() ? nullptr : &*found;
+}
+
+inline bool commitment_equal(const CommitmentWire& left,
+                             const CommitmentWire& right) noexcept {
+    return left.tensor_id == right.tensor_id && left.visibility == right.visibility &&
+           left.domain_size == right.domain_size &&
+           zkdl::cpu_g1_equal(zkdl::cpu_g1_from_native(left.commitment),
+                              zkdl::cpu_g1_from_native(right.commitment));
+}
+
+inline bool verify_tensor_contract(const VerifierContext& context,
+                                   const std::vector<CommitmentWire>& commitments,
+                                   std::string* error = nullptr) {
+    std::set<std::string> descriptor_ids;
+    for (const auto& descriptor : context.tensor_descriptors) {
+        if (!descriptor.valid(error) || !descriptor_ids.insert(descriptor.id).second) {
+            if (error && error->empty()) *error = "duplicate/invalid verifier tensor descriptor";
+            return false;
+        }
+    }
+    if (!context.tensor_descriptors.empty()) {
+        for (const auto& commitment : commitments) {
+            const TensorDescriptor* descriptor = find_tensor_descriptor(
+                context.tensor_descriptors, commitment.tensor_id);
+            if (descriptor == nullptr || descriptor->domain_size != commitment.domain_size ||
+                descriptor->visibility != commitment.visibility) {
+                if (error) *error = "commitment does not match public tensor shape/padding contract";
+                return false;
+            }
+        }
+        for (const auto& descriptor : context.tensor_descriptors) {
+            const auto found = std::find_if(commitments.begin(), commitments.end(),
+                                            [&](const CommitmentWire& commitment) {
+                                                return commitment.tensor_id == descriptor.id;
+                                            });
+            if (found == commitments.end()) {
+                if (error) *error = "proof omits a tensor from the public shape contract: " + descriptor.id;
+                return false;
+            }
+        }
+    }
+    for (const auto& operation : context.operations) {
+        std::uint32_t aligned_domain = 0U;
+        for (const auto& ref : operation.tensor_refs) {
+            const TensorDescriptor* descriptor = find_tensor_descriptor(
+                context.tensor_descriptors, ref);
+            if (descriptor == nullptr) continue;
+            if (aligned_domain == 0U) aligned_domain = descriptor->domain_size;
+            if (operation.kind != RelationKind::SparseRoute &&
+                descriptor->domain_size != aligned_domain) {
+                if (error) *error = "operation tensor views violate authenticated MLE padding/domain contract";
+                return false;
+            }
+        }
+        for (const auto& primitive : operation.primitives) {
+            const std::array<std::uint32_t, 3U> expected = {
+                primitive.matmul_shape.a_size(), primitive.matmul_shape.b_size(),
+                primitive.matmul_shape.c_size()};
+            for (std::size_t i = 0U; i < primitive.tensor_refs.size(); ++i) {
+                const TensorDescriptor* descriptor = find_tensor_descriptor(
+                    context.tensor_descriptors, primitive.tensor_refs[i]);
+                if (descriptor == nullptr || descriptor->domain_size != expected[i]) {
+                    if (error) *error = "zkMatMul primitive shape is not bound to public tensor descriptor";
+                    return false;
+                }
+            }
+        }
+    }
+    return true;
+}
+
+inline bool verify_model_registry(
+    const std::vector<CommitmentWire>& commitments,
+    const std::vector<CommitmentWire>& registered_model_commitments,
+    std::string* error = nullptr) {
+    std::set<std::string> ids;
+    for (const auto& registered : registered_model_commitments) {
+        if (registered.visibility != 2U || registered.tensor_id.empty() ||
+            !ids.insert(registered.tensor_id).second) {
+            if (error) *error = "authenticated model registry contains duplicate/non-model commitment";
+            return false;
+        }
+        const auto found = std::find_if(commitments.begin(), commitments.end(),
+                                       [&](const CommitmentWire& commitment) {
+                                           return commitment.tensor_id == registered.tensor_id;
+                                       });
+        if (found == commitments.end() || !commitment_equal(*found, registered)) {
+            if (error) *error = "model tensor commitment does not match authenticated registry/VK map";
+            return false;
+        }
+    }
+    for (const auto& commitment : commitments) {
+        if (commitment.visibility != 2U) continue;
+        const auto found = std::find_if(registered_model_commitments.begin(),
+                                       registered_model_commitments.end(),
+                                       [&](const CommitmentWire& registered) {
+                                           return registered.tensor_id == commitment.tensor_id;
+                                       });
+        if (found == registered_model_commitments.end()) {
+            if (error) *error = "model tensor is not present in authenticated registry/VK map";
+            return false;
+        }
+    }
+    return true;
+}
+
+inline bool verify_hiding_records(
+    const std::vector<CommitmentWire>& commitments,
+    const std::vector<zkdl::CommitmentRecord>& records,
+    std::string* error = nullptr) {
+    std::set<std::string> labels;
+    for (const auto& record : records) {
+        if (!zkdl::CpuHidingCommitment::verify_record(record, error) ||
+            record.label.empty() || !labels.insert(record.label).second) {
+            if (error && error->empty()) *error = "invalid/duplicate native hiding commitment record";
+            return false;
+        }
+        const auto found = std::find_if(commitments.begin(), commitments.end(),
+                                       [&](const CommitmentWire& commitment) {
+                                           return commitment.tensor_id == record.label;
+                                       });
+        const std::uint32_t expected_record_visibility =
+            found == commitments.end() ? 0U : (found->visibility == 2U ? 1U :
+                                               (found->visibility == 3U ? 2U : 0U));
+        if (found == commitments.end() || expected_record_visibility == 0U ||
+            record.visibility != expected_record_visibility ||
+            !zkdl::cpu_g1_equal(zkdl::cpu_g1_from_native(record.value_commitment),
+                                zkdl::cpu_g1_from_native(found->commitment))) {
+            if (error) *error = "hiding commitment record is not bound to the canonical tensor commitment";
+            return false;
+        }
+    }
+    for (const auto& commitment : commitments) {
+        if (commitment.visibility == 1U) continue;
+        if (!labels.count(commitment.tensor_id)) {
+            if (error) *error = "private/model tensor is missing a native hiding commitment record";
+            return false;
+        }
+    }
+    return true;
+}
+
+inline bool verify_public_tensor_values(
+    const VerifierContext& context, const std::vector<CommitmentWire>& commitments,
+    std::string* error = nullptr) {
+    for (const auto& entry : context.public_tensor_values) {
+        const auto found = std::find_if(commitments.begin(), commitments.end(),
+                                       [&](const CommitmentWire& commitment) {
+                                           return commitment.tensor_id == entry.first;
+                                       });
+        const bool canonical = std::all_of(entry.second.begin(), entry.second.end(),
+                                           [](const FrWire& value) {
+                                               return zkdl::fr_canonical(value);
+                                           });
+        if (found == commitments.end() || found->visibility != 1U ||
+            entry.second.size() != found->domain_size || !canonical) {
+            if (error) *error = "public tensor value material does not match commitment domain";
+            return false;
+        }
+        if (found->domain_size > context.generators.size()) {
+            if (error) *error = "public tensor commitment exceeds authenticated generator domain";
+            return false;
+        }
+        const std::vector<zkdl::CpuG1Point> generators(
+            context.generators.begin(), context.generators.begin() + found->domain_size);
+        const G1Jacobian_t expected = zkdl::cpu_g1_to_native(
+            zkdl::cpu_g1_sum(generators, entry.second));
+        if (!zkdl::cpu_g1_equal(zkdl::cpu_g1_from_native(found->commitment),
+                                zkdl::cpu_g1_from_native(expected))) {
+            if (error) *error = "public tensor commitment is not graph/table-derived";
+            return false;
+        }
+    }
+    return true;
+}
+
+inline bool primitive_tensor_values(
+    const std::map<std::string, const TensorWitness*>& tensor_map,
+    const std::string& id, std::uint64_t expected_size,
+    std::vector<Fr_t>& values, std::string* error) {
+    const auto found = tensor_map.find(id);
+    if (found == tensor_map.end() || found->second == nullptr ||
+        expected_size > std::numeric_limits<std::uint32_t>::max() ||
+        found->second->domain_size != expected_size ||
+        found->second->values.size() != expected_size) {
+        if (error) *error = "zkMatMul primitive tensor shape/value mismatch: " + id;
+        return false;
+    }
+    values.clear();
+    values.reserve(found->second->values.size());
+    for (const auto& value : found->second->values) values.push_back(zkdl::fr_value(value));
+    return true;
+}
+
+inline bool prove_matmul_primitive(
+    const PrimitiveDescriptor& descriptor,
+    const std::map<std::string, const TensorWitness*>& tensor_map,
+    const std::vector<zkdl::CpuG1Point>& generators,
+    std::vector<byte>& encoded, std::string* error) {
+    if (descriptor.kind != 1U || descriptor.tensor_refs.size() != 3U) {
+        if (error) *error = "unsupported native relation primitive";
+        return false;
+    }
+    const zkdl::MatMulShape& shape = descriptor.matmul_shape;
+    std::string shape_error;
+    if (!shape.valid(&shape_error)) {
+        if (error) *error = "zkMatMul primitive shape rejected: " + shape_error;
+        return false;
+    }
+    const std::uint32_t generator_count = std::max(shape.n, std::max(shape.k, 1U));
+    if (generators.size() < generator_count) {
+        if (error) *error = "authenticated SRS generator domain is too small for zkMatMul";
+        return false;
+    }
+    std::vector<Fr_t> a_values, b_values, c_values;
+    if (!primitive_tensor_values(tensor_map, descriptor.tensor_refs[0], shape.a_size(),
+                                 a_values, error) ||
+        !primitive_tensor_values(tensor_map, descriptor.tensor_refs[1], shape.b_size(),
+                                 b_values, error) ||
+        !primitive_tensor_values(tensor_map, descriptor.tensor_refs[2], shape.c_size(),
+                                 c_values, error)) return false;
+    std::vector<G1Jacobian_t> native_generators;
+    native_generators.reserve(generator_count);
+    for (std::uint32_t i = 0U; i < generator_count; ++i)
+        native_generators.push_back(zkdl::cpu_g1_to_native(generators[i]));
+    try {
+        Commitment gen_a(shape.n, native_generators.data());
+        Commitment gen_b(shape.k, native_generators.data());
+        Commitment gen_c(shape.k, native_generators.data());
+        FrTensor a(shape.a_size(), a_values.data());
+        FrTensor b(shape.b_size(), b_values.data());
+        FrTensor c(shape.c_size(), c_values.data());
+        const zkdl::MatMulProof proof = zkdl::matmul_prove(
+            a, b, c, shape, gen_a, gen_b, gen_c);
+        encoded = proof.serialize();
+        if (encoded.empty()) {
+            if (error) *error = "zkMatMul primitive prover returned an empty proof";
+            return false;
+        }
+        return true;
+    } catch (const std::exception& exception) {
+        if (error) *error = std::string("zkMatMul primitive prover failed: ") + exception.what();
+        return false;
+    }
+}
+
+inline bool verify_matmul_primitive(
+    const PrimitiveDescriptor& descriptor, const std::vector<byte>& encoded,
+    const std::vector<zkdl::CpuG1Point>& generators, std::string* error) {
+    if (descriptor.kind != 1U || descriptor.tensor_refs.size() != 3U || encoded.empty()) {
+        if (error) *error = "invalid native relation primitive proof";
+        return false;
+    }
+    const zkdl::MatMulShape& shape = descriptor.matmul_shape;
+    std::string shape_error;
+    if (!shape.valid(&shape_error)) {
+        if (error) *error = "zkMatMul primitive shape rejected: " + shape_error;
+        return false;
+    }
+    const std::uint32_t generator_count = std::max(shape.n, std::max(shape.k, 1U));
+    if (generators.size() < generator_count) {
+        if (error) *error = "authenticated SRS generator domain is too small for zkMatMul";
+        return false;
+    }
+    zkdl::MatMulProof proof;
+    if (!zkdl::MatMulProof::deserialize(encoded, proof, error)) return false;
+    if (proof.shape != shape || proof.c_binding_mode != zkdl::MatMulProof::kCCommitment) {
+        if (error) *error = "zkMatMul primitive proof shape/binding mismatch";
+        return false;
+    }
+    zkdl::MatMulCpuCommitmentView a_view, b_view, c_view;
+    a_view.generators.assign(generators.begin(), generators.begin() + shape.n);
+    b_view.generators.assign(generators.begin(), generators.begin() + shape.k);
+    c_view.generators.assign(generators.begin(), generators.begin() + shape.k);
+    a_view.commitments.reserve(proof.commitment_a.size());
+    b_view.commitments.reserve(proof.commitment_b.size());
+    c_view.commitments.reserve(proof.commitment_c.size());
+    for (const auto& point : proof.commitment_a) a_view.commitments.push_back(zkdl::cpu_g1_from_native(point));
+    for (const auto& point : proof.commitment_b) b_view.commitments.push_back(zkdl::cpu_g1_from_native(point));
+    for (const auto& point : proof.commitment_c) c_view.commitments.push_back(zkdl::cpu_g1_from_native(point));
+    return zkdl::matmul_verify_cpu(proof, shape, a_view, b_view, &c_view, nullptr, error);
+}
+
+inline bool primitive_commitment_index(
+    const std::vector<CommitmentWire>& commitments, const std::string& tensor_id,
+    std::uint32_t& index, std::string* error) {
+    const auto found = std::find_if(commitments.begin(), commitments.end(),
+                                    [&](const CommitmentWire& value) {
+                                        return value.tensor_id == tensor_id;
+                                    });
+    if (found == commitments.end()) {
+        if (error) *error = "zkMatMul canonical commitment is missing: " + tensor_id;
+        return false;
+    }
+    index = static_cast<std::uint32_t>(std::distance(commitments.begin(), found));
+    return true;
+}
+
+inline std::vector<FrWire> primitive_opening_point(
+    const zkdl::EvaluationOpeningProof& opening) {
+    std::vector<FrWire> point;
+    point.reserve(opening.inner_point.size() + opening.outer_point.size());
+    for (const auto& value : opening.inner_point) point.push_back(zkdl::fr_wire(value));
+    for (const auto& value : opening.outer_point) point.push_back(zkdl::fr_wire(value));
+    return point;
+}
+
+inline bool prove_primitive_binding(
+    const PrimitiveDescriptor& descriptor, const std::vector<byte>& encoded,
+    const std::map<std::string, const TensorWitness*>& tensor_map,
+    const std::vector<zkdl::CpuG1Point>& generators,
+    const std::vector<CommitmentWire>& commitments,
+    OperationProof::PrimitiveBinding& binding, std::string* error) {
+    zkdl::MatMulProof primitive;
+    if (!zkdl::MatMulProof::deserialize(encoded, primitive, error) ||
+        primitive.shape != descriptor.matmul_shape ||
+        primitive.c_binding_mode != zkdl::MatMulProof::kCCommitment ||
+        !primitive.has_c_opening) {
+        if (error && error->empty()) *error = "zkMatMul primitive has no canonical C opening";
+        return false;
+    }
+    const std::uint32_t a_domain = descriptor.matmul_shape.a_size();
+    const std::uint32_t b_domain = descriptor.matmul_shape.b_size();
+    const std::uint32_t c_domain = descriptor.matmul_shape.c_size();
+    const auto a = tensor_map.find(descriptor.tensor_refs[0]);
+    const auto b = tensor_map.find(descriptor.tensor_refs[1]);
+    const auto c = tensor_map.find(descriptor.tensor_refs[2]);
+    if (a == tensor_map.end() || b == tensor_map.end() || c == tensor_map.end() ||
+        a->second == nullptr || b->second == nullptr || c->second == nullptr ||
+        a->second->domain_size != a_domain || b->second->domain_size != b_domain ||
+        c->second->domain_size != c_domain || generators.size() <
+            std::max(a_domain, std::max(b_domain, c_domain))) {
+        if (error) *error = "zkMatMul canonical binding tensor shape is invalid";
+        return false;
+    }
+    if (!primitive_commitment_index(commitments, descriptor.tensor_refs[0],
+                                    binding.a_commitment_index, error) ||
+        !primitive_commitment_index(commitments, descriptor.tensor_refs[1],
+                                    binding.b_commitment_index, error) ||
+        !primitive_commitment_index(commitments, descriptor.tensor_refs[2],
+                                    binding.c_commitment_index, error)) return false;
+    const std::vector<FrWire> point_a = primitive_opening_point(primitive.opening_a);
+    const std::vector<FrWire> point_b = primitive_opening_point(primitive.opening_b);
+    const std::vector<FrWire> point_c = primitive_opening_point(primitive.opening_c);
+    binding.opening_a = zkdl::cpu_open(
+        std::vector<zkdl::CpuG1Point>(generators.begin(), generators.begin() + a_domain),
+        a->second->values, point_a);
+    binding.opening_b = zkdl::cpu_open(
+        std::vector<zkdl::CpuG1Point>(generators.begin(), generators.begin() + b_domain),
+        b->second->values, point_b);
+    binding.opening_c = zkdl::cpu_open(
+        std::vector<zkdl::CpuG1Point>(generators.begin(), generators.begin() + c_domain),
+        c->second->values, point_c);
+    binding.opening_a.commitment_index = binding.a_commitment_index;
+    binding.opening_b.commitment_index = binding.b_commitment_index;
+    binding.opening_c.commitment_index = binding.c_commitment_index;
+    if (!same_wire(zkdl::fr_wire(binding.opening_a.value),
+                   zkdl::fr_wire(primitive.opening_a.value)) ||
+        !same_wire(zkdl::fr_wire(binding.opening_b.value),
+                   zkdl::fr_wire(primitive.opening_b.value)) ||
+        !same_wire(zkdl::fr_wire(binding.opening_c.value),
+                   zkdl::fr_wire(primitive.opening_c.value))) {
+        if (error) *error = "zkMatMul row commitment opening is not bound to canonical tensor opening";
+        return false;
+    }
+    return true;
+}
+
+inline bool verify_primitive_binding(
+    const PrimitiveDescriptor& descriptor, const std::vector<byte>& encoded,
+    const OperationProof::PrimitiveBinding& binding,
+    const std::vector<CommitmentWire>& commitments,
+    const std::vector<zkdl::CpuG1Point>& generators, std::string* error) {
+    zkdl::MatMulProof primitive;
+    if (!zkdl::MatMulProof::deserialize(encoded, primitive, error) ||
+        primitive.shape != descriptor.matmul_shape ||
+        primitive.c_binding_mode != zkdl::MatMulProof::kCCommitment ||
+        !primitive.has_c_opening) {
+        if (error && error->empty()) *error = "zkMatMul primitive binding mode is not canonical";
+        return false;
+    }
+    const std::array<std::uint32_t, 3U> indices = {
+        binding.a_commitment_index, binding.b_commitment_index, binding.c_commitment_index};
+    const std::array<std::uint32_t, 3U> domains = {
+        descriptor.matmul_shape.a_size(), descriptor.matmul_shape.b_size(), descriptor.matmul_shape.c_size()};
+    const std::array<const zkdl::EvaluationOpeningProof*, 3U> openings = {
+        &binding.opening_a, &binding.opening_b, &binding.opening_c};
+    const std::array<const zkdl::EvaluationOpeningProof*, 3U> primitive_openings = {
+        &primitive.opening_a, &primitive.opening_b, &primitive.opening_c};
+    for (std::size_t i = 0U; i < indices.size(); ++i) {
+        if (indices[i] >= commitments.size() ||
+            commitments[indices[i]].tensor_id != descriptor.tensor_refs[i] ||
+            commitments[indices[i]].domain_size != domains[i] ||
+            openings[i]->commitment_index != indices[i] ||
+            openings[i]->generator_size != domains[i] || !openings[i]->outer_point.empty() ||
+            openings[i]->inner_point.size() != primitive_openings[i]->inner_point.size() +
+                                               primitive_openings[i]->outer_point.size()) {
+            if (error) *error = "zkMatMul canonical commitment binding metadata mismatch";
+            return false;
+        }
+        const std::vector<FrWire> point = primitive_opening_point(*primitive_openings[i]);
+        for (std::size_t j = 0U; j < point.size(); ++j)
+            if (!same_wire(zkdl::fr_wire(openings[i]->inner_point[j]), point[j])) {
+                if (error) *error = "zkMatMul canonical binding point differs from row opening";
+                return false;
+            }
+        if (!zkdl::cpu_verify_opening(*openings[i],
+                                      zkdl::cpu_g1_from_native(commitments[indices[i]].commitment),
+                                      error) ||
+            !same_wire(zkdl::fr_wire(openings[i]->value),
+                       zkdl::fr_wire(primitive_openings[i]->value))) {
+            if (error && error->empty()) *error = "zkMatMul canonical row reduction opening failed";
+            return false;
+        }
+    }
+    return true;
+}
+
+inline bool route_tensor_shapes_valid(
+    const OperationDescriptor& descriptor,
+    const std::map<std::string, const TensorWitness*>& tensor_map,
+    const TensorWitness*& source, const TensorWitness*& output,
+    std::string* error) {
+    if (descriptor.kind != RelationKind::SparseRoute ||
+        descriptor.selector_edge_domain == 0U || descriptor.selector_node_domain == 0U ||
+        descriptor.selector_feature_domain == 0U ||
+        descriptor.selector_src.size() != descriptor.selector_edge_domain ||
+        descriptor.selector_dst.size() != descriptor.selector_edge_domain ||
+        descriptor.selector_active.size() != descriptor.selector_edge_domain ||
+        descriptor.selector_source_ref.empty() || descriptor.selector_output_ref.empty()) {
+        if (error) *error = "sparse route descriptor is incomplete";
+        return false;
+    }
+    const auto source_it = tensor_map.find(descriptor.selector_source_ref);
+    const auto output_it = tensor_map.find(descriptor.selector_output_ref);
+    if (source_it == tensor_map.end() || output_it == tensor_map.end() ||
+        source_it->second == nullptr || output_it->second == nullptr) {
+        if (error) *error = "sparse route canonical source/output tensor is missing";
+        return false;
+    }
+    const std::uint64_t source_size = static_cast<std::uint64_t>(descriptor.selector_node_domain) *
+                                      descriptor.selector_feature_domain;
+    const std::uint64_t output_size = static_cast<std::uint64_t>(descriptor.selector_edge_domain) *
+                                      descriptor.selector_feature_domain;
+    if (source_size > std::numeric_limits<std::uint32_t>::max() ||
+        output_size > std::numeric_limits<std::uint32_t>::max() ||
+        source_it->second->domain_size != source_size ||
+        output_it->second->domain_size != output_size) {
+        if (error) *error = "sparse route source/output domains do not match public selector shape";
+        return false;
+    }
+    for (std::uint32_t edge = 0U; edge < descriptor.selector_edge_domain; ++edge)
+        if (descriptor.selector_active[edge] > 1U ||
+            (!descriptor.selector_active[edge] &&
+             (descriptor.selector_src[edge] != 0U || descriptor.selector_dst[edge] != 0U)) ||
+            (descriptor.selector_active[edge] &&
+             (descriptor.selector_src[edge] >= descriptor.selector_node_domain ||
+              descriptor.selector_dst[edge] >= descriptor.selector_node_domain))) {
+            if (error) *error = "sparse route public src/dst index is out of bounds";
+            return false;
+        }
+    source = source_it->second;
+    output = output_it->second;
+    return true;
+}
+
+inline std::vector<FrWire> route_partial_feature(
+    const std::vector<FrWire>& values, std::uint32_t outer_domain,
+    std::uint32_t feature_domain, const std::vector<FrWire>& feature_point) {
+    if (values.size() != static_cast<std::uint64_t>(outer_domain) * feature_domain ||
+        feature_domain != (std::uint32_t(1U) << feature_point.size()))
+        throw std::invalid_argument("sparse route feature MLE shape mismatch");
+    std::vector<FrWire> partial(outer_domain);
+    for (std::uint32_t outer = 0U; outer < outer_domain; ++outer) {
+        std::vector<FrWire> block(
+            values.begin() + static_cast<std::ptrdiff_t>(outer * feature_domain),
+            values.begin() + static_cast<std::ptrdiff_t>((outer + 1U) * feature_domain));
+        for (const auto& challenge : feature_point) fold_values(block, challenge);
+        partial[outer] = block.front();
+    }
+    return partial;
+}
+
+inline std::vector<FrWire> public_route_selector_mle(
+    const OperationDescriptor& descriptor, const std::vector<FrWire>& edge_point,
+    bool destination = false) {
+    const std::uint32_t edge_domain = descriptor.selector_edge_domain;
+    const std::uint32_t node_domain = descriptor.selector_node_domain;
+    if (edge_domain != (std::uint32_t(1U) << edge_point.size()) ||
+        descriptor.selector_src.size() != edge_domain) {
+        throw std::invalid_argument("public sparse selector MLE shape mismatch");
+    }
+    std::vector<FrWire> selector(node_domain);
+    const FrWire one = zkdl::fr_from_u32(1U);
+    const FrWire zero{};
+    // This is the equality-MLE construction itself, not a dense one-hot
+    // matrix multiplication: each public node coordinate is evaluated by
+    // folding its edge indicator against the verifier's FS point.
+    for (std::uint32_t node = 0U; node < node_domain; ++node) {
+        std::vector<FrWire> indicator(edge_domain, zero);
+        for (std::uint32_t edge = 0U; edge < edge_domain; ++edge)
+            if (descriptor.selector_active[edge] &&
+                (destination ? descriptor.selector_dst[edge] : descriptor.selector_src[edge]) == node)
+                indicator[edge] = one;
+        for (const auto& challenge : edge_point) fold_values(indicator, challenge);
+        selector[node] = indicator.front();
+    }
+    return selector;
+}
+
+inline bool route_commitment_index(
+    const std::vector<CommitmentWire>& commitments, const std::string& tensor_id,
+    std::uint32_t& index, std::string* error) {
+    const auto found = std::find_if(commitments.begin(), commitments.end(),
+                                    [&](const CommitmentWire& commitment) {
+                                        return commitment.tensor_id == tensor_id;
+                                    });
+    if (found == commitments.end()) {
+        if (error) *error = "sparse route commitment is missing: " + tensor_id;
+        return false;
+    }
+    index = static_cast<std::uint32_t>(std::distance(commitments.begin(), found));
+    return true;
+}
+
+inline bool prove_sparse_route(
+    const OperationDescriptor& descriptor,
+    const std::map<std::string, const TensorWitness*>& tensor_map,
+    const std::vector<zkdl::CpuG1Point>& generators,
+    const std::vector<CommitmentWire>& commitments,
+    zkdl::Transcript& transcript, SparseRouteProof& route,
+    std::string* error) {
+    const TensorWitness* source = nullptr;
+    const TensorWitness* output = nullptr;
+    if (!route_tensor_shapes_valid(descriptor, tensor_map, source, output, error)) return false;
+    const std::uint32_t edge_bits = log2_exact(descriptor.selector_edge_domain);
+    const std::uint32_t node_bits = log2_exact(descriptor.selector_node_domain);
+    const std::uint32_t feature_bits = log2_exact(descriptor.selector_feature_domain);
+    if (edge_bits == std::numeric_limits<std::uint32_t>::max() ||
+        node_bits == std::numeric_limits<std::uint32_t>::max() ||
+        feature_bits == std::numeric_limits<std::uint32_t>::max() ||
+        generators.size() < std::max(source->domain_size, output->domain_size)) {
+        if (error) *error = "sparse route has no authenticated generator domain";
+        return false;
+    }
+    route = SparseRouteProof{};
+    route.edge_domain = descriptor.selector_edge_domain;
+    route.node_domain = descriptor.selector_node_domain;
+    route.feature_domain = descriptor.selector_feature_domain;
+    route.edge_point.reserve(edge_bits);
+    route.feature_point.reserve(feature_bits);
+    for (std::uint32_t bit = 0U; bit < edge_bits; ++bit)
+        route.edge_point.push_back(transcript.challenge(
+            "gat.route." + descriptor.id + ".edge." + std::to_string(bit)));
+    for (std::uint32_t bit = 0U; bit < feature_bits; ++bit)
+        route.feature_point.push_back(transcript.challenge(
+            "gat.route." + descriptor.id + ".feature." + std::to_string(bit)));
+    const std::vector<FrWire> edge_point = [&]() {
+        std::vector<FrWire> out;
+        out.reserve(route.edge_point.size());
+        for (const auto& value : route.edge_point) out.push_back(zkdl::fr_wire(value));
+        return out;
+    }();
+    const std::vector<FrWire> feature_point = [&]() {
+        std::vector<FrWire> out;
+        out.reserve(route.feature_point.size());
+        for (const auto& value : route.feature_point) out.push_back(zkdl::fr_wire(value));
+        return out;
+    }();
+    std::vector<FrWire> source_by_node = route_partial_feature(
+        source->values, descriptor.selector_node_domain,
+        descriptor.selector_feature_domain, feature_point);
+    const std::vector<FrWire> output_by_edge = route_partial_feature(
+        output->values, descriptor.selector_edge_domain,
+        descriptor.selector_feature_domain, feature_point);
+    std::vector<FrWire> output_eval_values = output_by_edge;
+    for (const auto& challenge : edge_point) fold_values(output_eval_values, challenge);
+    route.output_claim = zkdl::fr_value(output_eval_values.front());
+    const std::vector<FrWire> selector_by_node = public_route_selector_mle(descriptor, edge_point);
+    FrWire source_sum{};
+    for (std::uint32_t node = 0U; node < descriptor.selector_node_domain; ++node)
+        source_sum = zkdl::fr_add(source_sum, zkdl::fr_mul(selector_by_node[node], source_by_node[node]));
+    route.source_sum_claim = zkdl::fr_value(source_sum);
+    std::vector<FrWire> destination_by_node = public_route_selector_mle(
+        descriptor, edge_point, true);
+    if (!same_wire(zkdl::fr_wire(route.output_claim), source_sum)) {
+        if (error) *error = "sparse route witness does not satisfy public selector MLE claim";
+        return false;
+    }
+    route.sumcheck.label = "gat.route." + descriptor.id;
+    route.sumcheck.degree = 2U;
+    std::vector<FrWire> current_selector = selector_by_node;
+    std::vector<FrWire> current_source = source_by_node;
+    for (std::uint32_t round = 0U; round < node_bits; ++round) {
+        zkdl::SumcheckRound message;
+        const std::size_t next_size = current_selector.size() / 2U;
+        for (std::uint32_t evaluation = 0U; evaluation <= 2U; ++evaluation) {
+            const FrWire x = zkdl::fr_from_u32(evaluation);
+            FrWire total{};
+            for (std::size_t row = 0U; row < next_size; ++row) {
+                const FrWire selector_value = zkdl::fr_add(
+                    current_selector[2U * row], zkdl::fr_mul(
+                        x, zkdl::fr_sub(current_selector[2U * row + 1U],
+                                       current_selector[2U * row])));
+                const FrWire source_value = zkdl::fr_add(
+                    current_source[2U * row], zkdl::fr_mul(
+                        x, zkdl::fr_sub(current_source[2U * row + 1U],
+                                       current_source[2U * row])));
+                total = zkdl::fr_add(total, zkdl::fr_mul(selector_value, source_value));
+            }
+            message.evaluations.push_back(zkdl::fr_value(total));
+        }
+        route.sumcheck.rounds.push_back(message);
+        transcript.absorb_fr(route.sumcheck.label + ".round", message.evaluations);
+        const Fr_t challenge = transcript.challenge(route.sumcheck.label + ".challenge");
+        route.node_point.push_back(challenge);
+        fold_values(current_selector, zkdl::fr_wire(challenge));
+        fold_values(current_source, zkdl::fr_wire(challenge));
+    }
+    route.sumcheck.terminal_claims = {
+        zkdl::fr_value(current_selector.front()), zkdl::fr_value(current_source.front())};
+    route.sumcheck.final_claim = zkdl::fr_value(zkdl::fr_mul(
+        current_selector.front(), current_source.front()));
+    for (const auto& challenge : route.node_point)
+        fold_values(destination_by_node, zkdl::fr_wire(challenge));
+    route.dst_selector_claim = zkdl::fr_value(destination_by_node.front());
+    if (route.node_point.size() != node_bits) {
+        if (error) *error = "sparse route prover lost node FS challenges";
+        return false;
+    }
+    if (!route_commitment_index(commitments, descriptor.selector_source_ref,
+                                route.source_commitment_index, error) ||
+        !route_commitment_index(commitments, descriptor.selector_output_ref,
+                                route.output_commitment_index, error)) return false;
+    std::vector<FrWire> source_point = feature_point;
+    for (const auto& challenge : route.node_point) source_point.push_back(zkdl::fr_wire(challenge));
+    std::vector<FrWire> output_point = feature_point;
+    for (const auto& challenge : route.edge_point) output_point.push_back(zkdl::fr_wire(challenge));
+    route.source_opening = zkdl::cpu_open(
+        std::vector<zkdl::CpuG1Point>(generators.begin(), generators.begin() + source->domain_size),
+        source->values, source_point);
+    route.source_opening.commitment_index = route.source_commitment_index;
+    route.output_opening = zkdl::cpu_open(
+        std::vector<zkdl::CpuG1Point>(generators.begin(), generators.begin() + output->domain_size),
+        output->values, output_point);
+    route.output_opening.commitment_index = route.output_commitment_index;
+    std::vector<byte> source_opening_bytes, output_opening_bytes;
+    zkdl::serialize_opening(route.source_opening, source_opening_bytes);
+    zkdl::serialize_opening(route.output_opening, output_opening_bytes);
+    transcript.absorb("gat.route." + descriptor.id + ".opening.source", source_opening_bytes);
+    transcript.absorb("gat.route." + descriptor.id + ".opening.output", output_opening_bytes);
+    route.rho = transcript.challenge("gat.fac4dnn.line8." + descriptor.id + ".rho");
+    route.compressed_claim = zkdl::fr_value(zkdl::fr_add(
+        zkdl::fr_wire(route.output_claim),
+        zkdl::fr_add(
+            zkdl::fr_mul(zkdl::fr_wire(route.rho), zkdl::fr_wire(route.source_sum_claim)),
+            zkdl::fr_mul(zkdl::fr_mul(zkdl::fr_wire(route.rho), zkdl::fr_wire(route.rho)),
+                          zkdl::fr_wire(route.dst_selector_claim)))));
+    transcript.absorb_fr("gat.fac4dnn.line8." + descriptor.id + ".eq30",
+                         {route.compressed_claim});
+    return true;
+}
+
+inline bool verify_sparse_route(
+    const OperationDescriptor& descriptor,
+    const std::vector<CommitmentWire>& commitments,
+    const std::vector<zkdl::CpuG1Point>& generators,
+    zkdl::Transcript& transcript, const SparseRouteProof& route,
+    std::string* error) {
+    if (descriptor.kind != RelationKind::SparseRoute ||
+        route.edge_domain != descriptor.selector_edge_domain ||
+        route.node_domain != descriptor.selector_node_domain ||
+        route.feature_domain != descriptor.selector_feature_domain) {
+        if (error) *error = "sparse route proof/descriptor domain mismatch";
+        return false;
+    }
+    const std::uint32_t edge_bits = log2_exact(route.edge_domain);
+    const std::uint32_t node_bits = log2_exact(route.node_domain);
+    const std::uint32_t feature_bits = log2_exact(route.feature_domain);
+    if (edge_bits == std::numeric_limits<std::uint32_t>::max() ||
+        node_bits == std::numeric_limits<std::uint32_t>::max() ||
+        feature_bits == std::numeric_limits<std::uint32_t>::max() ||
+        route.edge_point.size() != edge_bits || route.node_point.size() != node_bits ||
+        route.feature_point.size() != feature_bits ||
+        route.sumcheck.label != "gat.route." + descriptor.id ||
+        route.sumcheck.degree != 2U || route.sumcheck.rounds.size() != node_bits ||
+        route.sumcheck.terminal_claims.size() != 2U ||
+        route.source_commitment_index >= commitments.size() ||
+        route.output_commitment_index >= commitments.size() ||
+        commitments[route.source_commitment_index].tensor_id != descriptor.selector_source_ref ||
+        commitments[route.output_commitment_index].tensor_id != descriptor.selector_output_ref ||
+        commitments[route.source_commitment_index].domain_size !=
+            static_cast<std::uint64_t>(route.node_domain) * route.feature_domain ||
+        commitments[route.output_commitment_index].domain_size !=
+            static_cast<std::uint64_t>(route.edge_domain) * route.feature_domain ||
+        generators.size() < std::max(commitments[route.source_commitment_index].domain_size,
+                                     commitments[route.output_commitment_index].domain_size)) {
+        if (error) *error = "sparse route proof shape or commitment reference is invalid";
+        return false;
+    }
+    for (std::uint32_t bit = 0U; bit < edge_bits; ++bit) {
+        const Fr_t expected = transcript.challenge(
+            "gat.route." + descriptor.id + ".edge." + std::to_string(bit));
+        if (fr_compare_mixed(expected, route.edge_point[bit]) != 0) {
+            if (error) *error = "sparse route edge challenge is not transcript-bound";
+            return false;
+        }
+    }
+    for (std::uint32_t bit = 0U; bit < feature_bits; ++bit) {
+        const Fr_t expected = transcript.challenge(
+            "gat.route." + descriptor.id + ".feature." + std::to_string(bit));
+        if (fr_compare_mixed(expected, route.feature_point[bit]) != 0) {
+            if (error) *error = "sparse route feature challenge is not transcript-bound";
+            return false;
+        }
+    }
+    std::vector<Fr_t> node_challenges;
+    if (!zkdl::verify_sumcheck(route.sumcheck, route.output_claim, transcript,
+                               &node_challenges, error) ||
+        node_challenges.size() != route.node_point.size()) return false;
+    for (size_t i = 0U; i < node_challenges.size(); ++i)
+        if (fr_compare_mixed(node_challenges[i], route.node_point[i]) != 0) {
+            if (error) *error = "sparse route node challenge is not transcript-bound";
+            return false;
+        }
+    std::vector<FrWire> expected_source_point;
+    expected_source_point.reserve(feature_bits + node_bits);
+    for (const auto& value : route.feature_point) expected_source_point.push_back(zkdl::fr_wire(value));
+    for (const auto& value : route.node_point) expected_source_point.push_back(zkdl::fr_wire(value));
+    std::vector<FrWire> expected_output_point;
+    expected_output_point.reserve(feature_bits + edge_bits);
+    for (const auto& value : route.feature_point) expected_output_point.push_back(zkdl::fr_wire(value));
+    for (const auto& value : route.edge_point) expected_output_point.push_back(zkdl::fr_wire(value));
+    const auto& source_commitment = commitments[route.source_commitment_index];
+    const auto& output_commitment = commitments[route.output_commitment_index];
+    if (route.source_opening.commitment_index != route.source_commitment_index ||
+        route.output_opening.commitment_index != route.output_commitment_index ||
+        route.source_opening.generator_size != source_commitment.domain_size ||
+        route.output_opening.generator_size != output_commitment.domain_size ||
+        route.source_opening.outer_point.size() != 0U ||
+        route.output_opening.outer_point.size() != 0U ||
+        route.source_opening.inner_point.size() != expected_source_point.size() ||
+        route.output_opening.inner_point.size() != expected_output_point.size()) {
+        if (error) *error = "sparse route opening metadata is not canonical";
+        return false;
+    }
+    for (size_t i = 0U; i < expected_source_point.size(); ++i)
+        if (fr_compare_mixed(route.source_opening.inner_point[i],
+                             expected_source_point[i]) != 0) {
+            if (error) *error = "sparse route source opening point mismatch";
+            return false;
+        }
+    for (size_t i = 0U; i < expected_output_point.size(); ++i)
+        if (fr_compare_mixed(route.output_opening.inner_point[i],
+                             expected_output_point[i]) != 0) {
+            if (error) *error = "sparse route output opening point mismatch";
+            return false;
+        }
+    if (!zkdl::cpu_verify_opening(route.source_opening,
+                                  zkdl::cpu_g1_from_native(source_commitment.commitment), error) ||
+        !zkdl::cpu_verify_opening(route.output_opening,
+                                  zkdl::cpu_g1_from_native(output_commitment.commitment), error)) return false;
+    const std::vector<FrWire> edge_point = [&]() {
+        std::vector<FrWire> point;
+        point.reserve(route.edge_point.size());
+        for (const auto& value : route.edge_point) point.push_back(zkdl::fr_wire(value));
+        return point;
+    }();
+    std::vector<FrWire> selector_terminal = public_route_selector_mle(descriptor, edge_point);
+    for (const auto& challenge : route.node_point) fold_values(selector_terminal, zkdl::fr_wire(challenge));
+    std::vector<FrWire> destination_terminal = public_route_selector_mle(
+        descriptor, edge_point, true);
+    for (const auto& challenge : route.node_point)
+        fold_values(destination_terminal, zkdl::fr_wire(challenge));
+    if (fr_compare_mixed(route.sumcheck.terminal_claims[0],
+                         selector_terminal.front()) != 0 ||
+        fr_compare_mixed(route.sumcheck.terminal_claims[1],
+                         route.source_opening.value) != 0 ||
+        fr_compare_mixed(route.sumcheck.final_claim,
+                         zkdl::fr_value(zkdl::fr_mul(
+                             zkdl::fr_wire(route.sumcheck.terminal_claims[0]),
+                             zkdl::fr_wire(route.sumcheck.terminal_claims[1])))) != 0 ||
+        fr_compare_mixed(route.sumcheck.final_claim,
+                         route.source_sum_claim) != 0 ||
+        fr_compare_mixed(route.dst_selector_claim, destination_terminal.front()) != 0 ||
+        fr_compare_mixed(route.output_opening.value, route.output_claim) != 0 ||
+        fr_compare_mixed(route.source_sum_claim, route.output_claim) != 0) {
+        if (error) *error = "sparse route terminal or Equation(30) claim failed";
+        return false;
+    }
+    std::vector<byte> source_opening_bytes, output_opening_bytes;
+    zkdl::serialize_opening(route.source_opening, source_opening_bytes);
+    zkdl::serialize_opening(route.output_opening, output_opening_bytes);
+    transcript.absorb("gat.route." + descriptor.id + ".opening.source", source_opening_bytes);
+    transcript.absorb("gat.route." + descriptor.id + ".opening.output", output_opening_bytes);
+    const Fr_t expected_rho = transcript.challenge(
+        "gat.fac4dnn.line8." + descriptor.id + ".rho");
+    if (fr_compare_mixed(expected_rho, route.rho) != 0) {
+        if (error) *error = "FAC4DNN Line8 rho is not transcript-bound";
+        return false;
+    }
+    const Fr_t expected_compressed = zkdl::fr_value(zkdl::fr_add(
+        zkdl::fr_wire(route.output_claim),
+        zkdl::fr_add(
+            zkdl::fr_mul(zkdl::fr_wire(route.rho), zkdl::fr_wire(route.source_sum_claim)),
+            zkdl::fr_mul(zkdl::fr_mul(zkdl::fr_wire(route.rho), zkdl::fr_wire(route.rho)),
+                          zkdl::fr_wire(route.dst_selector_claim)))));
+    if (fr_compare_mixed(expected_compressed, route.compressed_claim) != 0) {
+        if (error) *error = "FAC4DNN Line8 Equation(30) compression failed";
+        return false;
+    }
+    transcript.absorb_fr("gat.fac4dnn.line8." + descriptor.id + ".eq30",
+                         {route.compressed_claim});
+    return true;
+}
+
 inline bool prove(const ProverContext& context, Proof& proof, std::string* error = nullptr) {
     try {
         if (!descriptor_vector_valid(context.operations, error)) return false;
@@ -917,6 +2110,14 @@ inline bool prove(const ProverContext& context, Proof& proof, std::string* error
         }
         proof = Proof{};
         proof.statement = context.statement;
+        const std::array<byte, 32> expected_public_digest =
+            zkdl::sha256(proof.statement.public_output);
+        if (proof.statement.public_output.empty() ||
+            (proof.statement.public_output_digest != std::array<byte, 32>{} &&
+             proof.statement.public_output_digest != expected_public_digest)) {
+            throw std::invalid_argument("public Y digest is not canonical");
+        }
+        proof.statement.public_output_digest = expected_public_digest;
         for (const auto& tensor : context.tensors) {
             const std::uint32_t domain = tensor.domain_size;
             if (context.generators.size() < domain) {
@@ -932,12 +2133,43 @@ inline bool prove(const ProverContext& context, Proof& proof, std::string* error
             commitment.commitment = zkdl::cpu_g1_to_native(zkdl::cpu_g1_sum(generators, tensor.values));
             proof.commitments.push_back(commitment);
         }
+        if (!verify_model_registry(proof.commitments,
+                                   context.registered_model_commitments, error) ||
+            !verify_hiding_records(proof.commitments,
+                                   context.hiding_commitment_records, error)) return false;
         zkdl::Transcript transcript("zkdl-gat-relation-v1");
         absorb_statement(transcript, proof.statement, proof.commitments);
         for (const auto& operation : context.operations) {
             absorb_descriptor(transcript, operation);
             OperationProof operation_proof;
             operation_proof.descriptor = operation;
+            if (operation.primitives.size() > 8U) {
+                throw std::invalid_argument("relation operation carries too many native primitives");
+            }
+            if (operation.kind == RelationKind::SparseRoute) {
+                SparseRouteProof route;
+                if (!prove_sparse_route(operation, tensor_map, context.generators,
+                                        proof.commitments, transcript, route, error)) return false;
+                operation_proof.route_proof = route.serialize();
+                transcript.absorb("gat.relation.route", operation_proof.route_proof);
+            } else if (!operation_proof.route_proof.empty()) {
+                throw std::invalid_argument("non-route operation carries a sparse route proof");
+            }
+            for (const auto& primitive : operation.primitives) {
+                std::vector<byte> primitive_bytes;
+                if (!prove_matmul_primitive(primitive, tensor_map, context.generators,
+                                             primitive_bytes, error)) return false;
+                operation_proof.primitive_proofs.push_back(std::move(primitive_bytes));
+                transcript.absorb("gat.relation.primitive", operation_proof.primitive_proofs.back());
+                OperationProof::PrimitiveBinding binding;
+                if (!prove_primitive_binding(primitive,
+                                              operation_proof.primitive_proofs.back(), tensor_map,
+                                              context.generators, proof.commitments, binding, error)) return false;
+                operation_proof.primitive_bindings.push_back(std::move(binding));
+                std::vector<byte> binding_bytes;
+                append_primitive_binding(binding_bytes, operation_proof.primitive_bindings.back());
+                transcript.absorb("gat.relation.primitive.binding", binding_bytes);
+            }
             for (const auto& descriptor : operation.constraints) {
                 std::vector<const TensorWitness*> witnesses;
                 for (const auto& ref : operation.tensor_refs) {
@@ -1011,12 +2243,21 @@ inline bool verify(const Proof& proof, const VerifierContext& context,
         !same_bytes(proof.statement.ledger_digest, context.statement.ledger_digest) ||
         !same_bytes(proof.statement.srs_digest, context.statement.srs_digest) ||
         !same_bytes(proof.statement.registry_digest, context.statement.registry_digest) ||
+        proof.statement.public_output_digest != zkdl::sha256(proof.statement.public_output) ||
+        (context.statement.public_output_digest != std::array<byte, 32>{} &&
+         proof.statement.public_output_digest != context.statement.public_output_digest) ||
         proof.statement.public_output != context.statement.public_output) {
         if (error) *error = "relation proof statement/resource identity mismatch";
         return false;
     }
     if (!descriptor_vector_valid(context.operations, error) ||
         proof.operations.size() != context.operations.size() || proof.commitments.empty()) return false;
+    if (!verify_tensor_contract(context, proof.commitments, error) ||
+        !verify_model_registry(proof.commitments,
+                               context.registered_model_commitments, error) ||
+        !verify_hiding_records(proof.commitments,
+                               context.hiding_commitment_records, error) ||
+        !verify_public_tensor_values(context, proof.commitments, error)) return false;
     std::set<std::string> commitment_ids;
     for (const auto& commitment : proof.commitments) {
         if (commitment.tensor_id.empty() || !commitment_ids.insert(commitment.tensor_id).second ||
@@ -1057,6 +2298,43 @@ inline bool verify(const Proof& proof, const VerifierContext& context,
             return false;
         }
         absorb_descriptor(transcript, expected_operation);
+        if (operation.primitive_proofs.size() != expected_operation.primitives.size()) {
+            if (error) *error = "relation primitive proof count mismatch";
+            return false;
+        }
+        if (operation.primitive_bindings.size() != expected_operation.primitives.size()) {
+            if (error) *error = "relation primitive canonical binding count mismatch";
+            return false;
+        }
+        if (expected_operation.kind == RelationKind::SparseRoute) {
+            if (operation.route_proof.empty()) {
+                if (error) *error = "sparse route operation is missing its native relation proof";
+                return false;
+            }
+            SparseRouteProof route;
+            if (!SparseRouteProof::deserialize(operation.route_proof, route, error) ||
+                !verify_sparse_route(expected_operation, proof.commitments, context.generators,
+                                     transcript, route, error)) return false;
+            transcript.absorb("gat.relation.route", operation.route_proof);
+        } else if (!operation.route_proof.empty()) {
+            if (error) *error = "non-route operation carries a sparse route proof";
+            return false;
+        }
+        for (size_t primitive_index = 0U;
+             primitive_index < expected_operation.primitives.size(); ++primitive_index) {
+            if (!verify_matmul_primitive(expected_operation.primitives[primitive_index],
+                                         operation.primitive_proofs[primitive_index],
+                                         context.generators, error)) return false;
+            transcript.absorb("gat.relation.primitive",
+                              operation.primitive_proofs[primitive_index]);
+            if (!verify_primitive_binding(expected_operation.primitives[primitive_index],
+                                          operation.primitive_proofs[primitive_index],
+                                          operation.primitive_bindings[primitive_index],
+                                          proof.commitments, context.generators, error)) return false;
+            std::vector<byte> binding_bytes;
+            append_primitive_binding(binding_bytes, operation.primitive_bindings[primitive_index]);
+            transcript.absorb("gat.relation.primitive.binding", binding_bytes);
+        }
         for (size_t constraint_index = 0U; constraint_index < expected_operation.constraints.size(); ++constraint_index)
             if (!verify_constraint(operation.constraints[constraint_index], expected_operation.constraints[constraint_index],
                                    expected_operation.tensor_refs,

@@ -6,7 +6,21 @@
 // fallback. A missing witness/resource is reported by the core as BLOCKED.
 
 #include "gat_native_bridge.hpp"
-#include "gat_native_core.cuh"
+
+// Keep the bridge wrapper translation unit free of the native core's large
+// header-only CUDA proof stack.  Including gat_native_core.cuh here as well
+// as in gat_native_core.cu emits the original CUDA helper definitions twice
+// at link time.  The bridge only needs these two core entry-point declarations.
+namespace zkdl_gat {
+
+bool zkdl_gat_native_core_prove(const NativeProveRequest& request,
+                                NativeProofResult* result,
+                                std::string* error);
+
+bool zkdl_gat_native_core_verify(const NativeVerifyRequest& request,
+                                 std::string* error);
+
+}  // namespace zkdl_gat
 
 namespace zkdl_gat {
 

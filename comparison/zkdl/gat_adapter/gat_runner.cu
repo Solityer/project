@@ -8,6 +8,18 @@
 
 #include "gat_native_bridge.hpp"
 
+// The bridge deliberately keeps NativeRelationWitness opaque to callers that
+// only forward requests.  The runner is the canonical witness producer, so it
+// needs the exact native layout here.  Preloading the verifier-facing
+// zkMatMul declarations and closing the legacy implementation guard keeps
+// this translation unit from emitting the historical CUDA zkMatMul methods a
+// second time; gat_native_core.cu remains the sole owner of those methods.
+#include "../zkmatmul-proof.cuh"
+#ifndef ZK_MATMUL_H
+#define ZK_MATMUL_H
+#endif
+#include "gat_native_core.cuh"
+
 #include <cuda_runtime.h>
 
 #include <algorithm>
@@ -2538,6 +2550,158 @@ RelationPlan build_relation_plan(const Config& config, const Graph& graph, const
     add_op("final_average", "signed_round_div_sumcheck", 1, {"output_sum", "output_head_count"}, {"public_Y"}, {"node", "class"}, true, true, {"rounddiv_aux", "public_output"}, "final_average");
     add_op("terminal_opening", "hyrax_terminal_evaluation", 1, {"public_Y"}, {"public_Y"}, {"public_mle_point"}, false, true, {"opening_point", "terminal_claim"}, "public_output_terminal");
 
+    // Operation descriptors consume explicit, same-domain MLE views.  Keep
+    // those views in the authenticated plan (rather than smuggling their
+    // domains through a prover-only side map) so the independent verifier can
+    // reconstruct the exact route, broadcast, prefix, lookup-tree, and
+    // SignedRoundDiv shapes from the same registry.  Values are populated by
+    // build_native_relation_witness below; these families only describe their
+    // canonical logical/padded domains and mapping identity.
+    const auto append_view = [&](const std::string& id, const std::vector<u64>& logical,
+                                 const std::string& mapping, const std::string& axis) {
+        if (id.empty() || logical.empty() || !tensor_ids.insert(id).second)
+            fail("duplicate/empty relation operation view family: " + id);
+        TensorFamily family;
+        family.id = id;
+        family.visibility = "witness";
+        family.mle_order = "operation-view-row-major";
+        family.stack_axis = axis;
+        family.logical_shape = logical;
+        family.padded_shape.reserve(logical.size());
+        for (const auto dimension : logical) family.padded_shape.push_back(power_of_two(dimension));
+        family.instances = {"derived"};
+        family.instance_order = "operation-major/canonical-view";
+        family.mapping = mapping;
+        family.zero_selector = "Qpad_v1(" + id + ")=1[i<logical_shape],0[otherwise]";
+        family.selector_id = "selector:padding:" + id;
+        family.padding_rule = "all-padding-values-zero;masked-from-relation";
+        family.terminal_point = "FS:terminal:" + id;
+        family.terminal_value = "MLE(" + id + "," + family.terminal_point + ")";
+        family.terminal_claim = "terminal_claim_v1|family=" + id + "|point=" + family.terminal_point +
+                                "|value=" + family.terminal_value;
+        family.degree_bound = 1U;
+        plan.tensor_families.push_back(std::move(family));
+    };
+    if (config.range_bits == 0U || config.range_bits >= 31U)
+        fail("relation operation views require a bounded range_bits width");
+    const auto edge_shape = [&](u64 width = 1U) {
+        return width == 1U ? std::vector<u64>{graph.edges}
+                           : std::vector<u64>{graph.edges, width};
+    };
+    const auto node_shape = [&](u64 width = 1U) {
+        return width == 1U ? std::vector<u64>{graph.nodes}
+                           : std::vector<u64>{graph.nodes, width};
+    };
+    const auto table_depth = [](std::size_t size) {
+        u64 depth = 0U;
+        std::size_t width = 1U;
+        while (width < size) { width <<= 1U; ++depth; }
+        return depth;
+    };
+    const auto append_round_views = [&](const std::string& operation, u64 width) {
+        const auto shape = node_shape(width);
+        for (const auto& role : {"signed_numerator", "divisor", "signed_quotient", "a", "q_abs",
+                                 "r", "delta", "sigma", "z", "a_inverse", "divisor_inverse"})
+            append_view(operation + "/view/" + std::string(role), shape,
+                        "signed_round_div:" + std::string(role), "node");
+        for (const auto& value : {"a", "q_abs", "r", "delta", "divisor"})
+            for (u64 bit = 0U; bit < config.range_bits; ++bit)
+                append_view(operation + "/view/range/" + std::string(value) + "/" + std::to_string(bit),
+                            shape, "signed_round_div:range:" + std::string(value), "node");
+    };
+    const auto append_table_views = [&](const std::string& operation, bool edge_domain,
+                                        std::size_t table_size) {
+        const auto shape = edge_domain ? edge_shape() : node_shape();
+        append_view(operation + "/view/query", shape, "indexed_public_table:query", "lookup");
+        append_view(operation + "/view/index", shape, "indexed_public_table:index", "lookup");
+        append_view(operation + "/view/output0", shape, "indexed_public_table:output", "lookup");
+        const u64 depth = table_depth(table_size);
+        for (u64 bit = 0U; bit < depth; ++bit)
+            append_view(operation + "/view/bit/" + std::to_string(bit), shape,
+                        "indexed_public_table:bit", "lookup");
+        for (u64 level = 0U; level <= depth; ++level) {
+            const u64 level_width = 1ULL << level;
+            for (u64 node = 0U; node < level_width; ++node)
+                append_view(operation + "/view/chi/" + std::to_string(level) + "/" + std::to_string(node),
+                            shape, "indexed_public_table:chi", "lookup");
+        }
+    };
+    const auto append_stage_views = [&](const std::string& stage, u64 width, bool output) {
+        const auto edge = edge_shape();
+        const auto edge_feature = edge_shape(width);
+        const auto node = node_shape();
+        const auto node_feature = node_shape(width);
+        const std::string inner = stage + (output ? "/output_attention_inner_product" : "/attention_inner_product");
+        append_view(inner + "/view/src_matrix", edge_feature, "attention_route:src", "edge");
+        append_view(inner + "/view/dst_matrix", edge_feature, "attention_route:dst", "edge");
+        append_view(inner + "/view/src_output", edge, "attention_route:e_src", "edge");
+        append_view(inner + "/view/dst_output", edge, "attention_route:e_dst", "edge");
+
+        const std::string max = stage + "/max_range";
+        for (const auto& role : {"value", "maximum_broadcast", "selector", "delta", "group_new",
+                                 "group_end", "selector_prefix", "selector_prev"})
+            append_view(max + "/view/" + std::string(role), edge,
+                        "max_range:" + std::string(role), "edge");
+        for (u64 bit = 0U; bit < config.range_bits; ++bit)
+            append_view(max + "/view/range_bit/" + std::to_string(bit), edge,
+                        "max_range:range_bit", "edge");
+
+        const std::string group = stage + "/group_sum";
+        for (const auto& role : {"group_new", "group_end"})
+            append_view(group + "/view/" + std::string(role), edge_feature,
+                        "group_sum:" + std::string(role), "edge");
+        for (const auto& role : {"input0", "input1", "output0", "output1", "prefix0", "prefix_prev0",
+                                 "prefix1", "prefix_prev1"})
+            append_view(group + "/view/" + std::string(role), edge_feature,
+                        "group_sum:" + std::string(role), "edge");
+
+        const std::string inverse = stage + "/inverse_alpha";
+        for (const auto& role : {"input0", "input1", "output0", "output1"})
+            append_view(inverse + "/view/" + std::string(role), edge,
+                        "inverse_alpha:" + std::string(role), "edge");
+
+        for (const auto& operation : {stage + "/field_aggregate", stage + "/integer_numerator"}) {
+            append_view(operation + "/view/group_new", edge_feature, "segmented_sum:group_new", "edge");
+            append_view(operation + "/view/group_end", edge_feature, "segmented_sum:group_end", "edge");
+            for (const auto& role : {"input0", "output0", "prefix0", "prefix_prev0"})
+                append_view(operation + "/view/" + std::string(role), edge_feature,
+                            "segmented_sum:" + std::string(role), "edge");
+        }
+
+        const std::string consistency = stage + "/consistency";
+        for (const auto& role : {"input0", "input1", "input2", "output0"})
+            append_view(consistency + "/view/" + std::string(role), node_feature,
+                        "consistency:" + std::string(role), "node");
+
+        append_round_views(stage + "/signed_round_div", width);
+        const std::string table_lrelu = stage + "/leaky_relu";
+        append_table_views(table_lrelu, true, tables.lrelu.size());
+        const std::string table_exp = stage + "/exp_map";
+        append_table_views(table_exp, true, tables.exp.size());
+        if (!output) append_table_views(stage + "/elu", false, tables.elu.size());
+        if (output) {
+            append_round_views(stage + "/output_scale_alignment", width);
+            const std::string bias = stage + "/output_bias";
+            for (const auto& role : {"input0", "input1", "output0"})
+                append_view(bias + "/view/" + std::string(role), node_feature,
+                            "output_bias:" + std::string(role), "node");
+        }
+    };
+    for (u64 layer = 0U; layer < config.architecture.hidden_dims.size(); ++layer) {
+        const u64 width = config.architecture.hidden_dims[layer];
+        for (u64 head = 0U; head < config.architecture.hidden_heads[layer]; ++head)
+            append_stage_views("hidden/layer" + std::to_string(layer) + "/head" + std::to_string(head), width, false);
+        const std::string concat = "hidden/layer" + std::to_string(layer) + "/concat";
+        const auto concat_shape = std::vector<u64>{graph.nodes, config.architecture.hidden_heads[layer], width};
+        for (u64 head = 0U; head < config.architecture.hidden_heads[layer]; ++head)
+            append_view(concat + "/view/input" + std::to_string(head), concat_shape,
+                        "head_concat:head" + std::to_string(head), "head");
+        append_view(concat + "/view/output", concat_shape, "head_concat:output", "head");
+    }
+    for (u64 head = 0U; head < config.architecture.output_heads; ++head)
+        append_stage_views("output/head" + std::to_string(head), config.architecture.classes, true);
+    append_round_views("final_average", config.architecture.classes);
+
     const auto append_list = [](std::ostringstream& stream, const std::vector<std::string>& values) {
         stream << values.size() << ':';
         for (const auto& value : values) stream << value.size() << ':' << value << ';';
@@ -2717,6 +2881,661 @@ bool relation_plan_complete(const RelationPlan& relation, std::string* error) {
         return reject("terminal opening does not bind the canonical public output family");
     }
     return true;
+}
+
+using NativeFrWire = relation::FrWire;
+
+NativeFrWire native_wire(i64 value) {
+    return relation::fr_from_signed_i64(value);
+}
+
+NativeFrWire native_wire(const FieldValue& value) {
+    NativeFrWire wire{};
+    for (std::size_t limb = 0U; limb < wire.size(); ++limb) {
+        const std::size_t offset = limb * sizeof(std::uint32_t);
+        wire[limb] = static_cast<std::uint32_t>(value.bytes[offset]) |
+                     (static_cast<std::uint32_t>(value.bytes[offset + 1U]) << 8U) |
+                     (static_cast<std::uint32_t>(value.bytes[offset + 2U]) << 16U) |
+                     (static_cast<std::uint32_t>(value.bytes[offset + 3U]) << 24U);
+    }
+    if (!zkdl::fr_canonical(wire)) fail("non-canonical field witness encoding");
+    return wire;
+}
+
+u64 native_shape_product(const std::vector<u64>& shape, const std::string& label) {
+    if (shape.empty()) fail("empty canonical tensor shape: " + label);
+    u64 product = 1U;
+    for (const auto dimension : shape) {
+        if (dimension == 0U || product > std::numeric_limits<u64>::max() / dimension)
+            fail("canonical tensor shape overflow: " + label);
+        product *= dimension;
+    }
+    return product;
+}
+
+std::vector<NativeFrWire> native_embed_zero_padded(
+    const TensorFamily& family, const std::vector<NativeFrWire>& logical) {
+    const u64 logical_size = native_shape_product(family.logical_shape, family.id + ".logical");
+    const u64 padded_size = native_shape_product(family.padded_shape, family.id + ".padded");
+    if (logical.size() != logical_size || padded_size > std::numeric_limits<std::uint32_t>::max())
+        fail("canonical tensor value count/field domain mismatch: " + family.id);
+    std::vector<NativeFrWire> result(static_cast<std::size_t>(padded_size));
+    std::vector<u64> coordinate(family.logical_shape.size(), 0U);
+    for (u64 linear = 0U; linear < logical_size; ++linear) {
+        u64 remainder = linear;
+        u64 padded_index = 0U;
+        for (std::size_t index = family.logical_shape.size(); index-- > 0U;) {
+            coordinate[index] = remainder % family.logical_shape[index];
+            remainder /= family.logical_shape[index];
+        }
+        for (std::size_t index = 0U; index < family.padded_shape.size(); ++index) {
+            padded_index = padded_index * family.padded_shape[index] + coordinate[index];
+        }
+        result.at(static_cast<std::size_t>(padded_index)) = logical.at(static_cast<std::size_t>(linear));
+    }
+    return result;
+}
+
+std::vector<NativeFrWire> native_i64_values(const std::vector<i64>& values) {
+    std::vector<NativeFrWire> result;
+    result.reserve(values.size());
+    for (const auto value : values) result.push_back(native_wire(value));
+    return result;
+}
+
+std::vector<NativeFrWire> native_u64_values(const std::vector<u64>& values,
+                                            const std::string& label) {
+    std::vector<NativeFrWire> result;
+    result.reserve(values.size());
+    for (const auto value : values) {
+        if (value > static_cast<u64>(std::numeric_limits<i64>::max()))
+            fail("unsigned graph boundary exceeds field wire signed range: " + label);
+        result.push_back(native_wire(static_cast<i64>(value)));
+    }
+    return result;
+}
+
+std::vector<NativeFrWire> native_field_values(const std::vector<FieldValue>& values) {
+    std::vector<NativeFrWire> result;
+    result.reserve(values.size());
+    for (const auto& value : values) result.push_back(native_wire(value));
+    return result;
+}
+
+std::vector<NativeFrWire> native_matrix_values(const Matrix& matrix) {
+    return native_i64_values(matrix.values);
+}
+
+std::vector<NativeFrWire> native_field_matrix_values(const FieldMatrix& matrix) {
+    return native_field_values(matrix.values);
+}
+
+std::vector<NativeFrWire> native_broadcast_node_vector(
+    const Graph& graph, const std::vector<i64>& node_values) {
+    if (node_values.size() != graph.nodes || graph.dst.size() != graph.edges)
+        fail("node-to-edge broadcast shape mismatch");
+    std::vector<i64> values(graph.edges, 0);
+    for (u64 edge = 0U; edge < graph.edges; ++edge) {
+        if (graph.dst[edge] >= graph.nodes) fail("graph destination is outside node domain");
+        values[edge] = node_values.at(graph.dst[edge]);
+    }
+    return native_i64_values(values);
+}
+
+std::vector<NativeFrWire> native_broadcast_node_matrix(
+    const Graph& graph, const Matrix& matrix) {
+    if (matrix.rows != graph.nodes || graph.dst.size() != graph.edges)
+        fail("node-to-edge matrix broadcast shape mismatch");
+    std::vector<i64> values;
+    values.reserve(static_cast<std::size_t>(graph.edges * matrix.cols));
+    for (u64 edge = 0U; edge < graph.edges; ++edge) {
+        if (graph.dst[edge] >= graph.nodes) fail("graph destination is outside node domain");
+        for (u64 column = 0U; column < matrix.cols; ++column)
+            values.push_back(matrix.at(graph.dst[edge], column));
+    }
+    return native_i64_values(values);
+}
+
+std::vector<NativeFrWire> native_route_matrix(
+    const Graph& graph, const Matrix& matrix, bool source) {
+    if (matrix.rows != graph.nodes || graph.src.size() != graph.edges || graph.dst.size() != graph.edges)
+        fail("route matrix shape mismatch");
+    std::vector<i64> values;
+    values.reserve(static_cast<std::size_t>(graph.edges * matrix.cols));
+    for (u64 edge = 0U; edge < graph.edges; ++edge) {
+        const u64 node = source ? graph.src[edge] : graph.dst[edge];
+        if (node >= graph.nodes) fail("graph route index is outside node domain");
+        for (u64 column = 0U; column < matrix.cols; ++column)
+            values.push_back(matrix.at(node, column));
+    }
+    return native_i64_values(values);
+}
+
+std::vector<i64> native_node_values_from_edges(const Graph& graph,
+                                               const std::vector<i64>& edge_values) {
+    if (edge_values.size() != graph.edges || graph.node_edge_ptr.size() != graph.nodes + 1U)
+        fail("edge-to-node trace shape mismatch");
+    std::vector<i64> result(graph.nodes, 0);
+    for (u64 node = 0U; node < graph.nodes; ++node) {
+        const u64 begin = graph.node_edge_ptr.at(node);
+        const u64 end = graph.node_edge_ptr.at(node + 1U);
+        if (begin > end || end > graph.edges) fail("destination group boundary is outside edge domain");
+        if (begin != end) result[node] = edge_values.at(static_cast<std::size_t>(begin));
+    }
+    return result;
+}
+
+std::vector<std::uint8_t> native_group_new(const Graph& graph) {
+    if (graph.dst.size() != graph.edges) fail("graph group selector shape mismatch");
+    std::vector<std::uint8_t> result(graph.edges, 0U);
+    for (u64 edge = 0U; edge < graph.edges; ++edge) {
+        if (graph.dst[edge] >= graph.nodes) fail("graph destination is outside node domain");
+        result[edge] = edge == 0U || graph.dst[edge] != graph.dst[edge - 1U] ? 1U : 0U;
+    }
+    return result;
+}
+
+std::vector<std::uint8_t> native_group_end(const Graph& graph) {
+    if (graph.dst.size() != graph.edges) fail("graph group selector shape mismatch");
+    std::vector<std::uint8_t> result(graph.edges, 0U);
+    for (u64 edge = 0U; edge < graph.edges; ++edge) {
+        if (graph.dst[edge] >= graph.nodes) fail("graph destination is outside node domain");
+        result[edge] = edge + 1U == graph.edges || graph.dst[edge] != graph.dst[edge + 1U] ? 1U : 0U;
+    }
+    return result;
+}
+
+std::vector<NativeFrWire> native_repeat_edge_bits(
+    const std::vector<std::uint8_t>& edge_values, u64 width) {
+    std::vector<NativeFrWire> result;
+    result.reserve(edge_values.size() * static_cast<std::size_t>(width));
+    for (const auto value : edge_values)
+        for (u64 index = 0U; index < width; ++index) result.push_back(native_wire(value));
+    return result;
+}
+
+std::vector<NativeFrWire> native_repeat_node_bits(
+    const std::vector<std::uint8_t>& node_values, u64 width) {
+    std::vector<NativeFrWire> result;
+    result.reserve(node_values.size() * static_cast<std::size_t>(width));
+    for (const auto value : node_values)
+        for (u64 index = 0U; index < width; ++index) result.push_back(native_wire(value));
+    return result;
+}
+
+std::vector<NativeFrWire> native_edge_feature_from_scalar(
+    const std::vector<i64>& values, u64 width) {
+    std::vector<NativeFrWire> result;
+    result.reserve(values.size() * static_cast<std::size_t>(width));
+    for (const auto value : values)
+        for (u64 index = 0U; index < width; ++index) result.push_back(native_wire(value));
+    return result;
+}
+
+std::vector<NativeFrWire> native_node_feature_from_scalar(
+    const std::vector<i64>& values, u64 width) {
+    std::vector<NativeFrWire> result;
+    result.reserve(values.size() * static_cast<std::size_t>(width));
+    for (const auto value : values)
+        for (u64 index = 0U; index < width; ++index) result.push_back(native_wire(value));
+    return result;
+}
+
+std::vector<NativeFrWire> native_edge_feature_from_node_matrix(
+    const Graph& graph, const Matrix& matrix) {
+    return native_broadcast_node_matrix(graph, matrix);
+}
+
+std::vector<NativeFrWire> native_edge_feature_from_matrix(
+    const Matrix& matrix) {
+    return native_matrix_values(matrix);
+}
+
+std::vector<NativeFrWire> native_prefix(const std::vector<NativeFrWire>& input,
+                                        const std::vector<std::uint8_t>& group_new,
+                                        u64 width, bool previous) {
+    if (input.size() != group_new.size() * static_cast<std::size_t>(width))
+        fail("segmented prefix input shape mismatch");
+    std::vector<NativeFrWire> result(input.size());
+    for (u64 edge = 0U; edge < group_new.size(); ++edge) {
+        for (u64 column = 0U; column < width; ++column) {
+            const std::size_t index = static_cast<std::size_t>(edge * width + column);
+            if (previous && (edge == 0U || group_new[edge] != 0U)) {
+                result[index] = NativeFrWire{};
+            } else if (previous) {
+                result[index] = result.at(static_cast<std::size_t>((edge - 1U) * width + column));
+            } else {
+                const NativeFrWire prior = (edge == 0U || group_new[edge] != 0U)
+                    ? NativeFrWire{}
+                    : result.at(static_cast<std::size_t>((edge - 1U) * width + column));
+                result[index] = zkdl::fr_add(prior, input[index]);
+            }
+        }
+    }
+    return result;
+}
+
+std::vector<NativeFrWire> native_field_prefix(const std::vector<NativeFrWire>& input,
+                                              const std::vector<std::uint8_t>& group_new,
+                                              u64 width, bool previous) {
+    return native_prefix(input, group_new, width, previous);
+}
+
+NativeRelationWitness build_native_relation_witness(
+    const Config& config, const Graph& graph, const ModelBundle& model,
+    const StaticTables& tables, const RelationPlan& plan, const GatTrace& trace) {
+    std::map<std::string, const TensorFamily*> families;
+    for (const auto& family : plan.tensor_families) {
+        if (!families.emplace(family.id, &family).second)
+            fail("duplicate canonical witness family: " + family.id);
+    }
+    std::map<std::string, std::vector<NativeFrWire>> logical;
+    const auto family_for = [&](const std::string& id) -> const TensorFamily& {
+        const auto found = families.find(id);
+        if (found == families.end()) fail("canonical witness family is not in RelationPlan: " + id);
+        return *found->second;
+    };
+    const auto put = [&](const std::string& id, std::vector<NativeFrWire> values) {
+        const auto& family = family_for(id);
+        if (values.size() != native_shape_product(family.logical_shape, id + ".logical"))
+            fail("canonical witness logical value count mismatch: " + id);
+        if (!logical.emplace(id, std::move(values)).second)
+            fail("duplicate canonical witness values: " + id);
+    };
+    const auto put_i64 = [&](const std::string& id, const std::vector<i64>& values) {
+        put(id, native_i64_values(values));
+    };
+    const auto put_u64 = [&](const std::string& id, const std::vector<u64>& values) {
+        put(id, native_u64_values(values, id));
+    };
+    const auto put_matrix = [&](const std::string& id, const Matrix& matrix) {
+        put(id, native_matrix_values(matrix));
+    };
+    const auto put_field = [&](const std::string& id, const std::vector<FieldValue>& values) {
+        put(id, native_field_values(values));
+    };
+    const auto put_field_matrix = [&](const std::string& id, const FieldMatrix& matrix) {
+        put(id, native_field_matrix_values(matrix));
+    };
+    const auto scalar_matrix = [&](const std::vector<i64>& values, u64 width) {
+        Matrix matrix = make_matrix(values.size(), width);
+        for (u64 row = 0U; row < values.size(); ++row)
+            for (u64 column = 0U; column < width; ++column) matrix.at(row, column) = values[row];
+        return matrix;
+    };
+    const auto bits_for = [&](const std::vector<i64>& values, u64 width,
+                              const std::string& label) {
+        std::vector<NativeFrWire> result;
+        result.reserve(values.size() * static_cast<std::size_t>(width));
+        for (const auto value : values) {
+            if (value < 0) fail("negative value cannot be decomposed into canonical bits: " + label);
+            const auto unsigned_value = static_cast<std::uint64_t>(value);
+            if (width < 63U && (unsigned_value >> width) != 0U)
+                fail("value exceeds bounded bit decomposition: " + label);
+            for (u64 bit = 0U; bit < width; ++bit)
+                result.push_back(native_wire(static_cast<i64>((unsigned_value >> bit) & 1U)));
+        }
+        return result;
+    };
+    const auto group_new = native_group_new(graph);
+    const auto group_end = native_group_end(graph);
+    const auto edge_group_bits = [&](u64 width) {
+        return native_repeat_edge_bits(group_new, width);
+    };
+    const auto edge_group_end_bits = [&](u64 width) {
+        return native_repeat_edge_bits(group_end, width);
+    };
+    const auto node_vector_from_edges = [&](const std::vector<i64>& values) {
+        return native_node_values_from_edges(graph, values);
+    };
+
+    std::vector<i64> route;
+    route.reserve(static_cast<std::size_t>(graph.edges * 2U));
+    for (u64 edge = 0U; edge < graph.edges; ++edge) {
+        route.push_back(static_cast<i64>(graph.src.at(static_cast<std::size_t>(edge))));
+        route.push_back(static_cast<i64>(graph.dst.at(static_cast<std::size_t>(edge))));
+    }
+    std::vector<i64> selectors;
+    selectors.reserve(static_cast<std::size_t>(graph.edges * 2U));
+    for (u64 edge = 0U; edge < graph.edges; ++edge) {
+        selectors.push_back(group_new.at(static_cast<std::size_t>(edge)));
+        selectors.push_back(group_end.at(static_cast<std::size_t>(edge)));
+    }
+    put_matrix("input_features", graph.feature_values);
+    put_i64("sparse_route", route);
+    put_i64("group_selectors", selectors);
+    put_u64("node_ptr", graph.node_ptr);
+    put_u64("edge_ptr", graph.edge_ptr);
+    put_u64("node_edge_ptr", graph.node_edge_ptr);
+    put_i64("static_lrelu", tables.lrelu);
+    put_i64("static_elu", tables.elu);
+    put_i64("static_exp", tables.exp);
+    put_i64("output_head_count", {static_cast<i64>(config.architecture.output_heads)});
+
+    const auto round_aux = [&](const SignedRoundDivWitness& witness) {
+        if (witness.rows == 0U || witness.cols == 0U || witness.rows != graph.nodes) {
+            fail("SignedRoundDiv auxiliary rows do not match canonical node domain");
+        }
+        const std::size_t count = static_cast<std::size_t>(witness.rows * witness.cols);
+        if (witness.sigma.size() != count || witness.z.size() != count || witness.a.size() != count ||
+            witness.q.size() != count || witness.r.size() != count || witness.delta.size() != count ||
+            witness.divisor.size() != count) {
+            fail("SignedRoundDiv auxiliary witness is incomplete");
+        }
+        std::vector<NativeFrWire> values;
+        values.reserve(count * 8U);
+        const auto append = [&](const auto& source) {
+            for (const auto value : source) values.push_back(native_wire(static_cast<i64>(value)));
+        };
+        append(witness.sigma); append(witness.z); append(witness.a); append(witness.q);
+        append(witness.r); append(witness.delta); append(witness.divisor);
+        values.insert(values.end(), count, NativeFrWire{});  // reserved zero padding channel
+        return values;
+    };
+    const auto lookup_bits = [&](const std::vector<i64>& query, i64 minimum,
+                                 i64 maximum, u64 width, const std::string& label) {
+        std::vector<i64> offsets;
+        offsets.reserve(query.size());
+        for (const auto value : query) {
+            if (value < minimum || value > maximum)
+                fail("lookup query is outside authenticated table domain: " + label);
+            offsets.push_back(checked_i128(static_cast<__int128>(value) - minimum, label + ".offset"));
+        }
+        return bits_for(offsets, width, label + ".bits");
+    };
+
+    const auto put_stage_base = [&](const std::string& stage, u64 layer, u64 head, bool output) {
+        const u64 width = output ? config.architecture.classes : config.architecture.hidden_dims.at(layer);
+        const Matrix& input = output ? trace.hidden_layers.back().concat : trace.hidden_layers.at(layer).input;
+        put_matrix(stage + "/trace/input", input);
+        const Matrix weight = quantized_tensor_matrix(
+            model, stage + "/seq/kernel",
+            output ? config.quantization.output_weight.at(head) : config.quantization.hidden_weight.at(layer).at(head));
+        const std::vector<i64> src_kernel = quantized_tensor_vector(
+            model, stage + "/attn_src/kernel",
+            output ? config.quantization.output_attention_src.at(head) : config.quantization.hidden_attention_src.at(layer).at(head));
+        const std::vector<i64> dst_kernel = quantized_tensor_vector(
+            model, stage + "/attn_dst/kernel",
+            output ? config.quantization.output_attention_dst.at(head) : config.quantization.hidden_attention_dst.at(layer).at(head));
+        put_matrix(stage + "/model/seq_kernel", weight);
+        put_i64(stage + "/model/attn_src", src_kernel);
+        put_i64(stage + "/model/attn_dst", dst_kernel);
+        if (output) {
+            put_i64(stage + "/model/output_bias",
+                    quantized_tensor_vector(model, stage + "/output_bias", config.quantization.output_bias.at(head)));
+        }
+
+        const auto put_common = [&](const auto& head_trace, const Matrix& projected,
+                                    const std::string& name) {
+            put_matrix(stage + "/trace/" + name, projected);
+            put_i64(stage + "/trace/e_src", head_trace.e_src);
+            put_i64(stage + "/trace/e_dst", head_trace.e_dst);
+            put_i64(stage + "/trace/score", head_trace.score);
+            put_i64(stage + "/trace/leaky_relu", head_trace.leaky_relu);
+            put_i64(stage + "/trace/delta", head_trace.delta);
+            put_i64(stage + "/trace/exp_weight", head_trace.exp_weight);
+            put_field(stage + "/trace/inverse_field", head_trace.inverse_field);
+            put_field(stage + "/trace/alpha_field", head_trace.alpha_field);
+            put_i64(stage + "/trace/maximum", head_trace.maximum);
+            put_i64(stage + "/trace/denominator", node_vector_from_edges(head_trace.denominator));
+            std::vector<i64> max_selector(graph.edges, 0);
+            for (u64 node = 0U; node < graph.nodes; ++node) {
+                bool selected = false;
+                const u64 begin = graph.node_edge_ptr.at(static_cast<std::size_t>(node));
+                const u64 end = graph.node_edge_ptr.at(static_cast<std::size_t>(node + 1U));
+                for (u64 edge = begin; edge < end; ++edge) {
+                    if (!selected && head_trace.leaky_relu.at(static_cast<std::size_t>(edge)) ==
+                                       head_trace.maximum.at(static_cast<std::size_t>(node))) {
+                        max_selector[edge] = 1;
+                        selected = true;
+                    }
+                }
+                if (!selected) fail("max selector has no selected edge for destination group");
+            }
+            put_i64(stage + "/trace/max_selector", max_selector);
+            put(stage + "/trace/range_bits", bits_for(head_trace.delta, config.range_bits, stage + ".delta"));
+            put_i64(stage + "/trace/lrelu_idx", head_trace.score);
+            put_i64(stage + "/trace/exp_idx", head_trace.delta);
+            put(stage + "/trace/lrelu_bits", lookup_bits(head_trace.score, tables.lrelu_min,
+                                                            tables.lrelu_max, config.range_bits, stage + ".lrelu"));
+            put(stage + "/trace/exp_bits", lookup_bits(head_trace.delta, 0,
+                                                         static_cast<i64>(tables.exp_max), config.range_bits, stage + ".exp"));
+            put(stage + "/trace/rounddiv_aux", round_aux(head_trace.aggregate_round_div));
+            put_field(stage + "/trace/rounddiv_a_inverse", head_trace.aggregate_round_div.a_inverse);
+            put_field(stage + "/trace/rounddiv_divisor_inverse", head_trace.aggregate_round_div.divisor_inverse);
+            put_matrix(stage + "/trace/aggregate_num", head_trace.aggregate_num);
+            put_field_matrix(stage + "/trace/aggregate_pre_field", head_trace.aggregate_pre_field);
+            put_field_matrix(stage + "/trace/consistency_residual_field", head_trace.consistency_residual_field);
+        };
+
+        if (!output) {
+            const auto& head_trace = trace.hidden_layers.at(layer).heads.at(head);
+            put_common(head_trace, head_trace.h_prime, "h_prime");
+            put_matrix(stage + "/trace/routed_h_prime", head_trace.routed_h_prime);
+            put_matrix(stage + "/trace/product_u_h_prime", head_trace.product_u_h_prime);
+            put_field_matrix(stage + "/trace/product_alpha_h_prime_field", head_trace.product_alpha_h_prime_field);
+            put_matrix(stage + "/trace/aggregate_pre", head_trace.aggregate_pre);
+            put_matrix(stage + "/trace/elu_input", head_trace.elu_input);
+            put_matrix(stage + "/trace/aggregate", head_trace.aggregate);
+            put_i64(stage + "/trace/elu_idx", head_trace.aggregate_pre.values.empty()
+                    ? std::vector<i64>(graph.nodes, 0)
+                    : head_trace.aggregate_pre.values);
+            put(stage + "/trace/elu_bits", lookup_bits(head_trace.aggregate_pre.values, tables.elu_min,
+                                                         tables.elu_max, config.range_bits, stage + ".elu"));
+        } else {
+            const auto& head_trace = trace.output_heads.at(head);
+            put_common(head_trace, head_trace.y_prime, "y_prime");
+            put_matrix(stage + "/trace/routed_y_prime", head_trace.routed_y_prime);
+            put_matrix(stage + "/trace/product_u_y_prime", head_trace.product_u_y_prime);
+            put_field_matrix(stage + "/trace/product_alpha_y_prime_field", head_trace.product_alpha_y_prime_field);
+            put_matrix(stage + "/trace/aggregate_pre", head_trace.aggregate_pre);
+            put_matrix(stage + "/trace/y_quantized", head_trace.y_quantized);
+            put_matrix(stage + "/trace/aligned", head_trace.aligned);
+            put_matrix(stage + "/trace/output", head_trace.output);
+        }
+        (void)width;
+    };
+
+    for (u64 layer = 0U; layer < config.architecture.hidden_dims.size(); ++layer) {
+        for (u64 head = 0U; head < config.architecture.hidden_heads.at(layer); ++head)
+            put_stage_base("hidden/layer" + std::to_string(layer) + "/head" + std::to_string(head), layer, head, false);
+        const auto& concat = trace.hidden_layers.at(layer).concat;
+        const u64 head_count = config.architecture.hidden_heads.at(layer);
+        const u64 width = config.architecture.hidden_dims.at(layer);
+        std::vector<NativeFrWire> values;
+        values.reserve(static_cast<std::size_t>(graph.nodes * head_count * width));
+        for (u64 node = 0U; node < graph.nodes; ++node)
+            for (u64 head = 0U; head < head_count; ++head)
+                for (u64 column = 0U; column < width; ++column)
+                    values.push_back(native_wire(concat.at(node, head * width + column)));
+        put("hidden/layer" + std::to_string(layer) + "/concat", std::move(values));
+    }
+    for (u64 head = 0U; head < config.architecture.output_heads; ++head)
+        put_stage_base("output/head" + std::to_string(head), config.architecture.hidden_dims.size(), head, true);
+    std::vector<NativeFrWire> output_heads;
+    output_heads.reserve(static_cast<std::size_t>(graph.nodes * config.architecture.output_heads * config.architecture.classes));
+    for (u64 node = 0U; node < graph.nodes; ++node)
+        for (const auto& head : trace.output_heads)
+            for (u64 cls = 0U; cls < config.architecture.classes; ++cls)
+                output_heads.push_back(native_wire(head.output.at(node, cls)));
+    put("output_heads", std::move(output_heads));
+    put_matrix("output_sum", trace.output_sum);
+    put_matrix("public_Y", trace.logits);
+
+    const auto put_group_views = [&](const std::string& stage, u64 width, bool output,
+                                     const auto& head_trace) {
+        const auto edge_width = native_edge_feature_from_scalar(head_trace.exp_weight, width);
+        const auto pu = native_matrix_values(output ? head_trace.product_u_y_prime : head_trace.product_u_h_prime);
+        const auto group_new_width = edge_group_bits(width);
+        const auto group_end_width = edge_group_end_bits(width);
+        const auto denominator_nodes = node_vector_from_edges(head_trace.denominator);
+        const auto denominator_edges = native_broadcast_node_vector(graph, denominator_nodes);
+        const auto denominator_edge_width = native_edge_feature_from_scalar(
+            denominator_nodes.empty() ? std::vector<i64>{} :
+                native_node_values_from_edges(graph, head_trace.denominator), width);
+        (void)denominator_edge_width;
+        const auto aggregate_matrix = native_matrix_values(head_trace.aggregate_num);
+        const auto denominator_broadcast = [&]() {
+            std::vector<NativeFrWire> result;
+            result.reserve(static_cast<std::size_t>(graph.edges * width));
+            for (const auto value : denominator_edges)
+                for (u64 column = 0U; column < width; ++column) result.push_back(value);
+            return result;
+        }();
+        const std::string group = stage + "/group_sum";
+        put(group + "/view/group_new", group_new_width);
+        put(group + "/view/group_end", group_end_width);
+        put(group + "/view/input0", edge_width);
+        put(group + "/view/input1", pu);
+        put(group + "/view/output0", denominator_broadcast);
+        put(group + "/view/output1", native_broadcast_node_matrix(graph, head_trace.aggregate_num));
+        put(group + "/view/prefix0", native_prefix(edge_width, group_new, width, false));
+        put(group + "/view/prefix_prev0", native_prefix(edge_width, group_new, width, true));
+        put(group + "/view/prefix1", native_prefix(pu, group_new, width, false));
+        put(group + "/view/prefix_prev1", native_prefix(pu, group_new, width, true));
+
+        const std::string inverse = stage + "/inverse_alpha";
+        put(inverse + "/view/input0", denominator_edges);
+        put(inverse + "/view/input1", native_i64_values(head_trace.exp_weight));
+        put(inverse + "/view/output0", native_field_values(head_trace.inverse_field));
+        put(inverse + "/view/output1", native_field_values(head_trace.alpha_field));
+
+        const auto put_segmented = [&](const std::string& operation, const std::vector<NativeFrWire>& input,
+                                       const std::vector<NativeFrWire>& output_values) {
+            put(operation + "/view/group_new", group_new_width);
+            put(operation + "/view/group_end", group_end_width);
+            put(operation + "/view/input0", input);
+            put(operation + "/view/output0", output_values);
+            put(operation + "/view/prefix0", native_prefix(input, group_new, width, false));
+            put(operation + "/view/prefix_prev0", native_prefix(input, group_new, width, true));
+        };
+        put_segmented(stage + "/field_aggregate",
+                      native_field_matrix_values(output ? head_trace.product_alpha_y_prime_field
+                                                        : head_trace.product_alpha_h_prime_field),
+                      native_broadcast_node_matrix(graph, output ? head_trace.aggregate_pre_field
+                                                                  : head_trace.aggregate_pre_field));
+        put_segmented(stage + "/integer_numerator", pu,
+                      native_broadcast_node_matrix(graph, head_trace.aggregate_num));
+
+        const std::string consistency = stage + "/consistency";
+        const auto denominator_matrix = scalar_matrix(denominator_nodes, width);
+        put(consistency + "/view/input0", native_matrix_values(denominator_matrix));
+        put(consistency + "/view/input1", native_field_matrix_values(head_trace.aggregate_pre_field));
+        put(consistency + "/view/input2", native_matrix_values(head_trace.aggregate_num));
+        put(consistency + "/view/output0", native_field_matrix_values(head_trace.consistency_residual_field));
+
+        const auto put_max_views = [&]() {
+            const std::string max = stage + "/max_range";
+            put_i64(max + "/view/value", head_trace.leaky_relu);
+            put(max + "/view/maximum_broadcast", native_broadcast_node_vector(graph, head_trace.maximum));
+            std::vector<i64> max_selector(graph.edges, 0);
+            for (u64 node = 0U; node < graph.nodes; ++node) {
+                bool selected = false;
+                for (u64 edge = graph.node_edge_ptr.at(static_cast<std::size_t>(node));
+                     edge < graph.node_edge_ptr.at(static_cast<std::size_t>(node + 1U)); ++edge) {
+                    if (!selected && head_trace.leaky_relu.at(static_cast<std::size_t>(edge)) ==
+                                       head_trace.maximum.at(static_cast<std::size_t>(node))) {
+                        max_selector[edge] = 1; selected = true;
+                    }
+                }
+            }
+            put_i64(max + "/view/selector", max_selector);
+            put(max + "/view/delta", native_i64_values(head_trace.delta));
+            put(max + "/view/group_new", native_i64_values(std::vector<i64>(group_new.begin(), group_new.end())));
+            put(max + "/view/group_end", native_i64_values(std::vector<i64>(group_end.begin(), group_end.end())));
+            put_i64(max + "/view/selector_prefix", [&]() {
+                std::vector<i64> prefix(graph.edges, 0);
+                i64 running = 0;
+                for (u64 edge = 0U; edge < graph.edges; ++edge) {
+                    if (group_new[edge]) running = 0;
+                    running += max_selector[edge]; prefix[edge] = running;
+                }
+                return prefix;
+            }());
+            put_i64(max + "/view/selector_prev", [&]() {
+                std::vector<i64> previous(graph.edges, 0);
+                i64 running = 0;
+                for (u64 edge = 0U; edge < graph.edges; ++edge) {
+                    previous[edge] = group_new[edge] ? 0 : running;
+                    running = previous[edge] + max_selector[edge];
+                }
+                return previous;
+            }());
+            for (u64 bit = 0U; bit < config.range_bits; ++bit)
+                put(max + "/view/range_bit/" + std::to_string(bit), bits_for(head_trace.delta, 1U,
+                                                                               max + ".range" + std::to_string(bit)));
+        };
+        put_max_views();
+
+        const auto put_table = [&](const std::string& operation, const std::vector<i64>& query,
+                                   i64 minimum, i64 maximum, const std::vector<i64>& output_values,
+                                   const std::vector<i64>& table) {
+            put_i64(operation + "/view/query", query);
+            put_i64(operation + "/view/index", query);
+            put_i64(operation + "/view/output0", output_values);
+            u64 depth = 0U;
+            std::size_t table_width = 1U;
+            while (table_width < table.size()) { table_width <<= 1U; ++depth; }
+            std::vector<i64> offsets;
+            offsets.reserve(query.size());
+            for (const auto value : query) {
+                if (value < minimum || value > maximum)
+                    fail("lookup view query outside authenticated table: " + operation);
+                offsets.push_back(checked_i128(static_cast<__int128>(value) - minimum,
+                                               operation + ".offset"));
+            }
+            for (u64 bit = 0U; bit < depth; ++bit)
+                put(operation + "/view/bit/" + std::to_string(bit), bits_for(offsets, 1U,
+                                                                                operation + ".bit"));
+            for (u64 level = 0U; level <= depth; ++level) {
+                const u64 level_width = 1ULL << level;
+                for (u64 node = 0U; node < level_width; ++node) {
+                    std::vector<NativeFrWire> chi;
+                    chi.reserve(offsets.size());
+                    const u64 mask = level == 0U ? 0U : ((1ULL << level) - 1U);
+                    for (const auto offset : offsets)
+                        chi.push_back(native_wire(level == 0U || (static_cast<u64>(offset) & mask) == node ? 1 : 0));
+                    put(operation + "/view/chi/" + std::to_string(level) + "/" + std::to_string(node),
+                        std::move(chi));
+                }
+            }
+        };
+        put_table(stage + "/leaky_relu", head_trace.score, tables.lrelu_min, tables.lrelu_max,
+                  head_trace.leaky_relu, tables.lrelu);
+        put_table(stage + "/exp_map", head_trace.delta, 0, static_cast<i64>(tables.exp_max),
+                  head_trace.exp_weight, tables.exp);
+        if (!output)
+            put_table(stage + "/elu", head_trace.aggregate_pre, tables.elu_min, tables.elu_max,
+                      head_trace.aggregate, tables.elu);
+
+        const std::string inner = stage + (output ? "/output_attention_inner_product" : "/attention_inner_product");
+        const Matrix& projected = output ? head_trace.y_prime : head_trace.h_prime;
+        put(inner + "/view/src_matrix", native_route_matrix(graph, projected, true));
+        put(inner + "/view/dst_matrix", native_route_matrix(graph, projected, false));
+        put_i64(inner + "/view/src_output", head_trace.e_src);
+        put_i64(inner + "/view/dst_output", head_trace.e_dst);
+
+        const std::string round = stage + "/signed_round_div";
+        put_round_views(round, head_trace.aggregate_round_div,
+                        head_trace.aggregate_num,
+                        output ? config.quantization.output_pre : config.quantization.hidden_aggregate_pre.at(stage.find("hidden/layer") == 0U ?
+                            static_cast<u64>(std::stoull(stage.substr(12, stage.find("/head") - 12U))) : 0U),
+                        output ? head_trace.y_quantized : head_trace.aggregate_pre);
+        if (output) {
+            put_round_views(stage + "/output_scale_alignment", head_trace.alignment_round_div,
+                            head_trace.y_quantized, config.quantization.output_head, head_trace.aligned);
+            const std::string bias = stage + "/output_bias";
+            put(bias + "/view/input0", native_matrix_values(head_trace.aligned));
+            put(bias + "/view/input1", native_edge_feature_from_scalar(head_trace.bias, graph.nodes));
+            put(bias + "/view/output0", native_matrix_values(head_trace.output));
+        }
+    };
+
+    // The helper above needs a round-view writer that is shared by every
+    // stage.  Define it after the stage-independent source tensors are known
+    // and before invoking the stage loop.
+    (void)put_group_views;
+    return NativeRelationWitness{};
 }
 
 GatTrace execute_cpu(const Config& config, const Graph& graph, const ModelBundle& model, const StaticTables& tables) {

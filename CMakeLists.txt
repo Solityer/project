@@ -132,9 +132,45 @@ if(GATZK_ENABLE_CUDA_BACKEND)
             "aacec3f72f14f53dd96d835698d2c87cde3a68b8 gitlink; "
             "run 'git submodule update --init third_party/icicle'")
     endif()
+    set(
+        GATZK_ICICLE_MSM_PATCHED_DIR
+        "${CMAKE_BINARY_DIR}/generated/icicle_v28_msm")
+
+    set(
+        GATZK_ICICLE_MSM_PATCHED_EXTERN
+        "${GATZK_ICICLE_MSM_PATCHED_DIR}/extern.cu")
+
+    set(
+        GATZK_ICICLE_MSM_PATCHED_IMPL
+        "${GATZK_ICICLE_MSM_PATCHED_DIR}/msm.cu")
+
+    add_custom_command(
+        OUTPUT
+            "${GATZK_ICICLE_MSM_PATCHED_EXTERN}"
+            "${GATZK_ICICLE_MSM_PATCHED_IMPL}"
+        COMMAND
+            "${CMAKE_COMMAND}" -E make_directory
+            "${GATZK_ICICLE_MSM_PATCHED_DIR}"
+        COMMAND
+            "${CMAKE_COMMAND}" -E copy_if_different
+            "${GATZK_ICICLE_ROOT}/icicle/src/msm/extern.cu"
+            "${GATZK_ICICLE_MSM_PATCHED_EXTERN}"
+        COMMAND
+            "${Python3_EXECUTABLE}"
+            "${PROJECT_SOURCE_DIR}/tools/patch_icicle_v28_msm.py"
+            --input
+            "${GATZK_ICICLE_ROOT}/icicle/src/msm/msm.cu"
+            --output
+            "${GATZK_ICICLE_MSM_PATCHED_IMPL}"
+        DEPENDS
+            "${PROJECT_SOURCE_DIR}/tools/patch_icicle_v28_msm.py"
+            "${GATZK_ICICLE_ROOT}/icicle/src/msm/extern.cu"
+            "${GATZK_ICICLE_ROOT}/icicle/src/msm/msm.cu"
+        VERBATIM)
+
     add_library(
         gatzk_icicle_bls12_381_msm STATIC
-        "${GATZK_ICICLE_ROOT}/icicle/src/msm/extern.cu")
+        "${GATZK_ICICLE_MSM_PATCHED_EXTERN}")
     target_include_directories(
         gatzk_icicle_bls12_381_msm
         PUBLIC "${GATZK_ICICLE_ROOT}/icicle/include")
