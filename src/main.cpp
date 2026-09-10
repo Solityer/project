@@ -719,6 +719,9 @@ int main(int argc, char **argv)
             metrics.reference_forward_ms = metrics.forward_ms;
             progress(mode_label + ":prove:start");
 
+            gatzk::protocol::timing::
+                start_prove_timer(&metrics);
+
             const auto proof =
                 gatzk::protocol::prove(
                     context,
