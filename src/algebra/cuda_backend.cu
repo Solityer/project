@@ -1064,10 +1064,11 @@ namespace gatzk::algebra
     // 重心插值权重计算(用于在单个挑战点x上快速评估多项式)
     namespace
     {
-                __device__ __forceinline__
-        gpu::GpuFr barycentric_pow_u64(
-            gpu::GpuFr base,
-            std::size_t exponent)
+        __device__ __forceinline__
+            gpu::GpuFr
+            barycentric_pow_u64(
+                gpu::GpuFr base,
+                std::size_t exponent)
         {
             auto result =
                 gpu::fr_one();
@@ -1097,14 +1098,10 @@ namespace gatzk::algebra
         barycentric_prepare_chunk_kernel(
             const gpu::GpuFr omega,
             const gpu::GpuFr x,
-            gpu::GpuFr *__restrict__
-                omega_powers,
-            gpu::GpuFr *__restrict__
-                denominators,
-            gpu::GpuFr *__restrict__
-                prefix_within,
-            gpu::GpuFr *__restrict__
-                chunk_products,
+            gpu::GpuFr *__restrict__ omega_powers,
+            gpu::GpuFr *__restrict__ denominators,
+            gpu::GpuFr *__restrict__ prefix_within,
+            gpu::GpuFr *__restrict__ chunk_products,
             std::size_t domain_size,
             std::size_t chunk_size)
         {
@@ -1173,18 +1170,13 @@ namespace gatzk::algebra
 
         __global__ void
         barycentric_weights_finalize_kernel(
-            const gpu::GpuFr *__restrict__
-                omega_powers,
-            const gpu::GpuFr *__restrict__
-                denominators,
-            const gpu::GpuFr *__restrict__
-                prefix_within,
-            const gpu::GpuFr *__restrict__
-                chunk_outer_inv,
+            const gpu::GpuFr *__restrict__ omega_powers,
+            const gpu::GpuFr *__restrict__ denominators,
+            const gpu::GpuFr *__restrict__ prefix_within,
+            const gpu::GpuFr *__restrict__ chunk_outer_inv,
             const gpu::GpuFr zero_eval,
             const gpu::GpuFr inv_n,
-            gpu::GpuFr *__restrict__
-                weights,
+            gpu::GpuFr *__restrict__ weights,
             std::size_t domain_size,
             std::size_t chunk_size)
         {
@@ -1218,10 +1210,8 @@ namespace gatzk::algebra
             {
                 auto inverse =
                     gpu::fr_mul(
-                        chunk_outer_inv[
-                            chunk_id],
-                        prefix_within[
-                            index]);
+                        chunk_outer_inv[chunk_id],
+                        prefix_within[index]);
 
                 inverse =
                     gpu::fr_mul(
@@ -1502,8 +1492,7 @@ namespace gatzk::algebra
         {
             chunk_products[chunk] =
                 gpu_to_mcl(
-                    host_chunk_products[
-                        chunk]);
+                    host_chunk_products[chunk]);
         }
 
         std::vector<mcl::Fr>
@@ -1518,20 +1507,16 @@ namespace gatzk::algebra
              ++chunk)
         {
             mcl::Fr::mul(
-                cross_prefix[
-                    chunk + 1],
-                cross_prefix[
-                    chunk],
-                chunk_products[
-                    chunk]);
+                cross_prefix[chunk + 1],
+                cross_prefix[chunk],
+                chunk_products[chunk]);
         }
 
         mcl::Fr global_inverse;
 
         mcl::Fr::inv(
             global_inverse,
-            cross_prefix[
-                num_chunks]);
+            cross_prefix[num_chunks]);
 
         mcl::Fr cross_suffix =
             mcl::Fr(1);
@@ -1545,8 +1530,7 @@ namespace gatzk::algebra
             mcl::Fr::mul(
                 partial,
                 global_inverse,
-                cross_prefix[
-                    chunk]);
+                cross_prefix[chunk]);
 
             mcl::Fr outer_inverse;
 
@@ -1555,16 +1539,14 @@ namespace gatzk::algebra
                 partial,
                 cross_suffix);
 
-            host_chunk_outer_inv[
-                chunk] =
+            host_chunk_outer_inv[chunk] =
                 mcl_to_gpu(
                     outer_inverse);
 
             mcl::Fr::mul(
                 cross_suffix,
                 cross_suffix,
-                chunk_products[
-                    chunk]);
+                chunk_products[chunk]);
         }
 
         status =

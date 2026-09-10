@@ -719,15 +719,6 @@ int main(int argc, char **argv)
             metrics.reference_forward_ms = metrics.forward_ms;
             progress(mode_label + ":prove:start");
 
-            const auto prove_wall_start =
-                std::chrono::steady_clock::now();
-
-            const auto commitment_time_before_prove =
-                metrics.commitment_time_ms;
-
-            gatzk::protocol::timing::
-                start_prove_timer(&metrics);
-
             const auto proof =
                 gatzk::protocol::prove(
                     context,
@@ -769,12 +760,13 @@ int main(int argc, char **argv)
                     double,
                     std::milli>(
                     prove_wall_end -
-                    prove_wall_start)
+                    metrics.prove_timer_wall_start)
                     .count();
 
             const auto prove_commitment_ms =
-                metrics.commitment_time_ms -
-                commitment_time_before_prove;
+                clamp_non_negative(
+                    metrics.commitment_time_ms -
+                    metrics.prove_timer_commitment_baseline_ms);
 
             metrics.prove_accounted_ms =
                 clamp_non_negative(

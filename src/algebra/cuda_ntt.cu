@@ -1069,7 +1069,8 @@ namespace gatzk::algebra
         {
             const auto flat_index =
                 static_cast<std::size_t>(
-                    blockIdx.x) * blockDim.x +
+                    blockIdx.x) *
+                    blockDim.x +
                 threadIdx.x;
 
             const auto total =
@@ -1110,7 +1111,8 @@ namespace gatzk::algebra
         {
             const auto chunk_index =
                 static_cast<std::size_t>(
-                    blockIdx.x) * blockDim.x +
+                    blockIdx.x) *
+                    blockDim.x +
                 threadIdx.x;
 
             const auto group_items =
@@ -1931,7 +1933,8 @@ namespace gatzk::algebra
         const FieldElement &shift,
         mcl::Fr *device_output,
         std::size_t target_size,
-        bool make_default_stream_wait)
+        bool make_default_stream_wait,
+        bool wait_for_default_stream_before_output)
     {
         if (device_output == nullptr ||
             domain_size == 0 ||
@@ -2189,7 +2192,7 @@ namespace gatzk::algebra
                 reinterpret_cast<const mcl::Fr *>(workspace.input),
                 reinterpret_cast<
                     mcl::Fr *>(
-                        device_output),
+                    device_output),
                 half_size,
                 2,
                 ntt::NTTDir::kForward,
@@ -2231,7 +2234,8 @@ namespace gatzk::algebra
         const FieldElement &shift,
         mcl::Fr *device_output,
         std::size_t target_size,
-        bool make_default_stream_wait)
+        bool make_default_stream_wait,
+        bool wait_for_default_stream_before_output)
     {
         if (device_output == nullptr ||
             target_size < 2 ||
@@ -2407,7 +2411,7 @@ namespace gatzk::algebra
                 reinterpret_cast<const mcl::Fr *>(workspace.input),
                 reinterpret_cast<
                     mcl::Fr *>(
-                        device_output),
+                    device_output),
                 half_size,
                 2,
                 ntt::NTTDir::kForward,

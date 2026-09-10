@@ -2516,7 +2516,7 @@ namespace gatzk::protocol
                                 .zero_domain_blinder,
                         .lease =
                             trace.spill_directory_lease,
-                    };
+            };
 
             if (!semantic_spill_cache_key.empty() &&
                 polynomial.shared_data != nullptr)
@@ -7412,6 +7412,8 @@ namespace gatzk::protocol
             const auto q_qry_exp = eval_data(context, "P_Q_qry_exp");
             const auto q_tbl_elu = eval_data(context, "P_Q_tbl_ELU");
             add_metric(metrics != nullptr ? &metrics->public_poly_residual_ms : nullptr, stage_start);
+
+            timing::start_prove_timer(metrics);
 
             if (static_artifacts.full_feature_identity)
             {

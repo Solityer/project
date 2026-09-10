@@ -21,7 +21,6 @@ namespace gatzk::algebra
 
     CudaNttWorkspaceResidency cuda_ntt_workspace_residency();
 
-
     bool cuda_coset_evaluations_to_device_exact(
         const mcl::Fr *values,
         std::size_t value_count,
@@ -31,7 +30,8 @@ namespace gatzk::algebra
         const FieldElement &shift,
         mcl::Fr *device_output,
         std::size_t target_size,
-        bool make_default_stream_wait = false);
+        bool make_default_stream_wait = false,
+        bool wait_for_default_stream_before_output = false);
 
     bool cuda_coset_coefficients_to_device_exact(
         const mcl::Fr *coefficients,
@@ -39,7 +39,8 @@ namespace gatzk::algebra
         const FieldElement &shift,
         mcl::Fr *device_output,
         std::size_t target_size,
-        bool make_default_stream_wait = false);
+        bool make_default_stream_wait = false,
+        bool wait_for_default_stream_before_output = false);
 
     bool cuda_coset_device_to_coefficients_exact(
         const mcl::Fr *device_values,

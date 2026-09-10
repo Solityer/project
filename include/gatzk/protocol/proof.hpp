@@ -1088,6 +1088,8 @@ namespace gatzk::protocol
         bool prove_timer_running = false;
         bool prove_timer_finished = false;
         std::size_t commitment_timer_depth = 0;
+        double prove_timer_commitment_baseline_ms = 0.0;
+        std::chrono::steady_clock::time_point prove_timer_wall_start{};
         std::chrono::steady_clock::time_point prove_timer_segment_start{};
         std::chrono::steady_clock::time_point commitment_timer_start{};
     };
@@ -1135,11 +1137,19 @@ namespace gatzk::protocol
                 throw std::runtime_error(
                     "formal prove timer started in an invalid timing state");
             }
+            const auto started =
+                Clock::now();
+
             metrics->prove_time_ms = 0.0;
+            metrics->prove_timer_commitment_baseline_ms =
+                metrics->commitment_time_ms;
             metrics->prove_timer_started = true;
             metrics->prove_timer_running = true;
             metrics->prove_timer_finished = false;
-            metrics->prove_timer_segment_start = Clock::now();
+            metrics->prove_timer_wall_start =
+                started;
+            metrics->prove_timer_segment_start =
+                started;
         }
 
         inline void finish_prove_timer(RunMetrics *metrics)

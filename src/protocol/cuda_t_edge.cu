@@ -591,6 +591,10 @@ namespace gatzk::protocol
                     cache_slot_count_,
                     0);
 
+                host_leaf_requires_default_wait_.assign(
+                    cache_slot_count_,
+                    false);
+
                 try
                 {
                     const auto leaf_bytes =
@@ -1033,12 +1037,16 @@ namespace gatzk::protocol
                             shift_,
                             device_leaf_table_[slot],
                             target_size_,
-                            true);
+                            true,
+                            host_leaf_requires_default_wait_[slot]);
 
                 if (!executed)
                 {
                     return false;
                 }
+
+                host_leaf_requires_default_wait_[slot] =
+                    false;
 
                 host_leaf_split_layout_[slot] =
                     1;
@@ -1084,12 +1092,16 @@ namespace gatzk::protocol
                             shift_,
                             device_leaf_table_[slot],
                             target_size_,
-                            true);
+                            true,
+                            host_leaf_requires_default_wait_[slot]);
 
                 if (!executed)
                 {
                     return false;
                 }
+
+                host_leaf_requires_default_wait_[slot] =
+                    false;
 
                 host_leaf_split_layout_[slot] =
                     1;
@@ -1496,6 +1508,16 @@ namespace gatzk::protocol
                         status);
                 }
 
+                for (const auto &source :
+                     sources)
+                {
+                    host_leaf_requires_default_wait_[
+                        source.slot] = true;
+                }
+
+                host_leaf_requires_default_wait_[
+                    target_slot] = true;
+
                 host_leaf_bound_[target_slot] = true;
                 return true;
             }
@@ -1581,6 +1603,9 @@ namespace gatzk::protocol
                 }
 
                 algebra::record_cuda_h2d(byte_count);
+
+                host_leaf_requires_default_wait_[slot] =
+                    false;
 
                 host_leaf_uploaded_prefix_[slot] =
                     logical_offset + count;
@@ -1759,6 +1784,13 @@ namespace gatzk::protocol
                 algebra::
                     record_cuda_kernel_invocations(
                         1);
+
+                for (const auto access :
+                     term.required_accesses)
+                {
+                    host_leaf_requires_default_wait_[
+                        access_slots[access]] = true;
+                }
             }
 
             void release_leaf(
@@ -2198,6 +2230,9 @@ namespace gatzk::protocol
 
             std::vector<std::size_t>
                 host_leaf_uploaded_prefix_;
+
+            std::vector<bool>
+                host_leaf_requires_default_wait_;
 
             std::uint8_t
                 *device_leaf_split_layout_ =
