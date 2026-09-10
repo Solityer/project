@@ -86,6 +86,8 @@ KERNEL void Fr_elementwise_unmont(GLOBAL Fr_t* arr, GLOBAL Fr_t* arr_out, uint n
   arr_out[gid] = blstrs__scalar__Scalar_unmont(arr[gid]);
 }
 
+DEVICE Fr_t Fr_field_mul(Fr_t a, Fr_t b);
+
 // Elementwise montegomery multiplication
 KERNEL void Fr_elementwise_mont_mul(GLOBAL Fr_t* arr1, GLOBAL Fr_t* arr2, GLOBAL Fr_t* arr_out, uint n) {
   const uint gid = GET_GLOBAL_ID();
@@ -98,7 +100,18 @@ KERNEL void Fr_broadcast_mont_mul(GLOBAL Fr_t* arr, Fr_t x, GLOBAL Fr_t* arr_out
 {
   const uint gid = GET_GLOBAL_ID();
   if (gid >= n) return;
-  arr_out[gid] = blstrs__scalar__Scalar_mul(arr[gid], x);
+  arr_out[gid] = Fr_field_mul(arr[gid], x);
+}
+
+// Canonical field multiplication for wire values.  The upstream kernels
+// historically mixed Montgomery and canonical encodings.  Opening points,
+// transcript challenges and serialized claims use canonical residues, so this
+// helper makes the conversion explicit at the native CUDA boundary.
+DEVICE Fr_t Fr_field_mul(Fr_t a, Fr_t b)
+{
+    return blstrs__scalar__Scalar_unmont(
+        blstrs__scalar__Scalar_mul(blstrs__scalar__Scalar_mont(a),
+                                   blstrs__scalar__Scalar_mont(b)));
 }
 
 
@@ -146,6 +159,25 @@ class FrTensor
         Fr_t out;
         cudaMemcpy(&out, gpu_data + idx, sizeof(Fr_t), cudaMemcpyDeviceToHost);
         return out;
+    }
+
+    // Explicit host/device transfer hooks used by the verifier-facing
+    // envelope and by the GAT adapter.  They expose the native tensor storage
+    // without introducing a second tensor implementation.
+    const Fr_t* device_data() const { return gpu_data; }
+    Fr_t* device_data() { return gpu_data; }
+
+    std::vector<Fr_t> to_host() const
+    {
+        std::vector<Fr_t> out(size);
+        if (size != 0) cudaMemcpy(out.data(), gpu_data, sizeof(Fr_t) * size, cudaMemcpyDeviceToHost);
+        return out;
+    }
+
+    void from_host(const Fr_t* cpu_data, uint count)
+    {
+        if (count != size) throw std::runtime_error("Incompatible tensor transfer size");
+        if (size != 0) cudaMemcpy(gpu_data, cpu_data, sizeof(Fr_t) * size, cudaMemcpyHostToDevice);
     }
 
     FrTensor operator+(const FrTensor& t) const
@@ -326,7 +358,8 @@ Fr_t FrTensor::sum() const
     cudaMemcpy(ptr_input, gpu_data, size * sizeof(Fr_t), cudaMemcpyDeviceToDevice);
 
     while(curSize > 1) {
-        uint gridSize = (curSize + FrNumThread - 1) / FrNumThread;
+        // Each reduction block consumes two input tiles of blockDim.x.
+        uint gridSize = (curSize + 2 * FrNumThread - 1) / (2 * FrNumThread);
         Fr_sum_reduction<<<gridSize, FrNumThread, FrSharedMemorySize>>>(ptr_input, ptr_output, curSize);
         cudaDeviceSynchronize(); // Ensure kernel completion before proceeding
         
@@ -351,12 +384,15 @@ Fr_t FrTensor::sum() const
 Fr_t FrTensor::operator()(const vector<Fr_t>& u) const
 {
     uint log_dim = u.size();
-    if (size <= ((1 << log_dim) / 2) || size > (1 << log_dim)) throw std::runtime_error("Incompatible dimensions");
+    if (log_dim >= 32 || size == 0) throw std::runtime_error("Incompatible dimensions");
+    const uint64_t domain = uint64_t(1) << log_dim;
+    if (size <= domain / 2 || uint64_t(size) > domain) throw std::runtime_error("Incompatible dimensions");
     return Fr_me(*this, u.begin(), u.end());
 }
 
 KERNEL void random_int_kernel(Fr_t* gpu_data, uint num_bits, uint n, unsigned long seed)
 {
+    if (num_bits == 0 || num_bits > 32) return;
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     curandState state;
     
@@ -364,13 +400,16 @@ KERNEL void random_int_kernel(Fr_t* gpu_data, uint num_bits, uint n, unsigned lo
     curand_init(seed, tid, 0, &state);  
     
     if (tid < n) {
-        gpu_data[tid] = {curand(&state) & ((1U << num_bits) - 1), 0, 0, 0, 0, 0, 0, 0};
-        gpu_data[tid] = blstrs__scalar__Scalar_sub(gpu_data[tid], {1U << (num_bits - 1), 0, 0, 0, 0, 0, 0, 0});
+        const uint mask = num_bits == 32 ? 0xffffffffU : ((1U << num_bits) - 1U);
+        const uint sign = num_bits == 32 ? 0x80000000U : (1U << (num_bits - 1));
+        gpu_data[tid] = {curand(&state) & mask, 0, 0, 0, 0, 0, 0, 0};
+        gpu_data[tid] = blstrs__scalar__Scalar_sub(gpu_data[tid], {sign, 0, 0, 0, 0, 0, 0, 0});
     }
 }
 
 FrTensor FrTensor::random_int(uint size, uint num_bits)
 {
+    if (num_bits == 0 || num_bits > 32) throw std::invalid_argument("random_int bit width must be in [1,32]");
     // Create a random device
     std::random_device rd;
 
@@ -395,7 +434,7 @@ KERNEL void random_kernel(Fr_t* gpu_data, uint n, unsigned long seed)
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     curandState state;
 
-    if (tid > n) return;
+    if (tid >= n) return;
     
     // Initialize the RNG state for this thread.
     curand_init(seed, tid, 0, &state);  
@@ -425,7 +464,11 @@ FrTensor FrTensor::random(uint size)
 
 FrTensor FrTensor::partial_me(vector<Fr_t> u, uint window_size) const
 {
-    if (size <= window_size * (1 << (u.size() - 1))) throw std::runtime_error("Incompatible dimensions");
+    // Prevent overflow in the power-of-two shape calculation.  An empty
+    // point is a valid no-op partial MLE evaluation.
+    if (window_size == 0 || u.size() >= 32) throw std::runtime_error("Incompatible dimensions");
+    const uint64_t required = uint64_t(window_size) << u.size();
+    if (required == 0 || uint64_t(size) <= required / 2U) throw std::runtime_error("Incompatible dimensions");
     return Fr_partial_me(*this, u.begin(), u.end(), window_size);
 }
 
@@ -459,8 +502,8 @@ KERNEL void Fr_me_step(GLOBAL Fr_t *arr_in, GLOBAL Fr_t *arr_out, Fr_t x, uint i
     
     uint gid0 = 2 * gid;
     uint gid1 = 2 * gid + 1;
-    if (gid1 < in_size) arr_out[gid] = blstrs__scalar__Scalar_add(arr_in[gid0], blstrs__scalar__Scalar_mul(x, blstrs__scalar__Scalar_sub(arr_in[gid1], arr_in[gid0])));
-    else if (gid0 < in_size) arr_out[gid] = blstrs__scalar__Scalar_sub(arr_in[gid0], blstrs__scalar__Scalar_mul(x, arr_in[gid0]));
+    if (gid1 < in_size) arr_out[gid] = blstrs__scalar__Scalar_add(arr_in[gid0], Fr_field_mul(x, blstrs__scalar__Scalar_sub(arr_in[gid1], arr_in[gid0])));
+    else if (gid0 < in_size) arr_out[gid] = blstrs__scalar__Scalar_sub(arr_in[gid0], Fr_field_mul(x, arr_in[gid0]));
     else arr_out[gid] = blstrs__scalar__Scalar_ZERO;
 }
 
@@ -482,8 +525,8 @@ KERNEL void Fr_partial_me_step(GLOBAL Fr_t *arr_in, GLOBAL Fr_t *arr_out, Fr_t x
     uint idx_in_window = gid % window_size;
     uint gid0 = 2 * window_id * window_size + idx_in_window;
     uint gid1 = (2 * window_id + 1) * window_size + idx_in_window;
-    if (gid1 < in_size) arr_out[gid] = blstrs__scalar__Scalar_add(arr_in[gid0], blstrs__scalar__Scalar_mul(x, blstrs__scalar__Scalar_sub(arr_in[gid1], arr_in[gid0])));
-    else if (gid0 < in_size) arr_out[gid] = blstrs__scalar__Scalar_sub(arr_in[gid0], blstrs__scalar__Scalar_mul(x, arr_in[gid0]));
+    if (gid1 < in_size) arr_out[gid] = blstrs__scalar__Scalar_add(arr_in[gid0], Fr_field_mul(x, blstrs__scalar__Scalar_sub(arr_in[gid1], arr_in[gid0])));
+    else if (gid0 < in_size) arr_out[gid] = blstrs__scalar__Scalar_sub(arr_in[gid0], Fr_field_mul(x, arr_in[gid0]));
     else arr_out[gid] = blstrs__scalar__Scalar_ZERO;
 }
 

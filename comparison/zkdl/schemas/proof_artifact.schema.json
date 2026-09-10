@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "zkDL_gat_proof_artifact_v1",
+  "title": "zkDL GAT proof artifact metadata",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "statement_id", "proof_id", "backend", "proof_scope", "native_core_api", "status", "proof_size_bytes", "commitment_size_bytes", "commitment_time_seconds", "prove_time_seconds", "verify_time_seconds", "verifier_reads_witness", "gpu_kernel_executed", "silent_fallback", "output_bound", "error"],
+  "properties": {
+    "schema": {"const": "zkDL_gat_proof_envelope_v1"},
+    "statement_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "proof_id": {"type": "string", "minLength": 1},
+    "backend": {"type": "string", "enum": ["cpu", "gpu"]},
+    "proof_scope": {"const": "full_gat_forward"},
+    "native_core_api": {"type": "string", "minLength": 1},
+    "status": {"type": "string", "enum": ["VERIFIED", "BLOCKED", "UNAVAILABLE"]},
+    "proof_size_bytes": {"type": "integer", "minimum": 0},
+    "commitment_size_bytes": {"type": "integer", "minimum": 0},
+    "commitment_time_seconds": {"type": "number", "minimum": 0},
+    "prove_time_seconds": {"type": "number", "minimum": 0},
+    "verify_time_seconds": {"type": "number", "minimum": 0},
+    "verifier_reads_witness": {"const": false},
+    "gpu_kernel_executed": {"type": "boolean"},
+    "silent_fallback": {"const": false},
+    "output_bound": {"type": "boolean"},
+    "error": {"type": "string"}
+  }
+}

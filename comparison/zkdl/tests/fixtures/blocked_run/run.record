@@ -1,0 +1,17 @@
+schema=zkDL_gat_run_record_v1
+dataset=cora
+backend=gpu
+statement_id=0000000000000000000000000000000000000000000000000000000000000000
+proof_id=
+verification_status=BLOCKED
+proof_scope=full_gat_forward
+proof_size_bytes=0
+commitment_size_bytes=0
+commitment_time_seconds=0
+prove_time_seconds=0
+verify_time_seconds=0
+verifier_reads_witness=0
+gpu_kernel_executed=0
+silent_fallback=0
+output_bound=0
+error=fixture-blocked

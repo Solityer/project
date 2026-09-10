@@ -8,7 +8,7 @@ NVCC := $(CUDA_PATH)/bin/nvcc
 # Include and library paths
 INCLUDES := -I$(CUDA_PATH)/include # -I$(LIBTORCH_PATH)/include -I$(LIBTORCH_PATH)/include/torch/csrc/api/include
 #LIBS     := -L$(CUDA_PATH)/lib64 -lcudart -L$(LIBTORCH_PATH)/lib -ltorch -lc10
-LIBS := -L$(CUDA_PATH)/lib64 -lcudart # -L$(LIBTORCH_PATH)/lib -ltorch -ltorch_cpu -ltorch_cuda -lc10 -lc10_cuda
+LIBS := -L$(CUDA_PATH)/lib64 -lcudart -lcrypto # -L$(LIBTORCH_PATH)/lib -ltorch -ltorch_cpu -ltorch_cuda -lc10 -lc10_cuda
 
 
 # NVCC compiler flags
@@ -17,11 +17,28 @@ NVCC_FLAGS := -arch=sm_80
 # Source and target files
 SRCS := $(wildcard *.cu)
 TARGETS := $(SRCS:.cu=)
+GAT_TARGET := gat_runner
+GAT_SRC := gat_adapter/gat_runner.cu gat_adapter/gat_native_bridge.cu
 
-all: $(TARGETS)
+.PHONY: all baseline-local-build test-short clean
+
+all: $(TARGETS) $(GAT_TARGET)
+
+# Baseline-local targets intentionally build only the restored official CUDA
+# core plus the GAT adapter.  No target reaches into comparison/main or the
+# test-only fixtures at runtime.
+baseline-local-build: $(GAT_TARGET)
+
+test-short: tests/core_smoke
+
+tests/core_smoke: tests/core_smoke.cu proof.cuh commitment.cuh fr-tensor.cuh g1-tensor.cuh
+	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $< -o $@
 
 %: %.cu
 	$(NVCC)  $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $< -o $@
+
+$(GAT_TARGET): $(GAT_SRC) gat_adapter/gat_adapter.hpp gat_adapter/gat_native_bridge.hpp commitment.cuh proof.cuh fr-tensor.cuh g1-tensor.cuh zkmatmul.cuh zkprod.cuh
+	$(NVCC) $(NVCC_FLAGS) -std=c++17 $(INCLUDES) $(LIBS) -I. -Igat_adapter $(GAT_SRC) -o $@
 	
 clean:
-	rm -f $(TARGETS)
+	rm -f $(TARGETS) $(GAT_TARGET) tests/core_smoke

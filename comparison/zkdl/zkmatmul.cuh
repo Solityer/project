@@ -116,4 +116,9 @@ void zkMatMul::prove(const Commitment& genA, const Commitment& genB, uint& proof
     p_timer.stop();
 }
 
+// The legacy demo API above intentionally remains available for upstream
+// callers.  The verifier-facing GAT adapter is kept in a separate header so
+// the native kernel and its historical declarations stay recognizable.
+#include "zkmatmul-proof.cuh"
+
 #endif

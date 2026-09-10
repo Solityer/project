@@ -1,0 +1,2 @@
+/usr/bin/ar qc libgpt_lib.a CMakeFiles/gpt_lib.dir/circuit.cpp.o CMakeFiles/gpt_lib.dir/hyrax.cpp.o CMakeFiles/gpt_lib.dir/hyrax_rp.cpp.o CMakeFiles/gpt_lib.dir/models.cpp.o CMakeFiles/gpt_lib.dir/neuralNetwork.cpp.o CMakeFiles/gpt_lib.dir/polynomial.cpp.o CMakeFiles/gpt_lib.dir/prover.cpp.o CMakeFiles/gpt_lib.dir/range_prover.cpp.o CMakeFiles/gpt_lib.dir/timer.cpp.o CMakeFiles/gpt_lib.dir/utils.cpp.o CMakeFiles/gpt_lib.dir/verifier.cpp.o
+/usr/bin/ranlib libgpt_lib.a

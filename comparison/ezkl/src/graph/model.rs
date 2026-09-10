@@ -378,12 +378,53 @@ impl NodeType {
 pub struct ParsedNodes {
     /// The nodes in the graph.
     pub nodes: BTreeMap<usize, NodeType>,
+    /// Runtime parameter input node indices.  These are deliberately kept
+    /// separate from the public graph inputs: canonical GAT parameters are a
+    /// single private advice tensor, while legacy ONNX models continue to use
+    /// constants discovered in the graph.
+    #[serde(default)]
+    pub param_inputs: Vec<usize>,
     inputs: Vec<usize>,
     outputs: Vec<Outlet>,
     output_types: Vec<InputType>,
 }
 
 impl ParsedNodes {
+    /// Construct a graph from an adapter-owned canonical node map.
+    ///
+    /// This is intentionally a narrow exposure hook: parsing, layout and
+    /// proof generation remain owned by the official ezkl graph machinery.
+    pub fn from_parts(
+        nodes: BTreeMap<usize, NodeType>,
+        inputs: Vec<usize>,
+        outputs: Vec<Outlet>,
+        output_types: Vec<InputType>,
+    ) -> Self {
+        Self::from_parts_with_param_inputs(nodes, inputs, vec![], outputs, output_types)
+    }
+
+    /// Construct a graph with explicit private runtime parameter inputs.
+    ///
+    /// The four-argument [`Self::from_parts`] constructor remains the
+    /// backwards-compatible path for ordinary ONNX graphs.  A parameter input
+    /// is not included in `inputs`, so it can never accidentally become a
+    /// public feature instance.
+    pub fn from_parts_with_param_inputs(
+        nodes: BTreeMap<usize, NodeType>,
+        inputs: Vec<usize>,
+        param_inputs: Vec<usize>,
+        outputs: Vec<Outlet>,
+        output_types: Vec<InputType>,
+    ) -> Self {
+        Self {
+            nodes,
+            param_inputs,
+            inputs,
+            outputs,
+            output_types,
+        }
+    }
+
     /// Returns the output types of the computational graph.
     pub fn get_output_types(&self) -> Vec<InputType> {
         self.output_types.clone()
@@ -392,6 +433,28 @@ impl ParsedNodes {
     /// Returns the number of the computational graph's inputs
     pub fn num_inputs(&self) -> usize {
         self.inputs.len()
+    }
+
+    /// Returns the number of explicit runtime parameter inputs.
+    pub fn num_param_inputs(&self) -> usize {
+        self.param_inputs.len()
+    }
+
+    /// Returns shapes of the explicit runtime parameter inputs.
+    pub fn param_shapes(&self) -> Result<Vec<Vec<usize>>, GraphError> {
+        self.param_inputs
+            .iter()
+            .map(|input| {
+                let node = self
+                    .nodes
+                    .get(input)
+                    .ok_or(GraphError::MissingNode(*input))?;
+                node.out_dims()
+                    .first()
+                    .cloned()
+                    .ok_or(GraphError::MissingNode(*input))
+            })
+            .collect()
     }
 
     /// Input types
@@ -572,9 +635,25 @@ impl Model {
             })
             .collect::<Result<Vec<_>, GraphError>>()?;
 
-        let res = self.dummy_layout(
+        let runtime_params = self
+            .graph
+            .param_shapes()?
+            .iter()
+            .map(|shape| {
+                let len = shape.iter().product();
+                let mut tensor: ValTensor<Fp> = (0..len)
+                    .map(|_| ValType::Value(Value::<Fp>::unknown()))
+                    .collect::<Vec<_>>()
+                    .into();
+                tensor.reshape(shape)?;
+                Ok(tensor)
+            })
+            .collect::<Result<Vec<_>, GraphError>>()?;
+
+        let res = self.dummy_layout_with_runtime_params(
             run_args,
             &inputs,
+            &runtime_params,
             RegionSettings::all_false(run_args.decomp_base, run_args.decomp_legs),
         )?;
 
@@ -622,11 +701,41 @@ impl Model {
         run_args: &RunArgs,
         region_settings: RegionSettings,
     ) -> Result<ForwardResult, GraphError> {
+        self.forward_with_runtime_params(model_inputs, &[], run_args, region_settings)
+    }
+
+    /// Runs a forward pass with explicit runtime parameter tensors.
+    ///
+    /// Canonical GAT models use one flat private parameter input.  Keeping this
+    /// API separate from the legacy ONNX forward method makes the old constant
+    /// graph path source-compatible while ensuring the adapter cannot silently
+    /// fall back to compile-time constants.
+    pub fn forward_with_runtime_params(
+        &self,
+        model_inputs: &[Tensor<Fp>],
+        runtime_params: &[Tensor<Fp>],
+        run_args: &RunArgs,
+        region_settings: RegionSettings,
+    ) -> Result<ForwardResult, GraphError> {
+        if self.graph.num_param_inputs() > 0 && !self.visibility.params.is_hashed_public() {
+            return Err(GraphError::MisformedParams(
+                "canonical runtime parameters require public native H(W) visibility".into(),
+            ));
+        }
         let valtensor_inputs: Vec<ValTensor<Fp>> = model_inputs
             .iter()
             .map(|x| x.map(|elem| ValType::Value(Value::known(elem))).into())
             .collect();
-        let res = self.dummy_layout(run_args, &valtensor_inputs, region_settings)?;
+        let valtensor_params: Vec<ValTensor<Fp>> = runtime_params
+            .iter()
+            .map(|x| x.map(|elem| ValType::Value(Value::known(elem))).into())
+            .collect();
+        let res = self.dummy_layout_with_runtime_params(
+            run_args,
+            &valtensor_inputs,
+            &valtensor_params,
+            region_settings,
+        )?;
         Ok(res.into())
     }
 
@@ -722,6 +831,7 @@ impl Model {
 
         let parsed_nodes = ParsedNodes {
             nodes,
+            param_inputs: vec![],
             inputs: model.inputs.iter().map(|o| o.node).collect(),
             outputs: model.outputs.iter().map(|o| (o.node, o.slot)).collect(),
             output_types: model
@@ -885,6 +995,7 @@ impl Model {
 
                     let subgraph = ParsedNodes {
                         nodes: subgraph_nodes,
+                        param_inputs: vec![],
                         inputs: model.inputs.iter().map(|o| o.node).collect(),
                         outputs: model.outputs.iter().map(|o| (o.node, o.slot)).collect(),
                         output_types: model
@@ -1139,6 +1250,43 @@ impl Model {
         witnessed_outputs: &[ValTensor<Fp>],
         constants: &mut ConstantsMap<Fp>,
     ) -> Result<Vec<ValTensor<Fp>>, GraphError> {
+        self.layout_with_runtime_params(
+            config,
+            layouter,
+            run_args,
+            inputs,
+            &[],
+            vars,
+            witnessed_outputs,
+            constants,
+        )
+    }
+
+    /// Layout the graph with explicit runtime parameter advice tensors.
+    ///
+    /// `runtime_params` are inserted under `ParsedNodes::param_inputs` and are
+    /// never converted into `Constant` nodes.  An empty slice is accepted only
+    /// for legacy graphs without explicit parameter inputs.
+    #[allow(clippy::too_many_arguments)]
+    pub fn layout_with_runtime_params(
+        &self,
+        mut config: ModelConfig,
+        layouter: &mut impl Layouter<Fp>,
+        run_args: &RunArgs,
+        inputs: &[ValTensor<Fp>],
+        runtime_params: &[ValTensor<Fp>],
+        vars: &mut ModelVars<Fp>,
+        witnessed_outputs: &[ValTensor<Fp>],
+        constants: &mut ConstantsMap<Fp>,
+    ) -> Result<Vec<ValTensor<Fp>>, GraphError> {
+        if self.graph.param_inputs.len() != runtime_params.len() {
+            return Err(GraphError::MisformedParams(format!(
+                "runtime parameter input count {} does not match graph declaration {}",
+                runtime_params.len(),
+                self.graph.param_inputs.len()
+            )));
+        }
+
         info!("model layout...");
 
         let start_time = instant::Instant::now();
@@ -1160,6 +1308,21 @@ impl Model {
                 input.reshape(&input_shapes[i])?;
                 results.insert(*input_idx, vec![input]);
             }
+        }
+
+        for (param_idx, param) in self.graph.param_inputs.iter().zip(runtime_params) {
+            let shape = self
+                .graph
+                .nodes
+                .get(param_idx)
+                .ok_or(GraphError::MissingNode(*param_idx))?
+                .out_dims()
+                .first()
+                .cloned()
+                .ok_or(GraphError::MissingNode(*param_idx))?;
+            let mut param = param.clone();
+            param.reshape(&shape)?;
+            results.insert(*param_idx, vec![param]);
         }
 
         let instance_idx = vars.get_instance_idx();
@@ -1267,7 +1430,9 @@ impl Model {
         let orig_inputs: BTreeMap<usize, _> = results
             .clone()
             .into_iter()
-            .filter(|(idx, _)| self.graph.inputs.contains(idx))
+            .filter(|(idx, _)| {
+                self.graph.inputs.contains(idx) || self.graph.param_inputs.contains(idx)
+            })
             .collect();
 
         for (idx, node) in self.graph.nodes.iter() {
@@ -1484,6 +1649,43 @@ impl Model {
         inputs: &[ValTensor<Fp>],
         region_settings: RegionSettings,
     ) -> Result<DummyPassRes, GraphError> {
+        let runtime_params = self
+            .graph
+            .param_shapes()?
+            .iter()
+            .map(|shape| {
+                let len = shape.iter().product();
+                let mut tensor: ValTensor<Fp> = (0..len)
+                    .map(|_| ValType::Value(Value::<Fp>::unknown()))
+                    .collect::<Vec<_>>()
+                    .into();
+                tensor.reshape(shape)?;
+                Ok(tensor)
+            })
+            .collect::<Result<Vec<_>, GraphError>>()?;
+        self.dummy_layout_with_runtime_params(run_args, inputs, &runtime_params, region_settings)
+    }
+
+    /// Dummy-layout variant that carries explicit runtime parameter advice.
+    ///
+    /// The old [`Self::dummy_layout`] API remains suitable for ONNX models
+    /// whose parameters are represented by constants.  Canonical adapters use
+    /// this variant so key generation and settings calculation see the same
+    /// flat parameter input shape as witness synthesis.
+    pub fn dummy_layout_with_runtime_params(
+        &self,
+        run_args: &RunArgs,
+        inputs: &[ValTensor<Fp>],
+        runtime_params: &[ValTensor<Fp>],
+        region_settings: RegionSettings,
+    ) -> Result<DummyPassRes, GraphError> {
+        if self.graph.param_inputs.len() != runtime_params.len() {
+            return Err(GraphError::MisformedParams(format!(
+                "runtime parameter input count {} does not match graph declaration {}",
+                runtime_params.len(),
+                self.graph.param_inputs.len()
+            )));
+        }
         debug!("calculating num of constraints using dummy model layout...");
 
         let start_time = instant::Instant::now();
@@ -1492,6 +1694,20 @@ impl Model {
 
         for (i, input_idx) in self.graph.inputs.iter().enumerate() {
             results.insert(*input_idx, vec![inputs[i].clone()]);
+        }
+        for (param_idx, param) in self.graph.param_inputs.iter().zip(runtime_params) {
+            let shape = self
+                .graph
+                .nodes
+                .get(param_idx)
+                .ok_or(GraphError::MissingNode(*param_idx))?
+                .out_dims()
+                .first()
+                .cloned()
+                .ok_or(GraphError::MissingNode(*param_idx))?;
+            let mut param = param.clone();
+            param.reshape(&shape)?;
+            results.insert(*param_idx, vec![param]);
         }
 
         let mut dummy_config = {

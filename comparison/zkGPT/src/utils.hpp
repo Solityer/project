@@ -10,8 +10,8 @@
 int ceilPow2BitLengthSigned(double n);
 int floorPow2BitLengthSigned(double n);
 
-char ceilPow2BitLength(u32 n);
-char floorPow2BitLength(u32 n);
+i8 ceilPow2BitLength(u32 n);
+i8 floorPow2BitLength(u32 n);
 void field(const char* f,Fr x);
 
 

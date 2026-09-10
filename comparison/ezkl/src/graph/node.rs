@@ -22,6 +22,7 @@ use crate::circuit::Constant;
 use crate::circuit::Input;
 use crate::circuit::Op;
 use crate::circuit::Unknown;
+use crate::gat_adapter::op::GatOp;
 
 // Import graph error types for EZKL
 #[cfg(all(feature = "ezkl", not(target_arch = "wasm32")))]
@@ -305,6 +306,8 @@ pub enum SupportedOp {
     Constant(Constant<Fp>),
     /// Placeholder for unsupported operations
     Unknown(Unknown),
+    /// Canonical grouped-edge GAT operation.
+    Gat(GatOp),
     /// Operations requiring rescaling of inputs
     Rescaled(Rescaled),
     /// Operations requiring scale rebasing
@@ -320,6 +323,9 @@ impl SupportedOp {
     pub fn is_lookup(&self) -> bool {
         match self {
             SupportedOp::Nonlinear(_) => true,
+            // GatOp lays out authenticated LReLU/exp/ELU/max rows through
+            // the official dynamic-lookup backend.
+            SupportedOp::Gat(_) => true,
             SupportedOp::RebaseScale(op) => op.inner.is_lookup(),
             _ => false,
         }
@@ -406,6 +412,7 @@ impl SupportedOp {
             SupportedOp::Input(op) => op,
             SupportedOp::Constant(op) => op,
             SupportedOp::Unknown(op) => op,
+            SupportedOp::Gat(op) => op,
             SupportedOp::Rescaled(op) => op,
             SupportedOp::RebaseScale(op) => op,
         }
@@ -450,6 +457,10 @@ impl From<Box<dyn Op<Fp>>> for SupportedOp {
 
         if let Some(op) = value.as_any().downcast_ref::<Unknown>() {
             return SupportedOp::Unknown(op.clone());
+        };
+
+        if let Some(op) = value.as_any().downcast_ref::<GatOp>() {
+            return SupportedOp::Gat(op.clone());
         };
 
         if let Some(op) = value.as_any().downcast_ref::<Rescaled>() {

@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+root="$(cd -- "$script_dir/.." && pwd -P)"
+backend="${1:-}"
+if [[ "$backend" != "cpu" && "$backend" != "gpu" ]]; then
+  echo "usage: $0 cpu|gpu" >&2
+  exit 2
+fi
+if [[ "${ZKDL_ALLOW_FULL_DATASET_RUN:-0}" != "1" ]]; then
+  echo "run-five: refusing full-dataset proving; set ZKDL_ALLOW_FULL_DATASET_RUN=1 after review" >&2
+  exit 3
+fi
+for config in cora citeseer pubmed ppi ogbn_arxiv; do
+  "$script_dir/run_single.sh" "$root/configs/${config}_secure.cfg" "$backend" "runs/${config}_${backend}"
+done

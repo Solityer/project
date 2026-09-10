@@ -20,17 +20,37 @@ void prover::init()
     proof_size = 0;
     r_u.resize(C.size + 1);
     r_v.resize(C.size + 1);
-    const int SIZE=28;
-    V_mult[0].resize(1<<SIZE);
-    V_mult[1].resize(1<<SIZE);
-    mult_array[0].resize(1<<SIZE);
-    mult_array[1].resize(1<<SIZE);
-    tmp_V_mult[0].resize(1<<SIZE);
-    tmp_V_mult[1].resize(1<<SIZE);
-    tmp_mult_array[0].resize(1<<SIZE);
-    tmp_mult_array[1].resize(1<<SIZE);
-    lasso_mult_v.resize(1<<SIZE);
-    for(int i=0;i<(1<<SIZE);i++)
+
+    // The upstream implementation reserved 2^28 scratch entries for every
+    // tiny circuit as well as for the largest historical GPT circuit.  That
+    // makes a bounded primitive check allocate tens of gigabytes before a
+    // single Sumcheck round.  Size the same official scratch arrays from the
+    // actual layered-circuit bit lengths; large circuits retain the original
+    // capacity while small relations stay bounded.
+    int scratch_bits = 0;
+    for (const layer &current : C.circuit) {
+        scratch_bits = std::max<int>(scratch_bits, current.bit_length);
+        scratch_bits = std::max<int>(scratch_bits, current.bit_length_u[0]);
+        scratch_bits = std::max<int>(scratch_bits, current.bit_length_u[1]);
+        scratch_bits = std::max<int>(scratch_bits, current.bit_length_v[0]);
+        scratch_bits = std::max<int>(scratch_bits, current.bit_length_v[1]);
+        scratch_bits = std::max<int>(scratch_bits, current.max_bl_u);
+        scratch_bits = std::max<int>(scratch_bits, current.max_bl_v);
+    }
+    scratch_bits = std::max(1, scratch_bits);
+    if (scratch_bits >= static_cast<int>(8 * sizeof(std::size_t)))
+        throw std::length_error("prover scratch domain is too large");
+    const std::size_t scratch_size = std::size_t(1) << scratch_bits;
+    V_mult[0].resize(scratch_size);
+    V_mult[1].resize(scratch_size);
+    mult_array[0].resize(scratch_size);
+    mult_array[1].resize(scratch_size);
+    tmp_V_mult[0].resize(scratch_size);
+    tmp_V_mult[1].resize(scratch_size);
+    tmp_mult_array[0].resize(scratch_size);
+    tmp_mult_array[1].resize(scratch_size);
+    lasso_mult_v.resize(scratch_size);
+    for(std::size_t i=0;i<scratch_size;i++)
         lasso_mult_v[i]=0;
 }
 

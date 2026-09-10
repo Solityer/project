@@ -34,9 +34,9 @@ use self::input::GraphData;
 use self::modules::{GraphModules, ModuleConfigs, ModuleForwardResult, ModuleSizes};
 use crate::circuit::lookup::LookupOp;
 use crate::circuit::modules::ModulePlanner;
-use crate::circuit::region::{ConstantsMap, RegionSettings};
+use crate::circuit::region::{ConstantsMap, RegionCtx, RegionSettings};
 use crate::circuit::table::{num_cols_required, Range, Table, RESERVED_BLINDING_ROWS_PAD};
-use crate::circuit::{CheckMode, InputType};
+use crate::circuit::{CheckMode, Input, InputType};
 use crate::fieldutils::{felt_to_f64, IntegerRep};
 use crate::pfsys::PrettyElements;
 use crate::tensor::{Tensor, ValTensor};
@@ -138,6 +138,12 @@ pub struct GraphWitness {
     pub max_range_size: IntegerRep,
     /// (optional) version of ezkl used
     pub version: Option<String>,
+    /// The private runtime parameter closure, stored separately from public
+    /// graph inputs.  Keeping this field at the end preserves the legacy
+    /// ONNX witness serialization prefix; legacy witnesses default it to an
+    /// empty vector.
+    #[serde(default)]
+    pub params: Vec<Vec<Fp>>,
 }
 
 impl GraphWitness {
@@ -158,6 +164,7 @@ impl GraphWitness {
     pub fn new(inputs: Vec<Vec<Fp>>, outputs: Vec<Vec<Fp>>) -> Self {
         GraphWitness {
             inputs,
+            params: vec![],
             outputs,
             pretty_elements: None,
             processed_inputs: None,
@@ -307,6 +314,15 @@ impl GraphWitness {
             .into_iter()
             .map(|i| Tensor::from(i.into_iter()))
             .collect::<Vec<Tensor<Fp>>>()
+    }
+
+    /// Convert explicit runtime parameter witnesses to tensors.
+    pub fn get_param_tensor(&self) -> Vec<Tensor<Fp>> {
+        self.params
+            .clone()
+            .into_iter()
+            .map(|p| Tensor::from(p.into_iter()))
+            .collect()
     }
 
     ///
@@ -1252,8 +1268,31 @@ impl GraphCircuit {
             GraphError::ReadWriteFileError(path.display().to_string(), e.to_string())
         })?;
         let writer = std::io::BufWriter::with_capacity(*EZKL_BUF_CAPACITY, f);
-        bincode::serialize_into(writer, &self)?;
+        // A compiled circuit contains structure and settings only.  Runtime
+        // private parameters are witness data and must never be serialized
+        // into this artifact.
+        let mut compiled = self.clone();
+        Self::redact_compiled_model_params(&mut compiled.core.model);
+        compiled.graph_witness.params.clear();
+        compiled.graph_witness.outputs.clear();
+        compiled.graph_witness.processed_inputs = None;
+        compiled.graph_witness.processed_params = None;
+        compiled.graph_witness.processed_outputs = None;
+        bincode::serialize_into(writer, &compiled)?;
         Ok(())
+    }
+
+    fn redact_compiled_model_params(model: &mut Model) {
+        for node in model.graph.nodes.values_mut() {
+            match node {
+                NodeType::Node(node) => {
+                    if let SupportedOp::Gat(op) = &mut node.opkind {
+                        op.redact_private_params();
+                    }
+                }
+                NodeType::SubGraph { model, .. } => Self::redact_compiled_model_params(model),
+            }
+        }
     }
 
     ///
@@ -1341,9 +1380,14 @@ impl GraphCircuit {
         // dummy module settings, must load from GraphData after
         let mut settings = model.gen_params(run_args, run_args.check_mode)?;
 
+        let parameter_shapes = if model.graph.num_param_inputs() > 0 {
+            model.graph.param_shapes()?
+        } else {
+            model.const_shapes()
+        };
         let mut num_params = 0;
-        if !model.const_shapes().is_empty() {
-            for shape in model.const_shapes() {
+        if !parameter_shapes.is_empty() {
+            for shape in parameter_shapes {
                 num_params += shape.iter().product::<usize>();
             }
         }
@@ -1402,6 +1446,24 @@ impl GraphCircuit {
 
     /// load inputs and outputs for the model
     pub fn load_graph_witness(&mut self, data: &GraphWitness) -> Result<(), GraphError> {
+        if self.model().graph.num_param_inputs() > 0 {
+            let expected = self.model().graph.param_shapes()?;
+            if data.params.len() != expected.len()
+                || data
+                    .params
+                    .iter()
+                    .zip(expected)
+                    .any(|(value, shape)| value.len() != shape.iter().product::<usize>())
+            {
+                return Err(GraphError::MisformedParams(
+                    "runtime parameter witness shape does not match compiled graph".into(),
+                ));
+            }
+        } else if !data.params.is_empty() {
+            return Err(GraphError::MisformedParams(
+                "legacy graph does not accept explicit runtime parameter witnesses".into(),
+            ));
+        }
         self.graph_witness = data.clone();
         // load the module settings
         Ok(())
@@ -1738,9 +1800,43 @@ impl GraphCircuit {
         srs: Option<&Scheme::ParamsProver>,
         region_settings: RegionSettings,
     ) -> Result<GraphWitness, GraphError> {
+        self.forward_with_runtime_params(inputs, None, vk, srs, region_settings)
+    }
+
+    /// Runs the official graph forward with one explicit flat runtime
+    /// parameter tensor.  The parameter module and the graph relation receive
+    /// the same tensor values; synthesis later reuses the same assigned advice
+    /// cells for both consumers.
+    pub fn forward_with_runtime_params<Scheme: CommitmentScheme<Scalar = Fp, Curve = G1Affine>>(
+        &self,
+        inputs: &mut [Tensor<Fp>],
+        runtime_params: Option<&Tensor<Fp>>,
+        vk: Option<&VerifyingKey<G1Affine>>,
+        srs: Option<&Scheme::ParamsProver>,
+        region_settings: RegionSettings,
+    ) -> Result<GraphWitness, GraphError> {
         let original_inputs = inputs.to_vec();
 
         let visibility = VarVisibility::from_args(&self.settings().run_args)?;
+        if self.model().graph.num_param_inputs() > 0 && runtime_params.is_none() {
+            return Err(GraphError::MisformedParams(
+                "canonical graph requires an explicit runtime parameter tensor".into(),
+            ));
+        }
+        if self.model().graph.num_param_inputs() > 0 && !visibility.params.is_hashed_public() {
+            return Err(GraphError::MisformedParams(
+                "canonical graph runtime parameters require public native H(W) visibility".into(),
+            ));
+        }
+        if let Some(runtime_params) = runtime_params {
+            let expected = self.model().graph.param_shapes()?;
+            if expected.len() != 1 || runtime_params.len() != expected[0].iter().product::<usize>()
+            {
+                return Err(GraphError::MisformedParams(
+                    "runtime parameter tensor shape does not match canonical graph".into(),
+                ));
+            }
+        }
         let mut processed_inputs = None;
         let mut processed_params = None;
         let mut processed_outputs = None;
@@ -1771,21 +1867,36 @@ impl GraphCircuit {
         }
 
         if visibility.params.requires_processing() {
-            let params = self.model().get_all_params();
-            if !params.is_empty() {
-                let flattened_params = Tensor::new(Some(&params), &[params.len()])?.combine()?;
-                processed_params = Some(GraphModules::forward::<Scheme>(
-                    &[flattened_params],
-                    &visibility.params,
-                    vk,
-                    srs,
-                )?);
-            }
+            let flattened_params = if let Some(runtime_params) = runtime_params {
+                runtime_params.clone()
+            } else {
+                let params = self.model().get_all_params();
+                if params.is_empty() {
+                    return Err(GraphError::MissingParams(
+                        "parameter module requested but model has no parameters".into(),
+                    ));
+                }
+                Tensor::new(Some(&params), &[params.len()])?.combine()?
+            };
+            processed_params = Some(GraphModules::forward::<Scheme>(
+                &[flattened_params],
+                &visibility.params,
+                vk,
+                srs,
+            )?);
         }
 
-        let mut model_results =
+        let mut model_results = if let Some(runtime_params) = runtime_params {
+            self.model().forward_with_runtime_params(
+                inputs,
+                std::slice::from_ref(runtime_params),
+                &self.settings().run_args,
+                region_settings,
+            )?
+        } else {
             self.model()
-                .forward(inputs, &self.settings().run_args, region_settings)?;
+                .forward(inputs, &self.settings().run_args, region_settings)?
+        };
 
         if visibility.output.requires_processing() {
             let module_outlets = visibility.output.overwrites_inputs();
@@ -1818,6 +1929,9 @@ impl GraphCircuit {
                 .iter()
                 .map(|t| t.deref().to_vec())
                 .collect_vec(),
+            params: runtime_params
+                .map(|t| vec![t.deref().to_vec()])
+                .unwrap_or_default(),
             pretty_elements: None,
             outputs: model_results
                 .outputs
@@ -1934,7 +2048,31 @@ impl Circuit<Fp> for GraphCircuit {
     type Params = GraphSettings;
 
     fn without_witnesses(&self) -> Self {
-        self.clone()
+        let mut circuit = self.clone();
+        Self::redact_compiled_model_params(&mut circuit.core.model);
+        // Key generation must not retain a caller's runtime model closure.
+        // Keep only shape-correct zero placeholders so synthesis can build
+        // the fixed layout; the real witness is loaded for proving later.
+        circuit.graph_witness.params = self
+            .model()
+            .graph
+            .param_shapes()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|shape| vec![Fp::ZERO; shape.iter().product()])
+            .collect();
+        circuit.graph_witness.outputs = self
+            .model()
+            .graph
+            .output_shapes()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|shape| vec![Fp::ZERO; shape.iter().product()])
+            .collect();
+        circuit.graph_witness.processed_params = None;
+        circuit.graph_witness.processed_inputs = None;
+        circuit.graph_witness.processed_outputs = None;
+        circuit
     }
 
     fn params(&self) -> Self::Params {
@@ -2091,11 +2229,98 @@ impl Circuit<Fp> for GraphCircuit {
             )?;
         }
 
-        // now we need to assign the flattened params to the model
+        // Canonical GAT parameters arrive as one flat private input.  First
+        // assign that input once; the Poseidon module and the graph relation
+        // then consume the same `PrevAssigned` advice cells.  This prevents a
+        // hash-only path from leaving the actual parameter relation
+        // unconstrained.
         let mut model = self.model().clone();
         let param_visibility = &self.settings().run_args.param_visibility;
+        let mut runtime_param_values: Option<Vec<ValTensor<Fp>>> = None;
+        if self.model().graph.num_param_inputs() > 0 {
+            if !param_visibility.is_hashed_public() {
+                return Err(PlonkError::Synthesis);
+            }
+            let mut parameter_tensors = self.graph_witness.get_param_tensor();
+            if parameter_tensors.len() != 1 {
+                return Err(PlonkError::Synthesis);
+            }
+            let mut parameter = parameter_tensors.pop().ok_or(PlonkError::Synthesis)?;
+            let parameter_shape = self
+                .model()
+                .graph
+                .param_shapes()
+                .map_err(|_| PlonkError::Synthesis)?
+                .into_iter()
+                .next()
+                .ok_or(PlonkError::Synthesis)?;
+            if parameter.len() != parameter_shape.iter().product::<usize>() {
+                return Err(PlonkError::Synthesis);
+            }
+            parameter.set_visibility(param_visibility);
+            let parameter: ValTensor<Fp> =
+                parameter.try_into().map_err(|_| PlonkError::Synthesis)?;
+
+            let challenges = if let Some(einsum_config) = &config.model_config.base.einsums {
+                einsum_config
+                    .challenges()
+                    .map_err(|_| PlonkError::Synthesis)?
+                    .iter()
+                    .map(|c| layouter.get_challenge(*c))
+                    .collect_vec()
+            } else {
+                vec![]
+            };
+            let (assigned_parameter, assigned_constants) = layouter.assign_region(
+                || "runtime_parameter_input",
+                |region| {
+                    let mut thread_safe_region = RegionCtx::new_with_challenges(
+                        region,
+                        0,
+                        self.settings().run_args.num_inner_cols,
+                        self.settings().run_args.decomp_base,
+                        self.settings().run_args.decomp_legs,
+                        challenges.clone(),
+                    );
+                    thread_safe_region.update_constants(constants.clone());
+                    let assigned = config
+                        .model_config
+                        .base
+                        .layout(
+                            &mut thread_safe_region,
+                            &[&parameter],
+                            Box::new(Input {
+                                scale: parameter.scale(),
+                                datum_type: InputType::F32,
+                                decomp: false,
+                            }),
+                        )
+                        .map_err(|_| PlonkError::Synthesis)?
+                        .ok_or(PlonkError::Synthesis)?;
+                    Ok((assigned, thread_safe_region.assigned_constants().clone()))
+                },
+            )?;
+            *constants = assigned_constants;
+            let mut module_values = vec![assigned_parameter.clone()];
+            graph_modules.layout(
+                &mut layouter,
+                &mut config.module_configs,
+                &mut module_values,
+                param_visibility,
+                &mut instance_offset,
+                &mut constants,
+            )?;
+            runtime_param_values = Some(vec![assigned_parameter]);
+        }
+
+        // Legacy ONNX models still use the original constant replacement
+        // path.  It is intentionally unreachable for a graph with explicit
+        // runtime parameter inputs.
         trace!("running params module layout");
-        if !self.model().get_all_params().is_empty() && param_visibility.requires_processing() {
+        if self.model().graph.num_param_inputs() == 0
+            && !self.model().get_all_params().is_empty()
+            && param_visibility.requires_processing()
+        {
             // now we need to flatten the params
             let consts = self.model().get_all_params();
 
@@ -2145,8 +2370,19 @@ impl Circuit<Fp> for GraphCircuit {
         let mut vars = config.model_config.vars.clone();
         vars.set_initial_instance_offset(instance_offset);
 
-        let mut outputs = model
-            .layout(
+        let mut outputs = if let Some(runtime_params) = runtime_param_values.as_ref() {
+            model.layout_with_runtime_params(
+                config.model_config.clone(),
+                &mut layouter,
+                &self.settings().run_args,
+                &inputs,
+                runtime_params,
+                &mut vars,
+                &outputs,
+                &mut constants,
+            )
+        } else {
+            model.layout(
                 config.model_config.clone(),
                 &mut layouter,
                 &self.settings().run_args,
@@ -2155,10 +2391,11 @@ impl Circuit<Fp> for GraphCircuit {
                 &outputs,
                 &mut constants,
             )
-            .map_err(|e| {
-                log::error!("{}", e);
-                PlonkError::Synthesis
-            })?;
+        }
+        .map_err(|e| {
+            log::error!("{}", e);
+            PlonkError::Synthesis
+        })?;
         trace!("running output module layout");
 
         let output_visibility = &self.settings().run_args.output_visibility;

@@ -1,0 +1,22 @@
+{
+  "schema": "zkDL_gat_statement_v1",
+  "statement_id": "0000000000000000000000000000000000000000000000000000000000000000",
+  "dataset": "cora",
+  "model_arch_id": "fixture-architecture",
+  "model_param_id": "fixture-parameters",
+  "quant_cfg_id": "gat_l3_scale_chain",
+  "static_table_id": "tables:lrelu+elu+exp+range",
+  "input_preprocess_id": "row_normalize",
+  "topology_id": "1111111111111111111111111111111111111111111111111111111111111111",
+  "feature_id": "2222222222222222222222222222222222222222222222222222222222222222",
+  "output_id": "3333333333333333333333333333333333333333333333333333333333333333",
+  "public_output_path": "public_Y.txt",
+  "public_output_digest": "3333333333333333333333333333333333333333333333333333333333333333",
+  "nodes": 1,
+  "edges": 1,
+  "graphs": 1,
+  "classes": 1,
+  "proof_scope": "full_gat_forward",
+  "privacy_policy": "model_and_trace_hidden",
+  "verifier_reads_witness": false
+}

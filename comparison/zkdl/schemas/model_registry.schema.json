@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "zkDL_gat_model_registry_v1",
+  "title": "zkDL GAT model registry entry",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "dataset", "model_arch_id", "model_param_id", "quant_cfg_id", "static_table_id", "checkpoint_bundle", "manifest_sha256", "quantization_config", "source_root"],
+  "properties": {
+    "schema": {"const": "zkDL_gat_model_registry_v1"},
+    "dataset": {"type": "string", "enum": ["cora", "citeseer", "pubmed", "ppi", "ogbn_arxiv"]},
+    "model_arch_id": {"type": "string", "minLength": 1},
+    "model_param_id": {"type": "string", "minLength": 1},
+    "quant_cfg_id": {"type": "string", "minLength": 1},
+    "static_table_id": {"type": "string", "minLength": 1},
+    "checkpoint_bundle": {"type": "string", "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+"},
+    "manifest_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "quantization_config": {"type": "string", "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+"},
+    "source_root": {"const": "baseline-local"}
+  }
+}

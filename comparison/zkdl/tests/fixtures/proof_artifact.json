@@ -1,0 +1,19 @@
+{
+  "schema": "zkDL_gat_proof_envelope_v1",
+  "statement_id": "0000000000000000000000000000000000000000000000000000000000000000",
+  "proof_id": "fixture-proof-cora-cpu",
+  "backend": "cpu",
+  "proof_scope": "full_gat_forward",
+  "native_core_api": "zkdl_native_gat_bridge_v1",
+  "status": "VERIFIED",
+  "proof_size_bytes": 128,
+  "commitment_size_bytes": 256,
+  "commitment_time_seconds": 0.01,
+  "prove_time_seconds": 0.02,
+  "verify_time_seconds": 0.01,
+  "verifier_reads_witness": false,
+  "gpu_kernel_executed": false,
+  "silent_fallback": false,
+  "output_bound": true,
+  "error": ""
+}

@@ -1514,3 +1514,591 @@ GAT 新增 relation 和适配逻辑必须连接到官方核心证明系统，而
 
 > 必须保留并实际使用对应官方原始实现，只允许在其基础上进行完成 GAT 所必需的增量适配；不得重新实现一个仅在方法或接口上相似的替代系统。
 
+
+## 20.17 GAT 适配实现必须集中隔离
+
+为保证官方源码与 GAT 对比实验适配逻辑之间的边界清晰，三个 baseline 均必须在各自根目录中新建统一的 GAT 适配目录：
+
+- `comparison/zkGPT/gat_adapter/`
+- `comparison/zkdl/gat_adapter/`
+- `comparison/ezkl/gat_adapter/`
+
+所有为 GAT 对比实验新增的正式适配实现，应优先且集中放入对应 baseline 的 `gat_adapter/` 目录中。
+
+包括但不限于：
+
+- GAT 数据读取与格式转换；
+- 图结构适配；
+- 节点、边、`node_ptr`、`edge_ptr` 等图索引处理；
+- GAT forward 适配；
+- projection；
+- attention score；
+- LeakyReLU；
+- stable Softmax；
+- aggregation；
+- ELU；
+- ExpMap；
+- SignedRoundDiv；
+- hidden multi-head concat；
+- output multi-head averaging；
+- PPI 多图边界适配；
+- fixed-point / quantization 适配；
+- GAT witness/trace 构造；
+- GAT relation 构造；
+- GAT 运算到 baseline 原生证明原语的映射；
+- GAT 专用 prover 调用适配；
+- GAT 专用 verifier statement/output 接入；
+- GAT 正式实验入口所需的 adapter；
+- 与统一 GAT 任务直接相关的其他新增正式实现。
+
+`gat_adapter/` 中的代码必须继续使用对应 baseline 的原生核心语言和工程体系：
+
+- zkGPT 的 GAT 核心适配使用 C++/CUDA；
+- zkDL 的 GAT 核心适配使用 CUDA/C++，包括必要的 `.cu` / `.cuh`；
+- ezkl 的 GAT 核心适配使用 Rust，并继续接入原生 Cargo/ezkl/Halo2 路径。
+
+不得为了统一三个 baseline 的适配目录而统一其核心实现语言。
+
+
+### 20.17.1 官方源码只允许最小必要接线修改
+
+“适配代码集中在 `gat_adapter/`”不表示官方源码绝对不可修改。
+
+如果将 GAT adapter 接入官方核心实现确实需要修改官方工程，则只允许进行最小必要修改，例如：
+
+- `#include` / `import` / `mod` 接入；
+- operation / layer / circuit / command 注册；
+- 函数或类型声明接入；
+- 调用 `gat_adapter/` 中实现的 GAT relation；
+- 增加 build target；
+- 将 `gat_adapter/` 源文件加入官方构建；
+- 增加必要依赖；
+- 增加 GAT 正式 runner/CLI 入口；
+- 增加 CPU/GPU backend 的必要调用入口；
+- 为传递 GAT 所需数据增加最小接口；
+- 其他无法通过 adapter 独立完成的必要连接修改。
+
+如果某项功能能够完整地在 `gat_adapter/` 中实现，则禁止为了方便而直接将新的 GAT 业务逻辑写入官方核心源码。
+
+官方核心文件中的修改应尽量表现为：
+
+> register / include / link / call / expose interface
+
+而不是：
+
+> 在官方核心源码内部重新实现完整 GAT 逻辑。
+
+
+### 20.17.2 禁止将 GAT 适配逻辑散落到官方源码树
+
+禁止：
+
+- 将新的 GAT forward 实现分散写入多个官方核心目录；
+- 将新的 GAT relation 大量直接写入原 prover/verifier 核心文件；
+- 为了减少文件数量而把 GAT adapter 合并进官方大文件；
+- 将 GAT 数据处理、量化、图结构、attention 等新增实现散落到官方原始源码树中；
+- 通过修改大量官方核心文件来规避 `gat_adapter/` 隔离要求；
+- 把官方源码改造成以 GAT 为中心的新工程结构。
+
+如确有某个极小逻辑必须直接位于官方原文件中，必须限制为完成接线所需的最小实现，不得成为新的 GAT 主实现位置。
+
+
+### 20.17.3 `gat_adapter/` 不得成为新的独立证明系统
+
+`gat_adapter/` 的职责是将统一 GAT 推理关系接入对应 baseline 的官方核心证明系统。
+
+禁止在 `gat_adapter/` 中：
+
+- 从零实现一个新的 prover；
+- 从零实现一个新的 verifier；
+- 重新实现官方 commitment scheme 后绕开官方实现；
+- 重新实现完整 Sumcheck/GKR/Hyrax/Halo2/Plonkish 等核心协议后替代官方代码；
+- 建立一套与官方 proof backend 平行的自建证明系统；
+- 让正式 proof path 主要在 `gat_adapter/` 内完成，而官方核心 prover/verifier 只被象征性调用。
+
+正确关系必须是：
+
+> `gat_adapter/` 负责 GAT relation / data / mapping / integration  
+> → 调用 baseline 官方核心证明原语  
+> → 由 baseline 官方 prover/verifier 完成正式 proof/verify。
+
+
+### 20.17.4 测试代码不得进入 `gat_adapter/`
+
+`gat_adapter/` 属于正式生产实现的一部分。
+
+以下内容不得放入 `gat_adapter/`：
+
+- unit test；
+- integration test；
+- toy graph；
+- synthetic fixture；
+- tamper test；
+- negative test；
+- debug runner；
+- self-test；
+- benchmark harness；
+- profiler driver；
+- test-only helper；
+- test-only resource。
+
+所有测试相关代码和资源必须继续放在：
+
+- `comparison/zkGPT/tests/`
+- `comparison/zkdl/tests/`
+- `comparison/ezkl/tests/`
+
+正式执行链不得依赖 `tests/`。
+
+
+### 20.17.5 外围脚本与正式资源不强制放入 `gat_adapter/`
+
+`gat_adapter/` 主要用于 GAT 正式适配源码，不要求把所有 baseline 文件都塞入该目录。
+
+正式外围内容仍可按照本文件其他章节组织，例如：
+
+- `scripts/`
+- `configs/`
+- `data/`
+- `models/`
+- `resources/`
+- `artifacts/`
+- `runs/`
+- `results/`
+
+因此：
+
+- GAT 核心适配源码 -> `gat_adapter/`
+- 正式 runner / collect / validate -> `scripts/`
+- 正式配置 -> `configs/`
+- 正式数据和模型资源 -> baseline 自己的资源目录
+- 测试代码和测试 fixture -> `tests/`
+
+不得为了目录统一而破坏官方原始项目结构。
+
+
+### 20.17.6 适配隔离原则
+
+三个 baseline 均应遵守：
+
+> 官方原始项目保持可识别、可追踪、可继续使用。
+
+> 新增 GAT 正式实现集中在 `gat_adapter/`。
+
+> 官方源码只进行接入 GAT adapter 所必需的最小修改。
+
+> `gat_adapter/` 只能扩展官方证明系统，不能替代官方证明系统。
+
+> 测试代码与正式 GAT adapter 继续严格物理隔离。
+
+
+## 20.18 自动化开发阶段必须采用短时、定向、最小范围验证
+
+自动化开发代理、Codex 或其他代码执行代理在 baseline 开发阶段，只允许执行与当前修改直接相关的最小必要验证。
+
+统一原则：
+
+> 修改什么，就精准测试什么，以及它必要的直接影响路径；不追求全量覆盖，不运行大范围回归，不运行长时间验证。
+
+禁止：
+
+- 为验证单个修改而运行整个测试目录；
+- 运行整个 test suite；
+- 运行 workspace-wide / repository-wide tests；
+- 运行全部 integration tests；
+- 运行全部 regression tests；
+- 运行全矩阵测试；
+- 运行与当前修改无直接关系的测试；
+- 运行长时间 proving；
+- 运行长时间 verification；
+- 运行长时间 setup；
+- 运行长时间 parameter generation；
+- 运行长时间 compilation benchmark；
+- 运行长时间 GPU benchmark；
+- 为等待结果而设置 300、600、900 秒或更长 timeout；
+- 因测试未结束而持续提高 timeout；
+- 以 synthetic input 为理由执行持续高 CPU/GPU 占用的长任务；
+- 为获得最终 `VERIFY_OK`、最终 proof、最终性能数字而执行长时间任务。
+
+对于不同 baseline，还应避免未经限定的全工程测试命令，例如：
+
+- zkGPT：不得直接运行覆盖整个项目的全量 `pytest`、`unittest discover`、全目录测试脚本或等价命令；
+- zkDL：不得执行覆盖全部 CUDA/C++ 测试、全部 demo 或完整工程回归的无差别测试；
+- ezkl：不得执行未限定范围的完整 `cargo test`、workspace-wide test 或覆盖整个工程的测试集合。
+
+允许：
+
+- 编译当前修改直接影响的 target；
+- 对当前修改函数执行最小 unit test；
+- 对当前 proof primitive 映射执行最小 integration test；
+- 使用极小 synthetic graph；
+- 使用最小 fixture；
+- 使用最短调用链；
+- 对 CPU/GPU 当前修改路径做小规模一致性检查；
+- 对 verifier trust boundary 做小规模 negative/tamper test；
+- 对正式 runner/collector/validator 使用测试 fixture 做逻辑验证。
+
+如果测试开始出现持续明显重计算、持续高资源占用、运行时间快速增长或已经超出“短时定向验证”的合理范围，应立即停止，不得继续等待或增加 timeout。
+
+如果某项结论只能通过完整数据集、长时间 setup、长时间 proving、长时间 verification 或完整矩阵才能确认，则自动化开发代理必须停止在：
+
+> 实现完成 + 代码检查完成 + 最小同路径验证完成 + 正式运行入口准备完成
+
+的状态，并将完整验证留给用户本人执行。
+
+未由自动化开发代理完成长时间正式验证，不得被视为 baseline 实现未完成的理由，只要本文件规定的实现、资源、短时验证和正式运行入口已经准备完成。
+
+
+## 20.19 官方自带测试、示例、benchmark 与开发测试隔离规则的边界
+
+本文件第 8 节要求新增测试代码物理隔离到 baseline 根目录下的 `tests/`。
+
+该要求仅适用于**本项目为 GAT adaptation 新增的测试、调试、benchmark、profiling、fixture 和验证代码**。
+
+如果对应官方仓库原本自带以下内容：
+
+- tests；
+- test vectors；
+- examples；
+- demo；
+- benchmark；
+- microbenchmark；
+- profiler；
+- sample；
+- verification vectors；
+- reference inputs；
+- 官方自测脚本；
+- 官方回归测试；
+- 官方测试资源；
+- 其他属于官方原始工程的测试或示例内容；
+
+则这些内容属于第 20.15 节规定的“官方原始项目整体内容”，必须保持其官方原始位置和工程归属。
+
+禁止：
+
+- 因第 8 节测试隔离规则而移动官方原有 tests/examples/benchmarks；
+- 将官方测试目录强行迁入本项目新建的 `tests/`；
+- 因正式实验不调用某个官方 example/demo 就删除它；
+- 将官方 benchmark 判定为“开发残留”后删除；
+- 为统一三个 baseline 的目录结构而重排官方测试工程；
+- 修改官方测试代码使其承担本项目正式 GAT production 任务。
+
+本项目新增的 GAT 测试必须放入：
+
+- `comparison/zkGPT/tests/`
+- `comparison/zkdl/tests/`
+- `comparison/ezkl/tests/`
+
+官方自带测试、示例和 benchmark 可以原样保留，但不得成为本项目正式 GAT production runner、正式 proof 生成或正式 verifier 的必需依赖。
+
+因此，本文件中的测试隔离规则统一解释为：
+
+> 官方原有测试工程原样保护；本项目新增测试统一进入 baseline-local `tests/`；正式 GAT 执行链不得依赖测试代码。
+
+
+## 20.20 官方第三方依赖、submodule 与 vendor dependency 的 baseline-local 复制规则
+
+如果某个 baseline 官方工程原本声明、要求或依赖某个第三方项目、submodule、vendor dependency 或 external library，则该依赖属于 baseline 官方工程的正常组成部分。
+
+如果当前项目其他位置已经存在该第三方依赖的可用副本，允许将**该第三方依赖本体**复制到 baseline 官方工程预期的位置，以恢复 baseline-local、可独立构建的官方工程。
+
+例如：
+
+> 如果 zkGPT 官方工程要求 `3rd/mcl/`，而主项目中已经存在可用的 mcl 官方依赖副本，则允许将 mcl 依赖本体复制到 `comparison/zkGPT/3rd/mcl/`。
+
+该行为不视为“迁移主实验实现”，前提是复制对象确实是 baseline 官方依赖本身，而不是主实验围绕该依赖新增的证明实现。
+
+必须满足：
+
+- 复制后依赖位于当前 baseline 自己目录；
+- 正式 build/run 不再读取原主项目依赖路径；
+- 不通过软链接继续依赖主项目；
+- 不通过环境变量将正式依赖指回主实验目录；
+- 只复制第三方 dependency 本体；
+- 如果能够确认官方 baseline 对应的 dependency revision/tag/commit，应优先保持一致；
+- 复制后不得混入主实验专项修改，除非该修改本身就是第三方依赖官方版本的一部分。
+
+禁止借此复制：
+
+- 主实验 KZG 实现；
+- 主实验 MSM wrapper；
+- 主实验 FFT backend/kernel；
+- 主实验 CUDA optimization；
+- 主实验 cache；
+- 主实验 commitment pipeline；
+- 主实验 proof wrapper；
+- 主实验 transcript wrapper；
+- 主实验 lookup/trace 实现；
+- 主实验为该第三方库编写的专项安全或性能工程；
+- 其他不属于 baseline 官方第三方依赖本体的项目实现。
+
+如果无法确认某个目录究竟属于“第三方依赖本体”还是“主实验二次实现”，必须先进行来源检查，不得整目录无差别复制。
+
+原则：
+
+> 允许复制 baseline 官方本来就需要的第三方依赖；禁止把主实验围绕该依赖开发的 proof/protocol/optimization 一并带入 baseline。
+
+
+## 20.21 `gat_adapter/` 为 GAT 新增核心适配实现的强制位置
+
+本节进一步强化第 20.17 节。
+
+第 20.17 中“所有为 GAT 对比实验新增的正式适配实现，应优先且集中放入 `gat_adapter/`”统一解释为以下强制规则：
+
+> 所有为 GAT 对比实验新增的正式核心适配实现，必须集中放入对应 baseline 的 `gat_adapter/`。
+
+除第 20.17.1 所允许的最小必要接线修改外，不得将新的 GAT 核心实现直接写入官方原始源码树。
+
+官方核心源码中的新增或修改必须严格限制为：
+
+- register；
+- include；
+- import；
+- `mod` 声明；
+- link；
+- build registration；
+- call；
+- expose interface；
+- type/function declaration；
+- 必要的极小参数传递；
+- 无法通过 adapter 独立完成的最小局部接线。
+
+如果某项 GAT 功能能够在 `gat_adapter/` 中实现，则必须在 `gat_adapter/` 中实现，不得因为：
+
+- 修改官方文件更方便；
+- 可以减少新文件；
+- 可以复用某个官方大函数；
+- 可以少写 adapter；
+- 可以减少接口；
+- 可以提高短期开发速度；
+
+而把新的 GAT 主逻辑直接写入官方核心文件。
+
+特别禁止将以下新增 GAT 主逻辑直接散落到官方核心源码中：
+
+- GAT forward；
+- graph traversal；
+- attention；
+- LeakyReLU；
+- stable Softmax；
+- aggregation；
+- ELU；
+- ExpMap；
+- SignedRoundDiv；
+- multi-head concat；
+- output head averaging；
+- PPI graph boundary；
+- GAT witness/trace 构造；
+- GAT relation；
+- GAT-specific proof primitive mapping。
+
+如果确实存在必须直接修改官方核心算法逻辑的极小例外，该修改必须是接入官方 proof primitive 所不可避免的最小变化，且不得形成第二个 GAT 实现位置。
+
+因此，正式 GAT 实现的主位置必须始终清晰可识别为：
+
+> `comparison/<baseline>/gat_adapter/`
+
+
+## 20.22 canonical dataset、checkpoint 与模型参数必须跨 baseline 保持一致
+
+三个 baseline 比较的是不同证明体系在同一 GAT 推理任务上的表现。
+
+因此，统一实验输入不仅要求使用相同数据集和 GAT 结构，还必须使用相同的 canonical model parameters。
+
+三个 baseline 必须以统一来源的以下对象作为实验基准：
+
+- canonical dataset；
+- canonical graph structure；
+- canonical node/edge ordering；
+- canonical graph batching；
+- canonical checkpoint；
+- canonical weight；
+- canonical bias；
+- canonical quantization scale；
+- canonical fixed-point parameter；
+- canonical model architecture；
+- canonical GAT numerical semantics；
+- canonical public features；
+- canonical public output policy。
+
+禁止：
+
+- 为 zkGPT 重新训练一份模型；
+- 为 zkDL 重新训练一份模型；
+- 为 ezkl 重新训练一份模型；
+- baseline-specific retraining；
+- baseline-specific finetuning；
+- baseline-specific reinitialization；
+- 为某个证明系统单独修改 weight；
+- 为某个证明系统单独修改 bias；
+- 为了更容易证明而改变模型层数、head 数、hidden dimension 或其他模型结构；
+- 为了适应 field、tensor shape 或 circuit 限制而改变真实模型数学参数；
+- 为某个 baseline 单独选择更容易证明的 checkpoint；
+- 通过改变量化 scale 使某一 baseline 获得不同的有效模型。
+
+允许：
+
+- 将 canonical checkpoint 转换为 baseline 自己的文件格式；
+- 将 tensor 改为 baseline 原生内存布局；
+- 将数据序列化为 baseline 所需格式；
+- 将模型参数转换为对应 field/fixed-point 表示；
+- 做 value-preserving 的格式、布局、编码和序列化转换。
+
+任何转换都必须满足：
+
+> 转换前后的模型数学语义一致。
+
+如果 baseline 需要不同内部表示，应由 adapter 完成表示转换，而不得改变 canonical 模型本身。
+
+正式比较应始终满足：
+
+> same dataset + same graph + same checkpoint + same model parameters + same GAT semantics + different proof system
+
+
+## 20.23 允许必要的内部 padding/alignment，但不得改变真实 GAT 关系
+
+不同 baseline 可能因 MLE、FFT domain、tensor shape、Halo2 region、CUDA kernel alignment 或其他原生证明/执行要求，需要进行内部 padding 或 alignment。
+
+允许进行完成 baseline 原生证明所必需的内部 padding，包括但不限于：
+
+- power-of-two padding；
+- tensor padding；
+- polynomial domain padding；
+- row/column alignment；
+- dummy entries；
+- dummy nodes；
+- dummy edges；
+- circuit rows padding；
+- region padding；
+- backend memory alignment。
+
+但 padding 必须满足严格的语义中立性：
+
+- 不得删除任何真实节点；
+- 不得删除任何真实边；
+- 不得替换真实节点；
+- 不得替换真实边；
+- 不得减少真实 attention computation；
+- 不得减少真实 aggregation；
+- 不得改变真实 neighborhood；
+- 不得改变真实 Softmax normalization domain；
+- 不得改变真实 logits；
+- 不得使 dummy node/edge 参与真实 attention 归一化；
+- 不得使 dummy value 改变真实 aggregation；
+- dummy/padded 元素必须被正确约束、mask 或隔离；
+- padding 逻辑本身必须与该 baseline 的正式 proof relation 一致。
+
+禁止通过 padding 实质形成：
+
+- sampled graph；
+- reduced graph；
+- compressed relation；
+- 部分节点证明；
+- 部分边证明；
+- 省略真实运算；
+- 改变真实模型输出。
+
+内部 padding 只能解决 proof/backend 的表示和对齐要求，不得改变统一 GAT 数值语义。
+
+
+## 20.24 三个 baseline 的论文级 timing 口径必须统一
+
+本文件第 12.3 要求单个 baseline 内计时稳定。
+
+进一步规定：用于最终论文横向比较的核心计时阶段必须在三个 baseline 之间采用统一语义边界。
+
+最终论文重点计时字段为：
+
+- commitment / preparation（如该 baseline 对应阶段适用）；
+- prove；
+- verify。
+
+对于 baseline 原生存在但其他方案没有完全对应阶段的操作，应同时：
+
+1. 保留 baseline-native raw timing；
+2. 按统一论文计时定义映射到对应 paper-level timing；
+3. 不得为了获得更有利结果而任意改变阶段边界。
+
+以下原则必须统一：
+
+- 一次性 setup 不混入每次 inference 的 prove time；
+- compile 不得在某一 baseline 中计入 prove，而在另一 baseline 中排除；
+- PK/VK generation 应单独记录；
+- model registration/commitment 如果属于一次性阶段，应与每次 inference 区分；
+- witness generation 的计时归属必须使用统一定义；
+- verifier-facing proof serialization 的计时边界必须保持一致；
+- 文件系统冷启动、日志打印、CSV/JSON 写入不得选择性计入某一 baseline 的 crypto timing；
+- 同一计算阶段不得重复计入多个 paper-level 字段；
+- 不得通过提前停止计时隐藏异步 GPU 计算。
+
+GPU timing 必须在必要位置执行正确的设备同步，以确保：
+
+> 计时结束时对应 GPU computation 已真实完成。
+
+不得因为 CUDA asynchronous execution、stream dispatch、kernel launch 或后台 execution 尚未结束，就提前记录较短的阶段时间。
+
+如果 baseline 原生阶段无法一一映射，应保留完整 raw breakdown，并使用统一、明确、可审计的映射规则生成论文表格字段，不得隐藏无法直接比较的阶段。
+
+
+## 20.25 官方 upstream provenance、版本与 adaptation 起点必须固定
+
+每个 baseline 开始正式 GAT adaptation 后，必须固定其官方 upstream source identity。
+
+至少应记录：
+
+- official repository；
+- official upstream URL；
+- upstream commit / tag / release / archive identity；
+- adaptation 起始源码快照身份；
+- 官方 submodule identity；
+- 关键第三方 dependency identity；
+- 如果使用 vendor dependency，其来源和版本；
+- 当前 baseline 中哪些内容来自 pristine upstream；
+- 哪些内容属于 GAT adaptation 新增；
+- 哪些官方文件因 GAT 接入进行了最小修改。
+
+上述 provenance 信息必须保存在当前 baseline 自己的目录中，不得依赖外部聊天记录、临时日志或开发代理记忆。
+
+可以使用例如：
+
+- `UPSTREAM_PROVENANCE.md`
+- 或等价的 baseline-local provenance 文件。
+
+provenance 文件只用于记录来源和版本事实，不需要成为额外实验过程报告。
+
+禁止：
+
+- 开发过程中静默替换 upstream 版本；
+- 在未记录的情况下切换官方 tag/commit；
+- 用另一个 fork 的源码替换原官方源码后继续沿用原 baseline 名称；
+- 在不同数据集之间使用不同 upstream 版本；
+- CPU 和 GPU 路径基于不同 upstream snapshot；
+- 为解决一个适配问题而整体升级官方工程，却不记录版本变化；
+- 将来源不明的代码混入官方源码后继续声称为 pristine upstream。
+
+如果必须升级或切换 upstream version，应先明确记录旧版本、新版本和切换原因，并保证新的 GAT adaptation 仍建立在明确、可审计的官方来源上。
+
+原则：
+
+> baseline 的源码来源必须可追踪，正式实验使用的官方版本必须固定，GAT adaptation 的起点必须可审计。
+
+
+## 20.26 本轮新增约束的优先级
+
+第 20.18 至 20.25 节均属于最高优先级执行约束。
+
+如果与本文件前文的一般性规则存在歧义，按以下原则解释：
+
+1. 官方源码和官方工程保护优先；
+2. 原生语言和原生构建体系保护优先；
+3. `gat_adapter/` 集中隔离要求优先；
+4. canonical dataset/checkpoint/model parameters 一致性优先；
+5. 短时、定向、最小范围测试约束优先于一般测试覆盖要求；
+6. 官方自带 tests/examples/benchmarks 的原始位置保护优先于本项目新增测试隔离规则；
+7. baseline 官方第三方依赖的 baseline-local 复制例外，不视为主实验实现迁移；
+8. padding 只能作为语义中立的内部表示手段；
+9. 论文级 timing 必须保持跨 baseline 可比；
+10. upstream provenance 必须固定且可审计。
+
+任何自动化开发代理不得利用前文较宽泛或较旧的措辞规避本节新增约束。
+

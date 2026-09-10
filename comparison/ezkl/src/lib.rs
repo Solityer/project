@@ -141,6 +141,10 @@ pub mod eth;
 pub mod execute;
 /// Utilities for converting from Halo2 Field types to integers (and vice-versa).
 pub mod fieldutils;
+/// Baseline-local canonical GAT adapter implemented on top of the native
+/// ezkl graph and Halo2 circuit abstractions.
+#[path = "../gat_adapter/mod.rs"]
+pub mod gat_adapter;
 /// Methods for loading onnx format models and automatically laying them out in
 /// a Halo2 circuit.
 #[cfg(any(feature = "onnx", not(feature = "ezkl")))]

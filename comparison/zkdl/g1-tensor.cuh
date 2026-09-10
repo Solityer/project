@@ -11,6 +11,15 @@ typedef blstrs__fp__Fp Fp_t;
 const uint G1NumThread = 64;
 const uint G1AffineSharedMemorySize = 2 * sizeof(G1Affine_t) * G1NumThread; 
 const uint G1JacobianSharedMemorySize = 2 * sizeof(G1Jacobian_t) * G1NumThread;
+// A fixed-window table is supplied by the caller in global scratch memory.
+// Keeping the table out of the device stack avoids the register/local-memory
+// blow-up caused by a 256-round unrolled scalar multiplication.
+const uint G1ScalarWindowBits = 4;
+const uint G1ScalarWindowSize = 1U << G1ScalarWindowBits;
+const uint G1ScalarWindowCount =
+    (blstrs__scalar__Scalar_LIMBS * blstrs__scalar__Scalar_LIMB_BITS) /
+    G1ScalarWindowBits;
+const uint G1ScalarWindowTile = 64;
 
 DEVICE Fp_t Fp_minus(Fp_t a) {
 	return blstrs__fp__Fp_sub(blstrs__fp__Fp_ZERO, a);
@@ -118,6 +127,15 @@ class G1TensorAffine: public G1Tensor
 	// 	return out;
 	// }
 
+    const G1Affine_t* device_data() const { return gpu_data; }
+    G1Affine_t* device_data() { return gpu_data; }
+    std::vector<G1Affine_t> to_host() const
+    {
+        std::vector<G1Affine_t> out(size);
+        if (size != 0) cudaMemcpy(out.data(), gpu_data, sizeof(G1Affine_t) * size, cudaMemcpyDeviceToHost);
+        return out;
+    }
+
     G1TensorAffine operator-() const;
 
     G1TensorJacobian& operator*(const FrTensor&);
@@ -146,6 +164,15 @@ class G1TensorJacobian: public G1Tensor
     ~G1TensorJacobian();
 
 	G1Jacobian_t operator()(uint) const;
+
+    const G1Jacobian_t* device_data() const { return gpu_data; }
+    G1Jacobian_t* device_data() { return gpu_data; }
+    std::vector<G1Jacobian_t> to_host() const
+    {
+        std::vector<G1Jacobian_t> out(size);
+        if (size != 0) cudaMemcpy(out.data(), gpu_data, sizeof(G1Jacobian_t) * size, cudaMemcpyDeviceToHost);
+        return out;
+    }
 
     G1TensorJacobian operator-() const;
 
@@ -549,7 +576,8 @@ G1Jacobian_t G1TensorJacobian::sum() const
     cudaMemcpy(ptr_input, gpu_data, size * sizeof(G1Jacobian_t), cudaMemcpyDeviceToDevice);
 
     while(curSize > 1) {
-        uint gridSize = (curSize + G1NumThread - 1) / G1NumThread;
+        // Each reduction block consumes two input tiles of blockDim.x.
+        uint gridSize = (curSize + 2 * G1NumThread - 1) / (2 * G1NumThread);
         G1Jacobian_sum_reduction<<<gridSize, G1NumThread, G1JacobianSharedMemorySize>>>(ptr_input, ptr_output, curSize);
         cudaDeviceSynchronize(); // Ensure kernel completion before proceeding
         
@@ -570,11 +598,106 @@ G1Jacobian_t G1TensorJacobian::sum() const
     return finalSum;
 }
 
+/* Native Jacobian addition with explicit infinity/inverse handling.  The
+ * upstream affine-named helper evaluates the generic formula even when the
+ * two inputs are inverses (H=0); opening folds hit that case for repeated
+ * generators.  Keep the same BLS12-381 Jacobian relation but return the
+ * canonical infinity before entering the generic H=0 arithmetic. */
+DEVICE G1Jacobian_t G1Jacobian_add_safe(G1Jacobian_t a, G1Jacobian_t b) {
+    const Fp_t zero = blstrs__fp__Fp_ZERO;
+    if (blstrs__fp__Fp_eq(a.z, zero)) return b;
+    if (blstrs__fp__Fp_eq(b.z, zero)) return a;
+
+    const Fp_t z1z1 = blstrs__fp__Fp_sqr(a.z);
+    const Fp_t z2z2 = blstrs__fp__Fp_sqr(b.z);
+    const Fp_t u1 = blstrs__fp__Fp_mul(a.x, z2z2);
+    const Fp_t u2 = blstrs__fp__Fp_mul(b.x, z1z1);
+    const Fp_t s1 = blstrs__fp__Fp_mul(
+        blstrs__fp__Fp_mul(a.y, b.z), z2z2);
+    const Fp_t s2 = blstrs__fp__Fp_mul(
+        blstrs__fp__Fp_mul(b.y, a.z), z1z1);
+
+    if (blstrs__fp__Fp_eq(u1, u2)) {
+        if (blstrs__fp__Fp_eq(s1, s2))
+            return blstrs__g1__G1Affine_double(a);
+        return blstrs__g1__G1Affine_ZERO;
+    }
+
+    const Fp_t h = blstrs__fp__Fp_sub(u2, u1);
+    Fp_t i = blstrs__fp__Fp_double(h);
+    i = blstrs__fp__Fp_sqr(i);
+    const Fp_t j = blstrs__fp__Fp_mul(h, i);
+    Fp_t r = blstrs__fp__Fp_sub(s2, s1);
+    r = blstrs__fp__Fp_double(r);
+    const Fp_t v = blstrs__fp__Fp_mul(u1, i);
+    G1Jacobian_t out;
+    out.x = blstrs__fp__Fp_sub(
+        blstrs__fp__Fp_sub(blstrs__fp__Fp_sqr(r), j),
+        blstrs__fp__Fp_double(v));
+    out.y = blstrs__fp__Fp_mul(
+        blstrs__fp__Fp_sub(v, out.x), r);
+    Fp_t sj = blstrs__fp__Fp_mul(s1, j);
+    sj = blstrs__fp__Fp_double(sj);
+    out.y = blstrs__fp__Fp_sub(out.y, sj);
+    out.z = blstrs__fp__Fp_add(a.z, b.z);
+    out.z = blstrs__fp__Fp_sqr(out.z);
+    out.z = blstrs__fp__Fp_sub(blstrs__fp__Fp_sub(out.z, z1z1), z2z2);
+    out.z = blstrs__fp__Fp_mul(out.z, h);
+    return out;
+}
+
+/*
+ * Fixed-window BLS12-381 scalar multiplication for canonical scalar wires.
+ *
+ * The 4-bit table is caller-owned global scratch rather than a local array.
+ * This keeps the per-thread frame bounded while retaining the native
+ * Jacobian formulas and the same little-endian scalar encoding used by the
+ * CPU reference.  The table is [0..15]P and the accumulator scans all 64
+ * nibbles from most significant to least significant.  Canonical scalar
+ * validation remains an input/statement responsibility; this routine does
+ * not reduce or reinterpret a non-canonical wire.
+ */
+DEVICE G1Jacobian_t G1Jacobian_mul_fixed_window4(
+    G1Jacobian_t point, Fr_t scalar, GLOBAL G1Jacobian_t* window_table)
+{
+    window_table[0] = blstrs__g1__G1Affine_ZERO;
+    window_table[1] = point;
+    for (uint i = 2; i < G1ScalarWindowSize; ++i)
+        window_table[i] = G1Jacobian_add_safe(window_table[i - 1], point);
+
+    G1Jacobian_t result = blstrs__g1__G1Affine_ZERO;
+    for (int window = static_cast<int>(G1ScalarWindowCount) - 1;
+         window >= 0; --window) {
+        result = blstrs__g1__G1Affine_double(result);
+        result = blstrs__g1__G1Affine_double(result);
+        result = blstrs__g1__G1Affine_double(result);
+        result = blstrs__g1__G1Affine_double(result);
+
+        const uint limb = static_cast<uint>(window) >> 3;
+        const uint shift = (static_cast<uint>(window) & 7U) * G1ScalarWindowBits;
+        const uint digit = (scalar.val[limb] >> shift) & (G1ScalarWindowSize - 1U);
+        if (digit != 0U)
+            result = G1Jacobian_add_safe(result, window_table[digit]);
+    }
+    return result;
+}
+
 DEVICE G1Jacobian_t G1Jacobian_mul(G1Jacobian_t a, Fr_t x) {
     G1Jacobian_t out = blstrs__g1__G1Affine_ZERO;
-    #pragma unroll
-    for (uint i = 0; i < 256; ++i) {
-        if ((x.val[i / 32] >> (i % 32)) & 1U) out = blstrs__g1__G1Affine_add(out, a); // the i-th bit of x
+    // Scalar wires are canonical residues, not Montgomery values.  Walk only
+    // through the highest set bit to preserve the native double-and-add
+    // relation without forcing a 256-iteration unrolled local frame.
+    int highest = blstrs__scalar__Scalar_LIMBS * blstrs__scalar__Scalar_LIMB_BITS - 1;
+    while (highest >= 0 && ((x.val[highest / blstrs__scalar__Scalar_LIMB_BITS] >>
+                             (highest % blstrs__scalar__Scalar_LIMB_BITS)) & 1U) == 0U) {
+        --highest;
+    }
+    if (highest < 0) return out;
+    for (int i = 0; i <= highest; ++i) {
+        if ((x.val[i / blstrs__scalar__Scalar_LIMB_BITS] >>
+             (i % blstrs__scalar__Scalar_LIMB_BITS)) & 1U) {
+            out = G1Jacobian_add_safe(out, a);
+        }
         a = blstrs__g1__G1Affine_double(a); // (1 << i) * original_a
     }
     return out;
@@ -616,12 +739,11 @@ KERNEL void G1_me_step(GLOBAL G1Jacobian_t *arr_in, GLOBAL G1Jacobian_t *arr_out
     const uint gid = GET_GLOBAL_ID();
     if (gid >= out_size) return;
 
-    Fr_t x_unmont = blstrs__scalar__Scalar_unmont(x);
-    
     uint gid0 = 2 * gid;
     uint gid1 = 2 * gid + 1;
-    if (gid1 < in_size) arr_out[gid] = blstrs__g1__G1Affine_add(arr_in[gid0], G1Jacobian_mul(blstrs__g1__G1Affine_add(arr_in[gid1], G1Jacobian_minus(arr_in[gid0])), x_unmont));
-    else if (gid0 < in_size) arr_out[gid] = blstrs__g1__G1Affine_add(arr_in[gid0], G1Jacobian_minus(G1Jacobian_mul(arr_in[gid0], x_unmont)));
+    // x is a canonical wire scalar; G1Jacobian_mul consumes the same wire.
+    if (gid1 < in_size) arr_out[gid] = blstrs__g1__G1Affine_add(arr_in[gid0], G1Jacobian_mul(blstrs__g1__G1Affine_add(arr_in[gid1], G1Jacobian_minus(arr_in[gid0])), x));
+    else if (gid0 < in_size) arr_out[gid] = blstrs__g1__G1Affine_add(arr_in[gid0], G1Jacobian_minus(G1Jacobian_mul(arr_in[gid0], x)));
     else arr_out[gid] = blstrs__g1__G1Affine_ZERO;
 }
 
@@ -637,7 +759,9 @@ G1Jacobian_t G1_me(const G1TensorJacobian& t, vector<Fr_t>::const_iterator begin
 G1Jacobian_t G1TensorJacobian::operator()(const vector<Fr_t>& u) const
 {
     uint log_dim = u.size();
-    if (size <= (1 << (log_dim - 1)) || size > (1 << log_dim)) throw std::runtime_error("Incompatible dimensions");
+    if (log_dim >= 32 || size == 0) throw std::runtime_error("Incompatible dimensions");
+    const uint64_t domain = uint64_t(1) << log_dim;
+    if (size <= domain / 2U || uint64_t(size) > domain) throw std::runtime_error("Incompatible dimensions");
     return G1_me(*this, u.begin(), u.end());
 }
 

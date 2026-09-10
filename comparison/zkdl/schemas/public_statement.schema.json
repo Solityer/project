@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "zkDL_gat_public_statement_v1",
+  "title": "zkDL GAT public statement",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "statement_id", "dataset", "model_arch_id", "model_param_id", "quant_cfg_id", "static_table_id", "input_preprocess_id", "topology_id", "feature_id", "output_id", "public_output_path", "public_output_digest", "nodes", "edges", "graphs", "classes", "proof_scope", "privacy_policy", "verifier_reads_witness"],
+  "properties": {
+    "schema": {"const": "zkDL_gat_statement_v1"},
+    "statement_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "dataset": {"type": "string", "enum": ["cora", "citeseer", "pubmed", "ppi", "ogbn_arxiv"]},
+    "model_arch_id": {"type": "string", "minLength": 1},
+    "model_param_id": {"type": "string", "minLength": 1},
+    "quant_cfg_id": {"type": "string", "minLength": 1},
+    "static_table_id": {"type": "string", "minLength": 1},
+    "input_preprocess_id": {"type": "string", "minLength": 1},
+    "topology_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "feature_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "output_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "public_output_path": {"type": "string", "minLength": 1},
+    "public_output_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "nodes": {"type": "integer", "minimum": 1},
+    "edges": {"type": "integer", "minimum": 1},
+    "graphs": {"type": "integer", "minimum": 1},
+    "classes": {"type": "integer", "minimum": 1},
+    "proof_scope": {"const": "full_gat_forward"},
+    "privacy_policy": {"type": "string", "minLength": 1},
+    "verifier_reads_witness": {"const": false}
+  }
+}

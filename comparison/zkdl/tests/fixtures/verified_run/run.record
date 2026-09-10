@@ -1,0 +1,17 @@
+schema=zkDL_gat_run_record_v1
+dataset=cora
+backend=cpu
+statement_id=0000000000000000000000000000000000000000000000000000000000000000
+proof_id=fixture-proof-cora-cpu
+verification_status=VERIFIED
+proof_scope=full_gat_forward
+proof_size_bytes=128
+commitment_size_bytes=256
+commitment_time_seconds=0.01
+prove_time_seconds=0.02
+verify_time_seconds=0.01
+verifier_reads_witness=0
+gpu_kernel_executed=0
+silent_fallback=0
+output_bound=1
+error=

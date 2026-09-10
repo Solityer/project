@@ -1,0 +1,2331 @@
+// Baseline-local GAT relation adapter for the official zkDL CUDA tree.
+//
+// This translation unit owns only canonical input/model decoding, the fixed
+// point GAT witness relation, and the production command line.  Proof bytes
+// are produced and checked exclusively through gat_native_bridge.hpp; the
+// weak hook is deliberately fail-closed when the official core bridge is not
+// linked.
+
+#include "gat_native_bridge.hpp"
+
+#include <cuda_runtime.h>
+
+#include <algorithm>
+#include <array>
+#include <chrono>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <fstream>
+#include <iomanip>
+#include <iostream>
+#include <limits>
+#include <map>
+#include <numeric>
+#include <regex>
+#include <set>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <unordered_map>
+#include <utility>
+
+#include <openssl/bn.h>
+
+namespace zkdl_gat {
+namespace {
+
+using u64 = std::uint64_t;
+using i64 = std::int64_t;
+
+[[noreturn]] void fail(const std::string& message) {
+    throw std::runtime_error("zkdl-gat: " + message);
+}
+
+std::string trim(std::string value) {
+    const auto first = value.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) return {};
+    const auto last = value.find_last_not_of(" \t\r\n");
+    return value.substr(first, last - first + 1);
+}
+
+std::map<std::string, std::string> read_kv(const std::filesystem::path& path) {
+    std::ifstream input(path);
+    if (!input) fail("cannot open configuration " + path.string());
+    std::map<std::string, std::string> result;
+    std::string line;
+    std::size_t line_no = 0;
+    while (std::getline(input, line)) {
+        ++line_no;
+        const auto comment = line.find('#');
+        if (comment != std::string::npos) line.resize(comment);
+        line = trim(line);
+        if (line.empty()) continue;
+        const auto equal = line.find('=');
+        if (equal == std::string::npos) {
+            fail("malformed key=value line " + std::to_string(line_no) + " in " + path.string());
+        }
+        const std::string key = trim(line.substr(0, equal));
+        const std::string value = trim(line.substr(equal + 1));
+        if (key.empty() || value.empty()) fail("empty key/value in " + path.string());
+        if (!result.emplace(key, value).second) fail("duplicate key " + key + " in " + path.string());
+    }
+    return result;
+}
+
+u64 parse_u64(const std::string& text, const std::string& what) {
+    std::size_t used = 0;
+    unsigned long long value = 0;
+    try {
+        value = std::stoull(trim(text), &used, 0);
+    } catch (...) {
+        fail("invalid unsigned integer for " + what + ": " + text);
+    }
+    if (used != trim(text).size()) fail("invalid trailing characters for " + what + ": " + text);
+    return static_cast<u64>(value);
+}
+
+bool parse_bool(const std::string& text, const std::string& what) {
+    const std::string value = trim(text);
+    if (value == "true" || value == "1") return true;
+    if (value == "false" || value == "0") return false;
+    fail("invalid boolean for " + what + ": " + text);
+}
+
+std::vector<u64> parse_list(const std::string& text, const std::string& what) {
+    std::string value = trim(text);
+    if (!value.empty() && value.front() == '[') {
+        if (value.back() != ']') fail("unterminated list for " + what);
+        value = value.substr(1, value.size() - 2);
+    }
+    std::vector<u64> output;
+    std::stringstream stream(value);
+    std::string item;
+    while (std::getline(stream, item, ',')) {
+        item = trim(item);
+        if (item.empty()) continue;
+        output.push_back(parse_u64(item, what));
+    }
+    if (output.empty()) fail("empty list for " + what);
+    return output;
+}
+
+std::vector<std::pair<u64, u64>> parse_profile(const std::string& text) {
+    std::string value = trim(text);
+    if (value.size() < 2 || value.front() != '[' || value.back() != ']') {
+        fail("invalid hidden_profile: " + text);
+    }
+    value = value.substr(1, value.size() - 2);
+    std::vector<std::pair<u64, u64>> result;
+    std::stringstream stream(value);
+    std::string item;
+    while (std::getline(stream, item, ',')) {
+        item = trim(item);
+        const auto x = item.find('x');
+        if (x == std::string::npos) fail("invalid hidden_profile item: " + item);
+        result.emplace_back(parse_u64(item.substr(0, x), "hidden head count"),
+                            parse_u64(item.substr(x + 1), "hidden head dimension"));
+    }
+    if (result.empty()) fail("empty hidden_profile");
+    return result;
+}
+
+std::filesystem::path local_path(const std::filesystem::path& baseline,
+                                 const std::string& raw, const std::string& field) {
+    const std::filesystem::path candidate(raw);
+    if (candidate.is_absolute()) fail(field + " must be baseline-local: " + raw);
+    for (const auto& component : candidate) {
+        if (component == "..") fail(field + " escapes baseline root: " + raw);
+    }
+    const auto normalized = (baseline / candidate).lexically_normal();
+    const auto base = baseline.lexically_normal();
+    const std::string base_text = base.generic_string();
+    const std::string path_text = normalized.generic_string();
+    if (path_text != base_text && path_text.rfind(base_text + "/", 0) != 0) {
+        fail(field + " escapes baseline root: " + raw);
+    }
+    return normalized;
+}
+
+std::string file_text(const std::filesystem::path& path) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input) fail("cannot open " + path.string());
+    std::ostringstream output;
+    output << input.rdbuf();
+    return output.str();
+}
+
+// Small self-contained SHA-256 implementation.  The adapter does not depend
+// on the host OpenSSL installation, so a copied baseline remains reproducible
+// under the official nvcc build.
+class Sha256 {
+public:
+    Sha256() : bit_count_(0), buffered_(0) {
+        state_[0] = 0x6a09e667U;
+        state_[1] = 0xbb67ae85U;
+        state_[2] = 0x3c6ef372U;
+        state_[3] = 0xa54ff53aU;
+        state_[4] = 0x510e527fU;
+        state_[5] = 0x9b05688cU;
+        state_[6] = 0x1f83d9abU;
+        state_[7] = 0x5be0cd19U;
+    }
+
+    void update(const void* data, std::size_t length) {
+        const auto* bytes = static_cast<const std::uint8_t*>(data);
+        bit_count_ += static_cast<std::uint64_t>(length) * 8U;
+        while (length != 0) {
+            const std::size_t take = std::min<std::size_t>(length, 64U - buffered_);
+            std::memcpy(buffer_.data() + buffered_, bytes, take);
+            buffered_ += take;
+            bytes += take;
+            length -= take;
+            if (buffered_ == 64U) {
+                transform(buffer_.data());
+                buffered_ = 0;
+            }
+        }
+    }
+
+    std::array<std::uint8_t, 32> finish() {
+        const std::uint64_t original_bits = bit_count_;
+        const std::uint8_t one = 0x80U;
+        update(&one, 1);
+        const std::uint8_t zero = 0;
+        while (buffered_ != 56U) update(&zero, 1);
+        std::array<std::uint8_t, 8> length{};
+        for (int i = 0; i < 8; ++i) {
+            length[7 - i] = static_cast<std::uint8_t>(original_bits >> (i * 8));
+        }
+        update(length.data(), length.size());
+        std::array<std::uint8_t, 32> result{};
+        for (int i = 0; i < 8; ++i) {
+            result[i * 4] = static_cast<std::uint8_t>(state_[i] >> 24);
+            result[i * 4 + 1] = static_cast<std::uint8_t>(state_[i] >> 16);
+            result[i * 4 + 2] = static_cast<std::uint8_t>(state_[i] >> 8);
+            result[i * 4 + 3] = static_cast<std::uint8_t>(state_[i]);
+        }
+        return result;
+    }
+
+private:
+    static constexpr std::array<std::uint32_t, 64> constants_ = {
+        0x428a2f98U, 0x71374491U, 0xb5c0fbcfU, 0xe9b5dba5U,
+        0x3956c25bU, 0x59f111f1U, 0x923f82a4U, 0xab1c5ed5U,
+        0xd807aa98U, 0x12835b01U, 0x243185beU, 0x550c7dc3U,
+        0x72be5d74U, 0x80deb1feU, 0x9bdc06a7U, 0xc19bf174U,
+        0xe49b69c1U, 0xefbe4786U, 0x0fc19dc6U, 0x240ca1ccU,
+        0x2de92c6fU, 0x4a7484aaU, 0x5cb0a9dcU, 0x76f988daU,
+        0x983e5152U, 0xa831c66dU, 0xb00327c8U, 0xbf597fc7U,
+        0xc6e00bf3U, 0xd5a79147U, 0x06ca6351U, 0x14292967U,
+        0x27b70a85U, 0x2e1b2138U, 0x4d2c6dfcU, 0x53380d13U,
+        0x650a7354U, 0x766a0abbU, 0x81c2c92eU, 0x92722c85U,
+        0xa2bfe8a1U, 0xa81a664bU, 0xc24b8b70U, 0xc76c51a3U,
+        0xd192e819U, 0xd6990624U, 0xf40e3585U, 0x106aa070U,
+        0x19a4c116U, 0x1e376c08U, 0x2748774cU, 0x34b0bcb5U,
+        0x391c0cb3U, 0x4ed8aa4aU, 0x5b9cca4fU, 0x682e6ff3U,
+        0x748f82eeU, 0x78a5636fU, 0x84c87814U, 0x8cc70208U,
+        0x90befffaU, 0xa4506cebU, 0xbef9a3f7U, 0xc67178f2U};
+
+    static std::uint32_t rotr(std::uint32_t value, unsigned amount) {
+        return (value >> amount) | (value << (32U - amount));
+    }
+    static std::uint32_t choose(std::uint32_t x, std::uint32_t y, std::uint32_t z) {
+        return (x & y) ^ (~x & z);
+    }
+    static std::uint32_t majority(std::uint32_t x, std::uint32_t y, std::uint32_t z) {
+        return (x & y) ^ (x & z) ^ (y & z);
+    }
+    static std::uint32_t big_sigma0(std::uint32_t x) {
+        return rotr(x, 2) ^ rotr(x, 13) ^ rotr(x, 22);
+    }
+    static std::uint32_t big_sigma1(std::uint32_t x) {
+        return rotr(x, 6) ^ rotr(x, 11) ^ rotr(x, 25);
+    }
+    static std::uint32_t small_sigma0(std::uint32_t x) {
+        return rotr(x, 7) ^ rotr(x, 18) ^ (x >> 3);
+    }
+    static std::uint32_t small_sigma1(std::uint32_t x) {
+        return rotr(x, 17) ^ rotr(x, 19) ^ (x >> 10);
+    }
+
+    void transform(const std::uint8_t* block) {
+        std::array<std::uint32_t, 64> words{};
+        for (int i = 0; i < 16; ++i) {
+            words[i] = (static_cast<std::uint32_t>(block[4 * i]) << 24) |
+                       (static_cast<std::uint32_t>(block[4 * i + 1]) << 16) |
+                       (static_cast<std::uint32_t>(block[4 * i + 2]) << 8) |
+                       static_cast<std::uint32_t>(block[4 * i + 3]);
+        }
+        for (int i = 16; i < 64; ++i) {
+            words[i] = small_sigma1(words[i - 2]) + words[i - 7] +
+                       small_sigma0(words[i - 15]) + words[i - 16];
+        }
+        std::uint32_t a = state_[0], b = state_[1], c = state_[2], d = state_[3];
+        std::uint32_t e = state_[4], f = state_[5], g = state_[6], h = state_[7];
+        for (int i = 0; i < 64; ++i) {
+            const std::uint32_t t1 = h + big_sigma1(e) + choose(e, f, g) + constants_[i] + words[i];
+            const std::uint32_t t2 = big_sigma0(a) + majority(a, b, c);
+            h = g; g = f; f = e; e = d + t1; d = c; c = b; b = a; a = t1 + t2;
+        }
+        state_[0] += a; state_[1] += b; state_[2] += c; state_[3] += d;
+        state_[4] += e; state_[5] += f; state_[6] += g; state_[7] += h;
+    }
+
+    std::array<std::uint32_t, 8> state_{};
+    std::array<std::uint8_t, 64> buffer_{};
+    std::uint64_t bit_count_;
+    std::size_t buffered_;
+};
+
+std::string hex(const std::array<std::uint8_t, 32>& digest) {
+    std::ostringstream out;
+    out << std::hex << std::setfill('0');
+    for (const auto byte : digest) out << std::setw(2) << static_cast<unsigned>(byte);
+    return out.str();
+}
+
+std::string sha256_bytes(const void* data, std::size_t size) {
+    Sha256 hash;
+    hash.update(data, size);
+    return hex(hash.finish());
+}
+
+std::string sha256_text(const std::string& text) {
+    return sha256_bytes(text.data(), text.size());
+}
+
+std::string sha256_file(const std::filesystem::path& path) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input) fail("cannot open for hashing " + path.string());
+    Sha256 hash;
+    std::array<char, 1 << 16> buffer{};
+    while (input) {
+        input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+        const auto count = input.gcount();
+        if (count > 0) hash.update(buffer.data(), static_cast<std::size_t>(count));
+    }
+    return hex(hash.finish());
+}
+
+void hash_u64(Sha256& hash, u64 value) {
+    std::array<std::uint8_t, 8> bytes{};
+    for (unsigned i = 0; i < 8; ++i) bytes[i] = static_cast<std::uint8_t>(value >> (8U * i));
+    hash.update(bytes.data(), bytes.size());
+}
+
+void hash_i64(Sha256& hash, i64 value) { hash_u64(hash, static_cast<u64>(value)); }
+
+std::string digest_matrix(const Matrix& matrix) {
+    Sha256 hash;
+    hash_u64(hash, matrix.rows); hash_u64(hash, matrix.cols);
+    for (const auto value : matrix.values) hash_i64(hash, value);
+    return hex(hash.finish());
+}
+
+std::string digest_graph(const Graph& graph) {
+    Sha256 hash;
+    hash_u64(hash, graph.total_nodes); hash_u64(hash, graph.nodes); hash_u64(hash, graph.edges);
+    hash_u64(hash, graph.graphs); hash_u64(hash, graph.features);
+    hash_u64(hash, graph.absolute_ids.size());
+    for (const auto value : graph.absolute_ids) hash_u64(hash, value);
+    hash_u64(hash, graph.node_ptr.size());
+    for (const auto value : graph.node_ptr) hash_u64(hash, value);
+    hash_u64(hash, graph.edge_ptr.size());
+    for (const auto value : graph.edge_ptr) hash_u64(hash, value);
+    hash_u64(hash, graph.node_edge_ptr.size());
+    for (const auto value : graph.node_edge_ptr) hash_u64(hash, value);
+    hash_u64(hash, graph.src.size());
+    for (std::size_t i = 0; i < graph.src.size(); ++i) {
+        hash_u64(hash, graph.src[i]); hash_u64(hash, graph.dst[i]);
+    }
+    return hex(hash.finish());
+}
+
+std::string digest_graph_boundaries(const Graph& graph) {
+    Sha256 hash;
+    const std::string tag = "zkDL_gat_graph_boundaries_v1";
+    hash_u64(hash, tag.size());
+    hash.update(tag.data(), tag.size());
+    const auto append = [&](const std::vector<u64>& values) {
+        hash_u64(hash, values.size());
+        for (const auto value : values) hash_u64(hash, value);
+    };
+    append(graph.node_ptr);
+    append(graph.edge_ptr);
+    append(graph.node_edge_ptr);
+    return hex(hash.finish());
+}
+
+std::string digest_tables(const StaticTables& tables) {
+    Sha256 hash;
+    const auto hash_string = [&](const std::string& value) {
+        hash_u64(hash, static_cast<u64>(value.size()));
+        hash.update(value.data(), value.size());
+    };
+    hash_string("zkDL_gat_static_tables_v1");
+    hash_string(tables.generator_id);
+    hash_string(tables.version);
+    hash_string(tables.scale_id);
+    hash_string(tables.domain_id);
+    hash_string(tables.row_order);
+    hash_string(tables.spec_hash);
+    hash_i64(hash, tables.lrelu_min); hash_i64(hash, tables.lrelu_max);
+    hash_i64(hash, tables.elu_min); hash_i64(hash, tables.elu_max);
+    hash_u64(hash, tables.exp_max);
+    hash_u64(hash, tables.lrelu.size());
+    for (const auto value : tables.lrelu) hash_i64(hash, value);
+    hash_u64(hash, tables.elu.size());
+    for (const auto value : tables.elu) hash_i64(hash, value);
+    hash_u64(hash, tables.exp.size());
+    for (const auto value : tables.exp) hash_i64(hash, value);
+    return hex(hash.finish());
+}
+
+i64 checked_i128(__int128 value, const std::string& what) {
+    if (value < static_cast<__int128>(std::numeric_limits<i64>::min()) ||
+        value > static_cast<__int128>(std::numeric_limits<i64>::max())) {
+        fail("signed 64-bit overflow in " + what);
+    }
+    return static_cast<i64>(value);
+}
+
+i64 round_div(i64 numerator, i64 denominator, const std::string& what) {
+    if (denominator <= 0) fail("non-positive divisor in " + what);
+    const __int128 n = numerator;
+    const __int128 d = denominator;
+    if (n >= 0) return checked_i128((n + d / 2) / d, what);
+    return checked_i128(-((-n + d / 2) / d), what);
+}
+
+i64 rounded_float(double value, u64 scale, const std::string& what) {
+    if (!std::isfinite(value)) fail("non-finite model value in " + what);
+    const long double scaled = static_cast<long double>(value) * static_cast<long double>(scale);
+    const long double rounded = scaled >= 0 ? std::floor(scaled + 0.5L) : std::ceil(scaled - 0.5L);
+    if (rounded < static_cast<long double>(std::numeric_limits<i64>::min()) ||
+        rounded > static_cast<long double>(std::numeric_limits<i64>::max())) {
+        fail("quantization overflow in " + what);
+    }
+    return static_cast<i64>(rounded);
+}
+
+Matrix make_matrix(u64 rows, u64 cols) {
+    if (rows != 0 && cols > std::numeric_limits<std::size_t>::max() / rows) fail("matrix size overflow");
+    Matrix matrix;
+    matrix.rows = rows; matrix.cols = cols;
+    matrix.values.assign(static_cast<std::size_t>(rows * cols), 0);
+    return matrix;
+}
+
+Matrix concat_columns(const std::vector<Matrix>& matrices) {
+    if (matrices.empty()) fail("cannot concatenate empty matrix family");
+    const u64 rows = matrices.front().rows;
+    u64 cols = 0;
+    for (const auto& matrix : matrices) {
+        if (matrix.rows != rows) fail("concat row mismatch");
+        cols += matrix.cols;
+    }
+    Matrix output = make_matrix(rows, cols);
+    u64 offset = 0;
+    for (const auto& matrix : matrices) {
+        for (u64 row = 0; row < rows; ++row) {
+            std::copy(matrix.values.begin() + static_cast<std::ptrdiff_t>(row * matrix.cols),
+                      matrix.values.begin() + static_cast<std::ptrdiff_t>((row + 1) * matrix.cols),
+                      output.values.begin() + static_cast<std::ptrdiff_t>(row * cols + offset));
+        }
+        offset += matrix.cols;
+    }
+    return output;
+}
+
+const ModelTensor& model_tensor(const ModelBundle& model, const std::string& name) {
+    const auto iterator = model.tensors.find(name);
+    if (iterator == model.tensors.end()) fail("checkpoint tensor missing: " + name);
+    return iterator->second;
+}
+
+Matrix quantized_tensor_matrix(const ModelBundle& model, const std::string& name,
+                               u64 scale) {
+    const auto& tensor = model_tensor(model, name);
+    if (tensor.shape.size() < 2) fail("tensor is not matrix-shaped: " + name);
+    const u64 rows = tensor.shape[tensor.shape.size() - 2];
+    const u64 cols = tensor.shape.back();
+    if (tensor.values.size() != rows * cols) fail("tensor count mismatch: " + name);
+    Matrix output = make_matrix(rows, cols);
+    for (u64 row = 0; row < rows; ++row) {
+        for (u64 col = 0; col < cols; ++col) {
+            output.at(row, col) = rounded_float(tensor.values[static_cast<std::size_t>(row * cols + col)],
+                                                scale, name);
+        }
+    }
+    return output;
+}
+
+std::vector<i64> quantized_tensor_vector(const ModelBundle& model, const std::string& name,
+                                         u64 scale) {
+    const auto& tensor = model_tensor(model, name);
+    std::vector<i64> output;
+    output.reserve(tensor.values.size());
+    for (const auto value : tensor.values) output.push_back(rounded_float(value, scale, name));
+    return output;
+}
+
+std::int64_t table_lookup(const std::vector<i64>& values, i64 minimum, i64 maximum,
+                          i64 index, const std::string& name) {
+    if (index < minimum || index > maximum) {
+        fail(name + " lookup outside committed table domain");
+    }
+    return values.at(static_cast<std::size_t>(index - minimum));
+}
+
+Matrix matmul_cpu(const Matrix& left, const Matrix& right, const std::string& name) {
+    if (left.cols != right.rows) fail("matmul dimension mismatch in " + name);
+    Matrix output = make_matrix(left.rows, right.cols);
+    for (u64 row = 0; row < left.rows; ++row) {
+        for (u64 col = 0; col < right.cols; ++col) {
+            __int128 sum = 0;
+            for (u64 inner = 0; inner < left.cols; ++inner) {
+                sum += static_cast<__int128>(left.at(row, inner)) * right.at(inner, col);
+            }
+            output.at(row, col) = checked_i128(sum, name);
+        }
+    }
+    return output;
+}
+
+__global__ void matmul_kernel(const long long* left, const long long* right, long long* output,
+                              unsigned long long rows, unsigned long long inner,
+                              unsigned long long cols) {
+    const unsigned long long index = static_cast<unsigned long long>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (index >= rows * cols) return;
+    const unsigned long long row = index / cols;
+    const unsigned long long col = index % cols;
+    long long sum = 0;
+    for (unsigned long long k = 0; k < inner; ++k) sum += left[row * inner + k] * right[k * cols + col];
+    output[index] = sum;
+}
+
+void cuda_check(cudaError_t error, const std::string& what) {
+    if (error != cudaSuccess) fail(what + ": " + cudaGetErrorString(error));
+}
+
+Matrix matmul_gpu(const Matrix& left, const Matrix& right, const std::string& name) {
+    if (left.cols != right.rows) fail("matmul dimension mismatch in " + name);
+    const std::size_t left_bytes = left.values.size() * sizeof(i64);
+    const std::size_t right_bytes = right.values.size() * sizeof(i64);
+    const std::size_t output_bytes = static_cast<std::size_t>(left.rows * right.cols) * sizeof(i64);
+    long long* left_device = nullptr;
+    long long* right_device = nullptr;
+    long long* output_device = nullptr;
+    try {
+        cuda_check(cudaMalloc(&left_device, left_bytes), name + " cudaMalloc(left)");
+        cuda_check(cudaMalloc(&right_device, right_bytes), name + " cudaMalloc(right)");
+        cuda_check(cudaMalloc(&output_device, output_bytes), name + " cudaMalloc(output)");
+        cuda_check(cudaMemcpy(left_device, left.values.data(), left_bytes, cudaMemcpyHostToDevice), name + " H2D(left)");
+        cuda_check(cudaMemcpy(right_device, right.values.data(), right_bytes, cudaMemcpyHostToDevice), name + " H2D(right)");
+        const auto count = left.rows * right.cols;
+        const unsigned threads = 256;
+        const unsigned blocks = static_cast<unsigned>((count + threads - 1) / threads);
+        matmul_kernel<<<blocks, threads>>>(left_device, right_device, output_device,
+                                            left.rows, left.cols, right.cols);
+        cuda_check(cudaGetLastError(), name + " kernel launch");
+        cuda_check(cudaDeviceSynchronize(), name + " kernel synchronize");
+        Matrix output = make_matrix(left.rows, right.cols);
+        cuda_check(cudaMemcpy(output.values.data(), output_device, output_bytes, cudaMemcpyDeviceToHost),
+                   name + " D2H(output)");
+        cudaFree(left_device); cudaFree(right_device); cudaFree(output_device);
+        return output;
+    } catch (...) {
+        if (left_device) cudaFree(left_device);
+        if (right_device) cudaFree(right_device);
+        if (output_device) cudaFree(output_device);
+        throw;
+    }
+}
+
+class BigNum {
+public:
+    BigNum() : value_(BN_new()) {
+        if (!value_) fail("BN_new failed");
+        BN_zero(value_);
+    }
+    BigNum(const BigNum&) = delete;
+    BigNum& operator=(const BigNum&) = delete;
+    BigNum(BigNum&& other) noexcept : value_(other.value_) { other.value_ = nullptr; }
+    BigNum& operator=(BigNum&& other) noexcept {
+        if (this != &other) { if (value_) BN_free(value_); value_ = other.value_; other.value_ = nullptr; }
+        return *this;
+    }
+    ~BigNum() { if (value_) BN_free(value_); }
+    BIGNUM* get() { return value_; }
+    const BIGNUM* get() const { return value_; }
+    BIGNUM** address() { return &value_; }
+private:
+    BIGNUM* value_;
+};
+
+const BIGNUM* scalar_modulus() {
+    static BIGNUM* modulus = [] {
+        BIGNUM* result = nullptr;
+        if (BN_hex2bn(&result, "73eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001") == 0) {
+            fail("BN_hex2bn failed for scalar modulus");
+        }
+        return result;
+    }();
+    return modulus;
+}
+
+BigNum field_from_i64(i64 value, BN_CTX* context) {
+    BigNum result;
+    const std::string decimal = std::to_string(value);
+    if (BN_dec2bn(result.address(), decimal.c_str()) == 0) fail("BN_dec2bn failed");
+    if (!BN_nnmod(result.get(), result.get(), scalar_modulus(), context)) fail("BN_nnmod failed");
+    return result;
+}
+
+FieldValue field_encode(const BIGNUM* input) {
+    if (BN_num_bytes(input) > 32) fail("field encoding exceeds 256 bits");
+    std::array<std::uint8_t, 32> big_endian{};
+    const int size = BN_bn2binpad(input, big_endian.data(), static_cast<int>(big_endian.size()));
+    if (size != static_cast<int>(big_endian.size())) fail("BN_bn2binpad failed");
+    FieldValue output;
+    for (std::size_t i = 0; i < output.bytes.size(); ++i) output.bytes[i] = big_endian[output.bytes.size() - i - 1];
+    return output;
+}
+
+BigNum field_inverse(i64 value, BN_CTX* context) {
+    BigNum base = field_from_i64(value, context);
+    if (BN_is_zero(base.get())) fail("zero denominator in attention relation");
+    BigNum result;
+    if (!BN_mod_inverse(result.get(), base.get(), scalar_modulus(), context)) fail("field inverse failed");
+    return result;
+}
+
+void fill_field_attention(HiddenHeadTrace& head, const Graph& graph, u64 edge_begin,
+                          u64 edge_end, const std::vector<i64>& denominator_by_node) {
+    BN_CTX* context = BN_CTX_new();
+    if (!context) fail("BN_CTX_new failed");
+    head.inverse_field.resize(graph.edges);
+    head.alpha_field.resize(graph.edges);
+    for (u64 edge = edge_begin; edge < edge_end; ++edge) {
+        const u64 node = graph.dst[edge];
+        BigNum inverse = field_inverse(denominator_by_node[node], context);
+        BigNum exponent = field_from_i64(head.exp_weight[edge], context);
+        BigNum alpha;
+        if (!BN_mod_mul(alpha.get(), exponent.get(), inverse.get(), scalar_modulus(), context)) fail("field alpha multiplication failed");
+        head.inverse_field[edge] = field_encode(inverse.get());
+        head.alpha_field[edge] = field_encode(alpha.get());
+    }
+    BN_CTX_free(context);
+}
+
+void fill_field_attention(OutputHeadTrace& head, const Graph& graph, u64 edge_begin,
+                          u64 edge_end, const std::vector<i64>& denominator_by_node) {
+    BN_CTX* context = BN_CTX_new();
+    if (!context) fail("BN_CTX_new failed");
+    head.inverse_field.resize(graph.edges);
+    head.alpha_field.resize(graph.edges);
+    for (u64 edge = edge_begin; edge < edge_end; ++edge) {
+        const u64 node = graph.dst[edge];
+        BigNum inverse = field_inverse(denominator_by_node[node], context);
+        BigNum exponent = field_from_i64(head.exp_weight[edge], context);
+        BigNum alpha;
+        if (!BN_mod_mul(alpha.get(), exponent.get(), inverse.get(), scalar_modulus(), context)) fail("field alpha multiplication failed");
+        head.inverse_field[edge] = field_encode(inverse.get());
+        head.alpha_field[edge] = field_encode(alpha.get());
+    }
+    BN_CTX_free(context);
+}
+
+std::vector<i64> attention_scores(const Matrix& projected, const Matrix& src_kernel,
+                                  const Matrix& dst_kernel, const Graph& graph,
+                                  std::vector<i64>* e_src, std::vector<i64>* e_dst,
+                                  std::vector<i64>* score, const std::string& name) {
+    if (src_kernel.rows != projected.cols || dst_kernel.rows != projected.cols ||
+        src_kernel.cols != 1 || dst_kernel.cols != 1) fail("attention kernel shape mismatch in " + name);
+    e_src->assign(graph.edges, 0); e_dst->assign(graph.edges, 0); score->assign(graph.edges, 0);
+    for (u64 edge = 0; edge < graph.edges; ++edge) {
+        __int128 source = 0, destination = 0;
+        for (u64 dim = 0; dim < projected.cols; ++dim) {
+            source += static_cast<__int128>(projected.at(graph.src[edge], dim)) * src_kernel.at(dim, 0);
+            destination += static_cast<__int128>(projected.at(graph.dst[edge], dim)) * dst_kernel.at(dim, 0);
+        }
+        (*e_src)[edge] = checked_i128(source, name + ".e_src");
+        (*e_dst)[edge] = checked_i128(destination, name + ".e_dst");
+        (*score)[edge] = checked_i128(source + destination, name + ".score");
+    }
+    return *score;
+}
+
+void aggregate_head(const Config& config, const Graph& graph, const StaticTables& tables,
+                    const Matrix& projected, const std::vector<i64>& score,
+                    u64 exp_scale, u64 h_prime_scale, u64 aggregate_scale,
+                    HiddenHeadTrace* output, const std::string& name) {
+    output->h_prime = projected;
+    output->leaky_relu.resize(graph.edges);
+    output->maximum.assign(graph.nodes, std::numeric_limits<i64>::min());
+    output->delta.resize(graph.edges); output->exp_weight.resize(graph.edges);
+    output->denominator.resize(graph.edges); output->inverse.resize(graph.edges, 0);
+    output->alpha.resize(graph.edges, 0);
+    output->routed_h_prime = make_matrix(graph.edges, projected.cols);
+    output->product_u_h_prime = make_matrix(graph.edges, projected.cols);
+    output->product_alpha_h_prime = make_matrix(graph.edges, projected.cols);
+    output->aggregate_pre = make_matrix(graph.nodes, projected.cols);
+    output->aggregate_pre_field.rows = graph.nodes;
+    output->aggregate_pre_field.cols = projected.cols;
+    output->aggregate_pre_field.values.assign(static_cast<std::size_t>(graph.nodes * projected.cols), FieldValue{});
+    output->aggregate_num = make_matrix(graph.nodes, projected.cols);
+    output->elu_input = make_matrix(graph.nodes, projected.cols);
+    output->aggregate = make_matrix(graph.nodes, projected.cols);
+    for (u64 edge = 0; edge < graph.edges; ++edge) {
+        output->leaky_relu[edge] = table_lookup(tables.lrelu, tables.lrelu_min, tables.lrelu_max,
+                                                score[edge], name + ".lrelu");
+        output->maximum[graph.dst[edge]] = std::max(output->maximum[graph.dst[edge]], output->leaky_relu[edge]);
+    }
+    std::vector<i64> denominator_by_node(graph.nodes, 0);
+    for (u64 edge = 0; edge < graph.edges; ++edge) {
+        const u64 node = graph.dst[edge];
+        output->delta[edge] = checked_i128(static_cast<__int128>(output->maximum[node]) - output->leaky_relu[edge],
+                                           name + ".delta");
+        output->exp_weight[edge] = table_lookup(tables.exp, 0, static_cast<i64>(tables.exp_max),
+                                                output->delta[edge], name + ".exp");
+        denominator_by_node[node] = checked_i128(static_cast<__int128>(denominator_by_node[node]) + output->exp_weight[edge],
+                                                  name + ".denominator");
+    }
+    for (u64 edge = 0; edge < graph.edges; ++edge) output->denominator[edge] = denominator_by_node[graph.dst[edge]];
+    if (output->denominator.empty()) fail(name + " has no edges");
+    fill_field_attention(*output, graph, 0, graph.edges, denominator_by_node);
+    // Accumulate the complete numerator before applying SignedRoundDiv.  The
+    // previous implementation rounded every prefix of a destination group,
+    // which is not the relation in the protocol and is observably wrong for
+    // groups containing more than one edge.
+    for (u64 edge = 0; edge < graph.edges; ++edge) {
+        const u64 node = graph.dst[edge];
+        for (u64 dim = 0; dim < projected.cols; ++dim) {
+            const i64 value = projected.at(graph.src[edge], dim);
+            output->routed_h_prime.at(edge, dim) = value;
+            output->product_u_h_prime.at(edge, dim) = checked_i128(
+                static_cast<__int128>(value) * output->exp_weight[edge], name + ".u_h_prime");
+            output->product_alpha_h_prime.at(edge, dim) = checked_i128(
+                static_cast<__int128>(value) * output->alpha[edge], name + ".alpha_h_prime");
+            output->aggregate_num.at(node, dim) = checked_i128(
+                static_cast<__int128>(output->aggregate_num.at(node, dim)) +
+                    output->product_u_h_prime.at(edge, dim), name + ".aggregate_num");
+            output->aggregate_pre.at(node, dim) = 0;
+            output->elu_input.at(node, dim) = 0;
+        }
+    }
+
+    // Aggregate pre-field is the actual native field relation, while the
+    // integer view above is the fixed-point projection used by ELU.  The
+    // field view must use alpha=U*inv_dst (not the integer U numerator):
+    // this is the relation that makes aggregate_num == Sum*aggregate_pre in
+    // the scalar field.  Keep the accumulation on BIGNUMs so no host-side
+    // second field arithmetic implementation is introduced.
+    BN_CTX* field_context = BN_CTX_new();
+    if (!field_context) fail("BN_CTX_new failed for aggregate field");
+    for (u64 node = 0; node < graph.nodes; ++node) {
+        for (u64 dim = 0; dim < projected.cols; ++dim) {
+            BigNum value;
+            BN_zero(value.get());
+            if (node + 1 >= graph.node_edge_ptr.size()) {
+                BN_CTX_free(field_context);
+                fail("edge pointer does not cover destination node");
+            }
+            BigNum inverse = field_inverse(denominator_by_node[node], field_context);
+            for (u64 edge = graph.node_edge_ptr[node]; edge < graph.node_edge_ptr[node + 1]; ++edge) {
+                if (graph.dst[edge] != node) {
+                    BN_CTX_free(field_context);
+                    fail("edge pointer/destination mismatch");
+                }
+                BigNum weight = field_from_i64(output->exp_weight[edge], field_context);
+                BigNum source = field_from_i64(projected.at(graph.src[edge], dim), field_context);
+                BigNum alpha;
+                BigNum product;
+                if (!BN_mod_mul(alpha.get(), weight.get(), inverse.get(), scalar_modulus(), field_context) ||
+                    !BN_mod_mul(product.get(), alpha.get(), source.get(), scalar_modulus(), field_context) ||
+                    !BN_mod_add(value.get(), value.get(), product.get(), scalar_modulus(), field_context)) {
+                    BN_CTX_free(field_context);
+                    fail("aggregate field arithmetic failed");
+                }
+            }
+            output->aggregate_pre_field.values[static_cast<std::size_t>(node * projected.cols + dim)] =
+                field_encode(value.get());
+            const i64 denom = denominator_by_node[node];
+            output->aggregate_pre.at(node, dim) = round_div(
+                checked_i128(static_cast<__int128>(output->aggregate_num.at(node, dim)) * aggregate_scale,
+                             name + ".aggregate_scaled"),
+                checked_i128(static_cast<__int128>(denom) * h_prime_scale,
+                             name + ".aggregate_denominator"), name + ".aggregate_pre");
+            output->elu_input.at(node, dim) = output->aggregate_pre.at(node, dim);
+            output->aggregate.at(node, dim) = table_lookup(
+                tables.elu, tables.elu_min, tables.elu_max, output->elu_input.at(node, dim), name + ".elu");
+        }
+    }
+    BN_CTX_free(field_context);
+    (void)config; (void)exp_scale;
+}
+
+void aggregate_output_head(const Config& config, const Graph& graph, const StaticTables& tables,
+                           const Matrix& projected, const std::vector<i64>& score,
+                           u64 h_prime_scale, u64 aggregate_scale,
+                           OutputHeadTrace* output, const std::string& name) {
+    output->y_prime = projected;
+    output->leaky_relu.resize(graph.edges);
+    output->maximum.assign(graph.nodes, std::numeric_limits<i64>::min());
+    output->delta.resize(graph.edges); output->exp_weight.resize(graph.edges);
+    output->denominator.resize(graph.edges); output->inverse.resize(graph.edges, 0);
+    output->alpha.resize(graph.edges, 0);
+    output->routed_y_prime = make_matrix(graph.edges, projected.cols);
+    output->product_u_y_prime = make_matrix(graph.edges, projected.cols);
+    output->product_alpha_y_prime = make_matrix(graph.edges, projected.cols);
+    output->aggregate_pre = make_matrix(graph.nodes, projected.cols);
+    output->aggregate_pre_field.rows = graph.nodes;
+    output->aggregate_pre_field.cols = projected.cols;
+    output->aggregate_pre_field.values.assign(static_cast<std::size_t>(graph.nodes * projected.cols), FieldValue{});
+    output->aggregate_num = make_matrix(graph.nodes, projected.cols);
+    output->y_quantized = make_matrix(graph.nodes, projected.cols);
+    output->aligned = make_matrix(graph.nodes, projected.cols);
+    output->bias.assign(projected.cols, 0);
+    output->output = make_matrix(graph.nodes, projected.cols);
+    for (u64 edge = 0; edge < graph.edges; ++edge) {
+        output->leaky_relu[edge] = table_lookup(tables.lrelu, tables.lrelu_min, tables.lrelu_max,
+                                                score[edge], name + ".lrelu");
+        output->maximum[graph.dst[edge]] = std::max(output->maximum[graph.dst[edge]], output->leaky_relu[edge]);
+    }
+    std::vector<i64> denominator_by_node(graph.nodes, 0);
+    for (u64 edge = 0; edge < graph.edges; ++edge) {
+        output->delta[edge] = checked_i128(static_cast<__int128>(output->maximum[graph.dst[edge]]) - output->leaky_relu[edge],
+                                           name + ".delta");
+        output->exp_weight[edge] = table_lookup(tables.exp, 0, static_cast<i64>(tables.exp_max),
+                                                output->delta[edge], name + ".exp");
+        denominator_by_node[graph.dst[edge]] = checked_i128(static_cast<__int128>(denominator_by_node[graph.dst[edge]]) +
+                                                            output->exp_weight[edge], name + ".denominator");
+    }
+    for (u64 edge = 0; edge < graph.edges; ++edge) output->denominator[edge] = denominator_by_node[graph.dst[edge]];
+    fill_field_attention(*output, graph, 0, graph.edges, denominator_by_node);
+    for (u64 edge = 0; edge < graph.edges; ++edge) {
+        const u64 node = graph.dst[edge];
+        for (u64 dim = 0; dim < projected.cols; ++dim) {
+            const i64 value = projected.at(graph.src[edge], dim);
+            output->routed_y_prime.at(edge, dim) = value;
+            output->product_u_y_prime.at(edge, dim) = checked_i128(static_cast<__int128>(value) * output->exp_weight[edge],
+                                                                   name + ".u_y_prime");
+            output->aggregate_num.at(node, dim) = checked_i128(static_cast<__int128>(output->aggregate_num.at(node, dim)) +
+                                                               output->product_u_y_prime.at(edge, dim), name + ".aggregate_num");
+        }
+    }
+    // Preserve the same canonical alpha aggregate used by the hidden layers.
+    // The integer y_quantized/aligned views below remain the fixed-point
+    // SignedRoundDiv path and are intentionally not substituted by this
+    // field value.
+    BN_CTX* field_context = BN_CTX_new();
+    if (!field_context) fail("BN_CTX_new failed for output aggregate field");
+    for (u64 node = 0; node < graph.nodes; ++node) {
+        if (node + 1 >= graph.node_edge_ptr.size()) {
+            BN_CTX_free(field_context);
+            fail("edge pointer does not cover output destination node");
+        }
+        BigNum inverse = field_inverse(denominator_by_node[node], field_context);
+        for (u64 dim = 0; dim < projected.cols; ++dim) {
+            BigNum value;
+            BN_zero(value.get());
+            for (u64 edge = graph.node_edge_ptr[node]; edge < graph.node_edge_ptr[node + 1]; ++edge) {
+                if (graph.dst[edge] != node) {
+                    BN_CTX_free(field_context);
+                    fail("output edge pointer/destination mismatch");
+                }
+                BigNum weight = field_from_i64(output->exp_weight[edge], field_context);
+                BigNum source = field_from_i64(projected.at(graph.src[edge], dim), field_context);
+                BigNum alpha;
+                BigNum product;
+                if (!BN_mod_mul(alpha.get(), weight.get(), inverse.get(), scalar_modulus(), field_context) ||
+                    !BN_mod_mul(product.get(), alpha.get(), source.get(), scalar_modulus(), field_context) ||
+                    !BN_mod_add(value.get(), value.get(), product.get(), scalar_modulus(), field_context)) {
+                    BN_CTX_free(field_context);
+                    fail("output aggregate field arithmetic failed");
+                }
+            }
+            output->aggregate_pre_field.values[static_cast<std::size_t>(node * projected.cols + dim)] =
+                field_encode(value.get());
+            output->aggregate_pre.at(node, dim) = round_div(
+                checked_i128(static_cast<__int128>(output->aggregate_num.at(node, dim)) * aggregate_scale,
+                             name + ".aggregate_scaled"),
+                checked_i128(static_cast<__int128>(denominator_by_node[node]) * h_prime_scale,
+                             name + ".aggregate_denominator"), name + ".aggregate_pre");
+            output->y_quantized.at(node, dim) = output->aggregate_pre.at(node, dim);
+            output->aligned.at(node, dim) = output->y_quantized.at(node, dim);
+        }
+    }
+    BN_CTX_free(field_context);
+    (void)config;
+}
+
+GatTrace run_forward(const Config& config, const Graph& graph, const ModelBundle& model,
+                     const StaticTables& tables, bool gpu_projection) {
+    GatTrace trace;
+    trace.first_input = graph.feature_values;
+    Matrix current = graph.feature_values;
+    for (u64 layer = 0; layer < config.architecture.hidden_dims.size(); ++layer) {
+        HiddenLayerTrace layer_trace;
+        layer_trace.input = current;
+        std::vector<Matrix> head_outputs;
+        const u64 head_count = config.architecture.hidden_heads.at(layer);
+        const u64 head_dim = config.architecture.hidden_dims.at(layer);
+        const u64 in_dim = current.cols;
+        for (u64 head = 0; head < head_count; ++head) {
+            const std::string prefix = "hidden/layer" + std::to_string(layer) + "/head" + std::to_string(head);
+            const Matrix weight = quantized_tensor_matrix(model, prefix + "/seq/kernel", 4);
+            const Matrix projected = gpu_projection ? matmul_gpu(current, weight, prefix + ".projection")
+                                                     : matmul_cpu(current, weight, prefix + ".projection");
+            const Matrix src_kernel = quantized_tensor_matrix(model, prefix + "/attn_src/kernel", 4);
+            const Matrix dst_kernel = quantized_tensor_matrix(model, prefix + "/attn_dst/kernel", 4);
+            HiddenHeadTrace head_trace;
+            attention_scores(projected, src_kernel, dst_kernel, graph, &head_trace.e_src, &head_trace.e_dst,
+                             &head_trace.score, prefix + ".attention");
+            aggregate_head(config, graph, tables, projected, head_trace.score, 16, 64, 16,
+                           &head_trace, prefix);
+            head_outputs.push_back(head_trace.aggregate);
+            layer_trace.heads.push_back(std::move(head_trace));
+        }
+        layer_trace.concat = concat_columns(head_outputs);
+        current = layer_trace.concat;
+        if (current.cols != head_count * head_dim || in_dim == 0) fail("hidden layer shape invariant failed");
+        trace.hidden_layers.push_back(std::move(layer_trace));
+    }
+    for (u64 head = 0; head < config.architecture.output_heads; ++head) {
+        const std::string prefix = "output/head" + std::to_string(head);
+        const Matrix weight = quantized_tensor_matrix(model, prefix + "/seq/kernel", 4);
+        const Matrix projected = gpu_projection ? matmul_gpu(current, weight, prefix + ".projection")
+                                                 : matmul_cpu(current, weight, prefix + ".projection");
+        const Matrix src_kernel = quantized_tensor_matrix(model, prefix + "/attn_src/kernel", 4);
+        const Matrix dst_kernel = quantized_tensor_matrix(model, prefix + "/attn_dst/kernel", 4);
+        OutputHeadTrace head_trace;
+        attention_scores(projected, src_kernel, dst_kernel, graph, &head_trace.e_src, &head_trace.e_dst,
+                         &head_trace.score, prefix + ".attention");
+        aggregate_output_head(config, graph, tables, projected, head_trace.score, 64, 16,
+                              &head_trace, prefix);
+        const auto bias = quantized_tensor_vector(model, prefix + "/output_bias", 16);
+        if (bias.size() != current.cols && bias.size() != config.architecture.classes) fail(prefix + " bias shape mismatch");
+        head_trace.bias = bias;
+        for (u64 node = 0; node < graph.nodes; ++node) {
+            for (u64 cls = 0; cls < projected.cols; ++cls) {
+                head_trace.output.at(node, cls) = checked_i128(static_cast<__int128>(head_trace.aligned.at(node, cls)) + bias[cls],
+                                                               prefix + ".bias");
+            }
+        }
+        trace.output_heads.push_back(std::move(head_trace));
+    }
+    if (trace.output_heads.empty()) fail("no output heads");
+    trace.output_sum = make_matrix(graph.nodes, config.architecture.classes);
+    for (const auto& head : trace.output_heads) {
+        if (head.output.cols != trace.output_sum.cols) fail("output head class shape mismatch");
+        for (std::size_t index = 0; index < trace.output_sum.values.size(); ++index) {
+            trace.output_sum.values[index] = checked_i128(static_cast<__int128>(trace.output_sum.values[index]) + head.output.values[index],
+                                                          "output head sum");
+        }
+    }
+    trace.logits = make_matrix(graph.nodes, config.architecture.classes);
+    for (std::size_t index = 0; index < trace.logits.values.size(); ++index) {
+        trace.logits.values[index] = round_div(trace.output_sum.values[index],
+                                               static_cast<i64>(trace.output_heads.size()), "final average");
+    }
+    return trace;
+}
+
+std::string json_string_field(const std::string& text, const std::string& key) {
+    const std::regex pattern("\\\"" + key + "\\\"\\s*:\\s*\\\"([^\\\"]*)\\\"");
+    std::smatch match;
+    if (!std::regex_search(text, match, pattern)) fail("manifest field missing: " + key);
+    return match[1].str();
+}
+
+u64 json_u64_field(const std::string& text, const std::string& key) {
+    const std::regex pattern("\\\"" + key + "\\\"\\s*:\\s*([0-9]+)");
+    std::smatch match;
+    if (!std::regex_search(text, match, pattern)) fail("manifest field missing: " + key);
+    return parse_u64(match[1].str(), "manifest " + key);
+}
+
+bool is_digest(const std::string& value) {
+    return std::regex_match(value, std::regex("[0-9a-fA-F]{64}"));
+}
+
+std::vector<std::uint64_t> json_shape(const std::string& text, const std::string& what) {
+    return parse_list(text, what);
+}
+
+std::map<std::string, std::vector<u64>> manifest_tensor_shapes(const std::string& manifest) {
+    const auto marker = manifest.find("\"tensor_index\"");
+    if (marker == std::string::npos) fail("checkpoint manifest tensor_index missing");
+    const std::string index = manifest.substr(marker);
+    const std::regex entry(
+        "\\\"([^\\\"]+)\\\"\\s*:\\s*\\{[\\s\\S]*?\\\"shape\\\"\\s*:\\s*\\[([^\\]]*)\\]");
+    std::map<std::string, std::vector<u64>> shapes;
+    for (std::sregex_iterator iterator(index.begin(), index.end(), entry), end; iterator != end; ++iterator) {
+        const std::string name = (*iterator)[1].str();
+        const auto shape = json_shape((*iterator)[2].str(), "manifest tensor shape " + name);
+        if (!shapes.emplace(name, shape).second) fail("duplicate checkpoint manifest tensor index: " + name);
+    }
+    if (shapes.empty()) fail("checkpoint manifest tensor_index is empty");
+    return shapes;
+}
+
+void expect_manifest(const std::string& manifest, const Config& config) {
+    if (json_string_field(manifest, "family_schema") != "multi_layer_multi_head") {
+        fail("checkpoint family_schema is not canonical");
+    }
+    if (json_string_field(manifest, "dataset") != config.dataset) fail("checkpoint dataset mismatch");
+    if (json_string_field(manifest, "model_arch_id") != config.model_arch_id) fail("checkpoint model_arch_id mismatch");
+    if (json_string_field(manifest, "model_param_id") != config.model_param_id) fail("checkpoint model_param_id mismatch");
+    if (json_string_field(manifest, "quant_cfg_id") != config.quant_cfg_id) fail("checkpoint quant_cfg_id mismatch");
+    if (json_string_field(manifest, "static_table_id") != config.static_table_id) fail("checkpoint static_table_id mismatch");
+    if (json_string_field(manifest, "input_preprocess_id") != config.input_preprocess_id) fail("checkpoint input_preprocess_id mismatch");
+    if (json_string_field(manifest, "degree_bound_id") != config.degree_bound_id) fail("checkpoint degree_bound_id mismatch");
+    if (json_string_field(manifest, "edge_sort_rule") != config.edge_sort_rule) fail("checkpoint edge_sort_rule mismatch");
+    if (json_string_field(manifest, "batching_rule") != config.batching_rule) fail("checkpoint batching_rule mismatch");
+    const auto checkpoint_prefix = json_string_field(manifest, "checkpoint_prefix");
+    const auto expected_prefix = std::filesystem::relative(
+        config.checkpoint_bundle / "best_model.pt", config.baseline_root).generic_string();
+    if (checkpoint_prefix != expected_prefix) fail("checkpoint_prefix is not baseline-local canonical path");
+    if (json_u64_field(manifest, "L") != config.architecture.layers) fail("checkpoint L mismatch");
+    if (json_u64_field(manifest, "K_out") != config.architecture.output_heads) fail("checkpoint K_out mismatch");
+    if (json_u64_field(manifest, "C") != config.architecture.classes) fail("checkpoint class count mismatch");
+    if (json_u64_field(manifest, "tensor_count") == 0) fail("checkpoint tensor_count is zero");
+}
+
+struct RawEdge { u64 graph = 0; u64 src = 0; u64 dst = 0; u64 ordinal = 0; };
+
+std::vector<float> load_npy_float32(const std::filesystem::path& path, u64 expected_rows,
+                                    u64 expected_cols) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input) fail("cannot open numpy feature file " + path.string());
+    std::array<unsigned char, 10> preamble{};
+    input.read(reinterpret_cast<char*>(preamble.data()), static_cast<std::streamsize>(preamble.size()));
+    if (input.gcount() != static_cast<std::streamsize>(preamble.size()) || preamble[0] != 0x93 ||
+        preamble[1] != 'N' || preamble[2] != 'U' || preamble[3] != 'M' || preamble[4] != 'P' || preamble[5] != 'Y') {
+        fail("invalid numpy magic in " + path.string());
+    }
+    const unsigned version_major = preamble[6];
+    const std::size_t length_size = version_major == 1 ? 2 : 4;
+    std::uint32_t header_size = 0;
+    for (std::size_t i = 0; i < length_size; ++i) header_size |= static_cast<std::uint32_t>(preamble[8 + i]) << (8U * i);
+    std::string header(header_size, '\0');
+    input.read(header.data(), static_cast<std::streamsize>(header.size()));
+    if (input.gcount() != static_cast<std::streamsize>(header.size())) fail("truncated numpy header");
+    if (header.find("'descr': '<f4'") == std::string::npos && header.find("\"descr\": \"<f4\"") == std::string::npos &&
+        header.find("'descr': '|f4'") == std::string::npos) fail("numpy feature dtype is not little-endian float32");
+    if (header.find("fortran_order': False") == std::string::npos && header.find("fortran_order\": False") == std::string::npos) {
+        fail("numpy feature array must be C-contiguous");
+    }
+    const auto shape_pos = header.find("shape");
+    if (shape_pos == std::string::npos) fail("numpy shape missing");
+    const auto left = header.find('(', shape_pos);
+    const auto right = header.find(')', left);
+    if (left == std::string::npos || right == std::string::npos) fail("numpy shape malformed");
+    std::string shape = header.substr(left + 1, right - left - 1);
+    std::stringstream shape_stream(shape);
+    std::string row_text, col_text;
+    if (!std::getline(shape_stream, row_text, ',') || !std::getline(shape_stream, col_text, ',')) fail("numpy rank is not two");
+    const u64 rows = parse_u64(trim(row_text), "numpy rows");
+    const u64 cols = parse_u64(trim(col_text), "numpy cols");
+    if (rows != expected_rows || cols != expected_cols) fail("numpy feature shape mismatch");
+    std::vector<float> values(static_cast<std::size_t>(rows * cols));
+    input.read(reinterpret_cast<char*>(values.data()), static_cast<std::streamsize>(values.size() * sizeof(float)));
+    if (input.gcount() != static_cast<std::streamsize>(values.size() * sizeof(float))) fail("truncated numpy feature payload");
+    return values;
+}
+
+}  // namespace
+
+AssetManifest load_asset_manifest(const Config& config) {
+    if (config.asset_manifest_path.empty()) fail("asset manifest path is empty");
+    if (std::filesystem::is_symlink(config.asset_manifest_path) ||
+        !std::filesystem::is_regular_file(config.asset_manifest_path)) {
+        fail("baseline-local asset_manifest is missing or not a regular file: " +
+             config.asset_manifest_path.string());
+    }
+    const auto manifest = file_text(config.asset_manifest_path);
+    AssetManifest result;
+    result.schema = json_string_field(manifest, "schema");
+    if (result.schema != "zkDL_gat_asset_manifest_v1") fail("asset manifest schema mismatch");
+    result.dataset = json_string_field(manifest, "dataset");
+    if (result.dataset != config.dataset) fail("asset manifest dataset mismatch");
+    result.quant_cfg_id = json_string_field(manifest, "quant_cfg_id");
+    if (result.quant_cfg_id != config.quant_cfg_id) fail("asset manifest quant_cfg_id mismatch");
+    result.config = json_string_field(manifest, "config");
+    const auto expected_config = std::filesystem::relative(config.config_path, config.baseline_root).generic_string();
+    if (result.config != expected_config) fail("asset manifest config identity mismatch");
+    result.digest = sha256_file(config.asset_manifest_path);
+
+    const std::regex entry(
+        "\\{\\s*\"bytes\"\\s*:\\s*([0-9]+)\\s*,\\s*\"path\"\\s*:\\s*\"([^\"]+)\"\\s*,\\s*\"sha256\"\\s*:\\s*\"([0-9a-fA-F]{64})\"\\s*\\}");
+    std::set<std::string> paths;
+    for (std::sregex_iterator iterator(manifest.begin(), manifest.end(), entry), end; iterator != end; ++iterator) {
+        AssetManifestEntry file;
+        file.bytes = parse_u64((*iterator)[1].str(), "asset manifest bytes");
+        file.path = (*iterator)[2].str();
+        file.sha256 = (*iterator)[3].str();
+        if (file.path.empty() || std::filesystem::path(file.path).is_absolute()) {
+            fail("asset manifest file path is not baseline-local: " + file.path);
+        }
+        for (const auto& component : std::filesystem::path(file.path)) {
+            if (component == "..") fail("asset manifest file path escapes baseline root: " + file.path);
+        }
+        if (!paths.insert(file.path).second) fail("duplicate asset manifest file: " + file.path);
+        const auto resolved = local_path(config.baseline_root, file.path, "asset manifest file");
+        if (std::filesystem::is_symlink(resolved) || !std::filesystem::is_regular_file(resolved)) {
+            fail("asset manifest file is missing or symlinked: " + file.path);
+        }
+        if (std::filesystem::file_size(resolved) != file.bytes) fail("asset manifest byte size mismatch: " + file.path);
+        if (sha256_file(resolved) != file.sha256) fail("asset manifest digest mismatch: " + file.path);
+        result.files.push_back(std::move(file));
+    }
+    if (result.files.empty()) fail("asset manifest has no files");
+    const auto require_entry = [&](const std::string& relative) {
+        if (!paths.count(relative)) fail("asset manifest missing required file: " + relative);
+    };
+    require_entry(result.config);
+    require_entry("configs/quantization_scale_chain.cfg");
+    require_entry((std::filesystem::relative(config.checkpoint_bundle, config.baseline_root) / "manifest.json").generic_string());
+    require_entry((std::filesystem::relative(config.checkpoint_bundle, config.baseline_root) / "tensors.txt").generic_string());
+    require_entry((std::filesystem::relative(config.checkpoint_bundle, config.baseline_root) / "tensors.npz").generic_string());
+    require_entry((std::filesystem::relative(config.cache_root / config.dataset, config.baseline_root) / "meta.cfg").generic_string());
+    return result;
+}
+
+const char* backend_name(Backend backend) noexcept { return backend == Backend::Cpu ? "cpu" : "gpu"; }
+
+Backend parse_backend(const std::string& value) {
+    if (value == "cpu") return Backend::Cpu;
+    if (value == "gpu") return Backend::Gpu;
+    fail("backend must be cpu or gpu");
+}
+
+Config load_config(const std::filesystem::path& path) {
+    const auto absolute = std::filesystem::absolute(path).lexically_normal();
+    if (absolute.parent_path().filename() != "configs") fail("config must be in baseline-local configs/");
+    const auto values = read_kv(absolute);
+    Config config;
+    config.config_path = absolute;
+    config.baseline_root = absolute.parent_path().parent_path();
+    const std::set<std::string> canonical_keys = {
+        "dataset", "data_root", "cache_root", "export_dir", "checkpoint_bundle", "task_type", "report_unit",
+        "batching_rule", "self_loop_rule", "edge_sort_rule", "chunking_rule", "L", "hidden_profile", "d_in_profile",
+        "K_out", "num_classes", "range_bits", "seed", "dump_trace", "auto_prepare_dataset", "model_arch_id",
+        "model_param_id", "quant_cfg_id", "input_preprocess_id", "static_table_id", "degree_bound_id", "symmetrize_edges",
+        "deduplicate_edges", "batch_graphs", "srs_type", "srs_id", "srs_path", "privacy_policy", "input_privacy",
+        "output_mode", "opening_mode", "binding_mode", "proof_task", "security_profile_id", "verifier_registry_digest"
+    };
+    for (const auto& item : values) {
+        if (!canonical_keys.count(item.first)) fail("unknown non-canonical configuration key: " + item.first);
+    }
+    const auto required = [&](const std::string& key) -> std::string {
+        const auto iterator = values.find(key);
+        if (iterator == values.end()) fail("configuration key missing: " + key);
+        return iterator->second;
+    };
+    config.dataset = required("dataset");
+    static const std::set<std::string> datasets = {"cora", "citeseer", "pubmed", "ppi", "ogbn_arxiv"};
+    if (!datasets.count(config.dataset)) fail("dataset is outside canonical five-dataset set");
+    config.data_root = local_path(config.baseline_root, required("data_root"), "data_root");
+    config.cache_root = local_path(config.baseline_root, required("cache_root"), "cache_root");
+    config.checkpoint_bundle = local_path(config.baseline_root, required("checkpoint_bundle"), "checkpoint_bundle");
+    config.run_root = local_path(config.baseline_root, required("export_dir"), "export_dir");
+    config.asset_manifest_path = config.run_root / "asset_manifest.json";
+    config.model_arch_id = required("model_arch_id"); config.model_param_id = required("model_param_id");
+    config.quant_cfg_id = required("quant_cfg_id"); config.static_table_id = required("static_table_id");
+    config.input_preprocess_id = required("input_preprocess_id"); config.proof_task = required("proof_task");
+    config.privacy_policy = required("privacy_policy"); config.input_privacy = required("input_privacy");
+    config.output_mode = required("output_mode"); config.batching_rule = required("batching_rule");
+    config.self_loop_rule = required("self_loop_rule"); config.edge_sort_rule = required("edge_sort_rule");
+    config.task_type = required("task_type"); config.report_unit = required("report_unit");
+    config.chunking_rule = required("chunking_rule"); config.degree_bound_id = required("degree_bound_id");
+    config.srs_type = required("srs_type"); config.srs_id = required("srs_id");
+    config.srs_path = local_path(config.baseline_root, required("srs_path"), "srs_path").string();
+    config.opening_mode = required("opening_mode"); config.binding_mode = required("binding_mode");
+    config.security_profile_id = required("security_profile_id"); config.verifier_registry_digest = required("verifier_registry_digest");
+    if (!is_digest(config.verifier_registry_digest)) fail("verifier_registry_digest must be SHA-256");
+    config.range_bits = parse_u64(required("range_bits"), "range_bits");
+    config.batch_graphs = values.count("batch_graphs") ? parse_u64(values.at("batch_graphs"), "batch_graphs") : 1;
+    config.seed = parse_u64(required("seed"), "seed");
+    config.dump_trace = parse_bool(required("dump_trace"), "dump_trace");
+    config.symmetrize_edges = values.count("symmetrize_edges") && parse_bool(values.at("symmetrize_edges"), "symmetrize_edges");
+    config.deduplicate_edges = !values.count("deduplicate_edges") || parse_bool(values.at("deduplicate_edges"), "deduplicate_edges");
+    config.auto_prepare_dataset = parse_bool(required("auto_prepare_dataset"), "auto_prepare_dataset");
+    config.architecture.layers = parse_u64(required("L"), "L");
+    const auto profile = parse_profile(required("hidden_profile"));
+    for (const auto item : profile) { config.architecture.hidden_heads.push_back(item.first); config.architecture.hidden_dims.push_back(item.second); }
+    config.architecture.input_dims = parse_list(required("d_in_profile"), "d_in_profile");
+    config.architecture.output_heads = parse_u64(required("K_out"), "K_out");
+    config.architecture.classes = parse_u64(required("num_classes"), "num_classes");
+    if (config.architecture.layers != config.architecture.hidden_dims.size() + 1 ||
+        config.architecture.input_dims.size() != config.architecture.hidden_dims.size()) fail("L/profile dimension mismatch");
+    if (config.architecture.layers < 2 || config.architecture.output_heads == 0 || config.architecture.classes == 0 || config.batch_graphs == 0) {
+        fail("canonical architecture/batching dimensions are invalid");
+    }
+
+    const auto quant_path = config.baseline_root / "configs" / "quantization_scale_chain.cfg";
+    const auto quant = read_kv(quant_path);
+    if (quant.at("schema") != "gat_l3_scale_chain" || quant.at("quant_cfg_id") != config.quant_cfg_id) {
+        fail("quantization scale chain schema/id mismatch");
+    }
+    if (quant.at("quant_cfg_id") != config.quant_cfg_id) fail("quantization chain id mismatch");
+    config.quantization.input = parse_u64(quant.at("s_input"), "s_input");
+    config.quantization.delta = parse_u64(quant.at("s_delta"), "s_delta");
+    config.quantization.exp = parse_u64(quant.at("s_exp"), "s_exp");
+    config.quantization.hidden_input = parse_list(quant.at("s_h"), "s_h");
+    config.quantization.hidden_weight = parse_list(quant.at("s_w_hidden_0"), "s_w_hidden_0");
+    config.quantization.hidden_h_prime = parse_list(quant.at("s_h_prime_hidden_0"), "s_h_prime_hidden_0");
+    config.quantization.hidden_attention_src = parse_list(quant.at("s_a_src_hidden_0"), "s_a_src_hidden_0");
+    config.quantization.hidden_attention_dst = parse_list(quant.at("s_a_dst_hidden_0"), "s_a_dst_hidden_0");
+    config.quantization.hidden_aggregate_pre = parse_list(quant.at("s_agg_pre"), "s_agg_pre");
+    config.quantization.hidden_aggregate = parse_list(quant.at("s_agg"), "s_agg");
+    config.quantization.output_weight = parse_list(quant.at("s_w_output"), "s_w_output");
+    config.quantization.output_y_prime = parse_list(quant.at("s_y_prime"), "s_y_prime");
+    config.quantization.output_attention_src = parse_list(quant.at("s_a_src_output"), "s_a_src_output");
+    config.quantization.output_attention_dst = parse_list(quant.at("s_a_dst_output"), "s_a_dst_output");
+    config.quantization.output_bias = parse_list(quant.at("s_b_output"), "s_b_output");
+    config.quantization.output_pre = parse_u64(quant.at("s_out_pre"), "s_out_pre");
+    config.quantization.output_head = parse_u64(quant.at("s_out_head"), "s_out_head");
+    config.quantization.output = parse_u64(quant.at("s_out"), "s_out");
+    config.quantization.rounding = quant.at("round"); config.quantization.rescale = quant.at("rescale");
+    config.quantization.output_average = quant.at("output_average");
+    if (quant.at("s_cat").empty() || config.quantization.rounding != "nearest_ties_away" || config.quantization.rescale != "none" ||
+        config.quantization.output_average != "signed_round_div") fail("unsupported non-canonical quantization chain");
+    config.config_digest = sha256_file(absolute);
+    return config;
+}
+
+ModelBundle load_model_bundle(const Config& config) {
+    const auto assets = load_asset_manifest(config);
+    if (!std::filesystem::is_directory(config.checkpoint_bundle)) fail("checkpoint bundle is not a directory");
+    const auto manifest_path = config.checkpoint_bundle / "manifest.json";
+    const auto manifest = file_text(manifest_path);
+    expect_manifest(manifest, config);
+    const auto manifest_shapes = manifest_tensor_shapes(manifest);
+    ModelBundle model;
+    model.root = config.checkpoint_bundle;
+    model.dataset = config.dataset; model.model_arch_id = config.model_arch_id;
+    model.model_param_id = config.model_param_id; model.quant_cfg_id = config.quant_cfg_id;
+    model.static_table_id = config.static_table_id; model.manifest_digest = sha256_file(manifest_path);
+    model.tensor_count_manifest = json_u64_field(manifest, "tensor_count");
+    const auto asset_digest = [&](const std::filesystem::path& path) -> std::string {
+        const auto relative = std::filesystem::relative(path, config.baseline_root).generic_string();
+        for (const auto& file : assets.files) if (file.path == relative) return file.sha256;
+        fail("asset manifest does not authenticate checkpoint file: " + relative);
+    };
+    model.tensors_text_digest = asset_digest(config.checkpoint_bundle / "tensors.txt");
+    model.tensors_npz_digest = asset_digest(config.checkpoint_bundle / "tensors.npz");
+    const auto best_model = config.checkpoint_bundle / "best_model.pt";
+    if (std::filesystem::is_regular_file(best_model)) model.best_model_digest = asset_digest(best_model);
+    std::ifstream npz(config.checkpoint_bundle / "tensors.npz", std::ios::binary);
+    std::array<unsigned char, 4> npz_magic{};
+    npz.read(reinterpret_cast<char*>(npz_magic.data()), static_cast<std::streamsize>(npz_magic.size()));
+    if (npz.gcount() != static_cast<std::streamsize>(npz_magic.size()) || npz_magic[0] != 'P' ||
+        npz_magic[1] != 'K' || npz_magic[2] != 3 || npz_magic[3] != 4) {
+        fail("checkpoint tensors.npz is not a valid ZIP archive");
+    }
+    std::ifstream input(config.checkpoint_bundle / "tensors.txt");
+    if (!input) fail("cannot open checkpoint tensor export");
+    std::string marker;
+    while (input >> marker) {
+        if (marker != "TENSOR") fail("unexpected checkpoint token " + marker);
+        ModelTensor tensor;
+        u64 rank = 0, count = 0;
+        input >> tensor.name >> rank;
+        if (!input || rank == 0 || rank > 8) fail("malformed checkpoint tensor header");
+        tensor.shape.resize(rank);
+        u64 product = 1;
+        for (u64& dimension : tensor.shape) {
+            input >> dimension;
+            if (!input || dimension == 0 || product > std::numeric_limits<u64>::max() / dimension) fail("invalid tensor shape");
+            product *= dimension;
+        }
+        input >> count;
+        if (!input || count != product) fail("checkpoint tensor count mismatch: " + tensor.name);
+        tensor.values.resize(static_cast<std::size_t>(count));
+        for (double& value : tensor.values) {
+            input >> value;
+            if (!input || !std::isfinite(value)) fail("invalid checkpoint tensor value: " + tensor.name);
+        }
+        if (!model.tensors.emplace(tensor.name, std::move(tensor)).second) fail("duplicate checkpoint tensor");
+    }
+    if (model.tensors.empty()) fail("checkpoint contains no tensors");
+    if (model.tensors.size() != model.tensor_count_manifest || manifest_shapes.size() != model.tensor_count_manifest) {
+        fail("checkpoint tensor_count does not match manifest tensor_index");
+    }
+    for (const auto& item : model.tensors) {
+        const auto shape = manifest_shapes.find(item.first);
+        if (shape == manifest_shapes.end()) fail("checkpoint tensor is absent from manifest tensor_index: " + item.first);
+        if (shape->second != item.second.shape) fail("checkpoint tensor shape disagrees with manifest: " + item.first);
+    }
+    return model;
+}
+
+Graph load_graph(const Config& config) {
+    const auto directory = config.cache_root / config.dataset;
+    const auto metadata = read_kv(directory / "meta.cfg");
+    const auto metadata_value = [&](const std::string& key) -> std::string {
+        const auto iterator = metadata.find(key);
+        if (iterator == metadata.end()) fail("cache metadata key missing: " + key);
+        return iterator->second;
+    };
+    if (metadata_value("name") != config.dataset) fail("cache dataset name mismatch");
+    const u64 nodes = parse_u64(metadata_value("num_nodes"), "num_nodes");
+    const u64 features = parse_u64(metadata_value("num_features"), "num_features");
+    if (metadata_value("input_preprocess_id") != config.input_preprocess_id) fail("cache input_preprocess_id mismatch");
+    if (metadata.count("num_classes") && parse_u64(metadata.at("num_classes"), "num_classes") != config.architecture.classes) {
+        fail("cache class count mismatch");
+    }
+    if (metadata.count("task_type") && metadata.at("task_type") != config.task_type) fail("cache task_type mismatch");
+    if (metadata.count("report_unit") && metadata.at("report_unit") != config.report_unit) fail("cache report_unit mismatch");
+    if (config.architecture.input_dims.front() != features) fail("feature dimension mismatch");
+    Graph graph;
+    graph.total_nodes = nodes; graph.nodes = nodes; graph.features = features;
+    graph.graphs = metadata.count("graph_count") ? parse_u64(metadata.at("graph_count"), "graph_count") : 1;
+    if (graph.graphs == 0) fail("graph_count must be positive");
+    if (config.dataset != "ppi" && graph.graphs != 1) {
+        fail("non-PPI canonical graph must contain exactly one graph");
+    }
+    graph.absolute_ids.resize(nodes); std::iota(graph.absolute_ids.begin(), graph.absolute_ids.end(), 0);
+    graph.node_ptr = {0, nodes};
+    if (config.dataset == "ppi") {
+        graph.node_ptr.clear();
+        std::ifstream ptr(directory / "node_ptr.txt");
+        if (!ptr) fail("missing PPI node_ptr");
+        u64 value = 0;
+        while (ptr >> value) graph.node_ptr.push_back(value);
+        if (graph.node_ptr.size() != graph.graphs + 1 || graph.node_ptr.empty() || graph.node_ptr.front() != 0 ||
+            graph.node_ptr.back() != nodes) fail("PPI node_ptr mismatch");
+        for (std::size_t index = 1; index < graph.node_ptr.size(); ++index) {
+            if (graph.node_ptr[index] <= graph.node_ptr[index - 1] || graph.node_ptr[index] > nodes) {
+                fail("PPI node_ptr is not strictly increasing and bounded");
+            }
+        }
+    }
+
+    Matrix features_matrix = make_matrix(nodes, features);
+    if (config.dataset == "ppi" || config.dataset == "ogbn_arxiv") {
+        const auto raw = load_npy_float32(directory / "features.npy", nodes, features);
+        for (u64 row = 0; row < nodes; ++row) {
+            long double sum = 0;
+            if (config.input_preprocess_id == "row_normalize") {
+                for (u64 col = 0; col < features; ++col) sum += raw[static_cast<std::size_t>(row * features + col)];
+            }
+            for (u64 col = 0; col < features; ++col) {
+                const double source = raw[static_cast<std::size_t>(row * features + col)];
+                const double value = config.input_preprocess_id == "row_normalize" && sum != 0 ? source / static_cast<double>(sum) : source;
+                features_matrix.at(row, col) = rounded_float(value, config.quantization.input, "feature");
+            }
+        }
+    } else {
+        std::ifstream input(directory / "features.txt");
+        if (!input) fail("missing sparse feature file");
+        u64 rows = 0, cols = 0;
+        input >> rows >> cols;
+        if (rows != nodes || cols != features) fail("sparse feature shape mismatch");
+        std::string line;
+        std::getline(input, line);
+        for (u64 row = 0; row < nodes; ++row) {
+            if (!std::getline(input, line)) fail("truncated sparse feature file");
+            std::stringstream tokens(line);
+            std::string token;
+            long double sum = 0;
+            std::vector<std::pair<u64, double>> entries;
+            while (tokens >> token) {
+                const auto colon = token.find(':');
+                if (colon == std::string::npos) fail("malformed sparse feature token");
+                const u64 column = parse_u64(token.substr(0, colon), "sparse feature index");
+                if (column >= features) fail("sparse feature index out of range");
+                const double value = std::stod(token.substr(colon + 1));
+                if (!std::isfinite(value)) fail("non-finite sparse feature");
+                entries.emplace_back(column, value); sum += value;
+            }
+            for (const auto entry : entries) {
+                const double value = config.input_preprocess_id == "row_normalize" && sum != 0 ? entry.second / static_cast<double>(sum) : entry.second;
+                features_matrix.at(row, entry.first) = rounded_float(value, config.quantization.input, "feature");
+            }
+        }
+    }
+    graph.feature_values = std::move(features_matrix);
+
+    std::ifstream edges_file(directory / "edges.txt");
+    if (!edges_file) fail("missing edge file");
+    std::vector<RawEdge> edges;
+    std::set<std::tuple<u64, u64, u64>> seen;
+    std::string line;
+    u64 ordinal = 0;
+    while (std::getline(edges_file, line)) {
+        line = trim(line); if (line.empty()) continue;
+        std::stringstream stream(line);
+        std::vector<u64> values; u64 value = 0;
+        while (stream >> value) values.push_back(value);
+        if ((config.dataset == "ppi" && values.size() != 3) || (config.dataset != "ppi" && values.size() != 2)) fail("malformed edge row");
+        const u64 gid = config.dataset == "ppi" ? values[0] : 0;
+        if (config.dataset == "ppi" && gid >= graph.graphs) fail("PPI edge graph id out of range");
+        if (config.dataset == "ppi") {
+            const u64 graph_nodes = graph.node_ptr.at(gid + 1) - graph.node_ptr.at(gid);
+            if (values[1] >= graph_nodes || values[2] >= graph_nodes) fail("PPI edge local endpoint out of range");
+        }
+        const u64 source = config.dataset == "ppi" ? graph.node_ptr.at(gid) + values[1] : values[0];
+        const u64 destination = config.dataset == "ppi" ? graph.node_ptr.at(gid) + values[2] : values[1];
+        if (source >= nodes || destination >= nodes) fail("edge endpoint out of range");
+        const auto add = [&](u64 src, u64 dst) {
+            if (config.deduplicate_edges && !seen.emplace(gid, src, dst).second) return;
+            edges.push_back({gid, src, dst, ordinal++});
+        };
+        add(source, destination);
+        if (config.symmetrize_edges) add(destination, source);
+    }
+    for (u64 node = 0; node < nodes; ++node) {
+        u64 gid = 0;
+        if (config.dataset == "ppi") gid = static_cast<u64>(std::upper_bound(graph.node_ptr.begin(), graph.node_ptr.end(), node) - graph.node_ptr.begin() - 1);
+        if (!config.deduplicate_edges || seen.emplace(gid, node, node).second) edges.push_back({gid, node, node, ordinal++});
+    }
+    std::stable_sort(edges.begin(), edges.end(), [](const RawEdge& left, const RawEdge& right) {
+        if (left.graph != right.graph) return left.graph < right.graph;
+        if (left.dst != right.dst) return left.dst < right.dst;
+        return left.ordinal < right.ordinal;
+    });
+    graph.src.reserve(edges.size()); graph.dst.reserve(edges.size());
+    graph.node_edge_ptr.assign(nodes + 1, 0);
+    for (const auto& edge : edges) {
+        graph.src.push_back(static_cast<std::uint32_t>(edge.src)); graph.dst.push_back(static_cast<std::uint32_t>(edge.dst));
+        ++graph.node_edge_ptr[edge.dst + 1];
+    }
+    for (u64 node = 1; node <= nodes; ++node) graph.node_edge_ptr[node] += graph.node_edge_ptr[node - 1];
+    graph.edges = graph.src.size();
+    graph.edge_ptr.assign(graph.graphs + 1, 0);
+    for (const auto& edge : edges) ++graph.edge_ptr[edge.graph + 1];
+    for (u64 gid = 1; gid <= graph.graphs; ++gid) graph.edge_ptr[gid] += graph.edge_ptr[gid - 1];
+    if (graph.edge_ptr.size() != graph.graphs + 1 || graph.edge_ptr.front() != 0 || graph.edge_ptr.back() != graph.edges) {
+        fail("graph edge_ptr does not cover the canonical edge list");
+    }
+    for (u64 gid = 0; gid < graph.graphs; ++gid) {
+        if (graph.edge_ptr[gid] >= graph.edge_ptr[gid + 1]) fail("graph edge_ptr contains an empty graph block");
+    }
+    if (graph.node_edge_ptr.size() != nodes + 1 || graph.node_edge_ptr.front() != 0 || graph.node_edge_ptr.back() != graph.edges) {
+        fail("node edge_ptr does not cover the canonical edge list");
+    }
+    for (u64 node = 0; node < nodes; ++node) {
+        if (graph.node_edge_ptr[node] > graph.node_edge_ptr[node + 1]) fail("node edge_ptr is not monotone");
+        if (graph.node_edge_ptr[node] == graph.node_edge_ptr[node + 1]) fail("node has no incoming edge after self-loop preparation");
+        for (u64 edge = graph.node_edge_ptr[node]; edge < graph.node_edge_ptr[node + 1]; ++edge) {
+            if (graph.dst.at(edge) != node || graph.src.at(edge) >= nodes) fail("edge_ptr/destination boundary mismatch");
+            if (config.dataset == "ppi") {
+                const u64 source_graph = static_cast<u64>(std::upper_bound(graph.node_ptr.begin(), graph.node_ptr.end(), graph.src[edge]) - graph.node_ptr.begin() - 1);
+                const u64 destination_graph = static_cast<u64>(std::upper_bound(graph.node_ptr.begin(), graph.node_ptr.end(), graph.dst[edge]) - graph.node_ptr.begin() - 1);
+                if (source_graph != destination_graph) fail("PPI edge crosses graph boundary");
+            }
+        }
+    }
+    return graph;
+}
+
+StaticTables build_static_tables(const Config& config, const Graph& graph) {
+    if (config.range_bits < 2 || config.range_bits > 30) fail("range_bits outside supported table bounds");
+    const bool large = config.batching_rule == "whole_graph_single" &&
+                       (graph.edges >= (1ULL << 18) || graph.features >= (1ULL << 24));
+    const u64 domain = large ? (1ULL << 20) : (1ULL << config.range_bits);
+    StaticTables tables;
+    if (large) {
+        tables.lrelu_min = -(3LL << 18);
+        tables.lrelu_max = (1LL << 23) - 2 - (3LL << 18) - 1;
+    } else {
+        tables.lrelu_min = -static_cast<i64>(domain);
+        tables.lrelu_max = static_cast<i64>(domain - 1);
+    }
+    tables.elu_min = tables.lrelu_min; tables.elu_max = tables.lrelu_max;
+    tables.exp_max = static_cast<u64>(std::max<i64>(1, tables.lrelu_max - tables.lrelu_min + 1));
+    tables.lrelu.reserve(static_cast<std::size_t>(tables.lrelu_max - tables.lrelu_min + 1));
+    tables.elu.reserve(static_cast<std::size_t>(tables.elu_max - tables.elu_min + 1));
+    tables.exp.reserve(static_cast<std::size_t>(tables.exp_max + 1));
+    for (i64 index = tables.lrelu_min; index <= tables.lrelu_max; ++index) {
+        tables.lrelu.push_back(index >= 0 ? index : round_div(index, 4, "LReLU"));
+        const long double real = std::exp(static_cast<long double>(index) / 16.0L) - 1.0L;
+        const long double scaled = real * 16.0L;
+        tables.elu.push_back(index >= 0 ? index : static_cast<i64>(scaled >= 0 ? std::floor(scaled + .5L) : std::ceil(scaled - .5L)));
+    }
+    for (u64 index = 0; index <= tables.exp_max; ++index) {
+        const long double real = std::exp(-static_cast<long double>(index) / static_cast<long double>(config.quantization.delta));
+        tables.exp.push_back(std::max<i64>(1, rounded_float(static_cast<double>(real), config.quantization.exp, "ExpMap")));
+    }
+    const auto expected_lut_rows = static_cast<std::size_t>(tables.lrelu_max - tables.lrelu_min + 1);
+    if (tables.lrelu.size() != expected_lut_rows || tables.elu.size() != expected_lut_rows ||
+        tables.exp.size() != static_cast<std::size_t>(tables.exp_max + 1) || tables.lrelu.empty() || tables.elu.empty() || tables.exp.empty()) {
+        fail("static table row counts do not match their authenticated domains");
+    }
+    if (tables.exp.front() <= 0 || tables.exp.back() <= 0) fail("ExpMap table contains a non-positive output");
+    tables.generator_id = "zkdl_gat_tables_v1";
+    tables.version = "1";
+    tables.scale_id = config.quant_cfg_id + ":S_delta=" + std::to_string(config.quantization.delta) + ":S_exp=" +
+                      std::to_string(config.quantization.exp);
+    tables.domain_id = "signed_lrelu_elu:" + std::to_string(tables.lrelu_min) + ":" + std::to_string(tables.lrelu_max) +
+                       ":exp_0_" + std::to_string(tables.exp_max);
+    tables.row_order = "ascending_index_min_to_max";
+    std::ostringstream spec;
+    spec << config.static_table_id << "\n" << tables.generator_id << "\n" << tables.version << "\n"
+         << tables.scale_id << "\n" << tables.domain_id << "\n" << tables.row_order << "\n"
+         << config.range_bits << "\n" << tables.lrelu_min << "\n" << tables.lrelu_max << "\n" << tables.exp_max;
+    tables.spec_hash = sha256_text(spec.str()); tables.digest = digest_tables(tables);
+    return tables;
+}
+
+RelationPlan build_relation_plan(const Config& config, const Graph& graph, const StaticTables& tables) {
+    RelationPlan plan;
+    const auto power_of_two = [](u64 value) {
+        if (value == 0) fail("relation plan contains a zero logical dimension");
+        u64 padded = 1;
+        while (padded < value) {
+            if (padded > std::numeric_limits<u64>::max() / 2) fail("relation plan padded dimension overflow");
+            padded <<= 1;
+        }
+        return padded;
+    };
+    std::set<std::string> tensor_ids;
+    std::set<std::string> operation_ids;
+    const auto stage_order = [](u64 layer, u64 head) {
+        return "layer=" + std::to_string(layer) + ";head=" + std::to_string(head) + ";node-edge-canonical";
+    };
+    const auto add_tensor = [&](std::string id, std::string visibility, std::string order,
+                                std::string axis, std::vector<u64> logical,
+                                std::vector<std::string> instances, std::string instance_order,
+                                std::string mapping, u64 degree) {
+        if (id.empty() || !tensor_ids.insert(id).second) fail("duplicate relation tensor family: " + id);
+        if (logical.empty() || instances.empty() || mapping.empty() || degree == 0) {
+            fail("relation tensor has incomplete canonical metadata: " + id);
+        }
+        if (visibility != "public" && visibility != "witness") fail("invalid tensor visibility: " + id);
+        TensorFamily family;
+        family.id = std::move(id); family.visibility = std::move(visibility);
+        family.mle_order = std::move(order); family.stack_axis = std::move(axis);
+        family.logical_shape = std::move(logical); family.padded_shape.reserve(family.logical_shape.size());
+        for (const auto dimension : family.logical_shape) family.padded_shape.push_back(power_of_two(dimension));
+        family.instances = std::move(instances); family.instance_order = std::move(instance_order);
+        family.mapping = std::move(mapping);
+        family.zero_selector = "Qpad_v1(" + family.id + ")=1[i<logical_shape],0[otherwise]";
+        family.selector_id = "selector:padding:" + family.id;
+        family.padding_rule = "all-padding-values-zero;masked-from-relation";
+        family.terminal_point = "FS:terminal:" + family.id;
+        family.terminal_value = "MLE(" + family.id + "," + family.terminal_point + ")";
+        family.terminal_claim = "terminal_claim_v1|family=" + family.id + "|point=" + family.terminal_point + "|value=" + family.terminal_value;
+        family.degree_bound = degree;
+        plan.tensor_families.push_back(std::move(family));
+    };
+    const auto add_op = [&](std::string id, std::string kind, u64 degree,
+                            std::vector<std::string> inputs, std::vector<std::string> outputs,
+                            std::vector<std::string> views, bool reindex, bool public_route,
+                            std::vector<std::string> auxiliary, std::string selector) {
+        if (id.empty() || !operation_ids.insert(id).second) fail("duplicate relation operation family: " + id);
+        if (degree == 0 || kind.empty() || inputs.empty() || outputs.empty() || views.empty() || selector.empty()) {
+            fail("relation operation has incomplete canonical metadata: " + id);
+        }
+        OperationFamily operation;
+        operation.id = std::move(id); operation.kind = std::move(kind);
+        operation.degree = degree; operation.degree_bound = "zkDL_degree_v1:" + std::to_string(degree);
+        operation.inputs = std::move(inputs); operation.outputs = std::move(outputs); operation.views = std::move(views);
+        operation.requires_reindex = reindex; operation.public_route = public_route;
+        operation.instance_order = "layer-major/head-major/node-major/edge-major";
+        operation.mapping = "operation_view_v1->canonical_mle:" + operation.id;
+        operation.auxiliary = std::move(auxiliary); operation.selector_id = std::move(selector);
+        operation.terminal_point = "FS:operation:" + operation.id;
+        operation.terminal_value = "claim(" + operation.id + "," + operation.terminal_point + ")";
+        operation.terminal_claim = "operation_terminal_claim_v1|operation=" + operation.id + "|point=" + operation.terminal_point + "|value=" + operation.terminal_value;
+        plan.operation_families.push_back(std::move(operation));
+    };
+    const auto add_stage_tensors = [&](const std::string& stage, u64 layer, u64 head,
+                                       u64 in_dim, u64 out_dim, bool output) {
+        const std::string order = stage_order(layer, head);
+        const std::string input_id = stage + "/trace/input";
+        const std::string trace_visibility = layer == 0 && !output ? "public" : "witness";
+        add_tensor(stage + "/model/seq_kernel", "witness", "model-layer-head-row-major", "model", {1, in_dim, out_dim}, {"model"}, order, "model_param_registry", 1);
+        add_tensor(stage + "/model/attn_src", "witness", "model-layer-head-row-major", "model", {out_dim}, {"model"}, order, "model_param_registry", 1);
+        add_tensor(stage + "/model/attn_dst", "witness", "model-layer-head-row-major", "model", {out_dim}, {"model"}, order, "model_param_registry", 1);
+        if (output) add_tensor(stage + "/model/bias", "witness", "model-layer-head-row-major", "model", {out_dim}, {"model"}, order, "model_param_registry", 1);
+        add_tensor(input_id, trace_visibility, "node-major-little-endian", "node", {graph.nodes, in_dim}, {"input"}, order, "layer_input_route", 1);
+        add_tensor(stage + "/trace/" + (output ? "y_prime" : "h_prime"), "witness", "node-major-little-endian", "node", {graph.nodes, out_dim}, {"projection"}, order, "projection_output", 2);
+        for (const auto& name : {std::string("e_src"), std::string("e_dst"), std::string("score"), std::string("leaky_relu"), std::string("delta"), std::string("exp_weight"), std::string("inverse"), std::string("alpha")}) {
+            add_tensor(stage + "/trace/" + name, "witness", "edge-major-little-endian", "edge", {graph.edges}, {name}, order, "edge_trace", name == "inverse" || name == "alpha" ? 2 : 1);
+        }
+        add_tensor(stage + "/trace/maximum", "witness", "node-major-little-endian", "node", {graph.nodes}, {"maximum"}, order, "destination_group_max", 1);
+        add_tensor(stage + "/trace/denominator", "witness", "node-major-little-endian", "node", {graph.nodes}, {"sum"}, order, "destination_group_sum", 1);
+        add_tensor(stage + "/trace/max_selector", "witness", "edge-major-little-endian", "edge", {graph.edges}, {"max_selector"}, order, "max_arg_selector", 1);
+        add_tensor(stage + "/trace/range_bits", "witness", "edge-major-little-endian", "bit", {graph.edges, config.range_bits}, {"range"}, order, "range_bit_decomposition", 1);
+        for (const auto& name : {std::string("lrelu_idx"), std::string("exp_idx"), std::string("elu_idx")}) {
+            add_tensor(stage + "/trace/" + name, "witness", "edge-or-node-major-little-endian", "lookup", name == "elu_idx" ? std::vector<u64>{graph.nodes} : std::vector<u64>{graph.edges}, {name}, order, "indexed_public_table", 1);
+        }
+        for (const auto& name : {std::string("lrelu_bits"), std::string("exp_bits"), std::string("elu_bits")}) {
+            add_tensor(stage + "/trace/" + name, "witness", "lookup-query-bit-major", "bit", name == "elu_bits" ? std::vector<u64>{graph.nodes, config.range_bits} : std::vector<u64>{graph.edges, config.range_bits}, {name}, order, "lookup_index_bits", 1);
+        }
+        const std::string value = stage + "/trace/" + (output ? "y_prime" : "h_prime");
+        add_tensor(stage + "/trace/routed_" + (output ? "y_prime" : "h_prime"), "witness", "edge-major-little-endian", "edge", {graph.edges, out_dim}, {"route"}, order, "public_sparse_route", 1);
+        add_tensor(stage + "/trace/product_u_" + (output ? "y_prime" : "h_prime"), "witness", "edge-major-little-endian", "edge", {graph.edges, out_dim}, {"u_product"}, order, "integer_product", 2);
+        add_tensor(stage + "/trace/product_alpha_" + (output ? "y_prime" : "h_prime"), "witness", "edge-major-little-endian", "edge", {graph.edges, out_dim}, {"alpha_product"}, order, "field_product", 2);
+        add_tensor(stage + "/trace/aggregate_num", "witness", "node-major-little-endian", "node", {graph.nodes, out_dim}, {"aggregate_num"}, order, "integer_group_sum", 1);
+        add_tensor(stage + "/trace/aggregate_pre_field", "witness", "node-major-little-endian", "node", {graph.nodes, out_dim}, {"aggregate_pre_field"}, order, "field_group_sum", 2);
+        add_tensor(stage + "/trace/consistency_residual", "witness", "node-major-little-endian", "node", {graph.nodes, out_dim}, {"consistency"}, order, "field_integer_consistency", 2);
+        add_tensor(stage + "/trace/rounddiv_aux", "witness", "node-major-little-endian", "aux", {graph.nodes, 3, out_dim}, {"division"}, order, "signed_round_div_auxiliary", 1);
+        add_tensor(stage + "/trace/aggregate_pre", "witness", "node-major-little-endian", "node", {graph.nodes, out_dim}, {"aggregate_pre"}, order, "signed_round_div", 1);
+        if (output) {
+            add_tensor(stage + "/trace/y_quantized", "witness", "node-major-little-endian", "node", {graph.nodes, out_dim}, {"y_quantized"}, order, "output_quantization", 1);
+            add_tensor(stage + "/trace/aligned", "witness", "node-major-little-endian", "node", {graph.nodes, out_dim}, {"aligned"}, order, "output_scale_alignment", 1);
+            add_tensor(stage + "/trace/output", "witness", "node-major-little-endian", "node", {graph.nodes, out_dim}, {"output"}, order, "output_bias_addition", 1);
+        } else {
+            add_tensor(stage + "/trace/elu_input", "witness", "node-major-little-endian", "node", {graph.nodes, out_dim}, {"elu_input"}, order, "elu_domain", 1);
+            add_tensor(stage + "/trace/aggregate", "witness", "node-major-little-endian", "node", {graph.nodes, out_dim}, {"aggregate"}, order, "elu_table", 1);
+        }
+        (void)value;
+    };
+    add_tensor("input_features", "public", "node-major-little-endian", "node", {graph.nodes, graph.features}, {"H_1"}, "graph-major/node-major", "public_feature_index", 1);
+    add_tensor("sparse_route", "public", "edge-major-little-endian", "edge", {graph.edges, 2}, {"src", "dst"}, "graph-major/destination-major", "public_edge_route", 1);
+    add_tensor("group_selectors", "public", "edge-major-little-endian", "edge", {graph.edges, 2}, {"group_new", "group_end"}, "graph-major/destination-major", "public_group_selectors", 1);
+    add_tensor("node_ptr", "public", "graph-major-little-endian", "graph", {graph.node_ptr.size()}, {"node_ptr"}, "graph-major", "ppi_graph_boundary", 1);
+    add_tensor("edge_ptr", "public", "graph-major-little-endian", "graph", {graph.edge_ptr.size()}, {"edge_ptr"}, "graph-major", "ppi_edge_boundary", 1);
+    add_tensor("node_edge_ptr", "public", "node-major-little-endian", "node", {graph.node_edge_ptr.size()}, {"node_edge_ptr"}, "node-major", "destination_segment_boundary", 1);
+    add_tensor("static_lrelu", "public", "table-index-major", "table", {static_cast<u64>(tables.lrelu.size())}, {"T_LReLU"}, "canonical-table-row-order", "static_table:lrelu", 1);
+    add_tensor("static_elu", "public", "table-index-major", "table", {static_cast<u64>(tables.elu.size())}, {"T_ELU"}, "canonical-table-row-order", "static_table:elu", 1);
+    add_tensor("static_exp", "public", "table-index-major", "table", {static_cast<u64>(tables.exp.size())}, {"T_exp"}, "canonical-table-row-order", "static_table:exp", 1);
+    add_tensor("output_head_count", "public", "scalar", "constant", {1}, {"K_out"}, "canonical-constant", "public_scalar", 1);
+
+    for (u64 layer = 0; layer < config.architecture.hidden_dims.size(); ++layer) {
+        const u64 in_dim = layer == 0 ? graph.features : config.architecture.hidden_heads[layer - 1] * config.architecture.hidden_dims[layer - 1];
+        const u64 head_dim = config.architecture.hidden_dims[layer];
+        std::vector<std::string> aggregate_inputs;
+        for (u64 head = 0; head < config.architecture.hidden_heads[layer]; ++head) {
+            const std::string stage = "hidden/layer" + std::to_string(layer) + "/head" + std::to_string(head);
+            add_stage_tensors(stage, layer, head, in_dim, head_dim, false);
+            const std::string input = layer == 0 ? "input_features" : "hidden/layer" + std::to_string(layer - 1) + "/concat";
+            const std::string hp = stage + "/trace/h_prime";
+            const std::string routed = stage + "/trace/routed_h_prime";
+            const std::string pu = stage + "/trace/product_u_h_prime";
+            const std::string pa = stage + "/trace/product_alpha_h_prime";
+            add_op(stage + "/projection", "tensor_matmul_sumcheck", 2, {input, stage + "/model/seq_kernel"}, {hp}, {"node", "inner", "feature"}, true, false, {"selector:" + stage + "/projection"}, "projection_padding:" + stage);
+            add_op(stage + "/attention_inner_product", "inner_product_sumcheck", 2, {hp, stage + "/model/attn_src", stage + "/model/attn_dst"}, {stage + "/trace/e_src", stage + "/trace/e_dst"}, {"edge", "inner", "head"}, true, false, {"src", "dst"}, "route_selector:" + stage);
+            add_op(stage + "/sparse_route", "public_selector_reindex", 1, {"sparse_route", hp}, {routed}, {"edge", "node", "feature"}, true, true, {"src", "dst", "node_edge_ptr"}, "public_route:" + stage);
+            add_op(stage + "/score_add", "field_addition", 1, {stage + "/trace/e_src", stage + "/trace/e_dst"}, {stage + "/trace/score"}, {"edge", "head"}, true, false, {}, "score_add:" + stage);
+            add_op(stage + "/leaky_relu", "indexed_public_table_sumcheck", 1, {stage + "/trace/score", "static_lrelu", stage + "/trace/lrelu_idx", stage + "/trace/lrelu_bits"}, {stage + "/trace/leaky_relu"}, {"query", "table"}, true, false, {"tau_lrelu", "omega_lrelu"}, "lookup_lrelu:" + stage);
+            add_op(stage + "/max_range", "segmented_max_range_sumcheck", 1, {stage + "/trace/leaky_relu", "sparse_route", "group_selectors"}, {stage + "/trace/maximum", stage + "/trace/max_selector", stage + "/trace/delta"}, {"node", "edge", "group"}, true, true, {"range_bits", "group_new", "group_end"}, "max_range:" + stage);
+            add_op(stage + "/exp_map", "indexed_public_table_sumcheck", 1, {stage + "/trace/delta", "static_exp", stage + "/trace/exp_idx", stage + "/trace/exp_bits"}, {stage + "/trace/exp_weight"}, {"query", "table"}, true, false, {"tau_exp", "omega_exp"}, "lookup_exp:" + stage);
+            add_op(stage + "/u_h_prime", "tensor_product_sumcheck", 2, {stage + "/trace/exp_weight", routed}, {pu}, {"edge", "feature"}, true, false, {}, "product_u:" + stage);
+            add_op(stage + "/group_sum", "segmented_sumcheck", 1, {stage + "/trace/exp_weight", pu, "sparse_route", "edge_ptr", "node_edge_ptr"}, {stage + "/trace/denominator", stage + "/trace/aggregate_num"}, {"graph", "node", "edge", "feature"}, true, true, {"group_new", "group_end", "zero_padding"}, "group_sum:" + stage);
+            add_op(stage + "/inverse_alpha", "field_inverse_product_sumcheck", 2, {stage + "/trace/denominator", stage + "/trace/exp_weight", "node_edge_ptr"}, {stage + "/trace/inverse", stage + "/trace/alpha"}, {"node", "edge"}, true, false, {"inverse_field", "alpha_field", "nonzero_denominator"}, "inverse_alpha:" + stage);
+            add_op(stage + "/alpha_h_prime", "tensor_product_sumcheck", 2, {stage + "/trace/alpha", routed}, {pa}, {"edge", "feature"}, true, false, {}, "product_alpha:" + stage);
+            add_op(stage + "/field_aggregate", "segmented_sumcheck", 1, {pa, "sparse_route", "node_edge_ptr"}, {stage + "/trace/aggregate_pre_field"}, {"node", "edge", "feature"}, true, true, {"group_new", "group_end"}, "field_aggregate:" + stage);
+            add_op(stage + "/integer_numerator", "segmented_sumcheck", 1, {pu, "sparse_route", "node_edge_ptr"}, {stage + "/trace/aggregate_num"}, {"node", "edge", "feature"}, true, true, {"group_new", "group_end"}, "integer_numerator:" + stage);
+            add_op(stage + "/consistency", "tensor_product_sumcheck", 2, {stage + "/trace/denominator", stage + "/trace/aggregate_pre_field", stage + "/trace/aggregate_num"}, {stage + "/trace/consistency_residual"}, {"node", "feature"}, true, false, {}, "consistency:" + stage);
+            add_op(stage + "/signed_round_div", "signed_round_div_sumcheck", 1, {stage + "/trace/aggregate_num", stage + "/trace/denominator"}, {stage + "/trace/aggregate_pre", stage + "/trace/rounddiv_aux"}, {"node", "feature"}, true, false, {"sigma", "z", "a", "a_inv", "d_inv", "q", "r", "delta", "range_bits"}, "round_div:" + stage);
+            add_op(stage + "/elu", "indexed_public_table_sumcheck", 1, {stage + "/trace/aggregate_pre", "static_elu", stage + "/trace/elu_idx", stage + "/trace/elu_bits"}, {stage + "/trace/aggregate"}, {"query", "table"}, true, false, {"tau_elu", "omega_elu"}, "lookup_elu:" + stage);
+            aggregate_inputs.push_back(stage + "/trace/aggregate");
+        }
+        const std::string concat = "hidden/layer" + std::to_string(layer) + "/concat";
+        add_tensor(concat, "witness", "node-major-head-major-feature", "head", {graph.nodes, config.architecture.hidden_heads[layer], head_dim}, {"heads"}, "layer-major/head-major/feature-major", "head_concat_reindex", 1);
+        add_op(concat, "tensor_reindex_sumcheck", 1, aggregate_inputs, {concat}, {"node", "head", "feature"}, true, false, {"head_offsets", "zero_padding"}, "concat:" + std::to_string(layer));
+    }
+    const u64 output_in = config.architecture.hidden_heads.back() * config.architecture.hidden_dims.back();
+    std::vector<std::string> output_values;
+    for (u64 head = 0; head < config.architecture.output_heads; ++head) {
+        const std::string stage = "output/head" + std::to_string(head);
+        add_stage_tensors(stage, config.architecture.hidden_dims.size(), head, output_in, config.architecture.classes, true);
+        const std::string hp = stage + "/trace/y_prime";
+        const std::string routed = stage + "/trace/routed_y_prime";
+        const std::string pu = stage + "/trace/product_u_y_prime";
+        const std::string pa = stage + "/trace/product_alpha_y_prime";
+        const std::string input = "hidden/layer" + std::to_string(config.architecture.hidden_dims.size() - 1) + "/concat";
+        add_op(stage + "/output_projection", "tensor_matmul_sumcheck", 2, {input, stage + "/model/seq_kernel"}, {hp}, {"node", "inner", "class"}, true, false, {"zero_padding"}, "output_projection:" + stage);
+        add_op(stage + "/output_attention_inner_product", "inner_product_sumcheck", 2, {hp, stage + "/model/attn_src", stage + "/model/attn_dst"}, {stage + "/trace/e_src", stage + "/trace/e_dst"}, {"edge", "inner", "class"}, true, false, {"src", "dst"}, "output_route_selector:" + stage);
+        add_op(stage + "/sparse_route", "public_selector_reindex", 1, {"sparse_route", hp}, {routed}, {"edge", "node", "class"}, true, true, {"src", "dst", "node_edge_ptr"}, "public_route:" + stage);
+        add_op(stage + "/score_add", "field_addition", 1, {stage + "/trace/e_src", stage + "/trace/e_dst"}, {stage + "/trace/score"}, {"edge", "class"}, true, false, {}, "score_add:" + stage);
+        add_op(stage + "/leaky_relu", "indexed_public_table_sumcheck", 1, {stage + "/trace/score", "static_lrelu", stage + "/trace/lrelu_idx", stage + "/trace/lrelu_bits"}, {stage + "/trace/leaky_relu"}, {"query", "table"}, true, false, {"tau_lrelu", "omega_lrelu"}, "lookup_lrelu:" + stage);
+        add_op(stage + "/max_range", "segmented_max_range_sumcheck", 1, {stage + "/trace/leaky_relu", "sparse_route", "group_selectors"}, {stage + "/trace/maximum", stage + "/trace/max_selector", stage + "/trace/delta"}, {"node", "edge", "group"}, true, true, {"range_bits", "group_new", "group_end"}, "max_range:" + stage);
+        add_op(stage + "/exp_map", "indexed_public_table_sumcheck", 1, {stage + "/trace/delta", "static_exp", stage + "/trace/exp_idx", stage + "/trace/exp_bits"}, {stage + "/trace/exp_weight"}, {"query", "table"}, true, false, {"tau_exp", "omega_exp"}, "lookup_exp:" + stage);
+        add_op(stage + "/u_y_prime", "tensor_product_sumcheck", 2, {stage + "/trace/exp_weight", routed}, {pu}, {"edge", "class"}, true, false, {}, "product_u:" + stage);
+        add_op(stage + "/group_sum", "segmented_sumcheck", 1, {stage + "/trace/exp_weight", pu, "sparse_route", "edge_ptr", "node_edge_ptr"}, {stage + "/trace/denominator", stage + "/trace/aggregate_num"}, {"graph", "node", "edge", "class"}, true, true, {"group_new", "group_end", "zero_padding"}, "group_sum:" + stage);
+        add_op(stage + "/inverse_alpha", "field_inverse_product_sumcheck", 2, {stage + "/trace/denominator", stage + "/trace/exp_weight", "node_edge_ptr"}, {stage + "/trace/inverse", stage + "/trace/alpha"}, {"node", "edge"}, true, false, {"inverse_field", "alpha_field", "nonzero_denominator"}, "inverse_alpha:" + stage);
+        add_op(stage + "/alpha_y_prime", "tensor_product_sumcheck", 2, {stage + "/trace/alpha", routed}, {pa}, {"edge", "class"}, true, false, {}, "product_alpha:" + stage);
+        add_op(stage + "/field_aggregate", "segmented_sumcheck", 1, {pa, "sparse_route", "node_edge_ptr"}, {stage + "/trace/aggregate_pre_field"}, {"node", "edge", "class"}, true, true, {"group_new", "group_end"}, "field_aggregate:" + stage);
+        add_op(stage + "/integer_numerator", "segmented_sumcheck", 1, {pu, "sparse_route", "node_edge_ptr"}, {stage + "/trace/aggregate_num"}, {"node", "edge", "class"}, true, true, {"group_new", "group_end"}, "integer_numerator:" + stage);
+        add_op(stage + "/consistency", "tensor_product_sumcheck", 2, {stage + "/trace/denominator", stage + "/trace/aggregate_pre_field", stage + "/trace/aggregate_num"}, {stage + "/trace/consistency_residual"}, {"node", "class"}, true, false, {}, "consistency:" + stage);
+        add_op(stage + "/signed_round_div", "signed_round_div_sumcheck", 1, {stage + "/trace/aggregate_num", stage + "/trace/denominator"}, {stage + "/trace/y_quantized", stage + "/trace/rounddiv_aux"}, {"node", "class"}, true, false, {"sigma", "z", "a", "a_inv", "d_inv", "q", "r", "delta", "range_bits"}, "round_div:" + stage);
+        add_op(stage + "/output_scale_alignment", "signed_round_div_sumcheck", 1, {stage + "/trace/y_quantized"}, {stage + "/trace/aligned"}, {"node", "class"}, true, false, {"scale_out_head", "scale_out_pre"}, "scale_alignment:" + stage);
+        add_op(stage + "/output_bias", "field_addition", 1, {stage + "/trace/aligned", stage + "/model/bias"}, {stage + "/trace/output"}, {"node", "class"}, true, false, {"bias"}, "output_bias:" + stage);
+        output_values.push_back(stage + "/trace/output");
+    }
+    add_tensor("output_heads", "witness", "node-major-head-major-class", "head", {graph.nodes, config.architecture.output_heads, config.architecture.classes}, {"heads"}, "head-major/node-major/class-major", "output_head_stack", 1);
+    add_tensor("output_sum", "witness", "node-major-class-major", "class", {graph.nodes, config.architecture.classes}, {"sum"}, "node-major/class-major", "head_sum", 1);
+    add_tensor("public_Y", "public", "node-major-class-major", "class", {graph.nodes, config.architecture.classes}, {"logits"}, "node-major/class-major", "public_output", 1);
+    add_op("head_sum", "tensor_sumcheck", 1, output_values, {"output_sum"}, {"node", "head", "class"}, true, false, {"head_offsets", "zero_padding"}, "head_sum");
+    add_op("final_average", "signed_round_div_sumcheck", 1, {"output_sum", "output_head_count"}, {"public_Y"}, {"node", "class"}, true, true, {"rounddiv_aux", "public_output"}, "final_average");
+    add_op("terminal_opening", "hyrax_terminal_evaluation", 1, {"public_Y"}, {"public_Y"}, {"public_mle_point"}, false, true, {"opening_point", "terminal_claim"}, "public_output_terminal");
+
+    const auto append_list = [](std::ostringstream& stream, const std::vector<std::string>& values) {
+        stream << values.size() << ':';
+        for (const auto& value : values) stream << value.size() << ':' << value << ';';
+    };
+    std::ostringstream registry;
+    registry << "schema=" << plan.schema_id << "\nproof_scope=" << plan.proof_scope << "\nbinding=" << plan.binding_rule << "\n";
+    for (const auto& family : plan.tensor_families) {
+        registry << "T|" << family.id << '|' << family.visibility << '|' << family.mle_order << '|' << family.stack_axis << '|';
+        append_list(registry, family.instances);
+        registry << family.logical_shape.size() << ':'; for (const auto value : family.logical_shape) registry << value << ',';
+        registry << '|' << family.padded_shape.size() << ':'; for (const auto value : family.padded_shape) registry << value << ',';
+        registry << '|' << family.instance_order << '|' << family.mapping << '|' << family.zero_selector << '|'
+                 << family.selector_id << '|' << family.padding_rule << '|' << family.terminal_point << '|'
+                 << family.terminal_value << '|' << family.terminal_claim << '|' << family.degree_bound << '\n';
+    }
+    for (const auto& operation : plan.operation_families) {
+        registry << "O|" << operation.id << '|' << operation.kind << '|' << operation.degree_bound << '|' << operation.degree << '|';
+        append_list(registry, operation.inputs); registry << '|'; append_list(registry, operation.outputs); registry << '|'; append_list(registry, operation.views);
+        registry << '|' << operation.instance_order << '|' << operation.mapping << '|'; append_list(registry, operation.auxiliary);
+        registry << '|' << operation.selector_id << '|' << operation.terminal_point << '|' << operation.terminal_value << '|'
+                 << operation.terminal_claim << '|' << (operation.requires_reindex ? 1 : 0) << '|' << (operation.public_route ? 1 : 0) << '\n';
+    }
+    plan.registry_digest = sha256_text(registry.str());
+    std::ostringstream claims;
+    std::ostringstream mappings;
+    std::ostringstream selectors;
+    std::ostringstream degrees;
+    for (const auto& family : plan.tensor_families) {
+        claims << family.id << '=' << family.terminal_claim << '\n';
+        mappings << family.id << '=' << family.mapping << '\n';
+        selectors << family.id << '=' << family.selector_id << '|' << family.zero_selector << '|' << family.padding_rule << '\n';
+        degrees << family.id << '=' << family.degree_bound << '\n';
+    }
+    for (const auto& operation : plan.operation_families) {
+        claims << operation.id << '=' << operation.terminal_claim << '\n';
+        mappings << operation.id << '=' << operation.mapping << '\n';
+        selectors << operation.id << '=' << operation.selector_id << '\n';
+        degrees << operation.id << '=' << operation.degree_bound << '\n';
+    }
+    plan.terminal_claims_digest = sha256_text(claims.str());
+    plan.mapping_digest = sha256_text(mappings.str());
+    plan.selector_digest = sha256_text(selectors.str());
+    plan.degree_digest = sha256_text(degrees.str());
+    plan.schema_digest = sha256_text(plan.schema_id + "\n" + plan.proof_scope + "\n" + plan.binding_rule + "\n");
+    return plan;
+}
+
+bool relation_plan_complete(const RelationPlan& relation, std::string* error) {
+    const auto reject = [&](const std::string& message) {
+        if (error) *error = message;
+        return false;
+    };
+    if (relation.schema_id != "zkDL_gat_inference_v1" || relation.proof_scope != "full_gat_forward" ||
+        relation.binding_rule != "fac4dnn_reindex_v1") {
+        return reject("relation plan schema/proof/binding identity mismatch");
+    }
+    for (const auto& digest : {relation.registry_digest, relation.terminal_claims_digest,
+                               relation.schema_digest, relation.mapping_digest,
+                               relation.selector_digest, relation.degree_digest}) {
+        if (!is_digest(digest)) return reject("relation plan digest is not a canonical SHA-256");
+    }
+    std::set<std::string> tensor_ids;
+    for (const auto& family : relation.tensor_families) {
+        if (family.id.empty() || !tensor_ids.insert(family.id).second) {
+            return reject("relation plan has duplicate/empty tensor family id");
+        }
+        if (family.visibility != "public" && family.visibility != "witness" ||
+            family.logical_shape.empty() || family.logical_shape.size() != family.padded_shape.size() ||
+            family.instances.empty() || family.mle_order.empty() || family.stack_axis.empty() ||
+            family.instance_order.empty() || family.mapping.empty() || family.selector_id.empty() ||
+            family.padding_rule.empty() || family.terminal_point.empty() || family.terminal_value.empty() ||
+            family.terminal_claim.empty() || family.degree_bound == 0) {
+            return reject("relation tensor family has incomplete canonical metadata: " + family.id);
+        }
+        for (std::size_t index = 0; index < family.logical_shape.size(); ++index) {
+            const u64 logical = family.logical_shape[index];
+            const u64 padded = family.padded_shape[index];
+            if (logical == 0 || padded < logical || (padded & (padded - 1U)) != 0) {
+                return reject("relation tensor family has non-power-of-two padding: " + family.id);
+            }
+        }
+        const std::string expected_selector = "selector:padding:" + family.id;
+        if (family.selector_id != expected_selector || family.zero_selector.find("Qpad_v1(" + family.id + ")") != 0 ||
+            family.padding_rule.find("all-padding-values-zero") == std::string::npos) {
+            return reject("relation tensor family padding selector is not canonical: " + family.id);
+        }
+        if (family.terminal_claim.find("terminal_claim_v1|family=" + family.id + "|") != 0 ||
+            family.terminal_claim.find("|point=" + family.terminal_point + "|") == std::string::npos ||
+            family.terminal_claim.find("|value=" + family.terminal_value) == std::string::npos) {
+            return reject("relation tensor terminal claim is not bound to its family: " + family.id);
+        }
+    }
+    const auto has_tensor = [&](const std::string& id) { return tensor_ids.count(id) != 0; };
+    if (!has_tensor("input_features") || !has_tensor("sparse_route") || !has_tensor("group_selectors") ||
+        !has_tensor("node_ptr") || !has_tensor("edge_ptr") || !has_tensor("node_edge_ptr") ||
+        !has_tensor("static_lrelu") || !has_tensor("static_elu") || !has_tensor("static_exp") ||
+        !has_tensor("output_head_count") || !has_tensor("output_heads") || !has_tensor("output_sum") ||
+        !has_tensor("public_Y")) {
+        return reject("relation plan is missing a canonical public/aggregate tensor family");
+    }
+    std::set<std::string> operation_ids;
+    std::map<std::string, const OperationFamily*> operations;
+    for (const auto& operation : relation.operation_families) {
+        if (operation.id.empty() || !operation_ids.insert(operation.id).second) {
+            return reject("relation plan has duplicate/empty operation family id");
+        }
+        if (operation.kind.empty() || operation.degree == 0 || operation.degree_bound != "zkDL_degree_v1:" + std::to_string(operation.degree) ||
+            operation.inputs.empty() || operation.outputs.empty() || operation.views.empty() || operation.instance_order.empty() ||
+            operation.mapping.empty() || operation.selector_id.empty() || operation.terminal_point.empty() ||
+            operation.terminal_value.empty() || operation.terminal_claim.empty()) {
+            return reject("relation operation has incomplete canonical metadata: " + operation.id);
+        }
+        for (const auto& input : operation.inputs) if (!has_tensor(input)) return reject("relation operation input is unregistered: " + operation.id + " -> " + input);
+        for (const auto& output : operation.outputs) if (!has_tensor(output)) return reject("relation operation output is unregistered: " + operation.id + " -> " + output);
+        if (operation.mapping.find("operation_view_v1->canonical_mle:" + operation.id) != 0) return reject("relation operation mapping is not canonical: " + operation.id);
+        if (operation.terminal_claim.find("operation_terminal_claim_v1|operation=" + operation.id + "|") != 0 ||
+            operation.terminal_claim.find("|point=" + operation.terminal_point + "|") == std::string::npos ||
+            operation.terminal_claim.find("|value=" + operation.terminal_value) == std::string::npos) {
+            return reject("relation operation terminal claim is not bound to its operation: " + operation.id);
+        }
+        if (operation.id != "terminal_opening" && !operation.requires_reindex) return reject("non-terminal operation omitted FAC4DNN re-index binding: " + operation.id);
+        if (operation.public_route && operation.selector_id.find("public_route:") != 0 && operation.id != "final_average" && operation.id != "terminal_opening") return reject("public route operation has wrong selector: " + operation.id);
+        if (operation.kind.find("indexed_public_table") != std::string::npos &&
+            (operation.auxiliary.size() < 2 || operation.auxiliary[0].find("tau_") != 0 || operation.auxiliary[1].find("omega_") != 0)) {
+            return reject("indexed table operation lacks independent challenges: " + operation.id);
+        }
+        if (operation.kind.find("signed_round_div") != std::string::npos && operation.auxiliary.empty()) return reject("round-div operation lacks auxiliary witness registry: " + operation.id);
+        operations.emplace(operation.id, &operation);
+    }
+    const auto require_op = [&](const std::string& id) -> bool {
+        if (!operations.count(id)) return reject("relation plan is missing mandatory operation family: " + id);
+        return true;
+    };
+    for (const auto& family : relation.tensor_families) {
+        if (family.id.find("/model/seq_kernel") == std::string::npos) continue;
+        const auto stage = family.id.substr(0, family.id.find("/model/"));
+        if (stage.rfind("hidden/layer", 0) == 0) {
+            for (const auto& suffix : {"/projection", "/attention_inner_product", "/sparse_route", "/score_add", "/leaky_relu", "/max_range", "/exp_map", "/u_h_prime", "/group_sum", "/inverse_alpha", "/alpha_h_prime", "/field_aggregate", "/integer_numerator", "/consistency", "/signed_round_div", "/elu"}) {
+                if (!require_op(stage + suffix)) return false;
+            }
+        } else if (stage.rfind("output/head", 0) == 0) {
+            for (const auto& suffix : {"/output_projection", "/output_attention_inner_product", "/sparse_route", "/score_add", "/leaky_relu", "/max_range", "/exp_map", "/u_y_prime", "/group_sum", "/inverse_alpha", "/alpha_y_prime", "/field_aggregate", "/integer_numerator", "/consistency", "/signed_round_div", "/output_scale_alignment", "/output_bias"}) {
+                if (!require_op(stage + suffix)) return false;
+            }
+        } else {
+            return reject("model tensor family is not layer/head canonical: " + family.id);
+        }
+    }
+    for (const auto& id : {std::string("head_sum"), std::string("final_average"), std::string("terminal_opening")}) {
+        if (!require_op(id)) return false;
+    }
+    const auto terminal = operations.at("terminal_opening");
+    if (terminal->inputs != std::vector<std::string>{"public_Y"} || terminal->outputs != std::vector<std::string>{"public_Y"} || !terminal->public_route) {
+        return reject("terminal opening does not bind the canonical public output family");
+    }
+    return true;
+}
+
+GatTrace execute_cpu(const Config& config, const Graph& graph, const ModelBundle& model, const StaticTables& tables) {
+    return run_forward(config, graph, model, tables, false);
+}
+
+GatTrace execute_gpu(const Config& config, const Graph& graph, const ModelBundle& model,
+                     const StaticTables& tables, bool* kernel_executed) {
+    if (!kernel_executed) fail("execute_gpu requires kernel status output");
+    *kernel_executed = false;
+    int device_count = 0;
+    cuda_check(cudaGetDeviceCount(&device_count), "cudaGetDeviceCount");
+    if (device_count <= 0) fail("GPU backend requested but no CUDA device is available");
+    cuda_check(cudaSetDevice(0), "cudaSetDevice");
+    GatTrace trace = run_forward(config, graph, model, tables, true);
+    *kernel_executed = true;
+    return trace;
+}
+
+std::string statement_canonical_payload(const PublicStatement& statement) {
+    std::ostringstream canonical;
+    canonical << "schema=zkDL_gat_statement_v1\n" << "dataset=" << statement.dataset << "\n"
+              << "model_arch_id=" << statement.model_arch_id << "\n" << "model_param_id=" << statement.model_param_id << "\n"
+              << "quant_cfg_id=" << statement.quant_cfg_id << "\n" << "static_table_id=" << statement.static_table_id << "\n"
+              << "input_preprocess_id=" << statement.input_preprocess_id << "\n" << "topology_id=" << statement.topology_id << "\n"
+              << "feature_id=" << statement.feature_id << "\n" << "output_id=" << statement.output_id << "\n"
+              << "public_output_path=" << statement.public_output_path << "\npublic_output_digest=" << statement.public_output_digest << "\n"
+              << "relation_registry_digest=" << statement.relation_registry_digest << "\n"
+              << "relation_terminal_claims_digest=" << statement.relation_terminal_claims_digest << "\n"
+              << "relation_mapping_digest=" << statement.relation_mapping_digest << "\n"
+              << "relation_selector_digest=" << statement.relation_selector_digest << "\n"
+              << "relation_degree_digest=" << statement.relation_degree_digest << "\n"
+              << "static_table_generator_id=" << statement.static_table_generator_id << "\n"
+              << "static_table_version=" << statement.static_table_version << "\n"
+              << "static_table_scale_id=" << statement.static_table_scale_id << "\n"
+              << "static_table_domain_id=" << statement.static_table_domain_id << "\n"
+              << "static_table_row_order=" << statement.static_table_row_order << "\n"
+              << "static_table_spec_hash=" << statement.static_table_spec_hash << "\n"
+              << "static_table_digest=" << statement.static_table_digest << "\n"
+              << "config_digest=" << statement.config_digest << "\nasset_manifest_digest=" << statement.asset_manifest_digest << "\n"
+              << "checkpoint_manifest_digest=" << statement.checkpoint_manifest_digest << "\n"
+              << "checkpoint_tensors_txt_digest=" << statement.checkpoint_tensors_txt_digest << "\n"
+              << "checkpoint_tensors_npz_digest=" << statement.checkpoint_tensors_npz_digest << "\n"
+              << "verifier_registry_digest=" << statement.verifier_registry_digest << "\n"
+              << "topology_boundary_digest=" << statement.topology_boundary_digest << "\n"
+              << "total_nodes=" << statement.total_nodes << "\n" << "nodes=" << statement.nodes << "\n"
+              << "edges=" << statement.edges << "\n" << "graphs=" << statement.graphs << "\n"
+              << "classes=" << statement.classes << "\n"
+              << "hidden_layer_count=" << statement.hidden_layer_count << "\nhidden_head_count=" << statement.hidden_head_count << "\n"
+              << "output_head_count=" << statement.output_head_count << "\n"
+              << "proof_scope=" << statement.proof_scope << "\n" << "verifier_reads_witness=0\n"
+              << "privacy_policy=" << statement.privacy_policy << "\n";
+    return canonical.str();
+}
+
+std::string statement_identity(const PublicStatement& statement) {
+    return sha256_text(statement_canonical_payload(statement));
+}
+
+PublicStatement make_statement(const Config& config, const Graph& graph, const ModelBundle& model,
+                               const StaticTables& tables, const RelationPlan& relation,
+                               const GatTrace& trace) {
+    PublicStatement statement;
+    statement.dataset = config.dataset; statement.model_arch_id = config.model_arch_id;
+    statement.model_param_id = config.model_param_id; statement.quant_cfg_id = config.quant_cfg_id;
+    statement.static_table_id = config.static_table_id; statement.input_preprocess_id = config.input_preprocess_id;
+    statement.topology_id = digest_graph(graph); statement.feature_id = digest_matrix(graph.feature_values);
+    statement.output_id = digest_matrix(trace.logits); statement.public_output_digest = statement.output_id;
+    statement.relation_registry_digest = relation.registry_digest;
+    statement.relation_terminal_claims_digest = relation.terminal_claims_digest;
+    statement.relation_mapping_digest = relation.mapping_digest;
+    statement.relation_selector_digest = relation.selector_digest;
+    statement.relation_degree_digest = relation.degree_digest;
+    statement.static_table_generator_id = tables.generator_id;
+    statement.static_table_version = tables.version;
+    statement.static_table_scale_id = tables.scale_id;
+    statement.static_table_domain_id = tables.domain_id;
+    statement.static_table_row_order = tables.row_order;
+    statement.static_table_spec_hash = tables.spec_hash;
+    statement.static_table_digest = tables.digest;
+    statement.config_digest = config.config_digest;
+    statement.asset_manifest_digest = sha256_file(config.asset_manifest_path);
+    statement.checkpoint_manifest_digest = model.manifest_digest;
+    statement.checkpoint_tensors_txt_digest = model.tensors_text_digest;
+    statement.checkpoint_tensors_npz_digest = model.tensors_npz_digest;
+    statement.verifier_registry_digest = config.verifier_registry_digest;
+    statement.topology_boundary_digest = digest_graph_boundaries(graph);
+    statement.total_nodes = graph.total_nodes; statement.nodes = graph.nodes; statement.edges = graph.edges;
+    statement.graphs = graph.graphs; statement.classes = config.architecture.classes;
+    statement.hidden_layer_count = config.architecture.hidden_dims.size();
+    statement.hidden_head_count = std::accumulate(config.architecture.hidden_heads.begin(), config.architecture.hidden_heads.end(), u64{0});
+    statement.output_head_count = config.architecture.output_heads;
+    statement.privacy_policy = config.privacy_policy; statement.verifier_reads_witness = false;
+    statement.statement_id = statement_identity(statement);
+    return statement;
+}
+
+void write_statement(const std::filesystem::path& path, const PublicStatement& statement) {
+    std::filesystem::create_directories(path.parent_path());
+    std::ofstream output(path);
+    if (!output) fail("cannot write statement " + path.string());
+    output << "schema=zkDL_gat_statement_v1\nstatement_id=" << statement.statement_id << "\n"
+           << "dataset=" << statement.dataset << "\nmodel_arch_id=" << statement.model_arch_id << "\n"
+           << "model_param_id=" << statement.model_param_id << "\nquant_cfg_id=" << statement.quant_cfg_id << "\n"
+           << "static_table_id=" << statement.static_table_id << "\ninput_preprocess_id=" << statement.input_preprocess_id << "\n"
+           << "topology_id=" << statement.topology_id << "\nfeature_id=" << statement.feature_id << "\noutput_id=" << statement.output_id << "\n"
+           << "public_output_path=" << statement.public_output_path << "\npublic_output_digest=" << statement.public_output_digest << "\n"
+           << "relation_registry_digest=" << statement.relation_registry_digest << "\n"
+           << "relation_terminal_claims_digest=" << statement.relation_terminal_claims_digest << "\n"
+           << "relation_mapping_digest=" << statement.relation_mapping_digest << "\n"
+           << "relation_selector_digest=" << statement.relation_selector_digest << "\n"
+           << "relation_degree_digest=" << statement.relation_degree_digest << "\n"
+           << "static_table_generator_id=" << statement.static_table_generator_id << "\nstatic_table_version=" << statement.static_table_version << "\n"
+           << "static_table_scale_id=" << statement.static_table_scale_id << "\nstatic_table_domain_id=" << statement.static_table_domain_id << "\n"
+           << "static_table_row_order=" << statement.static_table_row_order << "\nstatic_table_spec_hash=" << statement.static_table_spec_hash << "\n"
+           << "static_table_digest=" << statement.static_table_digest << "\nconfig_digest=" << statement.config_digest << "\n"
+           << "asset_manifest_digest=" << statement.asset_manifest_digest << "\ncheckpoint_manifest_digest=" << statement.checkpoint_manifest_digest << "\n"
+           << "checkpoint_tensors_txt_digest=" << statement.checkpoint_tensors_txt_digest << "\ncheckpoint_tensors_npz_digest=" << statement.checkpoint_tensors_npz_digest << "\n"
+           << "verifier_registry_digest=" << statement.verifier_registry_digest << "\ntopology_boundary_digest=" << statement.topology_boundary_digest << "\n"
+           << "total_nodes=" << statement.total_nodes << "\nnodes=" << statement.nodes << "\nedges=" << statement.edges << "\n"
+           << "graphs=" << statement.graphs << "\nclasses=" << statement.classes << "\nproof_scope=" << statement.proof_scope << "\n"
+           << "hidden_layer_count=" << statement.hidden_layer_count << "\nhidden_head_count=" << statement.hidden_head_count << "\n"
+           << "output_head_count=" << statement.output_head_count << "\n"
+           << "privacy_policy=" << statement.privacy_policy << "\nverifier_reads_witness=" << (statement.verifier_reads_witness ? 1 : 0) << "\n";
+}
+
+bool read_statement(const std::filesystem::path& path, PublicStatement* statement, std::string* error) {
+    try {
+        if (!statement) fail("read_statement received null output");
+        const auto values = read_kv(path);
+        const auto get = [&](const std::string& key) -> std::string {
+            const auto iterator = values.find(key); if (iterator == values.end()) fail("statement field missing: " + key); return iterator->second;
+        };
+        if (get("schema") != "zkDL_gat_statement_v1") fail("statement schema mismatch");
+        statement->statement_id = get("statement_id"); statement->dataset = get("dataset");
+        statement->model_arch_id = get("model_arch_id"); statement->model_param_id = get("model_param_id");
+        statement->quant_cfg_id = get("quant_cfg_id"); statement->static_table_id = get("static_table_id");
+        statement->input_preprocess_id = get("input_preprocess_id"); statement->topology_id = get("topology_id");
+        statement->feature_id = get("feature_id"); statement->output_id = get("output_id");
+        statement->public_output_path = get("public_output_path");
+        statement->public_output_digest = get("public_output_digest");
+        statement->relation_registry_digest = get("relation_registry_digest");
+        statement->relation_terminal_claims_digest = get("relation_terminal_claims_digest");
+        statement->relation_mapping_digest = get("relation_mapping_digest");
+        statement->relation_selector_digest = get("relation_selector_digest");
+        statement->relation_degree_digest = get("relation_degree_digest");
+        statement->static_table_generator_id = get("static_table_generator_id");
+        statement->static_table_version = get("static_table_version");
+        statement->static_table_scale_id = get("static_table_scale_id");
+        statement->static_table_domain_id = get("static_table_domain_id");
+        statement->static_table_row_order = get("static_table_row_order");
+        statement->static_table_spec_hash = get("static_table_spec_hash");
+        statement->static_table_digest = get("static_table_digest");
+        statement->config_digest = get("config_digest");
+        statement->asset_manifest_digest = get("asset_manifest_digest");
+        statement->checkpoint_manifest_digest = get("checkpoint_manifest_digest");
+        statement->checkpoint_tensors_txt_digest = get("checkpoint_tensors_txt_digest");
+        statement->checkpoint_tensors_npz_digest = get("checkpoint_tensors_npz_digest");
+        statement->verifier_registry_digest = get("verifier_registry_digest");
+        statement->topology_boundary_digest = get("topology_boundary_digest");
+        statement->total_nodes = parse_u64(get("total_nodes"), "statement total_nodes");
+        statement->nodes = parse_u64(get("nodes"), "statement nodes"); statement->edges = parse_u64(get("edges"), "statement edges");
+        statement->graphs = parse_u64(get("graphs"), "statement graphs"); statement->classes = parse_u64(get("classes"), "statement classes");
+        statement->hidden_layer_count = parse_u64(get("hidden_layer_count"), "statement hidden_layer_count");
+        statement->hidden_head_count = parse_u64(get("hidden_head_count"), "statement hidden_head_count");
+        statement->output_head_count = parse_u64(get("output_head_count"), "statement output_head_count");
+        statement->proof_scope = get("proof_scope"); statement->privacy_policy = get("privacy_policy");
+        statement->verifier_reads_witness = parse_bool(get("verifier_reads_witness"), "statement verifier_reads_witness");
+        if (statement->verifier_reads_witness) fail("statement violates witness-independent verifier boundary");
+        if (statement->statement_id != statement_identity(*statement)) fail("statement identity mismatch");
+        return true;
+    } catch (const std::exception& exception) {
+        if (error) *error = exception.what();
+        return false;
+    }
+}
+
+void write_run_record(const std::filesystem::path& path, const RunRecord& record) {
+    std::filesystem::create_directories(path.parent_path());
+    std::ofstream output(path);
+    if (!output) fail("cannot write run record " + path.string());
+    output << "schema=zkDL_gat_run_record_v1\ndataset=" << record.dataset << "\nbackend=" << record.backend << "\n"
+           << "statement_id=" << record.statement_id << "\nproof_id=" << record.proof_id << "\nverification_status=" << record.verification_status << "\n"
+           << "proof_scope=" << record.proof_scope << "\nproof_size_bytes=" << record.proof_size_bytes << "\ncommitment_size_bytes=" << record.commitment_size_bytes << "\n"
+           << "commitment_time_seconds=" << std::setprecision(17) << record.commitment_time_seconds << "\nprove_time_seconds=" << record.prove_time_seconds << "\n"
+           << "verify_time_seconds=" << record.verify_time_seconds << "\nverifier_reads_witness=" << (record.verifier_reads_witness ? 1 : 0) << "\n"
+           << "gpu_kernel_executed=" << (record.gpu_kernel_executed ? 1 : 0) << "\nsilent_fallback=" << (record.silent_fallback ? 1 : 0) << "\n"
+           << "output_bound=" << (record.output_bound ? 1 : 0) << "\nerror=" << record.error << "\n";
+}
+
+namespace {
+
+struct CliOptions {
+    std::string command;
+    std::filesystem::path config;
+    std::filesystem::path run_dir;
+    std::filesystem::path statement;
+    std::filesystem::path proof;
+    std::filesystem::path envelope;
+    Backend backend = Backend::Cpu;
+    bool has_backend = false;
+};
+
+void usage() {
+    std::cerr << "usage: gat_runner <inspect|prepare|run|prove|verify> --config FILE "
+                 "[--backend cpu|gpu] [--run-dir DIR]\n";
+}
+
+CliOptions parse_cli(int argc, char** argv) {
+    if (argc < 3) { usage(); fail("missing command/config"); }
+    CliOptions options;
+    options.command = argv[1];
+    const std::set<std::string> commands = {"inspect", "prepare", "run", "prove", "verify"};
+    if (!commands.count(options.command)) fail("unknown command: " + options.command);
+    for (int i = 2; i < argc; ++i) {
+        const std::string argument = argv[i];
+        if (argument == "--config" || argument == "--run-dir" || argument == "--statement" ||
+            argument == "--proof" || argument == "--envelope" || argument == "--backend") {
+            if (++i >= argc) fail("missing value for " + argument);
+            const std::string value = argv[i];
+            if (argument == "--config") options.config = value;
+            else if (argument == "--run-dir") options.run_dir = value;
+            else if (argument == "--statement") options.statement = value;
+            else if (argument == "--proof") options.proof = value;
+            else if (argument == "--envelope") options.envelope = value;
+            else { options.backend = parse_backend(value); options.has_backend = true; }
+        } else {
+            fail("unknown argument: " + argument);
+        }
+    }
+    if (options.config.empty()) fail("--config is required");
+    if ((options.command == "run" || options.command == "prove") && !options.has_backend) {
+        fail("--backend is required for " + options.command);
+    }
+    return options;
+}
+
+std::filesystem::path run_path(const Config& config, const std::filesystem::path& raw) {
+    if (raw.empty()) return config.run_root;
+    if (raw.is_absolute()) {
+        const auto base = config.baseline_root.lexically_normal().generic_string();
+        const auto candidate = raw.lexically_normal().generic_string();
+        if (candidate != base && candidate.rfind(base + "/", 0) != 0) fail("run directory escapes baseline root");
+        return raw.lexically_normal();
+    }
+    return local_path(config.baseline_root, raw.generic_string(), "run_dir");
+}
+
+void write_matrix_text(const std::filesystem::path& path, const Matrix& matrix) {
+    std::filesystem::create_directories(path.parent_path());
+    std::ofstream output(path);
+    if (!output) fail("cannot write matrix " + path.string());
+    output << matrix.rows << " " << matrix.cols << "\n";
+    for (u64 row = 0; row < matrix.rows; ++row) {
+        for (u64 col = 0; col < matrix.cols; ++col) {
+            if (col) output << ' ';
+            output << matrix.at(row, col);
+        }
+        output << '\n';
+    }
+}
+
+Matrix read_public_output(const std::filesystem::path& path, std::uint64_t expected_rows,
+                          std::uint64_t expected_cols) {
+    if (path.empty() || std::filesystem::is_symlink(path) || !std::filesystem::is_regular_file(path)) {
+        fail("public output is missing or not a regular baseline-local file: " + path.string());
+    }
+    std::ifstream input(path);
+    if (!input) fail("cannot open public output " + path.string());
+    u64 rows = 0, cols = 0;
+    input >> rows >> cols;
+    if (!input || rows != expected_rows || cols != expected_cols) fail("public output shape mismatch");
+    Matrix output = make_matrix(rows, cols);
+    for (auto& value : output.values) {
+        input >> value;
+        if (!input) fail("truncated public output");
+    }
+    std::string trailing;
+    if (input >> trailing) fail("public output contains trailing data");
+    return output;
+}
+
+void write_plan(const std::filesystem::path& path, const RelationPlan& plan, const StaticTables& tables) {
+    std::filesystem::create_directories(path.parent_path());
+    std::ofstream output(path);
+    if (!output) fail("cannot write relation plan " + path.string());
+    output << "schema_id=" << plan.schema_id << "\nproof_scope=" << plan.proof_scope << "\nbinding_rule=" << plan.binding_rule << "\n"
+           << "registry_digest=" << plan.registry_digest << "\nterminal_claims_digest=" << plan.terminal_claims_digest << "\n"
+           << "schema_digest=" << plan.schema_digest << "\nmapping_digest=" << plan.mapping_digest << "\n"
+           << "selector_digest=" << plan.selector_digest << "\ndegree_digest=" << plan.degree_digest << "\n"
+           << "table_generator_id=" << tables.generator_id << "\ntable_spec_hash=" << tables.spec_hash << "\ntable_digest=" << tables.digest << "\n"
+           << "table_domain_id=" << tables.domain_id << "\ntable_row_order=" << tables.row_order << "\n";
+    for (const auto& family : plan.tensor_families) {
+        output << "tensor=" << family.id << "|" << family.visibility << "|" << family.mle_order << "|" << family.stack_axis << "|";
+        for (std::size_t i = 0; i < family.logical_shape.size(); ++i) { if (i) output << ','; output << family.logical_shape[i]; }
+        output << '|';
+        for (std::size_t i = 0; i < family.padded_shape.size(); ++i) { if (i) output << ','; output << family.padded_shape[i]; }
+        output << '|';
+        for (std::size_t i = 0; i < family.instances.size(); ++i) { if (i) output << ','; output << family.instances[i]; }
+        output << '|' << family.instance_order << '|' << family.mapping << '|' << family.zero_selector << '|'
+               << family.selector_id << '|' << family.padding_rule << '|' << family.terminal_point << '|'
+               << family.terminal_value << '|' << family.terminal_claim << "|degree=" << family.degree_bound << '\n';
+    }
+    for (const auto& operation : plan.operation_families) {
+        output << "operation=" << operation.id << '|' << operation.kind << '|' << operation.degree_bound << "|degree=" << operation.degree << '|'
+               << (operation.requires_reindex ? 1 : 0) << '|' << (operation.public_route ? 1 : 0) << '|';
+        for (std::size_t i = 0; i < operation.inputs.size(); ++i) { if (i) output << ','; output << operation.inputs[i]; }
+        output << '|';
+        for (std::size_t i = 0; i < operation.outputs.size(); ++i) { if (i) output << ','; output << operation.outputs[i]; }
+        output << '|';
+        for (std::size_t i = 0; i < operation.views.size(); ++i) { if (i) output << ','; output << operation.views[i]; }
+        output << '|' << operation.instance_order << '|' << operation.mapping << '|';
+        for (std::size_t i = 0; i < operation.auxiliary.size(); ++i) { if (i) output << ','; output << operation.auxiliary[i]; }
+        output << '|' << operation.selector_id << '|' << operation.terminal_point << '|' << operation.terminal_value
+               << '|' << operation.terminal_claim << '\n';
+    }
+}
+
+void write_bytes(const std::filesystem::path& path, const std::vector<std::uint8_t>& bytes) {
+    std::filesystem::create_directories(path.parent_path());
+    std::ofstream output(path, std::ios::binary);
+    if (!output) fail("cannot write proof bytes " + path.string());
+    if (!bytes.empty()) output.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+}
+
+std::vector<std::uint8_t> read_bytes(const std::filesystem::path& path) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input) fail("cannot read proof bytes " + path.string());
+    input.seekg(0, std::ios::end);
+    const auto end = input.tellg();
+    if (end < 0) fail("cannot size proof bytes");
+    input.seekg(0, std::ios::beg);
+    std::vector<std::uint8_t> bytes(static_cast<std::size_t>(end));
+    if (!bytes.empty()) input.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    if (!input && !input.eof()) fail("truncated proof bytes");
+    return bytes;
+}
+
+void write_envelope(const std::filesystem::path& path, const ProofEnvelope& envelope) {
+    std::filesystem::create_directories(path.parent_path());
+    std::ofstream output(path);
+    if (!output) fail("cannot write proof envelope " + path.string());
+    output << "schema_id=" << envelope.schema_id << "\nstatement_id=" << envelope.statement_id << "\nproof_id=" << envelope.proof_id << "\n"
+           << "backend=" << envelope.backend << "\nproof_scope=" << envelope.proof_scope << "\nnative_core_api=" << envelope.native_core_api << "\n"
+           << "status=" << envelope.status << "\nproof_size_bytes=" << envelope.proof_size_bytes << "\ncommitment_size_bytes=" << envelope.commitment_size_bytes << "\n"
+           << "commitment_time_seconds=" << std::setprecision(17) << envelope.commitment_time_seconds << "\nprove_time_seconds=" << envelope.prove_time_seconds << "\n"
+           << "verify_time_seconds=" << envelope.verify_time_seconds << "\nverifier_reads_witness=" << (envelope.verifier_reads_witness ? 1 : 0) << "\n"
+           << "gpu_kernel_executed=" << (envelope.gpu_kernel_executed ? 1 : 0) << "\nsilent_fallback=" << (envelope.silent_fallback ? 1 : 0) << "\n"
+           << "output_bound=" << (envelope.output_bound ? 1 : 0) << "\nerror=" << envelope.error << "\n";
+}
+
+ProofEnvelope read_envelope(const std::filesystem::path& path) {
+    const auto values = read_kv(path);
+    const auto get = [&](const std::string& key) -> std::string {
+        const auto iterator = values.find(key); if (iterator == values.end()) fail("proof envelope field missing: " + key); return iterator->second;
+    };
+    ProofEnvelope envelope;
+    envelope.schema_id = get("schema_id"); envelope.statement_id = get("statement_id"); envelope.proof_id = get("proof_id");
+    envelope.backend = get("backend"); envelope.proof_scope = get("proof_scope"); envelope.native_core_api = get("native_core_api");
+    envelope.status = get("status"); envelope.proof_size_bytes = parse_u64(get("proof_size_bytes"), "proof_size_bytes");
+    envelope.commitment_size_bytes = parse_u64(get("commitment_size_bytes"), "commitment_size_bytes");
+    envelope.verifier_reads_witness = parse_bool(get("verifier_reads_witness"), "verifier_reads_witness");
+    envelope.gpu_kernel_executed = parse_bool(get("gpu_kernel_executed"), "gpu_kernel_executed");
+    envelope.silent_fallback = parse_bool(get("silent_fallback"), "silent_fallback");
+    envelope.output_bound = parse_bool(get("output_bound"), "output_bound"); envelope.error = get("error");
+    return envelope;
+}
+
+RunRecord rejected_record(const Config& config, Backend backend, const PublicStatement* statement,
+                         const std::string& message, bool kernel_executed) {
+    RunRecord record;
+    record.dataset = config.dataset; record.backend = backend_name(backend); record.proof_scope = "full_gat_forward";
+    record.verification_status = "BLOCKED"; record.error = message; record.gpu_kernel_executed = kernel_executed;
+    if (statement) record.statement_id = statement->statement_id;
+    record.silent_fallback = false; record.verifier_reads_witness = false; record.output_bound = false;
+    return record;
+}
+
+int produce(const Config& config, const CliOptions& options) {
+    const auto directory = run_path(config, options.run_dir);
+    const auto statement_path = directory / "statement.txt";
+    const auto envelope_path = directory / "proof.meta";
+    const auto proof_path = directory / "proof.bin";
+    const auto record_path = directory / "run.record";
+    const auto start = std::chrono::steady_clock::now();
+    const auto model = load_model_bundle(config);
+    const auto graph = load_graph(config);
+    const auto tables = build_static_tables(config, graph);
+    const auto relation = build_relation_plan(config, graph, tables);
+    std::string relation_error;
+    if (!relation_plan_complete(relation, &relation_error)) fail(relation_error);
+    bool kernel_executed = false;
+    GatTrace trace;
+    try {
+        trace = options.backend == Backend::Cpu ? execute_cpu(config, graph, model, tables)
+                                                : execute_gpu(config, graph, model, tables, &kernel_executed);
+    } catch (const std::exception& exception) {
+        const auto statement = make_statement(config, graph, model, tables, relation, GatTrace{});
+        write_statement(statement_path, statement);
+        write_run_record(record_path, rejected_record(config, options.backend, &statement, exception.what(), kernel_executed));
+        return 2;
+    }
+    const auto statement = make_statement(config, graph, model, tables, relation, trace);
+    write_statement(statement_path, statement);
+    write_matrix_text(directory / "public_Y.txt", trace.logits);
+    write_plan(directory / "relation.plan", relation, tables);
+    RunRecord record;
+    record.dataset = config.dataset; record.backend = backend_name(options.backend); record.statement_id = statement.statement_id;
+    record.proof_scope = statement.proof_scope; record.gpu_kernel_executed = kernel_executed;
+    record.commitment_time_seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    if (!native_bridge_available()) {
+        record = rejected_record(config, options.backend, &statement,
+                                 "official native zkDL GAT bridge is not linked; proving is fail-closed", kernel_executed);
+        write_run_record(record_path, record);
+        return 3;
+    }
+    NativeProveRequest request{&config, &graph, &model, &tables, &relation, &trace, &statement, options.backend};
+    NativeProofResult result;
+    std::string error;
+    if (!zkdl_gat_native_prove(request, &result, &error)) {
+        record = rejected_record(config, options.backend, &statement, error.empty() ? "native prove rejected" : error, kernel_executed);
+        write_envelope(envelope_path, result.envelope); write_run_record(record_path, record); return 4;
+    }
+    result.envelope.statement_id = statement.statement_id; result.envelope.backend = backend_name(options.backend);
+    result.envelope.proof_size_bytes = result.proof_bytes.size(); result.envelope.gpu_kernel_executed = kernel_executed;
+    write_bytes(proof_path, result.proof_bytes); write_envelope(envelope_path, result.envelope);
+    NativeVerifyRequest verify_request{&config, &statement, &result.envelope, &result.proof_bytes, options.backend};
+    if (!zkdl_gat_native_verify(verify_request, &error) || result.envelope.silent_fallback ||
+        result.envelope.verifier_reads_witness || !result.envelope.output_bound) {
+        record = rejected_record(config, options.backend, &statement, error.empty() ? "native verifier rejected envelope" : error, kernel_executed);
+        record.proof_id = result.envelope.proof_id; record.proof_size_bytes = result.proof_bytes.size();
+        write_run_record(record_path, record); return 5;
+    }
+    record.proof_id = result.envelope.proof_id; record.proof_size_bytes = result.proof_bytes.size();
+    record.commitment_size_bytes = result.envelope.commitment_size_bytes;
+    record.prove_time_seconds = result.envelope.prove_time_seconds; record.verify_time_seconds = result.envelope.verify_time_seconds;
+    record.verification_status = "VERIFIED"; record.verifier_reads_witness = false; record.output_bound = true;
+    write_run_record(record_path, record);
+    return 0;
+}
+
+int prepare(const Config& config, const CliOptions& options) {
+    const auto model = load_model_bundle(config);
+    const auto graph = load_graph(config);
+    const auto tables = build_static_tables(config, graph);
+    const auto plan = build_relation_plan(config, graph, tables);
+    std::string relation_error;
+    if (!relation_plan_complete(plan, &relation_error)) fail(relation_error);
+    const auto directory = run_path(config, options.run_dir);
+    write_plan(directory / "relation.plan", plan, tables);
+    std::ofstream identity(directory / "identity.cfg");
+    if (!identity) fail("cannot write identity.cfg");
+    identity << "dataset=" << config.dataset << "\nmodel_manifest_sha256=" << model.manifest_digest << "\n"
+             << "topology_sha256=" << digest_graph(graph) << "\nfeature_sha256=" << digest_matrix(graph.feature_values) << "\n"
+             << "table_sha256=" << tables.digest << "\nproof_scope=" << plan.proof_scope << "\n";
+    std::cout << "prepared dataset=" << config.dataset << " nodes=" << graph.nodes << " edges=" << graph.edges
+              << " relation_operations=" << plan.operation_families.size() << "\n";
+    return 0;
+}
+
+int verify_only(const Config& config, const CliOptions& options) {
+    const auto directory = run_path(config, options.run_dir);
+    const auto statement_path = options.statement.empty() ? directory / "statement.txt" : options.statement;
+    const auto envelope_path = options.envelope.empty() ? directory / "proof.meta" : options.envelope;
+    const auto proof_path = options.proof.empty() ? directory / "proof.bin" : options.proof;
+    PublicStatement statement;
+    std::string error;
+    if (!read_statement(statement_path, &statement, &error)) fail(error);
+    const ProofEnvelope envelope = read_envelope(envelope_path);
+    if (envelope.statement_id != statement.statement_id ||
+        envelope.proof_scope != statement.proof_scope || envelope.verifier_reads_witness || envelope.silent_fallback || !envelope.output_bound) {
+        fail("proof envelope does not bind the public statement and verifier boundary");
+    }
+    const Backend backend = parse_backend(envelope.backend);
+    if (options.has_backend && options.backend != backend) fail("requested backend does not match proof envelope");
+    const auto public_output_path = local_path(directory, statement.public_output_path, "public_output_path");
+    const auto public_output = read_public_output(public_output_path, statement.nodes, statement.classes);
+    if (statement.output_id != statement.public_output_digest ||
+        digest_matrix(public_output) != statement.public_output_digest) {
+        fail("public output shape or digest does not match the public statement");
+    }
+    if (!native_bridge_available()) fail("official native zkDL GAT bridge is not linked; verification is fail-closed");
+    const auto proof = read_bytes(proof_path);
+    NativeVerifyRequest request{&config, &statement, &envelope, &proof, backend};
+    if (!zkdl_gat_native_verify(request, &error)) fail(error.empty() ? "native verifier rejected proof" : error);
+    std::ofstream result(directory / "verification.result");
+    if (!result) fail("cannot write verification.result");
+    result << "status=VERIFIED\nstatement_id=" << statement.statement_id << "\nproof_id=" << envelope.proof_id << "\n";
+    std::cout << "verification=VERIFIED statement_id=" << statement.statement_id << "\n";
+    return 0;
+}
+
+}  // namespace
+
+}  // namespace zkdl_gat
+
+int main(int argc, char** argv) {
+    try {
+        const auto options = zkdl_gat::parse_cli(argc, argv);
+        const auto config = zkdl_gat::load_config(options.config);
+        if (options.command == "inspect") {
+            std::cout << "dataset=" << config.dataset << " baseline_root=" << config.baseline_root.string()
+                      << " checkpoint_bundle=" << config.checkpoint_bundle.string() << " backend="
+                      << (options.has_backend ? zkdl_gat::backend_name(options.backend) : "unspecified") << "\n";
+            return 0;
+        }
+        if (options.command == "prepare") return zkdl_gat::prepare(config, options);
+        if (options.command == "run" || options.command == "prove") return zkdl_gat::produce(config, options);
+        return zkdl_gat::verify_only(config, options);
+    } catch (const std::exception& exception) {
+        std::cerr << exception.what() << '\n';
+        return 1;
+    }
+}

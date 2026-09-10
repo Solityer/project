@@ -1,0 +1,1 @@
+/usr/bin/clang++-18 -fPIC -O3 -lpthread -pthread -g -shared -Wl,-soname,libmcl.so.3 -o ../../lib/libmcl.so.3.3 CMakeFiles/mcl.dir/src/fp.cpp.o   -L/home/pzh/project/comparison/zkGPT/3rd/mcl  bint64.o base64.o 
