@@ -2188,11 +2188,18 @@ namespace gatzk::algebra
                 1);
         }
 
+        if (wait_for_default_stream_before_output)
+        {
+            enqueue_stream_wait_for_default(
+                stream,
+                "coset evaluation output dependency");
+        }
+
         if (!run_bounded_ntt_device(
                 reinterpret_cast<const mcl::Fr *>(workspace.input),
                 reinterpret_cast<
                     mcl::Fr *>(
-                    device_output),
+                        device_output),
                 half_size,
                 2,
                 ntt::NTTDir::kForward,
@@ -2407,11 +2414,18 @@ namespace gatzk::algebra
                 1);
         }
 
+        if (wait_for_default_stream_before_output)
+        {
+            enqueue_stream_wait_for_default(
+                stream,
+                "coefficient coset output dependency");
+        }
+
         if (!run_bounded_ntt_device(
                 reinterpret_cast<const mcl::Fr *>(workspace.input),
                 reinterpret_cast<
                     mcl::Fr *>(
-                    device_output),
+                        device_output),
                 half_size,
                 2,
                 ntt::NTTDir::kForward,

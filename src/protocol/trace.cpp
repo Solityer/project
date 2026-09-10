@@ -2516,7 +2516,7 @@ namespace gatzk::protocol
                                 .zero_domain_blinder,
                         .lease =
                             trace.spill_directory_lease,
-            };
+                    };
 
             if (!semantic_spill_cache_key.empty() &&
                 polynomial.shared_data != nullptr)
