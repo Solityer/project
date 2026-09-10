@@ -974,6 +974,8 @@ namespace gatzk::crypto
             std::size_t batch_index =
                 std::numeric_limits<std::size_t>::max())
         {
+            algebra::ensure_mcl_field_ready();
+
             G1Point output;
 
             if (bls12_381::projective_t::is_zero(input))
@@ -982,7 +984,10 @@ namespace gatzk::crypto
                 return output;
             }
 
-            if (!bls12_381::projective_t::is_on_curve(input))
+            const bool icicle_projective_valid =
+                bls12_381::projective_t::is_on_curve(input);
+
+            if (!icicle_projective_valid)
             {
                 throw std::runtime_error(
                     "CUDA G1 MSM returned an off-curve ICICLE "
@@ -999,19 +1004,59 @@ namespace gatzk::crypto
                                std::to_string(batch_index)));
             }
 
-            const auto affine =
-                bls12_381::projective_t::to_affine(input);
+            // ICICLE uses homogeneous projective coordinates:
+            //     x_affine = X / Z
+            //     y_affine = Y / Z
+            //
+            // Import X/Y/Z canonically first and perform only the final
+            // representation-boundary normalization in mcl.  The MSM itself,
+            // bucket accumulation, reduction, SRS residency and batching all
+            // remain on ICICLE/CUDA.
+            const auto projective_x =
+                to_mcl_field<mcl::Fp>(
+                    input.x);
 
-            if (affine == bls12_381::affine_t::zero())
+            const auto projective_y =
+                to_mcl_field<mcl::Fp>(
+                    input.y);
+
+            const auto projective_z =
+                to_mcl_field<mcl::Fp>(
+                    input.z);
+
+            if (projective_z.isZero())
             {
-                output.value.clear();
-                return output;
+                throw std::runtime_error(
+                    "CUDA G1 MSM returned a non-zero projective "
+                    "point with zero canonical Z: route=" +
+                    std::string(route) +
+                    " count=" +
+                    std::to_string(count) +
+                    " configured_c=" +
+                    std::to_string(configured_window_bits) +
+                    (batch_index ==
+                             std::numeric_limits<std::size_t>::max()
+                         ? std::string{}
+                         : " batch_index=" +
+                               std::to_string(batch_index)));
             }
 
-            output.value.x =
-                to_mcl_field<mcl::Fp>(affine.x);
-            output.value.y =
-                to_mcl_field<mcl::Fp>(affine.y);
+            mcl::Fp z_inverse;
+
+            mcl::Fp::inv(
+                z_inverse,
+                projective_z);
+
+            mcl::Fp::mul(
+                output.value.x,
+                projective_x,
+                z_inverse);
+
+            mcl::Fp::mul(
+                output.value.y,
+                projective_y,
+                z_inverse);
+
             output.value.z = 1;
 
             const bool mcl_valid =
@@ -1025,13 +1070,14 @@ namespace gatzk::crypto
             if (!mcl_valid || !subgroup_valid)
             {
                 throw std::runtime_error(
-                    "CUDA G1 MSM returned an invalid converted "
-                    "point: route=" +
+                    "CUDA G1 MSM returned an invalid canonical "
+                    "BLS12-381 point: route=" +
                     std::string(route) +
                     " count=" +
                     std::to_string(count) +
                     " configured_c=" +
                     std::to_string(configured_window_bits) +
+                    " icicle_projective_valid=true" +
                     " mcl_valid=" +
                     std::string(
                         mcl_valid ? "true" : "false") +
@@ -1049,7 +1095,6 @@ namespace gatzk::crypto
 
             return output;
         }
-
         bool resident_cuda_msm_is_safe(
             DeviceBaseCache &cache,
             const G1Point *points,

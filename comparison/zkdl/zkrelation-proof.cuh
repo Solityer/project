@@ -220,6 +220,9 @@ struct OperationDescriptor {
     std::vector<std::uint8_t> selector_active;
     std::string selector_source_ref;
     std::string selector_output_ref;
+    // A normal sparse route selects source[src[e]].  A broadcast route (for
+    // example inverse denominator -> edge) selects source[dst[e]].
+    bool route_by_destination = false;
 
     bool valid(std::string* error = nullptr) const {
         const bool canonical_root = id == "head_sum" || id == "final_average" ||
@@ -242,7 +245,7 @@ struct OperationDescriptor {
             return false;
         }
         if (source_refs.empty() || tensor_refs.empty() ||
-            (constraints.empty() && primitives.empty())) {
+            (constraints.empty() && primitives.empty() && kind != RelationKind::SparseRoute)) {
             if (error) *error = "relation operation descriptor has no tensor/constraint body";
             return false;
         }
@@ -277,7 +280,9 @@ struct OperationDescriptor {
             }
         for (const auto& primitive : primitives)
             if (!primitive.valid(tensor_refs, error)) return false;
-        const bool route_relation = kind == RelationKind::SparseRoute;
+        const bool route_relation = kind == RelationKind::SparseRoute ||
+                                    !selector_source_ref.empty() ||
+                                    !selector_output_ref.empty();
         if (route_relation) {
             if (selector_edge_domain == 0U || selector_node_domain == 0U ||
                 selector_feature_domain == 0U ||
@@ -317,7 +322,7 @@ struct OperationDescriptor {
                    selector_feature_domain != 0U || !selector_src.empty() ||
                    !selector_dst.empty() || !selector_active.empty() ||
                    !selector_source_ref.empty() ||
-                   !selector_output_ref.empty()) {
+                   !selector_output_ref.empty() || route_by_destination) {
             if (error) *error = "non-route operation carries an unexpected selector descriptor";
             return false;
         }
@@ -499,6 +504,11 @@ struct ProverContext {
     // commitment object.  The record is public metadata plus a Schnorr
     // knowledge proof; values/randomness never cross this context boundary.
     std::vector<zkdl::CommitmentRecord> hiding_commitment_records;
+    // Public graph-derived material may be attached to a non-public view
+    // commitment (for example group-boundary bits).  The verifier accepts
+    // only ids explicitly reconstructed from Graph/CSR, never arbitrary
+    // caller-supplied private values.
+    std::set<std::string> graph_public_tensor_ids;
     std::map<std::string, std::vector<FrWire>> public_tensor_values;
 };
 
@@ -515,6 +525,7 @@ struct VerifierContext {
     std::vector<TensorDescriptor> tensor_descriptors;
     std::vector<CommitmentWire> registered_model_commitments;
     std::vector<zkdl::CommitmentRecord> hiding_commitment_records;
+    std::set<std::string> graph_public_tensor_ids;
     std::map<std::string, std::vector<FrWire>> public_tensor_values;
     std::vector<zkdl::CpuG1Point> generators;
 };
@@ -709,6 +720,7 @@ inline void append_operation(std::vector<byte>& out, const OperationDescriptor& 
     for (const auto value : descriptor.selector_active) zkdl::append_u32(out, value);
     zkdl::append_string(out, descriptor.selector_source_ref);
     zkdl::append_string(out, descriptor.selector_output_ref);
+    zkdl::append_u32(out, descriptor.route_by_destination ? 1U : 0U);
     zkdl::append_u64(out, static_cast<std::uint64_t>(descriptor.primitives.size()));
     for (const auto& primitive : descriptor.primitives) append_primitive(out, primitive);
     zkdl::append_u64(out, static_cast<std::uint64_t>(descriptor.constraints.size()));
@@ -719,7 +731,8 @@ inline void append_operation(std::vector<byte>& out, const OperationDescriptor& 
  * canonical representation is unambiguous across languages. */
 inline bool read_operation_strict(const std::vector<byte>& in, size_t& offset,
                                   OperationDescriptor& descriptor) {
-    std::uint32_t kind = 0U, public_route = 0U, reindex = 0U;
+    std::uint32_t kind = 0U, public_route = 0U, reindex = 0U,
+                  route_by_destination = 0U;
     std::uint64_t count = 0U;
     if (!zkdl::read_string(in, offset, descriptor.id) ||
         !zkdl::read_u32(in, offset, kind) || !relation_kind_valid(kind) ||
@@ -754,6 +767,7 @@ inline bool read_operation_strict(const std::vector<byte>& in, size_t& offset,
     }
     if (!zkdl::read_string(in, offset, descriptor.selector_source_ref) ||
         !zkdl::read_string(in, offset, descriptor.selector_output_ref) ||
+        !zkdl::read_u32(in, offset, route_by_destination) || route_by_destination > 1U ||
         !zkdl::read_u64(in, offset, count) || count > 8U) return false;
     descriptor.primitives.resize(static_cast<size_t>(count));
     for (auto& primitive : descriptor.primitives)
@@ -763,6 +777,7 @@ inline bool read_operation_strict(const std::vector<byte>& in, size_t& offset,
     descriptor.kind = static_cast<RelationKind>(kind);
     descriptor.public_route = public_route != 0U;
     descriptor.requires_reindex = reindex != 0U;
+    descriptor.route_by_destination = route_by_destination != 0U;
     descriptor.constraints.resize(static_cast<size_t>(count));
     for (auto& constraint : descriptor.constraints)
         if (!read_constraint(in, offset, constraint)) return false;
@@ -1326,7 +1341,9 @@ inline bool verify_tensor_contract(const VerifierContext& context,
                 context.tensor_descriptors, ref);
             if (descriptor == nullptr) continue;
             if (aligned_domain == 0U) aligned_domain = descriptor->domain_size;
-            if (operation.kind != RelationKind::SparseRoute &&
+            const bool has_route = operation.kind == RelationKind::SparseRoute ||
+                                   !operation.selector_source_ref.empty();
+            if (!has_route &&
                 descriptor->domain_size != aligned_domain) {
                 if (error) *error = "operation tensor views violate authenticated MLE padding/domain contract";
                 return false;
@@ -1432,7 +1449,9 @@ inline bool verify_public_tensor_values(
                                            [](const FrWire& value) {
                                                return zkdl::fr_canonical(value);
                                            });
-        if (found == commitments.end() || found->visibility != 1U ||
+        const bool graph_public = context.graph_public_tensor_ids.count(entry.first) != 0U;
+        if (found == commitments.end() ||
+            (!graph_public && found->visibility != 1U) ||
             entry.second.size() != found->domain_size || !canonical) {
             if (error) *error = "public tensor value material does not match commitment domain";
             return false;
@@ -1701,7 +1720,8 @@ inline bool route_tensor_shapes_valid(
     const std::map<std::string, const TensorWitness*>& tensor_map,
     const TensorWitness*& source, const TensorWitness*& output,
     std::string* error) {
-    if (descriptor.kind != RelationKind::SparseRoute ||
+    if ((descriptor.kind != RelationKind::SparseRoute &&
+         descriptor.kind != RelationKind::Alpha) ||
         descriptor.selector_edge_domain == 0U || descriptor.selector_node_domain == 0U ||
         descriptor.selector_feature_domain == 0U ||
         descriptor.selector_src.size() != descriptor.selector_edge_domain ||
@@ -1856,13 +1876,14 @@ inline bool prove_sparse_route(
     std::vector<FrWire> output_eval_values = output_by_edge;
     for (const auto& challenge : edge_point) fold_values(output_eval_values, challenge);
     route.output_claim = zkdl::fr_value(output_eval_values.front());
-    const std::vector<FrWire> selector_by_node = public_route_selector_mle(descriptor, edge_point);
+    const std::vector<FrWire> selector_by_node = public_route_selector_mle(
+        descriptor, edge_point, descriptor.route_by_destination);
     FrWire source_sum{};
     for (std::uint32_t node = 0U; node < descriptor.selector_node_domain; ++node)
         source_sum = zkdl::fr_add(source_sum, zkdl::fr_mul(selector_by_node[node], source_by_node[node]));
     route.source_sum_claim = zkdl::fr_value(source_sum);
     std::vector<FrWire> destination_by_node = public_route_selector_mle(
-        descriptor, edge_point, true);
+        descriptor, edge_point, !descriptor.route_by_destination);
     if (!same_wire(zkdl::fr_wire(route.output_claim), source_sum)) {
         if (error) *error = "sparse route witness does not satisfy public selector MLE claim";
         return false;
@@ -1947,7 +1968,8 @@ inline bool verify_sparse_route(
     const std::vector<zkdl::CpuG1Point>& generators,
     zkdl::Transcript& transcript, const SparseRouteProof& route,
     std::string* error) {
-    if (descriptor.kind != RelationKind::SparseRoute ||
+    if ((descriptor.kind != RelationKind::SparseRoute &&
+         descriptor.kind != RelationKind::Alpha) ||
         route.edge_domain != descriptor.selector_edge_domain ||
         route.node_domain != descriptor.selector_node_domain ||
         route.feature_domain != descriptor.selector_feature_domain) {
@@ -2046,10 +2068,11 @@ inline bool verify_sparse_route(
         for (const auto& value : route.edge_point) point.push_back(zkdl::fr_wire(value));
         return point;
     }();
-    std::vector<FrWire> selector_terminal = public_route_selector_mle(descriptor, edge_point);
+    std::vector<FrWire> selector_terminal = public_route_selector_mle(
+        descriptor, edge_point, descriptor.route_by_destination);
     for (const auto& challenge : route.node_point) fold_values(selector_terminal, zkdl::fr_wire(challenge));
     std::vector<FrWire> destination_terminal = public_route_selector_mle(
-        descriptor, edge_point, true);
+        descriptor, edge_point, !descriptor.route_by_destination);
     for (const auto& challenge : route.node_point)
         fold_values(destination_terminal, zkdl::fr_wire(challenge));
     if (fr_compare_mixed(route.sumcheck.terminal_claims[0],
@@ -2146,7 +2169,9 @@ inline bool prove(const ProverContext& context, Proof& proof, std::string* error
             if (operation.primitives.size() > 8U) {
                 throw std::invalid_argument("relation operation carries too many native primitives");
             }
-            if (operation.kind == RelationKind::SparseRoute) {
+            const bool has_route = operation.kind == RelationKind::SparseRoute ||
+                                   !operation.selector_source_ref.empty();
+            if (has_route) {
                 SparseRouteProof route;
                 if (!prove_sparse_route(operation, tensor_map, context.generators,
                                         proof.commitments, transcript, route, error)) return false;
@@ -2306,7 +2331,9 @@ inline bool verify(const Proof& proof, const VerifierContext& context,
             if (error) *error = "relation primitive canonical binding count mismatch";
             return false;
         }
-        if (expected_operation.kind == RelationKind::SparseRoute) {
+        const bool has_route = expected_operation.kind == RelationKind::SparseRoute ||
+                               !expected_operation.selector_source_ref.empty();
+        if (has_route) {
             if (operation.route_proof.empty()) {
                 if (error) *error = "sparse route operation is missing its native relation proof";
                 return false;

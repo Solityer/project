@@ -131,6 +131,135 @@ def main() -> None:
         "large-bucket metadata synchronization",
     )
 
+    # large_bucket_indices is consumed and released exclusively by
+    # stream_large_buckets.  Allocating it on the main stream leaves a
+    # cross-stream stream-ordered-allocation dependency that ICICLE v2.8.0
+    # never establishes explicitly.
+    old = """        unsigned* large_bucket_indices;
+        CHK_IF_RETURN(cudaMallocAsync(&large_bucket_indices, sizeof(unsigned) * large_buckets_nof_threads, stream));
+"""
+
+    new = """        unsigned* large_bucket_indices;
+        CHK_IF_RETURN(cudaMallocAsync(
+          &large_bucket_indices, sizeof(unsigned) * large_buckets_nof_threads, stream_large_buckets));
+"""
+
+    text = replace_once(
+        text,
+        old,
+        new,
+        "large-bucket allocation stream ownership",
+    )
+
+    # The large-bucket stream reads all four sorted arrays below.  In the
+    # original v2.8.0 code the main stream queues cudaFreeAsync() for those
+    # arrays before it waits for event_large_buckets_accumulated.  With the
+    # CUDA stream-ordered allocator this permits reuse before the secondary
+    # stream has completed its reads.  Preserve concurrent accumulation, but
+    # put the event dependency before the frees.
+    old = """      CHK_IF_RETURN(cudaFreeAsync(sorted_point_indices, stream));
+      CHK_IF_RETURN(cudaFreeAsync(sorted_bucket_sizes, stream));
+      CHK_IF_RETURN(cudaFreeAsync(sorted_bucket_offsets, stream));
+      CHK_IF_RETURN(cudaFreeAsync(sorted_single_bucket_indices, stream));
+      if (h_nof_large_buckets > 0 && bucket_th > 0) {
+        // all the large buckets need to be accumulated before the final summation
+        CHK_IF_RETURN(cudaStreamWaitEvent(stream, event_large_buckets_accumulated));
+        CHK_IF_RETURN(cudaStreamDestroy(stream_large_buckets));
+      }
+"""
+
+    new = """      if (h_nof_large_buckets > 0 && bucket_th > 0) {
+        // The secondary stream still reads the sorted metadata.  Establish
+        // the dependency before any stream-ordered free can recycle it.
+        CHK_IF_RETURN(cudaStreamWaitEvent(stream, event_large_buckets_accumulated));
+      }
+      CHK_IF_RETURN(cudaFreeAsync(sorted_point_indices, stream));
+      CHK_IF_RETURN(cudaFreeAsync(sorted_bucket_sizes, stream));
+      CHK_IF_RETURN(cudaFreeAsync(sorted_bucket_offsets, stream));
+      CHK_IF_RETURN(cudaFreeAsync(sorted_single_bucket_indices, stream));
+      if (h_nof_large_buckets > 0 && bucket_th > 0) {
+        CHK_IF_RETURN(cudaStreamDestroy(stream_large_buckets));
+        CHK_IF_RETURN(cudaEventDestroy(event_large_buckets_accumulated));
+      }
+"""
+
+    text = replace_once(
+        text,
+        old,
+        new,
+        "large-bucket metadata lifetime ordering",
+    )
+
+    # Iterative reduction uses allocations created on the main MSM stream from
+    # stream_reduction as well.  v2.8.0 only establishes the reverse
+    # stream_reduction -> main dependency after the kernels finish.  Add the
+    # missing main -> stream_reduction dependency at the beginning of each
+    # reduction generation; the two reduction streams remain concurrent once
+    # the generation inputs are ready.
+    old = """        cudaStream_t stream_reduction;
+        cudaEvent_t event_finished_reduction;
+        CHK_IF_RETURN(cudaStreamCreate(&stream_reduction));
+        CHK_IF_RETURN(cudaEventCreateWithFlags(&event_finished_reduction, cudaEventDisableTiming));
+"""
+
+    new = """        cudaStream_t stream_reduction;
+        cudaEvent_t event_finished_reduction;
+        cudaEvent_t event_main_reduction_ready;
+        CHK_IF_RETURN(cudaStreamCreate(&stream_reduction));
+        CHK_IF_RETURN(cudaEventCreateWithFlags(&event_finished_reduction, cudaEventDisableTiming));
+        CHK_IF_RETURN(cudaEventCreateWithFlags(&event_main_reduction_ready, cudaEventDisableTiming));
+"""
+
+    text = replace_once(
+        text,
+        old,
+        new,
+        "iterative-reduction bidirectional event declaration",
+    )
+
+    old = """          initialize_buckets_kernel<<<(target_buckets_count * batch_size + 255) / 256, 256>>>(
+            target_buckets, target_buckets_count * batch_size); // initialization is needed for the odd c case
+
+          for (unsigned j = 0; j < target_bits_count; j++) {
+"""
+
+    new = """          initialize_buckets_kernel<<<(target_buckets_count * batch_size + 255) / 256, 256, 0, stream>>>(
+            target_buckets, target_buckets_count * batch_size); // initialization is needed for the odd c case
+
+          // target_buckets/temp_buckets1/temp_buckets2 are stream-ordered
+          // allocations made on the main MSM stream.  The secondary
+          // reduction stream must not access them until those allocations
+          // and the target initialization are visible.
+          CHK_IF_RETURN(cudaEventRecord(event_main_reduction_ready, stream));
+          CHK_IF_RETURN(cudaStreamWaitEvent(stream_reduction, event_main_reduction_ready));
+
+          for (unsigned j = 0; j < target_bits_count; j++) {
+"""
+
+    text = replace_once(
+        text,
+        old,
+        new,
+        "iterative-reduction main-to-secondary dependency",
+    )
+
+    old = """            CHK_IF_RETURN(cudaStreamDestroy(stream_reduction));
+            break;
+"""
+
+    new = """            CHK_IF_RETURN(cudaStreamDestroy(stream_reduction));
+            CHK_IF_RETURN(cudaEventDestroy(event_finished_reduction));
+            CHK_IF_RETURN(cudaEventDestroy(event_main_reduction_ready));
+            break;
+"""
+
+    text = replace_once(
+        text,
+        old,
+        new,
+        "iterative-reduction event lifetime",
+    )
+
     output.parent.mkdir(
         parents=True,
         exist_ok=True,

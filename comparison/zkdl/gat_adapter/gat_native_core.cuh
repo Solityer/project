@@ -43,6 +43,11 @@ struct NativeRelationWitness {
     // points with the generated canonical commitments; it never invents a
     // model commitment from metadata.
     std::vector<relation::CommitmentWire> registered_model_commitments;
+    // One native CpuHidingCommitment::record() for every model/private tensor.
+    // The record carries only the value commitment, public blinding data, and
+    // its Schnorr response; the core verifies the blinder knowledge before
+    // opening the underlying value commitment.
+    std::vector<zkdl::CommitmentRecord> hiding_commitment_records;
     std::vector<zkdl::CpuG1Point> generators;
     std::string registry_path;
     std::array<zkdl::byte, 32> srs_digest{};

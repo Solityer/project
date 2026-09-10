@@ -702,19 +702,6 @@ bool padded_matrix_shape(
     return true;
 }
 
-relation::ConstraintDescriptor primitive_anchor_constraint(
-    const relation::OperationDescriptor& operation,
-    const std::string& ref) {
-    relation::ConstraintDescriptor constraint;
-    constraint.id = operation.id + "/primitive-anchor";
-    constraint.degree = 1U;
-    const std::uint32_t index = local_ref(operation, ref);
-    const FrWire one = zkdl::fr_from_u32(1U);
-    constraint.terms.push_back(monomial(one, {index}));
-    constraint.terms.push_back(monomial(zkdl::fr_neg(one), {index}));
-    return constraint;
-}
-
 std::string required_view(const OperationFamily& plan_operation,
                           const std::map<std::string, std::uint32_t>& domains,
                           const std::string& role, const std::string& fallback,
@@ -1120,10 +1107,78 @@ relation::OperationDescriptor sparse_route_operation(
     operation.selector_source_ref = source_ref;
     operation.selector_output_ref = output_ref;
     // The route relation itself owns the sparse selector polynomial.  The
-    // canonical tensor relation only anchors the routed output; source is
-    // intentionally kept in source_refs and in the route proof opening.
+    // source/output commitments are bound by the route proof's canonical
+    // Hyrax openings; no tautological anchor constraint is emitted.
     set_tensor_refs(operation, {output_ref});
-    operation.constraints.push_back(primitive_anchor_constraint(operation, output_ref));
+    return operation;
+}
+
+relation::OperationDescriptor inverse_broadcast_operation(
+    const Graph& graph, const OperationFamily& plan_operation,
+    const std::map<std::string, std::uint32_t>& domains,
+    const std::map<std::string, const TensorFamily*>& families,
+    std::string* error) {
+    if (plan_operation.inputs.size() < 2U || plan_operation.outputs.size() < 2U) {
+        if (error) *error = "BLOCKED: inverse/alpha relation lacks denominator, edge weight, and outputs";
+        return relation::OperationDescriptor{};
+    }
+    const std::string denominator_edge = required_view(
+        plan_operation, domains, "input0", "", error);
+    const std::string edge_weight = required_view(
+        plan_operation, domains, "input1", "", error);
+    const std::string inverse_edge = required_view(
+        plan_operation, domains, "output0", "", error);
+    const std::string alpha_edge = required_view(
+        plan_operation, domains, "output1", "", error);
+    if (denominator_edge.empty() || edge_weight.empty() || inverse_edge.empty() ||
+        alpha_edge.empty()) return relation::OperationDescriptor{};
+
+    // Reuse the canonical selector builder with a synthetic two-input route:
+    // denominator(node) -> denominator_edge(dst[e]).  The original plan
+    // remains in source_refs below, so the route descriptor cannot be
+    // replaced by a prover-selected mapping.
+    OperationFamily route_plan = plan_operation;
+    route_plan.inputs = {"sparse_route", plan_operation.inputs.front()};
+    route_plan.outputs = {denominator_edge};
+    relation::OperationDescriptor operation = sparse_route_operation(
+        graph, route_plan, domains, families, error);
+    if (operation.id.empty()) return operation;
+    operation.id = plan_operation.id;
+    operation.kind = relation::RelationKind::Alpha;
+    operation.degree = 2U;
+    operation.mapping = plan_operation.mapping + ";public-selector-mle:dst";
+    operation.terminal_claim = plan_operation.terminal_claim;
+    operation.terminal_point = plan_operation.terminal_point;
+    operation.public_route = plan_operation.public_route;
+    operation.requires_reindex = plan_operation.requires_reindex;
+    operation.route_by_destination = true;
+    operation.source_refs.clear();
+    for (const auto& input : plan_operation.inputs) append_unique(operation.source_refs, input);
+    for (const auto& output : plan_operation.outputs) append_unique(operation.source_refs, output);
+    // Generic Alpha constraints are all on the edge domain.  The node->edge
+    // denominator broadcast is proved by the route proof above.
+    set_tensor_refs(operation, {denominator_edge, edge_weight, inverse_edge, alpha_edge});
+    operation.constraints.clear();
+    relation::ConstraintDescriptor inverse;
+    inverse.id = operation.id + "/inverse-edge";
+    inverse.degree = 2U;
+    inverse.constant = zkdl::fr_neg(zkdl::fr_from_u32(1U));
+    inverse.terms.push_back(monomial(
+        zkdl::fr_from_u32(1U), {local_ref(operation, denominator_edge),
+                                local_ref(operation, inverse_edge)}));
+    operation.constraints.push_back(std::move(inverse));
+    operation.constraints.push_back(product_constraint(
+        operation.id + "/alpha-edge", operation, edge_weight, inverse_edge, alpha_edge));
+    operation.padding = "fixed-zero-padding;public-dst-broadcast;field-inverse-alpha";
+    std::uint32_t edge_domain = 0U;
+    if (!same_domain_refs(domains, operation.tensor_refs, &edge_domain, error, operation.id))
+        return relation::OperationDescriptor{};
+    (void)edge_domain;
+    std::string validation_error;
+    if (!operation.valid(&validation_error)) {
+        if (error) *error = "BLOCKED: inverse/alpha descriptor rejected: " + validation_error;
+        return relation::OperationDescriptor{};
+    }
     return operation;
 }
 
@@ -1221,24 +1276,9 @@ relation::OperationDescriptor canonical_operation(
             operation.constraints.push_back(product_constraint(
                 operation.id + "/product", operation, inputs[0], inputs[1], output));
         } else if (plan_operation.kind == "field_inverse_product_sumcheck") {
-            operation.kind = relation::RelationKind::Alpha;
-            if (plan_operation.inputs.size() < 2U || plan_operation.outputs.size() < 2U)
-                return unsupported("denominator/exp/inverse/alpha aligned field tensors");
-            const std::vector<std::string> inputs = aligned_inputs(plan_operation, domains);
-            const std::string inverse_view = aligned_output(plan_operation, domains, 0U);
-            const std::string alpha_view = aligned_output(plan_operation, domains, 1U);
-            set_tensor_refs(operation, {inputs[0], inputs[1], inverse_view, alpha_view});
-            relation::ConstraintDescriptor inverse;
-            inverse.id = operation.id + "/inverse";
-            inverse.degree = 2U;
-            inverse.constant = zkdl::fr_neg(zkdl::fr_from_u32(1U));
-            inverse.terms.push_back(monomial(
-                zkdl::fr_from_u32(1U), {local_ref(operation, inputs[0]),
-                                        local_ref(operation, inverse_view)}));
-            operation.constraints.push_back(std::move(inverse));
-            operation.constraints.push_back(product_constraint(
-                operation.id + "/alpha", operation, inputs[1], inverse_view,
-                alpha_view));
+            if (graph == nullptr) return unsupported("public destination route for denominator broadcast");
+            operation = inverse_broadcast_operation(*graph, plan_operation, domains, families, error);
+            if (operation.id.empty()) return operation;
         } else if (plan_operation.kind == "public_selector_reindex") {
             if (graph == nullptr) return unsupported("public canonical graph src/dst route descriptor");
             operation = sparse_route_operation(*graph, plan_operation, domains, families, error);
@@ -1369,7 +1409,9 @@ bool build_canonical_operations(const Config& config, const StaticTables& tables
         // edge-view domains; its public selector-MLE proof carries both
         // canonical openings.  All other relation families still require
         // same-domain MLE views here.
-        if (operation.kind != relation::RelationKind::SparseRoute) {
+        const bool has_route = operation.kind == relation::RelationKind::SparseRoute ||
+                               !operation.selector_source_ref.empty();
+        if (!has_route) {
             const std::uint32_t domain = domains.at(operation.tensor_refs.front());
             for (const auto& ref : operation.tensor_refs)
                 if (domains.at(ref) != domain) {
@@ -1425,9 +1467,12 @@ bool operation_set_matches_plan(const RelationPlan& plan,
         const bool route_mapping = expected.kind == "public_selector_reindex" &&
                                    (actual.mapping == expected.mapping ||
                                     actual.mapping == expected.mapping + ";public-selector-mle:src-dst");
+        const bool broadcast_mapping = expected.kind == "field_inverse_product_sumcheck" &&
+                                       (actual.mapping == expected.mapping ||
+                                        actual.mapping == expected.mapping + ";public-selector-mle:dst");
         if ((!low_degree_tree && actual.degree != expected.degree) ||
             (low_degree_tree && (actual.degree < expected.degree || actual.degree > 2U)) ||
-            (!route_mapping && actual.mapping != expected.mapping) ||
+            (!route_mapping && !broadcast_mapping && actual.mapping != expected.mapping) ||
             actual.terminal_point != expected.terminal_point ||
             actual.terminal_claim != expected.terminal_claim ||
             actual.requires_reindex != expected.requires_reindex ||
@@ -1526,9 +1571,25 @@ bool shape_contract_from_witness(
     return shape_contract_from_plan(plan, witness.tensor_shapes, descriptors, error);
 }
 
+bool graph_public_descriptor_id(const std::string& id) {
+    const auto suffix = [&](const std::string& value) {
+        return id.size() >= value.size() &&
+               id.compare(id.size() - value.size(), value.size(), value) == 0U;
+    };
+    return id == "sparse_route" || id == "group_selectors" ||
+           id == "node_ptr" || id == "edge_ptr" || id == "node_edge_ptr" ||
+           suffix("/view/group_new") || suffix("/view/group_end");
+}
+
 bool graph_public_values(const Graph& graph, const relation::TensorDescriptor& descriptor,
                          std::vector<FrWire>& values, std::string* error) {
     values.assign(descriptor.domain_size, FrWire{});
+    const auto suffix = [&](const std::string& value) {
+        return descriptor.id.size() >= value.size() &&
+               descriptor.id.compare(descriptor.id.size() - value.size(), value.size(), value) == 0U;
+    };
+    const bool csr_boundary_view = suffix("/view/group_new") ||
+                                   suffix("/view/group_end");
     const auto from_u64 = [&](std::uint64_t value, FrWire& out) {
         if (value > std::numeric_limits<std::uint32_t>::max()) return false;
         out = zkdl::fr_from_u32(static_cast<std::uint32_t>(value));
@@ -1557,6 +1618,55 @@ bool graph_public_values(const Graph& graph, const relation::TensorDescriptor& d
                 values[base] = zkdl::fr_from_u32(first ? 1U : 0U);
                 values[base + 1U] = zkdl::fr_from_u32(last ? 1U : 0U);
             }
+        }
+        return true;
+    }
+    if (csr_boundary_view) {
+        if (graph.dst.size() != graph.edges || graph.node_edge_ptr.size() != graph.nodes + 1U ||
+            graph.node_edge_ptr.empty() || graph.node_edge_ptr.front() != 0U ||
+            graph.node_edge_ptr.back() != graph.edges || descriptor.padded_shape.empty() ||
+            descriptor.padded_shape.front() < graph.edges) {
+            if (error) *error = "public CSR group-boundary view has an incompatible graph/domain";
+            return false;
+        }
+        for (std::size_t node = 0U; node + 1U < graph.node_edge_ptr.size(); ++node) {
+            if (graph.node_edge_ptr[node] > graph.node_edge_ptr[node + 1U] ||
+                graph.node_edge_ptr[node + 1U] > graph.edges) {
+                if (error) *error = "public CSR node_edge_ptr is not monotone or bounded";
+                return false;
+            }
+        }
+        std::uint64_t feature_width = 1U;
+        for (std::size_t axis = 1U; axis < descriptor.padded_shape.size(); ++axis) {
+            if (descriptor.padded_shape[axis] == 0U ||
+                feature_width > std::numeric_limits<std::uint64_t>::max() /
+                                    descriptor.padded_shape[axis]) {
+                if (error) *error = "public CSR group-boundary view feature domain overflows";
+                return false;
+            }
+            feature_width *= descriptor.padded_shape[axis];
+        }
+        if (feature_width == 0U ||
+            feature_width > std::numeric_limits<std::uint32_t>::max() ||
+            feature_width * descriptor.padded_shape.front() != descriptor.domain_size) {
+            if (error) *error = "public CSR group-boundary view domain does not match its shape";
+            return false;
+        }
+        const bool want_end = suffix("/view/group_end");
+        for (std::uint64_t edge = 0U; edge < graph.edges; ++edge) {
+            const std::uint64_t destination = graph.dst[edge];
+            if (destination >= graph.nodes ||
+                edge < graph.node_edge_ptr[destination] ||
+                edge >= graph.node_edge_ptr[destination + 1U]) {
+                if (error) *error = "public CSR edge is outside its destination segment";
+                return false;
+            }
+            const bool boundary = want_end
+                ? edge + 1U == graph.node_edge_ptr[destination + 1U]
+                : edge == graph.node_edge_ptr[destination];
+            for (std::uint64_t feature = 0U; feature < feature_width; ++feature)
+                values[static_cast<std::size_t>(edge * feature_width + feature)] =
+                    zkdl::fr_from_u32(boundary ? 1U : 0U);
         }
         return true;
     }
@@ -1614,12 +1724,18 @@ bool context_from_request(const NativeProveRequest& request,
     }
     context.generators = request.witness->generators;
     context.registered_model_commitments = request.witness->registered_model_commitments;
+    context.hiding_commitment_records = request.witness->hiding_commitment_records;
     for (const auto& tensor : context.tensors)
         if (tensor.visibility == 1U) context.public_tensor_values.emplace(tensor.id, tensor.values);
     for (const auto& descriptor : context.tensor_descriptors) {
-        if (descriptor.visibility != 1U) continue;
+        const bool graph_view = graph_public_descriptor_id(descriptor.id);
+        if (descriptor.visibility != 1U && !graph_view) continue;
         std::vector<FrWire> expected;
-        if (!graph_public_values(*request.graph, descriptor, expected, error)) continue;
+        if (!graph_public_values(*request.graph, descriptor, expected, error)) {
+            if (graph_view) return false;
+            continue;
+        }
+        if (graph_view) context.graph_public_tensor_ids.insert(descriptor.id);
         const auto found = context.public_tensor_values.find(descriptor.id);
         if (found == context.public_tensor_values.end()) {
             context.public_tensor_values.emplace(descriptor.id, std::move(expected));
@@ -1779,12 +1895,18 @@ bool context_from_verify(const NativeVerifyRequest& request,
     }
     context.generators = supplied.generators;
     context.registered_model_commitments = supplied.registered_model_commitments;
+    context.hiding_commitment_records = supplied.hiding_commitment_records;
     for (const auto& tensor : supplied.tensors)
         context.public_tensor_values.emplace(tensor.id, tensor.values);
     for (const auto& descriptor : context.tensor_descriptors) {
-        if (descriptor.visibility != 1U) continue;
+        const bool graph_view = graph_public_descriptor_id(descriptor.id);
+        if (descriptor.visibility != 1U && !graph_view) continue;
         std::vector<FrWire> expected;
-        if (!graph_public_values(*request.graph, descriptor, expected, error)) continue;
+        if (!graph_public_values(*request.graph, descriptor, expected, error)) {
+            if (graph_view) return false;
+            continue;
+        }
+        if (graph_view) context.graph_public_tensor_ids.insert(descriptor.id);
         const auto found = context.public_tensor_values.find(descriptor.id);
         if (found == context.public_tensor_values.end()) {
             context.public_tensor_values.emplace(descriptor.id, std::move(expected));
