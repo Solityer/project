@@ -130,6 +130,9 @@ struct Config {
     bool deduplicate_edges = true;
     bool auto_prepare_dataset = false;
     bool dump_trace = false;
+    // Independent verification may authenticate public metadata and relation
+    // resources without opening private checkpoint tensor payloads.
+    bool public_verifier_mode = false;
     Architecture architecture;
     Quantization quantization;
 };
@@ -497,6 +500,7 @@ struct AssetManifest {
 
 AssetManifest load_asset_manifest(const Config& config);
 ModelBundle load_model_bundle(const Config& config);
+ModelBundle load_model_metadata(const Config& config);
 Graph load_graph(const Config& config);
 StaticTables build_static_tables(const Config& config, const Graph& graph);
 RelationPlan build_relation_plan(const Config& config, const Graph& graph,

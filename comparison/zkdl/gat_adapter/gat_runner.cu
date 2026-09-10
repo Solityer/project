@@ -8,57 +8,6 @@
 
 #include "gat_native_bridge.hpp"
 
-// The bridge deliberately keeps NativeRelationWitness opaque to callers that
-// only forward requests.  The runner needs its data layout, but including the
-// native core header here would pull the header-only CUDA proof stack into a
-// second translation unit and emit duplicate kernel symbols.  Keep this
-// runner-side ABI mirror limited to the fields actually materialized here;
-// native core owns the corresponding full relation types and proof methods.
-namespace zkdl {
-using byte = std::uint8_t;
-using FrWire = std::array<std::uint32_t, 8U>;
-struct CpuG1Point {};
-}  // namespace zkdl
-
-namespace zkdl_gat {
-namespace relation {
-using FrWire = zkdl::FrWire;
-struct TensorWitness {
-    std::string id;
-    std::uint32_t visibility = 0U;
-    std::uint32_t domain_size = 0U;
-    std::vector<FrWire> values;
-};
-struct OperationDescriptor {};
-struct CommitmentWire {};
-}  // namespace relation
-
-struct NativeRelationWitness {
-    std::vector<relation::TensorWitness> tensors;
-    struct TensorShape {
-        std::string id;
-        std::uint32_t domain_size = 0U;
-        std::uint32_t visibility = 0U;
-        std::vector<std::uint64_t> logical_shape;
-        std::vector<std::uint64_t> padded_shape;
-        std::string mle_order;
-        std::string stack_axis;
-        std::string mapping;
-        std::string padding_rule;
-        std::string registry_id;
-    };
-    std::vector<TensorShape> tensor_shapes;
-    std::vector<relation::OperationDescriptor> operations;
-    std::vector<relation::CommitmentWire> registered_model_commitments;
-    std::vector<zkdl::CpuG1Point> generators;
-    std::string registry_path;
-    std::array<zkdl::byte, 32U> srs_digest{};
-    std::array<zkdl::byte, 32U> registry_digest{};
-    bool srs_authenticated = false;
-    bool registry_authenticated = false;
-};
-}  // namespace zkdl_gat
-
 #include <cuda_runtime.h>
 
 #include <algorithm>
@@ -1916,6 +1865,9 @@ AssetManifest load_asset_manifest(const Config& config) {
     const std::regex entry(
         "\\{\\s*\"bytes\"\\s*:\\s*([0-9]+)\\s*,\\s*\"path\"\\s*:\\s*\"([^\"]+)\"\\s*,\\s*\"sha256\"\\s*:\\s*\"([0-9a-fA-F]{64})\"\\s*\\}");
     std::set<std::string> paths;
+    const std::string checkpoint_root = std::filesystem::relative(
+        config.checkpoint_bundle, config.baseline_root).generic_string();
+    const std::string checkpoint_prefix = checkpoint_root.empty() ? std::string() : checkpoint_root + "/";
     for (std::sregex_iterator iterator(manifest.begin(), manifest.end(), entry), end; iterator != end; ++iterator) {
         AssetManifestEntry file;
         file.bytes = parse_u64((*iterator)[1].str(), "asset manifest bytes");
@@ -1929,6 +1881,16 @@ AssetManifest load_asset_manifest(const Config& config) {
         }
         if (!paths.insert(file.path).second) fail("duplicate asset manifest file: " + file.path);
         const auto resolved = local_path(config.baseline_root, file.path, "asset manifest file");
+        const bool private_checkpoint_asset = config.public_verifier_mode &&
+            !checkpoint_prefix.empty() && file.path.rfind(checkpoint_prefix, 0U) == 0U &&
+            file.path != checkpoint_prefix + "manifest.json";
+        if (private_checkpoint_asset) {
+            // The digest recorded in the public asset manifest is enough for
+            // statement binding.  Do not open/hash checkpoint tensor or model
+            // payloads in an independent verifier process.
+            result.files.push_back(std::move(file));
+            continue;
+        }
         if (std::filesystem::is_symlink(resolved) || !std::filesystem::is_regular_file(resolved)) {
             fail("asset manifest file is missing or symlinked: " + file.path);
         }
@@ -2225,6 +2187,49 @@ ModelBundle load_model_bundle(const Config& config) {
         if (shape == manifest_shapes.end()) fail("checkpoint tensor is absent from manifest tensor_index: " + item.first);
         if (shape->second != item.second.shape) fail("checkpoint tensor shape disagrees with manifest: " + item.first);
     }
+    return model;
+}
+
+ModelBundle load_model_metadata(const Config& config) {
+    // This path intentionally authenticates only public checkpoint metadata.
+    // load_asset_manifest honors public_verifier_mode and records, but does
+    // not open/hash, private checkpoint payloads.
+    const auto assets = load_asset_manifest(config);
+    if (!std::filesystem::is_directory(config.checkpoint_bundle))
+        fail("checkpoint bundle is not a directory");
+    const auto manifest_path = config.checkpoint_bundle / "manifest.json";
+    if (std::filesystem::is_symlink(manifest_path) || !std::filesystem::is_regular_file(manifest_path))
+        fail("BLOCKED: public checkpoint manifest is missing or not a regular file");
+    const auto manifest = file_text(manifest_path);
+    expect_manifest(manifest, config);
+    (void)manifest_tensor_shapes(manifest);
+
+    ModelBundle model;
+    model.root = config.checkpoint_bundle;
+    model.dataset = config.dataset;
+    model.model_arch_id = config.model_arch_id;
+    model.model_param_id = config.model_param_id;
+    model.quant_cfg_id = config.quant_cfg_id;
+    model.static_table_id = config.static_table_id;
+    model.manifest_digest = sha256_file(manifest_path);
+    model.tensor_count_manifest = json_u64_field(manifest, "tensor_count");
+    const auto recorded_digest = [&](const std::filesystem::path& path) -> std::string {
+        const auto relative = std::filesystem::relative(path, config.baseline_root).generic_string();
+        for (const auto& file : assets.files)
+            if (file.path == relative) return file.sha256;
+        fail("asset manifest does not authenticate checkpoint metadata: " + relative);
+    };
+    // These are recorded identities only.  No private payload is opened or
+    // parsed by this metadata-only loader.
+    model.tensors_text_digest = recorded_digest(config.checkpoint_bundle / "tensors.txt");
+    model.tensors_npz_digest = recorded_digest(config.checkpoint_bundle / "tensors.npz");
+    const auto best_model = config.checkpoint_bundle / "best_model.pt";
+    const auto best_relative = std::filesystem::relative(best_model, config.baseline_root).generic_string();
+    for (const auto& file : assets.files)
+        if (file.path == best_relative) {
+            model.best_model_digest = file.sha256;
+            break;
+        }
     return model;
 }
 
@@ -2933,7 +2938,7 @@ bool relation_plan_complete(const RelationPlan& relation, std::string* error) {
     return true;
 }
 
-using NativeFrWire = relation::FrWire;
+using NativeFrWire = NativeFieldWire;
 
 const NativeFrWire& native_scalar_modulus() {
     static const NativeFrWire modulus = {{
@@ -3259,7 +3264,7 @@ std::vector<NativeFrWire> native_field_prefix(const std::vector<NativeFrWire>& i
     return native_prefix(input, group_new, width, previous);
 }
 
-NativeRelationWitness build_native_relation_witness(
+NativeRelationWitnessInput build_native_relation_witness(
     const Config& config, const Graph& graph, const ModelBundle& model,
     const StaticTables& tables, const RelationPlan& plan, const GatTrace& trace) {
     std::map<std::string, const TensorFamily*> families;
@@ -3773,14 +3778,14 @@ NativeRelationWitness build_native_relation_witness(
     put_round_views("final_average", trace.final_average_round_div,
                     trace.output_sum, 1U, trace.logits);
 
-    NativeRelationWitness result;
+    NativeRelationWitnessInput result;
     result.tensors.reserve(plan.tensor_families.size());
     result.tensor_shapes.reserve(plan.tensor_families.size());
     for (const auto& family : plan.tensor_families) {
         const auto found = logical.find(family.id);
         if (found == logical.end())
             fail("canonical native witness is missing tensor values: " + family.id);
-        relation::TensorWitness tensor;
+        NativeTensorWitnessInput tensor;
         tensor.id = family.id;
         tensor.visibility = family.visibility == "public" ? 1U :
             (family.id.find("/model/") != std::string::npos ? 2U : 3U);
@@ -3788,7 +3793,7 @@ NativeRelationWitness build_native_relation_witness(
         tensor.values = native_embed_zero_padded(family, found->second);
         result.tensors.push_back(std::move(tensor));
 
-        NativeRelationWitness::TensorShape shape;
+        NativeTensorShapeInput shape;
         shape.id = family.id;
         shape.domain_size = static_cast<std::uint32_t>(native_shape_product(family.padded_shape, family.id + ".domain"));
         shape.visibility = result.tensors.back().visibility;
@@ -3807,7 +3812,7 @@ NativeRelationWitness build_native_relation_witness(
     // SHA-256 equals the secure configuration; no placeholder registry,
     // generator vector, VK, or SRS data is ever manufactured here.
     result.registry_path = (config.baseline_root / "artifacts" / "verifier_registry.json").string();
-    const auto decode_digest = [](const std::string& text, std::array<zkdl::byte, 32>& output) {
+    const auto decode_digest = [](const std::string& text, std::array<std::uint8_t, 32>& output) {
         if (!is_digest(text)) return false;
         const auto nibble = [](char value) -> int {
             if (value >= '0' && value <= '9') return value - '0';
@@ -3819,7 +3824,7 @@ NativeRelationWitness build_native_relation_witness(
             const int high = nibble(text[index * 2U]);
             const int low = nibble(text[index * 2U + 1U]);
             if (high < 0 || low < 0) return false;
-            output[index] = static_cast<zkdl::byte>((high << 4) | low);
+            output[index] = static_cast<std::uint8_t>((high << 4) | low);
         }
         return true;
     };
@@ -3845,11 +3850,11 @@ NativeRelationWitness build_native_relation_witness(
     return result;
 }
 
-NativeRelationWitness build_native_public_context(
+NativeRelationWitnessInput build_native_public_context(
     const Config& config, const RelationPlan& plan, const Matrix& public_output) {
-    NativeRelationWitness result;
+    NativeRelationWitnessInput result;
     result.tensor_shapes.reserve(plan.tensor_families.size());
-    const auto decode_digest = [](const std::string& text, std::array<zkdl::byte, 32>& output) {
+    const auto decode_digest = [](const std::string& text, std::array<std::uint8_t, 32>& output) {
         if (!is_digest(text)) return false;
         const auto nibble = [](char value) -> int {
             if (value >= '0' && value <= '9') return value - '0';
@@ -3861,12 +3866,12 @@ NativeRelationWitness build_native_public_context(
             const int high = nibble(text[index * 2U]);
             const int low = nibble(text[index * 2U + 1U]);
             if (high < 0 || low < 0) return false;
-            output[index] = static_cast<zkdl::byte>((high << 4) | low);
+            output[index] = static_cast<std::uint8_t>((high << 4) | low);
         }
         return true;
     };
     for (const auto& family : plan.tensor_families) {
-        NativeRelationWitness::TensorShape shape;
+        NativeTensorShapeInput shape;
         shape.id = family.id;
         shape.domain_size = static_cast<std::uint32_t>(native_shape_product(family.padded_shape, family.id + ".domain"));
         shape.visibility = family.visibility == "public" ? 1U :
@@ -3887,7 +3892,7 @@ NativeRelationWitness build_native_public_context(
     if (public_output.rows != public_family->logical_shape.at(0) ||
         public_output.cols != public_family->logical_shape.at(1))
         fail("independent verifier public_Y shape does not match RelationPlan");
-    relation::TensorWitness tensor;
+    NativeTensorWitnessInput tensor;
     tensor.id = "public_Y";
     tensor.visibility = 1U;
     tensor.domain_size = static_cast<std::uint32_t>(native_shape_product(
@@ -4594,7 +4599,8 @@ void validate_statement_binding(const Config& config, const Graph& graph, const 
 
 int verify_only(const Config& config, const CliOptions& options) {
     const auto directory = run_path(config, options.run_dir);
-    const auto run_config = config_for_run(config, directory);
+    auto run_config = config_for_run(config, directory);
+    run_config.public_verifier_mode = true;
     const auto statement_path = run_file_path(directory, options.statement, "statement.txt");
     const auto envelope_path = run_file_path(directory, options.envelope, "proof.meta");
     const auto proof_path = run_file_path(directory, options.proof, "proof.bin");
@@ -4628,13 +4634,12 @@ int verify_only(const Config& config, const CliOptions& options) {
 
         // Reload the manifest, checkpoint, graph, descriptor, ledger, and scale
         // chain in this verifier process.  No producer-side precheck is trusted.
-        const auto model = load_model_bundle(run_config);
+        const auto model = load_model_metadata(run_config);
         const auto graph = load_graph(run_config);
         const auto tables = build_static_tables(run_config, graph);
         const auto relation = build_relation_plan(run_config, graph, tables);
         std::string relation_error;
         if (!relation_plan_complete(relation, &relation_error)) fail(relation_error);
-        admit_integer_bound_ledger(run_config, graph, model, tables, relation.integer_bound_ledger);
         validate_statement_binding(run_config, graph, model, tables, relation, statement);
 
         const auto public_output_path = local_path(directory, statement.public_output_path, "public_output_path");

@@ -433,7 +433,10 @@ inline bool deserialize_sumcheck(const std::vector<byte>& in, size_t& offset,
         parsed.rounds.push_back(round);
     }
     std::uint64_t terminals = 0;
-    if (!read_u64(in, offset, terminals) || terminals > 64U) return false;
+    // Native relation families may open more than 64 canonical views (for
+    // example a bounded SignedRoundDiv range stack), but the wire remains
+    // explicitly capped rather than accepting an unbounded allocation.
+    if (!read_u64(in, offset, terminals) || terminals > 4096U) return false;
     parsed.terminal_claims.resize(static_cast<size_t>(terminals));
     for (size_t i = 0; i < parsed.terminal_claims.size(); ++i)
         if (!read_fr(in, offset, parsed.terminal_claims[i])) return false;

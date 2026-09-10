@@ -8,14 +8,13 @@
 // makes it impossible for the adapter to grow a second proof system.
 
 #include "gat_adapter.hpp"
+#include "gat_native_abi.hpp"
 
 #include <cstdint>
 #include <string>
 #include <vector>
 
 namespace zkdl_gat {
-
-struct NativeRelationWitness;
 
 struct NativeProveRequest {
     const Config* config = nullptr;
@@ -29,7 +28,7 @@ struct NativeProveRequest {
     // Field-MLE tensors/selectors/public-Y and authenticated SRS/registry
     // identity.  The adapter must populate this explicitly; the native core
     // never reconstructs field values from int64/double metadata.
-    const NativeRelationWitness* witness = nullptr;
+    const NativeRelationWitnessInput* witness = nullptr;
 };
 
 struct NativeProofResult {
@@ -50,7 +49,7 @@ struct NativeVerifyRequest {
     // Public relation descriptors, public Y, authenticated SRS generators,
     // and registry identity for an independent verifier.  This context must
     // not contain private witness tensors.
-    const NativeRelationWitness* public_context = nullptr;
+    const NativeRelationWitnessInput* public_context = nullptr;
     // Authenticated relation plan used to reconstruct operation descriptors;
     // the verifier must not take relation equations from proof bytes.
     const RelationPlan* relation = nullptr;
