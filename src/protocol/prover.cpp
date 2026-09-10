@@ -13592,7 +13592,7 @@ namespace gatzk::protocol
 
             constexpr std::size_t
                 kMaximumIntegratedRetainedCudaMsmBaseBytes =
-                    std::size_t{4} << 30;
+                    std::size_t{8} << 30;
 
             std::size_t
                 retained_cuda_msm_base_bytes =
@@ -13621,7 +13621,7 @@ namespace gatzk::protocol
                             host_budget.budget_bytes,
                             std::min(
                                 live_after_reserve /
-                                    std::size_t{16},
+                                    std::size_t{8},
                                 kMaximumIntegratedRetainedCudaMsmBaseBytes));
                 }
                 else
@@ -13926,10 +13926,6 @@ namespace gatzk::protocol
             proof_domain_weight_cache->get(
                 spec.domain,
                 z);
-
-            proof_domain_weight_cache->get(
-                spec.domain,
-                z * spec.domain->omega);
 
             bundle_results.push_back(
                 build_bundle(spec));
@@ -15740,22 +15736,6 @@ namespace gatzk::protocol
         }
         progress_note("prove:external_opening:done");
         strip_prover_material_from_proof(&proof);
-        progress_note(
-            "prove:cuda_cache_release:start");
-
-        crypto::
-            release_cuda_g1_msm_resident_cache();
-
-        algebra::
-            release_cuda_ntt_workspace();
-
-        algebra::
-            release_cuda_weighted_dot_cache();
-
-        release_cuda_t_edge_executor_cache();
-
-        progress_note(
-            "prove:cuda_cache_release:done");
 
         cuda_cache_release_guard.dismiss();
 

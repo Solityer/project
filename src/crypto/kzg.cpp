@@ -35,6 +35,7 @@
 #include "gatzk/algebra/field_io.hpp"
 #include "gatzk/algebra/vector_ops.hpp"
 #include "gatzk/crypto/compiler_artifact.hpp"
+#include "gatzk/crypto/cuda_msm.hpp"
 #include "gatzk/protocol/schema.hpp"
 #include "gatzk/util/logging.hpp"
 #include "gatzk/util/route2.hpp"
@@ -2912,8 +2913,13 @@ namespace gatzk::crypto
                            rhs.max_scalar_count;
                 });
 
-            constexpr std::size_t
-                kMaximumCudaSameSrsWaveSize = 8;
+            const std::size_t
+                kMaximumCudaSameSrsWaveSize =
+                    util::route2_options()
+                            .cuda_field_hotspots &&
+                            cuda_g1_msm_integrated_memory_device()
+                        ? 16
+                        : 8;
 
             for (auto &wave : waves)
             {
@@ -3646,7 +3652,28 @@ namespace gatzk::crypto
             std::vector<FieldElement> folded_values;
             std::vector<FieldElement> folded_zero_domain_blinder;
             std::vector<FieldElement> scaled_claim_sums;
+
+            std::unique_ptr<
+                algebra::CudaScaledAccumulateSession>
+                cuda_fold_session;
         };
+
+        void finish_cuda_fold_session(
+            FoldedEvaluationGroup *group)
+        {
+            if (group == nullptr ||
+                group->cuda_fold_session ==
+                    nullptr)
+            {
+                return;
+            }
+
+            group->cuda_fold_session
+                ->finish();
+
+            group->cuda_fold_session
+                .reset();
+        }
 
         struct FoldedOpeningPlan
         {
@@ -3803,9 +3830,12 @@ namespace gatzk::crypto
                 return;
             }
 
-            auto *folded_native =
+            auto *folded_base_native =
                 FieldElement::mutable_native_array_data(
-                    group->folded_values.data()) +
+                    group->folded_values.data());
+
+            auto *folded_native =
+                folded_base_native +
                 target_offset;
 
             const auto *source_native =
@@ -3814,6 +3844,29 @@ namespace gatzk::crypto
 
             const auto scale_native =
                 scale.native();
+
+            if (group->cuda_fold_session ==
+                nullptr)
+            {
+                group->cuda_fold_session =
+                    algebra::
+                        create_cuda_scaled_accumulate_session(
+                            folded_base_native,
+                            group->folded_values.size());
+            }
+
+            if (group->cuda_fold_session !=
+                nullptr)
+            {
+                group->cuda_fold_session
+                    ->accumulate_range(
+                        source_native,
+                        scale_native,
+                        target_offset,
+                        source_values.size());
+
+                return;
+            }
 
             if (!algebra::try_cuda_scaled_accumulate_native(
                     folded_native,
@@ -3912,18 +3965,24 @@ namespace gatzk::crypto
                 return;
             }
 
-            auto *first_native =
+            auto *first_base_native =
                 FieldElement::
                     mutable_native_array_data(
                         first_group->folded_values
-                            .data()) +
-                target_offset;
+                            .data());
 
-            auto *second_native =
+            auto *second_base_native =
                 FieldElement::
                     mutable_native_array_data(
                         second_group->folded_values
-                            .data()) +
+                            .data());
+
+            auto *first_native =
+                first_base_native +
+                target_offset;
+
+            auto *second_native =
+                second_base_native +
                 target_offset;
 
             const auto *source_native =
@@ -3936,6 +3995,56 @@ namespace gatzk::crypto
 
             const auto second_scale_native =
                 second_scale.native();
+
+            if (first_group->cuda_fold_session ==
+                nullptr)
+            {
+                first_group->cuda_fold_session =
+                    algebra::
+                        create_cuda_scaled_accumulate_session(
+                            first_base_native,
+                            first_group->folded_values
+                                .size());
+            }
+
+            if (second_group->cuda_fold_session ==
+                nullptr)
+            {
+                second_group->cuda_fold_session =
+                    algebra::
+                        create_cuda_scaled_accumulate_session(
+                            second_base_native,
+                            second_group->folded_values
+                                .size());
+            }
+
+            if (first_group->cuda_fold_session !=
+                    nullptr &&
+                second_group->cuda_fold_session !=
+                    nullptr)
+            {
+                first_group->cuda_fold_session
+                    ->accumulate_range(
+                        source_native,
+                        first_scale_native,
+                        target_offset,
+                        source_values.size());
+
+                second_group->cuda_fold_session
+                    ->accumulate_range(
+                        source_native,
+                        second_scale_native,
+                        target_offset,
+                        source_values.size());
+
+                return;
+            }
+
+            finish_cuda_fold_session(
+                first_group);
+
+            finish_cuda_fold_session(
+                second_group);
 
             if (!algebra::
                     try_cuda_scaled_accumulate_pair_native(
@@ -5069,6 +5178,9 @@ namespace gatzk::crypto
                 trim_zero_coefficients(
                     &group
                          .folded_zero_domain_blinder);
+
+                finish_cuda_fold_session(
+                    &group);
             }
 
             return plan;
@@ -5368,6 +5480,17 @@ namespace gatzk::crypto
                 process_single(
                     1,
                     deferred[1][index]);
+            }
+
+            for (auto &plan :
+                 result.plans)
+            {
+                for (auto &group :
+                     plan.evaluation_groups)
+                {
+                    finish_cuda_fold_session(
+                        &group);
+                }
             }
 
             return result;

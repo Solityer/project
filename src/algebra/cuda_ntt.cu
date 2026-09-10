@@ -1819,16 +1819,29 @@ namespace gatzk::algebra
                 workspace.scratch_a != nullptr &&
                 workspace.scratch_b != nullptr};
     }
+        if (make_default_stream_wait)
+        {
+            enqueue_default_stream_wait(
+                stream,
+                "coset evaluation default-stream dependency");
 
-    bool cuda_coset_evaluations_to_device_exact(
-        const mcl::Fr *values,
-        std::size_t value_count,
-        std::size_t domain_size,
-        const mcl::Fr *zero_domain_blinder,
-        std::size_t blinder_count,
-        const FieldElement &shift,
-        mcl::Fr *device_output,
-        std::size_t target_size)
+            return true;
+        }
+
+        status =
+            cudaStreamSynchronize(
+                stream);
+
+        if (status != cudaSuccess)
+        {
+            throw_cuda_ntt_error(
+                "coset evaluation synchronization",
+                status);
+        }
+
+        record_cuda_stream_sync();
+
+        return true;
     {
         if (device_output == nullptr ||
             domain_size == 0 ||
@@ -2098,20 +2111,16 @@ namespace gatzk::algebra
             return false;
         }
 
-        status =
-            cudaStreamSynchronize(
-                stream);
-
-        if (status != cudaSuccess)
-        {
-            throw_cuda_ntt_error(
-                "coset evaluation synchronization",
-                status);
-        }
-
-        record_cuda_stream_sync();
-
-        return true;
+    bool cuda_coset_evaluations_to_device_exact(
+        const mcl::Fr *values,
+        std::size_t value_count,
+        std::size_t domain_size,
+        const mcl::Fr *zero_domain_blinder,
+        std::size_t blinder_count,
+        const FieldElement &shift,
+        mcl::Fr *device_output,
+        std::size_t target_size,
+        bool make_default_stream_wait)
     }
 
     bool cuda_coset_coefficients_to_device_exact(
@@ -2119,7 +2128,8 @@ namespace gatzk::algebra
         std::size_t coefficient_count,
         const FieldElement &shift,
         mcl::Fr *device_output,
-        std::size_t target_size)
+        std::size_t target_size,
+        bool make_default_stream_wait)
     {
         if (device_output == nullptr ||
             target_size < 2 ||
@@ -2307,6 +2317,15 @@ namespace gatzk::algebra
             return false;
         }
 
+        if (make_default_stream_wait)
+        {
+            enqueue_default_stream_wait(
+                stream,
+                "coefficient coset default-stream dependency");
+
+            return true;
+        }
+
         status =
             cudaStreamSynchronize(
                 stream);
@@ -2327,7 +2346,8 @@ namespace gatzk::algebra
         const mcl::Fr *device_values,
         std::size_t size,
         const FieldElement &shift,
-        mcl::Fr *host_coefficients)
+        mcl::Fr *host_coefficients,
+        bool wait_for_default_stream)
     {
         if (device_values == nullptr ||
             host_coefficients == nullptr ||
@@ -2386,7 +2406,14 @@ namespace gatzk::algebra
         }
 
         const auto stream =
-            workspace.stream;
+            workspace.stream();
+
+        if (wait_for_default_stream)
+        {
+            enqueue_stream_wait_for_default(
+                stream,
+                "inverse coset producer dependency");
+        }
 
         constexpr unsigned
             kBlockSize = 256;

@@ -22,6 +22,25 @@ namespace gatzk::algebra
     void release_cuda_ntt_workspace();
     void release_cuda_scaled_accumulate_workspace();
 
+    class CudaScaledAccumulateSession
+    {
+    public:
+        virtual ~CudaScaledAccumulateSession() = default;
+
+        virtual void accumulate_range(
+            const mcl::Fr *source,
+            const mcl::Fr &scale,
+            std::size_t target_offset,
+            std::size_t element_count) = 0;
+
+        virtual void finish() = 0;
+    };
+
+    std::unique_ptr<CudaScaledAccumulateSession>
+    create_cuda_scaled_accumulate_session(
+        mcl::Fr *target,
+        std::size_t element_count);
+
     // 返回当前构建与运行环境解析出的代数后端信息。
     AlgebraBackend configured_algebra_backend();
     std::string configured_algebra_backend_name();

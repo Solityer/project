@@ -7413,7 +7413,6 @@ namespace gatzk::protocol
             const auto q_tbl_elu = eval_data(context, "P_Q_tbl_ELU");
             add_metric(metrics != nullptr ? &metrics->public_poly_residual_ms : nullptr, stage_start);
 
-            timing::start_prove_timer(metrics);
             if (static_artifacts.full_feature_identity)
             {
                 append_dynamic_commitment(

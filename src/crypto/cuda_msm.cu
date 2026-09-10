@@ -7,10 +7,12 @@
 #include <cstdint>
 #include <cstring>
 #include <fstream>
+#include <future>
 #include <limits>
 #include <mutex>
 #include <new>
 #include <sstream>
+#include <thread>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -50,8 +52,11 @@ namespace gatzk::crypto
         constexpr std::size_t kMaxIntegratedResidentCudaMsmCount =
             1ULL << 26;
 
-        // ICICLE natively supports several MSMs sharing one point vector.
-        constexpr std::size_t kMaxResidentCudaMsmBatchSize = 8;
+        constexpr std::size_t
+            kMaxDiscreteResidentCudaMsmBatchSize = 8;
+
+        constexpr std::size_t
+            kMaxIntegratedResidentCudaMsmBatchSize = 16;
 
         // A direct resident batch is only worthwhile while the complete scalar
         // working set remains bounded.  Larger batches keep the resident SRS
@@ -183,6 +188,154 @@ namespace gatzk::crypto
             return output;
         }
 
+        template <typename Function>
+        void parallel_conversion_ranges(
+            std::size_t count,
+            Function &&function)
+        {
+            if (count == 0)
+            {
+                return;
+            }
+
+            constexpr std::size_t
+                kMinimumItemsPerWorker =
+                    std::size_t{1} << 17;
+
+            const auto hardware_workers =
+                std::max<std::size_t>(
+                    1,
+                    std::thread::
+                        hardware_concurrency());
+
+            const auto useful_workers =
+                std::max<std::size_t>(
+                    1,
+                    (count +
+                     kMinimumItemsPerWorker -
+                     1) /
+                        kMinimumItemsPerWorker);
+
+            const auto worker_count =
+                std::min<std::size_t>(
+                    8,
+                    std::min(
+                        hardware_workers,
+                        useful_workers));
+
+            if (worker_count <= 1)
+            {
+                function(
+                    std::size_t{0},
+                    count);
+
+                return;
+            }
+
+            const auto chunk_size =
+                (count +
+                 worker_count - 1) /
+                worker_count;
+
+            std::vector<
+                std::future<void>>
+                futures;
+
+            futures.reserve(
+                worker_count);
+
+            for (std::size_t worker = 0;
+                 worker < worker_count;
+                 ++worker)
+            {
+                const auto begin =
+                    worker *
+                    chunk_size;
+
+                const auto end =
+                    std::min(
+                        count,
+                        begin +
+                            chunk_size);
+
+                if (begin >= end)
+                {
+                    break;
+                }
+
+                futures.push_back(
+                    std::async(
+                        std::launch::async,
+                        [&, begin, end]
+                        {
+                            function(
+                                begin,
+                                end);
+                        }));
+            }
+
+            for (auto &future :
+                 futures)
+            {
+                future.get();
+            }
+        }
+
+        void normalize_mcl_g1_parallel(
+            mcl::G1 *output,
+            mcl::G1 *input,
+            std::size_t count)
+        {
+            parallel_conversion_ranges(
+                count,
+                [&](std::size_t begin,
+                    std::size_t end)
+                {
+                    mcl::G1::normalizeVec(
+                        output + begin,
+                        input + begin,
+                        end - begin);
+                });
+        }
+
+        void convert_normalized_points_to_icicle(
+            bls12_381::affine_t *output,
+            const mcl::G1 *input,
+            std::size_t count)
+        {
+            parallel_conversion_ranges(
+                count,
+                [&](std::size_t begin,
+                    std::size_t end)
+                {
+                    for (std::size_t index =
+                             begin;
+                         index < end;
+                         ++index)
+                    {
+                        if (input[index].isZero())
+                        {
+                            output[index] =
+                                bls12_381::
+                                    affine_t::zero();
+
+                            continue;
+                        }
+
+                        output[index] = {
+                            to_icicle_field<
+                                bls12_381::
+                                    point_field_t>(
+                                input[index].x),
+                            to_icicle_field<
+                                bls12_381::
+                                    point_field_t>(
+                                input[index].y),
+                        };
+                    }
+                });
+        }
+
         void copy_mcl_canonical_scalars_to_icicle(
             bls12_381::scalar_t *output,
             const algebra::FieldElement *input,
@@ -199,14 +352,23 @@ namespace gatzk::crypto
                     "CUDA G1 MSM canonical scalar staging received a null buffer");
             }
 
-            for (std::size_t index = 0;
-                 index < count;
-                 ++index)
-            {
-                output[index] =
-                    to_icicle_field<bls12_381::scalar_t>(
-                        input[index].native());
-            }
+            parallel_conversion_ranges(
+                count,
+                [&](std::size_t begin,
+                    std::size_t end)
+                {
+                    for (std::size_t index =
+                             begin;
+                         index < end;
+                         ++index)
+                    {
+                        output[index] =
+                            to_icicle_field<
+                                bls12_381::scalar_t>(
+                                input[index]
+                                    .native());
+                    }
+                });
         }
 
         void copy_icicle_scalars_to_device(
@@ -736,23 +898,15 @@ namespace gatzk::crypto
                         std::min(chunk_capacity, count - offset);
                     auto *native_points = const_cast<mcl::G1 *>(
                         reinterpret_cast<const mcl::G1 *>(points + offset));
-                    mcl::G1::normalizeVec(
-                        normalized.data(), native_points, chunk_size);
-                    for (std::size_t index = 0; index < chunk_size; ++index)
-                    {
-                        if (normalized[index].isZero())
-                        {
-                            converted[index] =
-                                bls12_381::affine_t::zero();
-                            continue;
-                        }
-                        converted[index] = {
-                            to_icicle_field<bls12_381::point_field_t>(
-                                normalized[index].x),
-                            to_icicle_field<bls12_381::point_field_t>(
-                                normalized[index].y),
-                        };
-                    }
+                    normalize_mcl_g1_parallel(
+                        normalized.data(),
+                        native_points,
+                        chunk_size);
+
+                    convert_normalized_points_to_icicle(
+                        converted.data(),
+                        normalized.data(),
+                        chunk_size);
                     const auto status = cudaMemcpy(
                         device_points + offset,
                         converted.data(),
@@ -935,8 +1089,13 @@ namespace gatzk::crypto
                 return false;
             }
 
+            const auto maximum_batch_size =
+                integrated
+                    ? kMaxIntegratedResidentCudaMsmBatchSize
+                    : kMaxDiscreteResidentCudaMsmBatchSize;
+
             if (batch_size >
-                kMaxResidentCudaMsmBatchSize)
+                maximum_batch_size)
             {
                 return false;
             }
@@ -1832,31 +1991,15 @@ namespace gatzk::crypto
                     reinterpret_cast<const mcl::G1 *>(
                         points));
 
-            mcl::G1::normalizeVec(
+            normalize_mcl_g1_parallel(
                 buffers.normalized_points.data(),
                 native_points,
                 count);
 
-            for (std::size_t index = 0;
-                 index < count;
-                 ++index)
-            {
-                if (buffers.normalized_points[index].isZero())
-                {
-                    buffers.converted_points[index] =
-                        bls12_381::affine_t::zero();
-
-                    continue;
-                }
-
-                buffers.converted_points[index] = {
-                    to_icicle_field<bls12_381::point_field_t>(
-                        buffers.normalized_points[index].x),
-
-                    to_icicle_field<bls12_381::point_field_t>(
-                        buffers.normalized_points[index].y),
-                };
-            }
+            convert_normalized_points_to_icicle(
+                buffers.converted_points.data(),
+                buffers.normalized_points.data(),
+                count);
 
             const auto status =
                 cudaMemcpy(

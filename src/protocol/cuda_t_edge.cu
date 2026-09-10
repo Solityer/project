@@ -126,6 +126,7 @@ namespace gatzk::protocol
             return output;
         }
 
+        template <std::size_t StackDepth>
         __global__ void
         t_edge_term_kernel(
             const TEdgeProgramInstruction
@@ -153,7 +154,7 @@ namespace gatzk::protocol
                 return;
             }
 
-            GpuFr stack[kMaximumProgramStackDepth];
+            GpuFr stack[StackDepth];
 
             std::size_t stack_size = 0;
 
@@ -365,16 +366,52 @@ namespace gatzk::protocol
             std::uint8_t output_split_layout,
             GpuFr *target)
         {
-            const auto logical_index =
+            const auto block_begin =
                 static_cast<std::size_t>(
                     blockIdx.x) *
-                    blockDim.x +
+                blockDim.x;
+
+            const auto logical_index =
+                block_begin +
                 threadIdx.x;
+
+            __shared__ GpuFr
+                block_root_power;
+
+            __shared__ GpuFr
+                block_zero_power;
+
+            if (threadIdx.x == 0)
+            {
+                block_root_power =
+                    t_edge_pow_u64(
+                        root,
+                        block_begin);
+
+                block_zero_power =
+                    t_edge_pow_u64(
+                        zero_step,
+                        block_begin);
+            }
+
+            __syncthreads();
 
             if (logical_index >= target_size)
             {
                 return;
             }
+
+            const auto lane_root_power =
+                t_edge_pow_u64(
+                    root,
+                    static_cast<std::size_t>(
+                        threadIdx.x));
+
+            const auto lane_zero_power =
+                t_edge_pow_u64(
+                    zero_step,
+                    static_cast<std::size_t>(
+                        threadIdx.x));
 
             const auto half_size =
                 target_size / 2U;
@@ -395,9 +432,9 @@ namespace gatzk::protocol
             const auto point =
                 algebra::gpu::fr_mul(
                     shift,
-                    t_edge_pow_u64(
-                        root,
-                        logical_index));
+                    algebra::gpu::fr_mul(
+                        block_root_power,
+                        lane_root_power));
 
             for (std::size_t source_index = 0;
                  source_index < source_count;
@@ -463,9 +500,9 @@ namespace gatzk::protocol
                 algebra::gpu::fr_sub(
                     algebra::gpu::fr_mul(
                         shift_domain_power,
-                        t_edge_pow_u64(
-                            zero_step,
-                            logical_index)),
+                        algebra::gpu::fr_mul(
+                            block_zero_power,
+                            lane_zero_power)),
                     algebra::gpu::fr_one());
 
             target[output_index] =
@@ -988,7 +1025,6 @@ namespace gatzk::protocol
                         "invalid CUDA t_edge evaluation leaf slot");
                 }
 
-                const bool executed =
                     algebra::
                         cuda_coset_evaluations_to_device_exact(
                             values,
@@ -997,10 +1033,9 @@ namespace gatzk::protocol
                             zero_domain_blinder,
                             blinder_count,
                             shift_,
-                            reinterpret_cast<
-                                mcl::Fr *>(
-                                device_leaf_slots_[slot]),
-                            target_size_);
+                            device_leaf_table_[slot],
+                            target_size_,
+                            true);
 
                 if (!executed)
                 {
@@ -1043,16 +1078,14 @@ namespace gatzk::protocol
                         "invalid CUDA t_edge coefficient leaf slot");
                 }
 
-                const bool executed =
                     algebra::
                         cuda_coset_coefficients_to_device_exact(
                             coefficients,
                             coefficient_count,
                             shift_,
-                            reinterpret_cast<
-                                mcl::Fr *>(
-                                device_leaf_slots_[slot]),
-                            target_size_);
+                            device_leaf_table_[slot],
+                            target_size_,
+                            true);
 
                 if (!executed)
                 {
@@ -1443,16 +1476,6 @@ namespace gatzk::protocol
                         status);
                 }
 
-                status = cudaStreamSynchronize(0);
-
-                if (status != cudaSuccess)
-                {
-                    throw_cuda_t_edge_error(
-                        "linear materialization synchronization",
-                        status);
-                }
-
-                algebra::record_cuda_stream_sync();
                 algebra::record_cuda_kernel_invocations(1);
 
                 host_leaf_split_layout_[target_slot] =
@@ -1643,22 +1666,85 @@ namespace gatzk::protocol
                     gpu_field(
                         term.alpha_scale);
 
-                t_edge_term_kernel<<<
-                    static_cast<unsigned>(
-                        block_count_size),
-                    kBlockSize>>>(
-                    device_instructions_,
-                    term.instruction_begin,
-                    term.instruction_end,
-                    device_constants_,
-                    device_leaf_table_,
-                    device_leaf_split_layout_,
-                    device_access_slots_,
-                    device_access_rotated_,
-                    rotation_step_,
-                    target_size_,
-                    alpha_scale,
-                    device_quotient_);
+                if (program_->maximum_stack_depth <= 8)
+                {
+                    t_edge_term_kernel<8><<<
+                        static_cast<unsigned>(
+                            block_count_size),
+                        kBlockSize>>>(
+                        device_instructions_,
+                        term.instruction_begin,
+                        term.instruction_end,
+                        device_constants_,
+                        device_leaf_table_,
+                        device_leaf_split_layout_,
+                        device_access_slots_,
+                        device_access_rotated_,
+                        rotation_step_,
+                        target_size_,
+                        alpha_scale,
+                        device_quotient_);
+                }
+                else if (
+                    program_->maximum_stack_depth <= 16)
+                {
+                    t_edge_term_kernel<16><<<
+                        static_cast<unsigned>(
+                            block_count_size),
+                        kBlockSize>>>(
+                        device_instructions_,
+                        term.instruction_begin,
+                        term.instruction_end,
+                        device_constants_,
+                        device_leaf_table_,
+                        device_leaf_split_layout_,
+                        device_access_slots_,
+                        device_access_rotated_,
+                        rotation_step_,
+                        target_size_,
+                        alpha_scale,
+                        device_quotient_);
+                }
+                else if (
+                    program_->maximum_stack_depth <= 32)
+                {
+                    t_edge_term_kernel<32><<<
+                        static_cast<unsigned>(
+                            block_count_size),
+                        kBlockSize>>>(
+                        device_instructions_,
+                        term.instruction_begin,
+                        term.instruction_end,
+                        device_constants_,
+                        device_leaf_table_,
+                        device_leaf_split_layout_,
+                        device_access_slots_,
+                        device_access_rotated_,
+                        rotation_step_,
+                        target_size_,
+                        alpha_scale,
+                        device_quotient_);
+                }
+                else
+                {
+                    t_edge_term_kernel<
+                        kMaximumProgramStackDepth><<<
+                        static_cast<unsigned>(
+                            block_count_size),
+                        kBlockSize>>>(
+                        device_instructions_,
+                        term.instruction_begin,
+                        term.instruction_end,
+                        device_constants_,
+                        device_leaf_table_,
+                        device_leaf_split_layout_,
+                        device_access_slots_,
+                        device_access_rotated_,
+                        rotation_step_,
+                        target_size_,
+                        alpha_scale,
+                        device_quotient_);
+                }
 
                 status =
                     cudaGetLastError();
@@ -1804,16 +1890,6 @@ namespace gatzk::protocol
                         status);
                 }
 
-                status =
-                    cudaStreamSynchronize(0);
-
-                if (status != cudaSuccess)
-                {
-                    throw_cuda_t_edge_error(
-                        "finalize synchronization",
-                        status);
-                }
-
                 const bool executed =
                     algebra::
                         cuda_coset_device_to_coefficients_exact(
@@ -1822,9 +1898,8 @@ namespace gatzk::protocol
                                 device_quotient_),
                             target_size_,
                             shift_,
-                            algebra::FieldElement::
-                                mutable_native_array_data(
-                                    output));
+                            output,
+                            true);
 
                 if (!executed)
                 {

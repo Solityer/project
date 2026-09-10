@@ -18,13 +18,16 @@
 #include <unistd.h>
 
 #include "gatzk/algebra/vector_ops.hpp"
+#include "gatzk/algebra/cuda_weighted_session.hpp"
 #include "gatzk/crypto/curve.hpp"
+#include "gatzk/crypto/cuda_msm.hpp"
 #include "gatzk/protocol/trace.hpp"
 #include "gatzk/protocol/challenges.hpp"
 #include "gatzk/protocol/prover.hpp"
 #include "gatzk/protocol/proof_codec.hpp"
 #include "gatzk/protocol/verifier.hpp"
 #include "gatzk/protocol/verifier_context.hpp"
+#include "gatzk/protocol/cuda_t_edge.hpp"
 #include "gatzk/util/config.hpp"
 #include "gatzk/util/route2.hpp"
 #include "gatzk/util/trace_spill.hpp"
@@ -227,6 +230,82 @@ namespace
 
         bool had_detailed_profile_ = false;
         std::string detailed_profile_value_;
+    };
+
+    class ScopedProverCudaExecutionStateRelease
+    {
+    public:
+        ScopedProverCudaExecutionStateRelease() = default;
+
+        ScopedProverCudaExecutionStateRelease(
+            const ScopedProverCudaExecutionStateRelease &) = delete;
+
+        ScopedProverCudaExecutionStateRelease &
+        operator=(
+            const ScopedProverCudaExecutionStateRelease &) = delete;
+
+        ~ScopedProverCudaExecutionStateRelease()
+        {
+            release_now();
+        }
+
+        void release_now() noexcept
+        {
+            if (!armed_)
+            {
+                return;
+            }
+
+            armed_ = false;
+
+            try
+            {
+                gatzk::crypto::
+                    release_cuda_g1_msm_resident_cache();
+            }
+            catch (...)
+            {
+            }
+
+            try
+            {
+                gatzk::algebra::
+                    release_cuda_ntt_workspace();
+            }
+            catch (...)
+            {
+            }
+
+            try
+            {
+                gatzk::algebra::
+                    release_cuda_scaled_accumulate_workspace();
+            }
+            catch (...)
+            {
+            }
+
+            try
+            {
+                gatzk::algebra::
+                    release_cuda_weighted_dot_cache();
+            }
+            catch (...)
+            {
+            }
+
+            try
+            {
+                gatzk::protocol::
+                    release_cuda_t_edge_executor_cache();
+            }
+            catch (...)
+            {
+            }
+        }
+
+    private:
+        bool armed_ = true;
     };
 }
 
@@ -639,15 +718,76 @@ int main(int argc, char **argv)
                 mode_label + ":trace:profile" + ":commit_dynamic_ms=" + format_ms(metrics.commit_dynamic_ms) + ":materialization_ms=" + format_ms(metrics.dynamic_polynomial_materialization_ms) + ":msm_ms=" + format_ms(metrics.dynamic_commit_msm_ms) + ":derived_point_ms=" + format_ms(metrics.derived_commitment_point_ms) + ":trace_generation_ms=" + format_ms(metrics.trace_generation_ms) + ":forward_ms=" + format_ms(metrics.forward_ms) + ":lookup_inverse_ms=" + format_ms(metrics.lookup_inverse_ms) + ":lookup_accumulator_ms=" + format_ms(metrics.lookup_accumulator_ms) + ":lookup_pack_ms=" + format_ms(metrics.lookup_query_pack_ms + metrics.lookup_multiplicity_ms + metrics.lookup_key_build_ms) + ":lookup_nested_total_ms=" + format_ms(metrics.lookup_trace_ms) + ":hidden_stage_ms=" + format_ms(metrics.hidden_head_trace_ms) + ":output_stage_ms=" + format_ms(metrics.output_head_trace_ms) + ":trace_other_ms=" + format_ms(trace_other_ms) + ":finalize_ms=" + format_ms(metrics.trace_finalize_ms));
             metrics.reference_forward_ms = metrics.forward_ms;
             progress(mode_label + ":prove:start");
-            const auto proof = gatzk::protocol::prove(context, trace, &metrics);
-            const auto serialization_start = std::chrono::steady_clock::now();
-            const auto proof_bytes = gatzk::protocol::serialize_proof(proof);
-            const auto serialization_end = std::chrono::steady_clock::now();
-            metrics.proof_serialization_ms = std::chrono::duration<double, std::milli>(
-                                                 serialization_end - serialization_start)
-                                                 .count();
-            gatzk::protocol::timing::finish_prove_timer(&metrics);
-            gatzk::protocol::timing::assert_prove_finished(metrics);
+
+            const auto prove_wall_start =
+                std::chrono::steady_clock::now();
+
+            const auto commitment_time_before_prove =
+                metrics.commitment_time_ms;
+
+            gatzk::protocol::timing::
+                start_prove_timer(&metrics);
+
+            const auto proof =
+                gatzk::protocol::prove(
+                    context,
+                    trace,
+                    &metrics);
+
+            ScopedProverCudaExecutionStateRelease
+                prover_cuda_execution_state_release;
+
+            const auto serialization_start =
+                std::chrono::steady_clock::now();
+
+            const auto proof_bytes =
+                gatzk::protocol::serialize_proof(
+                    proof);
+
+            const auto serialization_end =
+                std::chrono::steady_clock::now();
+
+            metrics.proof_serialization_ms =
+                std::chrono::duration<
+                    double,
+                    std::milli>(
+                    serialization_end -
+                    serialization_start)
+                    .count();
+
+            gatzk::protocol::timing::
+                finish_prove_timer(&metrics);
+
+            const auto prove_wall_end =
+                std::chrono::steady_clock::now();
+
+            gatzk::protocol::timing::
+                assert_prove_finished(metrics);
+
+            const auto prove_wall_ms =
+                std::chrono::duration<
+                    double,
+                    std::milli>(
+                    prove_wall_end -
+                    prove_wall_start)
+                    .count();
+
+            const auto prove_commitment_ms =
+                metrics.commitment_time_ms -
+                commitment_time_before_prove;
+
+            metrics.prove_accounted_ms =
+                clamp_non_negative(
+                    prove_wall_ms -
+                    prove_commitment_ms);
+
+            metrics.prove_accounting_gap_ms =
+                metrics.prove_time_ms -
+                metrics.prove_accounted_ms;
+
+            prover_cuda_execution_state_release
+                .release_now();
+
             progress(mode_label + ":prove:done");
             metrics.lookup_trace_ms =
                 metrics.lookup_table_pack_ms + metrics.lookup_query_pack_ms + metrics.lookup_key_build_ms + metrics.lookup_multiplicity_ms + metrics.lookup_inverse_ms + metrics.lookup_accumulator_ms + metrics.lookup_state_machine_ms + metrics.lookup_selector_mask_ms + metrics.lookup_public_helper_ms + metrics.lookup_copy_convert_ms;

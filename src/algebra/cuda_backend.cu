@@ -15,6 +15,7 @@
 #include "gatzk/algebra/vector_ops.hpp"
 #include "gatzk/algebra/cuda_weighted_session.hpp"
 #include "gatzk/util/effective_memory.hpp"
+#include "gatzk/util/route2.hpp"
 
 // 实现四个GPU加速组件，均为工程优化:
 //   1. 重心权重构造 (barycentric_weights_gpu)
@@ -315,6 +316,381 @@ namespace gatzk::algebra
 
             return workspace;
         }
+
+        class CudaScaledAccumulateSessionImpl final
+            : public CudaScaledAccumulateSession
+        {
+        public:
+            CudaScaledAccumulateSessionImpl(
+                mcl::Fr *host_target,
+                std::size_t element_count)
+                : host_target_(host_target),
+                  element_count_(element_count),
+                  zero_copy_target_(
+                      cuda_backend_unified_addressing_available())
+            {
+                if (host_target_ == nullptr ||
+                    element_count_ == 0)
+                {
+                    throw std::runtime_error(
+                        "CUDA scaled accumulate session received invalid target storage");
+                }
+
+                if (element_count_ >
+                    std::numeric_limits<std::size_t>::max() /
+                        sizeof(gpu::GpuFr))
+                {
+                    throw std::runtime_error(
+                        "CUDA scaled accumulate session byte-size overflow");
+                }
+
+                auto status =
+                    cudaStreamCreateWithFlags(
+                        &stream_,
+                        cudaStreamNonBlocking);
+
+                if (status != cudaSuccess)
+                {
+                    stream_ = nullptr;
+
+                    throw_scaled_accumulate_cuda_error(
+                        "session stream creation",
+                        status);
+                }
+
+                source_capacity_ =
+                    std::min<std::size_t>(
+                        element_count_,
+                        std::size_t{1} << 20);
+
+                const auto source_bytes =
+                    source_capacity_ *
+                    sizeof(gpu::GpuFr);
+
+                status =
+                    cudaMalloc(
+                        reinterpret_cast<void **>(
+                            &device_source_),
+                        source_bytes);
+
+                if (status != cudaSuccess)
+                {
+                    release_noexcept();
+
+                    throw_scaled_accumulate_cuda_error(
+                        "session source allocation",
+                        status);
+                }
+
+                if (!zero_copy_target_)
+                {
+                    const auto target_bytes =
+                        element_count_ *
+                        sizeof(gpu::GpuFr);
+
+                    status =
+                        cudaMalloc(
+                            reinterpret_cast<void **>(
+                                &device_target_),
+                            target_bytes);
+
+                    if (status != cudaSuccess)
+                    {
+                        release_noexcept();
+
+                        throw_scaled_accumulate_cuda_error(
+                            "session target allocation",
+                            status);
+                    }
+
+                    status =
+                        cudaMemcpyAsync(
+                            device_target_,
+                            host_target_,
+                            target_bytes,
+                            cudaMemcpyHostToDevice,
+                            stream_);
+
+                    if (status != cudaSuccess)
+                    {
+                        release_noexcept();
+
+                        throw_scaled_accumulate_cuda_error(
+                            "session target upload",
+                            status);
+                    }
+
+                    record_cuda_h2d(
+                        target_bytes);
+                }
+            }
+
+            ~CudaScaledAccumulateSessionImpl() override
+            {
+                if (!finished_)
+                {
+                    try
+                    {
+                        finish();
+                    }
+                    catch (...)
+                    {
+                    }
+                }
+
+                release_noexcept();
+            }
+
+            void accumulate_range(
+                const mcl::Fr *source,
+                const mcl::Fr &scale,
+                std::size_t target_offset,
+                std::size_t element_count) override
+            {
+                if (finished_ ||
+                    source == nullptr ||
+                    target_offset > element_count_ ||
+                    element_count >
+                        element_count_ -
+                            target_offset)
+                {
+                    throw std::runtime_error(
+                        "CUDA scaled accumulate session received invalid range");
+                }
+
+                if (element_count == 0 ||
+                    scale.isZero())
+                {
+                    return;
+                }
+
+                gpu::GpuFr gpu_scale{};
+
+                std::memcpy(
+                    gpu_scale.d,
+                    &scale,
+                    sizeof(gpu_scale.d));
+
+                constexpr unsigned
+                    kBlockSize = 256;
+
+                std::size_t processed = 0;
+
+                while (processed <
+                       element_count)
+                {
+                    const auto current_count =
+                        std::min(
+                            source_capacity_,
+                            element_count -
+                                processed);
+
+                    const auto byte_count =
+                        current_count *
+                        sizeof(gpu::GpuFr);
+
+                    auto status =
+                        cudaMemcpyAsync(
+                            device_source_,
+                            source + processed,
+                            byte_count,
+                            cudaMemcpyHostToDevice,
+                            stream_);
+
+                    if (status != cudaSuccess)
+                    {
+                        throw_scaled_accumulate_cuda_error(
+                            "session source upload",
+                            status);
+                    }
+
+                    record_cuda_h2d(
+                        byte_count);
+
+                    const auto block_count_size =
+                        (current_count +
+                         kBlockSize - 1) /
+                        kBlockSize;
+
+                    if (block_count_size >
+                        std::numeric_limits<
+                            unsigned>::max())
+                    {
+                        throw std::runtime_error(
+                            "CUDA scaled accumulate session grid exceeds CUDA launch limits");
+                    }
+
+                    auto *target =
+                        zero_copy_target_
+                            ? reinterpret_cast<
+                                  gpu::GpuFr *>(
+                                  host_target_ +
+                                  target_offset +
+                                  processed)
+                            : device_target_ +
+                                  target_offset +
+                                  processed;
+
+                    scaled_accumulate_kernel<<<
+                        static_cast<unsigned>(
+                            block_count_size),
+                        kBlockSize,
+                        0,
+                        stream_>>>(
+                        target,
+                        device_source_,
+                        gpu_scale,
+                        current_count);
+
+                    status =
+                        cudaGetLastError();
+
+                    if (status != cudaSuccess)
+                    {
+                        throw_scaled_accumulate_cuda_error(
+                            "session kernel launch",
+                            status);
+                    }
+
+                    record_cuda_kernel_invocations(
+                        1);
+
+                    processed +=
+                        current_count;
+                }
+
+                record_cuda_opening_fold_call();
+            }
+
+            void finish() override
+            {
+                if (finished_)
+                {
+                    return;
+                }
+
+                if (!zero_copy_target_)
+                {
+                    const auto target_bytes =
+                        element_count_ *
+                        sizeof(gpu::GpuFr);
+
+                    const auto status =
+                        cudaMemcpyAsync(
+                            host_target_,
+                            device_target_,
+                            target_bytes,
+                            cudaMemcpyDeviceToHost,
+                            stream_);
+
+                    if (status != cudaSuccess)
+                    {
+                        throw_scaled_accumulate_cuda_error(
+                            "session target download",
+                            status);
+                    }
+
+                    record_cuda_d2h(
+                        target_bytes);
+                }
+
+                const auto status =
+                    cudaStreamSynchronize(
+                        stream_);
+
+                if (status != cudaSuccess)
+                {
+                    throw_scaled_accumulate_cuda_error(
+                        "session synchronization",
+                        status);
+                }
+
+                record_cuda_stream_sync();
+
+                finished_ = true;
+            }
+
+        private:
+            void release_noexcept() noexcept
+            {
+                if (device_source_ != nullptr)
+                {
+                    (void)cudaFree(
+                        device_source_);
+
+                    device_source_ =
+                        nullptr;
+                }
+
+                if (device_target_ != nullptr)
+                {
+                    (void)cudaFree(
+                        device_target_);
+
+                    device_target_ =
+                        nullptr;
+                }
+
+                if (stream_ != nullptr)
+                {
+                    (void)cudaStreamDestroy(
+                        stream_);
+
+                    stream_ = nullptr;
+                }
+            }
+
+            mcl::Fr *host_target_ = nullptr;
+            std::size_t element_count_ = 0;
+            std::size_t source_capacity_ = 0;
+
+            bool zero_copy_target_ = false;
+            bool finished_ = false;
+
+            gpu::GpuFr *device_target_ =
+                nullptr;
+
+            gpu::GpuFr *device_source_ =
+                nullptr;
+
+            cudaStream_t stream_ =
+                nullptr;
+        };
+    }
+
+    std::unique_ptr<CudaScaledAccumulateSession>
+    create_cuda_scaled_accumulate_session(
+        mcl::Fr *target,
+        std::size_t element_count)
+    {
+        if (element_count == 0 ||
+            !util::route2_options()
+                 .cuda_field_hotspots)
+        {
+            return nullptr;
+        }
+
+        const auto minimum_size =
+            cuda_backend_unified_addressing_available()
+                ? (std::size_t{1} << 20)
+                : (std::size_t{1} << 22);
+
+        if (element_count <
+            minimum_size)
+        {
+            return nullptr;
+        }
+
+        if (target == nullptr)
+        {
+            throw std::runtime_error(
+                "CUDA scaled accumulate session received a null target");
+        }
+
+        return std::make_unique<
+            CudaScaledAccumulateSessionImpl>(
+            target,
+            element_count);
     }
 
     void release_cuda_scaled_accumulate_workspace()
@@ -688,236 +1064,570 @@ namespace gatzk::algebra
     // 重心插值权重计算(用于在单个挑战点x上快速评估多项式)
     namespace
     {
-        // 第一阶段：并行生成 omega^i 与分母 x - omega^i
-        __global__ void barycentric_denominators_kernel(
+                __device__ __forceinline__
+        gpu::GpuFr barycentric_pow_u64(
+            gpu::GpuFr base,
+            std::size_t exponent)
+        {
+            auto result =
+                gpu::fr_one();
+
+            while (exponent != 0)
+            {
+                if ((exponent & 1U) != 0U)
+                {
+                    result =
+                        gpu::fr_mul(
+                            result,
+                            base);
+                }
+
+                base =
+                    gpu::fr_sqr(
+                        base);
+
+                exponent >>=
+                    1U;
+            }
+
+            return result;
+        }
+
+        __global__ void
+        barycentric_prepare_chunk_kernel(
             const gpu::GpuFr omega,
             const gpu::GpuFr x,
-            gpu::GpuFr *__restrict__ omega_powers, // 输出 `omega^i`
-            gpu::GpuFr *__restrict__ denominators, // 输出 `x - omega^i`
-            std::size_t domain_size)
-        {
-            const auto tid = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-            if (tid >= domain_size)
-                return;
-            // 用平方乘计算 `omega^tid`，避免在 GPU 侧显式展开整张幂表。
-            gpu::GpuFr result = gpu::fr_one();
-            gpu::GpuFr base = omega;
-            std::size_t exp = tid;
-            while (exp > 0)
-            {
-                if (exp & 1)
-                    result = gpu::fr_mul(result, base);
-                base = gpu::fr_sqr(base);
-                exp >>= 1;
-            }
-            omega_powers[tid] = result;
-            denominators[tid] = gpu::fr_sub(x, result);
-        }
-
-        // 第二阶段：分块扫描分母积。
-        // 每个 block 先算自身区间积，再由主机做跨块归约，最后回到 GPU 展开。
-        __global__ void prefix_product_chunk_kernel(
-            const gpu::GpuFr *__restrict__ denominators,
-            gpu::GpuFr *__restrict__ prefix_within,
-            gpu::GpuFr *__restrict__ chunk_products,
+            gpu::GpuFr *__restrict__
+                omega_powers,
+            gpu::GpuFr *__restrict__
+                denominators,
+            gpu::GpuFr *__restrict__
+                prefix_within,
+            gpu::GpuFr *__restrict__
+                chunk_products,
             std::size_t domain_size,
             std::size_t chunk_size)
         {
-            const auto chunk_id = static_cast<std::size_t>(blockIdx.x);
-            const auto begin = chunk_id * chunk_size;
-            const auto end = min(begin + chunk_size, domain_size);
-            if (begin >= end)
-                return;
-            // 每个 block 只让线程 0 顺序完成局部扫描，避免共享内存复杂同步。
-            if (threadIdx.x == 0)
+            const auto chunk_id =
+                static_cast<std::size_t>(
+                    blockIdx.x) *
+                    blockDim.x +
+                threadIdx.x;
+
+            const auto begin =
+                chunk_id *
+                chunk_size;
+
+            if (begin >= domain_size)
             {
-                gpu::GpuFr acc = gpu::fr_one();
-                for (std::size_t i = begin; i < end; ++i)
-                {
-                    prefix_within[i] = acc;
-                    acc = gpu::fr_mul(acc, denominators[i]);
-                }
-                chunk_products[chunk_id] = acc;
+                return;
             }
+
+            const auto end =
+                begin + chunk_size <
+                        domain_size
+                    ? begin +
+                          chunk_size
+                    : domain_size;
+
+            auto omega_power =
+                barycentric_pow_u64(
+                    omega,
+                    begin);
+
+            auto accumulator =
+                gpu::fr_one();
+
+            for (std::size_t index = begin;
+                 index < end;
+                 ++index)
+            {
+                omega_powers[index] =
+                    omega_power;
+
+                const auto denominator =
+                    gpu::fr_sub(
+                        x,
+                        omega_power);
+
+                denominators[index] =
+                    denominator;
+
+                prefix_within[index] =
+                    accumulator;
+
+                accumulator =
+                    gpu::fr_mul(
+                        accumulator,
+                        denominator);
+
+                omega_power =
+                    gpu::fr_mul(
+                        omega_power,
+                        omega);
+            }
+
+            chunk_products[chunk_id] =
+                accumulator;
         }
 
-        // 第三阶段：合并跨块逆元与块内前后缀，输出最终重心权重
-        __global__ void barycentric_weights_finalize_kernel(
-            const gpu::GpuFr *__restrict__ omega_powers,
-            const gpu::GpuFr *__restrict__ denominators,
-            const gpu::GpuFr *__restrict__ prefix_within,
-            const gpu::GpuFr *__restrict__ chunk_outer_inv,
-            const gpu::GpuFr zero_eval, // `Z_N(x)`
-            const gpu::GpuFr inv_n,     // Montgomery 形式下的 `1/N`
-            gpu::GpuFr *__restrict__ weights,
+        __global__ void
+        barycentric_weights_finalize_kernel(
+            const gpu::GpuFr *__restrict__
+                omega_powers,
+            const gpu::GpuFr *__restrict__
+                denominators,
+            const gpu::GpuFr *__restrict__
+                prefix_within,
+            const gpu::GpuFr *__restrict__
+                chunk_outer_inv,
+            const gpu::GpuFr zero_eval,
+            const gpu::GpuFr inv_n,
+            gpu::GpuFr *__restrict__
+                weights,
             std::size_t domain_size,
             std::size_t chunk_size)
         {
-            const auto chunk_id = static_cast<std::size_t>(blockIdx.x);
-            const auto begin = chunk_id * chunk_size;
-            const auto end = min(begin + chunk_size, domain_size);
-            if (begin >= end)
-                return;
-            if (threadIdx.x != 0)
-                return;
-            gpu::GpuFr running_suffix = gpu::fr_one();
-            for (std::size_t i = end; i-- > begin;)
+            const auto chunk_id =
+                static_cast<std::size_t>(
+                    blockIdx.x) *
+                    blockDim.x +
+                threadIdx.x;
+
+            const auto begin =
+                chunk_id *
+                chunk_size;
+
+            if (begin >= domain_size)
             {
-                // 还原 1 / (x - omega^i)
-                gpu::GpuFr inv_d = gpu::fr_mul(chunk_outer_inv[chunk_id], prefix_within[i]);
-                inv_d = gpu::fr_mul(inv_d, running_suffix);
-                // 回填 formal 主线需要的 barycentric 权重。
-                gpu::GpuFr scaled = gpu::fr_mul(omega_powers[i], inv_n);
-                gpu::GpuFr w = gpu::fr_mul(zero_eval, scaled);
-                w = gpu::fr_mul(w, inv_d);
-                weights[i] = w;
-                running_suffix = gpu::fr_mul(running_suffix, denominators[i]);
+                return;
+            }
+
+            const auto end =
+                begin + chunk_size <
+                        domain_size
+                    ? begin +
+                          chunk_size
+                    : domain_size;
+
+            auto running_suffix =
+                gpu::fr_one();
+
+            for (std::size_t index = end;
+                 index-- > begin;)
+            {
+                auto inverse =
+                    gpu::fr_mul(
+                        chunk_outer_inv[
+                            chunk_id],
+                        prefix_within[
+                            index]);
+
+                inverse =
+                    gpu::fr_mul(
+                        inverse,
+                        running_suffix);
+
+                auto scaled =
+                    gpu::fr_mul(
+                        omega_powers[index],
+                        inv_n);
+
+                auto weight =
+                    gpu::fr_mul(
+                        zero_eval,
+                        scaled);
+
+                weight =
+                    gpu::fr_mul(
+                        weight,
+                        inverse);
+
+                weights[index] =
+                    weight;
+
+                running_suffix =
+                    gpu::fr_mul(
+                        running_suffix,
+                        denominators[index]);
             }
         }
-
     } // namespace
 
-    // 把 GPU结果写回与 `mcl::Fr` 兼容的 limb 布局。
     bool barycentric_weights_gpu(
         const uint64_t omega_limbs[4],
         const uint64_t x_limbs[4],
         const uint64_t zero_eval_limbs[4],
         const uint64_t inv_n_limbs[4],
-        uint64_t *output_weight_limbs, // 输出域大小*4个uint64_t
+        uint64_t *output_weight_limbs,
         std::size_t domain_size)
     {
-
         if (domain_size == 0)
-            return true;
-
-        gpu::GpuFr omega, x, zero_eval, inv_n;
-        std::memcpy(omega.d, omega_limbs, 32);
-        std::memcpy(x.d, x_limbs, 32);
-        std::memcpy(zero_eval.d, zero_eval_limbs, 32);
-        std::memcpy(inv_n.d, inv_n_limbs, 32);
-
-        // 为三阶段 kernel 准备设备缓冲区。
-        gpu::GpuFr *d_omega_powers = nullptr, *d_denominators = nullptr;
-        gpu::GpuFr *d_prefix = nullptr, *d_chunk_products = nullptr;
-        gpu::GpuFr *d_chunk_outer_inv = nullptr, *d_weights = nullptr;
-
-        const std::size_t num_chunks = std::min(domain_size, static_cast<std::size_t>(256));
-        const std::size_t chunk_size = (domain_size + num_chunks - 1) / num_chunks;
-
-        const auto elem_bytes = domain_size * sizeof(gpu::GpuFr);
-        const auto chunk_bytes = num_chunks * sizeof(gpu::GpuFr);
-
-        auto cleanup = [&]()
         {
-            cudaFree(d_omega_powers);
-            cudaFree(d_denominators);
-            cudaFree(d_prefix);
-            cudaFree(d_chunk_products);
-            cudaFree(d_chunk_outer_inv);
-            cudaFree(d_weights);
+            return true;
+        }
+
+        gpu::GpuFr omega{};
+        gpu::GpuFr x{};
+        gpu::GpuFr zero_eval{};
+        gpu::GpuFr inv_n{};
+
+        std::memcpy(
+            omega.d,
+            omega_limbs,
+            sizeof(omega.d));
+
+        std::memcpy(
+            x.d,
+            x_limbs,
+            sizeof(x.d));
+
+        std::memcpy(
+            zero_eval.d,
+            zero_eval_limbs,
+            sizeof(zero_eval.d));
+
+        std::memcpy(
+            inv_n.d,
+            inv_n_limbs,
+            sizeof(inv_n.d));
+
+        constexpr std::size_t
+            kBarycentricChunkSize = 256;
+
+        const auto chunk_size =
+            std::min(
+                domain_size,
+                kBarycentricChunkSize);
+
+        const auto num_chunks =
+            (domain_size +
+             chunk_size - 1) /
+            chunk_size;
+
+        gpu::GpuFr *d_omega_powers =
+            nullptr;
+
+        gpu::GpuFr *d_denominators =
+            nullptr;
+
+        gpu::GpuFr *d_prefix =
+            nullptr;
+
+        gpu::GpuFr *d_chunk_products =
+            nullptr;
+
+        gpu::GpuFr *d_chunk_outer_inv =
+            nullptr;
+
+        gpu::GpuFr *d_weights =
+            nullptr;
+
+        const auto elem_bytes =
+            domain_size *
+            sizeof(gpu::GpuFr);
+
+        const auto chunk_bytes =
+            num_chunks *
+            sizeof(gpu::GpuFr);
+
+        auto cleanup =
+            [&]() noexcept
+        {
+            if (d_omega_powers != nullptr)
+            {
+                (void)cudaFree(
+                    d_omega_powers);
+            }
+
+            if (d_denominators != nullptr)
+            {
+                (void)cudaFree(
+                    d_denominators);
+            }
+
+            if (d_prefix != nullptr)
+            {
+                (void)cudaFree(
+                    d_prefix);
+            }
+
+            if (d_chunk_products != nullptr)
+            {
+                (void)cudaFree(
+                    d_chunk_products);
+            }
+
+            if (d_chunk_outer_inv != nullptr)
+            {
+                (void)cudaFree(
+                    d_chunk_outer_inv);
+            }
+
+            if (d_weights != nullptr)
+            {
+                (void)cudaFree(
+                    d_weights);
+            }
         };
 
-        if (cudaMalloc(&d_omega_powers, elem_bytes) != cudaSuccess ||
-            cudaMalloc(&d_denominators, elem_bytes) != cudaSuccess ||
-            cudaMalloc(&d_prefix, elem_bytes) != cudaSuccess ||
-            cudaMalloc(&d_chunk_products, chunk_bytes) != cudaSuccess ||
-            cudaMalloc(&d_chunk_outer_inv, chunk_bytes) != cudaSuccess ||
-            cudaMalloc(&d_weights, elem_bytes) != cudaSuccess)
+        if (cudaMalloc(
+                reinterpret_cast<void **>(
+                    &d_omega_powers),
+                elem_bytes) != cudaSuccess ||
+            cudaMalloc(
+                reinterpret_cast<void **>(
+                    &d_denominators),
+                elem_bytes) != cudaSuccess ||
+            cudaMalloc(
+                reinterpret_cast<void **>(
+                    &d_prefix),
+                elem_bytes) != cudaSuccess ||
+            cudaMalloc(
+                reinterpret_cast<void **>(
+                    &d_chunk_products),
+                chunk_bytes) != cudaSuccess ||
+            cudaMalloc(
+                reinterpret_cast<void **>(
+                    &d_chunk_outer_inv),
+                chunk_bytes) != cudaSuccess ||
+            cudaMalloc(
+                reinterpret_cast<void **>(
+                    &d_weights),
+                elem_bytes) != cudaSuccess)
         {
             cleanup();
             return false;
         }
 
-        // 第一阶段：生成幂表与分母。
-        {
-            constexpr unsigned block = 256;
-            const auto grid = static_cast<unsigned>((domain_size + block - 1) / block);
-            barycentric_denominators_kernel<<<grid, block>>>(omega, x, d_omega_powers, d_denominators, domain_size);
-        }
+        constexpr unsigned
+            kBlockSize = 128;
 
-        // 第二阶段：块内前缀积。
-        {
-            prefix_product_chunk_kernel<<<static_cast<unsigned>(num_chunks), 1>>>(
-                d_denominators, d_prefix, d_chunk_products, domain_size, chunk_size);
-        }
-        if (cudaDeviceSynchronize() != cudaSuccess)
+        const auto block_count_size =
+            (num_chunks +
+             kBlockSize - 1) /
+            kBlockSize;
+
+        if (block_count_size >
+            std::numeric_limits<
+                unsigned>::max())
         {
             cleanup();
             return false;
         }
 
-        // 第二阶段补充：跨块归约在主机完成，块数较小时更直接稳定。
-        std::vector<gpu::GpuFr> h_chunk_products(num_chunks);
-        std::vector<gpu::GpuFr> h_chunk_outer_inv(num_chunks);
-        cudaMemcpy(h_chunk_products.data(), d_chunk_products, chunk_bytes, cudaMemcpyDeviceToHost);
+        const auto block_count =
+            static_cast<unsigned>(
+                block_count_size);
 
-        // 主机侧用 mcl 完成小规模跨块归约，成本相对可忽略。
-        {
-            // 把 `GpuFr` 的 4 个 limb 拷回 `mcl::Fr`，两侧都保持 Montgomery 表示。
-            auto gpufr_to_mclfr = [](const gpu::GpuFr &src) -> mcl::Fr
-            {
-                mcl::Fr dst;
-                dst.clear();
-                std::memcpy(&dst, src.d, 32);
-                return dst;
-            };
-            auto mclfr_to_gpufr = [](const mcl::Fr &src) -> gpu::GpuFr
-            {
-                gpu::GpuFr dst;
-                std::memcpy(dst.d, &src, 32);
-                return dst;
-            };
+        barycentric_prepare_chunk_kernel<<<
+            block_count,
+            kBlockSize>>>(
+            omega,
+            x,
+            d_omega_powers,
+            d_denominators,
+            d_prefix,
+            d_chunk_products,
+            domain_size,
+            chunk_size);
 
-            std::vector<mcl::Fr> mcl_chunk_prods(num_chunks);
-            for (std::size_t c = 0; c < num_chunks; ++c)
-            {
-                mcl_chunk_prods[c] = gpufr_to_mclfr(h_chunk_products[c]);
-            }
+        auto status =
+            cudaGetLastError();
 
-            std::vector<mcl::Fr> mcl_cross_prefix(num_chunks + 1);
-            mcl_cross_prefix[0] = mcl::Fr(1);
-            for (std::size_t c = 0; c < num_chunks; ++c)
-            {
-                mcl::Fr::mul(mcl_cross_prefix[c + 1], mcl_cross_prefix[c], mcl_chunk_prods[c]);
-            }
-
-            mcl::Fr global_inv;
-            mcl::Fr::inv(global_inv, mcl_cross_prefix[num_chunks]);
-
-            mcl::Fr cross_suffix;
-            cross_suffix = mcl::Fr(1);
-            for (std::size_t c = num_chunks; c-- > 0;)
-            {
-                mcl::Fr tmp;
-                mcl::Fr::mul(tmp, global_inv, mcl_cross_prefix[c]);
-                mcl::Fr outer;
-                mcl::Fr::mul(outer, tmp, cross_suffix);
-                h_chunk_outer_inv[c] = mclfr_to_gpufr(outer);
-                mcl::Fr::mul(cross_suffix, cross_suffix, mcl_chunk_prods[c]);
-            }
-        }
-        cudaMemcpy(d_chunk_outer_inv, h_chunk_outer_inv.data(), chunk_bytes, cudaMemcpyHostToDevice);
-
-        // 第三阶段：写出最终权重。
-        {
-            barycentric_weights_finalize_kernel<<<static_cast<unsigned>(num_chunks), 1>>>(
-                d_omega_powers, d_denominators, d_prefix, d_chunk_outer_inv,
-                zero_eval, inv_n, d_weights, domain_size, chunk_size);
-        }
-
-        if (cudaDeviceSynchronize() != cudaSuccess)
+        if (status != cudaSuccess)
         {
             cleanup();
             return false;
         }
 
-        // 把结果下载回主机。
-        cudaMemcpy(output_weight_limbs, d_weights, elem_bytes, cudaMemcpyDeviceToHost);
+        std::vector<gpu::GpuFr>
+            host_chunk_products(
+                num_chunks);
+
+        std::vector<gpu::GpuFr>
+            host_chunk_outer_inv(
+                num_chunks);
+
+        status =
+            cudaMemcpy(
+                host_chunk_products.data(),
+                d_chunk_products,
+                chunk_bytes,
+                cudaMemcpyDeviceToHost);
+
+        if (status != cudaSuccess)
+        {
+            cleanup();
+            return false;
+        }
+
+        record_cuda_d2h(
+            chunk_bytes);
+
+        auto gpu_to_mcl =
+            [](const gpu::GpuFr &source)
+        {
+            mcl::Fr output;
+            output.clear();
+
+            std::memcpy(
+                &output,
+                source.d,
+                sizeof(source.d));
+
+            return output;
+        };
+
+        auto mcl_to_gpu =
+            [](const mcl::Fr &source)
+        {
+            gpu::GpuFr output{};
+
+            std::memcpy(
+                output.d,
+                &source,
+                sizeof(output.d));
+
+            return output;
+        };
+
+        std::vector<mcl::Fr>
+            chunk_products(
+                num_chunks);
+
+        for (std::size_t chunk = 0;
+             chunk < num_chunks;
+             ++chunk)
+        {
+            chunk_products[chunk] =
+                gpu_to_mcl(
+                    host_chunk_products[
+                        chunk]);
+        }
+
+        std::vector<mcl::Fr>
+            cross_prefix(
+                num_chunks + 1);
+
+        cross_prefix[0] =
+            mcl::Fr(1);
+
+        for (std::size_t chunk = 0;
+             chunk < num_chunks;
+             ++chunk)
+        {
+            mcl::Fr::mul(
+                cross_prefix[
+                    chunk + 1],
+                cross_prefix[
+                    chunk],
+                chunk_products[
+                    chunk]);
+        }
+
+        mcl::Fr global_inverse;
+
+        mcl::Fr::inv(
+            global_inverse,
+            cross_prefix[
+                num_chunks]);
+
+        mcl::Fr cross_suffix =
+            mcl::Fr(1);
+
+        for (std::size_t chunk =
+                 num_chunks;
+             chunk-- > 0;)
+        {
+            mcl::Fr partial;
+
+            mcl::Fr::mul(
+                partial,
+                global_inverse,
+                cross_prefix[
+                    chunk]);
+
+            mcl::Fr outer_inverse;
+
+            mcl::Fr::mul(
+                outer_inverse,
+                partial,
+                cross_suffix);
+
+            host_chunk_outer_inv[
+                chunk] =
+                mcl_to_gpu(
+                    outer_inverse);
+
+            mcl::Fr::mul(
+                cross_suffix,
+                cross_suffix,
+                chunk_products[
+                    chunk]);
+        }
+
+        status =
+            cudaMemcpy(
+                d_chunk_outer_inv,
+                host_chunk_outer_inv.data(),
+                chunk_bytes,
+                cudaMemcpyHostToDevice);
+
+        if (status != cudaSuccess)
+        {
+            cleanup();
+            return false;
+        }
+
+        record_cuda_h2d(
+            chunk_bytes);
+
+        barycentric_weights_finalize_kernel<<<
+            block_count,
+            kBlockSize>>>(
+            d_omega_powers,
+            d_denominators,
+            d_prefix,
+            d_chunk_outer_inv,
+            zero_eval,
+            inv_n,
+            d_weights,
+            domain_size,
+            chunk_size);
+
+        status =
+            cudaGetLastError();
+
+        if (status != cudaSuccess)
+        {
+            cleanup();
+            return false;
+        }
+
+        status =
+            cudaMemcpy(
+                output_weight_limbs,
+                d_weights,
+                elem_bytes,
+                cudaMemcpyDeviceToHost);
+
+        if (status != cudaSuccess)
+        {
+            cleanup();
+            return false;
+        }
+
+        record_cuda_d2h(
+            elem_bytes);
+
         cleanup();
-        record_cuda_kernel_invocations(3);
+
+        record_cuda_kernel_invocations(
+            2);
+
         return true;
     }
-
     // =========================================================================
     // CUDA 侧批量加权求值
     // =========================================================================

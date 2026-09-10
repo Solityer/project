@@ -1379,6 +1379,14 @@ namespace gatzk::algebra
     {
     }
 
+    std::unique_ptr<CudaScaledAccumulateSession>
+    create_cuda_scaled_accumulate_session(
+        mcl::Fr *,
+        std::size_t)
+    {
+        return nullptr;
+    }
+
     std::unique_ptr<CudaWeightedDotSession>
     create_cuda_weighted_dot_session(
         const std::vector<
