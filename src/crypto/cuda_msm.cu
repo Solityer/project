@@ -67,21 +67,19 @@ namespace gatzk::crypto
         constexpr std::size_t kMaxIntegratedResidentBatchScalarCount =
             1ULL << 25;
 
-        // Keep every individual pinned-ICICLE BLS12-381 MSM strictly below
-        // the 2^16 boundary. Larger logical MSMs remain on CUDA and are
-        // accumulated from bounded chunks.
-        constexpr std::size_t kIcicleV28MaximumSingleMsmCount =
-            (1ULL << 16) - 1;
-
+        // Prefer large ICICLE calls for throughput.  Every returned point is
+        // validated before it is admitted into the mcl/KZG representation;
+        // an invalid direct result is retried through progressively smaller
+        // CUDA-only chunks instead of falling back to a CPU MSM.
         constexpr std::size_t kPreferredStreamMsmChunkSize =
-            kIcicleV28MaximumSingleMsmCount;
+            1ULL << 20;
 
         constexpr std::size_t kMinimumStreamMsmChunkSize =
             1ULL << 15;
 
         constexpr std::size_t
             kIcicleV28MaximumDirectResidentMsmCount =
-                kIcicleV28MaximumSingleMsmCount;
+                1ULL << 23;
 
         constexpr std::size_t kDeviceBaseCacheLimitBytes =
             24ULL << 30;
@@ -108,6 +106,37 @@ namespace gatzk::crypto
         public:
             using std::runtime_error::runtime_error;
         };
+
+        class CudaMsmInvalidResult : public std::runtime_error
+        {
+        public:
+            using std::runtime_error::runtime_error;
+        };
+
+        bool shrink_invalid_msm_chunk(
+            std::size_t *chunk_size,
+            std::size_t current_count,
+            std::size_t minimum_chunk)
+        {
+            if (chunk_size == nullptr ||
+                current_count <= minimum_chunk)
+            {
+                return false;
+            }
+
+            const auto next_chunk =
+                std::max(
+                    minimum_chunk,
+                    current_count / 2);
+
+            if (next_chunk >= current_count)
+            {
+                return false;
+            }
+
+            *chunk_size = next_chunk;
+            return true;
+        }
 
         std::size_t checked_byte_count(
             std::size_t count,
@@ -174,20 +203,59 @@ namespace gatzk::crypto
         template <class IcicleField, class MclField>
         IcicleField to_icicle_field(const MclField &input)
         {
-            std::array<std::uint8_t, 64> bytes{};
-            if (input.getLittleEndian(bytes.data(), bytes.size()) == 0)
+            IcicleField output{};
+
+            constexpr std::size_t byte_count =
+                sizeof(output.limbs_storage.limbs);
+
+            constexpr std::size_t limb_count =
+                sizeof(output.limbs_storage.limbs) /
+                sizeof(output.limbs_storage.limbs[0]);
+
+            static_assert(
+                sizeof(output.limbs_storage.limbs[0]) ==
+                sizeof(std::uint32_t));
+
+            static_assert(
+                byte_count ==
+                limb_count * sizeof(std::uint32_t));
+
+            std::array<std::uint8_t, byte_count>
+                bytes{};
+
+            const auto written =
+                input.getLittleEndian(
+                    bytes.data(),
+                    bytes.size());
+
+            if (written == 0 ||
+                written > bytes.size())
             {
                 throw std::runtime_error(
                     "CUDA G1 MSM failed to export a canonical field value");
             }
-            IcicleField output{};
-            constexpr std::size_t byte_count =
-                sizeof(output.limbs_storage.limbs);
-            static_assert(byte_count <= 64);
-            std::memcpy(
-                output.limbs_storage.limbs,
-                bytes.data(),
-                byte_count);
+
+            for (std::size_t limb = 0;
+                 limb < limb_count;
+                 ++limb)
+            {
+                const auto offset =
+                    limb * sizeof(std::uint32_t);
+
+                output.limbs_storage.limbs[limb] =
+                    static_cast<std::uint32_t>(
+                        bytes[offset]) |
+                    (static_cast<std::uint32_t>(
+                         bytes[offset + 1])
+                     << 8U) |
+                    (static_cast<std::uint32_t>(
+                         bytes[offset + 2])
+                     << 16U) |
+                    (static_cast<std::uint32_t>(
+                         bytes[offset + 3])
+                     << 24U);
+            }
+
             return output;
         }
 
@@ -648,11 +716,58 @@ namespace gatzk::crypto
         template <class MclField, class IcicleField>
         MclField to_mcl_field(const IcicleField &input)
         {
+            constexpr std::size_t byte_count =
+                sizeof(input.limbs_storage.limbs);
+
+            constexpr std::size_t limb_count =
+                sizeof(input.limbs_storage.limbs) /
+                sizeof(input.limbs_storage.limbs[0]);
+
+            static_assert(
+                sizeof(input.limbs_storage.limbs[0]) ==
+                sizeof(std::uint32_t));
+
+            static_assert(
+                byte_count ==
+                limb_count * sizeof(std::uint32_t));
+
+            std::array<std::uint8_t, byte_count>
+                bytes{};
+
+            for (std::size_t limb = 0;
+                 limb < limb_count;
+                 ++limb)
+            {
+                const std::uint32_t value =
+                    static_cast<std::uint32_t>(
+                        input.limbs_storage.limbs[limb]);
+
+                const auto offset =
+                    limb * sizeof(std::uint32_t);
+
+                bytes[offset] =
+                    static_cast<std::uint8_t>(
+                        value & 0xffU);
+
+                bytes[offset + 1] =
+                    static_cast<std::uint8_t>(
+                        (value >> 8U) & 0xffU);
+
+                bytes[offset + 2] =
+                    static_cast<std::uint8_t>(
+                        (value >> 16U) & 0xffU);
+
+                bytes[offset + 3] =
+                    static_cast<std::uint8_t>(
+                        (value >> 24U) & 0xffU);
+            }
+
             MclField output;
+
             output.setLittleEndianMod(
-                reinterpret_cast<const std::uint8_t *>(
-                    input.limbs_storage.limbs),
-                sizeof(input.limbs_storage.limbs));
+                bytes.data(),
+                bytes.size());
+
             return output;
         }
 
@@ -977,6 +1092,8 @@ namespace gatzk::crypto
             std::size_t batch_index =
                 std::numeric_limits<std::size_t>::max())
         {
+            algebra::ensure_mcl_field_ready();
+
             G1Point output;
 
             if (bls12_381::projective_t::is_zero(input))
@@ -985,22 +1102,68 @@ namespace gatzk::crypto
                 return output;
             }
 
-            const bool icicle_projective_valid =
-                bls12_381::projective_t::is_on_curve(input);
-
-            const auto affine =
-                bls12_381::projective_t::to_affine(input);
-
-            if (affine == bls12_381::affine_t::zero())
+            if (!bls12_381::projective_t::is_on_curve(input))
             {
-                output.value.clear();
-                return output;
+                throw CudaMsmInvalidResult(
+                    "CUDA G1 MSM returned an off-curve ICICLE "
+                    "projective point: route=" +
+                    std::string(route) +
+                    " count=" +
+                    std::to_string(count) +
+                    " configured_c=" +
+                    std::to_string(configured_window_bits) +
+                    (batch_index ==
+                             std::numeric_limits<std::size_t>::max()
+                         ? std::string{}
+                         : " batch_index=" +
+                               std::to_string(batch_index)));
             }
 
-            output.value.x =
-                to_mcl_field<mcl::Fp>(affine.x);
-            output.value.y =
-                to_mcl_field<mcl::Fp>(affine.y);
+            const auto projective_x =
+                to_mcl_field<mcl::Fp>(
+                    input.x);
+
+            const auto projective_y =
+                to_mcl_field<mcl::Fp>(
+                    input.y);
+
+            const auto projective_z =
+                to_mcl_field<mcl::Fp>(
+                    input.z);
+
+            if (projective_z.isZero())
+            {
+                throw CudaMsmInvalidResult(
+                    "CUDA G1 MSM returned a non-zero ICICLE "
+                    "projective point with zero canonical Z: route=" +
+                    std::string(route) +
+                    " count=" +
+                    std::to_string(count) +
+                    " configured_c=" +
+                    std::to_string(configured_window_bits) +
+                    (batch_index ==
+                             std::numeric_limits<std::size_t>::max()
+                         ? std::string{}
+                         : " batch_index=" +
+                               std::to_string(batch_index)));
+            }
+
+            mcl::Fp z_inverse;
+
+            mcl::Fp::inv(
+                z_inverse,
+                projective_z);
+
+            mcl::Fp::mul(
+                output.value.x,
+                projective_x,
+                z_inverse);
+
+            mcl::Fp::mul(
+                output.value.y,
+                projective_y,
+                z_inverse);
+
             output.value.z = 1;
 
             const bool mcl_valid =
@@ -1013,19 +1176,14 @@ namespace gatzk::crypto
 
             if (!mcl_valid || !subgroup_valid)
             {
-                throw std::runtime_error(
-                    "CUDA G1 MSM returned an invalid converted "
-                    "point: route=" +
+                throw CudaMsmInvalidResult(
+                    "CUDA G1 MSM returned an invalid canonical "
+                    "BLS12-381 point: route=" +
                     std::string(route) +
                     " count=" +
                     std::to_string(count) +
                     " configured_c=" +
                     std::to_string(configured_window_bits) +
-                    " icicle_projective_valid=" +
-                    std::string(
-                        icicle_projective_valid
-                            ? "true"
-                            : "false") +
                     " mcl_valid=" +
                     std::string(
                         mcl_valid ? "true" : "false") +
@@ -1039,18 +1197,6 @@ namespace gatzk::crypto
                          ? std::string{}
                          : " batch_index=" +
                                std::to_string(batch_index)));
-            }
-
-            if (!icicle_projective_valid)
-            {
-                util::info(
-                    "cuda_msm ICICLE projective validation disagreed "
-                    "with canonical mcl validation: route=" +
-                    std::string(route) +
-                    " count=" +
-                    std::to_string(count) +
-                    " configured_c=" +
-                    std::to_string(configured_window_bits));
             }
 
             return output;
@@ -1792,22 +1938,55 @@ namespace gatzk::crypto
                         status);
                 }
 
+                std::vector<G1Point>
+                    partials(batch_size);
+
+                try
+                {
+                    for (std::size_t batch = 0;
+                         batch < batch_size;
+                         ++batch)
+                    {
+                        partials[batch] =
+                            to_mcl_point(
+                                results[batch],
+                                "resident_chunked_batch",
+                                current_count,
+                                config.c,
+                                batch);
+                    }
+                }
+                catch (const CudaMsmInvalidResult &)
+                {
+                    if (!shrink_invalid_msm_chunk(
+                            &chunk_size,
+                            current_count,
+                            minimum_chunk))
+                    {
+                        throw;
+                    }
+
+                    util::info(
+                        "cuda_msm "
+                        "route=resident_chunked_batch_validation_retry"
+                        " max_count=" +
+                        std::to_string(max_count) +
+                        " batch=" +
+                        std::to_string(batch_size) +
+                        " chunk=" +
+                        std::to_string(chunk_size));
+
+                    continue;
+                }
+
                 for (std::size_t batch = 0;
                      batch < batch_size;
                      ++batch)
                 {
-                    const auto partial =
-                        to_mcl_point(
-                            results[batch],
-                            "resident_chunked_batch",
-                            current_count,
-                            config.c,
-                            batch);
-
                     mcl::G1::add(
                         totals[batch].value,
                         totals[batch].value,
-                        partial.value);
+                        partials[batch].value);
                 }
 
                 algebra::record_cuda_kernel_invocations(
@@ -2145,12 +2324,37 @@ namespace gatzk::crypto
                         status);
                 }
 
-                const auto partial =
-                    to_mcl_point(
-                        result,
-                        "streamed",
-                        current_count,
-                        config.c);
+                G1Point partial;
+
+                try
+                {
+                    partial =
+                        to_mcl_point(
+                            result,
+                            "streamed",
+                            current_count,
+                            config.c);
+                }
+                catch (const CudaMsmInvalidResult &)
+                {
+                    if (!shrink_invalid_msm_chunk(
+                            &chunk_size,
+                            current_count,
+                            minimum_chunk))
+                    {
+                        throw;
+                    }
+
+                    util::info(
+                        "cuda_msm "
+                        "route=streamed_validation_retry"
+                        " count=" +
+                        std::to_string(count) +
+                        " chunk=" +
+                        std::to_string(chunk_size));
+
+                    continue;
+                }
 
                 mcl::G1::add(
                     total.value,
@@ -2412,22 +2616,55 @@ namespace gatzk::crypto
                         status);
                 }
 
+                std::vector<G1Point>
+                    partials(batch_size);
+
+                try
+                {
+                    for (std::size_t batch = 0;
+                         batch < batch_size;
+                         ++batch)
+                    {
+                        partials[batch] =
+                            to_mcl_point(
+                                results[batch],
+                                "streamed_batch",
+                                current_count,
+                                config.c,
+                                batch);
+                    }
+                }
+                catch (const CudaMsmInvalidResult &)
+                {
+                    if (!shrink_invalid_msm_chunk(
+                            &chunk_size,
+                            current_count,
+                            minimum_chunk))
+                    {
+                        throw;
+                    }
+
+                    util::info(
+                        "cuda_msm "
+                        "route=streamed_batch_validation_retry"
+                        " max_count=" +
+                        std::to_string(max_count) +
+                        " batch=" +
+                        std::to_string(batch_size) +
+                        " chunk=" +
+                        std::to_string(chunk_size));
+
+                    continue;
+                }
+
                 for (std::size_t batch = 0;
                      batch < batch_size;
                      ++batch)
                 {
-                    const auto partial =
-                        to_mcl_point(
-                            results[batch],
-                            "streamed_batch",
-                            current_count,
-                            config.c,
-                            batch);
-
                     mcl::G1::add(
                         totals[batch].value,
                         totals[batch].value,
-                        partial.value);
+                        partials[batch].value);
                 }
 
                 algebra::
@@ -2655,6 +2892,16 @@ namespace gatzk::crypto
 
                 return true;
             }
+            catch (const CudaMsmInvalidResult &error)
+            {
+                reusable_scalar_staging().release();
+
+                util::info(
+                    "cuda_msm route=resident validation_failed count=" +
+                    std::to_string(count) +
+                    " retry=bounded_cuda reason=" +
+                    std::string(error.what()));
+            }
             catch (const CudaMsmResourcePressure &)
             {
                 // The resident base preparation may already have completed.
@@ -2708,6 +2955,19 @@ namespace gatzk::crypto
                     cache);
 
                 return true;
+            }
+            catch (const CudaMsmInvalidResult &error)
+            {
+                cache.clear();
+                reusable_scalar_staging().release();
+                release_stream_msm_buffers();
+
+                util::info(
+                    "cuda_msm route=resident_chunked_batch "
+                    "validation_failed count=" +
+                    std::to_string(count) +
+                    " retry=streamed_cuda reason=" +
+                    std::string(error.what()));
             }
             catch (const CudaMsmResourcePressure &)
             {
@@ -2876,6 +3136,19 @@ namespace gatzk::crypto
 
                 return true;
             }
+            catch (const CudaMsmInvalidResult &error)
+            {
+                reusable_scalar_staging().release();
+
+                util::info(
+                    "cuda_msm route=resident_batch "
+                    "validation_failed max_count=" +
+                    std::to_string(max_count) +
+                    " batch=" +
+                    std::to_string(batch_size) +
+                    " retry=bounded_cuda reason=" +
+                    std::string(error.what()));
+            }
             catch (const CudaMsmResourcePressure &)
             {
                 // Do not destroy a successfully prepared base prefix merely
@@ -2933,6 +3206,19 @@ namespace gatzk::crypto
                     std::to_string(batch_size));
 
                 return true;
+            }
+            catch (const CudaMsmInvalidResult &error)
+            {
+                reusable_scalar_staging().release();
+
+                util::info(
+                    "cuda_msm route=resident_serial_batch "
+                    "validation_failed max_count=" +
+                    std::to_string(max_count) +
+                    " batch=" +
+                    std::to_string(batch_size) +
+                    " retry=bounded_cuda reason=" +
+                    std::string(error.what()));
             }
             catch (const CudaMsmResourcePressure &)
             {
