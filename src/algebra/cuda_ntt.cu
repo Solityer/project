@@ -115,6 +115,108 @@ namespace gatzk::algebra
                 std::string("CUDA quotient NTT ") + operation + " failed: " + cudaGetErrorString(status));
         }
 
+        void enqueue_default_stream_wait(
+            cudaStream_t producer_stream,
+            const char *operation)
+        {
+            cudaEvent_t event = nullptr;
+
+            auto status =
+                cudaEventCreateWithFlags(
+                    &event,
+                    cudaEventDisableTiming);
+
+            if (status != cudaSuccess)
+            {
+                throw_cuda_ntt_error(
+                    operation,
+                    status);
+            }
+
+            status =
+                cudaEventRecord(
+                    event,
+                    producer_stream);
+
+            if (status == cudaSuccess)
+            {
+                status =
+                    cudaStreamWaitEvent(
+                        nullptr,
+                        event,
+                        0);
+            }
+
+            const auto destroy_status =
+                cudaEventDestroy(
+                    event);
+
+            if (status != cudaSuccess)
+            {
+                throw_cuda_ntt_error(
+                    operation,
+                    status);
+            }
+
+            if (destroy_status != cudaSuccess)
+            {
+                throw_cuda_ntt_error(
+                    "dependency event destruction",
+                    destroy_status);
+            }
+        }
+
+        void enqueue_stream_wait_for_default(
+            cudaStream_t consumer_stream,
+            const char *operation)
+        {
+            cudaEvent_t event = nullptr;
+
+            auto status =
+                cudaEventCreateWithFlags(
+                    &event,
+                    cudaEventDisableTiming);
+
+            if (status != cudaSuccess)
+            {
+                throw_cuda_ntt_error(
+                    operation,
+                    status);
+            }
+
+            status =
+                cudaEventRecord(
+                    event,
+                    nullptr);
+
+            if (status == cudaSuccess)
+            {
+                status =
+                    cudaStreamWaitEvent(
+                        consumer_stream,
+                        event,
+                        0);
+            }
+
+            const auto destroy_status =
+                cudaEventDestroy(
+                    event);
+
+            if (status != cudaSuccess)
+            {
+                throw_cuda_ntt_error(
+                    operation,
+                    status);
+            }
+
+            if (destroy_status != cudaSuccess)
+            {
+                throw_cuda_ntt_error(
+                    "dependency event destruction",
+                    destroy_status);
+            }
+        }
+
         std::size_t checked_ntt_bytes(
             std::size_t size,
             std::size_t batch_size)

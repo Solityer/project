@@ -467,8 +467,7 @@ namespace gatzk::protocol
                     const auto blinder_value =
                         t_edge_eval_blinder(
                             source_blinders,
-                            source_blinder_offsets[
-                                source_index],
+                            source_blinder_offsets[source_index],
                             blinder_count,
                             point);
 
@@ -477,8 +476,7 @@ namespace gatzk::protocol
                             source_blinder_sum,
                             algebra::gpu::fr_mul(
                                 blinder_value,
-                                source_scales[
-                                    source_index]));
+                                source_scales[source_index]));
                 }
             }
 
@@ -1025,17 +1023,17 @@ namespace gatzk::protocol
                         "invalid CUDA t_edge evaluation leaf slot");
                 }
 
-                    algebra::
-                        cuda_coset_evaluations_to_device_exact(
-                            values,
-                            value_count,
-                            domain_size_,
-                            zero_domain_blinder,
-                            blinder_count,
-                            shift_,
-                            device_leaf_table_[slot],
-                            target_size_,
-                            true);
+                algebra::
+                    cuda_coset_evaluations_to_device_exact(
+                        values,
+                        value_count,
+                        domain_size_,
+                        zero_domain_blinder,
+                        blinder_count,
+                        shift_,
+                        device_leaf_table_[slot],
+                        target_size_,
+                        true);
 
                 if (!executed)
                 {
@@ -1078,14 +1076,14 @@ namespace gatzk::protocol
                         "invalid CUDA t_edge coefficient leaf slot");
                 }
 
-                    algebra::
-                        cuda_coset_coefficients_to_device_exact(
-                            coefficients,
-                            coefficient_count,
-                            shift_,
-                            device_leaf_table_[slot],
-                            target_size_,
-                            true);
+                algebra::
+                    cuda_coset_coefficients_to_device_exact(
+                        coefficients,
+                        coefficient_count,
+                        shift_,
+                        device_leaf_table_[slot],
+                        target_size_,
+                        true);
 
                 if (!executed)
                 {
@@ -1481,20 +1479,22 @@ namespace gatzk::protocol
                 host_leaf_split_layout_[target_slot] =
                     output_split_layout;
 
-                status = cudaMemcpy(
-                    device_leaf_split_layout_ + target_slot,
-                    &host_leaf_split_layout_[target_slot],
-                    sizeof(std::uint8_t),
-                    cudaMemcpyHostToDevice);
+                status =
+                    cudaMemsetAsync(
+                        device_leaf_split_layout_ +
+                            target_slot,
+                        static_cast<int>(
+                            output_split_layout),
+                        sizeof(std::uint8_t),
+                        nullptr);
 
                 if (status != cudaSuccess)
                 {
                     throw_cuda_t_edge_error(
-                        "linear target-layout upload",
+                        "linear target-layout update",
                         status);
                 }
 
-                algebra::record_cuda_h2d(sizeof(std::uint8_t));
                 host_leaf_bound_[target_slot] = true;
                 return true;
             }
@@ -1618,8 +1618,7 @@ namespace gatzk::protocol
                             kInvalidLeafSlot ||
                         access_slots[access] >=
                             cache_slot_count_ ||
-                        !host_leaf_bound_[
-                            access_slots[access]])
+                        !host_leaf_bound_[access_slots[access]])
                     {
                         throw std::runtime_error(
                             "CUDA t_edge term has "
@@ -2696,7 +2695,7 @@ namespace gatzk::protocol
                     !host.effective_total_known
                         ? kMinimumIntegratedReserve
                         : host.effective_total_bytes /
-                          16);
+                              16);
 
             std::size_t minimum_available_bytes = 0;
             if (!checked_add_size(
