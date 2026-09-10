@@ -1022,18 +1022,18 @@ namespace gatzk::protocol
                     throw std::runtime_error(
                         "invalid CUDA t_edge evaluation leaf slot");
                 }
-
-                algebra::
-                    cuda_coset_evaluations_to_device_exact(
-                        values,
-                        value_count,
-                        domain_size_,
-                        zero_domain_blinder,
-                        blinder_count,
-                        shift_,
-                        device_leaf_table_[slot],
-                        target_size_,
-                        true);
+                const bool executed =
+                    algebra::
+                        cuda_coset_evaluations_to_device_exact(
+                            values,
+                            value_count,
+                            domain_size_,
+                            zero_domain_blinder,
+                            blinder_count,
+                            shift_,
+                            device_leaf_table_[slot],
+                            target_size_,
+                            true);
 
                 if (!executed)
                 {
@@ -1044,20 +1044,20 @@ namespace gatzk::protocol
                     1;
 
                 const auto status =
-                    cudaMemcpy(
+                    cudaMemsetAsync(
                         device_leaf_split_layout_ +
                             slot,
-                        &host_leaf_split_layout_[slot],
+                        1,
                         sizeof(std::uint8_t),
-                        cudaMemcpyHostToDevice);
+                        nullptr);
 
                 if (status != cudaSuccess)
                 {
                     throw_cuda_t_edge_error(
-                        "leaf-layout upload",
+                        "leaf-layout update",
                         status);
                 }
-                algebra::record_cuda_h2d(sizeof(std::uint8_t));
+
                 host_leaf_bound_[slot] = true;
                 host_leaf_uploaded_prefix_[slot] = target_size_;
                 return true;
@@ -1076,14 +1076,15 @@ namespace gatzk::protocol
                         "invalid CUDA t_edge coefficient leaf slot");
                 }
 
-                algebra::
-                    cuda_coset_coefficients_to_device_exact(
-                        coefficients,
-                        coefficient_count,
-                        shift_,
-                        device_leaf_table_[slot],
-                        target_size_,
-                        true);
+                const bool executed =
+                    algebra::
+                        cuda_coset_coefficients_to_device_exact(
+                            coefficients,
+                            coefficient_count,
+                            shift_,
+                            device_leaf_table_[slot],
+                            target_size_,
+                            true);
 
                 if (!executed)
                 {
@@ -1094,20 +1095,20 @@ namespace gatzk::protocol
                     1;
 
                 const auto status =
-                    cudaMemcpy(
+                    cudaMemsetAsync(
                         device_leaf_split_layout_ +
                             slot,
-                        &host_leaf_split_layout_[slot],
+                        1,
                         sizeof(std::uint8_t),
-                        cudaMemcpyHostToDevice);
+                        nullptr);
 
                 if (status != cudaSuccess)
                 {
                     throw_cuda_t_edge_error(
-                        "leaf-layout upload",
+                        "leaf-layout update",
                         status);
                 }
-                algebra::record_cuda_h2d(sizeof(std::uint8_t));
+
                 host_leaf_bound_[slot] = true;
                 host_leaf_uploaded_prefix_[slot] = target_size_;
                 return true;
