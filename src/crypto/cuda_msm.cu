@@ -67,18 +67,21 @@ namespace gatzk::crypto
         constexpr std::size_t kMaxIntegratedResidentBatchScalarCount =
             1ULL << 25;
 
+        // Keep every individual pinned-ICICLE BLS12-381 MSM strictly below
+        // the 2^16 boundary. Larger logical MSMs remain on CUDA and are
+        // accumulated from bounded chunks.
+        constexpr std::size_t kIcicleV28MaximumSingleMsmCount =
+            (1ULL << 16) - 1;
+
         constexpr std::size_t kPreferredStreamMsmChunkSize =
-            1ULL << 20;
+            kIcicleV28MaximumSingleMsmCount;
 
         constexpr std::size_t kMinimumStreamMsmChunkSize =
-            1ULL << 16;
-        // ICICLE v2.8.0 direct resident BLS12-381 MSM is kept within the
-        // validated <= 2^23 execution range.  Larger MSMs remain on CUDA but
-        // are routed through the existing bounded chunked/streamed paths,
-        // avoiding one oversized ICICLE bucket-method invocation.
+            1ULL << 15;
+
         constexpr std::size_t
             kIcicleV28MaximumDirectResidentMsmCount =
-                1ULL << 23;
+                kIcicleV28MaximumSingleMsmCount;
 
         constexpr std::size_t kDeviceBaseCacheLimitBytes =
             24ULL << 30;
@@ -2888,9 +2891,8 @@ namespace gatzk::crypto
         // Route 2: full-width warm-resident wave.
         //
         // A large same-base batch can exceed the *aggregate* scalar envelope
-        // even though every individual MSM fits comfortably.  Direct scalar
-        // chunking splits the dimension into 2^20 chunks, turning,
-        // for example, a 50M x 2 batch into roughly fifty ICICLE launches.
+        // even though every individual MSM fits comfortably.  The bounded
+        // fallback splits the scalar dimension into ICICLE-safe CUDA chunks.
         //
         // When the SRS prefix is already resident, execute the independent
         // scalar vectors as full-width MSMs one after another.  The expensive

@@ -23,8 +23,9 @@ case "$config_path" in
   "$root/configs/"*.cfg) ;;
   *) echo "run-single: config must be under baseline-local configs/" >&2; exit 2 ;;
 esac
-"$script_dir/prepare_local.sh" "$config_path"
 if [[ -n "$run_dir" ]]; then
+  "$script_dir/prepare_local.sh" "$config_path" "$run_dir"
   exec "$root/gat_runner" prove --config "$config_path" --backend "$backend" --run-dir "$run_dir"
 fi
+"$script_dir/prepare_local.sh" "$config_path"
 exec "$root/gat_runner" prove --config "$config_path" --backend "$backend"

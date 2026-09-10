@@ -106,12 +106,26 @@ def main() -> int:
     for key in ("dataset", "cache_root", "checkpoint_bundle", "export_dir", "quant_cfg_id"):
         if key not in values:
             fail(f"config key missing: {key}")
+    relation_keys = ("static_table_descriptor", "integer_bound_ledger")
+    if values["dataset"] in {"cora", "citeseer", "pubmed", "ppi", "ogbn_arxiv"}:
+        for key in relation_keys:
+            if key not in values:
+                fail(f"BLOCKED: config key missing: {key}")
     cache = local_path(root, values["cache_root"], "cache_root") / values["dataset"]
     checkpoint = local_path(root, values["checkpoint_bundle"], "checkpoint_bundle")
     quant = root / "configs" / "quantization_scale_chain.cfg"
     if quant.is_symlink() or not quant.is_file():
         fail("quantization_scale_chain.cfg is missing")
     selected = [config_path, quant]
+    relation_digests: dict[str, str] = {}
+    for key in relation_keys:
+        if key not in values:
+            continue
+        relation_path = local_path(root, values[key], key)
+        if relation_path.is_symlink() or not relation_path.is_file():
+            fail(f"BLOCKED: authenticated relation resource is missing: {relation_path}")
+        selected.append(relation_path)
+        relation_digests[key] = sha256(relation_path)
     asset_entries = files_under((cache, checkpoint), root)
     for path in selected:
         if path.is_symlink():
@@ -128,8 +142,15 @@ def main() -> int:
         "quant_cfg_id": values["quant_cfg_id"],
         "baseline_root": ".",
         "config": config_path.relative_to(root).as_posix(),
+        "scale_chain_digest": sha256(quant),
         "files": asset_entries,
     }
+    if relation_keys[0] in relation_digests:
+        payload["static_table_descriptor"] = values[relation_keys[0]]
+        payload["static_table_descriptor_digest"] = relation_digests[relation_keys[0]]
+    if relation_keys[1] in relation_digests:
+        payload["integer_bound_ledger"] = values[relation_keys[1]]
+        payload["integer_bound_ledger_descriptor_digest"] = relation_digests[relation_keys[1]]
     output = args.output or (local_path(root, values["export_dir"], "export_dir") / "asset_manifest.json")
     output = output.resolve()
     try:

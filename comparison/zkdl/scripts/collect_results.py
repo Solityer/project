@@ -6,14 +6,32 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import re
 from pathlib import Path
 
 
 REQUIRED = {
     "schema", "dataset", "backend", "statement_id", "proof_id", "verification_status",
     "proof_scope", "proof_size_bytes", "commitment_size_bytes", "verifier_reads_witness",
-    "gpu_kernel_executed", "silent_fallback", "output_bound",
+    "gpu_kernel_executed", "silent_fallback", "output_bound", "commitment_time_seconds",
+    "prove_time_seconds", "verify_time_seconds", "error", "static_table_descriptor_digest",
+    "scale_chain_digest", "integer_bound_ledger_id", "integer_bound_ledger_digest",
+    "integer_bound_ledger_descriptor_digest",
 }
+
+IDENTITY_DIGESTS = {
+    "static_table_descriptor_digest", "scale_chain_digest", "integer_bound_ledger_digest",
+    "integer_bound_ledger_descriptor_digest",
+}
+
+
+def validate_identity_fields(row: dict[str, str], path: Path) -> None:
+    for field in IDENTITY_DIGESTS:
+        value = row[field]
+        if value != "UNAVAILABLE" and not re.fullmatch(r"[0-9a-f]{64}", value):
+            raise ValueError(f"invalid SHA-256 identity field {field} in {path}")
+    if not row["integer_bound_ledger_id"]:
+        raise ValueError(f"empty integer-bound ledger id in {path}")
 
 
 def read_record(path: Path) -> dict[str, str]:
@@ -46,6 +64,7 @@ def main() -> int:
     for record_path in sorted(runs.rglob("run.record")):
         try:
             row = read_record(record_path)
+            validate_identity_fields(row, record_path)
         except ValueError as exc:
             failures.append(str(exc))
             continue

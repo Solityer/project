@@ -15,6 +15,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <cctype>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
@@ -28,6 +29,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 #include <utility>
 
@@ -38,6 +40,12 @@ namespace {
 
 using u64 = std::uint64_t;
 using i64 = std::int64_t;
+
+// Relation resources are authenticated before materialization, but their
+// declared dimensions are still untrusted input.  Keep every table/family
+// container and every verifier-side range scan explicitly bounded.
+constexpr u64 kMaxStaticTableRows = 1ULL << 27;
+constexpr u64 kMaxLedgerFamilies = 4096;
 
 [[noreturn]] void fail(const std::string& message) {
     throw std::runtime_error("zkdl-gat: " + message);
@@ -75,15 +83,33 @@ std::map<std::string, std::string> read_kv(const std::filesystem::path& path) {
 }
 
 u64 parse_u64(const std::string& text, const std::string& what) {
+    const std::string value_text = trim(text);
+    if (value_text.empty() || value_text.front() == '-') {
+        fail("invalid unsigned integer for " + what + ": " + text);
+    }
     std::size_t used = 0;
     unsigned long long value = 0;
     try {
-        value = std::stoull(trim(text), &used, 0);
+        value = std::stoull(value_text, &used, 0);
     } catch (...) {
         fail("invalid unsigned integer for " + what + ": " + text);
     }
-    if (used != trim(text).size()) fail("invalid trailing characters for " + what + ": " + text);
+    if (used != value_text.size()) fail("invalid trailing characters for " + what + ": " + text);
     return static_cast<u64>(value);
+}
+
+i64 parse_i64(const std::string& text, const std::string& what) {
+    const std::string value_text = trim(text);
+    if (value_text.empty()) fail("invalid signed integer for " + what + ": " + text);
+    std::size_t used = 0;
+    long long value = 0;
+    try {
+        value = std::stoll(value_text, &used, 0);
+    } catch (...) {
+        fail("invalid signed integer for " + what + ": " + text);
+    }
+    if (used != value_text.size()) fail("invalid trailing characters for " + what + ": " + text);
+    return static_cast<i64>(value);
 }
 
 bool parse_bool(const std::string& text, const std::string& what) {
@@ -91,6 +117,21 @@ bool parse_bool(const std::string& text, const std::string& what) {
     if (value == "true" || value == "1") return true;
     if (value == "false" || value == "0") return false;
     fail("invalid boolean for " + what + ": " + text);
+}
+
+double parse_double(const std::string& text, const std::string& what) {
+    const std::string value_text = trim(text);
+    std::size_t used = 0;
+    double value = 0.0;
+    try {
+        value = std::stod(value_text, &used);
+    } catch (...) {
+        fail("invalid floating-point value for " + what + ": " + text);
+    }
+    if (used != value_text.size() || !std::isfinite(value) || value < 0.0) {
+        fail("invalid non-negative floating-point value for " + what + ": " + text);
+    }
+    return value;
 }
 
 std::vector<u64> parse_list(const std::string& text, const std::string& what) {
@@ -383,12 +424,160 @@ std::string digest_tables(const StaticTables& tables) {
     return hex(hash.finish());
 }
 
+std::string digest_ledger(const IntegerBoundLedger& ledger) {
+    Sha256 hash;
+    const auto hash_string = [&](const std::string& value) {
+        hash_u64(hash, static_cast<u64>(value.size()));
+        hash.update(value.data(), value.size());
+    };
+    const auto hash_family = [&](const IntegerBoundFamily& family) {
+        hash_u64(hash, family.layer);
+        hash_u64(hash, family.head);
+        hash_u64(hash, family.output ? 1U : 0U);
+        for (const auto value : {family.max_input_abs, family.max_weight_abs,
+                                 family.max_attention_abs, family.max_bias_abs,
+                                 family.max_score_abs, family.max_table_output_abs,
+                                 family.max_delta, family.max_exp, family.max_sum,
+                                 family.max_aggregate_num, family.max_dividend_abs,
+                                 family.max_aux_abs, family.max_divisor,
+                                 family.max_field_product_abs}) {
+            hash_i64(hash, value);
+        }
+    };
+    hash_string("zkDL_gat_integer_bound_ledger_v1");
+    hash_string(ledger.ledger_id);
+    hash_string(ledger.quant_cfg_id);
+    hash_string(ledger.static_table_id);
+    hash_string(ledger.field_modulus);
+    hash_string(ledger.scale_chain_digest);
+    hash_string(ledger.static_table_descriptor_digest);
+    for (const auto value : {ledger.max_score_abs, ledger.max_table_output_abs,
+                             ledger.max_delta, ledger.max_exp, ledger.max_sum,
+                             ledger.max_aggregate_num, ledger.max_dividend_abs,
+                             ledger.max_aux_abs, ledger.max_divisor}) {
+        hash_i64(hash, value);
+    }
+    hash_u64(hash, ledger.families.size());
+    for (const auto& family : ledger.families) hash_family(family);
+    return hex(hash.finish());
+}
+
+std::string json_fragment(const std::string& text, const std::string& key, char open, char close) {
+    const std::string marker = "\"" + key + "\"";
+    const auto marker_pos = text.find(marker);
+    if (marker_pos == std::string::npos) fail("JSON field missing: " + key);
+    const auto open_pos = text.find(open, marker_pos + marker.size());
+    if (open_pos == std::string::npos) fail("JSON field has no value: " + key);
+    bool quoted = false;
+    bool escaped = false;
+    int depth = 0;
+    for (std::size_t index = open_pos; index < text.size(); ++index) {
+        const char current = text[index];
+        if (quoted) {
+            if (escaped) escaped = false;
+            else if (current == '\\') escaped = true;
+            else if (current == '\"') quoted = false;
+            continue;
+        }
+        if (current == '\"') { quoted = true; continue; }
+        if (current == open) ++depth;
+        if (current == close && --depth == 0) return text.substr(open_pos, index - open_pos + 1);
+    }
+    fail("unterminated JSON field: " + key);
+}
+
+std::string json_scalar(const std::string& text, const std::string& key) {
+    const std::string marker = "\"" + key + "\"";
+    const auto marker_pos = text.find(marker);
+    if (marker_pos == std::string::npos) fail("JSON field missing: " + key);
+    const auto colon = text.find(':', marker_pos + marker.size());
+    if (colon == std::string::npos) fail("JSON field has no separator: " + key);
+    std::size_t begin = colon + 1;
+    while (begin < text.size() && std::isspace(static_cast<unsigned char>(text[begin]))) ++begin;
+    if (begin >= text.size()) fail("JSON field has no value: " + key);
+    if (text[begin] == '\"') {
+        const auto end = text.find('\"', begin + 1);
+        if (end == std::string::npos) fail("unterminated JSON string: " + key);
+        return text.substr(begin + 1, end - begin - 1);
+    }
+    std::size_t end = begin;
+    while (end < text.size() && text[end] != ',' && text[end] != '}' && !std::isspace(static_cast<unsigned char>(text[end]))) ++end;
+    return text.substr(begin, end - begin);
+}
+
+std::vector<i64> json_i64_array(const std::string& text, const std::string& key,
+                                u64 maximum_values = kMaxStaticTableRows) {
+    const auto fragment = json_fragment(text, key, '[', ']');
+    std::vector<i64> values;
+    std::stringstream stream(fragment.substr(1, fragment.size() - 2));
+    std::string item;
+    while (std::getline(stream, item, ',')) {
+        item = trim(item);
+        if (!item.empty()) {
+            if (values.size() >= maximum_values) fail("BLOCKED: JSON array exceeds bounded size: " + key);
+            values.push_back(parse_i64(item, "JSON " + key));
+        }
+    }
+    if (values.empty()) fail("JSON array is empty: " + key);
+    return values;
+}
+
+std::vector<std::string> json_objects(const std::string& text, const std::string& key,
+                                      u64 maximum_objects = kMaxLedgerFamilies) {
+    const auto fragment = json_fragment(text, key, '[', ']');
+    std::vector<std::string> objects;
+    bool quoted = false;
+    bool escaped = false;
+    int depth = 0;
+    std::size_t begin = 0;
+    for (std::size_t index = 1; index + 1 < fragment.size(); ++index) {
+        const char current = fragment[index];
+        if (quoted) {
+            if (escaped) escaped = false;
+            else if (current == '\\') escaped = true;
+            else if (current == '\"') quoted = false;
+            continue;
+        }
+        if (current == '\"') { quoted = true; continue; }
+        if (current == '{') { if (depth++ == 0) begin = index; }
+        else if (current == '}' && depth > 0 && --depth == 0) {
+            if (objects.size() >= maximum_objects) fail("BLOCKED: JSON object array exceeds bounded size: " + key);
+            objects.push_back(fragment.substr(begin, index - begin + 1));
+        }
+    }
+    if (objects.empty()) fail("JSON object array is empty: " + key);
+    return objects;
+}
+
+i64 json_i64_value(const std::string& text, const std::string& key) {
+    return parse_i64(json_scalar(text, key), "JSON " + key);
+}
+
+u64 json_u64_value(const std::string& text, const std::string& key) {
+    return parse_u64(json_scalar(text, key), "JSON " + key);
+}
+
+bool json_bool_value(const std::string& text, const std::string& key) {
+    return parse_bool(json_scalar(text, key), "JSON " + key);
+}
+
 i64 checked_i128(__int128 value, const std::string& what) {
     if (value < static_cast<__int128>(std::numeric_limits<i64>::min()) ||
         value > static_cast<__int128>(std::numeric_limits<i64>::max())) {
         fail("signed 64-bit overflow in " + what);
     }
     return static_cast<i64>(value);
+}
+
+u64 checked_domain_rows(i64 minimum, i64 maximum, const std::string& name) {
+    if (minimum > maximum) fail("invalid domain bounds in " + name);
+    const __int128 rows = static_cast<__int128>(maximum) -
+                          static_cast<__int128>(minimum) + 1;
+    if (rows <= 0 || rows > static_cast<__int128>(kMaxStaticTableRows) ||
+        rows > static_cast<__int128>(std::numeric_limits<std::size_t>::max())) {
+        fail("BLOCKED: table domain is too large in " + name);
+    }
+    return static_cast<u64>(rows);
 }
 
 i64 round_div(i64 numerator, i64 denominator, const std::string& what) {
@@ -476,7 +665,12 @@ std::int64_t table_lookup(const std::vector<i64>& values, i64 minimum, i64 maxim
     if (index < minimum || index > maximum) {
         fail(name + " lookup outside committed table domain");
     }
-    return values.at(static_cast<std::size_t>(index - minimum));
+    const __int128 offset = static_cast<__int128>(index) -
+                            static_cast<__int128>(minimum);
+    if (offset < 0 || offset >= static_cast<__int128>(values.size())) {
+        fail(name + " lookup offset exceeds committed table");
+    }
+    return values.at(static_cast<std::size_t>(offset));
 }
 
 Matrix matmul_cpu(const Matrix& left, const Matrix& right, const std::string& name) {
@@ -576,6 +770,14 @@ const BIGNUM* scalar_modulus() {
     return modulus;
 }
 
+std::string scalar_modulus_decimal() {
+    char* decimal = BN_bn2dec(scalar_modulus());
+    if (!decimal) fail("BN_bn2dec failed for scalar modulus");
+    const std::string result(decimal);
+    OPENSSL_free(decimal);
+    return result;
+}
+
 BigNum field_from_i64(i64 value, BN_CTX* context) {
     BigNum result;
     const std::string decimal = std::to_string(value);
@@ -638,6 +840,69 @@ void fill_field_attention(OutputHeadTrace& head, const Graph& graph, u64 edge_be
     BN_CTX_free(context);
 }
 
+SignedRoundDivWitness make_round_div_witness(const Matrix& numerator,
+                                             const std::vector<i64>& denominator,
+                                             u64 numerator_scale,
+                                             u64 denominator_scale,
+                                             const Matrix& expected,
+                                             const std::string& name) {
+    if (numerator.rows != expected.rows || numerator.cols != expected.cols ||
+        denominator.size() != numerator.rows || numerator_scale == 0 || denominator_scale == 0) {
+        fail("SignedRoundDiv shape/scale mismatch in " + name);
+    }
+    SignedRoundDivWitness witness;
+    witness.rows = numerator.rows;
+    witness.cols = numerator.cols;
+    const std::size_t count = numerator.values.size();
+    witness.sigma.assign(count, 0);
+    witness.z.assign(count, 0);
+    witness.a.assign(count, 0);
+    witness.q.assign(count, 0);
+    witness.r.assign(count, 0);
+    witness.delta.assign(count, 0);
+    witness.divisor.assign(count, 0);
+    witness.a_inverse.assign(count, FieldValue{});
+    witness.divisor_inverse.assign(count, FieldValue{});
+    BN_CTX* context = BN_CTX_new();
+    if (!context) fail("BN_CTX_new failed for " + name);
+    try {
+        for (u64 row = 0; row < numerator.rows; ++row) {
+            const i64 d = checked_i128(static_cast<__int128>(denominator[row]) * denominator_scale,
+                                       name + ".divisor");
+            if (d <= 0) fail("SignedRoundDiv divisor is not positive in " + name);
+            BigNum divisor_inverse = field_inverse(d, context);
+            for (u64 col = 0; col < numerator.cols; ++col) {
+                const std::size_t index = static_cast<std::size_t>(row * numerator.cols + col);
+                const i64 x = checked_i128(static_cast<__int128>(numerator.at(row, col)) * numerator_scale,
+                                           name + ".dividend");
+                const i64 y = expected.at(row, col);
+                const __int128 abs_x = x < 0 ? -static_cast<__int128>(x) : static_cast<__int128>(x);
+                const __int128 abs_y = y < 0 ? -static_cast<__int128>(y) : static_cast<__int128>(y);
+                const __int128 remainder = 2 * abs_x + d - 2 * static_cast<__int128>(d) * abs_y;
+                const __int128 slack = 2 * static_cast<__int128>(d) - 1 - remainder;
+                if (remainder < 0 || slack < 0) fail("invalid nearest-ties-away witness in " + name);
+                witness.sigma[index] = static_cast<std::uint8_t>(x < 0 ? 1U : 0U);
+                witness.z[index] = static_cast<std::uint8_t>(x == 0 ? 1U : 0U);
+                witness.a[index] = checked_i128(abs_x, name + ".a");
+                witness.q[index] = checked_i128(abs_y, name + ".q");
+                witness.r[index] = checked_i128(remainder, name + ".r");
+                witness.delta[index] = checked_i128(slack, name + ".delta");
+                witness.divisor[index] = d;
+                witness.divisor_inverse[index] = field_encode(divisor_inverse.get());
+                if (witness.a[index] != 0) {
+                    BigNum inverse = field_inverse(witness.a[index], context);
+                    witness.a_inverse[index] = field_encode(inverse.get());
+                }
+            }
+        }
+    } catch (...) {
+        BN_CTX_free(context);
+        throw;
+    }
+    BN_CTX_free(context);
+    return witness;
+}
+
 std::vector<i64> attention_scores(const Matrix& projected, const Matrix& src_kernel,
                                   const Matrix& dst_kernel, const Graph& graph,
                                   std::vector<i64>* e_src, std::vector<i64>* e_dst,
@@ -660,21 +925,25 @@ std::vector<i64> attention_scores(const Matrix& projected, const Matrix& src_ker
 
 void aggregate_head(const Config& config, const Graph& graph, const StaticTables& tables,
                     const Matrix& projected, const std::vector<i64>& score,
-                    u64 exp_scale, u64 h_prime_scale, u64 aggregate_scale,
+                    u64 h_prime_scale, u64 aggregate_pre_scale,
                     HiddenHeadTrace* output, const std::string& name) {
     output->h_prime = projected;
     output->leaky_relu.resize(graph.edges);
     output->maximum.assign(graph.nodes, std::numeric_limits<i64>::min());
     output->delta.resize(graph.edges); output->exp_weight.resize(graph.edges);
-    output->denominator.resize(graph.edges); output->inverse.resize(graph.edges, 0);
-    output->alpha.resize(graph.edges, 0);
+    output->denominator.resize(graph.edges);
     output->routed_h_prime = make_matrix(graph.edges, projected.cols);
     output->product_u_h_prime = make_matrix(graph.edges, projected.cols);
-    output->product_alpha_h_prime = make_matrix(graph.edges, projected.cols);
+    output->product_alpha_h_prime_field.rows = graph.edges;
+    output->product_alpha_h_prime_field.cols = projected.cols;
+    output->product_alpha_h_prime_field.values.assign(static_cast<std::size_t>(graph.edges * projected.cols), FieldValue{});
     output->aggregate_pre = make_matrix(graph.nodes, projected.cols);
     output->aggregate_pre_field.rows = graph.nodes;
     output->aggregate_pre_field.cols = projected.cols;
     output->aggregate_pre_field.values.assign(static_cast<std::size_t>(graph.nodes * projected.cols), FieldValue{});
+    output->consistency_residual_field.rows = graph.nodes;
+    output->consistency_residual_field.cols = projected.cols;
+    output->consistency_residual_field.values.assign(static_cast<std::size_t>(graph.nodes * projected.cols), FieldValue{});
     output->aggregate_num = make_matrix(graph.nodes, projected.cols);
     output->elu_input = make_matrix(graph.nodes, projected.cols);
     output->aggregate = make_matrix(graph.nodes, projected.cols);
@@ -707,8 +976,6 @@ void aggregate_head(const Config& config, const Graph& graph, const StaticTables
             output->routed_h_prime.at(edge, dim) = value;
             output->product_u_h_prime.at(edge, dim) = checked_i128(
                 static_cast<__int128>(value) * output->exp_weight[edge], name + ".u_h_prime");
-            output->product_alpha_h_prime.at(edge, dim) = checked_i128(
-                static_cast<__int128>(value) * output->alpha[edge], name + ".alpha_h_prime");
             output->aggregate_num.at(node, dim) = checked_i128(
                 static_cast<__int128>(output->aggregate_num.at(node, dim)) +
                     output->product_u_h_prime.at(edge, dim), name + ".aggregate_num");
@@ -729,6 +996,8 @@ void aggregate_head(const Config& config, const Graph& graph, const StaticTables
         for (u64 dim = 0; dim < projected.cols; ++dim) {
             BigNum value;
             BN_zero(value.get());
+            BigNum integer_value;
+            BN_zero(integer_value.get());
             if (node + 1 >= graph.node_edge_ptr.size()) {
                 BN_CTX_free(field_context);
                 fail("edge pointer does not cover destination node");
@@ -743,18 +1012,33 @@ void aggregate_head(const Config& config, const Graph& graph, const StaticTables
                 BigNum source = field_from_i64(projected.at(graph.src[edge], dim), field_context);
                 BigNum alpha;
                 BigNum product;
+                BigNum integer_product;
                 if (!BN_mod_mul(alpha.get(), weight.get(), inverse.get(), scalar_modulus(), field_context) ||
                     !BN_mod_mul(product.get(), alpha.get(), source.get(), scalar_modulus(), field_context) ||
-                    !BN_mod_add(value.get(), value.get(), product.get(), scalar_modulus(), field_context)) {
+                    !BN_mod_mul(integer_product.get(), weight.get(), source.get(), scalar_modulus(), field_context) ||
+                    !BN_mod_add(value.get(), value.get(), product.get(), scalar_modulus(), field_context) ||
+                    !BN_mod_add(integer_value.get(), integer_value.get(), integer_product.get(), scalar_modulus(), field_context)) {
                     BN_CTX_free(field_context);
                     fail("aggregate field arithmetic failed");
                 }
+                output->product_alpha_h_prime_field.values[static_cast<std::size_t>(edge * projected.cols + dim)] =
+                    field_encode(product.get());
             }
             output->aggregate_pre_field.values[static_cast<std::size_t>(node * projected.cols + dim)] =
                 field_encode(value.get());
+            BigNum rhs;
+            BigNum residual;
+            if (!BN_mod_mul(rhs.get(), field_from_i64(denominator_by_node[node], field_context).get(), value.get(),
+                            scalar_modulus(), field_context) ||
+                !BN_mod_sub(residual.get(), integer_value.get(), rhs.get(), scalar_modulus(), field_context)) {
+                BN_CTX_free(field_context);
+                fail("aggregate consistency field arithmetic failed");
+            }
+            output->consistency_residual_field.values[static_cast<std::size_t>(node * projected.cols + dim)] =
+                field_encode(residual.get());
             const i64 denom = denominator_by_node[node];
             output->aggregate_pre.at(node, dim) = round_div(
-                checked_i128(static_cast<__int128>(output->aggregate_num.at(node, dim)) * aggregate_scale,
+                checked_i128(static_cast<__int128>(output->aggregate_num.at(node, dim)) * aggregate_pre_scale,
                              name + ".aggregate_scaled"),
                 checked_i128(static_cast<__int128>(denom) * h_prime_scale,
                              name + ".aggregate_denominator"), name + ".aggregate_pre");
@@ -764,26 +1048,33 @@ void aggregate_head(const Config& config, const Graph& graph, const StaticTables
         }
     }
     BN_CTX_free(field_context);
-    (void)config; (void)exp_scale;
+    output->aggregate_round_div = make_round_div_witness(
+        output->aggregate_num, denominator_by_node, aggregate_pre_scale, h_prime_scale,
+        output->aggregate_pre, name + ".signed_round_div");
+    (void)config;
 }
 
 void aggregate_output_head(const Config& config, const Graph& graph, const StaticTables& tables,
                            const Matrix& projected, const std::vector<i64>& score,
-                           u64 h_prime_scale, u64 aggregate_scale,
+                           u64 h_prime_scale, u64 output_pre_scale,
                            OutputHeadTrace* output, const std::string& name) {
     output->y_prime = projected;
     output->leaky_relu.resize(graph.edges);
     output->maximum.assign(graph.nodes, std::numeric_limits<i64>::min());
     output->delta.resize(graph.edges); output->exp_weight.resize(graph.edges);
-    output->denominator.resize(graph.edges); output->inverse.resize(graph.edges, 0);
-    output->alpha.resize(graph.edges, 0);
+    output->denominator.resize(graph.edges);
     output->routed_y_prime = make_matrix(graph.edges, projected.cols);
     output->product_u_y_prime = make_matrix(graph.edges, projected.cols);
-    output->product_alpha_y_prime = make_matrix(graph.edges, projected.cols);
+    output->product_alpha_y_prime_field.rows = graph.edges;
+    output->product_alpha_y_prime_field.cols = projected.cols;
+    output->product_alpha_y_prime_field.values.assign(static_cast<std::size_t>(graph.edges * projected.cols), FieldValue{});
     output->aggregate_pre = make_matrix(graph.nodes, projected.cols);
     output->aggregate_pre_field.rows = graph.nodes;
     output->aggregate_pre_field.cols = projected.cols;
     output->aggregate_pre_field.values.assign(static_cast<std::size_t>(graph.nodes * projected.cols), FieldValue{});
+    output->consistency_residual_field.rows = graph.nodes;
+    output->consistency_residual_field.cols = projected.cols;
+    output->consistency_residual_field.values.assign(static_cast<std::size_t>(graph.nodes * projected.cols), FieldValue{});
     output->aggregate_num = make_matrix(graph.nodes, projected.cols);
     output->y_quantized = make_matrix(graph.nodes, projected.cols);
     output->aligned = make_matrix(graph.nodes, projected.cols);
@@ -831,6 +1122,8 @@ void aggregate_output_head(const Config& config, const Graph& graph, const Stati
         for (u64 dim = 0; dim < projected.cols; ++dim) {
             BigNum value;
             BN_zero(value.get());
+            BigNum integer_value;
+            BN_zero(integer_value.get());
             for (u64 edge = graph.node_edge_ptr[node]; edge < graph.node_edge_ptr[node + 1]; ++edge) {
                 if (graph.dst[edge] != node) {
                     BN_CTX_free(field_context);
@@ -840,17 +1133,32 @@ void aggregate_output_head(const Config& config, const Graph& graph, const Stati
                 BigNum source = field_from_i64(projected.at(graph.src[edge], dim), field_context);
                 BigNum alpha;
                 BigNum product;
+                BigNum integer_product;
                 if (!BN_mod_mul(alpha.get(), weight.get(), inverse.get(), scalar_modulus(), field_context) ||
                     !BN_mod_mul(product.get(), alpha.get(), source.get(), scalar_modulus(), field_context) ||
-                    !BN_mod_add(value.get(), value.get(), product.get(), scalar_modulus(), field_context)) {
+                    !BN_mod_mul(integer_product.get(), weight.get(), source.get(), scalar_modulus(), field_context) ||
+                    !BN_mod_add(value.get(), value.get(), product.get(), scalar_modulus(), field_context) ||
+                    !BN_mod_add(integer_value.get(), integer_value.get(), integer_product.get(), scalar_modulus(), field_context)) {
                     BN_CTX_free(field_context);
                     fail("output aggregate field arithmetic failed");
                 }
+                output->product_alpha_y_prime_field.values[static_cast<std::size_t>(edge * projected.cols + dim)] =
+                    field_encode(product.get());
             }
             output->aggregate_pre_field.values[static_cast<std::size_t>(node * projected.cols + dim)] =
                 field_encode(value.get());
+            BigNum rhs;
+            BigNum residual;
+            BigNum denominator = field_from_i64(denominator_by_node[node], field_context);
+            if (!BN_mod_mul(rhs.get(), denominator.get(), value.get(), scalar_modulus(), field_context) ||
+                !BN_mod_sub(residual.get(), integer_value.get(), rhs.get(), scalar_modulus(), field_context)) {
+                BN_CTX_free(field_context);
+                fail("output aggregate consistency field arithmetic failed");
+            }
+            output->consistency_residual_field.values[static_cast<std::size_t>(node * projected.cols + dim)] =
+                field_encode(residual.get());
             output->aggregate_pre.at(node, dim) = round_div(
-                checked_i128(static_cast<__int128>(output->aggregate_num.at(node, dim)) * aggregate_scale,
+                checked_i128(static_cast<__int128>(output->aggregate_num.at(node, dim)) * output_pre_scale,
                              name + ".aggregate_scaled"),
                 checked_i128(static_cast<__int128>(denominator_by_node[node]) * h_prime_scale,
                              name + ".aggregate_denominator"), name + ".aggregate_pre");
@@ -859,6 +1167,11 @@ void aggregate_output_head(const Config& config, const Graph& graph, const Stati
         }
     }
     BN_CTX_free(field_context);
+    std::vector<i64> denominators(graph.nodes, 0);
+    for (u64 node = 0; node < graph.nodes; ++node) denominators[node] = denominator_by_node[node];
+    output->aggregate_round_div = make_round_div_witness(
+        output->aggregate_num, denominators, output_pre_scale, h_prime_scale,
+        output->aggregate_pre, name + ".signed_round_div");
     (void)config;
 }
 
@@ -876,15 +1189,20 @@ GatTrace run_forward(const Config& config, const Graph& graph, const ModelBundle
         const u64 in_dim = current.cols;
         for (u64 head = 0; head < head_count; ++head) {
             const std::string prefix = "hidden/layer" + std::to_string(layer) + "/head" + std::to_string(head);
-            const Matrix weight = quantized_tensor_matrix(model, prefix + "/seq/kernel", 4);
+            const Matrix weight = quantized_tensor_matrix(model, prefix + "/seq/kernel",
+                                                          config.quantization.hidden_weight.at(layer).at(head));
             const Matrix projected = gpu_projection ? matmul_gpu(current, weight, prefix + ".projection")
                                                      : matmul_cpu(current, weight, prefix + ".projection");
-            const Matrix src_kernel = quantized_tensor_matrix(model, prefix + "/attn_src/kernel", 4);
-            const Matrix dst_kernel = quantized_tensor_matrix(model, prefix + "/attn_dst/kernel", 4);
+            const Matrix src_kernel = quantized_tensor_matrix(model, prefix + "/attn_src/kernel",
+                                                              config.quantization.hidden_attention_src.at(layer).at(head));
+            const Matrix dst_kernel = quantized_tensor_matrix(model, prefix + "/attn_dst/kernel",
+                                                              config.quantization.hidden_attention_dst.at(layer).at(head));
             HiddenHeadTrace head_trace;
             attention_scores(projected, src_kernel, dst_kernel, graph, &head_trace.e_src, &head_trace.e_dst,
                              &head_trace.score, prefix + ".attention");
-            aggregate_head(config, graph, tables, projected, head_trace.score, 16, 64, 16,
+            aggregate_head(config, graph, tables, projected, head_trace.score,
+                           config.quantization.hidden_h_prime.at(layer).at(head),
+                           config.quantization.hidden_aggregate_pre.at(layer),
                            &head_trace, prefix);
             head_outputs.push_back(head_trace.aggregate);
             layer_trace.heads.push_back(std::move(head_trace));
@@ -896,18 +1214,24 @@ GatTrace run_forward(const Config& config, const Graph& graph, const ModelBundle
     }
     for (u64 head = 0; head < config.architecture.output_heads; ++head) {
         const std::string prefix = "output/head" + std::to_string(head);
-        const Matrix weight = quantized_tensor_matrix(model, prefix + "/seq/kernel", 4);
+        const Matrix weight = quantized_tensor_matrix(model, prefix + "/seq/kernel",
+                                                      config.quantization.output_weight.at(head));
         const Matrix projected = gpu_projection ? matmul_gpu(current, weight, prefix + ".projection")
                                                  : matmul_cpu(current, weight, prefix + ".projection");
-        const Matrix src_kernel = quantized_tensor_matrix(model, prefix + "/attn_src/kernel", 4);
-        const Matrix dst_kernel = quantized_tensor_matrix(model, prefix + "/attn_dst/kernel", 4);
+        const Matrix src_kernel = quantized_tensor_matrix(model, prefix + "/attn_src/kernel",
+                                                          config.quantization.output_attention_src.at(head));
+        const Matrix dst_kernel = quantized_tensor_matrix(model, prefix + "/attn_dst/kernel",
+                                                          config.quantization.output_attention_dst.at(head));
         OutputHeadTrace head_trace;
         attention_scores(projected, src_kernel, dst_kernel, graph, &head_trace.e_src, &head_trace.e_dst,
                          &head_trace.score, prefix + ".attention");
-        aggregate_output_head(config, graph, tables, projected, head_trace.score, 64, 16,
+        aggregate_output_head(config, graph, tables, projected, head_trace.score,
+                              config.quantization.output_y_prime.at(head),
+                              config.quantization.output_pre,
                               &head_trace, prefix);
-        const auto bias = quantized_tensor_vector(model, prefix + "/output_bias", 16);
-        if (bias.size() != current.cols && bias.size() != config.architecture.classes) fail(prefix + " bias shape mismatch");
+        const auto bias = quantized_tensor_vector(model, prefix + "/output_bias",
+                                                  config.quantization.output_bias.at(head));
+        if (bias.size() != projected.cols || bias.size() != config.architecture.classes) fail(prefix + " bias shape mismatch");
         head_trace.bias = bias;
         for (u64 node = 0; node < graph.nodes; ++node) {
             for (u64 cls = 0; cls < projected.cols; ++cls) {
@@ -915,6 +1239,13 @@ GatTrace run_forward(const Config& config, const Graph& graph, const ModelBundle
                                                                prefix + ".bias");
             }
         }
+        head_trace.alignment_round_div = make_round_div_witness(
+            head_trace.y_quantized,
+            std::vector<i64>(graph.nodes, static_cast<i64>(config.quantization.output_pre)),
+            config.quantization.output_head,
+            1,
+            head_trace.aligned,
+            prefix + ".output_scale_alignment");
         trace.output_heads.push_back(std::move(head_trace));
     }
     if (trace.output_heads.empty()) fail("no output heads");
@@ -931,6 +1262,13 @@ GatTrace run_forward(const Config& config, const Graph& graph, const ModelBundle
         trace.logits.values[index] = round_div(trace.output_sum.values[index],
                                                static_cast<i64>(trace.output_heads.size()), "final average");
     }
+    trace.final_average_round_div = make_round_div_witness(
+        trace.output_sum,
+        std::vector<i64>(graph.nodes, static_cast<i64>(trace.output_heads.size())),
+        1,
+        1,
+        trace.logits,
+        "final_average");
     return trace;
 }
 
@@ -1037,6 +1375,456 @@ std::vector<float> load_npy_float32(const std::filesystem::path& path, u64 expec
     return values;
 }
 
+std::string authenticated_asset_digest(const Config& config, const std::filesystem::path& path) {
+    const auto assets = load_asset_manifest(config);
+    const auto relative = std::filesystem::relative(path, config.baseline_root).generic_string();
+    for (const auto& file : assets.files) {
+        if (file.path == relative) return file.sha256;
+    }
+    fail("asset manifest does not authenticate relation resource: " + relative);
+}
+
+void require_authentication_file(const Config& config, const std::filesystem::path& path,
+                                 const std::string& label) {
+    if (path.empty() || std::filesystem::is_symlink(path) || !std::filesystem::is_regular_file(path)) {
+        fail("BLOCKED: authenticated " + label + " is missing or not a regular baseline-local file: " + path.string());
+    }
+    (void)authenticated_asset_digest(config, path);
+}
+
+void validate_field_bound(i64 value, const std::string& label) {
+    if (value < 0) fail("negative integer bound in " + label);
+    BN_CTX* context = BN_CTX_new();
+    if (!context) fail("BN_CTX_new failed for " + label);
+    BigNum half;
+    if (!BN_copy(half.get(), scalar_modulus()) || !BN_sub_word(half.get(), 1) || !BN_rshift1(half.get(), half.get())) {
+        BN_CTX_free(context);
+        fail("failed to construct field half for " + label);
+    }
+    BigNum candidate = field_from_i64(value, context);
+    const bool fits = BN_cmp(candidate.get(), half.get()) < 0;
+    BN_CTX_free(context);
+    if (!fits) fail("integer bound is not strictly below backend field half in " + label);
+}
+
+void validate_static_tables(const Config& config, StaticTables* tables) {
+    if (!tables || !tables->authenticated) fail("BLOCKED: static table descriptor is not authenticated");
+    if (tables->quant_cfg_id != config.quant_cfg_id || tables->scale_id.empty() || tables->domain_id.empty() ||
+        tables->row_order != "ascending_index_min_to_max" || tables->generator_id.empty() || tables->version.empty()) {
+        fail("authenticated static table descriptor identity mismatch");
+    }
+    const auto lrelu_rows = checked_domain_rows(tables->lrelu_min, tables->lrelu_max, "LeakyReLU");
+    const auto elu_rows = checked_domain_rows(tables->elu_min, tables->elu_max, "ELU");
+    if (tables->exp_max >= kMaxStaticTableRows) {
+        fail("BLOCKED: ExpMap table domain is too large");
+    }
+    const auto exp_rows = tables->exp_max + 1;
+    if (tables->lrelu.size() != lrelu_rows || tables->elu.size() != elu_rows ||
+        tables->exp.size() != exp_rows || tables->lrelu.empty() || tables->elu.empty() || tables->exp.empty()) {
+        fail("authenticated static table row count does not match its descriptor domain");
+    }
+    for (std::size_t index = 0; index < tables->lrelu.size(); ++index) {
+        const i64 input = tables->lrelu_min + static_cast<i64>(index);
+        const i64 output = tables->lrelu[index];
+        if ((input >= 0 && output != input) || (input < 0 && (output < input || output > 0))) {
+            fail("authenticated LeakyReLU table violates monotone canonical range");
+        }
+        if (index != 0 && output < tables->lrelu[index - 1]) fail("authenticated LeakyReLU table is not monotone");
+    }
+    for (std::size_t index = 0; index < tables->elu.size(); ++index) {
+        const i64 input = tables->elu_min + static_cast<i64>(index);
+        const i64 output = tables->elu[index];
+        if ((input >= 0 && output != input) || (input < 0 && output >= 0)) {
+            fail("authenticated ELU table violates canonical range");
+        }
+        if (index != 0 && output < tables->elu[index - 1]) fail("authenticated ELU table is not monotone");
+    }
+    for (std::size_t index = 0; index < tables->exp.size(); ++index) {
+        if (tables->exp[index] <= 0 || (index != 0 && tables->exp[index] > tables->exp[index - 1])) {
+            fail("authenticated ExpMap table is not positive/non-increasing");
+        }
+    }
+    const auto expected_digest = digest_tables(*tables);
+    if (tables->digest != expected_digest) fail("authenticated static table digest mismatch");
+    std::ostringstream spec;
+    spec << config.static_table_id << "\n" << tables->generator_id << "\n" << tables->version << "\n"
+         << tables->scale_id << "\n" << tables->domain_id << "\n" << tables->row_order << "\n"
+         << config.range_bits << "\n" << tables->lrelu_min << "\n" << tables->lrelu_max << "\n" << tables->exp_max;
+    if (tables->spec_hash != sha256_text(spec.str())) fail("authenticated static table specification hash mismatch");
+}
+
+StaticTables load_static_table_descriptor(const Config& config) {
+    require_authentication_file(config, config.static_table_descriptor_path, "static table descriptor");
+    const auto text = file_text(config.static_table_descriptor_path);
+    if (trim(text).empty() || trim(text).front() != '{') {
+        fail("BLOCKED: static table descriptor must use the canonical JSON resource format");
+    }
+    StaticTables tables;
+    if (json_scalar(text, "schema") != "zkDL_gat_static_table_descriptor_v1") {
+        fail("static table descriptor schema mismatch");
+    }
+    tables.quant_cfg_id = json_scalar(text, "quant_cfg_id");
+    tables.generator_id = json_scalar(text, "generator_id");
+    tables.version = json_scalar(text, "version");
+    tables.scale_id = json_scalar(text, "scale_id");
+    tables.domain_id = json_scalar(text, "domain_id");
+    tables.row_order = json_scalar(text, "row_order");
+    tables.spec_hash = json_scalar(text, "spec_hash");
+    tables.digest = json_scalar(text, "digest");
+    if (json_scalar(text, "static_table_id") != config.static_table_id) fail("static table descriptor id mismatch");
+    tables.lrelu_min = json_i64_value(text, "lrelu_min");
+    tables.lrelu_max = json_i64_value(text, "lrelu_max");
+    tables.elu_min = json_i64_value(text, "elu_min");
+    tables.elu_max = json_i64_value(text, "elu_max");
+    tables.exp_max = json_u64_value(text, "exp_max");
+    tables.lrelu = json_i64_array(text, "lrelu");
+    tables.elu = json_i64_array(text, "elu");
+    tables.exp = json_i64_array(text, "exp");
+    tables.descriptor_digest = authenticated_asset_digest(config, config.static_table_descriptor_path);
+    tables.authenticated = true;
+    validate_static_tables(config, &tables);
+    return tables;
+}
+
+IntegerBoundFamily parse_ledger_family(const std::string& object) {
+    IntegerBoundFamily family;
+    family.layer = json_u64_value(object, "layer");
+    family.head = json_u64_value(object, "head");
+    family.output = json_bool_value(object, "output");
+    family.max_input_abs = json_i64_value(object, "max_input_abs");
+    family.max_weight_abs = json_i64_value(object, "max_weight_abs");
+    family.max_attention_abs = json_i64_value(object, "max_attention_abs");
+    family.max_bias_abs = json_i64_value(object, "max_bias_abs");
+    family.max_score_abs = json_i64_value(object, "max_score_abs");
+    family.max_table_output_abs = json_i64_value(object, "max_table_output_abs");
+    family.max_delta = json_i64_value(object, "max_delta");
+    family.max_exp = json_i64_value(object, "max_exp");
+    family.max_sum = json_i64_value(object, "max_sum");
+    family.max_aggregate_num = json_i64_value(object, "max_aggregate_num");
+    family.max_dividend_abs = json_i64_value(object, "max_dividend_abs");
+    family.max_aux_abs = json_i64_value(object, "max_aux_abs");
+    family.max_divisor = json_i64_value(object, "max_divisor");
+    family.max_field_product_abs = json_i64_value(object, "max_field_product_abs");
+    return family;
+}
+
+void validate_ledger_identity(const Config& config, const StaticTables& tables,
+                              const IntegerBoundLedger& ledger) {
+    if (!ledger.authenticated || ledger.schema != "zkDL_gat_integer_bound_ledger_v1" ||
+        ledger.ledger_id.empty() || ledger.quant_cfg_id != config.quant_cfg_id ||
+        ledger.static_table_id != config.static_table_id || ledger.field_modulus != scalar_modulus_decimal() ||
+        ledger.scale_chain_digest != config.scale_chain_digest ||
+        ledger.static_table_descriptor_digest != tables.descriptor_digest) {
+        fail("authenticated integer-bound ledger identity mismatch");
+    }
+    if (config.degree_bound_id == "auto" || config.degree_bound_id != ledger.ledger_id) {
+        fail("BLOCKED: secure config does not bind the authenticated integer-bound ledger id");
+    }
+    for (const auto value : {ledger.max_score_abs, ledger.max_table_output_abs, ledger.max_delta,
+                             ledger.max_exp, ledger.max_sum, ledger.max_aggregate_num,
+                             ledger.max_dividend_abs, ledger.max_aux_abs, ledger.max_divisor}) {
+        validate_field_bound(value, "ledger global bound");
+    }
+    if (ledger.max_divisor <= 0 || ledger.families.empty() || ledger.families.size() > kMaxLedgerFamilies) {
+        fail("BLOCKED: integer-bound ledger has an unbounded family registry");
+    }
+    const u64 hidden_layers = config.architecture.hidden_heads.size();
+    if (config.architecture.output_heads > kMaxLedgerFamilies) {
+        fail("BLOCKED: architecture has an unbounded output family registry");
+    }
+    u64 expected_families = config.architecture.output_heads;
+    for (const auto heads : config.architecture.hidden_heads) {
+        if (heads > kMaxLedgerFamilies || expected_families > kMaxLedgerFamilies - heads) {
+            fail("BLOCKED: architecture has an unbounded integer-bound family registry");
+        }
+        expected_families += heads;
+    }
+    if (ledger.families.size() != expected_families) {
+        fail("integer-bound ledger family count does not match canonical architecture");
+    }
+    std::set<std::string> family_ids;
+    for (std::size_t index = 0; index < ledger.families.size(); ++index) {
+        const auto& family = ledger.families[index];
+        const bool identity_in_range = family.output
+            ? family.layer == hidden_layers && family.head < config.architecture.output_heads
+            : family.layer < hidden_layers && family.head < config.architecture.hidden_heads.at(family.layer);
+        if (!identity_in_range || !family_ids.insert(std::to_string(family.layer) + ":" +
+                                                      std::to_string(family.head) + ":" +
+                                                      (family.output ? "out" : "hidden")).second) {
+            fail("integer-bound ledger contains an out-of-range or duplicate family identity");
+        }
+        for (const auto value : {family.max_input_abs, family.max_weight_abs, family.max_attention_abs,
+                                 family.max_bias_abs, family.max_score_abs, family.max_table_output_abs,
+                                 family.max_delta, family.max_exp, family.max_sum, family.max_aggregate_num,
+                                 family.max_dividend_abs, family.max_aux_abs, family.max_divisor,
+                                 family.max_field_product_abs}) {
+            validate_field_bound(value, "ledger family bound " + std::to_string(index));
+        }
+        if (family.max_divisor <= 0 || family.max_score_abs > ledger.max_score_abs ||
+            family.max_table_output_abs > ledger.max_table_output_abs || family.max_delta > ledger.max_delta ||
+            family.max_exp > ledger.max_exp || family.max_sum > ledger.max_sum ||
+            family.max_aggregate_num > ledger.max_aggregate_num || family.max_dividend_abs > ledger.max_dividend_abs ||
+            family.max_aux_abs > ledger.max_aux_abs || family.max_divisor > ledger.max_divisor) {
+            fail("integer-bound ledger family exceeds its global bound");
+        }
+    }
+    if (ledger.digest != digest_ledger(ledger)) fail("authenticated integer-bound ledger digest mismatch");
+}
+
+IntegerBoundLedger load_integer_bound_ledger(const Config& config, const StaticTables& tables) {
+    require_authentication_file(config, config.integer_bound_ledger_path, "integer-bound ledger");
+    const auto text = file_text(config.integer_bound_ledger_path);
+    if (trim(text).empty() || trim(text).front() != '{') {
+        fail("BLOCKED: integer-bound ledger must use the canonical JSON resource format");
+    }
+    IntegerBoundLedger ledger;
+    if (json_scalar(text, "schema") != "zkDL_gat_integer_bound_ledger_v1") fail("integer-bound ledger schema mismatch");
+    ledger.schema = json_scalar(text, "schema");
+    ledger.ledger_id = json_scalar(text, "ledger_id");
+    ledger.quant_cfg_id = json_scalar(text, "quant_cfg_id");
+    ledger.static_table_id = json_scalar(text, "static_table_id");
+    ledger.field_modulus = json_scalar(text, "field_modulus");
+    ledger.scale_chain_digest = json_scalar(text, "scale_chain_digest");
+    ledger.static_table_descriptor_digest = json_scalar(text, "static_table_descriptor_digest");
+    ledger.digest = json_scalar(text, "digest");
+    ledger.max_score_abs = json_i64_value(text, "max_score_abs");
+    ledger.max_table_output_abs = json_i64_value(text, "max_table_output_abs");
+    ledger.max_delta = json_i64_value(text, "max_delta");
+    ledger.max_exp = json_i64_value(text, "max_exp");
+    ledger.max_sum = json_i64_value(text, "max_sum");
+    ledger.max_aggregate_num = json_i64_value(text, "max_aggregate_num");
+    ledger.max_dividend_abs = json_i64_value(text, "max_dividend_abs");
+    ledger.max_aux_abs = json_i64_value(text, "max_aux_abs");
+    ledger.max_divisor = json_i64_value(text, "max_divisor");
+    for (const auto& object : json_objects(text, "families")) ledger.families.push_back(parse_ledger_family(object));
+    ledger.authenticated = true;
+    ledger.descriptor_digest = authenticated_asset_digest(config, config.integer_bound_ledger_path);
+    validate_ledger_identity(config, tables, ledger);
+    return ledger;
+}
+
+const IntegerBoundFamily& ledger_family(const IntegerBoundLedger& ledger, u64 layer, u64 head, bool output) {
+    const IntegerBoundFamily* found = nullptr;
+    for (const auto& family : ledger.families) {
+        if (family.layer == layer && family.head == head && family.output == output) {
+            if (found) fail("integer-bound ledger contains duplicate family identity");
+            found = &family;
+        }
+    }
+    if (!found) fail("integer-bound ledger is missing a required layer/head family");
+    return *found;
+}
+
+i64 max_abs_matrix(const Matrix& matrix, const std::string& name) {
+    __int128 maximum = 0;
+    for (const auto value : matrix.values) {
+        const __int128 absolute = value < 0 ? -static_cast<__int128>(value) : static_cast<__int128>(value);
+        if (absolute > maximum) maximum = absolute;
+    }
+    return checked_i128(maximum, name);
+}
+
+i64 max_abs_quantized_tensor(const ModelBundle& model, const std::string& name, u64 scale) {
+    const auto values = quantized_tensor_vector(model, name, scale);
+    __int128 maximum = 0;
+    for (const auto value : values) {
+        const __int128 absolute = value < 0 ? -static_cast<__int128>(value) : static_cast<__int128>(value);
+        if (absolute > maximum) maximum = absolute;
+    }
+    return checked_i128(maximum, name + ".bound");
+}
+
+i64 ceil_positive_div(i64 numerator, i64 denominator, const std::string& name) {
+    if (numerator < 0 || denominator <= 0) fail("invalid positive division bound in " + name);
+    return checked_i128((static_cast<__int128>(numerator) + denominator - 1) / denominator, name);
+}
+
+void require_ledger_bound(const IntegerBoundFamily& family, i64 required, i64 registered,
+                          const std::string& name) {
+    if (required < 0 || registered < 0 || required > registered) {
+        fail("BLOCKED: integer-bound ledger admission failed for " + name);
+    }
+    validate_field_bound(required, name);
+}
+
+void require_round_div_no_wrap(i64 dividend_abs, i64 divisor, i64 quotient_abs,
+                               const IntegerBoundFamily& family, const std::string& name) {
+    if (dividend_abs < 0 || divisor <= 0 || quotient_abs < 0) fail("invalid SignedRoundDiv bound in " + name);
+    const i64 two_a_plus_d = checked_i128(static_cast<__int128>(2) * dividend_abs + divisor,
+                                          name + ".2a_plus_d");
+    const i64 two_dq_plus_r = checked_i128(static_cast<__int128>(2) * divisor * quotient_abs +
+                                               (2 * divisor - 1), name + ".2dq_plus_r");
+    const i64 two_d_minus_one = checked_i128(static_cast<__int128>(2) * divisor - 1,
+                                             name + ".2d_minus_one");
+    for (const auto value : {dividend_abs, divisor, quotient_abs, two_a_plus_d,
+                             two_dq_plus_r, two_d_minus_one}) {
+        validate_field_bound(value, name + ".field_fit");
+    }
+    const i64 required_aux = std::max({dividend_abs, divisor, quotient_abs, two_a_plus_d,
+                                       two_dq_plus_r, two_d_minus_one});
+    require_ledger_bound(family, required_aux, family.max_aux_abs, name + ".aux");
+}
+
+void admit_integer_bound_ledger(const Config& config, const Graph& graph,
+                                const ModelBundle& model, const StaticTables& tables,
+                                const IntegerBoundLedger& ledger) {
+    if (!tables.authenticated || !ledger.authenticated) fail("BLOCKED: relation resources are not authenticated");
+    u64 max_degree = 0;
+    for (u64 node = 0; node < graph.nodes; ++node) {
+        max_degree = std::max(max_degree, graph.node_edge_ptr.at(node + 1) - graph.node_edge_ptr.at(node));
+    }
+    if (max_degree == 0) fail("BLOCKED: graph has no destination group for ledger admission");
+    const i64 input_bound = max_abs_matrix(graph.feature_values, "input_bound");
+    i64 current_bound = input_bound;
+    const auto table_output_bound = [&](const std::vector<i64>& values, i64 minimum, i64 maximum,
+                                        i64 input_abs, const std::string& name) {
+        if (input_abs < 0 || -static_cast<__int128>(input_abs) < minimum || input_abs > maximum) {
+            fail("BLOCKED: " + name + " input bound is outside its authenticated table domain");
+        }
+        const u64 first = static_cast<u64>(static_cast<__int128>(-input_abs) - minimum);
+        const u64 last = static_cast<u64>(static_cast<__int128>(input_abs) - minimum);
+        if (last >= values.size() || first > last) fail("invalid authenticated table bound in " + name);
+        const auto abs_value = [](i64 value) {
+            return value < 0 ? -static_cast<__int128>(value) : static_cast<__int128>(value);
+        };
+        // All authenticated lookup tables are monotone.  Therefore the
+        // maximum absolute output on a contiguous query interval is attained
+        // at one of its endpoints; do not let a hostile interval create an
+        // unbounded verifier-side scan.
+        const __int128 maximum_abs = std::max(abs_value(values.at(static_cast<std::size_t>(first))),
+                                              abs_value(values.at(static_cast<std::size_t>(last))));
+        return checked_i128(maximum_abs, name + ".output_bound");
+    };
+    const auto require_global = [&](i64 required, i64 registered, const std::string& name) {
+        if (required < 0 || registered < 0 || required > registered) fail("BLOCKED: global ledger admission failed for " + name);
+        validate_field_bound(required, name);
+    };
+    require_global(input_bound, ledger.max_score_abs, "input_bound");
+    for (u64 layer = 0; layer < config.architecture.hidden_dims.size(); ++layer) {
+        const u64 in_dim = layer == 0 ? graph.features : config.architecture.hidden_heads[layer - 1] * config.architecture.hidden_dims[layer - 1];
+        const u64 head_dim = config.architecture.hidden_dims[layer];
+        i64 next_bound = 0;
+        for (u64 head = 0; head < config.architecture.hidden_heads[layer]; ++head) {
+            const auto& family = ledger_family(ledger, layer, head, false);
+            const std::string prefix = "hidden/layer" + std::to_string(layer) + "/head" + std::to_string(head);
+            const i64 weight_bound = max_abs_quantized_tensor(model, prefix + "/seq/kernel",
+                                                               config.quantization.hidden_weight.at(layer).at(head));
+            const i64 attention_src_bound = max_abs_quantized_tensor(model, prefix + "/attn_src/kernel",
+                                                                       config.quantization.hidden_attention_src.at(layer).at(head));
+            const i64 attention_dst_bound = max_abs_quantized_tensor(model, prefix + "/attn_dst/kernel",
+                                                                       config.quantization.hidden_attention_dst.at(layer).at(head));
+            const i64 h_prime_bound = checked_i128(static_cast<__int128>(in_dim) * current_bound * weight_bound,
+                                                   prefix + ".h_prime_bound");
+            const i64 score_src_bound = checked_i128(static_cast<__int128>(head_dim) * h_prime_bound * attention_src_bound,
+                                                     prefix + ".score_src_bound");
+            const i64 score_dst_bound = checked_i128(static_cast<__int128>(head_dim) * h_prime_bound * attention_dst_bound,
+                                                     prefix + ".score_dst_bound");
+            const i64 score_bound = checked_i128(static_cast<__int128>(score_src_bound) + score_dst_bound,
+                                                 prefix + ".score_bound");
+            const i64 table_bound = table_output_bound(tables.lrelu, tables.lrelu_min, tables.lrelu_max,
+                                                       score_bound, prefix + ".lrelu");
+            const i64 delta_bound = checked_i128(static_cast<__int128>(2) * table_bound,
+                                                 prefix + ".delta_bound");
+            if (delta_bound > static_cast<i64>(tables.exp_max)) fail("BLOCKED: ExpMap table domain admission failed for " + prefix);
+            const i64 exp_bound = tables.exp.front();
+            const i64 sum_bound = checked_i128(static_cast<__int128>(max_degree) * exp_bound, prefix + ".sum_bound");
+            const i64 aggregate_num_bound = checked_i128(static_cast<__int128>(sum_bound) * h_prime_bound,
+                                                         prefix + ".aggregate_num_bound");
+            const i64 dividend_bound = checked_i128(static_cast<__int128>(config.quantization.hidden_aggregate_pre.at(layer)) * aggregate_num_bound,
+                                                    prefix + ".dividend_bound");
+            const i64 divisor_bound = checked_i128(static_cast<__int128>(config.quantization.hidden_h_prime.at(layer).at(head)) * sum_bound,
+                                                   prefix + ".divisor_bound");
+            const i64 min_divisor = static_cast<i64>(config.quantization.hidden_h_prime.at(layer).at(head));
+            const i64 quotient_bound = ceil_positive_div(dividend_bound, min_divisor, prefix + ".quotient_bound");
+            const i64 field_product_bound = checked_i128(static_cast<__int128>(exp_bound) * h_prime_bound,
+                                                         prefix + ".field_product_bound");
+            require_ledger_bound(family, current_bound, family.max_input_abs, prefix + ".input");
+            require_ledger_bound(family, weight_bound, family.max_weight_abs, prefix + ".weight");
+            require_ledger_bound(family, std::max(attention_src_bound, attention_dst_bound), family.max_attention_abs, prefix + ".attention");
+            require_ledger_bound(family, score_bound, family.max_score_abs, prefix + ".score");
+            require_ledger_bound(family, table_bound, family.max_table_output_abs, prefix + ".table_output");
+            require_ledger_bound(family, delta_bound, family.max_delta, prefix + ".delta");
+            require_ledger_bound(family, exp_bound, family.max_exp, prefix + ".exp");
+            require_ledger_bound(family, sum_bound, family.max_sum, prefix + ".sum");
+            require_ledger_bound(family, aggregate_num_bound, family.max_aggregate_num, prefix + ".aggregate_num");
+            require_ledger_bound(family, dividend_bound, family.max_dividend_abs, prefix + ".dividend");
+            require_ledger_bound(family, divisor_bound, family.max_divisor, prefix + ".divisor");
+            require_ledger_bound(family, field_product_bound, family.max_field_product_abs, prefix + ".field_product");
+            require_round_div_no_wrap(dividend_bound, min_divisor, quotient_bound, family, prefix + ".signed_round_div");
+            const i64 elu_bound = table_output_bound(tables.elu, tables.elu_min, tables.elu_max,
+                                                     quotient_bound, prefix + ".elu");
+            next_bound = std::max(next_bound, elu_bound);
+            for (const auto value : {score_bound, delta_bound, sum_bound, aggregate_num_bound,
+                                     dividend_bound, divisor_bound, field_product_bound}) require_global(value, ledger.max_dividend_abs, prefix + ".global");
+        }
+        current_bound = next_bound;
+    }
+    const u64 output_layer = config.architecture.hidden_dims.size();
+    const u64 output_in_dim = config.architecture.hidden_heads.back() * config.architecture.hidden_dims.back();
+    i64 output_head_bound = 0;
+    for (u64 head = 0; head < config.architecture.output_heads; ++head) {
+        const auto& family = ledger_family(ledger, output_layer, head, true);
+        const std::string prefix = "output/head" + std::to_string(head);
+        const i64 weight_bound = max_abs_quantized_tensor(model, prefix + "/seq/kernel", config.quantization.output_weight.at(head));
+        const i64 attention_src_bound = max_abs_quantized_tensor(model, prefix + "/attn_src/kernel", config.quantization.output_attention_src.at(head));
+        const i64 attention_dst_bound = max_abs_quantized_tensor(model, prefix + "/attn_dst/kernel", config.quantization.output_attention_dst.at(head));
+        const i64 bias_bound = max_abs_quantized_tensor(model, prefix + "/output_bias", config.quantization.output_bias.at(head));
+        const i64 y_prime_bound = checked_i128(static_cast<__int128>(output_in_dim) * current_bound * weight_bound,
+                                               prefix + ".y_prime_bound");
+        const i64 score_src_bound = checked_i128(static_cast<__int128>(config.architecture.classes) * y_prime_bound * attention_src_bound,
+                                                 prefix + ".score_src_bound");
+        const i64 score_dst_bound = checked_i128(static_cast<__int128>(config.architecture.classes) * y_prime_bound * attention_dst_bound,
+                                                 prefix + ".score_dst_bound");
+        const i64 score_bound = checked_i128(static_cast<__int128>(score_src_bound) + score_dst_bound, prefix + ".score_bound");
+        const i64 table_bound = table_output_bound(tables.lrelu, tables.lrelu_min, tables.lrelu_max, score_bound, prefix + ".lrelu");
+        const i64 delta_bound = checked_i128(static_cast<__int128>(2) * table_bound, prefix + ".delta_bound");
+        if (delta_bound > static_cast<i64>(tables.exp_max)) fail("BLOCKED: ExpMap table domain admission failed for " + prefix);
+        const i64 exp_bound = tables.exp.front();
+        const i64 sum_bound = checked_i128(static_cast<__int128>(max_degree) * exp_bound, prefix + ".sum_bound");
+        const i64 aggregate_num_bound = checked_i128(static_cast<__int128>(sum_bound) * y_prime_bound, prefix + ".aggregate_num_bound");
+        const i64 dividend_bound = checked_i128(static_cast<__int128>(config.quantization.output_pre) * aggregate_num_bound,
+                                                prefix + ".dividend_bound");
+        const i64 divisor_bound = checked_i128(static_cast<__int128>(config.quantization.output_y_prime.at(head)) * sum_bound,
+                                               prefix + ".divisor_bound");
+        const i64 quotient_bound = ceil_positive_div(dividend_bound, static_cast<i64>(config.quantization.output_y_prime.at(head)), prefix + ".quotient_bound");
+        const i64 aligned_bound = ceil_positive_div(static_cast<i64>(config.quantization.output_head) * quotient_bound,
+                                                    static_cast<i64>(config.quantization.output_pre), prefix + ".aligned_bound");
+        const i64 head_bound = checked_i128(static_cast<__int128>(aligned_bound) + bias_bound, prefix + ".head_bound");
+        const i64 field_product_bound = checked_i128(static_cast<__int128>(exp_bound) * y_prime_bound, prefix + ".field_product_bound");
+        require_ledger_bound(family, current_bound, family.max_input_abs, prefix + ".input");
+        require_ledger_bound(family, weight_bound, family.max_weight_abs, prefix + ".weight");
+        require_ledger_bound(family, std::max(attention_src_bound, attention_dst_bound), family.max_attention_abs, prefix + ".attention");
+        require_ledger_bound(family, bias_bound, family.max_bias_abs, prefix + ".bias");
+        require_ledger_bound(family, score_bound, family.max_score_abs, prefix + ".score");
+        require_ledger_bound(family, table_bound, family.max_table_output_abs, prefix + ".table_output");
+        require_ledger_bound(family, delta_bound, family.max_delta, prefix + ".delta");
+        require_ledger_bound(family, exp_bound, family.max_exp, prefix + ".exp");
+        require_ledger_bound(family, sum_bound, family.max_sum, prefix + ".sum");
+        require_ledger_bound(family, aggregate_num_bound, family.max_aggregate_num, prefix + ".aggregate_num");
+        require_ledger_bound(family, std::max({dividend_bound, static_cast<i64>(config.quantization.output_head) * quotient_bound,
+                                               static_cast<i64>(config.architecture.output_heads) * head_bound}),
+                             family.max_dividend_abs, prefix + ".dividend");
+        require_ledger_bound(family, divisor_bound, family.max_divisor, prefix + ".divisor");
+        require_ledger_bound(family, field_product_bound, family.max_field_product_abs, prefix + ".field_product");
+        require_round_div_no_wrap(dividend_bound, static_cast<i64>(config.quantization.output_y_prime.at(head)), quotient_bound,
+                                  family, prefix + ".signed_round_div");
+        require_round_div_no_wrap(static_cast<i64>(config.quantization.output_head) * quotient_bound,
+                                  static_cast<i64>(config.quantization.output_pre), aligned_bound,
+                                  family, prefix + ".output_alignment");
+        output_head_bound = std::max(output_head_bound, head_bound);
+    }
+    const i64 output_sum_bound = checked_i128(static_cast<__int128>(config.architecture.output_heads) * output_head_bound,
+                                              "final_average.sum_bound");
+    require_global(output_sum_bound, ledger.max_dividend_abs, "final_average.sum");
+    const i64 final_quotient_bound = ceil_positive_div(output_sum_bound,
+                                                       static_cast<i64>(config.architecture.output_heads),
+                                                       "final_average.quotient_bound");
+    require_global(final_quotient_bound, ledger.max_dividend_abs, "final_average.quotient");
+    const auto& final_family = ledger_family(ledger, output_layer, 0, true);
+    require_round_div_no_wrap(output_sum_bound, static_cast<i64>(config.architecture.output_heads),
+                              final_quotient_bound, final_family, "final_average");
+}
+
 }  // namespace
 
 AssetManifest load_asset_manifest(const Config& config) {
@@ -1055,6 +1843,20 @@ AssetManifest load_asset_manifest(const Config& config) {
     result.quant_cfg_id = json_string_field(manifest, "quant_cfg_id");
     if (result.quant_cfg_id != config.quant_cfg_id) fail("asset manifest quant_cfg_id mismatch");
     result.config = json_string_field(manifest, "config");
+    result.scale_chain_digest = json_string_field(manifest, "scale_chain_digest");
+    result.static_table_descriptor = json_string_field(manifest, "static_table_descriptor");
+    result.static_table_descriptor_digest = json_string_field(manifest, "static_table_descriptor_digest");
+    result.integer_bound_ledger = json_string_field(manifest, "integer_bound_ledger");
+    result.integer_bound_ledger_descriptor_digest = json_string_field(manifest, "integer_bound_ledger_descriptor_digest");
+    if (!is_digest(result.scale_chain_digest) || !is_digest(result.static_table_descriptor_digest) ||
+        !is_digest(result.integer_bound_ledger_descriptor_digest) ||
+        result.scale_chain_digest != config.scale_chain_digest ||
+        result.static_table_descriptor != std::filesystem::relative(
+            config.static_table_descriptor_path, config.baseline_root).generic_string() ||
+        result.integer_bound_ledger != std::filesystem::relative(
+            config.integer_bound_ledger_path, config.baseline_root).generic_string()) {
+        fail("asset manifest relation-resource identity mismatch");
+    }
     const auto expected_config = std::filesystem::relative(config.config_path, config.baseline_root).generic_string();
     if (result.config != expected_config) fail("asset manifest config identity mismatch");
     result.digest = sha256_file(config.asset_manifest_path);
@@ -1092,6 +1894,17 @@ AssetManifest load_asset_manifest(const Config& config) {
     require_entry((std::filesystem::relative(config.checkpoint_bundle, config.baseline_root) / "tensors.txt").generic_string());
     require_entry((std::filesystem::relative(config.checkpoint_bundle, config.baseline_root) / "tensors.npz").generic_string());
     require_entry((std::filesystem::relative(config.cache_root / config.dataset, config.baseline_root) / "meta.cfg").generic_string());
+    require_entry(std::filesystem::relative(config.static_table_descriptor_path, config.baseline_root).generic_string());
+    require_entry(std::filesystem::relative(config.integer_bound_ledger_path, config.baseline_root).generic_string());
+    const auto manifest_digest_for = [&](const std::string& relative) -> const std::string& {
+        for (const auto& file : result.files) if (file.path == relative) return file.sha256;
+        fail("asset manifest relation resource entry is missing: " + relative);
+    };
+    if (manifest_digest_for(result.static_table_descriptor) != result.static_table_descriptor_digest ||
+        manifest_digest_for(result.integer_bound_ledger) != result.integer_bound_ledger_descriptor_digest ||
+        manifest_digest_for("configs/quantization_scale_chain.cfg") != result.scale_chain_digest) {
+        fail("asset manifest relation-resource digest mismatch");
+    }
     return result;
 }
 
@@ -1116,7 +1929,8 @@ Config load_config(const std::filesystem::path& path) {
         "K_out", "num_classes", "range_bits", "seed", "dump_trace", "auto_prepare_dataset", "model_arch_id",
         "model_param_id", "quant_cfg_id", "input_preprocess_id", "static_table_id", "degree_bound_id", "symmetrize_edges",
         "deduplicate_edges", "batch_graphs", "srs_type", "srs_id", "srs_path", "privacy_policy", "input_privacy",
-        "output_mode", "opening_mode", "binding_mode", "proof_task", "security_profile_id", "verifier_registry_digest"
+        "output_mode", "opening_mode", "binding_mode", "proof_task", "security_profile_id", "verifier_registry_digest",
+        "static_table_descriptor", "integer_bound_ledger"
     };
     for (const auto& item : values) {
         if (!canonical_keys.count(item.first)) fail("unknown non-canonical configuration key: " + item.first);
@@ -1134,6 +1948,10 @@ Config load_config(const std::filesystem::path& path) {
     config.checkpoint_bundle = local_path(config.baseline_root, required("checkpoint_bundle"), "checkpoint_bundle");
     config.run_root = local_path(config.baseline_root, required("export_dir"), "export_dir");
     config.asset_manifest_path = config.run_root / "asset_manifest.json";
+    config.static_table_descriptor_path = local_path(
+        config.baseline_root, required("static_table_descriptor"), "static_table_descriptor");
+    config.integer_bound_ledger_path = local_path(
+        config.baseline_root, required("integer_bound_ledger"), "integer_bound_ledger");
     config.model_arch_id = required("model_arch_id"); config.model_param_id = required("model_param_id");
     config.quant_cfg_id = required("quant_cfg_id"); config.static_table_id = required("static_table_id");
     config.input_preprocess_id = required("input_preprocess_id"); config.proof_task = required("proof_task");
@@ -1167,21 +1985,39 @@ Config load_config(const std::filesystem::path& path) {
     }
 
     const auto quant_path = config.baseline_root / "configs" / "quantization_scale_chain.cfg";
+    if (std::filesystem::is_symlink(quant_path) || !std::filesystem::is_regular_file(quant_path)) {
+        fail("BLOCKED: quantization scale-chain file is missing or not a regular baseline-local file");
+    }
+    config.scale_chain_digest = sha256_file(quant_path);
     const auto quant = read_kv(quant_path);
     if (quant.at("schema") != "gat_l3_scale_chain" || quant.at("quant_cfg_id") != config.quant_cfg_id) {
         fail("quantization scale chain schema/id mismatch");
     }
-    if (quant.at("quant_cfg_id") != config.quant_cfg_id) fail("quantization chain id mismatch");
-    config.quantization.input = parse_u64(quant.at("s_input"), "s_input");
-    config.quantization.delta = parse_u64(quant.at("s_delta"), "s_delta");
-    config.quantization.exp = parse_u64(quant.at("s_exp"), "s_exp");
-    config.quantization.hidden_input = parse_list(quant.at("s_h"), "s_h");
-    config.quantization.hidden_weight = parse_list(quant.at("s_w_hidden_0"), "s_w_hidden_0");
-    config.quantization.hidden_h_prime = parse_list(quant.at("s_h_prime_hidden_0"), "s_h_prime_hidden_0");
-    config.quantization.hidden_attention_src = parse_list(quant.at("s_a_src_hidden_0"), "s_a_src_hidden_0");
-    config.quantization.hidden_attention_dst = parse_list(quant.at("s_a_dst_hidden_0"), "s_a_dst_hidden_0");
+    const auto scale_required = [&](const std::string& key) -> const std::string& {
+        const auto iterator = quant.find(key);
+        if (iterator == quant.end()) fail("quantization scale-chain key missing: " + key);
+        return iterator->second;
+    };
+    const auto parse_layer_scales = [&](const std::string& prefix) {
+        std::vector<std::vector<u64>> result;
+        result.reserve(config.architecture.hidden_dims.size());
+        for (u64 layer = 0; layer < config.architecture.hidden_dims.size(); ++layer) {
+            result.push_back(parse_list(scale_required(prefix + std::to_string(layer)),
+                                        prefix + std::to_string(layer)));
+        }
+        return result;
+    };
+    config.quantization.input = parse_u64(scale_required("s_input"), "s_input");
+    config.quantization.delta = parse_u64(scale_required("s_delta"), "s_delta");
+    config.quantization.exp = parse_u64(scale_required("s_exp"), "s_exp");
+    config.quantization.hidden_input = parse_list(scale_required("s_h"), "s_h");
+    config.quantization.hidden_weight = parse_layer_scales("s_w_hidden_");
+    config.quantization.hidden_h_prime = parse_layer_scales("s_h_prime_hidden_");
+    config.quantization.hidden_attention_src = parse_layer_scales("s_a_src_hidden_");
+    config.quantization.hidden_attention_dst = parse_layer_scales("s_a_dst_hidden_");
     config.quantization.hidden_aggregate_pre = parse_list(quant.at("s_agg_pre"), "s_agg_pre");
     config.quantization.hidden_aggregate = parse_list(quant.at("s_agg"), "s_agg");
+    config.quantization.hidden_concat = parse_list(scale_required("s_cat"), "s_cat");
     config.quantization.output_weight = parse_list(quant.at("s_w_output"), "s_w_output");
     config.quantization.output_y_prime = parse_list(quant.at("s_y_prime"), "s_y_prime");
     config.quantization.output_attention_src = parse_list(quant.at("s_a_src_output"), "s_a_src_output");
@@ -1192,8 +2028,84 @@ Config load_config(const std::filesystem::path& path) {
     config.quantization.output = parse_u64(quant.at("s_out"), "s_out");
     config.quantization.rounding = quant.at("round"); config.quantization.rescale = quant.at("rescale");
     config.quantization.output_average = quant.at("output_average");
-    if (quant.at("s_cat").empty() || config.quantization.rounding != "nearest_ties_away" || config.quantization.rescale != "none" ||
+    if (config.quantization.rounding != "nearest_ties_away" || config.quantization.rescale != "none" ||
         config.quantization.output_average != "signed_round_div") fail("unsupported non-canonical quantization chain");
+    const u64 hidden_layers = config.architecture.hidden_dims.size();
+    if (config.quantization.hidden_input.size() != hidden_layers + 1 ||
+        config.quantization.hidden_aggregate_pre.size() != hidden_layers ||
+        config.quantization.hidden_aggregate.size() != hidden_layers ||
+        config.quantization.hidden_concat.size() != hidden_layers ||
+        config.quantization.output_weight.size() != config.architecture.output_heads ||
+        config.quantization.output_y_prime.size() != config.architecture.output_heads ||
+        config.quantization.output_attention_src.size() != config.architecture.output_heads ||
+        config.quantization.output_attention_dst.size() != config.architecture.output_heads ||
+        config.quantization.output_bias.size() != config.architecture.output_heads) {
+        fail("quantization scale-chain vector lengths do not match canonical architecture");
+    }
+    const auto positive = [](u64 value, const std::string& name) {
+        if (value == 0) fail("quantization scale must be positive: " + name);
+    };
+    positive(config.quantization.input, "s_input"); positive(config.quantization.delta, "s_delta");
+    positive(config.quantization.exp, "s_exp"); positive(config.quantization.output_pre, "s_out_pre");
+    positive(config.quantization.output_head, "s_out_head"); positive(config.quantization.output, "s_out");
+    if (config.quantization.hidden_input.front() != config.quantization.input) {
+        fail("s_h[0] must equal s_input");
+    }
+    const auto product_scale = [](u64 left, u64 right, const std::string& name) {
+        if (left != 0 && right > std::numeric_limits<u64>::max() / left) fail("scale-chain overflow in " + name);
+        return left * right;
+    };
+    for (u64 layer = 0; layer < hidden_layers; ++layer) {
+        const auto expected_heads = config.architecture.hidden_heads.at(layer);
+        for (u64 head = 0; head < expected_heads; ++head) {
+            if (config.quantization.hidden_weight.at(layer).size() != expected_heads ||
+                config.quantization.hidden_h_prime.at(layer).size() != expected_heads ||
+                config.quantization.hidden_attention_src.at(layer).size() != expected_heads ||
+                config.quantization.hidden_attention_dst.at(layer).size() != expected_heads) {
+                fail("hidden scale-chain head count mismatch at layer " + std::to_string(layer));
+            }
+            const auto h_prime = product_scale(config.quantization.hidden_input.at(layer),
+                                               config.quantization.hidden_weight.at(layer).at(head), "S_Hprime");
+            if (h_prime != config.quantization.hidden_h_prime.at(layer).at(head) ||
+                product_scale(h_prime, config.quantization.hidden_attention_src.at(layer).at(head), "S_delta_src") != config.quantization.delta ||
+                product_scale(h_prime, config.quantization.hidden_attention_dst.at(layer).at(head), "S_delta_dst") != config.quantization.delta) {
+                fail("hidden projection/attention scale-chain mismatch at layer " + std::to_string(layer) +
+                     " head " + std::to_string(head));
+            }
+            positive(config.quantization.hidden_weight.at(layer).at(head), "s_w_hidden");
+            positive(config.quantization.hidden_h_prime.at(layer).at(head), "s_h_prime_hidden");
+            positive(config.quantization.hidden_attention_src.at(layer).at(head), "s_a_src_hidden");
+            positive(config.quantization.hidden_attention_dst.at(layer).at(head), "s_a_dst_hidden");
+        }
+        if (config.quantization.hidden_aggregate.at(layer) != config.quantization.hidden_concat.at(layer) ||
+            config.quantization.hidden_concat.at(layer) != config.quantization.hidden_input.at(layer + 1)) {
+            fail("hidden aggregate/concat/input scale-chain mismatch at layer " + std::to_string(layer));
+        }
+        positive(config.quantization.hidden_aggregate_pre.at(layer), "s_agg_pre");
+        positive(config.quantization.hidden_aggregate.at(layer), "s_agg");
+        positive(config.quantization.hidden_concat.at(layer), "s_cat");
+    }
+    if (config.quantization.output_pre == 0 || config.quantization.output_head == 0 ||
+        config.quantization.output != config.quantization.output_head) {
+        fail("output scale-chain requires S_out == S_out_head");
+    }
+    const u64 output_input_scale = config.quantization.hidden_input.back();
+    const u64 output_input_dim = config.architecture.hidden_heads.back() * config.architecture.hidden_dims.back();
+    (void)output_input_dim;
+    for (u64 head = 0; head < config.architecture.output_heads; ++head) {
+        const auto y_prime = product_scale(output_input_scale, config.quantization.output_weight.at(head), "S_Yprime");
+        if (y_prime != config.quantization.output_y_prime.at(head) ||
+            product_scale(y_prime, config.quantization.output_attention_src.at(head), "S_delta_output_src") != config.quantization.delta ||
+            product_scale(y_prime, config.quantization.output_attention_dst.at(head), "S_delta_output_dst") != config.quantization.delta ||
+            config.quantization.output_bias.at(head) != config.quantization.output_head) {
+            fail("output projection/attention/bias scale-chain mismatch at head " + std::to_string(head));
+        }
+        positive(config.quantization.output_weight.at(head), "s_w_output");
+        positive(config.quantization.output_y_prime.at(head), "s_y_prime");
+        positive(config.quantization.output_attention_src.at(head), "s_a_src_output");
+        positive(config.quantization.output_attention_dst.at(head), "s_a_dst_output");
+        positive(config.quantization.output_bias.at(head), "s_b_output");
+    }
     config.config_digest = sha256_file(absolute);
     return config;
 }
@@ -1425,56 +2337,18 @@ Graph load_graph(const Config& config) {
 }
 
 StaticTables build_static_tables(const Config& config, const Graph& graph) {
-    if (config.range_bits < 2 || config.range_bits > 30) fail("range_bits outside supported table bounds");
-    const bool large = config.batching_rule == "whole_graph_single" &&
-                       (graph.edges >= (1ULL << 18) || graph.features >= (1ULL << 24));
-    const u64 domain = large ? (1ULL << 20) : (1ULL << config.range_bits);
-    StaticTables tables;
-    if (large) {
-        tables.lrelu_min = -(3LL << 18);
-        tables.lrelu_max = (1LL << 23) - 2 - (3LL << 18) - 1;
-    } else {
-        tables.lrelu_min = -static_cast<i64>(domain);
-        tables.lrelu_max = static_cast<i64>(domain - 1);
-    }
-    tables.elu_min = tables.lrelu_min; tables.elu_max = tables.lrelu_max;
-    tables.exp_max = static_cast<u64>(std::max<i64>(1, tables.lrelu_max - tables.lrelu_min + 1));
-    tables.lrelu.reserve(static_cast<std::size_t>(tables.lrelu_max - tables.lrelu_min + 1));
-    tables.elu.reserve(static_cast<std::size_t>(tables.elu_max - tables.elu_min + 1));
-    tables.exp.reserve(static_cast<std::size_t>(tables.exp_max + 1));
-    for (i64 index = tables.lrelu_min; index <= tables.lrelu_max; ++index) {
-        tables.lrelu.push_back(index >= 0 ? index : round_div(index, 4, "LReLU"));
-        const long double real = std::exp(static_cast<long double>(index) / 16.0L) - 1.0L;
-        const long double scaled = real * 16.0L;
-        tables.elu.push_back(index >= 0 ? index : static_cast<i64>(scaled >= 0 ? std::floor(scaled + .5L) : std::ceil(scaled - .5L)));
-    }
-    for (u64 index = 0; index <= tables.exp_max; ++index) {
-        const long double real = std::exp(-static_cast<long double>(index) / static_cast<long double>(config.quantization.delta));
-        tables.exp.push_back(std::max<i64>(1, rounded_float(static_cast<double>(real), config.quantization.exp, "ExpMap")));
-    }
-    const auto expected_lut_rows = static_cast<std::size_t>(tables.lrelu_max - tables.lrelu_min + 1);
-    if (tables.lrelu.size() != expected_lut_rows || tables.elu.size() != expected_lut_rows ||
-        tables.exp.size() != static_cast<std::size_t>(tables.exp_max + 1) || tables.lrelu.empty() || tables.elu.empty() || tables.exp.empty()) {
-        fail("static table row counts do not match their authenticated domains");
-    }
-    if (tables.exp.front() <= 0 || tables.exp.back() <= 0) fail("ExpMap table contains a non-positive output");
-    tables.generator_id = "zkdl_gat_tables_v1";
-    tables.version = "1";
-    tables.scale_id = config.quant_cfg_id + ":S_delta=" + std::to_string(config.quantization.delta) + ":S_exp=" +
-                      std::to_string(config.quantization.exp);
-    tables.domain_id = "signed_lrelu_elu:" + std::to_string(tables.lrelu_min) + ":" + std::to_string(tables.lrelu_max) +
-                       ":exp_0_" + std::to_string(tables.exp_max);
-    tables.row_order = "ascending_index_min_to_max";
-    std::ostringstream spec;
-    spec << config.static_table_id << "\n" << tables.generator_id << "\n" << tables.version << "\n"
-         << tables.scale_id << "\n" << tables.domain_id << "\n" << tables.row_order << "\n"
-         << config.range_bits << "\n" << tables.lrelu_min << "\n" << tables.lrelu_max << "\n" << tables.exp_max;
-    tables.spec_hash = sha256_text(spec.str()); tables.digest = digest_tables(tables);
-    return tables;
+    (void)graph;
+    return load_static_table_descriptor(config);
 }
 
 RelationPlan build_relation_plan(const Config& config, const Graph& graph, const StaticTables& tables) {
     RelationPlan plan;
+    if (!tables.authenticated) fail("BLOCKED: relation plan cannot use unauthenticated static tables");
+    plan.static_table_descriptor_digest = tables.descriptor_digest;
+    plan.integer_bound_ledger = load_integer_bound_ledger(config, tables);
+    plan.scale_chain_digest = config.scale_chain_digest;
+    plan.integer_bound_ledger_digest = plan.integer_bound_ledger.digest;
+    plan.integer_bound_ledger_descriptor_digest = plan.integer_bound_ledger.descriptor_digest;
     const auto power_of_two = [](u64 value) {
         if (value == 0) fail("relation plan contains a zero logical dimension");
         u64 padded = 1;
@@ -1529,7 +2403,8 @@ RelationPlan build_relation_plan(const Config& config, const Graph& graph, const
         operation.requires_reindex = reindex; operation.public_route = public_route;
         operation.instance_order = "layer-major/head-major/node-major/edge-major";
         operation.mapping = "operation_view_v1->canonical_mle:" + operation.id;
-        operation.auxiliary = std::move(auxiliary); operation.selector_id = std::move(selector);
+        operation.auxiliary = std::move(auxiliary);
+        operation.selector_id = "selector:operation:" + operation.id + ":" + std::move(selector);
         operation.terminal_point = "FS:operation:" + operation.id;
         operation.terminal_value = "claim(" + operation.id + "," + operation.terminal_point + ")";
         operation.terminal_claim = "operation_terminal_claim_v1|operation=" + operation.id + "|point=" + operation.terminal_point + "|value=" + operation.terminal_value;
@@ -1543,12 +2418,14 @@ RelationPlan build_relation_plan(const Config& config, const Graph& graph, const
         add_tensor(stage + "/model/seq_kernel", "witness", "model-layer-head-row-major", "model", {1, in_dim, out_dim}, {"model"}, order, "model_param_registry", 1);
         add_tensor(stage + "/model/attn_src", "witness", "model-layer-head-row-major", "model", {out_dim}, {"model"}, order, "model_param_registry", 1);
         add_tensor(stage + "/model/attn_dst", "witness", "model-layer-head-row-major", "model", {out_dim}, {"model"}, order, "model_param_registry", 1);
-        if (output) add_tensor(stage + "/model/bias", "witness", "model-layer-head-row-major", "model", {out_dim}, {"model"}, order, "model_param_registry", 1);
+        if (output) add_tensor(stage + "/model/output_bias", "witness", "model-layer-head-row-major", "model", {out_dim}, {"model"}, order, "model_param_registry", 1);
         add_tensor(input_id, trace_visibility, "node-major-little-endian", "node", {graph.nodes, in_dim}, {"input"}, order, "layer_input_route", 1);
         add_tensor(stage + "/trace/" + (output ? "y_prime" : "h_prime"), "witness", "node-major-little-endian", "node", {graph.nodes, out_dim}, {"projection"}, order, "projection_output", 2);
-        for (const auto& name : {std::string("e_src"), std::string("e_dst"), std::string("score"), std::string("leaky_relu"), std::string("delta"), std::string("exp_weight"), std::string("inverse"), std::string("alpha")}) {
-            add_tensor(stage + "/trace/" + name, "witness", "edge-major-little-endian", "edge", {graph.edges}, {name}, order, "edge_trace", name == "inverse" || name == "alpha" ? 2 : 1);
+        for (const auto& name : {std::string("e_src"), std::string("e_dst"), std::string("score"), std::string("leaky_relu"), std::string("delta"), std::string("exp_weight")}) {
+            add_tensor(stage + "/trace/" + name, "witness", "edge-major-little-endian", "edge", {graph.edges}, {name}, order, "edge_trace", 1);
         }
+        add_tensor(stage + "/trace/inverse_field", "witness", "edge-major-field-little-endian", "edge", {graph.edges}, {"inverse"}, order, "field_exact:bls12-381-fr", 2);
+        add_tensor(stage + "/trace/alpha_field", "witness", "edge-major-field-little-endian", "edge", {graph.edges}, {"alpha"}, order, "field_exact:bls12-381-fr", 2);
         add_tensor(stage + "/trace/maximum", "witness", "node-major-little-endian", "node", {graph.nodes}, {"maximum"}, order, "destination_group_max", 1);
         add_tensor(stage + "/trace/denominator", "witness", "node-major-little-endian", "node", {graph.nodes}, {"sum"}, order, "destination_group_sum", 1);
         add_tensor(stage + "/trace/max_selector", "witness", "edge-major-little-endian", "edge", {graph.edges}, {"max_selector"}, order, "max_arg_selector", 1);
@@ -1562,11 +2439,13 @@ RelationPlan build_relation_plan(const Config& config, const Graph& graph, const
         const std::string value = stage + "/trace/" + (output ? "y_prime" : "h_prime");
         add_tensor(stage + "/trace/routed_" + (output ? "y_prime" : "h_prime"), "witness", "edge-major-little-endian", "edge", {graph.edges, out_dim}, {"route"}, order, "public_sparse_route", 1);
         add_tensor(stage + "/trace/product_u_" + (output ? "y_prime" : "h_prime"), "witness", "edge-major-little-endian", "edge", {graph.edges, out_dim}, {"u_product"}, order, "integer_product", 2);
-        add_tensor(stage + "/trace/product_alpha_" + (output ? "y_prime" : "h_prime"), "witness", "edge-major-little-endian", "edge", {graph.edges, out_dim}, {"alpha_product"}, order, "field_product", 2);
+        add_tensor(stage + "/trace/product_alpha_" + (output ? "y_prime" : "h_prime") + "_field", "witness", "edge-major-field-little-endian", "edge", {graph.edges, out_dim}, {"alpha_product"}, order, "field_product:bls12-381-fr", 2);
         add_tensor(stage + "/trace/aggregate_num", "witness", "node-major-little-endian", "node", {graph.nodes, out_dim}, {"aggregate_num"}, order, "integer_group_sum", 1);
         add_tensor(stage + "/trace/aggregate_pre_field", "witness", "node-major-little-endian", "node", {graph.nodes, out_dim}, {"aggregate_pre_field"}, order, "field_group_sum", 2);
-        add_tensor(stage + "/trace/consistency_residual", "witness", "node-major-little-endian", "node", {graph.nodes, out_dim}, {"consistency"}, order, "field_integer_consistency", 2);
-        add_tensor(stage + "/trace/rounddiv_aux", "witness", "node-major-little-endian", "aux", {graph.nodes, 3, out_dim}, {"division"}, order, "signed_round_div_auxiliary", 1);
+        add_tensor(stage + "/trace/consistency_residual_field", "witness", "node-major-field-little-endian", "node", {graph.nodes, out_dim}, {"consistency"}, order, "field_integer_consistency:bls12-381-fr", 2);
+        add_tensor(stage + "/trace/rounddiv_aux", "witness", "node-major-little-endian", "aux", {graph.nodes, 8, out_dim}, {"division"}, order, "signed_round_div_auxiliary", 1);
+        add_tensor(stage + "/trace/rounddiv_a_inverse", "witness", "node-major-field-little-endian", "aux", {graph.nodes, out_dim}, {"a_inverse"}, order, "field_exact:bls12-381-fr", 1);
+        add_tensor(stage + "/trace/rounddiv_divisor_inverse", "witness", "node-major-field-little-endian", "aux", {graph.nodes, out_dim}, {"divisor_inverse"}, order, "field_exact:bls12-381-fr", 1);
         add_tensor(stage + "/trace/aggregate_pre", "witness", "node-major-little-endian", "node", {graph.nodes, out_dim}, {"aggregate_pre"}, order, "signed_round_div", 1);
         if (output) {
             add_tensor(stage + "/trace/y_quantized", "witness", "node-major-little-endian", "node", {graph.nodes, out_dim}, {"y_quantized"}, order, "output_quantization", 1);
@@ -1600,7 +2479,7 @@ RelationPlan build_relation_plan(const Config& config, const Graph& graph, const
             const std::string hp = stage + "/trace/h_prime";
             const std::string routed = stage + "/trace/routed_h_prime";
             const std::string pu = stage + "/trace/product_u_h_prime";
-            const std::string pa = stage + "/trace/product_alpha_h_prime";
+            const std::string pa = stage + "/trace/product_alpha_h_prime_field";
             add_op(stage + "/projection", "tensor_matmul_sumcheck", 2, {input, stage + "/model/seq_kernel"}, {hp}, {"node", "inner", "feature"}, true, false, {"selector:" + stage + "/projection"}, "projection_padding:" + stage);
             add_op(stage + "/attention_inner_product", "inner_product_sumcheck", 2, {hp, stage + "/model/attn_src", stage + "/model/attn_dst"}, {stage + "/trace/e_src", stage + "/trace/e_dst"}, {"edge", "inner", "head"}, true, false, {"src", "dst"}, "route_selector:" + stage);
             add_op(stage + "/sparse_route", "public_selector_reindex", 1, {"sparse_route", hp}, {routed}, {"edge", "node", "feature"}, true, true, {"src", "dst", "node_edge_ptr"}, "public_route:" + stage);
@@ -1610,11 +2489,11 @@ RelationPlan build_relation_plan(const Config& config, const Graph& graph, const
             add_op(stage + "/exp_map", "indexed_public_table_sumcheck", 1, {stage + "/trace/delta", "static_exp", stage + "/trace/exp_idx", stage + "/trace/exp_bits"}, {stage + "/trace/exp_weight"}, {"query", "table"}, true, false, {"tau_exp", "omega_exp"}, "lookup_exp:" + stage);
             add_op(stage + "/u_h_prime", "tensor_product_sumcheck", 2, {stage + "/trace/exp_weight", routed}, {pu}, {"edge", "feature"}, true, false, {}, "product_u:" + stage);
             add_op(stage + "/group_sum", "segmented_sumcheck", 1, {stage + "/trace/exp_weight", pu, "sparse_route", "edge_ptr", "node_edge_ptr"}, {stage + "/trace/denominator", stage + "/trace/aggregate_num"}, {"graph", "node", "edge", "feature"}, true, true, {"group_new", "group_end", "zero_padding"}, "group_sum:" + stage);
-            add_op(stage + "/inverse_alpha", "field_inverse_product_sumcheck", 2, {stage + "/trace/denominator", stage + "/trace/exp_weight", "node_edge_ptr"}, {stage + "/trace/inverse", stage + "/trace/alpha"}, {"node", "edge"}, true, false, {"inverse_field", "alpha_field", "nonzero_denominator"}, "inverse_alpha:" + stage);
-            add_op(stage + "/alpha_h_prime", "tensor_product_sumcheck", 2, {stage + "/trace/alpha", routed}, {pa}, {"edge", "feature"}, true, false, {}, "product_alpha:" + stage);
+            add_op(stage + "/inverse_alpha", "field_inverse_product_sumcheck", 2, {stage + "/trace/denominator", stage + "/trace/exp_weight", "node_edge_ptr"}, {stage + "/trace/inverse_field", stage + "/trace/alpha_field"}, {"node", "edge"}, true, false, {"inverse_field", "alpha_field", "nonzero_denominator"}, "inverse_alpha:" + stage);
+            add_op(stage + "/alpha_h_prime", "tensor_product_sumcheck", 2, {stage + "/trace/alpha_field", routed}, {pa}, {"edge", "feature"}, true, false, {}, "product_alpha:" + stage);
             add_op(stage + "/field_aggregate", "segmented_sumcheck", 1, {pa, "sparse_route", "node_edge_ptr"}, {stage + "/trace/aggregate_pre_field"}, {"node", "edge", "feature"}, true, true, {"group_new", "group_end"}, "field_aggregate:" + stage);
             add_op(stage + "/integer_numerator", "segmented_sumcheck", 1, {pu, "sparse_route", "node_edge_ptr"}, {stage + "/trace/aggregate_num"}, {"node", "edge", "feature"}, true, true, {"group_new", "group_end"}, "integer_numerator:" + stage);
-            add_op(stage + "/consistency", "tensor_product_sumcheck", 2, {stage + "/trace/denominator", stage + "/trace/aggregate_pre_field", stage + "/trace/aggregate_num"}, {stage + "/trace/consistency_residual"}, {"node", "feature"}, true, false, {}, "consistency:" + stage);
+            add_op(stage + "/consistency", "tensor_product_sumcheck", 2, {stage + "/trace/denominator", stage + "/trace/aggregate_pre_field", stage + "/trace/aggregate_num"}, {stage + "/trace/consistency_residual_field"}, {"node", "feature"}, true, false, {}, "consistency:" + stage);
             add_op(stage + "/signed_round_div", "signed_round_div_sumcheck", 1, {stage + "/trace/aggregate_num", stage + "/trace/denominator"}, {stage + "/trace/aggregate_pre", stage + "/trace/rounddiv_aux"}, {"node", "feature"}, true, false, {"sigma", "z", "a", "a_inv", "d_inv", "q", "r", "delta", "range_bits"}, "round_div:" + stage);
             add_op(stage + "/elu", "indexed_public_table_sumcheck", 1, {stage + "/trace/aggregate_pre", "static_elu", stage + "/trace/elu_idx", stage + "/trace/elu_bits"}, {stage + "/trace/aggregate"}, {"query", "table"}, true, false, {"tau_elu", "omega_elu"}, "lookup_elu:" + stage);
             aggregate_inputs.push_back(stage + "/trace/aggregate");
@@ -1631,7 +2510,7 @@ RelationPlan build_relation_plan(const Config& config, const Graph& graph, const
         const std::string hp = stage + "/trace/y_prime";
         const std::string routed = stage + "/trace/routed_y_prime";
         const std::string pu = stage + "/trace/product_u_y_prime";
-        const std::string pa = stage + "/trace/product_alpha_y_prime";
+        const std::string pa = stage + "/trace/product_alpha_y_prime_field";
         const std::string input = "hidden/layer" + std::to_string(config.architecture.hidden_dims.size() - 1) + "/concat";
         add_op(stage + "/output_projection", "tensor_matmul_sumcheck", 2, {input, stage + "/model/seq_kernel"}, {hp}, {"node", "inner", "class"}, true, false, {"zero_padding"}, "output_projection:" + stage);
         add_op(stage + "/output_attention_inner_product", "inner_product_sumcheck", 2, {hp, stage + "/model/attn_src", stage + "/model/attn_dst"}, {stage + "/trace/e_src", stage + "/trace/e_dst"}, {"edge", "inner", "class"}, true, false, {"src", "dst"}, "output_route_selector:" + stage);
@@ -1642,14 +2521,14 @@ RelationPlan build_relation_plan(const Config& config, const Graph& graph, const
         add_op(stage + "/exp_map", "indexed_public_table_sumcheck", 1, {stage + "/trace/delta", "static_exp", stage + "/trace/exp_idx", stage + "/trace/exp_bits"}, {stage + "/trace/exp_weight"}, {"query", "table"}, true, false, {"tau_exp", "omega_exp"}, "lookup_exp:" + stage);
         add_op(stage + "/u_y_prime", "tensor_product_sumcheck", 2, {stage + "/trace/exp_weight", routed}, {pu}, {"edge", "class"}, true, false, {}, "product_u:" + stage);
         add_op(stage + "/group_sum", "segmented_sumcheck", 1, {stage + "/trace/exp_weight", pu, "sparse_route", "edge_ptr", "node_edge_ptr"}, {stage + "/trace/denominator", stage + "/trace/aggregate_num"}, {"graph", "node", "edge", "class"}, true, true, {"group_new", "group_end", "zero_padding"}, "group_sum:" + stage);
-        add_op(stage + "/inverse_alpha", "field_inverse_product_sumcheck", 2, {stage + "/trace/denominator", stage + "/trace/exp_weight", "node_edge_ptr"}, {stage + "/trace/inverse", stage + "/trace/alpha"}, {"node", "edge"}, true, false, {"inverse_field", "alpha_field", "nonzero_denominator"}, "inverse_alpha:" + stage);
-        add_op(stage + "/alpha_y_prime", "tensor_product_sumcheck", 2, {stage + "/trace/alpha", routed}, {pa}, {"edge", "class"}, true, false, {}, "product_alpha:" + stage);
+        add_op(stage + "/inverse_alpha", "field_inverse_product_sumcheck", 2, {stage + "/trace/denominator", stage + "/trace/exp_weight", "node_edge_ptr"}, {stage + "/trace/inverse_field", stage + "/trace/alpha_field"}, {"node", "edge"}, true, false, {"inverse_field", "alpha_field", "nonzero_denominator"}, "inverse_alpha:" + stage);
+        add_op(stage + "/alpha_y_prime", "tensor_product_sumcheck", 2, {stage + "/trace/alpha_field", routed}, {pa}, {"edge", "class"}, true, false, {}, "product_alpha:" + stage);
         add_op(stage + "/field_aggregate", "segmented_sumcheck", 1, {pa, "sparse_route", "node_edge_ptr"}, {stage + "/trace/aggregate_pre_field"}, {"node", "edge", "class"}, true, true, {"group_new", "group_end"}, "field_aggregate:" + stage);
         add_op(stage + "/integer_numerator", "segmented_sumcheck", 1, {pu, "sparse_route", "node_edge_ptr"}, {stage + "/trace/aggregate_num"}, {"node", "edge", "class"}, true, true, {"group_new", "group_end"}, "integer_numerator:" + stage);
-        add_op(stage + "/consistency", "tensor_product_sumcheck", 2, {stage + "/trace/denominator", stage + "/trace/aggregate_pre_field", stage + "/trace/aggregate_num"}, {stage + "/trace/consistency_residual"}, {"node", "class"}, true, false, {}, "consistency:" + stage);
+        add_op(stage + "/consistency", "tensor_product_sumcheck", 2, {stage + "/trace/denominator", stage + "/trace/aggregate_pre_field", stage + "/trace/aggregate_num"}, {stage + "/trace/consistency_residual_field"}, {"node", "class"}, true, false, {}, "consistency:" + stage);
         add_op(stage + "/signed_round_div", "signed_round_div_sumcheck", 1, {stage + "/trace/aggregate_num", stage + "/trace/denominator"}, {stage + "/trace/y_quantized", stage + "/trace/rounddiv_aux"}, {"node", "class"}, true, false, {"sigma", "z", "a", "a_inv", "d_inv", "q", "r", "delta", "range_bits"}, "round_div:" + stage);
         add_op(stage + "/output_scale_alignment", "signed_round_div_sumcheck", 1, {stage + "/trace/y_quantized"}, {stage + "/trace/aligned"}, {"node", "class"}, true, false, {"scale_out_head", "scale_out_pre"}, "scale_alignment:" + stage);
-        add_op(stage + "/output_bias", "field_addition", 1, {stage + "/trace/aligned", stage + "/model/bias"}, {stage + "/trace/output"}, {"node", "class"}, true, false, {"bias"}, "output_bias:" + stage);
+        add_op(stage + "/output_bias", "field_addition", 1, {stage + "/trace/aligned", stage + "/model/output_bias"}, {stage + "/trace/output"}, {"node", "class"}, true, false, {"bias"}, "output_bias:" + stage);
         output_values.push_back(stage + "/trace/output");
     }
     add_tensor("output_heads", "witness", "node-major-head-major-class", "head", {graph.nodes, config.architecture.output_heads, config.architecture.classes}, {"heads"}, "head-major/node-major/class-major", "output_head_stack", 1);
@@ -1664,7 +2543,11 @@ RelationPlan build_relation_plan(const Config& config, const Graph& graph, const
         for (const auto& value : values) stream << value.size() << ':' << value << ';';
     };
     std::ostringstream registry;
-    registry << "schema=" << plan.schema_id << "\nproof_scope=" << plan.proof_scope << "\nbinding=" << plan.binding_rule << "\n";
+    registry << "schema=" << plan.schema_id << "\nproof_scope=" << plan.proof_scope << "\nbinding=" << plan.binding_rule << "\n"
+             << "static_table_descriptor_digest=" << plan.static_table_descriptor_digest << "\n"
+             << "scale_chain_digest=" << plan.scale_chain_digest << "\n"
+             << "integer_bound_ledger_digest=" << plan.integer_bound_ledger_digest << "\n"
+             << "integer_bound_ledger_descriptor_digest=" << plan.integer_bound_ledger_descriptor_digest << "\n";
     for (const auto& family : plan.tensor_families) {
         registry << "T|" << family.id << '|' << family.visibility << '|' << family.mle_order << '|' << family.stack_axis << '|';
         append_list(registry, family.instances);
@@ -1717,13 +2600,31 @@ bool relation_plan_complete(const RelationPlan& relation, std::string* error) {
     }
     for (const auto& digest : {relation.registry_digest, relation.terminal_claims_digest,
                                relation.schema_digest, relation.mapping_digest,
-                               relation.selector_digest, relation.degree_digest}) {
+                               relation.selector_digest, relation.degree_digest,
+                               relation.static_table_descriptor_digest,
+                               relation.scale_chain_digest,
+                               relation.integer_bound_ledger_digest,
+                               relation.integer_bound_ledger_descriptor_digest}) {
         if (!is_digest(digest)) return reject("relation plan digest is not a canonical SHA-256");
+    }
+    if (!relation.integer_bound_ledger.authenticated ||
+        relation.integer_bound_ledger.digest != relation.integer_bound_ledger_digest ||
+        relation.integer_bound_ledger.descriptor_digest != relation.integer_bound_ledger_descriptor_digest ||
+        relation.integer_bound_ledger.static_table_descriptor_digest != relation.static_table_descriptor_digest ||
+        relation.scale_chain_digest != relation.integer_bound_ledger.scale_chain_digest) {
+        return reject("relation plan integer-bound ledger identity is not authenticated");
     }
     std::set<std::string> tensor_ids;
     for (const auto& family : relation.tensor_families) {
         if (family.id.empty() || !tensor_ids.insert(family.id).second) {
             return reject("relation plan has duplicate/empty tensor family id");
+        }
+        const auto trace_marker = family.id.rfind("/trace/");
+        const auto trace_name = trace_marker == std::string::npos
+            ? std::string{} : family.id.substr(trace_marker + 7);
+        if (trace_name == "inverse" || trace_name == "alpha" ||
+            trace_name == "product_alpha_h_prime" || trace_name == "product_alpha_y_prime") {
+            return reject("relation plan contains retired integer inverse/alpha/product tensor: " + family.id);
         }
         if (family.visibility != "public" && family.visibility != "witness" ||
             family.logical_shape.empty() || family.logical_shape.size() != family.padded_shape.size() ||
@@ -1780,7 +2681,8 @@ bool relation_plan_complete(const RelationPlan& relation, std::string* error) {
             return reject("relation operation terminal claim is not bound to its operation: " + operation.id);
         }
         if (operation.id != "terminal_opening" && !operation.requires_reindex) return reject("non-terminal operation omitted FAC4DNN re-index binding: " + operation.id);
-        if (operation.public_route && operation.selector_id.find("public_route:") != 0 && operation.id != "final_average" && operation.id != "terminal_opening") return reject("public route operation has wrong selector: " + operation.id);
+        if (operation.selector_id.find("selector:operation:" + operation.id + ":") != 0) return reject("operation selector namespace is not canonical: " + operation.id);
+        if (operation.public_route && operation.selector_id.find("public_route:") == std::string::npos && operation.id != "final_average" && operation.id != "terminal_opening") return reject("public route operation has wrong selector: " + operation.id);
         if (operation.kind.find("indexed_public_table") != std::string::npos &&
             (operation.auxiliary.size() < 2 || operation.auxiliary[0].find("tau_") != 0 || operation.auxiliary[1].find("omega_") != 0)) {
             return reject("indexed table operation lacks independent challenges: " + operation.id);
@@ -1854,6 +2756,11 @@ std::string statement_canonical_payload(const PublicStatement& statement) {
               << "static_table_row_order=" << statement.static_table_row_order << "\n"
               << "static_table_spec_hash=" << statement.static_table_spec_hash << "\n"
               << "static_table_digest=" << statement.static_table_digest << "\n"
+              << "static_table_descriptor_digest=" << statement.static_table_descriptor_digest << "\n"
+              << "scale_chain_digest=" << statement.scale_chain_digest << "\n"
+              << "integer_bound_ledger_id=" << statement.integer_bound_ledger_id << "\n"
+              << "integer_bound_ledger_digest=" << statement.integer_bound_ledger_digest << "\n"
+              << "integer_bound_ledger_descriptor_digest=" << statement.integer_bound_ledger_descriptor_digest << "\n"
               << "config_digest=" << statement.config_digest << "\nasset_manifest_digest=" << statement.asset_manifest_digest << "\n"
               << "checkpoint_manifest_digest=" << statement.checkpoint_manifest_digest << "\n"
               << "checkpoint_tensors_txt_digest=" << statement.checkpoint_tensors_txt_digest << "\n"
@@ -1895,6 +2802,11 @@ PublicStatement make_statement(const Config& config, const Graph& graph, const M
     statement.static_table_row_order = tables.row_order;
     statement.static_table_spec_hash = tables.spec_hash;
     statement.static_table_digest = tables.digest;
+    statement.static_table_descriptor_digest = tables.descriptor_digest;
+    statement.scale_chain_digest = config.scale_chain_digest;
+    statement.integer_bound_ledger_id = relation.integer_bound_ledger.ledger_id;
+    statement.integer_bound_ledger_digest = relation.integer_bound_ledger.digest;
+    statement.integer_bound_ledger_descriptor_digest = relation.integer_bound_ledger.descriptor_digest;
     statement.config_digest = config.config_digest;
     statement.asset_manifest_digest = sha256_file(config.asset_manifest_path);
     statement.checkpoint_manifest_digest = model.manifest_digest;
@@ -1930,7 +2842,10 @@ void write_statement(const std::filesystem::path& path, const PublicStatement& s
            << "static_table_generator_id=" << statement.static_table_generator_id << "\nstatic_table_version=" << statement.static_table_version << "\n"
            << "static_table_scale_id=" << statement.static_table_scale_id << "\nstatic_table_domain_id=" << statement.static_table_domain_id << "\n"
            << "static_table_row_order=" << statement.static_table_row_order << "\nstatic_table_spec_hash=" << statement.static_table_spec_hash << "\n"
-           << "static_table_digest=" << statement.static_table_digest << "\nconfig_digest=" << statement.config_digest << "\n"
+           << "static_table_digest=" << statement.static_table_digest << "\nstatic_table_descriptor_digest=" << statement.static_table_descriptor_digest << "\n"
+           << "scale_chain_digest=" << statement.scale_chain_digest << "\n"
+           << "integer_bound_ledger_id=" << statement.integer_bound_ledger_id << "\ninteger_bound_ledger_digest=" << statement.integer_bound_ledger_digest << "\n"
+           << "integer_bound_ledger_descriptor_digest=" << statement.integer_bound_ledger_descriptor_digest << "\nconfig_digest=" << statement.config_digest << "\n"
            << "asset_manifest_digest=" << statement.asset_manifest_digest << "\ncheckpoint_manifest_digest=" << statement.checkpoint_manifest_digest << "\n"
            << "checkpoint_tensors_txt_digest=" << statement.checkpoint_tensors_txt_digest << "\ncheckpoint_tensors_npz_digest=" << statement.checkpoint_tensors_npz_digest << "\n"
            << "verifier_registry_digest=" << statement.verifier_registry_digest << "\ntopology_boundary_digest=" << statement.topology_boundary_digest << "\n"
@@ -1968,6 +2883,11 @@ bool read_statement(const std::filesystem::path& path, PublicStatement* statemen
         statement->static_table_row_order = get("static_table_row_order");
         statement->static_table_spec_hash = get("static_table_spec_hash");
         statement->static_table_digest = get("static_table_digest");
+        statement->static_table_descriptor_digest = get("static_table_descriptor_digest");
+        statement->scale_chain_digest = get("scale_chain_digest");
+        statement->integer_bound_ledger_id = get("integer_bound_ledger_id");
+        statement->integer_bound_ledger_digest = get("integer_bound_ledger_digest");
+        statement->integer_bound_ledger_descriptor_digest = get("integer_bound_ledger_descriptor_digest");
         statement->config_digest = get("config_digest");
         statement->asset_manifest_digest = get("asset_manifest_digest");
         statement->checkpoint_manifest_digest = get("checkpoint_manifest_digest");
@@ -1998,7 +2918,11 @@ void write_run_record(const std::filesystem::path& path, const RunRecord& record
     if (!output) fail("cannot write run record " + path.string());
     output << "schema=zkDL_gat_run_record_v1\ndataset=" << record.dataset << "\nbackend=" << record.backend << "\n"
            << "statement_id=" << record.statement_id << "\nproof_id=" << record.proof_id << "\nverification_status=" << record.verification_status << "\n"
-           << "proof_scope=" << record.proof_scope << "\nproof_size_bytes=" << record.proof_size_bytes << "\ncommitment_size_bytes=" << record.commitment_size_bytes << "\n"
+           << "proof_scope=" << record.proof_scope << "\nstatic_table_descriptor_digest=" << record.static_table_descriptor_digest << "\n"
+           << "scale_chain_digest=" << record.scale_chain_digest << "\ninteger_bound_ledger_id=" << record.integer_bound_ledger_id << "\n"
+           << "integer_bound_ledger_digest=" << record.integer_bound_ledger_digest << "\n"
+           << "integer_bound_ledger_descriptor_digest=" << record.integer_bound_ledger_descriptor_digest << "\n"
+           << "proof_size_bytes=" << record.proof_size_bytes << "\ncommitment_size_bytes=" << record.commitment_size_bytes << "\n"
            << "commitment_time_seconds=" << std::setprecision(17) << record.commitment_time_seconds << "\nprove_time_seconds=" << record.prove_time_seconds << "\n"
            << "verify_time_seconds=" << record.verify_time_seconds << "\nverifier_reads_witness=" << (record.verifier_reads_witness ? 1 : 0) << "\n"
            << "gpu_kernel_executed=" << (record.gpu_kernel_executed ? 1 : 0) << "\nsilent_fallback=" << (record.silent_fallback ? 1 : 0) << "\n"
@@ -2063,6 +2987,27 @@ std::filesystem::path run_path(const Config& config, const std::filesystem::path
     return local_path(config.baseline_root, raw.generic_string(), "run_dir");
 }
 
+Config config_for_run(const Config& config, const std::filesystem::path& directory) {
+    Config result = config;
+    result.run_root = directory;
+    result.asset_manifest_path = directory / "asset_manifest.json";
+    return result;
+}
+
+std::filesystem::path run_file_path(const std::filesystem::path& directory,
+                                    const std::filesystem::path& raw,
+                                    const std::string& name) {
+    const auto expected = (directory / name).lexically_normal();
+    const auto candidate = raw.empty()
+        ? expected
+        : (raw.is_absolute() ? raw.lexically_normal()
+                             : local_path(directory, raw.generic_string(), name));
+    if (candidate != expected) {
+        fail(name + " must be the run-local " + expected.string());
+    }
+    return candidate;
+}
+
 void write_matrix_text(const std::filesystem::path& path, const Matrix& matrix) {
     std::filesystem::create_directories(path.parent_path());
     std::ofstream output(path);
@@ -2105,6 +3050,11 @@ void write_plan(const std::filesystem::path& path, const RelationPlan& plan, con
            << "registry_digest=" << plan.registry_digest << "\nterminal_claims_digest=" << plan.terminal_claims_digest << "\n"
            << "schema_digest=" << plan.schema_digest << "\nmapping_digest=" << plan.mapping_digest << "\n"
            << "selector_digest=" << plan.selector_digest << "\ndegree_digest=" << plan.degree_digest << "\n"
+           << "static_table_descriptor_digest=" << plan.static_table_descriptor_digest << "\n"
+           << "scale_chain_digest=" << plan.scale_chain_digest << "\n"
+           << "integer_bound_ledger_digest=" << plan.integer_bound_ledger_digest << "\n"
+           << "integer_bound_ledger_descriptor_digest=" << plan.integer_bound_ledger_descriptor_digest << "\n"
+           << "integer_bound_ledger_id=" << plan.integer_bound_ledger.ledger_id << "\n"
            << "table_generator_id=" << tables.generator_id << "\ntable_spec_hash=" << tables.spec_hash << "\ntable_digest=" << tables.digest << "\n"
            << "table_domain_id=" << tables.domain_id << "\ntable_row_order=" << tables.row_order << "\n";
     for (const auto& family : plan.tensor_families) {
@@ -2159,7 +3109,11 @@ void write_envelope(const std::filesystem::path& path, const ProofEnvelope& enve
     if (!output) fail("cannot write proof envelope " + path.string());
     output << "schema_id=" << envelope.schema_id << "\nstatement_id=" << envelope.statement_id << "\nproof_id=" << envelope.proof_id << "\n"
            << "backend=" << envelope.backend << "\nproof_scope=" << envelope.proof_scope << "\nnative_core_api=" << envelope.native_core_api << "\n"
-           << "status=" << envelope.status << "\nproof_size_bytes=" << envelope.proof_size_bytes << "\ncommitment_size_bytes=" << envelope.commitment_size_bytes << "\n"
+           << "status=" << envelope.status << "\nstatic_table_descriptor_digest=" << envelope.static_table_descriptor_digest << "\n"
+           << "scale_chain_digest=" << envelope.scale_chain_digest << "\ninteger_bound_ledger_id=" << envelope.integer_bound_ledger_id << "\n"
+           << "integer_bound_ledger_digest=" << envelope.integer_bound_ledger_digest << "\n"
+           << "integer_bound_ledger_descriptor_digest=" << envelope.integer_bound_ledger_descriptor_digest << "\n"
+           << "proof_size_bytes=" << envelope.proof_size_bytes << "\ncommitment_size_bytes=" << envelope.commitment_size_bytes << "\n"
            << "commitment_time_seconds=" << std::setprecision(17) << envelope.commitment_time_seconds << "\nprove_time_seconds=" << envelope.prove_time_seconds << "\n"
            << "verify_time_seconds=" << envelope.verify_time_seconds << "\nverifier_reads_witness=" << (envelope.verifier_reads_witness ? 1 : 0) << "\n"
            << "gpu_kernel_executed=" << (envelope.gpu_kernel_executed ? 1 : 0) << "\nsilent_fallback=" << (envelope.silent_fallback ? 1 : 0) << "\n"
@@ -2175,7 +3129,15 @@ ProofEnvelope read_envelope(const std::filesystem::path& path) {
     envelope.schema_id = get("schema_id"); envelope.statement_id = get("statement_id"); envelope.proof_id = get("proof_id");
     envelope.backend = get("backend"); envelope.proof_scope = get("proof_scope"); envelope.native_core_api = get("native_core_api");
     envelope.status = get("status"); envelope.proof_size_bytes = parse_u64(get("proof_size_bytes"), "proof_size_bytes");
+    envelope.static_table_descriptor_digest = get("static_table_descriptor_digest");
+    envelope.scale_chain_digest = get("scale_chain_digest");
+    envelope.integer_bound_ledger_id = get("integer_bound_ledger_id");
+    envelope.integer_bound_ledger_digest = get("integer_bound_ledger_digest");
+    envelope.integer_bound_ledger_descriptor_digest = get("integer_bound_ledger_descriptor_digest");
     envelope.commitment_size_bytes = parse_u64(get("commitment_size_bytes"), "commitment_size_bytes");
+    envelope.commitment_time_seconds = parse_double(get("commitment_time_seconds"), "commitment_time_seconds");
+    envelope.prove_time_seconds = parse_double(get("prove_time_seconds"), "prove_time_seconds");
+    envelope.verify_time_seconds = parse_double(get("verify_time_seconds"), "verify_time_seconds");
     envelope.verifier_reads_witness = parse_bool(get("verifier_reads_witness"), "verifier_reads_witness");
     envelope.gpu_kernel_executed = parse_bool(get("gpu_kernel_executed"), "gpu_kernel_executed");
     envelope.silent_fallback = parse_bool(get("silent_fallback"), "silent_fallback");
@@ -2188,123 +3150,318 @@ RunRecord rejected_record(const Config& config, Backend backend, const PublicSta
     RunRecord record;
     record.dataset = config.dataset; record.backend = backend_name(backend); record.proof_scope = "full_gat_forward";
     record.verification_status = "BLOCKED"; record.error = message; record.gpu_kernel_executed = kernel_executed;
-    if (statement) record.statement_id = statement->statement_id;
+    record.statement_id = statement ? statement->statement_id : std::string(64, '0');
+    record.static_table_descriptor_digest = statement ? statement->static_table_descriptor_digest : "UNAVAILABLE";
+    record.scale_chain_digest = statement ? statement->scale_chain_digest : config.scale_chain_digest;
+    record.integer_bound_ledger_id = statement ? statement->integer_bound_ledger_id : "UNAVAILABLE";
+    record.integer_bound_ledger_digest = statement ? statement->integer_bound_ledger_digest : "UNAVAILABLE";
+    record.integer_bound_ledger_descriptor_digest = statement ? statement->integer_bound_ledger_descriptor_digest : "UNAVAILABLE";
     record.silent_fallback = false; record.verifier_reads_witness = false; record.output_bound = false;
+    return record;
+}
+
+void bind_envelope_identity(ProofEnvelope* envelope, const PublicStatement& statement) {
+    if (!envelope) fail("proof envelope pointer is null");
+    const auto check_or_bind = [](std::string* actual, const std::string& expected,
+                                  const std::string& label) {
+        if (!actual->empty() && *actual != expected) fail("native proof envelope " + label + " mismatch");
+        *actual = expected;
+    };
+    check_or_bind(&envelope->static_table_descriptor_digest, statement.static_table_descriptor_digest,
+                  "static table descriptor identity");
+    check_or_bind(&envelope->scale_chain_digest, statement.scale_chain_digest, "scale-chain identity");
+    check_or_bind(&envelope->integer_bound_ledger_id, statement.integer_bound_ledger_id,
+                  "integer-bound ledger id");
+    check_or_bind(&envelope->integer_bound_ledger_digest, statement.integer_bound_ledger_digest,
+                  "integer-bound ledger digest");
+    check_or_bind(&envelope->integer_bound_ledger_descriptor_digest,
+                  statement.integer_bound_ledger_descriptor_digest,
+                  "integer-bound ledger descriptor identity");
+}
+
+RunRecord record_from_envelope(const Config& config, const PublicStatement& statement,
+                              const ProofEnvelope& envelope, const std::string& status,
+                              const std::string& error = {}) {
+    RunRecord record;
+    record.dataset = config.dataset;
+    record.backend = envelope.backend;
+    record.statement_id = statement.statement_id;
+    record.proof_id = envelope.proof_id;
+    record.verification_status = status;
+    record.proof_scope = statement.proof_scope;
+    record.static_table_descriptor_digest = statement.static_table_descriptor_digest;
+    record.scale_chain_digest = statement.scale_chain_digest;
+    record.integer_bound_ledger_id = statement.integer_bound_ledger_id;
+    record.integer_bound_ledger_digest = statement.integer_bound_ledger_digest;
+    record.integer_bound_ledger_descriptor_digest = statement.integer_bound_ledger_descriptor_digest;
+    record.proof_size_bytes = envelope.proof_size_bytes;
+    record.commitment_size_bytes = envelope.commitment_size_bytes;
+    record.commitment_time_seconds = envelope.commitment_time_seconds;
+    record.prove_time_seconds = envelope.prove_time_seconds;
+    record.verify_time_seconds = envelope.verify_time_seconds;
+    record.verifier_reads_witness = envelope.verifier_reads_witness;
+    record.gpu_kernel_executed = envelope.gpu_kernel_executed;
+    record.silent_fallback = envelope.silent_fallback;
+    record.output_bound = envelope.output_bound;
+    record.error = error.empty() ? envelope.error : error;
     return record;
 }
 
 int produce(const Config& config, const CliOptions& options) {
     const auto directory = run_path(config, options.run_dir);
+    const auto run_config = config_for_run(config, directory);
     const auto statement_path = directory / "statement.txt";
     const auto envelope_path = directory / "proof.meta";
     const auto proof_path = directory / "proof.bin";
     const auto record_path = directory / "run.record";
-    const auto start = std::chrono::steady_clock::now();
-    const auto model = load_model_bundle(config);
-    const auto graph = load_graph(config);
-    const auto tables = build_static_tables(config, graph);
-    const auto relation = build_relation_plan(config, graph, tables);
-    std::string relation_error;
-    if (!relation_plan_complete(relation, &relation_error)) fail(relation_error);
     bool kernel_executed = false;
-    GatTrace trace;
     try {
-        trace = options.backend == Backend::Cpu ? execute_cpu(config, graph, model, tables)
-                                                : execute_gpu(config, graph, model, tables, &kernel_executed);
-    } catch (const std::exception& exception) {
-        const auto statement = make_statement(config, graph, model, tables, relation, GatTrace{});
+        const auto model = load_model_bundle(run_config);
+        const auto graph = load_graph(run_config);
+        const auto tables = build_static_tables(run_config, graph);
+        const auto relation = build_relation_plan(run_config, graph, tables);
+        std::string relation_error;
+        if (!relation_plan_complete(relation, &relation_error)) fail(relation_error);
+        // This admission is intentionally before execute_gpu: a rejected
+        // integer/field bound must not allocate or launch any CUDA kernel.
+        admit_integer_bound_ledger(run_config, graph, model, tables, relation.integer_bound_ledger);
+        GatTrace trace;
+        try {
+            trace = options.backend == Backend::Cpu ? execute_cpu(run_config, graph, model, tables)
+                                                    : execute_gpu(run_config, graph, model, tables, &kernel_executed);
+        } catch (const std::exception& exception) {
+            const auto statement = make_statement(run_config, graph, model, tables, relation, GatTrace{});
+            write_statement(statement_path, statement);
+            ProofEnvelope envelope;
+            envelope.backend = backend_name(options.backend);
+            envelope.statement_id = statement.statement_id;
+            envelope.status = "BLOCKED";
+            envelope.gpu_kernel_executed = kernel_executed;
+            envelope.error = exception.what();
+            bind_envelope_identity(&envelope, statement);
+            write_envelope(envelope_path, envelope);
+            write_run_record(record_path, rejected_record(run_config, options.backend, &statement, exception.what(), kernel_executed));
+            return 2;
+        }
+        const auto statement = make_statement(run_config, graph, model, tables, relation, trace);
         write_statement(statement_path, statement);
-        write_run_record(record_path, rejected_record(config, options.backend, &statement, exception.what(), kernel_executed));
+        write_matrix_text(directory / "public_Y.txt", trace.logits);
+        write_plan(directory / "relation.plan", relation, tables);
+        if (!native_bridge_available()) {
+            const std::string message = "official native zkDL GAT bridge is not linked; proving is fail-closed";
+            ProofEnvelope envelope;
+            envelope.backend = backend_name(options.backend);
+            envelope.statement_id = statement.statement_id;
+            envelope.status = "BLOCKED";
+            envelope.gpu_kernel_executed = kernel_executed;
+            envelope.error = message;
+            bind_envelope_identity(&envelope, statement);
+            write_envelope(envelope_path, envelope);
+            write_run_record(record_path, rejected_record(run_config, options.backend, &statement, message, kernel_executed));
+            return 3;
+        }
+        NativeProveRequest request{&run_config, &graph, &model, &tables, &relation, &trace, &statement, options.backend};
+        NativeProofResult result;
+        std::string error;
+        if (!zkdl_gat_native_prove(request, &result, &error)) {
+            bind_envelope_identity(&result.envelope, statement);
+            write_envelope(envelope_path, result.envelope);
+            const std::string message = error.empty() ? "native prove rejected" : error;
+            auto record = rejected_record(run_config, options.backend, &statement, message, kernel_executed);
+            record.proof_id = result.envelope.proof_id;
+            record.proof_size_bytes = result.envelope.proof_size_bytes;
+            write_run_record(record_path, record);
+            return 4;
+        }
+        // Native code owns all envelope identity and timing fields.  The
+        // adapter accepts only an exact statement/backend/provenance binding.
+        if (result.envelope.statement_id != statement.statement_id ||
+            result.envelope.backend != backend_name(options.backend) ||
+            result.envelope.proof_scope != statement.proof_scope ||
+            result.envelope.proof_size_bytes != result.proof_bytes.size() ||
+            result.envelope.gpu_kernel_executed != kernel_executed) {
+            const std::string message = "native proof envelope does not bind statement/backend/proof provenance";
+            write_envelope(envelope_path, result.envelope);
+            write_run_record(record_path, rejected_record(run_config, options.backend, &statement, message, kernel_executed));
+            return 5;
+        }
+        bind_envelope_identity(&result.envelope, statement);
+        if (result.envelope.status != "VERIFIED" || result.envelope.proof_id.empty() ||
+            result.proof_bytes.empty() || result.envelope.native_core_api != "zkdl_native_gat_bridge_v1") {
+            const std::string message = "native proof envelope is not a complete verified proof artifact";
+            write_envelope(envelope_path, result.envelope);
+            write_run_record(record_path, rejected_record(run_config, options.backend, &statement, message, kernel_executed));
+            return 6;
+        }
+        write_bytes(proof_path, result.proof_bytes);
+        write_envelope(envelope_path, result.envelope);
+        const auto record = record_from_envelope(run_config, statement, result.envelope, "NOT_RUN");
+        write_run_record(record_path, record);
+        return 0;
+    } catch (const std::exception& exception) {
+        ProofEnvelope envelope;
+        envelope.backend = backend_name(options.backend);
+        envelope.status = "BLOCKED";
+        envelope.gpu_kernel_executed = kernel_executed;
+        envelope.error = exception.what();
+        write_envelope(envelope_path, envelope);
+        write_run_record(record_path, rejected_record(run_config, options.backend, nullptr, exception.what(), kernel_executed));
         return 2;
     }
-    const auto statement = make_statement(config, graph, model, tables, relation, trace);
-    write_statement(statement_path, statement);
-    write_matrix_text(directory / "public_Y.txt", trace.logits);
-    write_plan(directory / "relation.plan", relation, tables);
-    RunRecord record;
-    record.dataset = config.dataset; record.backend = backend_name(options.backend); record.statement_id = statement.statement_id;
-    record.proof_scope = statement.proof_scope; record.gpu_kernel_executed = kernel_executed;
-    record.commitment_time_seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
-    if (!native_bridge_available()) {
-        record = rejected_record(config, options.backend, &statement,
-                                 "official native zkDL GAT bridge is not linked; proving is fail-closed", kernel_executed);
-        write_run_record(record_path, record);
-        return 3;
-    }
-    NativeProveRequest request{&config, &graph, &model, &tables, &relation, &trace, &statement, options.backend};
-    NativeProofResult result;
-    std::string error;
-    if (!zkdl_gat_native_prove(request, &result, &error)) {
-        record = rejected_record(config, options.backend, &statement, error.empty() ? "native prove rejected" : error, kernel_executed);
-        write_envelope(envelope_path, result.envelope); write_run_record(record_path, record); return 4;
-    }
-    result.envelope.statement_id = statement.statement_id; result.envelope.backend = backend_name(options.backend);
-    result.envelope.proof_size_bytes = result.proof_bytes.size(); result.envelope.gpu_kernel_executed = kernel_executed;
-    write_bytes(proof_path, result.proof_bytes); write_envelope(envelope_path, result.envelope);
-    NativeVerifyRequest verify_request{&config, &statement, &result.envelope, &result.proof_bytes, options.backend};
-    if (!zkdl_gat_native_verify(verify_request, &error) || result.envelope.silent_fallback ||
-        result.envelope.verifier_reads_witness || !result.envelope.output_bound) {
-        record = rejected_record(config, options.backend, &statement, error.empty() ? "native verifier rejected envelope" : error, kernel_executed);
-        record.proof_id = result.envelope.proof_id; record.proof_size_bytes = result.proof_bytes.size();
-        write_run_record(record_path, record); return 5;
-    }
-    record.proof_id = result.envelope.proof_id; record.proof_size_bytes = result.proof_bytes.size();
-    record.commitment_size_bytes = result.envelope.commitment_size_bytes;
-    record.prove_time_seconds = result.envelope.prove_time_seconds; record.verify_time_seconds = result.envelope.verify_time_seconds;
-    record.verification_status = "VERIFIED"; record.verifier_reads_witness = false; record.output_bound = true;
-    write_run_record(record_path, record);
-    return 0;
 }
 
 int prepare(const Config& config, const CliOptions& options) {
-    const auto model = load_model_bundle(config);
-    const auto graph = load_graph(config);
-    const auto tables = build_static_tables(config, graph);
-    const auto plan = build_relation_plan(config, graph, tables);
+    const auto directory = run_path(config, options.run_dir);
+    const auto run_config = config_for_run(config, directory);
+    const auto model = load_model_bundle(run_config);
+    const auto graph = load_graph(run_config);
+    const auto tables = build_static_tables(run_config, graph);
+    const auto plan = build_relation_plan(run_config, graph, tables);
     std::string relation_error;
     if (!relation_plan_complete(plan, &relation_error)) fail(relation_error);
-    const auto directory = run_path(config, options.run_dir);
     write_plan(directory / "relation.plan", plan, tables);
     std::ofstream identity(directory / "identity.cfg");
     if (!identity) fail("cannot write identity.cfg");
     identity << "dataset=" << config.dataset << "\nmodel_manifest_sha256=" << model.manifest_digest << "\n"
              << "topology_sha256=" << digest_graph(graph) << "\nfeature_sha256=" << digest_matrix(graph.feature_values) << "\n"
-             << "table_sha256=" << tables.digest << "\nproof_scope=" << plan.proof_scope << "\n";
+             << "table_sha256=" << tables.digest << "\nstatic_table_descriptor_digest=" << tables.descriptor_digest << "\n"
+             << "scale_chain_digest=" << config.scale_chain_digest << "\ninteger_bound_ledger_id=" << plan.integer_bound_ledger.ledger_id << "\n"
+             << "integer_bound_ledger_digest=" << plan.integer_bound_ledger.digest << "\n"
+             << "integer_bound_ledger_descriptor_digest=" << plan.integer_bound_ledger.descriptor_digest << "\n"
+             << "proof_scope=" << plan.proof_scope << "\n";
     std::cout << "prepared dataset=" << config.dataset << " nodes=" << graph.nodes << " edges=" << graph.edges
               << " relation_operations=" << plan.operation_families.size() << "\n";
     return 0;
 }
 
+void validate_statement_binding(const Config& config, const Graph& graph, const ModelBundle& model,
+                               const StaticTables& tables, const RelationPlan& relation,
+                               const PublicStatement& statement) {
+    const auto require_equal = [](const std::string& actual, const std::string& expected,
+                                  const std::string& label) {
+        if (actual != expected) fail("public statement " + label + " does not match authenticated run inputs");
+    };
+    require_equal(statement.static_table_descriptor_digest, tables.descriptor_digest,
+                  "static table descriptor digest");
+    require_equal(statement.static_table_digest, tables.digest, "static table digest");
+    require_equal(statement.scale_chain_digest, config.scale_chain_digest, "scale-chain digest");
+    require_equal(statement.integer_bound_ledger_id, relation.integer_bound_ledger.ledger_id,
+                  "integer-bound ledger id");
+    require_equal(statement.integer_bound_ledger_digest, relation.integer_bound_ledger.digest,
+                  "integer-bound ledger digest");
+    require_equal(statement.integer_bound_ledger_descriptor_digest,
+                  relation.integer_bound_ledger.descriptor_digest,
+                  "integer-bound ledger descriptor digest");
+    if (!is_digest(statement.static_table_descriptor_digest) || !is_digest(statement.scale_chain_digest) ||
+        !is_digest(statement.integer_bound_ledger_digest) ||
+        !is_digest(statement.integer_bound_ledger_descriptor_digest)) {
+        fail("public statement relation identities are not canonical SHA-256 digests");
+    }
+    if (statement.verifier_reads_witness || statement.proof_scope != "full_gat_forward") {
+        fail("public statement violates the canonical verifier boundary");
+    }
+
+    // Reconstruct every statement field from the authenticated resources.  The
+    // output is the only field supplied by the prover and is checked separately
+    // against public_Y.txt below; all other fields must have the same identity.
+    auto expected = make_statement(config, graph, model, tables, relation, GatTrace{});
+    expected.output_id = statement.output_id;
+    expected.public_output_digest = statement.public_output_digest;
+    expected.statement_id = statement_identity(expected);
+    if (statement.statement_id != expected.statement_id) {
+        fail("public statement identity is not bound to authenticated run inputs");
+    }
+    if (statement.asset_manifest_digest != sha256_file(config.asset_manifest_path)) {
+        fail("public statement asset manifest digest is stale or unauthenticated");
+    }
+}
+
 int verify_only(const Config& config, const CliOptions& options) {
     const auto directory = run_path(config, options.run_dir);
-    const auto statement_path = options.statement.empty() ? directory / "statement.txt" : options.statement;
-    const auto envelope_path = options.envelope.empty() ? directory / "proof.meta" : options.envelope;
-    const auto proof_path = options.proof.empty() ? directory / "proof.bin" : options.proof;
+    const auto run_config = config_for_run(config, directory);
+    const auto statement_path = run_file_path(directory, options.statement, "statement.txt");
+    const auto envelope_path = run_file_path(directory, options.envelope, "proof.meta");
+    const auto proof_path = run_file_path(directory, options.proof, "proof.bin");
     PublicStatement statement;
+    ProofEnvelope envelope;
+    Backend backend = options.has_backend ? options.backend : Backend::Cpu;
+    bool statement_loaded = false;
+    bool envelope_loaded = false;
     std::string error;
-    if (!read_statement(statement_path, &statement, &error)) fail(error);
-    const ProofEnvelope envelope = read_envelope(envelope_path);
-    if (envelope.statement_id != statement.statement_id ||
-        envelope.proof_scope != statement.proof_scope || envelope.verifier_reads_witness || envelope.silent_fallback || !envelope.output_bound) {
-        fail("proof envelope does not bind the public statement and verifier boundary");
+    try {
+        if (!read_statement(statement_path, &statement, &error)) fail(error);
+        statement_loaded = true;
+        envelope = read_envelope(envelope_path);
+        envelope_loaded = true;
+        if (envelope.schema_id != "zkDL_gat_proof_envelope_v1" || envelope.status != "VERIFIED" ||
+            envelope.native_core_api != "zkdl_native_gat_bridge_v1" || envelope.proof_id.empty() ||
+            envelope.statement_id != statement.statement_id || envelope.proof_scope != statement.proof_scope ||
+            envelope.verifier_reads_witness || envelope.silent_fallback || !envelope.output_bound ||
+            envelope.proof_size_bytes == 0) {
+            fail("BLOCKED: proof envelope is not a complete independent-verification artifact");
+        }
+        backend = parse_backend(envelope.backend);
+        if (options.has_backend && options.backend != backend) fail("requested backend does not match proof envelope");
+        if (envelope.static_table_descriptor_digest != statement.static_table_descriptor_digest ||
+            envelope.scale_chain_digest != statement.scale_chain_digest ||
+            envelope.integer_bound_ledger_id != statement.integer_bound_ledger_id ||
+            envelope.integer_bound_ledger_digest != statement.integer_bound_ledger_digest ||
+            envelope.integer_bound_ledger_descriptor_digest != statement.integer_bound_ledger_descriptor_digest) {
+            fail("BLOCKED: proof envelope relation identities do not bind the public statement");
+        }
+
+        // Reload the manifest, checkpoint, graph, descriptor, ledger, and scale
+        // chain in this verifier process.  No producer-side precheck is trusted.
+        const auto model = load_model_bundle(run_config);
+        const auto graph = load_graph(run_config);
+        const auto tables = build_static_tables(run_config, graph);
+        const auto relation = build_relation_plan(run_config, graph, tables);
+        std::string relation_error;
+        if (!relation_plan_complete(relation, &relation_error)) fail(relation_error);
+        admit_integer_bound_ledger(run_config, graph, model, tables, relation.integer_bound_ledger);
+        validate_statement_binding(run_config, graph, model, tables, relation, statement);
+
+        const auto public_output_path = local_path(directory, statement.public_output_path, "public_output_path");
+        const auto public_output = read_public_output(public_output_path, statement.nodes, statement.classes);
+        if (statement.output_id != statement.public_output_digest ||
+            digest_matrix(public_output) != statement.public_output_digest) {
+            fail("public output shape or digest does not match the public statement");
+        }
+        if (backend == Backend::Gpu && !envelope.gpu_kernel_executed) {
+            fail("BLOCKED: GPU proof envelope does not attest CUDA execution");
+        }
+        if (backend == Backend::Cpu && envelope.gpu_kernel_executed) {
+            fail("BLOCKED: CPU proof envelope claims CUDA execution");
+        }
+        if (!native_bridge_available()) fail("official native zkDL GAT bridge is not linked; verification is fail-closed");
+        const auto proof = read_bytes(proof_path);
+        if (proof.size() != envelope.proof_size_bytes) fail("proof byte size does not match proof envelope");
+        NativeVerifyRequest request{&run_config, &statement, &envelope, &proof, backend};
+        if (!zkdl_gat_native_verify(request, &error)) fail(error.empty() ? "native verifier rejected proof" : error);
+        std::ofstream result(directory / "verification.result");
+        if (!result) fail("cannot write verification.result");
+        result << "status=VERIFIED\nstatement_id=" << statement.statement_id << "\nproof_id=" << envelope.proof_id << "\n";
+        write_run_record(directory / "run.record", record_from_envelope(run_config, statement, envelope, "VERIFIED"));
+        std::cout << "verification=VERIFIED statement_id=" << statement.statement_id << "\n";
+        return 0;
+    } catch (const std::exception& exception) {
+        const std::string message = std::string("BLOCKED: independent verification failed: ") + exception.what();
+        try {
+            const auto record = rejected_record(run_config, backend, statement_loaded ? &statement : nullptr,
+                                                message, envelope_loaded && envelope.gpu_kernel_executed);
+            write_run_record(directory / "run.record", record);
+            std::ofstream result(directory / "verification.result");
+            if (result) {
+                result << "status=BLOCKED\nstatement_id=" << (statement_loaded ? statement.statement_id : "UNAVAILABLE")
+                       << "\nproof_id=" << (envelope_loaded ? envelope.proof_id : "UNAVAILABLE") << "\nerror=" << message << "\n";
+            }
+        } catch (...) {
+            // Preserve the original verification failure.  A missing run
+            // directory must not turn a clear BLOCKED result into a parser crash.
+        }
+        std::cerr << "verification=BLOCKED " << message << '\n';
+        return 2;
     }
-    const Backend backend = parse_backend(envelope.backend);
-    if (options.has_backend && options.backend != backend) fail("requested backend does not match proof envelope");
-    const auto public_output_path = local_path(directory, statement.public_output_path, "public_output_path");
-    const auto public_output = read_public_output(public_output_path, statement.nodes, statement.classes);
-    if (statement.output_id != statement.public_output_digest ||
-        digest_matrix(public_output) != statement.public_output_digest) {
-        fail("public output shape or digest does not match the public statement");
-    }
-    if (!native_bridge_available()) fail("official native zkDL GAT bridge is not linked; verification is fail-closed");
-    const auto proof = read_bytes(proof_path);
-    NativeVerifyRequest request{&config, &statement, &envelope, &proof, backend};
-    if (!zkdl_gat_native_verify(request, &error)) fail(error.empty() ? "native verifier rejected proof" : error);
-    std::ofstream result(directory / "verification.result");
-    if (!result) fail("cannot write verification.result");
-    result << "status=VERIFIED\nstatement_id=" << statement.statement_id << "\nproof_id=" << envelope.proof_id << "\n";
-    std::cout << "verification=VERIFIED statement_id=" << statement.statement_id << "\n";
-    return 0;
 }
 
 }  // namespace

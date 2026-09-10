@@ -13,7 +13,21 @@ case "$config" in
   /*) config_path="$config" ;;
   *) config_path="$root/$config" ;;
 esac
+config_path="$(realpath -- "$config_path")"
+case "$config_path" in
+  "$root/configs/"*.cfg) ;;
+  *) echo "verify-single: config must be under baseline-local configs/" >&2; exit 2 ;;
+esac
 if [[ -n "$run_dir" ]]; then
-  exec "$root/gat_runner" verify --config "$config_path" --run-dir "$run_dir"
+  case "$run_dir" in
+    /*) run_path="$run_dir" ;;
+    *) run_path="$root/$run_dir" ;;
+  esac
+  run_path="$(realpath -m -- "$run_path")"
+  case "$run_path" in
+    "$root"/*) ;;
+    *) echo "verify-single: run directory must be under baseline-local root/" >&2; exit 2 ;;
+  esac
+  exec "$root/gat_runner" verify --config "$config_path" --run-dir "$run_path"
 fi
 exec "$root/gat_runner" verify --config "$config_path"

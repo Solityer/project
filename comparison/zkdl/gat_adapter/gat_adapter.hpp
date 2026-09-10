@@ -56,15 +56,16 @@ struct Quantization {
     std::vector<std::uint64_t> hidden_input{16, 16, 16};
     std::vector<std::uint64_t> hidden_aggregate_pre{16, 16};
     std::vector<std::uint64_t> hidden_aggregate{16, 16};
-    std::vector<std::uint64_t> hidden_weight;
-    std::vector<std::uint64_t> hidden_h_prime;
-    std::vector<std::uint64_t> hidden_attention_src;
-    std::vector<std::uint64_t> hidden_attention_dst;
+    std::vector<std::vector<std::uint64_t>> hidden_weight;
+    std::vector<std::vector<std::uint64_t>> hidden_h_prime;
+    std::vector<std::vector<std::uint64_t>> hidden_attention_src;
+    std::vector<std::vector<std::uint64_t>> hidden_attention_dst;
     std::vector<std::uint64_t> output_weight{4, 4};
     std::vector<std::uint64_t> output_y_prime{64, 64};
     std::vector<std::uint64_t> output_attention_src{4, 4};
     std::vector<std::uint64_t> output_attention_dst{4, 4};
     std::vector<std::uint64_t> output_bias{16, 16};
+    std::vector<std::uint64_t> hidden_concat{16, 16};
     std::uint64_t output_pre = 16;
     std::uint64_t output_head = 16;
     std::uint64_t output = 16;
@@ -90,6 +91,8 @@ struct Config {
     std::filesystem::path checkpoint_bundle;
     std::filesystem::path run_root;
     std::filesystem::path asset_manifest_path;
+    std::filesystem::path static_table_descriptor_path;
+    std::filesystem::path integer_bound_ledger_path;
     std::filesystem::path proof_path;
     std::filesystem::path statement_path;
     std::filesystem::path output_path;
@@ -119,6 +122,7 @@ struct Config {
     std::string binding_mode;
     std::string security_profile_id;
     std::string verifier_registry_digest;
+    std::string scale_chain_digest;
     std::uint64_t range_bits = 0;
     std::uint64_t batch_graphs = 0;
     std::uint64_t seed = 0;
@@ -186,6 +190,66 @@ struct StaticTables {
     std::string row_order;
     std::string spec_hash;
     std::string digest;
+    std::string descriptor_digest;
+    std::string quant_cfg_id;
+    bool authenticated = false;
+};
+
+struct IntegerBoundFamily {
+    std::uint64_t layer = 0;
+    std::uint64_t head = 0;
+    bool output = false;
+    std::int64_t max_input_abs = 0;
+    std::int64_t max_weight_abs = 0;
+    std::int64_t max_attention_abs = 0;
+    std::int64_t max_bias_abs = 0;
+    std::int64_t max_score_abs = 0;
+    std::int64_t max_table_output_abs = 0;
+    std::int64_t max_delta = 0;
+    std::int64_t max_exp = 0;
+    std::int64_t max_sum = 0;
+    std::int64_t max_aggregate_num = 0;
+    std::int64_t max_dividend_abs = 0;
+    std::int64_t max_aux_abs = 0;
+    std::int64_t max_divisor = 0;
+    std::int64_t max_field_product_abs = 0;
+};
+
+struct IntegerBoundLedger {
+    std::string schema = "zkDL_gat_integer_bound_ledger_v1";
+    std::string ledger_id;
+    std::string quant_cfg_id;
+    std::string static_table_id;
+    std::string field_modulus;
+    std::string scale_chain_digest;
+    std::string static_table_descriptor_digest;
+    std::string digest;
+    std::string descriptor_digest;
+    std::int64_t max_score_abs = 0;
+    std::int64_t max_table_output_abs = 0;
+    std::int64_t max_delta = 0;
+    std::int64_t max_exp = 0;
+    std::int64_t max_sum = 0;
+    std::int64_t max_aggregate_num = 0;
+    std::int64_t max_dividend_abs = 0;
+    std::int64_t max_aux_abs = 0;
+    std::int64_t max_divisor = 0;
+    std::vector<IntegerBoundFamily> families;
+    bool authenticated = false;
+};
+
+struct SignedRoundDivWitness {
+    std::uint64_t rows = 0;
+    std::uint64_t cols = 0;
+    std::vector<std::uint8_t> sigma;
+    std::vector<std::uint8_t> z;
+    std::vector<std::int64_t> a;
+    std::vector<std::int64_t> q;
+    std::vector<std::int64_t> r;
+    std::vector<std::int64_t> delta;
+    std::vector<std::int64_t> divisor;
+    std::vector<FieldValue> a_inverse;
+    std::vector<FieldValue> divisor_inverse;
 };
 
 struct HiddenHeadTrace {
@@ -198,18 +262,18 @@ struct HiddenHeadTrace {
     std::vector<std::int64_t> delta;
     std::vector<std::int64_t> exp_weight;
     std::vector<std::int64_t> denominator;
-    std::vector<std::int64_t> inverse;
-    std::vector<std::int64_t> alpha;
     std::vector<FieldValue> inverse_field;
     std::vector<FieldValue> alpha_field;
     Matrix routed_h_prime;
     Matrix product_u_h_prime;
-    Matrix product_alpha_h_prime;
+    FieldMatrix product_alpha_h_prime_field;
     Matrix aggregate_pre;
     FieldMatrix aggregate_pre_field;
+    FieldMatrix consistency_residual_field;
     Matrix aggregate_num;
     Matrix elu_input;
     Matrix aggregate;
+    SignedRoundDivWitness aggregate_round_div;
 };
 
 struct HiddenLayerTrace {
@@ -228,20 +292,21 @@ struct OutputHeadTrace {
     std::vector<std::int64_t> delta;
     std::vector<std::int64_t> exp_weight;
     std::vector<std::int64_t> denominator;
-    std::vector<std::int64_t> inverse;
-    std::vector<std::int64_t> alpha;
     std::vector<FieldValue> inverse_field;
     std::vector<FieldValue> alpha_field;
     Matrix routed_y_prime;
     Matrix product_u_y_prime;
-    Matrix product_alpha_y_prime;
+    FieldMatrix product_alpha_y_prime_field;
     Matrix aggregate_pre;
     FieldMatrix aggregate_pre_field;
+    FieldMatrix consistency_residual_field;
     Matrix aggregate_num;
     Matrix y_quantized;
     Matrix aligned;
     std::vector<std::int64_t> bias;
     Matrix output;
+    SignedRoundDivWitness aggregate_round_div;
+    SignedRoundDivWitness alignment_round_div;
 };
 
 struct GatTrace {
@@ -250,6 +315,7 @@ struct GatTrace {
     std::vector<OutputHeadTrace> output_heads;
     Matrix output_sum;
     Matrix logits;
+    SignedRoundDivWitness final_average_round_div;
 };
 
 struct TensorFamily {
@@ -300,6 +366,11 @@ struct RelationPlan {
     std::string mapping_digest;
     std::string selector_digest;
     std::string degree_digest;
+    std::string static_table_descriptor_digest;
+    std::string scale_chain_digest;
+    std::string integer_bound_ledger_digest;
+    std::string integer_bound_ledger_descriptor_digest;
+    IntegerBoundLedger integer_bound_ledger;
     std::vector<TensorFamily> tensor_families;
     std::vector<OperationFamily> operation_families;
 };
@@ -329,6 +400,11 @@ struct PublicStatement {
     std::string static_table_row_order;
     std::string static_table_spec_hash;
     std::string static_table_digest;
+    std::string static_table_descriptor_digest;
+    std::string scale_chain_digest;
+    std::string integer_bound_ledger_id;
+    std::string integer_bound_ledger_digest;
+    std::string integer_bound_ledger_descriptor_digest;
     std::string config_digest;
     std::string asset_manifest_digest;
     std::string checkpoint_manifest_digest;
@@ -357,6 +433,11 @@ struct ProofEnvelope {
     std::string proof_scope = "full_gat_forward";
     std::string native_core_api = "zkdl_native_gat_bridge_v1";
     std::string status = "UNAVAILABLE";
+    std::string static_table_descriptor_digest;
+    std::string scale_chain_digest;
+    std::string integer_bound_ledger_id;
+    std::string integer_bound_ledger_digest;
+    std::string integer_bound_ledger_descriptor_digest;
     std::uint64_t proof_size_bytes = 0;
     std::uint64_t commitment_size_bytes = 0;
     double commitment_time_seconds = 0.0;
@@ -376,6 +457,11 @@ struct RunRecord {
     std::string proof_id;
     std::string verification_status = "NOT_RUN";
     std::string proof_scope = "full_gat_forward";
+    std::string static_table_descriptor_digest;
+    std::string scale_chain_digest;
+    std::string integer_bound_ledger_id;
+    std::string integer_bound_ledger_digest;
+    std::string integer_bound_ledger_descriptor_digest;
     std::uint64_t proof_size_bytes = 0;
     std::uint64_t commitment_size_bytes = 0;
     double commitment_time_seconds = 0.0;
@@ -400,6 +486,11 @@ struct AssetManifest {
     std::string dataset;
     std::string quant_cfg_id;
     std::string config;
+    std::string scale_chain_digest;
+    std::string static_table_descriptor;
+    std::string static_table_descriptor_digest;
+    std::string integer_bound_ledger;
+    std::string integer_bound_ledger_descriptor_digest;
     std::string digest;
     std::vector<AssetManifestEntry> files;
 };

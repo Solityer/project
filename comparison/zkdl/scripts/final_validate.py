@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 
 
@@ -22,6 +23,30 @@ def read_kv(path: Path) -> dict[str, str]:
             fail(f"duplicate record key {key}: {path}")
         values[key] = value
     return values
+
+
+IDENTITY_DIGESTS = {
+    "static_table_descriptor_digest", "scale_chain_digest", "integer_bound_ledger_digest",
+    "integer_bound_ledger_descriptor_digest",
+}
+
+
+def validate_identity_fields(row: dict[str, str], path: Path, manifest: dict[str, object]) -> None:
+    for field in IDENTITY_DIGESTS:
+        value = row.get(field, "")
+        if not value or (value != "UNAVAILABLE" and not re.fullmatch(r"[0-9a-f]{64}", value)):
+            fail(f"invalid identity field {field}: {path}")
+    if not row.get("integer_bound_ledger_id"):
+        fail(f"missing integer-bound ledger id: {path}")
+    # A formal VERIFIED run must carry authenticated relation identities.  The
+    # empty-file manifests are test fixtures only; real manifests have entries
+    # and may not downgrade these bindings to UNAVAILABLE.
+    if manifest.get("files") and any(row[field] == "UNAVAILABLE" for field in IDENTITY_DIGESTS):
+        fail(f"VERIFIED run has unavailable relation identity: {path}")
+    for field in ("scale_chain_digest", "static_table_descriptor_digest", "integer_bound_ledger_descriptor_digest"):
+        manifest_value = manifest.get(field)
+        if manifest_value and manifest_value != "UNAVAILABLE" and row[field] != manifest_value:
+            fail(f"run/asset manifest identity mismatch for {field}: {path}")
 
 
 def main() -> int:
@@ -58,6 +83,10 @@ def main() -> int:
         except json.JSONDecodeError as exc:
             fail(f"invalid asset manifest {manifest}: {exc}")
         if payload.get("schema") != "zkDL_gat_asset_manifest_v1": fail(f"asset schema mismatch: {manifest}")
+        for field in ("scale_chain_digest", "static_table_descriptor", "static_table_descriptor_digest",
+                      "integer_bound_ledger", "integer_bound_ledger_descriptor_digest"):
+            if field not in payload: fail(f"asset identity field missing: {field}: {manifest}")
+        validate_identity_fields(row, path, payload)
     if args.require_pairs:
         seen = {(row.get("dataset"), row.get("backend")) for row in rows}
         datasets = {dataset for dataset, _ in seen}
