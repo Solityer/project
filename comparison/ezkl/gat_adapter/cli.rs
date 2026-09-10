@@ -81,6 +81,8 @@ impl FormalCliContract {
                     "--resource-manifest".into(),
                     "--output-dir".into(),
                     "--srs-path".into(),
+                    "--public-statement".into(),
+                    "--public-output".into(),
                     "--gpu".into(),
                 ],
                 witness: vec![

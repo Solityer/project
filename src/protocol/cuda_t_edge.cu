@@ -1035,7 +1035,8 @@ namespace gatzk::protocol
                             zero_domain_blinder,
                             blinder_count,
                             shift_,
-                            device_leaf_table_[slot],
+                            reinterpret_cast<mcl::Fr *>(
+                                device_leaf_table_[slot]),
                             target_size_,
                             true,
                             host_leaf_requires_default_wait_[slot]);
@@ -1090,7 +1091,8 @@ namespace gatzk::protocol
                             coefficients,
                             coefficient_count,
                             shift_,
-                            device_leaf_table_[slot],
+                            reinterpret_cast<mcl::Fr *>(
+                                device_leaf_table_[slot]),
                             target_size_,
                             true,
                             host_leaf_requires_default_wait_[slot]);
@@ -1511,12 +1513,10 @@ namespace gatzk::protocol
                 for (const auto &source :
                      sources)
                 {
-                    host_leaf_requires_default_wait_[
-                        source.slot] = true;
+                    host_leaf_requires_default_wait_[source.slot] = true;
                 }
 
-                host_leaf_requires_default_wait_[
-                    target_slot] = true;
+                host_leaf_requires_default_wait_[target_slot] = true;
 
                 host_leaf_bound_[target_slot] = true;
                 return true;
@@ -1788,8 +1788,7 @@ namespace gatzk::protocol
                 for (const auto access :
                      term.required_accesses)
                 {
-                    host_leaf_requires_default_wait_[
-                        access_slots[access]] = true;
+                    host_leaf_requires_default_wait_[access_slots[access]] = true;
                 }
             }
 
@@ -1930,7 +1929,9 @@ namespace gatzk::protocol
                                 device_quotient_),
                             target_size_,
                             shift_,
-                            output,
+                            algebra::FieldElement::
+                                mutable_native_array_data(
+                                    output),
                             true);
 
                 if (!executed)

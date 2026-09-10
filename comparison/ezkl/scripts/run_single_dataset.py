@@ -280,7 +280,7 @@ def main(args: argparse.Namespace) -> int:
     logs = output / "logs"
     logs.mkdir()
     settings = ensure_relative_arg(args.settings, "settings", default_path(output, "settings.json"))
-    compiled = ensure_relative_arg(args.compiled_circuit, "compiled-circuit", default_path(output, "compiled_circuit"))
+    compiled = ensure_relative_arg(args.compiled_circuit, "compiled-circuit", default_path(output, "compiled.circuit"))
     vk = ensure_relative_arg(args.vk, "vk", default_path(output, "vk.key"))
     pk = ensure_relative_arg(args.pk, "pk", default_path(output, "pk.key"))
     artifact_manifest = ensure_relative_arg(
@@ -314,6 +314,10 @@ def main(args: argparse.Namespace) -> int:
         cli_path(output, "output-dir"),
         "--srs-path",
         cli_path(srs, "SRS"),
+        "--public-statement",
+        cli_path(statement, "public statement"),
+        "--public-output",
+        cli_path(public_output, "public output"),
     ]
     if args.backend == "gpu":
         prepare_command.append("--gpu")

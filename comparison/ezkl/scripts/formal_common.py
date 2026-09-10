@@ -258,7 +258,15 @@ def load_cli_contract() -> dict[str, Any]:
         ):
             abort(f"GAT adapter contract required_flags.{stage} is invalid")
     required_flag_sets = {
-        "prepare": {"--dataset", "--resource-manifest", "--output-dir", "--srs-path", "--gpu"},
+        "prepare": {
+            "--dataset",
+            "--resource-manifest",
+            "--output-dir",
+            "--srs-path",
+            "--public-statement",
+            "--public-output",
+            "--gpu",
+        },
         "witness": {"--dataset", "--compiled-circuit", "--statement", "--output", "--gpu"},
         "prove": {"--witness", "--compiled-circuit", "--pk-path", "--proof-path", "--srs-path", "--check-mode"},
         "verify": {
