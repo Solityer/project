@@ -1,6 +1,6 @@
 #[cfg(all(feature = "eth", not(target_arch = "wasm32")))]
 use alloy::primitives::Address as H160;
-use clap::{Command, Parser, Subcommand};
+use clap::{Command, Parser, Subcommand, ValueEnum};
 use clap_complete::{generate, Generator, Shell};
 #[cfg(feature = "python-bindings")]
 use pyo3::{conversion::FromPyObject, exceptions::PyValueError, prelude::*};
@@ -82,6 +82,24 @@ pub const DEFAULT_VKA_DIGEST: &str = "vka.digest";
 pub const DEFAULT_GAT_OUTPUT_DIR: &str = "runs/gat";
 /// Baseline-local path for the Rust-generated formal CLI contract.
 pub const DEFAULT_FORMAL_CONTRACT: &str = "artifacts/gat_adapter/formal_cli.json";
+/// Setup context containing the native CircuitRef consumed by the external
+/// public-statement producer before final preparation.
+pub const DEFAULT_GAT_SETUP_CONTEXT: &str = "circuit_ref.json";
+
+/// Phase of the two-stage native GAT preparation flow.
+#[derive(Debug, Copy, Clone, ValueEnum, Serialize, Deserialize, PartialEq, PartialOrd)]
+pub enum GatPreparePhase {
+    /// Compile/setup the native circuit and emit its actual CircuitRef.
+    Setup,
+    /// Consume an externally produced statement and finalize the artifact manifest.
+    Final,
+}
+
+impl Default for GatPreparePhase {
+    fn default() -> Self {
+        Self::Final
+    }
+}
 
 #[derive(Debug, Copy, Clone, Serialize, Deserialize, PartialEq, PartialOrd)]
 /// Determines what the calibration pass should optimize for
@@ -431,6 +449,10 @@ pub enum Commands {
         /// Canonical dataset name: cora, citeseer, pubmed, ppi or ogbn_arxiv.
         #[arg(long)]
         dataset: String,
+        /// Native preparation phase; setup emits the actual CircuitRef and
+        /// final consumes the externally produced statement.
+        #[arg(long, value_enum, default_value_t = GatPreparePhase::Final)]
+        phase: GatPreparePhase,
         /// Baseline-local authenticated resource manifest.
         #[arg(long, default_value = "resources/resource_manifest.json", value_hint = clap::ValueHint::FilePath)]
         resource_manifest: PathBuf,
@@ -440,12 +462,14 @@ pub enum Commands {
         /// Path to an authentic official ezkl SRS; dummy/generated SRS is rejected.
         #[arg(long, value_hint = clap::ValueHint::FilePath)]
         srs_path: PathBuf,
-        /// Independently produced, verifier-facing public statement.
-        #[arg(long, required = true, value_hint = clap::ValueHint::FilePath)]
-        public_statement: PathBuf,
-        /// Independently produced canonical public logits file.
-        #[arg(long, required = true, value_hint = clap::ValueHint::FilePath)]
-        public_output: PathBuf,
+        /// Independently produced, verifier-facing public statement. Required
+        /// only during the final phase; setup emits the context first.
+        #[arg(long, value_hint = clap::ValueHint::FilePath)]
+        public_statement: Option<PathBuf>,
+        /// Independently produced canonical public logits file. Required only
+        /// during the final phase.
+        #[arg(long, value_hint = clap::ValueHint::FilePath)]
+        public_output: Option<PathBuf>,
         /// Request the official GPU path. Missing GPU backend/device fails closed.
         #[arg(long, action = clap::ArgAction::SetTrue)]
         gpu: bool,

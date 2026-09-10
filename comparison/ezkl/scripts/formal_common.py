@@ -260,6 +260,7 @@ def load_cli_contract() -> dict[str, Any]:
     required_flag_sets = {
         "prepare": {
             "--dataset",
+            "--phase",
             "--resource-manifest",
             "--output-dir",
             "--srs-path",
@@ -781,7 +782,13 @@ def require_circuit_ref(value: Any, label: str = "circuit_ref") -> dict[str, str
         abort(f"{label} is missing a non-empty identity field")
     if value["relation_id"] != CANONICAL_RELATION:
         abort(f"{label}.relation_id is not R_GAT-ezkl")
-    if any(any(marker in value[key].lower() for marker in ("pending", "placeholder", "dummy", "fake")) for key in required[1:]):
+    if any(
+        any(
+            marker in value[key].lower()
+            for marker in ("unbound", "pending", "placeholder", "dummy", "fake")
+        )
+        for key in required[1:]
+    ):
         abort(f"{label} contains a placeholder identity")
     for key in ("compiled_circuit_digest", "settings_digest", "vk_digest", "model_graph_digest"):
         require_digest(value[key], f"{label}.{key}")

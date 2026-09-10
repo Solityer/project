@@ -526,7 +526,10 @@ impl ArtifactManifest {
         }
         let backend = self.backend.to_ascii_lowercase();
         if backend != "cpu" && backend != "gpu" {
-            return Err(format!("artifact manifest has unsupported backend: {}", self.backend));
+            return Err(format!(
+                "artifact manifest has unsupported backend: {}",
+                self.backend
+            ));
         }
         if [
             self.dataset.as_str(),
@@ -540,8 +543,7 @@ impl ArtifactManifest {
             ["unbound", "pending", "placeholder", "dummy", "fake"]
                 .iter()
                 .any(|marker| lowered.contains(marker))
-        })
-        {
+        }) {
             return Err("artifact manifest contains an unbound/placeholder identity".into());
         }
         self.circuit_ref.validate()?;
@@ -637,7 +639,10 @@ impl ArtifactManifest {
         ];
         for path in required {
             if !names.contains(path) {
-                return Err(format!("artifact manifest is missing required file: {}", path));
+                return Err(format!(
+                    "artifact manifest is missing required file: {}",
+                    path
+                ));
             }
         }
         if require_proof && !names.contains("proof.json") {

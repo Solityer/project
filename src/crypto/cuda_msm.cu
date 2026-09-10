@@ -966,7 +966,6 @@ namespace gatzk::crypto
             static std::mutex mutex;
             return mutex;
         }
-
         G1Point to_mcl_point(
             const bls12_381::projective_t &input,
             const char *route,
@@ -983,22 +982,8 @@ namespace gatzk::crypto
                 return output;
             }
 
-            if (!bls12_381::projective_t::is_on_curve(input))
-            {
-                throw std::runtime_error(
-                    "CUDA G1 MSM returned an off-curve ICICLE "
-                    "projective point: route=" +
-                    std::string(route) +
-                    " count=" +
-                    std::to_string(count) +
-                    " configured_c=" +
-                    std::to_string(configured_window_bits) +
-                    (batch_index ==
-                             std::numeric_limits<std::size_t>::max()
-                         ? std::string{}
-                         : " batch_index=" +
-                               std::to_string(batch_index)));
-            }
+            const bool icicle_projective_valid =
+                bls12_381::projective_t::is_on_curve(input);
 
             const auto affine =
                 bls12_381::projective_t::to_affine(input);
@@ -1033,6 +1018,11 @@ namespace gatzk::crypto
                     std::to_string(count) +
                     " configured_c=" +
                     std::to_string(configured_window_bits) +
+                    " icicle_projective_valid=" +
+                    std::string(
+                        icicle_projective_valid
+                            ? "true"
+                            : "false") +
                     " mcl_valid=" +
                     std::string(
                         mcl_valid ? "true" : "false") +
@@ -1046,6 +1036,18 @@ namespace gatzk::crypto
                          ? std::string{}
                          : " batch_index=" +
                                std::to_string(batch_index)));
+            }
+
+            if (!icicle_projective_valid)
+            {
+                util::info(
+                    "cuda_msm ICICLE projective validation disagreed "
+                    "with canonical mcl validation: route=" +
+                    std::string(route) +
+                    " count=" +
+                    std::to_string(count) +
+                    " configured_c=" +
+                    std::to_string(configured_window_bits));
             }
 
             return output;

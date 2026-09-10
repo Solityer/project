@@ -56,7 +56,7 @@
       "required": ["prepare", "witness", "prove", "verify"],
       "properties": {
         "prepare": {
-          "const": ["--dataset", "--resource-manifest", "--output-dir", "--srs-path", "--public-statement", "--public-output", "--gpu"]
+          "const": ["--dataset", "--phase", "--resource-manifest", "--output-dir", "--srs-path", "--public-statement", "--public-output", "--gpu"]
         },
         "witness": {
           "const": ["--dataset", "--compiled-circuit", "--statement", "--output", "--gpu"]

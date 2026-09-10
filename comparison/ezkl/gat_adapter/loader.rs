@@ -5,20 +5,21 @@
 //! checkpoint tensor archive, applies canonical ties-away quantization, and
 //! constructs the exact tables/ledger consumed by the native graph op.
 
+use crate::fieldutils::integer_rep_to_felt;
 use crate::gat_adapter::manifest::{
     AuthenticatedResource, ResourceManifest, ResourceSourceSnapshot,
 };
 use crate::gat_adapter::schema::{
     multiplier_to_scale_exponent, sha256_digest, CanonicalGat, CanonicalGraph, CanonicalModel,
-    CircuitRef, DigestIdentity, HeadWeights, HiddenLayerSpec, IntegerBoundLedger, ModelBinding,
-    ScaleChain, StaticTables, GAT_SCHEMA_VERSION,
+    DigestIdentity, HeadWeights, HiddenLayerSpec, IntegerBoundLedger, ModelBinding, ScaleChain,
+    StaticTables, GAT_SCHEMA_VERSION,
 };
+use crate::graph::modules::native_poseidon_hash_string;
+use halo2curves::bn256::Fr;
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-
-const RELATION_ID: &str = "R_GAT-ezkl";
 
 /// A parsed canonical dataset/checkpoint bundle.
 #[derive(Clone, Debug)]
@@ -205,38 +206,32 @@ fn load_from_resources(
         id: ledger.ledger_id.clone(),
         digest: ledger.ledger_digest.clone(),
     };
+    let model_values = model.flattened_params();
     let canonical_model_digest = {
         let mut bytes = b"ezkl-gat-model-v1".to_vec();
-        for value in model.flattened_params() {
+        for value in &model_values {
             bytes.extend_from_slice(&value.to_le_bytes());
         }
         sha256_digest(&bytes)?
     };
+    let native_model_hash = native_poseidon_hash_string(
+        &model_values
+            .iter()
+            .copied()
+            .map(integer_rep_to_felt::<Fr>)
+            .collect::<Vec<_>>(),
+    )?;
     let profile = secure
         .get("ezkl_security_profile_id")
         .cloned()
         .ok_or_else(|| "missing ezkl_security_profile_id".to_string())?;
     let model_binding = ModelBinding {
-        // The native Poseidon module binds this same canonical closure during
-        // GraphCircuit forward. This preflight identity prevents a private
-        // parameter fallback from being accepted by the adapter.
-        hash: canonical_model_digest.clone(),
+        // Use the same native Poseidon primitive and field encoding as
+        // GraphModules::forward.  The SHA-256 value above remains only the
+        // canonical audit digest.
+        hash: native_model_hash,
         hash_domain: "ezkl-gat-model-v1".into(),
         canonical_model_digest,
-    };
-    let placeholder = sha256_digest(
-        format!("{}:{}:{}", RELATION_ID, dataset, resource_manifest_sha256).as_bytes(),
-    )?;
-    let circuit_ref = CircuitRef {
-        compiled_circuit_id: format!("unbound:{}", dataset),
-        compiled_circuit_digest: placeholder.clone(),
-        settings_id: format!("unbound-settings:{}", dataset),
-        settings_digest: placeholder.clone(),
-        vk_id: format!("unbound-vk:{}", dataset),
-        vk_digest: placeholder.clone(),
-        model_graph_id: format!("gat:{}", checkpoint.model_arch_id),
-        model_graph_digest: placeholder,
-        ezkl_security_profile_id: profile.clone(),
     };
     let spec = CanonicalGat {
         schema_version: GAT_SCHEMA_VERSION,
@@ -252,10 +247,12 @@ fn load_from_resources(
         topology,
         quantization,
         ledger_identity,
-        circuit_ref,
+        // Compiled-circuit/settings/VK identities do not exist until native
+        // setup.  They are produced and bound by gat-prepare's setup phase.
+        circuit_ref: None,
         model_binding,
     };
-    spec.validate()?;
+    spec.validate_for_compile()?;
     Ok(LoadedGat {
         spec,
         dataset: dataset.to_string(),

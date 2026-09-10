@@ -10,7 +10,7 @@ use crate::eth::register_vka_via_rv;
 use crate::eth::{get_contract_artifacts, verify_proof_via_solidity};
 use crate::gat_adapter::{
     build_model_for_run_args, load_dataset_with_manifest, write_generated_metadata, ArtifactFile,
-    ArtifactManifest, BoundCircuitRef, CoreRunManifest, FormalCliContract, GpuEvidence, PublicEzkl,
+    ArtifactManifest, BoundCircuitRef, CoreRunManifest, FormalCliContract, GpuEvidence,
     PublicStatement, RoundingMode, SrsProvenance,
 };
 use crate::graph::input::GraphData;
@@ -199,6 +199,7 @@ pub async fn run(command: Commands) -> Result<String, EZKLError> {
         .map(|e| serde_json::to_string(&e).unwrap()),
         Commands::GatPrepare {
             dataset,
+            phase,
             resource_manifest,
             output_dir,
             srs_path,
@@ -207,6 +208,7 @@ pub async fn run(command: Commands) -> Result<String, EZKLError> {
             gpu,
         } => gat_prepare(
             dataset,
+            phase,
             resource_manifest,
             output_dir,
             srs_path,
@@ -1731,6 +1733,7 @@ fn assert_native_gat_identity(
             if let SupportedOp::Gat(op) = node.opkind() {
                 found += 1;
                 if op.spec.graph.topology_digest != expected.graph.topology_digest
+                    || op.spec.model_binding.hash != expected.model_binding.hash
                     || op.spec.model_binding.canonical_model_digest
                         != expected.model_binding.canonical_model_digest
                     || op.spec.quantization.digest != expected.quantization.digest
@@ -1822,7 +1825,7 @@ fn resolved_circuit_ref(
         settings_digest: settings_sha256,
         vk_id: format!("vk:{}", &vk_sha256),
         vk_digest: vk_sha256,
-        model_graph_id: loaded.spec.circuit_ref.model_graph_id.clone(),
+        model_graph_id: format!("gat:{}", loaded.spec.model.model_arch_id),
         model_graph_digest,
         ezkl_security_profile_id: loaded.spec.ezkl_security_profile_id.clone(),
     })
@@ -1844,11 +1847,7 @@ fn copy_external_file(source: &Path, destination: &Path) -> Result<(), EZKLError
     }
     let rebound = std::fs::read(destination)?;
     if rebound != bytes {
-        return Err(format!(
-            "external artifact copy changed: {}",
-            destination.display()
-        )
-        .into());
+        return Err(format!("external artifact copy changed: {}", destination.display()).into());
     }
     Ok(())
 }
@@ -1863,7 +1862,10 @@ fn validate_statement_against_loaded(
         || statement.degree_bound_id != spec.ledger.ledger_id
         || statement.ezkl_security_profile_id != spec.ezkl_security_profile_id
     {
-        return Err("external public statement registry/model identity disagrees with canonical resources".into());
+        return Err(
+            "external public statement registry/model identity disagrees with canonical resources"
+                .into(),
+        );
     }
     let public = &statement.public_ezkl;
     if public.topology != spec.topology
@@ -1871,6 +1873,8 @@ fn validate_statement_against_loaded(
         || public.ledger != spec.ledger_identity
         || public.static_tables.id != spec.tables.static_tables_id
         || public.static_tables.digest != spec.tables.static_tables_digest
+        || public.model.hash != spec.model_binding.hash
+        || public.model.hash_domain != spec.model_binding.hash_domain
         || public.model.canonical_model_digest != spec.model_binding.canonical_model_digest
         || public.feature_table != spec.features
         || public.node_ids != spec.graph.node_ids
@@ -1881,8 +1885,23 @@ fn validate_statement_against_loaded(
     {
         return Err("external public statement graph/features/registry binding disagrees with canonical resources".into());
     }
-    if public.circuit.native.model_graph_id != spec.circuit_ref.model_graph_id {
-        return Err("external public statement model graph identity disagrees with canonical resources".into());
+    let expected_model_graph_id = spec
+        .circuit_ref
+        .as_ref()
+        .map(|circuit_ref| circuit_ref.model_graph_id.clone())
+        .unwrap_or_else(|| format!("gat:{}", spec.model.model_arch_id));
+    if public.circuit.native.model_graph_id != expected_model_graph_id {
+        return Err(
+            "external public statement model graph identity disagrees with canonical resources"
+                .into(),
+        );
+    }
+    if let Some(circuit_ref) = spec.circuit_ref.as_ref() {
+        if public.circuit.native != *circuit_ref {
+            return Err(
+                "external public statement CircuitRef disagrees with bound native setup".into(),
+            );
+        }
     }
     Ok(())
 }
@@ -1983,19 +2002,38 @@ fn public_instances_from_statement(
 
 fn gat_prepare(
     dataset: String,
+    phase: GatPreparePhase,
     resource_manifest: PathBuf,
     output_dir: PathBuf,
     srs_path: PathBuf,
-    public_statement_path: PathBuf,
-    public_output_path: PathBuf,
+    public_statement_path: Option<PathBuf>,
+    public_output_path: Option<PathBuf>,
     gpu: bool,
 ) -> Result<String, EZKLError> {
     enforce_gat_gpu(gpu)?;
     require_formal_local_path(&resource_manifest, "resource manifest")?;
     require_formal_local_path(&output_dir, "output directory")?;
     require_formal_local_path(&srs_path, "SRS")?;
-    require_formal_regular_file(&public_statement_path, "public statement")?;
-    require_formal_regular_file(&public_output_path, "public output")?;
+    if let Some(path) = public_statement_path.as_ref() {
+        require_formal_local_path(path, "public statement")?;
+    }
+    if let Some(path) = public_output_path.as_ref() {
+        require_formal_local_path(path, "public output")?;
+    }
+    if matches!(phase, GatPreparePhase::Final) {
+        require_formal_regular_file(
+            public_statement_path
+                .as_ref()
+                .ok_or_else(|| "final GAT preparation requires --public-statement".to_string())?,
+            "public statement",
+        )?;
+        require_formal_regular_file(
+            public_output_path
+                .as_ref()
+                .ok_or_else(|| "final GAT preparation requires --public-output".to_string())?,
+            "public output",
+        )?;
+    }
     if let Ok(metadata) = std::fs::symlink_metadata(&output_dir) {
         if metadata.file_type().is_symlink() {
             return Err(format!(
@@ -2008,22 +2046,65 @@ fn gat_prepare(
     let baseline_root = std::env::current_dir()?;
     let loaded = load_dataset_with_manifest(&baseline_root, &resource_manifest, &dataset)
         .map_err(EZKLError::from)?;
-    let supplied_statement =
-        PublicStatement::load(&public_statement_path).map_err(EZKLError::from)?;
-    if supplied_statement.dataset != loaded.dataset {
-        return Err("external public statement dataset disagrees with gat-prepare dataset".into());
-    }
-    let supplied_output = parse_public_output(&public_output_path, &loaded.dataset)?;
-    if supplied_output != supplied_statement.public_ezkl.y {
-        return Err("external public output Y disagrees element-by-element with public statement".into());
-    }
-    let supplied_output_sha256 = get_file_hash(&public_output_path)?;
-    if supplied_output_sha256 != supplied_statement.public_output_sha256 {
-        return Err("external public output digest disagrees with public statement".into());
-    }
-    validate_statement_against_loaded(&supplied_statement, &loaded.spec)?;
     let srs_sha256 = require_authentic_srs(&srs_path)?;
+    let backend = gat_backend(gpu)?;
+    match phase {
+        GatPreparePhase::Setup => gat_prepare_setup(loaded, output_dir, srs_path, gpu)?,
+        GatPreparePhase::Final => gat_prepare_final(
+            loaded,
+            output_dir,
+            srs_path,
+            srs_sha256,
+            public_statement_path
+                .ok_or_else(|| "final GAT preparation requires --public-statement".to_string())?,
+            public_output_path
+                .ok_or_else(|| "final GAT preparation requires --public-output".to_string())?,
+            backend,
+        )?,
+    }
+}
+
+fn gat_backend(gpu: bool) -> Result<String, EZKLError> {
+    let backend = std::env::var("EZKL_GAT_BACKEND").unwrap_or_else(|_| "cpu".into());
+    if backend != "cpu" && backend != "gpu" {
+        return Err(format!("unsupported formal backend: {}", backend).into());
+    }
+    if (backend == "gpu") != gpu {
+        return Err("GAT backend environment and --gpu flag disagree".into());
+    }
+    Ok(backend)
+}
+
+fn gat_prepare_setup(
+    loaded: crate::gat_adapter::LoadedGat,
+    output_dir: PathBuf,
+    srs_path: PathBuf,
+    gpu: bool,
+) -> Result<String, EZKLError> {
+    let _ = gpu;
     std::fs::create_dir_all(&output_dir)?;
+    for name in [
+        "settings.json",
+        "compiled.circuit",
+        "pk.key",
+        "vk.key",
+        "gat_static_tables.json",
+        "gat_integer_ledger.json",
+        "circuit_ref.json",
+        "artifact_manifest.json",
+        "statement.json",
+        "public_output.json",
+        "srs.kzg",
+    ] {
+        let path = output_dir.join(name);
+        if std::fs::symlink_metadata(&path).is_ok() {
+            return Err(format!(
+                "native GAT setup refuses to reuse an existing output: {}",
+                path.display()
+            )
+            .into());
+        }
+    }
     let mut run_args = RunArgs::default();
     run_args.input_visibility = Visibility::Public;
     run_args.output_visibility = Visibility::Public;
@@ -2050,7 +2131,6 @@ fn gat_prepare(
     let compiled_path = output_dir.join("compiled.circuit");
     let pk_path = output_dir.join("pk.key");
     let vk_path = output_dir.join("vk.key");
-    let artifact_path = output_dir.join("artifact_manifest.json");
     circuit.settings().save(&settings_path)?;
     circuit.save(compiled_path.clone())?;
     let params = load_params_prover::<KZGCommitmentScheme<Bn256>>(
@@ -2061,13 +2141,59 @@ fn gat_prepare(
     save_vk::<G1Affine>(&vk_path, pk.get_vk())?;
     save_pk::<G1Affine>(&pk_path, &pk)?;
     write_generated_metadata(&loaded.spec, &output_dir).map_err(EZKLError::from)?;
-    let bound_statement_path = output_dir.join("statement.json");
-    let bound_output_path = output_dir.join("public_output.json");
-    let bound_srs_path = output_dir.join("srs.kzg");
-    copy_external_file(&public_statement_path, &bound_statement_path)?;
-    copy_external_file(&public_output_path, &bound_output_path)?;
-    copy_external_file(&srs_path, &bound_srs_path)?;
-    let public_output_sha256 = supplied_output_sha256;
+    let settings_sha = get_file_hash(&settings_path)?;
+    let compiled_sha = get_file_hash(&compiled_path)?;
+    let vk_sha = get_file_hash(&vk_path)?;
+    let circuit_ref = resolved_circuit_ref(
+        &loaded,
+        settings_sha.clone(),
+        compiled_sha.clone(),
+        vk_sha.clone(),
+    )?;
+    let setup_context = BoundCircuitRef::new(circuit_ref);
+    setup_context.validate().map_err(EZKLError::from)?;
+    let context_path = output_dir.join(DEFAULT_GAT_SETUP_CONTEXT);
+    let context_bytes = serde_json::to_vec_pretty(&setup_context)?;
+    std::fs::write(&context_path, context_bytes)?;
+    let contract_path = loaded
+        .baseline_root
+        .join("artifacts/gat_adapter/formal_cli.json");
+    FormalCliContract::write(&contract_path).map_err(EZKLError::from)?;
+    Ok(output_dir.display().to_string())
+}
+
+fn gat_prepare_final(
+    loaded: crate::gat_adapter::LoadedGat,
+    output_dir: PathBuf,
+    srs_path: PathBuf,
+    srs_sha256: String,
+    public_statement_path: PathBuf,
+    public_output_path: PathBuf,
+    backend: String,
+) -> Result<String, EZKLError> {
+    let settings_path = output_dir.join("settings.json");
+    let compiled_path = output_dir.join("compiled.circuit");
+    let pk_path = output_dir.join("pk.key");
+    let vk_path = output_dir.join("vk.key");
+    let context_path = output_dir.join(DEFAULT_GAT_SETUP_CONTEXT);
+    let artifact_path = output_dir.join("artifact_manifest.json");
+    for (path, label) in [
+        (&settings_path, "settings"),
+        (&compiled_path, "compiled circuit"),
+        (&pk_path, "proving key"),
+        (&vk_path, "verification key"),
+        (&context_path, "setup CircuitRef"),
+    ] {
+        require_formal_regular_file(path, label)?;
+    }
+    if std::fs::symlink_metadata(&artifact_path).is_ok() {
+        return Err(format!(
+            "final GAT preparation refuses to overwrite an existing artifact manifest: {}",
+            artifact_path.display()
+        )
+        .into());
+    }
+    let setup_context = load_setup_circuit_ref(&context_path)?;
     let settings_sha = get_file_hash(&settings_path)?;
     let compiled_sha = get_file_hash(&compiled_path)?;
     let vk_sha = get_file_hash(&vk_path)?;
@@ -2078,22 +2204,47 @@ fn gat_prepare(
         compiled_sha.clone(),
         vk_sha.clone(),
     )?;
-    if supplied_statement.public_ezkl.circuit.native != circuit_ref {
+    if setup_context.native != circuit_ref {
+        return Err("setup CircuitRef does not match the native setup artifacts".into());
+    }
+    let mut bound_spec = loaded.spec.clone();
+    bound_spec.circuit_ref = Some(circuit_ref.clone());
+    bound_spec.validate().map_err(EZKLError::from)?;
+
+    let supplied_statement =
+        PublicStatement::load(&public_statement_path).map_err(EZKLError::from)?;
+    if supplied_statement.dataset != loaded.dataset {
+        return Err("external public statement dataset disagrees with gat-prepare dataset".into());
+    }
+    let supplied_output = parse_public_output(&public_output_path, &loaded.dataset)?;
+    if supplied_output != supplied_statement.public_ezkl.y {
         return Err(
-            "external public statement CircuitRef does not match the keygen artifacts".into(),
+            "external public output Y disagrees element-by-element with public statement".into(),
         );
     }
-    if get_file_hash(&bound_statement_path)? != get_file_hash(&public_statement_path)? {
-        return Err("bound public statement copy changed during preparation".into());
+    let supplied_output_sha256 = get_file_hash(&public_output_path)?;
+    if supplied_output_sha256 != supplied_statement.public_output_sha256 {
+        return Err("external public output digest disagrees with public statement".into());
     }
-    if get_file_hash(&bound_output_path)? != public_output_sha256 {
-        return Err("bound public output copy changed during preparation".into());
+    validate_statement_against_loaded(&supplied_statement, &bound_spec)?;
+    if supplied_statement.public_ezkl.circuit.native != circuit_ref {
+        return Err(
+            "external public statement CircuitRef does not match the setup artifacts".into(),
+        );
     }
+
+    let bound_statement_path = output_dir.join("statement.json");
+    let bound_output_path = output_dir.join("public_output.json");
+    let bound_srs_path = output_dir.join("srs.kzg");
+    copy_external_file(&public_statement_path, &bound_statement_path)?;
+    copy_external_file(&public_output_path, &bound_output_path)?;
+    copy_external_file(&srs_path, &bound_srs_path)?;
     let files: Vec<ArtifactFile> = [
         (&settings_path, "settings.json"),
         (&compiled_path, "compiled.circuit"),
         (&pk_path, "pk.key"),
         (&vk_path, "vk.key"),
+        (&context_path, DEFAULT_GAT_SETUP_CONTEXT),
         (&bound_statement_path, "statement.json"),
         (&bound_output_path, "public_output.json"),
         (&bound_srs_path, "srs.kzg"),
@@ -2113,14 +2264,7 @@ fn gat_prepare(
     .collect::<Result<_, _>>()?;
     let binary_path = std::env::current_exe()?;
     let binary_sha = get_file_hash(&binary_path)?;
-    let source_sha = source_tree_hash(&baseline_root)?;
-    let backend = std::env::var("EZKL_GAT_BACKEND").unwrap_or_else(|_| "cpu".into());
-    if backend != "cpu" && backend != "gpu" {
-        return Err(format!("unsupported formal backend: {}", backend).into());
-    }
-    if (backend == "gpu") != gpu {
-        return Err("GAT backend environment and --gpu flag disagree".into());
-    }
+    let source_sha = source_tree_hash(&loaded.baseline_root)?;
     let statement_sha = get_file_hash(&bound_statement_path)?;
     let srs_provenance = SrsProvenance {
         source: "official_ezkl_ceremony".into(),
@@ -2161,9 +2305,18 @@ fn gat_prepare(
         ezkl_security_profile_id: loaded.spec.ezkl_security_profile_id.clone(),
     };
     artifact.save(&artifact_path).map_err(EZKLError::from)?;
-    let contract_path = baseline_root.join("artifacts/gat_adapter/formal_cli.json");
+    let contract_path = loaded
+        .baseline_root
+        .join("artifacts/gat_adapter/formal_cli.json");
     FormalCliContract::write(&contract_path).map_err(EZKLError::from)?;
     Ok(output_dir.display().to_string())
+}
+
+fn load_setup_circuit_ref(path: &Path) -> Result<BoundCircuitRef, EZKLError> {
+    let bytes = std::fs::read(path)?;
+    let context: BoundCircuitRef = serde_json::from_slice(&bytes)?;
+    context.validate().map_err(EZKLError::from)?;
+    Ok(context)
 }
 
 fn gat_witness(
@@ -2184,12 +2337,30 @@ fn gat_witness(
     if statement.dataset != loaded.dataset {
         return Err("witness dataset and external statement dataset disagree".into());
     }
-    validate_statement_against_loaded(&statement, &loaded.spec)?;
-    if get_file_hash(&compiled_circuit)?
-        != statement.public_ezkl.circuit.native.compiled_circuit_digest
-    {
-        return Err("compiled circuit digest disagrees with external statement CircuitRef".into());
+    let output_dir = compiled_circuit
+        .parent()
+        .ok_or_else(|| "compiled circuit has no setup output directory".to_string())?;
+    let setup_context = load_setup_circuit_ref(&output_dir.join(DEFAULT_GAT_SETUP_CONTEXT))?;
+    let settings_path = output_dir.join("settings.json");
+    let vk_path = output_dir.join("vk.key");
+    require_formal_regular_file(&settings_path, "settings")?;
+    require_formal_regular_file(&vk_path, "verification key")?;
+    let circuit_ref = resolved_circuit_ref(
+        &loaded,
+        get_file_hash(&settings_path)?,
+        get_file_hash(&compiled_circuit)?,
+        get_file_hash(&vk_path)?,
+    )?;
+    if setup_context.native != circuit_ref {
+        return Err("setup CircuitRef does not match the native setup artifacts".into());
     }
+    if statement.public_ezkl.circuit.native != circuit_ref {
+        return Err("external statement CircuitRef does not match the setup artifacts".into());
+    }
+    let mut bound_spec = loaded.spec.clone();
+    bound_spec.circuit_ref = Some(circuit_ref);
+    bound_spec.validate().map_err(EZKLError::from)?;
+    validate_statement_against_loaded(&statement, &bound_spec)?;
     let mut circuit = GraphCircuit::load(compiled_circuit)?;
     assert_native_gat_identity(&circuit, &loaded.spec)?;
     if !circuit.settings().run_args.input_visibility.is_public()
@@ -2406,7 +2577,10 @@ fn parse_public_output(path: &Path, dataset: &str) -> Result<Vec<i128>, EZKLErro
     let JsonValue::Object(object) = value else {
         return Err("external public output must use the canonical {dataset,Y} object".into());
     };
-    let actual = object.keys().map(String::as_str).collect::<std::collections::BTreeSet<_>>();
+    let actual = object
+        .keys()
+        .map(String::as_str)
+        .collect::<std::collections::BTreeSet<_>>();
     let expected = ["dataset", "Y"]
         .into_iter()
         .collect::<std::collections::BTreeSet<_>>();
@@ -2501,8 +2675,16 @@ fn validate_artifact_files(
     let required = [
         ("proof.json", proof_path, "proof"),
         ("srs.kzg", srs_path, "SRS"),
-        ("gat_static_tables.json", static_tables_path.as_path(), "static tables"),
-        ("gat_integer_ledger.json", integer_ledger_path.as_path(), "integer ledger"),
+        (
+            "gat_static_tables.json",
+            static_tables_path.as_path(),
+            "static tables",
+        ),
+        (
+            "gat_integer_ledger.json",
+            integer_ledger_path.as_path(),
+            "integer ledger",
+        ),
     ];
     for (name, path, label) in required {
         let record = artifact
@@ -2651,7 +2833,8 @@ pub(crate) fn verify_with_formal_inputs(
             &proof_path,
         )?;
         let proof = Snark::load::<KZGCommitmentScheme<Bn256>>(&proof_path)?;
-        let expected_instances = public_instances_from_statement(&mut compiled_circuit, &statement)?;
+        let expected_instances =
+            public_instances_from_statement(&mut compiled_circuit, &statement)?;
         if proof.instances != expected_instances {
             return Err(
                 "native proof public instances disagree with the independently reconstructed GraphCircuit inputs/outputs"

@@ -144,11 +144,7 @@ impl PublicEzkl {
             for edge in edge_start..edge_end {
                 let src = self.src[edge];
                 let dst = self.dst[edge];
-                if src < node_start
-                    || src >= node_end
-                    || dst < node_start
-                    || dst >= node_end
-                {
+                if src < node_start || src >= node_end || dst < node_start || dst >= node_end {
                     return Err("statement edge crosses a graph batch boundary".into());
                 }
             }

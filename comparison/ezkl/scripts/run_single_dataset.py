@@ -2,10 +2,10 @@
 """Run one ezkl GAT CPU/GPU formal cell with explicit fail-closed gates.
 
 Without ``--execute-formal`` this command is a non-executing plan.  A formal
-cell requires the core adapter contract, external public statement/output,
-trusted SRS digest, and identity-bound compile/setup artifacts.  The adapter
-must expose ``gat-prepare`` and ``gat-witness``; the proof and verification
-stages then call the official ``prove`` and ``verify`` commands directly.
+cell runs native setup first, then consumes an externally produced public
+statement/output, finalizes the setup binding, and only then invokes the
+official witness, prove, and verify commands.  No statement or public output
+is synthesized by this runner.
 """
 
 from __future__ import annotations
@@ -34,7 +34,6 @@ from formal_common import (
     load_cli_contract,
     load_json,
     local_path,
-    parse_cfg,
     print_error,
     reject_forbidden_path,
     reject_reduced_srs,
@@ -42,7 +41,6 @@ from formal_common import (
     require_formal_srs,
     require_file,
     require_circuit_ref,
-    require_positive_timings,
     public_output_values,
     require_exact_keys,
     resource_manifest_hash,
@@ -52,7 +50,6 @@ from formal_common import (
     validate_config,
     validate_gpu_environment,
     validate_gpu_evidence,
-    validate_public_output,
     validate_public_statement,
     validate_resources,
 )
@@ -209,11 +206,12 @@ def validate_core_manifest(
 
 
 def print_plan(args: argparse.Namespace, config: Path, output: Path) -> None:
-    print("formal execution not requested; no compile, setup, prove, verify or full dataset work was run")
+    print("formal execution not requested; no setup, statement wait, final, prove, verify or full dataset work was run")
     print(f"dataset={args.dataset} backend={args.backend}")
     print(f"config={baseline_relative(config, 'config')}")
     print(f"output_dir={baseline_relative(output, 'output-dir')}")
-    print("rerun with --execute-formal and explicit --public-statement/--public-output/--srs-sha256")
+    print("execution order: gat-prepare --phase setup -> external statement/Y producer -> gat-prepare --phase final -> gat-witness -> prove -> verify")
+    print("rerun with --execute-formal and explicit external --public-statement/--public-output/--srs-sha256")
 
 
 def main(args: argparse.Namespace) -> int:
@@ -238,14 +236,6 @@ def main(args: argparse.Namespace) -> int:
     else:
         gpu_probe = None
 
-    statement = ensure_relative_arg(args.public_statement, "public-statement")
-    public_output = ensure_relative_arg(args.public_output, "public-output")
-    reject_forbidden_path(statement, "public-statement")
-    reject_forbidden_path(public_output, "public-output")
-    if "qat_best_logits" in public_output.name or "qat_best_logits" in public_output.as_posix():
-        abort("qat_best_logits is not a formal public output")
-    require_file(statement, "external public statement")
-    public_values = public_output_values(public_output, dataset=args.dataset)
     srs = ensure_relative_arg(args.srs, "srs", ROOT / values["srs_path"])
     require_formal_srs(srs)
     trusted_srs_sha = require_digest(args.srs_sha256 or "", "--srs-sha256")
@@ -293,8 +283,6 @@ def main(args: argparse.Namespace) -> int:
     proof = output / "proof.json"
     env = os.environ.copy()
     env["EZKL_WORKING_DIR"] = str(ROOT)
-    env["EZKL_GAT_PUBLIC_STATEMENT"] = str(statement)
-    env["EZKL_GAT_PUBLIC_OUTPUT"] = str(public_output)
     env["EZKL_GAT_BACKEND"] = args.backend
     env["EZKL_GAT_RUN_DIR"] = str(output)
     if args.backend == "gpu":
@@ -303,11 +291,62 @@ def main(args: argparse.Namespace) -> int:
     def cli_path(path: Path, label: str) -> str:
         return baseline_relative(path, label)
 
-    prepare_command = [
+    setup_command = [
         str(binary),
         contract["prepare_command"],
         "--dataset",
         args.dataset,
+        "--phase",
+        "setup",
+        "--resource-manifest",
+        "resources/resource_manifest.json",
+        "--output-dir",
+        cli_path(output, "output-dir"),
+        "--srs-path",
+        cli_path(srs, "SRS"),
+    ]
+    if args.backend == "gpu":
+        setup_command.append("--gpu")
+    setup_ms = run_command(
+        setup_command,
+        logs / "setup.log",
+        phase="GAT prepare setup (settings/compile/setup)",
+        env=env,
+    )
+    for path, label in (
+        (settings, "settings"),
+        (compiled, "compiled circuit"),
+        (vk, "verification key"),
+        (pk, "proving key"),
+    ):
+        require_file(path, label)
+
+    require_file(output / "circuit_ref.json", "setup circuit reference")
+
+    if args.public_statement is None or args.public_output is None:
+        abort(
+            "gat-prepare --phase setup completed, but no external statement producer "
+            "is available; provide --public-statement and --public-output produced "
+            "after setup before --phase final"
+        )
+    statement = ensure_relative_arg(args.public_statement, "public-statement")
+    public_output = ensure_relative_arg(args.public_output, "public-output")
+    reject_forbidden_path(statement, "public-statement")
+    reject_forbidden_path(public_output, "public-output")
+    if "qat_best_logits" in public_output.name or "qat_best_logits" in public_output.as_posix():
+        abort("qat_best_logits is not a formal public output")
+    require_file(statement, "external public statement")
+    public_values = public_output_values(public_output, dataset=args.dataset)
+    env["EZKL_GAT_PUBLIC_STATEMENT"] = str(statement)
+    env["EZKL_GAT_PUBLIC_OUTPUT"] = str(public_output)
+
+    final_command = [
+        str(binary),
+        contract["prepare_command"],
+        "--dataset",
+        args.dataset,
+        "--phase",
+        "final",
         "--resource-manifest",
         "resources/resource_manifest.json",
         "--output-dir",
@@ -320,21 +359,15 @@ def main(args: argparse.Namespace) -> int:
         cli_path(public_output, "public output"),
     ]
     if args.backend == "gpu":
-        prepare_command.append("--gpu")
-    prepare_ms = run_command(
-        prepare_command,
-        logs / "prepare.log",
-        phase="GAT prepare (settings/compile/setup)",
+        final_command.append("--gpu")
+    final_ms = run_command(
+        final_command,
+        logs / "final.log",
+        phase="GAT prepare final (external statement binding)",
         env=env,
     )
-    for path, label in (
-        (settings, "settings"),
-        (compiled, "compiled circuit"),
-        (vk, "verification key"),
-        (pk, "proving key"),
-        (artifact_manifest, "artifact identity manifest"),
-    ):
-        require_file(path, label)
+    require_file(artifact_manifest, "artifact identity manifest")
+    prepare_ms = setup_ms + final_ms
     artifact = validate_artifact_identity(
         artifact_manifest,
         dataset=args.dataset,

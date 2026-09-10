@@ -59,7 +59,7 @@ fn build_model_with_hashed_runtime(
     spec: CanonicalGat,
     rounding: RoundingMode,
 ) -> Result<Model, String> {
-    spec.validate()?;
+    spec.validate_for_compile()?;
     let mut nodes = BTreeMap::new();
     let mut next = 0usize;
     let graph = &spec.graph;

@@ -117,6 +117,16 @@ impl CircuitRef {
             if value.is_empty() {
                 return Err(format!("CircuitRef.{} must not be empty", label));
             }
+            let lowered = value.to_ascii_lowercase();
+            if ["unbound", "pending", "placeholder", "dummy", "fake"]
+                .iter()
+                .any(|marker| lowered.contains(marker))
+            {
+                return Err(format!(
+                    "CircuitRef.{} contains an unbound/placeholder identity",
+                    label
+                ));
+            }
         }
         for (label, digest) in [
             ("compiled_circuit_digest", &self.compiled_circuit_digest),
@@ -1278,8 +1288,10 @@ pub struct CanonicalGat {
     pub quantization: DigestIdentity,
     /// Authenticated integer-bound ledger identity (must match `ledger`).
     pub ledger_identity: DigestIdentity,
-    /// Native compiled circuit/settings/VK identity.
-    pub circuit_ref: CircuitRef,
+    /// Native compiled circuit/settings/VK identity.  It is bound by the
+    /// native setup phase; a loader result before setup deliberately carries
+    /// no circuit identity.
+    pub circuit_ref: Option<CircuitRef>,
     /// Public H(W) binding for the private model closure.
     pub model_binding: ModelBinding,
 }
@@ -1287,6 +1299,17 @@ pub struct CanonicalGat {
 impl CanonicalGat {
     /// Validate every public and private schema contract before graph building.
     pub fn validate(&self) -> Result<(), String> {
+        self.validate_inner(true)
+    }
+
+    /// Validate the relation before native setup has produced compiled
+    /// circuit/settings/VK identities.  This is an internal setup-phase
+    /// check; public statements and artifact manifests always use [`Self::validate`].
+    pub fn validate_for_compile(&self) -> Result<(), String> {
+        self.validate_inner(false)
+    }
+
+    fn validate_inner(&self, require_circuit_ref: bool) -> Result<(), String> {
         if self.schema_version != GAT_SCHEMA_VERSION {
             return Err(format!(
                 "unsupported GAT schema version {}",
@@ -1304,9 +1327,19 @@ impl CanonicalGat {
         {
             return Err("topology identity does not match canonical graph wiring".into());
         }
-        self.circuit_ref.validate()?;
-        if self.circuit_ref.ezkl_security_profile_id != self.ezkl_security_profile_id {
-            return Err("CircuitRef security profile disagrees with canonical profile".into());
+        match &self.circuit_ref {
+            Some(circuit_ref) => {
+                circuit_ref.validate()?;
+                if circuit_ref.ezkl_security_profile_id != self.ezkl_security_profile_id {
+                    return Err(
+                        "CircuitRef security profile disagrees with canonical profile".into(),
+                    );
+                }
+            }
+            None if require_circuit_ref => {
+                return Err("canonical GAT circuit identity is not bound by native setup".into());
+            }
+            None => {}
         }
         let expected_feature_len = self
             .graph
@@ -1522,7 +1555,10 @@ impl CanonicalGat {
             },
             quant: self.quantization.clone(),
             ledger: self.ledger_identity.clone(),
-            circuit: self.circuit_ref.clone(),
+            circuit: self
+                .circuit_ref
+                .clone()
+                .ok_or_else(|| "canonical GAT circuit identity is not bound".to_string())?,
             model: self.model_binding.clone(),
             feature_digest,
             output_digest,

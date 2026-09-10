@@ -22,6 +22,28 @@ pub type ModulePoseidon = PoseidonChip<PoseidonSpec, POSEIDON_WIDTH, POSEIDON_RA
 /// Poseidon module config
 pub type ModulePoseidonConfig = PoseidonConfig<POSEIDON_WIDTH, POSEIDON_RATE>;
 
+/// Evaluate the native parameter-hash primitive used by the graph modules.
+///
+/// Keeping this helper next to [`ModulePoseidon`] makes setup/statement
+/// producers use exactly the same Poseidon parameters and variable-length
+/// input handling as `GraphModules::forward`; callers must not substitute an
+/// external digest for the public model binding.
+pub fn native_poseidon_hash(values: &[Fp]) -> Result<Fp, String> {
+    let outputs = ModulePoseidon::run(values.to_vec()).map_err(|error| error.to_string())?;
+    outputs
+        .first()
+        .and_then(|output| output.first())
+        .copied()
+        .ok_or_else(|| "native Poseidon produced no hash output".into())
+}
+
+/// Return the native parameter hash in ezkl's canonical field encoding.
+pub fn native_poseidon_hash_string(values: &[Fp]) -> Result<String, String> {
+    Ok(crate::pfsys::field_to_string(&native_poseidon_hash(
+        values,
+    )?))
+}
+
 ///
 #[derive(Clone, Debug, Default)]
 pub struct ModuleConfigs {

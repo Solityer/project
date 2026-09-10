@@ -75,10 +75,11 @@ impl FormalCliContract {
             witness_command: "gat-witness".into(),
             prove_command: "prove".into(),
             verify_command: "verify".into(),
-            required_flags: RequiredFlags {
-                prepare: vec![
-                    "--dataset".into(),
-                    "--resource-manifest".into(),
+                required_flags: RequiredFlags {
+                    prepare: vec![
+                        "--dataset".into(),
+                        "--phase".into(),
+                        "--resource-manifest".into(),
                     "--output-dir".into(),
                     "--srs-path".into(),
                     "--public-statement".into(),

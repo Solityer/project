@@ -48,7 +48,7 @@ pub struct GatOp {
 impl GatOp {
     /// Construct and validate a canonical operation.
     pub fn new(spec: CanonicalGat, rounding: RoundingMode) -> Result<Self, String> {
-        spec.validate()?;
+        spec.validate_for_compile()?;
         Ok(Self { spec, rounding })
     }
 
@@ -928,7 +928,7 @@ impl Op<Fp> for GatOp {
             ));
         }
         self.spec
-            .validate()
+            .validate_for_compile()
             .map_err(|e| CircuitError::DimMismatch(format!("invalid canonical GAT: {}", e)))?;
         Self::require_scale(
             values[FEATURE_INPUT],
