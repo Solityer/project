@@ -6,4 +6,4 @@ __pycache__/
 *.pyc
 runs/
 artifacts/
-data/cache/
+data/cache/build_cpu_diag/
