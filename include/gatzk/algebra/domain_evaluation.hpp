@@ -10,6 +10,7 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include "gatzk/algebra/field.hpp"
@@ -87,94 +88,6 @@ class DomainEvaluationWeightCache
                 });
         }
 
-        // For H = {omega^i},
-        //
-        //     L_i(z * omega) = L_{i-1 mod n}(z).
-        //
-        // Therefore a z/zomega pair needs one barycentric construction only.
-        // The second point is produced by a cyclic rotation of the first
-        // weight vector without a second scan/inversion.
-        const DomainEvaluationWeights&
-        get_forward_rotation(
-            const std::shared_ptr<
-                RootOfUnityDomain>& domain,
-            const FieldElement& point)
-        {
-            if (domain == nullptr)
-            {
-                throw std::runtime_error(
-                    "forward domain-weight rotation requires a domain");
-            }
-
-            const auto rotated_point =
-                point * domain->omega;
-
-            const auto base_key =
-                domain_point_cache_key(
-                    domain,
-                    point);
-
-            const auto rotated_key =
-                domain_point_cache_key(
-                    domain,
-                    rotated_point);
-
-            if (base_key == rotated_key)
-            {
-                return get(
-                    domain,
-                    point);
-            }
-
-            return get_or_build(
-                rotated_key,
-                [&]()
-                {
-                    const auto &base =
-                        get(
-                            domain,
-                            point);
-
-                    DomainEvaluationWeights
-                        rotated;
-
-                    if (base.direct_index.has_value())
-                    {
-                        rotated.direct_index =
-                            (*base.direct_index + 1U) %
-                            domain->size;
-
-                        return rotated;
-                    }
-
-                    if (base.native_weights.size() !=
-                        domain->size)
-                    {
-                        throw std::runtime_error(
-                            "cached barycentric weight size mismatch");
-                    }
-
-                    rotated.native_weights.resize(
-                        domain->size);
-
-                    for (std::size_t index = 0;
-                         index < domain->size;
-                         ++index)
-                    {
-                        const auto source_index =
-                            index == 0
-                                ? domain->size - 1U
-                                : index - 1U;
-
-                        rotated.native_weights[index] =
-                            base.native_weights[
-                                source_index];
-                    }
-
-                    return rotated;
-                });
-        }
-
     private:
         template <typename Builder>
         const DomainEvaluationWeights&
@@ -196,7 +109,7 @@ class DomainEvaluationWeightCache
                         return it->second;
                     }
 
-                    if (!in_flight_.count(
+                    if (!in_flight_.contains(
                             cache_key))
                     {
                         in_flight_.insert(
@@ -249,8 +162,10 @@ class DomainEvaluationWeightCache
 
         std::mutex mutex_;
         std::condition_variable cv_;
+
         std::unordered_set<std::string>
             in_flight_;
+
         std::unordered_map<
             std::string,
             DomainEvaluationWeights>

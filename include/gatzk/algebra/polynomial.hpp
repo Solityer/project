@@ -46,11 +46,8 @@ namespace gatzk::algebra
 
 struct CudaResidentCoefficientBuffer
     {
-        // Owns execution-only CUDA storage. The deleter is installed by the
-        // CUDA producer and never participates in Polynomial semantics.
         std::shared_ptr<void> allocation;
 
-        // Device pointer to mcl-compatible Montgomery limbs.
         const std::uint64_t *device_montgomery_limbs =
             nullptr;
 
@@ -65,15 +62,15 @@ struct CudaResidentCoefficientBuffer
         Evaluation // 求值形式
     };
 
-    // Execution-only hint. It is deliberately excluded from every
-        // serialization, transcript, equality and proof object.
-        std::shared_ptr<
-            const CudaResidentCoefficientBuffer>
-            cuda_resident_coefficients;
-
     struct Polynomial
     {
         std::string name;
+
+        // Execution-only CUDA coefficient ownership. This sidecar is excluded
+        // from serialization, transcript construction and polynomial semantics.
+        std::shared_ptr<
+            const CudaResidentCoefficientBuffer>
+            cuda_resident_coefficients;
 
         // 当前多项式持有的表示基。
         PolynomialBasis basis = PolynomialBasis::Coefficient;

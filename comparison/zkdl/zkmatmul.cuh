@@ -57,10 +57,10 @@ KERNEL void zkMatMul_phase1_step(GLOBAL Fr_t *a, GLOBAL Fr_t *b, GLOBAL Fr_t *ou
     Fr_t b0 = (gid0 < in_size) ? b[gid0] : blstrs__scalar__Scalar_ZERO;
     Fr_t a1 = (gid1 < in_size) ? a[gid1] : blstrs__scalar__Scalar_ZERO;
     Fr_t b1 = (gid1 < in_size) ? b[gid1] : blstrs__scalar__Scalar_ZERO;
-    out0[gid] = blstrs__scalar__Scalar_mul(a0, b0);
-    out1[gid] = blstrs__scalar__Scalar_add(blstrs__scalar__Scalar_mul(a0, blstrs__scalar__Scalar_sub(b1, b0)), 
-        blstrs__scalar__Scalar_mul(b0, blstrs__scalar__Scalar_sub(a1, a0)));
-    out2[gid] = blstrs__scalar__Scalar_mul(blstrs__scalar__Scalar_sub(a1, a0), blstrs__scalar__Scalar_sub(b1, b0));
+    out0[gid] = Fr_field_mul(a0, b0);
+    out1[gid] = blstrs__scalar__Scalar_add(Fr_field_mul(a0, blstrs__scalar__Scalar_sub(b1, b0)),
+        Fr_field_mul(b0, blstrs__scalar__Scalar_sub(a1, a0)));
+    out2[gid] = Fr_field_mul(blstrs__scalar__Scalar_sub(a1, a0), blstrs__scalar__Scalar_sub(b1, b0));
 }
 
 std::pair<FrTensor, FrTensor> zkMatMul::phase1(const FrTensor& A_reduced, const FrTensor& B_reduced, uint num, uint n, vector<Fr_t>::const_iterator u_begin, vector<Fr_t>::const_iterator u_end, vector<Fr_t>::const_iterator v_begin, vector<Fr_t>::const_iterator v_end, vector<Fr_t>& proof)

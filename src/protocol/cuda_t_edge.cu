@@ -288,10 +288,152 @@ namespace gatzk::protocol
             return output;
         }
 
-        template <std::size_t StackDepth>
+        template <std::size_t RegisterCount>
+        struct TEdgeRegisterFile
+        {
+            GpuFr values[RegisterCount];
+
+            __device__ __forceinline__
+            void store(
+                std::uint8_t index,
+                const GpuFr &value)
+            {
+                values[index] =
+                    value;
+            }
+
+            __device__ __forceinline__
+            GpuFr load(
+                std::uint8_t index) const
+            {
+                return values[index];
+            }
+        };
+
+        template <>
+        struct TEdgeRegisterFile<4>
+        {
+            GpuFr r0;
+            GpuFr r1;
+            GpuFr r2;
+            GpuFr r3;
+
+            __device__ __forceinline__
+            void store(
+                std::uint8_t index,
+                const GpuFr &value)
+            {
+                switch (index)
+                {
+                case 0:
+                    r0 = value;
+                    break;
+                case 1:
+                    r1 = value;
+                    break;
+                case 2:
+                    r2 = value;
+                    break;
+                default:
+                    r3 = value;
+                    break;
+                }
+            }
+
+            __device__ __forceinline__
+            GpuFr load(
+                std::uint8_t index) const
+            {
+                switch (index)
+                {
+                case 0:
+                    return r0;
+                case 1:
+                    return r1;
+                case 2:
+                    return r2;
+                default:
+                    return r3;
+                }
+            }
+        };
+
+        template <>
+        struct TEdgeRegisterFile<8>
+        {
+            GpuFr r0;
+            GpuFr r1;
+            GpuFr r2;
+            GpuFr r3;
+            GpuFr r4;
+            GpuFr r5;
+            GpuFr r6;
+            GpuFr r7;
+
+            __device__ __forceinline__
+            void store(
+                std::uint8_t index,
+                const GpuFr &value)
+            {
+                switch (index)
+                {
+                case 0:
+                    r0 = value;
+                    break;
+                case 1:
+                    r1 = value;
+                    break;
+                case 2:
+                    r2 = value;
+                    break;
+                case 3:
+                    r3 = value;
+                    break;
+                case 4:
+                    r4 = value;
+                    break;
+                case 5:
+                    r5 = value;
+                    break;
+                case 6:
+                    r6 = value;
+                    break;
+                default:
+                    r7 = value;
+                    break;
+                }
+            }
+
+            __device__ __forceinline__
+            GpuFr load(
+                std::uint8_t index) const
+            {
+                switch (index)
+                {
+                case 0:
+                    return r0;
+                case 1:
+                    return r1;
+                case 2:
+                    return r2;
+                case 3:
+                    return r3;
+                case 4:
+                    return r4;
+                case 5:
+                    return r5;
+                case 6:
+                    return r6;
+                default:
+                    return r7;
+                }
+            }
+        };
+
+        template <std::size_t RegisterCount>
         __global__ void
         t_edge_term_kernel(
-            const TEdgeProgramInstruction
+            const CudaTEdgeCompiledInstruction
                 *instructions,
             std::size_t instruction_begin,
             std::size_t instruction_end,
@@ -316,9 +458,9 @@ namespace gatzk::protocol
                 return;
             }
 
-            GpuFr stack[StackDepth];
-
-            std::size_t stack_size = 0;
+            TEdgeRegisterFile<
+                RegisterCount>
+                registers;
 
             for (std::size_t index =
                      instruction_begin;
@@ -328,7 +470,7 @@ namespace gatzk::protocol
                 const auto instruction =
                     instructions[index];
 
-                switch (instruction.opcode)
+               switch (instruction.opcode)
                 {
                 case TEdgeProgramOpcode::
                     LoadAccess:
@@ -345,6 +487,7 @@ namespace gatzk::protocol
                                rotation_step) &
                                   (target_size - 1U)
                             : point;
+
                     std::size_t physical_index =
                         logical_index;
 
@@ -360,9 +503,10 @@ namespace gatzk::protocol
                                  : 0);
                     }
 
-                    stack[stack_size++] =
+                    registers.store(
+                        instruction.dst,
                         leaf_slots[slot]
-                                  [physical_index];
+                                  [physical_index]);
 
                     break;
                 }
@@ -370,24 +514,23 @@ namespace gatzk::protocol
                 case TEdgeProgramOpcode::
                     LoadConstant:
                 {
-                    stack[stack_size++] =
-                        constants[instruction.operand];
+                    registers.store(
+                        instruction.dst,
+                        constants[
+                            instruction.operand]);
 
                     break;
                 }
 
                 case TEdgeProgramOpcode::Add:
                 {
-                    const auto rhs =
-                        stack[--stack_size];
-
-                    const auto lhs =
-                        stack[--stack_size];
-
-                    stack[stack_size++] =
+                    registers.store(
+                        instruction.dst,
                         algebra::gpu::fr_add(
-                            lhs,
-                            rhs);
+                            registers.load(
+                                instruction.lhs),
+                            registers.load(
+                                instruction.rhs)));
 
                     break;
                 }
@@ -395,16 +538,13 @@ namespace gatzk::protocol
                 case TEdgeProgramOpcode::
                     Subtract:
                 {
-                    const auto rhs =
-                        stack[--stack_size];
-
-                    const auto lhs =
-                        stack[--stack_size];
-
-                    stack[stack_size++] =
+                    registers.store(
+                        instruction.dst,
                         algebra::gpu::fr_sub(
-                            lhs,
-                            rhs);
+                            registers.load(
+                                instruction.lhs),
+                            registers.load(
+                                instruction.rhs)));
 
                     break;
                 }
@@ -412,16 +552,13 @@ namespace gatzk::protocol
                 case TEdgeProgramOpcode::
                     Multiply:
                 {
-                    const auto rhs =
-                        stack[--stack_size];
-
-                    const auto lhs =
-                        stack[--stack_size];
-
-                    stack[stack_size++] =
+                    registers.store(
+                        instruction.dst,
                         algebra::gpu::fr_mul(
-                            lhs,
-                            rhs);
+                            registers.load(
+                                instruction.lhs),
+                            registers.load(
+                                instruction.rhs)));
 
                     break;
                 }
@@ -429,11 +566,13 @@ namespace gatzk::protocol
                 case TEdgeProgramOpcode::
                     Negate:
                 {
-                    stack[stack_size - 1] =
+                    registers.store(
+                        instruction.dst,
                         algebra::gpu::fr_sub(
                             algebra::gpu::
                                 fr_zero(),
-                            stack[stack_size - 1]);
+                            registers.load(
+                                instruction.lhs)));
 
                     break;
                 }
@@ -442,45 +581,13 @@ namespace gatzk::protocol
 
             const auto contribution =
                 algebra::gpu::fr_mul(
-                    stack[0],
+                    registers.load(0),
                     alpha_scale);
 
             quotient[point] =
                 algebra::gpu::fr_add(
                     quotient[point],
                     contribution);
-        }
-
-        __device__ __forceinline__ GpuFr
-        t_edge_pow_u64(
-            GpuFr base,
-            std::size_t exponent)
-        {
-            auto result =
-                algebra::gpu::fr_one();
-
-            while (exponent != 0)
-            {
-                if ((exponent & 1U) != 0U)
-                {
-                    result =
-                        algebra::gpu::fr_mul(
-                            result,
-                            base);
-                }
-
-                exponent >>= 1U;
-
-                if (exponent != 0)
-                {
-                    base =
-                        algebra::gpu::fr_mul(
-                            base,
-                            base);
-                }
-            }
-
-            return result;
         }
 
         __device__ __forceinline__ GpuFr
@@ -522,9 +629,11 @@ namespace gatzk::protocol
             std::size_t domain_size,
             std::size_t target_size,
             GpuFr shift,
-            GpuFr root,
+            const GpuFr *lane_root_powers,
+            const GpuFr *lane_zero_powers,
+            const GpuFr *block_root_powers,
+            const GpuFr *block_zero_powers,
             GpuFr shift_domain_power,
-            GpuFr zero_step,
             std::uint8_t output_split_layout,
             GpuFr *target)
         {
@@ -537,43 +646,26 @@ namespace gatzk::protocol
                 block_begin +
                 threadIdx.x;
 
-            __shared__ GpuFr
-                block_root_power;
-
-            __shared__ GpuFr
-                block_zero_power;
-
-            if (threadIdx.x == 0)
-            {
-                block_root_power =
-                    t_edge_pow_u64(
-                        root,
-                        block_begin);
-
-                block_zero_power =
-                    t_edge_pow_u64(
-                        zero_step,
-                        block_begin);
-            }
-
-            __syncthreads();
-
-            if (logical_index >= target_size)
+if (logical_index >= target_size)
             {
                 return;
             }
 
+            const auto block_root_power =
+                block_root_powers[
+                    blockIdx.x];
+
+            const auto block_zero_power =
+                block_zero_powers[
+                    blockIdx.x];
+
             const auto lane_root_power =
-                t_edge_pow_u64(
-                    root,
-                    static_cast<std::size_t>(
-                        threadIdx.x));
+                lane_root_powers[
+                    threadIdx.x];
 
             const auto lane_zero_power =
-                t_edge_pow_u64(
-                    zero_step,
-                    static_cast<std::size_t>(
-                        threadIdx.x));
+                lane_zero_powers[
+                    threadIdx.x];
 
             const auto half_size =
                 target_size / 2U;
@@ -894,13 +986,154 @@ namespace gatzk::protocol
                             algebra::FieldElement::
                                 zero());
 
-                    const auto root =
+                  const auto root =
                         algebra::FieldElement::
                             root_of_unity(
                                 target_size_);
 
                     const auto zero_step =
                         root.pow(domain_size_);
+
+                    const auto power_block_count =
+                        (target_size_ +
+                         kTEdgeExecutionBlockSize -
+                         1U) /
+                        kTEdgeExecutionBlockSize;
+
+                    std::vector<
+                        algebra::FieldElement>
+                        lane_root_powers(
+                            kTEdgeExecutionBlockSize);
+
+                    std::vector<
+                        algebra::FieldElement>
+                        lane_zero_powers(
+                            kTEdgeExecutionBlockSize);
+
+                    std::vector<
+                        algebra::FieldElement>
+                        block_root_powers(
+                            power_block_count);
+
+                    std::vector<
+                        algebra::FieldElement>
+                        block_zero_powers(
+                            power_block_count);
+
+                    algebra::geometric_powers_native(
+                        algebra::FieldElement::
+                            mutable_native_array_data(
+                                lane_root_powers.data()),
+                        lane_root_powers.size(),
+                        root);
+
+                    algebra::geometric_powers_native(
+                        algebra::FieldElement::
+                            mutable_native_array_data(
+                                lane_zero_powers.data()),
+                        lane_zero_powers.size(),
+                        zero_step);
+
+                    const auto root_block_step =
+                        root.pow(
+                            kTEdgeExecutionBlockSize);
+
+                    const auto zero_block_step =
+                        zero_step.pow(
+                            kTEdgeExecutionBlockSize);
+
+                    algebra::geometric_powers_native(
+                        algebra::FieldElement::
+                            mutable_native_array_data(
+                                block_root_powers.data()),
+                        block_root_powers.size(),
+                        root_block_step);
+
+                    algebra::geometric_powers_native(
+                        algebra::FieldElement::
+                            mutable_native_array_data(
+                                block_zero_powers.data()),
+                        block_zero_powers.size(),
+                        zero_block_step);
+
+                    const auto lane_power_bytes =
+                        checked_bytes(
+                            kTEdgeExecutionBlockSize,
+                            sizeof(GpuFr),
+                            "lane power table");
+
+                    const auto block_power_bytes =
+                        checked_bytes(
+                            power_block_count,
+                            sizeof(GpuFr),
+                            "block power table");
+
+                    const auto upload_power_table =
+                        [&](GpuFr **device_output,
+                            const std::vector<
+                                algebra::FieldElement> &values,
+                            std::size_t byte_count,
+                            const char *label)
+                    {
+                        auto upload_status =
+                            cudaMalloc(
+                                reinterpret_cast<
+                                    void **>(
+                                    device_output),
+                                byte_count);
+
+                        if (upload_status !=
+                            cudaSuccess)
+                        {
+                            throw_cuda_t_edge_error(
+                                label,
+                                upload_status);
+                        }
+
+                        upload_status =
+                            cudaMemcpy(
+                                *device_output,
+                                algebra::FieldElement::
+                                    native_array_data(
+                                        values.data()),
+                                byte_count,
+                                cudaMemcpyHostToDevice);
+
+                        if (upload_status !=
+                            cudaSuccess)
+                        {
+                            throw_cuda_t_edge_error(
+                                label,
+                                upload_status);
+                        }
+
+                        algebra::record_cuda_h2d(
+                            byte_count);
+                    };
+
+                    upload_power_table(
+                        &device_lane_root_powers_,
+                        lane_root_powers,
+                        lane_power_bytes,
+                        "lane-root power upload");
+
+                    upload_power_table(
+                        &device_lane_zero_powers_,
+                        lane_zero_powers,
+                        lane_power_bytes,
+                        "lane-zero power upload");
+
+                    upload_power_table(
+                        &device_block_root_powers_,
+                        block_root_powers,
+                        block_power_bytes,
+                        "block-root power upload");
+
+                    upload_power_table(
+                        &device_block_zero_powers_,
+                        block_zero_powers,
+                        block_power_bytes,
+                        "block-zero power upload");
 
                     auto zero_power =
                         shift.pow(domain_size_);
@@ -1015,6 +1248,10 @@ namespace gatzk::protocol
 
                 program_ = &program;
 
+                const auto compiled_program =
+                    compile_t_edge_execution_plan(
+                        program);
+
                 try
                 {
                     auto status =
@@ -1023,29 +1260,27 @@ namespace gatzk::protocol
                                 void **>(
                                 &device_instructions_),
                             checked_bytes(
-                                program.instructions
-                                    .size(),
+                                compiled_program.size(),
                                 sizeof(
-                                    TEdgeProgramInstruction),
-                                "instructions"));
+                                    CudaTEdgeCompiledInstruction),
+                                "compiled instructions"));
 
                     if (status != cudaSuccess)
                     {
                         throw_cuda_t_edge_error(
-                            "instruction allocation",
+                            "compiled instruction allocation",
                             status);
                     }
 
                     status =
                         cudaMemcpy(
                             device_instructions_,
-                            program.instructions.data(),
+                            compiled_program.data(),
                             checked_bytes(
-                                program.instructions
-                                    .size(),
+                                compiled_program.size(),
                                 sizeof(
-                                    TEdgeProgramInstruction),
-                                "instructions"),
+                                    CudaTEdgeCompiledInstruction),
+                                "compiled instructions"),
                             cudaMemcpyHostToDevice);
 
                     if (status != cudaSuccess)
@@ -1607,11 +1842,6 @@ namespace gatzk::protocol
                         "CUDA t_edge linear grid overflow");
                 }
 
-                const auto root =
-                    algebra::FieldElement::root_of_unity(
-                        target_size_);
-                const auto zero_step =
-                    root.pow(domain_size_);
                 const auto shift_domain_power =
                     shift_.pow(domain_size_);
 
@@ -1636,9 +1866,11 @@ namespace gatzk::protocol
                     domain_size_,
                     target_size_,
                     gpu_field(shift_),
-                    gpu_field(root),
+                    device_lane_root_powers_,
+                    device_lane_zero_powers_,
+                    device_block_root_powers_,
+                    device_block_zero_powers_,
                     gpu_field(shift_domain_power),
-                    gpu_field(zero_step),
                     output_split_layout,
                     device_leaf_slots_[target_slot]);
 
@@ -1853,7 +2085,27 @@ namespace gatzk::protocol
                     gpu_field(
                         term.alpha_scale);
 
-                if (program_->maximum_stack_depth <= 8)
+                if (term.maximum_stack_depth <= 4)
+                {
+                    t_edge_term_kernel<4><<<
+                        static_cast<unsigned>(
+                            block_count_size),
+                        kBlockSize>>>(
+                        device_instructions_,
+                        term.instruction_begin,
+                        term.instruction_end,
+                        device_constants_,
+                        device_leaf_table_,
+                        device_leaf_split_layout_,
+                        device_access_slots_,
+                        device_access_rotated_,
+                        rotation_step_,
+                        target_size_,
+                        alpha_scale,
+                        device_quotient_);
+                }
+                else if (
+                    term.maximum_stack_depth <= 8)
                 {
                     t_edge_term_kernel<8><<<
                         static_cast<unsigned>(
@@ -1873,7 +2125,7 @@ namespace gatzk::protocol
                         device_quotient_);
                 }
                 else if (
-                    program_->maximum_stack_depth <= 16)
+                    term.maximum_stack_depth <= 16)
                 {
                     t_edge_term_kernel<16><<<
                         static_cast<unsigned>(
@@ -1893,7 +2145,7 @@ namespace gatzk::protocol
                         device_quotient_);
                 }
                 else if (
-                    program_->maximum_stack_depth <= 32)
+                    term.maximum_stack_depth <= 32)
                 {
                     t_edge_term_kernel<32><<<
                         static_cast<unsigned>(
@@ -2043,7 +2295,10 @@ namespace gatzk::protocol
                         1);
             }
 
-            void finalize_coefficients(
+            std::shared_ptr<
+                const algebra::
+                    CudaResidentCoefficientBuffer>
+            finalize_coefficients(
                 algebra::FieldElement *output,
                 std::size_t output_count)
                 override
@@ -2056,12 +2311,21 @@ namespace gatzk::protocol
                         "invalid CUDA t_edge coefficient output");
                 }
 
+                if (device_leaf_slots_.empty() ||
+                    device_leaf_slots_.front() ==
+                        nullptr)
+                {
+                    throw std::runtime_error(
+                        "CUDA t_edge has no reusable resident coefficient buffer");
+                }
+
                 constexpr unsigned
-                    kBlockSize = 256;
+                    kBlockSize =
+                        kTEdgeExecutionBlockSize;
 
                 const auto block_count_size =
                     (target_size_ +
-                     kBlockSize - 1) /
+                     kBlockSize - 1U) /
                     kBlockSize;
 
                 t_edge_finalize_kernel<<<
@@ -2083,6 +2347,9 @@ namespace gatzk::protocol
                         status);
                 }
 
+                auto *resident_coefficients =
+                    device_leaf_slots_.front();
+
                 const bool executed =
                     algebra::
                         cuda_coset_device_to_coefficients_exact(
@@ -2094,7 +2361,9 @@ namespace gatzk::protocol
                             algebra::FieldElement::
                                 mutable_native_array_data(
                                     output),
-                            true);
+                            true,
+                            reinterpret_cast<mcl::Fr *>(
+                                resident_coefficients));
 
                 if (!executed)
                 {
@@ -2102,9 +2371,96 @@ namespace gatzk::protocol
                         "CUDA t_edge device quotient INTT was not admitted");
                 }
 
+                int resident_device = -1;
+
+                status =
+                    cudaGetDevice(
+                        &resident_device);
+
+                if (status != cudaSuccess)
+                {
+                    throw_cuda_t_edge_error(
+                        "resident coefficient device lookup",
+                        status);
+                }
+
+                std::shared_ptr<void> allocation(
+                    resident_coefficients,
+                    [resident_device](
+                        void *pointer) noexcept
+                    {
+                        if (pointer == nullptr)
+                        {
+                            return;
+                        }
+
+                        int previous_device = -1;
+
+                        if (cudaGetDevice(
+                                &previous_device) !=
+                            cudaSuccess)
+                        {
+                            (void)cudaGetLastError();
+                            return;
+                        }
+
+                        if (previous_device !=
+                            resident_device)
+                        {
+                            if (cudaSetDevice(
+                                    resident_device) !=
+                                cudaSuccess)
+                            {
+                                (void)cudaGetLastError();
+                                return;
+                            }
+                        }
+
+                        (void)cudaFree(
+                            pointer);
+
+                        if (previous_device !=
+                            resident_device)
+                        {
+                            (void)cudaSetDevice(
+                                previous_device);
+                        }
+                    });
+
+                device_leaf_slots_.front() =
+                    nullptr;
+
+                host_leaf_bound_.front() =
+                    false;
+
+                host_leaf_uploaded_prefix_.front() =
+                    0;
+
+                auto descriptor =
+                    std::make_shared<
+                        algebra::
+                            CudaResidentCoefficientBuffer>();
+
+                descriptor->allocation =
+                    std::move(allocation);
+
+                descriptor
+                    ->device_montgomery_limbs =
+                    reinterpret_cast<
+                        const std::uint64_t *>(
+                        resident_coefficients);
+
+                descriptor->capacity =
+                    target_size_;
+
+                descriptor->device =
+                    resident_device;
+
                 algebra::
                     record_cuda_kernel_invocations(
                         1);
+
+                return descriptor;
             }
 
         private:
@@ -2357,6 +2713,34 @@ namespace gatzk::protocol
                         device_zero_inverse_cycle_);
                 }
 
+                if (device_lane_root_powers_ !=
+                    nullptr)
+                {
+                    (void)cudaFree(
+                        device_lane_root_powers_);
+                }
+
+                if (device_lane_zero_powers_ !=
+                    nullptr)
+                {
+                    (void)cudaFree(
+                        device_lane_zero_powers_);
+                }
+
+                if (device_block_root_powers_ !=
+                    nullptr)
+                {
+                    (void)cudaFree(
+                        device_block_root_powers_);
+                }
+
+                if (device_block_zero_powers_ !=
+                    nullptr)
+                {
+                    (void)cudaFree(
+                        device_block_zero_powers_);
+                }
+
                 device_leaf_table_ =
                     nullptr;
 
@@ -2367,6 +2751,18 @@ namespace gatzk::protocol
                     nullptr;
 
                 device_zero_inverse_cycle_ =
+                    nullptr;
+
+                device_lane_root_powers_ =
+                    nullptr;
+
+                device_lane_zero_powers_ =
+                    nullptr;
+
+                device_block_root_powers_ =
+                    nullptr;
+
+                device_block_zero_powers_ =
                     nullptr;
             }
 
@@ -2446,11 +2842,23 @@ namespace gatzk::protocol
             std::size_t
                 zero_inverse_cycle_size_ = 0;
 
-            TEdgeProgramInstruction
+            CudaTEdgeCompiledInstruction
                 *device_instructions_ =
                     nullptr;
 
             GpuFr *device_constants_ =
+                nullptr;
+
+            GpuFr *device_lane_root_powers_ =
+                nullptr;
+
+            GpuFr *device_lane_zero_powers_ =
+                nullptr;
+
+            GpuFr *device_block_root_powers_ =
+                nullptr;
+
+            GpuFr *device_block_zero_powers_ =
                 nullptr;
 
             std::uint8_t
@@ -2651,6 +3059,28 @@ namespace gatzk::protocol
                 out);
         };
 
+        const auto power_block_count =
+            (target_size +
+             kTEdgeExecutionBlockSize -
+             1U) /
+            kTEdgeExecutionBlockSize;
+
+        std::size_t lane_power_bytes = 0;
+        std::size_t block_power_bytes = 0;
+
+        if (!checked_mul_size(
+                2U *
+                    kTEdgeExecutionBlockSize,
+                sizeof(GpuFr),
+                &lane_power_bytes) ||
+            !checked_mul_size(
+                2U *
+                    power_block_count,
+                sizeof(GpuFr),
+                &block_power_bytes))
+        {
+            return false;
+        }
         std::size_t device_required_bytes = 0;
         std::size_t host_required_bytes = 0;
         const auto add_device =
@@ -2674,9 +3104,9 @@ namespace gatzk::protocol
         std::size_t constant_bytes = 0;
         std::size_t access_rotation_bytes = 0;
         std::size_t access_slot_bytes = 0;
-        if (!checked_count_bytes(
+       if (!checked_count_bytes(
                 shape.instruction_count,
-                sizeof(TEdgeProgramInstruction),
+                sizeof(CudaTEdgeCompiledInstruction),
                 &instruction_bytes) ||
             !checked_count_bytes(
                 shape.constant_count,
@@ -2749,6 +3179,8 @@ namespace gatzk::protocol
             !add_device(linear_source_count_bytes) ||
             !add_device(linear_source_blinder_bytes) ||
             !add_device(linear_target_blinder_bytes) ||
+            !add_device(lane_power_bytes) ||
+            !add_device(block_power_bytes) ||
             !add_device(ntt_workspace_bytes) ||
             !add_device(icicle_domain_bytes) ||
             !add_device(kFixedMetadataBytes) ||
@@ -2796,7 +3228,9 @@ namespace gatzk::protocol
             !add_host(linear_source_offset_bytes) ||
             !add_host(linear_source_count_bytes) ||
             !add_host(linear_source_blinder_bytes) ||
-            !add_host(linear_target_blinder_bytes) ||
+           !add_host(linear_target_blinder_bytes) ||
+            !add_host(lane_power_bytes) ||
+            !add_host(block_power_bytes) ||
             !add_host(shape.caller_host_bytes) ||
             !add_host(kFixedMetadataBytes))
         {

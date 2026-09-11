@@ -948,8 +948,11 @@ namespace gatzk::crypto
                 }
             }
 
-            constexpr std::size_t
-                kMaximumBatchSize = 8;
+            const std::size_t
+                kMaximumBatchSize =
+                    cuda_g1_msm_integrated_memory_device()
+                        ? 16
+                        : 8;
 
             for (auto &group :
                  groups)
@@ -1255,14 +1258,22 @@ namespace gatzk::crypto
         const algebra::FieldElement *scalars,
         std::size_t count,
         bool stable_srs_bases,
-        std::size_t stable_srs_capacity)
+        std::size_t stable_srs_capacity,
+        const std::uint64_t *device_montgomery_scalars =
+            nullptr,
+        std::size_t device_montgomery_scalar_capacity =
+            0,
+        int device_montgomery_scalar_device =
+            -1)
     {
         if (!util::route2_options()
                  .cuda_field_hotspots)
         {
             return false;
         }
-        if (!should_use_cuda_msm_shape(
+        if (device_montgomery_scalars ==
+                nullptr &&
+            !should_use_cuda_msm_shape(
                 points,
                 count,
                 stable_srs_bases,
@@ -1275,7 +1286,9 @@ namespace gatzk::crypto
             kMinimumCoalescedMsmCount =
                 1ULL << 12;
 
-        if (stable_srs_bases &&
+        if (device_montgomery_scalars ==
+                nullptr &&
+            stable_srs_bases &&
             count >=
                 kMinimumCoalescedMsmCount)
         {
@@ -1298,7 +1311,10 @@ namespace gatzk::crypto
                 scalars,
                 count,
                 stable_srs_bases,
-                stable_srs_capacity))
+                stable_srs_capacity,
+                device_montgomery_scalars,
+                device_montgomery_scalar_capacity,
+                device_montgomery_scalar_device))
         {
             throw std::runtime_error(
                 "cuda_hotspots mode attempted a G1 MSM "
@@ -1471,13 +1487,49 @@ namespace gatzk::crypto
         }
         algebra::ensure_mcl_field_ready();
         const bool stable_srs_bases =
-            options != nullptr && options->stable_srs_bases;
+            options != nullptr &&
+            options->stable_srs_bases;
+
         const auto stable_srs_capacity =
-            options != nullptr ? options->stable_srs_capacity : 0;
-        const auto zero_scalar = algebra::FieldElement::zero();
+            options != nullptr
+                ? options->stable_srs_capacity
+                : 0;
+
+        const auto *device_montgomery_scalars =
+            options != nullptr
+                ? options
+                      ->device_montgomery_scalars
+                : nullptr;
+
+        const auto device_montgomery_scalar_capacity =
+            options != nullptr
+                ? options
+                      ->device_montgomery_scalar_capacity
+                : 0;
+
+        const auto device_montgomery_scalar_device =
+            options != nullptr
+                ? options
+                      ->device_montgomery_scalar_device
+                : -1;
+
+        if (device_montgomery_scalars !=
+                nullptr &&
+            device_montgomery_scalar_capacity <
+                count)
+        {
+            throw std::runtime_error(
+                "G1 MSM resident CUDA scalar capacity is smaller than input count");
+        }
+
+        const auto zero_scalar =
+            algebra::FieldElement::zero();
         std::size_t nonzero_count = 0;
         std::size_t last_nonzero_exclusive = 0;
-        if (count >= 1024 || profile != nullptr)
+        if (count >= 1024 ||
+            profile != nullptr ||
+            device_montgomery_scalars !=
+                nullptr)
         {
             for (std::size_t i = 0; i < count; ++i)
             {
@@ -1499,8 +1551,43 @@ namespace gatzk::crypto
                     profile->sparse_compaction = true;
                     profile->effective_scalar_count = 0;
                 }
+
                 return out;
             }
+
+            if (device_montgomery_scalars !=
+                nullptr)
+            {
+                if (profile != nullptr)
+                {
+                    profile->effective_scalar_count =
+                        count;
+
+                    profile->zero_scalar_skipping =
+                        nonzero_count != count;
+
+                    profile->sparse_compaction =
+                        false;
+                }
+
+                if (!execute_cuda_msm_when_requested(
+                        &out,
+                        points,
+                        scalars,
+                        count,
+                        stable_srs_bases,
+                        stable_srs_capacity,
+                        device_montgomery_scalars,
+                        device_montgomery_scalar_capacity,
+                        device_montgomery_scalar_device))
+                {
+                    throw std::runtime_error(
+                        "resident CUDA scalar MSM attempted a CPU fallback");
+                }
+
+                return out;
+            }
+
             if (try_single_nonzero_scalar_msm(
                     out,
                     points,

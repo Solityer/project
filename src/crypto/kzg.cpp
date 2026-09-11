@@ -3182,12 +3182,50 @@ namespace gatzk::crypto
                 }
                 stable_msm_options.stable_srs_capacity =
                     pk.powers_g1->size();
-                point = g1_multi_scalar_mul_profiled(
-                    pk.powers_g1->data(),
-                    polynomial.values().data(),
-                    polynomial.size(),
-                    profile != nullptr ? &msm_profile : nullptr,
-                    &stable_msm_options);
+
+                if (polynomial
+                        .cuda_resident_coefficients !=
+                    nullptr)
+                {
+                    const auto &resident =
+                        *polynomial
+                             .cuda_resident_coefficients;
+
+                    if (resident
+                                .device_montgomery_limbs ==
+                            nullptr ||
+                        resident.capacity <
+                            polynomial.size() ||
+                        resident.device < 0)
+                    {
+                        throw std::runtime_error(
+                            "coefficient polynomial has invalid CUDA-resident scalar material: " +
+                            polynomial.name);
+                    }
+
+                    stable_msm_options
+                        .device_montgomery_scalars =
+                        resident
+                            .device_montgomery_limbs;
+
+                    stable_msm_options
+                        .device_montgomery_scalar_capacity =
+                        resident.capacity;
+
+                    stable_msm_options
+                        .device_montgomery_scalar_device =
+                        resident.device;
+                }
+
+                point =
+                    g1_multi_scalar_mul_profiled(
+                        pk.powers_g1->data(),
+                        polynomial.values().data(),
+                        polynomial.size(),
+                        profile != nullptr
+                            ? &msm_profile
+                            : nullptr,
+                        &stable_msm_options);
             }
             else
             {
@@ -3379,13 +3417,32 @@ namespace gatzk::crypto
             const G1MSMExecutionOptions *msm_options = nullptr,
             EvaluationCommitmentCache *reuse_cache = nullptr)
         {
-            polynomial.name = name;
-            auto material = std::make_shared<algebra::Polynomial>(std::move(polynomial));
+            polynomial.name =
+                name;
+
+            auto material =
+                std::make_shared<
+                    algebra::Polynomial>(
+                    std::move(
+                        polynomial));
+
+            const auto point =
+                commit_polynomial_point(
+                    *material,
+                    pk,
+                    profile,
+                    msm_options,
+                    reuse_cache);
+
+            material
+                ->cuda_resident_coefficients
+                .reset();
+
             return Commitment{
                 .name = name,
-                .point = commit_polynomial_point(
-                    *material, pk, profile, msm_options, reuse_cache),
-                .opening_polynomial = material,
+                .point = point,
+                .opening_polynomial =
+                    material,
             };
         }
 
@@ -4374,46 +4431,156 @@ namespace gatzk::crypto
                 });
         }
 
+        struct SharedDomainWeightView
+        {
+            const algebra::DomainEvaluationWeights
+                *weights = nullptr;
+
+            std::size_t forward_rotation = 0;
+        };
+
+        SharedDomainWeightView
+        shared_domain_weight_view(
+            algebra::DomainEvaluationWeightCache
+                *cache,
+            const std::shared_ptr<
+                algebra::RootOfUnityDomain> &domain,
+            const std::vector<FieldElement> &points,
+            std::size_t point_index)
+        {
+            if (cache == nullptr ||
+                domain == nullptr ||
+                point_index >= points.size())
+            {
+                throw std::runtime_error(
+                    "invalid shared domain-weight request");
+            }
+
+            if (point_index > 0 &&
+                points[point_index] ==
+                    points[point_index - 1U] *
+                        domain->omega)
+            {
+                return SharedDomainWeightView{
+                    .weights =
+                        &cache->get(
+                            domain,
+                            points[
+                                point_index - 1U]),
+                    .forward_rotation = 1,
+                };
+            }
+
+            return SharedDomainWeightView{
+                .weights =
+                    &cache->get(
+                        domain,
+                        points[point_index]),
+                .forward_rotation = 0,
+            };
+        }
+
         FieldElement evaluate_with_shared_domain_weights(
             const algebra::Polynomial &polynomial,
             const FieldElement &point,
-            const algebra::DomainEvaluationWeights &weights)
+            const algebra::DomainEvaluationWeights &weights,
+            std::size_t forward_rotation = 0)
         {
-            if (polynomial.basis != algebra::PolynomialBasis::Evaluation || polynomial.domain == nullptr)
+            if (polynomial.basis !=
+                    algebra::PolynomialBasis::
+                        Evaluation ||
+                polynomial.domain == nullptr)
             {
                 throw std::runtime_error(
                     "shared domain-weight evaluation requires an evaluation polynomial");
             }
-            const auto &values = polynomial.values();
-            FieldElement value = FieldElement::zero();
+
+            const auto &values =
+                polynomial.values();
+
+            FieldElement value =
+                FieldElement::zero();
+
+            const auto domain_size =
+                polynomial.domain->size;
+
+            const auto rotation =
+                domain_size == 0
+                    ? std::size_t{0}
+                    : forward_rotation %
+                          domain_size;
+
             if (weights.direct_index.has_value())
             {
-                if (*weights.direct_index < values.size())
+                const auto rotated_index =
+                    (*weights.direct_index +
+                     rotation) %
+                    domain_size;
+
+                if (rotated_index <
+                    values.size())
                 {
-                    value = values[*weights.direct_index];
+                    value =
+                        values[
+                            rotated_index];
                 }
             }
             else
             {
-                if (values.size() > weights.native_weights.size())
+                if (weights.native_weights.size() !=
+                        domain_size ||
+                    values.size() >
+                        domain_size)
                 {
                     throw std::runtime_error(
                         "evaluation polynomial exceeds its domain weight vector");
                 }
+
                 mcl::Fr sum;
                 sum.clear();
-                for (std::size_t i = 0; i < values.size(); ++i)
+
+                for (std::size_t index = 0;
+                     index < values.size();
+                     ++index)
                 {
+                    const auto weight_index =
+                        (index +
+                         domain_size -
+                         rotation) %
+                        domain_size;
+
                     mcl::Fr product;
-                    mcl::Fr::mul(product, values[i].native(), weights.native_weights[i]);
-                    mcl::Fr::add(sum, sum, product);
+
+                    mcl::Fr::mul(
+                        product,
+                        values[index].native(),
+                        weights.native_weights[
+                            weight_index]);
+
+                    mcl::Fr::add(
+                        sum,
+                        sum,
+                        product);
                 }
-                value = FieldElement::from_native(sum);
+
+                value =
+                    FieldElement::
+                        from_native(
+                            sum);
             }
+
             if (polynomial.is_zero_domain_blinded())
             {
-                value += polynomial.domain->zero_polynomial_eval(point) * algebra::horner(polynomial.zero_domain_blinder, point);
+                value +=
+                    polynomial.domain
+                            ->zero_polynomial_eval(
+                                point) *
+                    algebra::horner(
+                        polynomial
+                            .zero_domain_blinder,
+                        point);
             }
+
             return value;
         }
 
@@ -4532,13 +4699,20 @@ namespace gatzk::crypto
                                         throw std::runtime_error(
                                             "evaluation polynomial is missing its domain: " + term.commitment->name);
                                     }
-                                    const auto &weights = claim_weight_cache.get(
-                                        polynomial.domain,
-                                        points[point_index]);
-                                    expected = evaluate_with_shared_domain_weights(
-                                        polynomial,
-                                        points[point_index],
-                                        weights);
+                                    const auto weight_view =
+                                        shared_domain_weight_view(
+                                            &claim_weight_cache,
+                                            polynomial.domain,
+                                            points,
+                                            point_index);
+
+                                    expected =
+                                        evaluate_with_shared_domain_weights(
+                                            polynomial,
+                                            points[point_index],
+                                            *weight_view.weights,
+                                            weight_view
+                                                .forward_rotation);
                                 }
                                 const auto claimed =
                                     term.scaled_claims[point_index] / term.scale;
@@ -5079,13 +5253,20 @@ namespace gatzk::crypto
                                     "evaluation polynomial is missing its domain: " + commitments[i].name);
                             }
 
+                            const auto weight_view =
+                                shared_domain_weight_view(
+                                    &claim_weight_cache,
+                                    material->domain,
+                                    points,
+                                    point_index);
+
                             expected =
                                 evaluate_with_shared_domain_weights(
                                     *material,
                                     points[point_index],
-                                    claim_weight_cache.get(
-                                        material->domain,
-                                        points[point_index]));
+                                    *weight_view.weights,
+                                    weight_view
+                                        .forward_rotation);
                         }
 
                         if (expected != claimed_values[i][point_index])
@@ -7294,7 +7475,13 @@ namespace gatzk::crypto
             wave_excluded[index] =
                 completed[index] ||
                 semantic_alias_of[index] !=
-                    object_count;
+                    object_count ||
+                (named_polynomials[index]
+                         .second != nullptr &&
+                 named_polynomials[index]
+                         .second
+                         ->cuda_resident_coefficients !=
+                     nullptr);
         }
 
         const G1MSMExecutionOptions
@@ -7707,17 +7894,23 @@ namespace gatzk::crypto
                     std::move(
                         polynomial));
 
+            const auto point =
+                commit_polynomial_point(
+                    *material,
+                    key.pk,
+                    profile != nullptr
+                        ? &object_profile
+                        : nullptr,
+                    options);
+
+            material
+                ->cuda_resident_coefficients
+                .reset();
+
             out[index] =
                 Commitment{
                     .name = name,
-                    .point =
-                        commit_polynomial_point(
-                            *material,
-                            key.pk,
-                            profile != nullptr
-                                ? &object_profile
-                                : nullptr,
-                            options),
+                    .point = point,
                     .opening_polynomial =
                         material,
                 };
@@ -7743,6 +7936,17 @@ namespace gatzk::crypto
             excluded(
                 object_count,
                 false);
+
+        for (std::size_t index = 0;
+             index < object_count;
+             ++index)
+        {
+            excluded[index] =
+                view[index].second != nullptr &&
+                view[index].second
+                        ->cuda_resident_coefficients !=
+                    nullptr;
+        }
 
         const G1MSMExecutionOptions
             wave_msm_options{

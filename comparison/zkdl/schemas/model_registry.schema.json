@@ -1,27 +1,70 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "zkDL_gat_model_registry_v1",
-  "title": "zkDL GAT model registry entry",
-  "type": "object",
-  "additionalProperties": false,
-  "required": ["schema", "dataset", "model_arch_id", "model_param_id", "quant_cfg_id", "static_table_id", "checkpoint_bundle", "manifest_sha256", "quantization_config", "source_root"],
-  "properties": {
-    "schema": {"const": "zkDL_gat_model_registry_v1"},
-    "dataset": {"type": "string", "enum": ["cora", "citeseer", "pubmed", "ppi", "ogbn_arxiv"]},
-    "model_arch_id": {"type": "string", "minLength": 1},
-    "model_param_id": {"type": "string", "minLength": 1},
-    "quant_cfg_id": {"type": "string", "minLength": 1},
-    "static_table_id": {"type": "string", "minLength": 1},
-    "static_table_descriptor": {"type": "string", "pattern": "^(?:UNAVAILABLE|^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+)$"},
-    "static_table_descriptor_digest": {"type": "string", "pattern": "^(?:[0-9a-f]{64}|UNAVAILABLE)$"},
-    "scale_chain_digest": {"type": "string", "pattern": "^(?:[0-9a-f]{64}|UNAVAILABLE)$"},
-    "integer_bound_ledger": {"type": "string", "pattern": "^(?:UNAVAILABLE|^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+)$"},
-    "integer_bound_ledger_id": {"type": "string", "minLength": 1},
-    "integer_bound_ledger_digest": {"type": "string", "pattern": "^(?:[0-9a-f]{64}|UNAVAILABLE)$"},
-    "integer_bound_ledger_descriptor_digest": {"type": "string", "pattern": "^(?:[0-9a-f]{64}|UNAVAILABLE)$"},
-    "checkpoint_bundle": {"type": "string", "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+"},
-    "manifest_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-    "quantization_config": {"type": "string", "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+"},
-    "source_root": {"const": "baseline-local"}
-  }
+  "$id": "zkDL_gat_model_registry",
+  "title": "zkDL GAT model registry",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "dataset", "model_arch_id", "model_param_id", "quant_cfg_id", "static_table_id", "checkpoint_bundle", "manifest_sha256", "quantization_config", "source_root"],
+      "properties": {
+        "schema": {"const": "zkDL_gat_model_registry_v1"},
+        "dataset": {"type": "string", "enum": ["cora", "citeseer", "pubmed", "ppi", "ogbn_arxiv"]},
+        "model_arch_id": {"type": "string", "minLength": 1},
+        "model_param_id": {"type": "string", "minLength": 1},
+        "quant_cfg_id": {"type": "string", "minLength": 1},
+        "static_table_id": {"type": "string", "minLength": 1},
+        "static_table_descriptor": {"type": "string", "pattern": "^(?:UNAVAILABLE|^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+)$"},
+        "static_table_descriptor_digest": {"type": "string", "pattern": "^(?:[0-9a-f]{64}|UNAVAILABLE)$"},
+        "scale_chain_digest": {"type": "string", "pattern": "^(?:[0-9a-f]{64}|UNAVAILABLE)$"},
+        "integer_bound_ledger": {"type": "string", "pattern": "^(?:UNAVAILABLE|^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+)$"},
+        "integer_bound_ledger_id": {"type": "string", "minLength": 1},
+        "integer_bound_ledger_digest": {"type": "string", "pattern": "^(?:[0-9a-f]{64}|UNAVAILABLE)$"},
+        "integer_bound_ledger_descriptor_digest": {"type": "string", "pattern": "^(?:[0-9a-f]{64}|UNAVAILABLE)$"},
+        "checkpoint_bundle": {"type": "string", "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+"},
+        "manifest_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "quantization_config": {"type": "string", "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+"},
+        "source_root": {"const": "baseline-local"}
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "dataset", "model_arch_id", "model_param_id", "quant_cfg_id", "static_table_id", "srs_id", "srs_manifest_digest", "generator_digest", "config_digest", "verifier_registry_digest", "scale_chain_digest", "static_table_digest", "integer_bound_ledger_digest", "model_manifest_digest", "model_tensors", "source_root"],
+      "properties": {
+        "schema": {"const": "zkDL_gat_model_registry_v2"},
+        "dataset": {"type": "string", "enum": ["cora", "citeseer", "pubmed", "ppi", "ogbn_arxiv"]},
+        "model_arch_id": {"type": "string", "minLength": 1},
+        "model_param_id": {"type": "string", "minLength": 1},
+        "quant_cfg_id": {"type": "string", "minLength": 1},
+        "static_table_id": {"type": "string", "minLength": 1},
+        "srs_id": {"type": "string", "minLength": 1},
+        "srs_manifest_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "generator_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "config_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "verifier_registry_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "scale_chain_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "static_table_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "integer_bound_ledger_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "model_manifest_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "model_tensors": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["tensor_id", "domain_size", "logical_shape", "padded_shape", "commitment"],
+            "properties": {
+              "tensor_id": {"type": "string", "minLength": 1},
+              "domain_size": {"type": "integer", "minimum": 1},
+              "logical_shape": {"type": "array", "minItems": 1, "items": {"type": "integer", "minimum": 1}},
+              "padded_shape": {"type": "array", "minItems": 1, "items": {"type": "integer", "minimum": 1}},
+              "commitment": {"type": "string", "pattern": "^[0-9a-f]{96}$"}
+            }
+          }
+        },
+        "source_root": {"const": "baseline-local"}
+      }
+    }
+  ]
 }

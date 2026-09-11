@@ -4,6 +4,7 @@
 #include "fr-tensor.cuh"
 #include "g1-tensor.cuh"
 #include "proof.cuh"
+#include "cpu-backend.cuh"
 
 class Commitment: public G1TensorJacobian
 {   
@@ -28,6 +29,12 @@ class Commitment: public G1TensorJacobian
     zkdl::EvaluationOpeningProof open_with_proof(const FrTensor& t,
                                                  const G1TensorJacobian& c,
                                                  const vector<Fr_t>& u) const;
+    zkdl::EvaluationOpeningProof open_with_ipa_proof(
+        const FrTensor& t, const G1TensorJacobian& c, const vector<Fr_t>& u,
+        const G1Jacobian_t& blinding_generator,
+        const G1Jacobian_t& u_generator,
+        const zkdl::FrWire& randomness,
+        const zkdl::CpuIpaOpeningMetadata& metadata) const;
     Fr_t open(const FrTensor& t, const G1TensorJacobian& c, const vector<Fr_t>& u,
               uint& proof_size_count, zkdl::EvaluationOpeningProof* retained) const;
 
@@ -143,21 +150,83 @@ zkdl::EvaluationOpeningProof Commitment::open_with_proof(const FrTensor& t,
                                                           const G1TensorJacobian& com,
                                                           const vector<Fr_t>& u) const
 {
-    if (u.size() < 1) throw std::runtime_error("Opening point must not be empty");
-    const vector<Fr_t> u_out(u.end() - ceilLog2(com.size), u.end());
-    const vector<Fr_t> u_in(u.begin(), u.end() - ceilLog2(com.size));
+    (void)t;
+    (void)com;
+    (void)u;
+    throw std::invalid_argument("authenticated IPA H/U basis is required");
+}
 
-    auto g_temp = com(u_out);
-    if (size != (1 << u_in.size())) throw std::runtime_error("Incompatible dimensions");
-    vector<G1Jacobian_t> proof;
-    auto val = me_open(t.partial_me(u_out, 1 << u_in.size()), *this, u_in.begin(), u_in.end(), proof);
-    zkdl::EvaluationOpeningProof opening;
-    opening.generator_size = size;
-    opening.inner_point = u_in;
+zkdl::EvaluationOpeningProof Commitment::open_with_ipa_proof(
+    const FrTensor& t, const G1TensorJacobian& com, const vector<Fr_t>& u,
+    const G1Jacobian_t& blinding_generator,
+    const G1Jacobian_t& u_generator,
+    const zkdl::FrWire& randomness,
+    const zkdl::CpuIpaOpeningMetadata& metadata) const
+{
+    if (u.empty()) throw std::runtime_error("Opening point must not be empty");
+    const std::uint32_t outer_bits = ceilLog2(com.size);
+    if (outer_bits > u.size()) throw std::runtime_error("Opening point has too few coordinates");
+    const vector<Fr_t> u_out(u.end() - outer_bits, u.end());
+    const vector<Fr_t> u_in(u.begin(), u.end() - outer_bits);
+    if (size != (std::size_t(1) << u_in.size()) ||
+        t.size != static_cast<std::uint64_t>(size) * com.size ||
+        com.size == 0U) throw std::runtime_error("Incompatible IPA opening dimensions");
+
+    const std::vector<G1Jacobian_t> native_generators = to_host();
+    const std::vector<Fr_t> host_values = t.to_host();
+    std::vector<zkdl::CpuG1Point> generators;
+    generators.reserve(native_generators.size());
+    for (const auto& generator : native_generators)
+        generators.push_back(zkdl::cpu_g1_from_native(generator));
+    std::vector<zkdl::FrWire> inner_values(size);
+    std::vector<zkdl::FrWire> inner_point;
+    inner_point.reserve(u_in.size());
+    for (const auto& coordinate : u_in) inner_point.push_back(zkdl::fr_wire(coordinate));
+    std::vector<zkdl::FrWire> outer_point;
+    outer_point.reserve(u_out.size());
+    for (const auto& coordinate : u_out) outer_point.push_back(zkdl::fr_wire(coordinate));
+    if (metadata.outer_point.size() != outer_point.size())
+        throw std::invalid_argument("IPA outer metadata does not match tensor view");
+    for (std::size_t i = 0U; i < outer_point.size(); ++i)
+        if (zkdl::fr_compare(metadata.outer_point[i], outer_point[i]) != 0)
+            throw std::invalid_argument("IPA outer metadata differs from tensor view");
+    for (uint column = 0U; column < size; ++column) {
+        std::vector<zkdl::FrWire> rows(com.size);
+        for (uint row = 0U; row < com.size; ++row)
+            rows[row] = zkdl::fr_wire(host_values[static_cast<std::size_t>(row) * size + column]);
+        for (const auto& coordinate : outer_point) {
+            const zkdl::FrWire one_minus = zkdl::fr_sub(
+                zkdl::fr_from_u32(1U), coordinate);
+            std::vector<zkdl::FrWire> next((rows.size() + 1U) / 2U);
+            for (std::size_t row = 0U; row < next.size(); ++row) {
+                const std::size_t left = 2U * row;
+                next[row] = zkdl::fr_mul(rows[left], one_minus);
+                if (left + 1U < rows.size())
+                    next[row] = zkdl::fr_add(next[row],
+                        zkdl::fr_mul(rows[left + 1U], coordinate));
+            }
+            rows.swap(next);
+        }
+        inner_values[column] = rows.front();
+    }
+    zkdl::EvaluationOpeningProof opening = zkdl::cpu_open(
+        generators, inner_values,
+        inner_point,
+        zkdl::cpu_g1_from_native(blinding_generator),
+        zkdl::cpu_g1_from_native(u_generator), randomness, metadata);
+    std::vector<zkdl::CpuG1Point> row_commitments;
+    const std::vector<G1Jacobian_t> native_commitments = com.to_host();
+    row_commitments.reserve(native_commitments.size());
+    for (const auto& row : native_commitments)
+        row_commitments.push_back(zkdl::cpu_g1_from_native(row));
+    if (row_commitments.size() != (std::size_t(1U) << outer_point.size()))
+        throw std::runtime_error("IPA outer commitment domain is not a power of two");
+    const zkdl::CpuG1Point expected_commitment = zkdl::cpu_g1_sum(
+        row_commitments, zkdl::cpu_ipa_mle_weights(outer_point));
+    if (!zkdl::cpu_g1_equal(
+            zkdl::cpu_g1_from_native(opening.commitment_eval), expected_commitment))
+        throw std::runtime_error("IPA opening is not bound to the outer tensor commitment");
     opening.outer_point = u_out;
-    opening.value = val;
-    opening.commitment_eval = g_temp;
-    opening.rounds = proof;
     return opening;
 }
 
@@ -166,10 +235,14 @@ Fr_t Commitment::open(const FrTensor& t, const G1TensorJacobian& com,
                       zkdl::EvaluationOpeningProof* retained) const
 {
     zkdl::EvaluationOpeningProof opening = open_with_proof(t, com, u);
-    // G1 points are serialized as three 381-bit Jacobian coordinates.  Count
-    // the actual verifier-facing message instead of the historical constant
-    // 36-byte approximation.
-    proof_size_count += static_cast<uint>(opening.rounds.size() * 3U * blstrs__fp__Fp_LIMBS * sizeof(uint));
+    const std::vector<zkdl::byte> encoded = [&]() {
+        std::vector<zkdl::byte> bytes;
+        zkdl::serialize_opening(opening, bytes);
+        return bytes;
+    }();
+    if (encoded.size() > std::numeric_limits<uint>::max() - proof_size_count)
+        throw std::overflow_error("IPA opening size exceeds uint");
+    proof_size_count += static_cast<uint>(encoded.size());
     if (retained != nullptr) *retained = opening;
     return opening.value;
 }
@@ -236,57 +309,10 @@ inline bool Commitment::verify_opening_gpu(const zkdl::EvaluationOpeningProof& o
                                            const G1Jacobian_t& expected_commitment_eval,
                                            std::string* error) const
 {
-    if (!zkdl::opening_shape_valid(opening, error)) return false;
-
-    const uint fold_count = static_cast<uint>(opening.inner_point.size());
-    std::vector<Fr_t> coefficients(3U * fold_count);
-    const zkdl::FrWire one = zkdl::fr_from_u32(1U);
-    for (uint i = 0; i < fold_count; ++i) {
-        const zkdl::FrWire u = zkdl::fr_wire(opening.inner_point[i]);
-        const zkdl::FrWire one_minus = zkdl::fr_sub(one, u);
-        const zkdl::FrWire c_a = zkdl::fr_mul(one_minus, one_minus);
-        const zkdl::FrWire c_p = zkdl::fr_mul(u, one_minus);
-        const zkdl::FrWire c_b = zkdl::fr_mul(u, u);
-        coefficients[3U * i] = zkdl::fr_value(c_a);
-        coefficients[3U * i + 1U] = zkdl::fr_value(c_p);
-        coefficients[3U * i + 2U] = zkdl::fr_value(c_b);
-    }
-
-    G1Jacobian_t* d_folds = nullptr;
-    Fr_t* d_coefficients = nullptr;
-    int* d_accepted = nullptr;
-    int accepted = 0;
-    const size_t fold_bytes = opening.rounds.size() * sizeof(G1Jacobian_t);
-    const size_t coefficient_bytes = coefficients.size() * sizeof(Fr_t);
-    cudaError_t status = cudaSuccess;
-    if ((status = cudaMalloc(reinterpret_cast<void**>(&d_folds), fold_bytes)) != cudaSuccess ||
-        (coefficient_bytes != 0 && (status = cudaMalloc(reinterpret_cast<void**>(&d_coefficients), coefficient_bytes)) != cudaSuccess) ||
-        (status = cudaMalloc(reinterpret_cast<void**>(&d_accepted), sizeof(int))) != cudaSuccess) {
-        if (d_folds) cudaFree(d_folds); if (d_coefficients) cudaFree(d_coefficients); if (d_accepted) cudaFree(d_accepted);
-        if (error) *error = cudaGetErrorString(status);
-        return false;
-    }
-    cudaMemcpy(d_folds, opening.rounds.data(), fold_bytes, cudaMemcpyHostToDevice);
-    if (coefficient_bytes != 0) cudaMemcpy(d_coefficients, coefficients.data(), coefficient_bytes, cudaMemcpyHostToDevice);
-    cudaMemset(d_accepted, 0, sizeof(int));
-    zkdl_opening_verify_kernel<<<1, 1>>>(d_folds, d_coefficients,
-                                         opening.commitment_eval,
-                                         expected_commitment_eval,
-                                         opening.rounds.back(), opening.value,
-                                         fold_count, d_accepted);
-    status = cudaGetLastError();
-    if (status == cudaSuccess) status = cudaDeviceSynchronize();
-    if (status == cudaSuccess) status = cudaMemcpy(&accepted, d_accepted, sizeof(int), cudaMemcpyDeviceToHost);
-    cudaFree(d_folds); cudaFree(d_coefficients); cudaFree(d_accepted);
-    if (status != cudaSuccess) {
-        if (error) *error = cudaGetErrorString(status);
-        return false;
-    }
-    if (accepted != 1) {
-        if (error) *error = "Hyrax opening equation failed";
-        return false;
-    }
-    return true;
+    (void)opening;
+    (void)expected_commitment_eval;
+    if (error) *error = "BLOCKED: native GPU IPA opening verifier is not implemented";
+    return false;
 }
 
 #endif

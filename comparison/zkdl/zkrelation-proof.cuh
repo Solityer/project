@@ -668,13 +668,13 @@ struct FacLine8Proof {
 };
 
 struct Proof {
-    static const std::uint32_t kVersion = 2U;
+    static const std::uint32_t kVersion = 3U;
     std::uint32_t version = kVersion;
     RelationStatement statement;
     std::vector<CommitmentWire> commitments;
     // Hiding records are part of the relation proof wire.  The verifier
-    // compares them with its public context and checks the native Schnorr
-    // proof before accepting any model/private opening.
+    // compares them with its public context before accepting any
+    // model/private opening; the IPA opening carries the blinding witness.
     std::vector<zkdl::CommitmentRecord> hiding_commitment_records;
     std::vector<OperationProof> operations;
     std::uint32_t public_output_commitment = std::numeric_limits<std::uint32_t>::max();
@@ -692,11 +692,20 @@ struct ProverContext {
     std::vector<TensorDescriptor> tensor_descriptors;
     std::vector<OperationDescriptor> operations;
     std::vector<zkdl::CpuG1Point> generators;
+    // IPA basis material is independent from the scalar-generator vector and
+    // must be supplied by the authenticated resource loader.  Empty H/U is a
+    // hard admission failure; no generator-derived fallback is permitted.
+    std::vector<zkdl::CpuG1Point> ipa_generators;
+    zkdl::CpuG1Point ipa_blinding_generator;
+    zkdl::CpuG1Point ipa_u_generator;
     std::vector<CommitmentWire> registered_model_commitments;
     // Private/model tensors are committed through the native hiding
     // commitment object.  The record is public metadata plus a Schnorr
     // knowledge proof; values/randomness never cross this context boundary.
     std::vector<zkdl::CommitmentRecord> hiding_commitment_records;
+    // One blinder is sampled per private/model tensor and reused for every
+    // opening of that canonical commitment in this proof.
+    std::map<std::string, FrWire> blinding_scalars;
     // Public graph-derived material may be attached to a non-public view
     // commitment (for example group-boundary bits).  The verifier accepts
     // only ids explicitly reconstructed from Graph/CSR, never arbitrary
@@ -724,6 +733,9 @@ struct VerifierContext {
     std::set<std::string> graph_public_tensor_ids;
     std::map<std::string, std::vector<FrWire>> public_tensor_values;
     std::vector<zkdl::CpuG1Point> generators;
+    std::vector<zkdl::CpuG1Point> ipa_generators;
+    zkdl::CpuG1Point ipa_blinding_generator;
+    zkdl::CpuG1Point ipa_u_generator;
 };
 
 inline bool same_wire(const FrWire& a, const FrWire& b) noexcept {
@@ -732,6 +744,14 @@ inline bool same_wire(const FrWire& a, const FrWire& b) noexcept {
 
 inline bool same_bytes(const std::array<byte, 32>& a, const std::array<byte, 32>& b) noexcept {
     return a == b;
+}
+
+inline bool same_g1_basis(const std::vector<zkdl::CpuG1Point>& left,
+                          const std::vector<zkdl::CpuG1Point>& right) {
+    if (left.size() != right.size()) return false;
+    for (std::size_t i = 0U; i < left.size(); ++i)
+        if (!zkdl::cpu_g1_equal(left[i], right[i])) return false;
+    return true;
 }
 
 inline std::uint32_t log2_exact(std::uint32_t value) {
@@ -896,11 +916,8 @@ inline void append_hiding_record(std::vector<byte>& out,
     zkdl::append_u32(out, record.visibility);
     zkdl::append_u64(out, static_cast<std::uint64_t>(record.points.size()));
     for (const auto& point : record.points) zkdl::append_g1(out, point);
-    zkdl::append_g1(out, record.value_commitment);
     zkdl::append_g1(out, record.blinding_generator);
     zkdl::append_g1(out, record.commitment);
-    zkdl::append_g1(out, record.schnorr_R);
-    zkdl::append_fr(out, record.schnorr_response);
 }
 
 inline bool read_hiding_record(const std::vector<byte>& in, size_t& offset,
@@ -912,11 +929,8 @@ inline bool read_hiding_record(const std::vector<byte>& in, size_t& offset,
     record.points.resize(static_cast<std::size_t>(count));
     for (auto& point : record.points)
         if (!zkdl::read_g1(in, offset, point)) return false;
-    return zkdl::read_g1(in, offset, record.value_commitment) &&
-           zkdl::read_g1(in, offset, record.blinding_generator) &&
-           zkdl::read_g1(in, offset, record.commitment) &&
-           zkdl::read_g1(in, offset, record.schnorr_R) &&
-           zkdl::read_fr(in, offset, record.schnorr_response);
+    return zkdl::read_g1(in, offset, record.blinding_generator) &&
+           zkdl::read_g1(in, offset, record.commitment);
 }
 
 inline void append_native_fr_vector(std::vector<byte>& out,
@@ -995,6 +1009,74 @@ inline void append_operation(std::vector<byte>& out, const OperationDescriptor& 
     for (const auto& primitive : descriptor.primitives) append_primitive(out, primitive);
     zkdl::append_u64(out, static_cast<std::uint64_t>(descriptor.constraints.size()));
     for (const auto& constraint : descriptor.constraints) append_constraint(out, constraint);
+}
+
+inline zkdl::CpuIpaOpeningMetadata relation_opening_metadata(
+    const OperationDescriptor& descriptor, std::uint32_t commitment_index,
+    const std::vector<FrWire>& outer_point, const RelationStatement& statement) {
+    if (statement.registry_digest == std::array<byte, 32U>{} ||
+        statement.srs_digest == std::array<byte, 32U>{})
+        throw std::invalid_argument("relation opening requires authenticated registry/SRS digests");
+    std::vector<byte> encoded;
+    append_operation(encoded, descriptor);
+    zkdl::append_u32(encoded, commitment_index);
+    for (const auto& coordinate : outer_point) zkdl::append_fr(encoded, zkdl::fr_value(coordinate));
+    zkdl::CpuIpaOpeningMetadata metadata;
+    metadata.commitment_index = commitment_index;
+    metadata.outer_point = outer_point;
+    metadata.descriptor_digest = zkdl::sha256(encoded);
+    metadata.registry_digest = statement.registry_digest;
+    metadata.srs_digest = statement.srs_digest;
+    return metadata;
+}
+
+/* Constraint openings use the same authenticated IPA header as operation
+ * openings, but their public descriptor is the canonical constraint wire.
+ * Keep this as a distinct overload so a verifier cannot silently hash a
+ * lossy OperationDescriptor projection (and so prover/verifier derive the
+ * exact same commitment-opening identity). */
+inline zkdl::CpuIpaOpeningMetadata relation_opening_metadata(
+    const ConstraintDescriptor& descriptor, std::uint32_t commitment_index,
+    const std::vector<FrWire>& outer_point, const RelationStatement& statement) {
+    if (statement.registry_digest == std::array<byte, 32U>{} ||
+        statement.srs_digest == std::array<byte, 32U>{})
+        throw std::invalid_argument("relation opening requires authenticated registry/SRS digests");
+    std::vector<byte> encoded;
+    append_constraint(encoded, descriptor);
+    zkdl::append_u32(encoded, commitment_index);
+    for (const auto& coordinate : outer_point)
+        zkdl::append_fr(encoded, zkdl::fr_value(coordinate));
+    zkdl::CpuIpaOpeningMetadata metadata;
+    metadata.commitment_index = commitment_index;
+    metadata.outer_point = outer_point;
+    metadata.descriptor_digest = zkdl::sha256(encoded);
+    metadata.registry_digest = statement.registry_digest;
+    metadata.srs_digest = statement.srs_digest;
+    return metadata;
+}
+
+inline OperationDescriptor public_output_opening_descriptor() {
+    OperationDescriptor descriptor;
+    descriptor.id = "terminal_opening";
+    descriptor.kind = RelationKind::PublicOutput;
+    descriptor.degree = 1U;
+    descriptor.source_refs = {"public_Y"};
+    descriptor.tensor_refs = {"public_Y"};
+    descriptor.mapping = "canonical-public-output";
+    descriptor.padding = "authenticated-public-output";
+    descriptor.terminal_claim = "public_Y";
+    descriptor.terminal_point = "public_Y";
+    return descriptor;
+}
+
+inline FrWire relation_blinding_scalar(
+    const TensorWitness& tensor, const std::map<std::string, FrWire>& blinders) {
+    if (tensor.visibility == 1U) return FrWire{};
+    const auto found = blinders.find(tensor.id);
+    if (found == blinders.end() || !zkdl::fr_canonical(found->second) ||
+        zkdl::fr_compare(found->second, FrWire{}) == 0)
+        throw std::invalid_argument("BLOCKED: missing nonzero per-tensor IPA blinder: " + tensor.id);
+    return found->second;
 }
 
 /* The operation reader keeps its two boolean fields separate so their
@@ -1453,6 +1535,8 @@ inline bool SparseRouteProof::deserialize(const std::vector<byte>& bytes,
 }
 
 inline std::vector<byte> Proof::serialize() const {
+    if (!hiding_commitment_records.empty())
+        throw std::invalid_argument("legacy hiding commitment records are not part of formal GATR wire");
     std::vector<byte> out;
     out.reserve(1024U);
     out.push_back('G'); out.push_back('A'); out.push_back('T'); out.push_back('R');
@@ -1500,18 +1584,9 @@ inline bool Proof::deserialize(const std::vector<byte>& bytes, Proof& proof,
             if (error) *error = "duplicate/empty GAT commitment id";
             return false;
         }
-    if (!zkdl::read_u64(bytes, offset, count) || count > max_items) {
+    if (!zkdl::read_u64(bytes, offset, count) || count != 0U) {
         if (error) *error = "invalid GAT hiding commitment section";
         return false;
-    }
-    parsed.hiding_commitment_records.resize(static_cast<std::size_t>(count));
-    std::set<std::string> hiding_labels;
-    for (auto& record : parsed.hiding_commitment_records) {
-        if (!read_hiding_record(bytes, offset, record) || record.label.empty() ||
-            !hiding_labels.insert(record.label).second) {
-            if (error) *error = "invalid/duplicate GAT hiding commitment record";
-            return false;
-        }
     }
     if (!zkdl::read_u64(bytes, offset, count) || count == 0U || count > max_items) {
         if (error) *error = "GAT relation proof has no operation section";
@@ -1557,6 +1632,1349 @@ inline void absorb_statement(zkdl::Transcript& transcript,
     zkdl::append_u64(encoded, static_cast<std::uint64_t>(commitments.size()));
     for (const auto& commitment : commitments) append_commitment(encoded, commitment);
     transcript.absorb("gat.relation.statement", encoded);
+}
+
+/*
+ * Hidden generic Sumcheck round engine.  This deliberately lives beside the
+ * relation descriptor rather than in a second proof implementation: all
+ * commitments, Sigma equations and Fiat--Shamir challenges are delegated to
+ * proof.cuh/cpu-backend.cuh's authenticated Pedersen primitives.  The engine
+ * is not yet wired into ConstraintProof; callers can exercise this seam while
+ * the terminal DAG/opening migration is completed.
+ */
+struct ZkSumcheckProverResult {
+    zkdl::ZkSumcheckProof proof;
+    std::vector<Fr_t> challenges;
+    std::vector<FrWire> folded_terminal_values;
+    FrWire final_q_blinder{};
+};
+
+struct ZkSumcheckVerifierResult {
+    std::vector<Fr_t> challenges;
+    G1Jacobian_t final_claim_commitment{};
+};
+
+inline bool zksc_digest_nonzero(const std::array<byte, 32U>& digest) {
+    return digest != std::array<byte, 32U>{{}};
+}
+
+inline bool zksc_statement_resources_valid(const RelationStatement& statement,
+                                           std::string* error = nullptr) {
+    if (!zksc_digest_nonzero(statement.registry_digest) ||
+        !zksc_digest_nonzero(statement.srs_digest)) {
+        if (error) *error = "ZkSumcheck requires authenticated registry/SRS digests";
+        return false;
+    }
+    return true;
+}
+
+inline std::array<byte, 32U> zksc_role_digest(
+    const ConstraintDescriptor& descriptor, const RelationStatement& statement,
+    const std::string& operation_context, const std::string& role,
+    std::uint32_t round_index, std::uint32_t commitment_index,
+    std::uint32_t related_index) {
+    std::vector<byte> encoded;
+    append_constraint(encoded, descriptor);
+    zkdl::append_string(encoded, operation_context);
+    zkdl::append_string(encoded, role);
+    zkdl::append_u32(encoded, round_index);
+    zkdl::append_u32(encoded, commitment_index);
+    zkdl::append_u32(encoded, related_index);
+    append_digest(encoded, statement.statement_digest);
+    append_digest(encoded, statement.model_digest);
+    append_digest(encoded, statement.table_digest);
+    append_digest(encoded, statement.ledger_digest);
+    append_digest(encoded, statement.registry_digest);
+    append_digest(encoded, statement.srs_digest);
+    return zkdl::sha256(encoded);
+}
+
+inline zkdl::PedersenProofContext zksc_make_context(
+    std::uint32_t operation, std::uint32_t degree, std::uint32_t basis_size,
+    std::uint32_t commitment_index, std::uint32_t related_index,
+    const std::array<byte, 32U>& basis_digest,
+    const std::array<byte, 32U>& descriptor_digest,
+    const RelationStatement& statement) {
+    zkdl::PedersenProofContext context;
+    context.commitment_index = commitment_index;
+    context.operation = operation;
+    context.commitment_a_index = commitment_index;
+    context.commitment_b_index = related_index;
+    context.commitment_c_index = zkdl::PedersenProofContext::kUnsetIndex;
+    context.evaluation_commitment_index = zkdl::PedersenProofContext::kUnsetIndex;
+    if (operation == zkdl::PedersenProofContext::kOperationVectorLinear) {
+        context.evaluation_commitment_index = related_index;
+        context.commitment_b_index = zkdl::PedersenProofContext::kUnsetIndex;
+    }
+    context.degree = degree;
+    context.basis_size = basis_size;
+    context.basis_digest = basis_digest;
+    context.descriptor_digest = descriptor_digest;
+    context.registry_digest = statement.registry_digest;
+    context.srs_digest = statement.srs_digest;
+    return context;
+}
+
+inline std::uint32_t zksc_round_commitment_index(std::uint32_t round) {
+    constexpr std::uint32_t kStride = 4U;
+    if (round > (std::numeric_limits<std::uint32_t>::max() / kStride) - 2U)
+        throw std::invalid_argument("ZkSumcheck round commitment index overflow");
+    return round * kStride;
+}
+
+inline std::uint32_t zksc_endpoint_index(std::uint32_t round) {
+    return zksc_round_commitment_index(round) + 1U;
+}
+
+inline std::uint32_t zksc_evaluation_index(std::uint32_t round) {
+    return zksc_round_commitment_index(round) + 2U;
+}
+
+inline std::array<byte, 32U> zksc_proof_descriptor_digest(
+    const ConstraintDescriptor& descriptor, const RelationStatement& statement,
+    const std::string& operation_context) {
+    return zksc_role_digest(descriptor, statement, operation_context,
+                            "initial-public-claim", 0U, zksc_endpoint_index(0U),
+                            zkdl::PedersenProofContext::kUnsetIndex);
+}
+
+inline std::array<byte, 32U> zksc_vector_role_digest(
+    const ConstraintDescriptor& descriptor, const RelationStatement& statement,
+    const std::string& operation_context, const std::string& role,
+    std::uint32_t round, std::uint32_t related_index) {
+    return zksc_role_digest(descriptor, statement, operation_context, role, round,
+                            zksc_round_commitment_index(round), related_index);
+}
+
+inline std::array<byte, 32U> zksc_scalar_role_digest(
+    const ConstraintDescriptor& descriptor, const RelationStatement& statement,
+    const std::string& operation_context, const std::string& role,
+    std::uint32_t round, std::uint32_t commitment_index,
+    std::uint32_t related_index) {
+    return zksc_role_digest(descriptor, statement, operation_context, role, round,
+                            commitment_index, related_index);
+}
+
+inline FrWire zksc_eval_coefficients(const std::vector<FrWire>& coefficients,
+                                     const FrWire& point) {
+    if (coefficients.empty()) throw std::invalid_argument("empty ZkSumcheck coefficient vector");
+    FrWire result{};
+    for (std::size_t index = coefficients.size(); index-- > 0U;) {
+        result = zkdl::fr_add(zkdl::fr_mul(result, point), coefficients[index]);
+    }
+    return result;
+}
+
+inline bool zksc_interpolate_coefficients(const std::vector<FrWire>& evaluations,
+                                          std::vector<FrWire>& coefficients,
+                                          std::string* error = nullptr) {
+    if (evaluations.empty() || evaluations.size() > 9U) {
+        if (error) *error = "ZkSumcheck interpolation degree is out of bounds";
+        return false;
+    }
+    coefficients.assign(evaluations.size(), FrWire{});
+    try {
+        for (std::size_t i = 0U; i < evaluations.size(); ++i) {
+            std::vector<FrWire> basis(1U, zkdl::fr_from_u32(1U));
+            FrWire denominator = zkdl::fr_from_u32(1U);
+            const FrWire xi = zkdl::fr_from_u32(static_cast<std::uint32_t>(i));
+            for (std::size_t j = 0U; j < evaluations.size(); ++j) {
+                if (i == j) continue;
+                const FrWire xj = zkdl::fr_from_u32(static_cast<std::uint32_t>(j));
+                std::vector<FrWire> next(basis.size() + 1U, FrWire{});
+                const FrWire negative_xj = zkdl::fr_neg(xj);
+                for (std::size_t k = 0U; k < basis.size(); ++k) {
+                    next[k] = zkdl::fr_add(next[k], zkdl::fr_mul(basis[k], negative_xj));
+                    next[k + 1U] = zkdl::fr_add(next[k + 1U], basis[k]);
+                }
+                basis.swap(next);
+                denominator = zkdl::fr_mul(denominator, zkdl::fr_sub(xi, xj));
+            }
+            const FrWire scale = zkdl::fr_mul(evaluations[i], zkdl::cpu_fr_inv(denominator));
+            for (std::size_t k = 0U; k < coefficients.size(); ++k)
+                coefficients[k] = zkdl::fr_add(coefficients[k],
+                                               zkdl::fr_mul(scale, basis[k]));
+        }
+        for (std::size_t i = 0U; i < evaluations.size(); ++i)
+            if (!same_wire(zksc_eval_coefficients(coefficients,
+                                                   zkdl::fr_from_u32(static_cast<std::uint32_t>(i))),
+                           evaluations[i])) {
+                if (error) *error = "ZkSumcheck interpolation failed its evaluation check";
+                return false;
+            }
+    } catch (const std::exception& exception) {
+        if (error) *error = exception.what();
+        return false;
+    }
+    return true;
+}
+
+inline void zksc_append_nested(std::vector<byte>& out,
+                               const std::vector<byte>& nested) {
+    zkdl::append_u64(out, static_cast<std::uint64_t>(nested.size()));
+    out.insert(out.end(), nested.begin(), nested.end());
+}
+
+inline std::vector<byte> zksc_round_pre_bytes(
+    const zkdl::ZkSumcheckRoundProof& round) {
+    std::vector<byte> out;
+    zkdl::append_u32(out, round.version);
+    zkdl::append_u32(out, round.round_index);
+    zkdl::append_g1(out, round.coefficient_commitment);
+    zkdl::append_g1(out, round.endpoint_commitment);
+    std::vector<byte> endpoint;
+    zkdl::serialize_pedersen_vector_linear(round.endpoint_linear, endpoint);
+    zksc_append_nested(out, endpoint);
+    zkdl::append_u32(out, static_cast<std::uint32_t>(round.link_kind));
+    if (round.link_kind == zkdl::ZkSumcheckLinkKind::InitialPublicClaim) {
+        std::vector<byte> initial;
+        zkdl::serialize_pedersen_scalar_value(round.initial_claim_binding, initial);
+        zksc_append_nested(out, initial);
+        zkdl::append_u64(out, 0U);
+    } else if (round.link_kind == zkdl::ZkSumcheckLinkKind::PreviousEvaluation) {
+        zkdl::append_u64(out, 0U);
+        std::vector<byte> previous;
+        zkdl::serialize_pedersen_scalar_equality(round.previous_claim_binding, previous);
+        zksc_append_nested(out, previous);
+    } else {
+        throw std::invalid_argument("unknown ZkSumcheck link branch");
+    }
+    return out;
+}
+
+inline std::vector<byte> zksc_round_query_bytes(
+    const zkdl::ZkSumcheckRoundProof& round) {
+    std::vector<byte> out;
+    zkdl::append_u32(out, round.round_index);
+    zkdl::append_g1(out, round.evaluation_commitment);
+    std::vector<byte> evaluation;
+    zkdl::serialize_pedersen_vector_linear(round.evaluation_linear, evaluation);
+    zksc_append_nested(out, evaluation);
+    return out;
+}
+
+inline void zksc_absorb_header(zkdl::Transcript& transcript,
+                               const zkdl::ZkSumcheckProof& proof) {
+    std::vector<byte> encoded;
+    zkdl::append_u32(encoded, proof.version);
+    zkdl::append_string(encoded, proof.label);
+    zkdl::append_u32(encoded, proof.degree);
+    zkdl::append_u32(encoded, proof.domain_size);
+    zkdl::append_pedersen_context(encoded, proof.initial_claim_context);
+    encoded.insert(encoded.end(), proof.descriptor_digest.begin(), proof.descriptor_digest.end());
+    encoded.insert(encoded.end(), proof.registry_digest.begin(), proof.registry_digest.end());
+    encoded.insert(encoded.end(), proof.srs_digest.begin(), proof.srs_digest.end());
+    encoded.insert(encoded.end(), proof.basis_digest.begin(), proof.basis_digest.end());
+    zkdl::append_g1(encoded, proof.blinding_generator);
+    zkdl::append_g1(encoded, proof.u_generator);
+    transcript.absorb("gat.zksumcheck.header", encoded);
+}
+
+inline zkdl::PedersenProofContext zksc_make_vector_context(
+    const ConstraintDescriptor& descriptor, const RelationStatement& statement,
+    const std::string& operation_context, const std::string& role,
+    std::uint32_t round, std::uint32_t related_index,
+    const std::array<byte, 32U>& basis_digest, std::uint32_t degree) {
+    return zksc_make_context(
+        zkdl::PedersenProofContext::kOperationVectorLinear, degree, degree + 1U,
+        zksc_round_commitment_index(round), related_index, basis_digest,
+        zksc_vector_role_digest(descriptor, statement, operation_context, role,
+                                round, related_index), statement);
+}
+
+inline zkdl::PedersenProofContext zksc_make_scalar_context(
+    const ConstraintDescriptor& descriptor, const RelationStatement& statement,
+    const std::string& operation_context, const std::string& role,
+    std::uint32_t round, std::uint32_t commitment_index,
+    std::uint32_t related_index, std::uint32_t operation,
+    const zkdl::CpuG1Point& blinding_generator,
+    const zkdl::CpuG1Point& u_generator) {
+    return zksc_make_context(
+        operation, 1U, 0U, commitment_index, related_index,
+        zkdl::cpu_ipa_basis_digest({}, blinding_generator, u_generator, 0U),
+        zksc_scalar_role_digest(descriptor, statement, operation_context, role,
+                                round, commitment_index, related_index), statement);
+}
+
+inline bool zksc_validate_inputs(
+    const ConstraintDescriptor& descriptor,
+    const std::vector<std::vector<FrWire>>& tensor_values,
+    std::uint32_t degree, std::uint32_t domain_size,
+    const std::vector<zkdl::CpuG1Point>& generators,
+    const zkdl::CpuG1Point& blinding_generator, const zkdl::CpuG1Point& u_generator,
+    const FrWire& initial_claim, const RelationStatement& statement,
+    const std::string& operation_context, std::string* error) {
+    if (!descriptor.valid(error) || descriptor.degree != degree ||
+        degree == 0U || degree > 8U || tensor_values.empty() ||
+        domain_size == 0U || (domain_size & (domain_size - 1U)) != 0U ||
+        domain_size > (1U << 30U) || generators.size() < static_cast<std::size_t>(degree + 1U) ||
+        !zkdl::fr_canonical(initial_claim) || operation_context.empty() ||
+        !zksc_statement_resources_valid(statement, error)) {
+        if (error && error->empty()) *error = "invalid ZkSumcheck prover inputs";
+        return false;
+    }
+    if (!zkdl::cpu_pedersen_basis_valid(
+            std::vector<zkdl::CpuG1Point>(generators.begin(), generators.begin() + degree + 1U),
+            blinding_generator, u_generator, degree + 1U, error)) return false;
+    for (const auto& tensor : tensor_values) {
+        if (tensor.size() != domain_size) {
+            if (error) *error = "ZkSumcheck tensor/domain mismatch";
+            return false;
+        }
+        for (const auto& value : tensor)
+            if (!zkdl::fr_canonical(value)) {
+                if (error) *error = "ZkSumcheck tensor value is not canonical";
+                return false;
+            }
+    }
+    return true;
+}
+
+inline bool prove_zk_sumcheck(
+    const ConstraintDescriptor& descriptor,
+    const std::vector<std::vector<FrWire>>& tensor_values,
+    std::uint32_t degree, std::uint32_t domain_size,
+    const std::vector<zkdl::CpuG1Point>& generators,
+    const zkdl::CpuG1Point& blinding_generator, const zkdl::CpuG1Point& u_generator,
+    const FrWire& initial_claim, const RelationStatement& statement,
+    const std::string& operation_context, zkdl::Transcript& parent_transcript,
+    ZkSumcheckProverResult& result, std::string* error = nullptr) {
+    try {
+        if (!zksc_validate_inputs(descriptor, tensor_values, degree, domain_size,
+                                  generators, blinding_generator, u_generator,
+                                  initial_claim, statement, operation_context, error)) return false;
+        const std::uint32_t bits = log2_exact(domain_size);
+        if (bits == std::numeric_limits<std::uint32_t>::max() ||
+            bits == 0U || bits > zkdl::ZkSumcheckProof::kMaxRounds) {
+            if (error) *error = "ZkSumcheck domain has no supported round decomposition";
+            return false;
+        }
+        result = ZkSumcheckProverResult{};
+        auto& proof = result.proof;
+        proof.label = operation_context;
+        proof.degree = degree;
+        proof.domain_size = domain_size;
+        proof.descriptor_digest = zksc_proof_descriptor_digest(
+            descriptor, statement, operation_context);
+        proof.registry_digest = statement.registry_digest;
+        proof.srs_digest = statement.srs_digest;
+        const std::vector<zkdl::CpuG1Point> round_generators(
+            generators.begin(), generators.begin() + degree + 1U);
+        proof.basis_digest = zkdl::cpu_ipa_basis_digest(
+            round_generators, blinding_generator, u_generator, degree + 1U);
+        proof.blinding_generator = zkdl::cpu_g1_to_native(blinding_generator);
+        proof.u_generator = zkdl::cpu_g1_to_native(u_generator);
+        proof.initial_claim_context = zksc_make_scalar_context(
+            descriptor, statement, operation_context, "initial-public-claim", 0U,
+            zksc_endpoint_index(0U), zkdl::PedersenProofContext::kUnsetIndex,
+            zkdl::PedersenProofContext::kOperationScalarValue,
+            blinding_generator, u_generator);
+        proof.initial_claim_context.descriptor_digest = proof.descriptor_digest;
+        proof.initial_claim_context.registry_digest = proof.registry_digest;
+        proof.initial_claim_context.srs_digest = proof.srs_digest;
+
+        zksc_absorb_header(parent_transcript, proof);
+        std::vector<std::vector<FrWire>> current = tensor_values;
+        FrWire previous_value = initial_claim;
+        FrWire previous_blinder{};
+        for (std::uint32_t round_index = 0U; round_index < bits; ++round_index) {
+            if (current.empty() || current.front().size() < 2U ||
+                (current.front().size() & 1U) != 0U) {
+                if (error) *error = "ZkSumcheck current tensor domain cannot be folded";
+                return false;
+            }
+            std::vector<FrWire> evaluations(degree + 1U, FrWire{});
+            const std::size_t next_size = current.front().size() / 2U;
+            for (std::uint32_t evaluation = 0U; evaluation <= degree; ++evaluation) {
+                const FrWire x = zkdl::fr_from_u32(evaluation);
+                for (std::size_t row = 0U; row < next_size; ++row) {
+                    std::vector<FrWire> values;
+                    values.reserve(current.size());
+                    for (const auto& tensor : current)
+                        values.push_back(zkdl::fr_add(
+                            tensor[2U * row],
+                            zkdl::fr_mul(x, zkdl::fr_sub(
+                                tensor[2U * row + 1U], tensor[2U * row]))));
+                    evaluations[evaluation] = zkdl::fr_add(
+                        evaluations[evaluation], eval_constraint(descriptor, values));
+                }
+            }
+            std::vector<FrWire> coefficients;
+            if (!zksc_interpolate_coefficients(evaluations, coefficients, error)) return false;
+            const FrWire endpoint_value = zksc_eval_coefficients(
+                coefficients, zkdl::fr_from_u32(0U));
+            const FrWire endpoint_at_one = zksc_eval_coefficients(
+                coefficients, zkdl::fr_from_u32(1U));
+            const FrWire endpoint = zkdl::fr_add(endpoint_value, endpoint_at_one);
+            const FrWire r_c = zkdl::cpu_fresh_csprng_scalar();
+            const FrWire r_e = zkdl::cpu_fresh_csprng_scalar();
+            const zkdl::CpuG1Point coefficient_point = zkdl::cpu_g1_add(
+                zkdl::cpu_g1_sum(round_generators, coefficients),
+                zkdl::cpu_g1_mul(blinding_generator, r_c));
+            const zkdl::CpuG1Point endpoint_commitment = zkdl::cpu_pedersen_scalar_commit(
+                endpoint, r_e, blinding_generator, u_generator);
+            const std::array<byte, 32U> endpoint_digest = zksc_vector_role_digest(
+                descriptor, statement, operation_context, "endpoint", round_index,
+                zksc_endpoint_index(round_index));
+            const auto endpoint_context = zksc_make_context(
+                zkdl::PedersenProofContext::kOperationVectorLinear, degree, degree + 1U,
+                zksc_round_commitment_index(round_index), zksc_endpoint_index(round_index),
+                proof.basis_digest, endpoint_digest, statement);
+            std::vector<FrWire> endpoint_weights(degree + 1U, zkdl::fr_from_u32(1U));
+            endpoint_weights[0] = zkdl::fr_from_u32(2U);
+            auto endpoint_linear = zkdl::cpu_open_pedersen_vector_linear(
+                round_generators, coefficients, r_c, endpoint_weights, r_e,
+                coefficient_point, endpoint_commitment, blinding_generator,
+                u_generator, endpoint_context);
+
+            zkdl::ZkSumcheckRoundProof round;
+            round.round_index = round_index;
+            round.coefficient_commitment = zkdl::cpu_g1_to_native(coefficient_point);
+            round.endpoint_commitment = zkdl::cpu_g1_to_native(endpoint_commitment);
+            round.endpoint_linear = endpoint_linear.proof;
+            if (round_index == 0U) {
+                round.link_kind = zkdl::ZkSumcheckLinkKind::InitialPublicClaim;
+                const auto initial_context = zksc_make_scalar_context(
+                    descriptor, statement, operation_context, "initial-public-claim", 0U,
+                    zksc_endpoint_index(0U), zkdl::PedersenProofContext::kUnsetIndex,
+                    zkdl::PedersenProofContext::kOperationScalarValue,
+                    blinding_generator, u_generator);
+                round.initial_claim_binding = zkdl::cpu_open_pedersen_scalar_value_public(
+                    initial_claim, r_e, endpoint_commitment, blinding_generator,
+                    u_generator, initial_context).proof;
+            } else {
+                round.link_kind = zkdl::ZkSumcheckLinkKind::PreviousEvaluation;
+                const auto previous_context = zksc_make_scalar_context(
+                    descriptor, statement, operation_context, "previous-evaluation",
+                    round_index, zksc_endpoint_index(round_index),
+                    zksc_evaluation_index(round_index - 1U),
+                    zkdl::PedersenProofContext::kOperationScalarEquality,
+                    blinding_generator, u_generator);
+                round.previous_claim_binding = zkdl::cpu_open_pedersen_scalar_equality(
+                    previous_value, r_e, previous_blinder, endpoint_commitment,
+                    zkdl::cpu_g1_from_native(proof.rounds.back().evaluation_commitment),
+                    blinding_generator, u_generator, previous_context).proof;
+            }
+            parent_transcript.absorb(
+                "gat.zksumcheck." + operation_context + ".round.pre",
+                zksc_round_pre_bytes(round));
+            const Fr_t challenge = parent_transcript.challenge(
+                "gat.zksumcheck." + operation_context + ".round." +
+                std::to_string(round_index) + ".challenge");
+            const FrWire challenge_wire = zkdl::fr_wire(challenge);
+            std::vector<FrWire> query_weights(degree + 1U, zkdl::fr_from_u32(1U));
+            for (std::uint32_t power = 1U; power <= degree; ++power)
+                query_weights[power] = zkdl::fr_mul(query_weights[power - 1U], challenge_wire);
+            const FrWire query_value = zksc_eval_coefficients(coefficients, challenge_wire);
+            const FrWire r_q = zkdl::cpu_fresh_csprng_scalar();
+            const zkdl::CpuG1Point query_commitment = zkdl::cpu_pedersen_scalar_commit(
+                query_value, r_q, blinding_generator, u_generator);
+            const auto query_context = zksc_make_vector_context(
+                descriptor, statement, operation_context, "evaluation", round_index,
+                zksc_evaluation_index(round_index), proof.basis_digest, degree);
+            auto query_linear = zkdl::cpu_open_pedersen_vector_linear(
+                round_generators, coefficients, r_c, query_weights, r_q,
+                coefficient_point, query_commitment, blinding_generator,
+                u_generator, query_context);
+            round.evaluation_commitment = zkdl::cpu_g1_to_native(query_commitment);
+            round.evaluation_linear = query_linear.proof;
+            parent_transcript.absorb(
+                "gat.zksumcheck." + operation_context + ".round.query",
+                zksc_round_query_bytes(round));
+            proof.rounds.push_back(round);
+            previous_value = query_value;
+            previous_blinder = r_q;
+            for (auto& tensor : current) fold_values(tensor, challenge_wire);
+            result.challenges.push_back(challenge);
+        }
+        proof.final_claim_commitment = proof.rounds.back().evaluation_commitment;
+        result.folded_terminal_values.reserve(current.size());
+        for (const auto& tensor : current) result.folded_terminal_values.push_back(tensor.front());
+        result.final_q_blinder = previous_blinder;
+        std::vector<byte> final_bytes;
+        zkdl::append_g1(final_bytes, proof.final_claim_commitment);
+        parent_transcript.absorb("gat.zksumcheck." + operation_context + ".final", final_bytes);
+        std::string shape_error;
+        if (!zkdl::zk_sumcheck_shape_valid(proof, &shape_error)) {
+            if (error) *error = shape_error.empty() ? "invalid generated ZkSumcheck proof" : shape_error;
+            return false;
+        }
+        return true;
+    } catch (const std::exception& exception) {
+        if (error) *error = exception.what();
+        return false;
+    }
+}
+
+inline bool verify_zk_sumcheck(
+    const zkdl::ZkSumcheckProof& proof, const ConstraintDescriptor& descriptor,
+    std::uint32_t degree, std::uint32_t domain_size,
+    const std::vector<zkdl::CpuG1Point>& generators,
+    const zkdl::CpuG1Point& blinding_generator, const zkdl::CpuG1Point& u_generator,
+    const FrWire& initial_claim, const RelationStatement& statement,
+    const std::string& operation_context, zkdl::Transcript& parent_transcript,
+    ZkSumcheckVerifierResult& result, std::string* error = nullptr) {
+    try {
+        if (!descriptor.valid(error) || proof.label != operation_context ||
+            proof.degree != degree || proof.domain_size != domain_size ||
+            !zkdl::zk_sumcheck_shape_valid(proof, error) ||
+            !zksc_statement_resources_valid(statement, error) ||
+            !zkdl::fr_canonical(initial_claim) || generators.size() < degree + 1U) {
+            if (error && error->empty()) *error = "invalid ZkSumcheck verifier inputs";
+            return false;
+        }
+        const auto strict_external = [&](const G1Jacobian_t& wire,
+                                         const zkdl::CpuG1Point& expected,
+                                         const char* label) {
+            std::array<byte, 48U> encoded{};
+            std::string point_error;
+            if (!zkdl_g1_wire::encode(wire, encoded, &point_error) ||
+                !zkdl::cpu_g1_equal(zkdl::cpu_g1_from_native(wire), expected)) {
+                if (error) *error = std::string("ZkSumcheck ") + label + " basis mismatch";
+                return false;
+            }
+            return true;
+        };
+        if (!strict_external(proof.blinding_generator, blinding_generator, "H") ||
+            !strict_external(proof.u_generator, u_generator, "U")) return false;
+        const std::vector<zkdl::CpuG1Point> round_generators(
+            generators.begin(), generators.begin() + degree + 1U);
+        if (!zkdl::cpu_pedersen_basis_valid(round_generators, blinding_generator,
+                                            u_generator, degree + 1U, error) ||
+            proof.basis_digest != zkdl::cpu_ipa_basis_digest(
+                round_generators, blinding_generator, u_generator, degree + 1U) ||
+            proof.descriptor_digest != zksc_proof_descriptor_digest(
+                descriptor, statement, operation_context) ||
+            proof.registry_digest != statement.registry_digest ||
+            proof.srs_digest != statement.srs_digest) {
+            if (error && error->empty()) *error = "ZkSumcheck descriptor/resource basis mismatch";
+            return false;
+        }
+        const auto expected_initial_context = zksc_make_scalar_context(
+            descriptor, statement, operation_context, "initial-public-claim", 0U,
+            zksc_endpoint_index(0U), zkdl::PedersenProofContext::kUnsetIndex,
+            zkdl::PedersenProofContext::kOperationScalarValue,
+            blinding_generator, u_generator);
+        if (!zkdl::cpu_pedersen_context_equal(
+                proof.initial_claim_context, expected_initial_context)) {
+            if (error) *error = "ZkSumcheck initial claim context mismatch";
+            return false;
+        }
+        result = ZkSumcheckVerifierResult{};
+        zksc_absorb_header(parent_transcript, proof);
+        for (std::size_t round_index = 0U; round_index < proof.rounds.size(); ++round_index) {
+            const auto& round = proof.rounds[round_index];
+            const auto endpoint_context = zksc_make_context(
+                zkdl::PedersenProofContext::kOperationVectorLinear, degree, degree + 1U,
+                zksc_round_commitment_index(static_cast<std::uint32_t>(round_index)),
+                zksc_endpoint_index(static_cast<std::uint32_t>(round_index)),
+                proof.basis_digest,
+                zksc_vector_role_digest(descriptor, statement, operation_context,
+                                        "endpoint", static_cast<std::uint32_t>(round_index),
+                                        zksc_endpoint_index(static_cast<std::uint32_t>(round_index))),
+                statement);
+            std::vector<FrWire> endpoint_weights(degree + 1U, zkdl::fr_from_u32(1U));
+            endpoint_weights[0] = zkdl::fr_from_u32(2U);
+            if (!zkdl::cpu_verify_pedersen_vector_linear(
+                    round.endpoint_linear,
+                    zkdl::cpu_g1_from_native(round.coefficient_commitment),
+                    zkdl::cpu_g1_from_native(round.endpoint_commitment), round_generators,
+                    endpoint_weights, blinding_generator, u_generator, endpoint_context,
+                    error)) return false;
+            if (round_index == 0U) {
+                const auto initial_context = zksc_make_scalar_context(
+                    descriptor, statement, operation_context, "initial-public-claim", 0U,
+                    zksc_endpoint_index(0U), zkdl::PedersenProofContext::kUnsetIndex,
+                    zkdl::PedersenProofContext::kOperationScalarValue,
+                    blinding_generator, u_generator);
+                if (!zkdl::cpu_verify_pedersen_scalar_value(
+                        round.initial_claim_binding, initial_claim,
+                        zkdl::cpu_g1_from_native(round.endpoint_commitment),
+                        blinding_generator, u_generator, initial_context, error)) return false;
+            } else {
+                const auto previous_context = zksc_make_scalar_context(
+                    descriptor, statement, operation_context, "previous-evaluation",
+                    static_cast<std::uint32_t>(round_index),
+                    zksc_endpoint_index(static_cast<std::uint32_t>(round_index)),
+                    zksc_evaluation_index(static_cast<std::uint32_t>(round_index - 1U)),
+                    zkdl::PedersenProofContext::kOperationScalarEquality,
+                    blinding_generator, u_generator);
+                if (!zkdl::cpu_verify_pedersen_scalar_equality(
+                        round.previous_claim_binding,
+                        zkdl::cpu_g1_from_native(round.endpoint_commitment),
+                        zkdl::cpu_g1_from_native(
+                            proof.rounds[round_index - 1U].evaluation_commitment),
+                        blinding_generator, u_generator, previous_context, error)) return false;
+            }
+            parent_transcript.absorb(
+                "gat.zksumcheck." + operation_context + ".round.pre",
+                zksc_round_pre_bytes(round));
+            const Fr_t challenge = parent_transcript.challenge(
+                "gat.zksumcheck." + operation_context + ".round." +
+                std::to_string(round_index) + ".challenge");
+            const FrWire challenge_wire = zkdl::fr_wire(challenge);
+            std::vector<FrWire> query_weights(degree + 1U, zkdl::fr_from_u32(1U));
+            for (std::uint32_t power = 1U; power <= degree; ++power)
+                query_weights[power] = zkdl::fr_mul(query_weights[power - 1U], challenge_wire);
+            const auto query_context = zksc_make_vector_context(
+                descriptor, statement, operation_context, "evaluation",
+                static_cast<std::uint32_t>(round_index),
+                zksc_evaluation_index(static_cast<std::uint32_t>(round_index)),
+                proof.basis_digest, degree);
+            if (!zkdl::cpu_verify_pedersen_vector_linear(
+                    round.evaluation_linear,
+                    zkdl::cpu_g1_from_native(round.coefficient_commitment),
+                    zkdl::cpu_g1_from_native(round.evaluation_commitment), round_generators,
+                    query_weights, blinding_generator, u_generator, query_context,
+                    error)) return false;
+            parent_transcript.absorb(
+                "gat.zksumcheck." + operation_context + ".round.query",
+                zksc_round_query_bytes(round));
+            result.challenges.push_back(challenge);
+        }
+        result.final_claim_commitment = proof.final_claim_commitment;
+        std::vector<byte> final_bytes;
+        zkdl::append_g1(final_bytes, proof.final_claim_commitment);
+        parent_transcript.absorb("gat.zksumcheck." + operation_context + ".final", final_bytes);
+        return true;
+    } catch (const std::exception& exception) {
+        if (error) *error = exception.what();
+        return false;
+    }
+}
+
+/*
+ * Hidden terminal relation proof.
+ *
+ * This seam is intentionally independent from ConstraintProof.  It commits
+ * each descriptor tensor's MLE evaluation as T_i, opens the canonical tensor
+ * commitment with Hyrax v4, and reduces every higher-degree monomial through
+ * the deterministic Pedersen product DAG.  No terminal value or blinder is
+ * serialized; the returned prover result keeps those scalars local for the
+ * caller that owns the canonical witness.
+ */
+struct ZkTerminalRelationProverResult {
+    zkdl::ZkTerminalRelationProof proof;
+    std::vector<FrWire> terminal_values;
+    std::vector<FrWire> terminal_blinders;
+    std::vector<FrWire> product_blinders;
+    FrWire residual_blinder{};
+};
+
+struct ZkTerminalRelationVerifierResult {
+    zkdl::CpuG1Point residual_commitment;
+    std::vector<zkdl::CpuG1Point> terminal_commitments;
+};
+
+struct ZkTerminalProductPlan {
+    std::uint32_t monomial_index = 0U;
+    std::uint32_t factor_step = 0U;
+    std::uint32_t left_commitment_index = 0U;
+    std::uint32_t right_commitment_index = 0U;
+    std::uint32_t output_commitment_index = 0U;
+};
+
+constexpr std::uint32_t kZkTerminalEvaluationIndexBase = 0x40000000U;
+constexpr std::uint32_t kZkTerminalProductIndexBase = 0x80000000U;
+constexpr std::uint32_t kZkTerminalResidualIndex = 0xF0000000U;
+constexpr std::uint32_t kZkTerminalExternalIndex = 0xF0000001U;
+
+inline std::uint32_t zktr_terminal_evaluation_index(std::size_t tensor_index) {
+    if (tensor_index >= 0x40000000U)
+        throw std::invalid_argument("terminal evaluation commitment index overflow");
+    return kZkTerminalEvaluationIndexBase + static_cast<std::uint32_t>(tensor_index);
+}
+
+inline std::uint32_t zktr_product_index(std::size_t node_index) {
+    if (node_index >= 0x70000000U)
+        throw std::invalid_argument("terminal product commitment index overflow");
+    return kZkTerminalProductIndexBase + static_cast<std::uint32_t>(node_index);
+}
+
+inline bool zktr_all_statement_digests_valid(const RelationStatement& statement,
+                                             std::string* error = nullptr) {
+    const std::array<byte, 32U> zero{{}};
+    if (statement.statement_digest == zero || statement.model_digest == zero ||
+        statement.table_digest == zero || statement.ledger_digest == zero ||
+        statement.registry_digest == zero || statement.srs_digest == zero) {
+        if (error) *error = "terminal relation requires authenticated statement resources";
+        return false;
+    }
+    return true;
+}
+
+inline bool zktr_validate_common_inputs(
+    const ConstraintDescriptor& descriptor,
+    const std::vector<std::vector<FrWire>>& tensor_values,
+    const std::vector<zkdl::CpuG1Point>& canonical_commitments,
+    const std::vector<FrWire>& tensor_blinders,
+    const std::vector<std::uint32_t>& commitment_indices,
+    const std::vector<FrWire>& evaluation_point,
+    const std::vector<zkdl::CpuG1Point>& generators,
+    const zkdl::CpuG1Point& blinding_generator,
+    const zkdl::CpuG1Point& u_generator,
+    const RelationStatement& statement,
+    const std::string& operation_context,
+    std::string* error = nullptr) {
+    if (!descriptor.valid(error) || tensor_values.empty() ||
+        tensor_values.size() != canonical_commitments.size() ||
+        tensor_values.size() != tensor_blinders.size() ||
+        tensor_values.size() != commitment_indices.size() ||
+        tensor_values.size() > zkdl::ZkTerminalRelationProof::kMaxTerminalCommitments ||
+        evaluation_point.size() >= 19U || evaluation_point.empty() ||
+        operation_context.empty() || !zktr_all_statement_digests_valid(statement, error)) {
+        if (error && error->empty()) *error = "invalid terminal relation inputs";
+        return false;
+    }
+    const std::uint64_t domain64 = std::uint64_t(1U) << evaluation_point.size();
+    if (domain64 > (1U << 18U) || generators.size() != domain64 ||
+        !zkdl::cpu_pedersen_basis_valid(generators, blinding_generator, u_generator,
+                                        static_cast<std::uint32_t>(domain64), error))
+        return false;
+    std::set<std::uint32_t> seen_indices;
+    for (std::size_t index = 0U; index < tensor_values.size(); ++index) {
+        if (commitment_indices[index] >= kZkTerminalEvaluationIndexBase ||
+            !seen_indices.insert(commitment_indices[index]).second ||
+            tensor_values[index].size() != domain64 ||
+            !zkdl::fr_canonical(tensor_blinders[index]) ||
+            zkdl::fr_compare(tensor_blinders[index], FrWire{}) == 0 ||
+            !zkdl::cpu_pedersen_strict_g1(canonical_commitments[index], error)) {
+            if (error && error->empty()) *error = "invalid canonical terminal tensor input";
+            return false;
+        }
+        for (const auto& value : tensor_values[index])
+            if (!zkdl::fr_canonical(value)) {
+                if (error) *error = "terminal tensor value is not canonical";
+                return false;
+            }
+    }
+    for (const auto& coordinate : evaluation_point)
+        if (!zkdl::fr_canonical(coordinate)) {
+            if (error) *error = "terminal evaluation point is not canonical";
+            return false;
+        }
+    for (const auto& term : descriptor.terms)
+        for (const auto ref : term.refs)
+            if (ref >= tensor_values.size()) {
+                if (error) *error = "terminal monomial references an unknown tensor";
+                return false;
+            }
+    return true;
+}
+
+inline bool zktr_validate_public_inputs(
+    const ConstraintDescriptor& descriptor, std::size_t tensor_count,
+    const std::vector<zkdl::CpuG1Point>& canonical_commitments,
+    const std::vector<std::uint32_t>& commitment_indices,
+    const std::vector<FrWire>& evaluation_point,
+    const std::vector<zkdl::CpuG1Point>& generators,
+    const zkdl::CpuG1Point& blinding_generator,
+    const zkdl::CpuG1Point& u_generator,
+    const RelationStatement& statement, const std::string& operation_context,
+    std::string* error = nullptr) {
+    if (!descriptor.valid(error) || tensor_count == 0U ||
+        tensor_count != canonical_commitments.size() ||
+        tensor_count != commitment_indices.size() ||
+        tensor_count > zkdl::ZkTerminalRelationProof::kMaxTerminalCommitments ||
+        evaluation_point.size() >= 19U || evaluation_point.empty() ||
+        operation_context.empty() || !zktr_all_statement_digests_valid(statement, error)) {
+        if (error && error->empty()) *error = "invalid terminal relation verifier inputs";
+        return false;
+    }
+    const std::uint64_t domain64 = std::uint64_t(1U) << evaluation_point.size();
+    if (domain64 > (1U << 18U) || generators.size() != domain64 ||
+        !zkdl::cpu_pedersen_basis_valid(generators, blinding_generator, u_generator,
+                                        static_cast<std::uint32_t>(domain64), error))
+        return false;
+    std::set<std::uint32_t> seen_indices;
+    for (std::size_t index = 0U; index < tensor_count; ++index)
+        if (commitment_indices[index] >= kZkTerminalEvaluationIndexBase ||
+            !seen_indices.insert(commitment_indices[index]).second ||
+            !zkdl::cpu_pedersen_strict_g1(canonical_commitments[index], error)) {
+            if (error && error->empty()) *error = "invalid canonical terminal commitment map";
+            return false;
+        }
+    for (const auto& coordinate : evaluation_point)
+        if (!zkdl::fr_canonical(coordinate)) {
+            if (error) *error = "terminal evaluation point is not canonical";
+            return false;
+        }
+    for (const auto& term : descriptor.terms)
+        for (const auto ref : term.refs)
+            if (ref >= tensor_count) {
+                if (error) *error = "terminal monomial references an unknown tensor";
+                return false;
+            }
+    return true;
+}
+
+inline bool zktr_build_product_plan(
+    const ConstraintDescriptor& descriptor, std::size_t tensor_count,
+    const std::vector<std::uint32_t>& commitment_indices,
+    std::vector<ZkTerminalProductPlan>& plans,
+    std::vector<std::uint32_t>& monomial_commitment_indices,
+    std::string* error = nullptr) {
+    if (commitment_indices.size() != tensor_count) {
+        if (error) *error = "terminal product plan tensor/index shape mismatch";
+        return false;
+    }
+    plans.clear();
+    monomial_commitment_indices.clear();
+    monomial_commitment_indices.reserve(descriptor.terms.size());
+    for (std::size_t monomial = 0U; monomial < descriptor.terms.size(); ++monomial) {
+        const auto& refs = descriptor.terms[monomial].refs;
+        if (refs.empty()) {
+            if (error) *error = "terminal product plan contains an empty monomial";
+            return false;
+        }
+        for (const auto ref : refs)
+            if (ref >= tensor_count) {
+                if (error) *error = "terminal product plan reference is out of bounds";
+                return false;
+            }
+        if (refs.size() == 1U) {
+            monomial_commitment_indices.push_back(
+                zktr_terminal_evaluation_index(refs.front()));
+            continue;
+        }
+        std::uint32_t left = zktr_terminal_evaluation_index(refs[0U]);
+        for (std::size_t factor = 1U; factor < refs.size(); ++factor) {
+            const std::size_t node_index = plans.size();
+            if (node_index >= zkdl::ZkTerminalRelationProof::kMaxProductNodes) {
+                if (error) *error = "terminal product DAG exceeds its bounded node cap";
+                return false;
+            }
+            const std::uint32_t right = zktr_terminal_evaluation_index(refs[factor]);
+            const std::uint32_t output = zktr_product_index(node_index);
+            plans.push_back(ZkTerminalProductPlan{
+                static_cast<std::uint32_t>(monomial), static_cast<std::uint32_t>(factor),
+                left, right, output});
+            left = output;
+        }
+        monomial_commitment_indices.push_back(left);
+    }
+    return true;
+}
+
+inline zkdl::PedersenProofContext zktr_make_link_context(
+    const ConstraintDescriptor& descriptor, const RelationStatement& statement,
+    const std::string& operation_context,
+    zkdl::ZkTerminalClaimLinkKind link_kind,
+    const std::array<byte, 32U>& descriptor_digest) {
+    const std::uint32_t operation =
+        link_kind == zkdl::ZkTerminalClaimLinkKind::ExternalEquality
+            ? zkdl::PedersenProofContext::kOperationScalarEquality
+            : zkdl::PedersenProofContext::kOperationScalarValue;
+    const std::uint32_t related =
+        link_kind == zkdl::ZkTerminalClaimLinkKind::ExternalEquality
+            ? kZkTerminalExternalIndex
+            : zkdl::PedersenProofContext::kUnsetIndex;
+    const auto basis_digest = zkdl::cpu_ipa_basis_digest(
+        {}, zkdl::CpuG1Point::zero(), zkdl::CpuG1Point::zero(), 0U);
+    // The basis is replaced by the caller after construction; this helper is
+    // kept parameter-free only for role/index derivation.
+    return zksc_make_context(
+        operation, 1U, 0U, kZkTerminalResidualIndex, related, basis_digest,
+        descriptor_digest, statement);
+}
+
+inline zkdl::PedersenProofContext zktr_make_link_context(
+    const ConstraintDescriptor& descriptor, const RelationStatement& statement,
+    const std::string& operation_context,
+    zkdl::ZkTerminalClaimLinkKind link_kind,
+    const std::array<byte, 32U>& descriptor_digest,
+    const zkdl::CpuG1Point& blinding_generator,
+    const zkdl::CpuG1Point& u_generator) {
+    (void)descriptor;
+    (void)operation_context;
+    auto context = zktr_make_link_context(
+        descriptor, statement, operation_context, link_kind, descriptor_digest);
+    context.basis_digest = zkdl::cpu_ipa_basis_digest(
+        {}, blinding_generator, u_generator, 0U);
+    return context;
+}
+
+inline zkdl::PedersenProofContext zktr_make_product_context(
+    const RelationStatement& statement, const std::array<byte, 32U>& descriptor_digest,
+    const zkdl::CpuG1Point& blinding_generator, const zkdl::CpuG1Point& u_generator,
+    std::uint32_t left, std::uint32_t right, std::uint32_t output) {
+    auto context = zksc_make_context(
+        zkdl::PedersenProofContext::kOperationProduct, 2U, 0U, left, right,
+        zkdl::cpu_ipa_basis_digest({}, blinding_generator, u_generator, 0U),
+        descriptor_digest, statement);
+    context.commitment_c_index = output;
+    return context;
+}
+
+inline zkdl::CpuIpaOpeningMetadata zktr_make_opening_metadata(
+    const std::array<byte, 32U>& descriptor_digest,
+    const RelationStatement& statement, const std::vector<FrWire>& point,
+    std::uint32_t commitment_index, std::uint32_t evaluation_commitment_index) {
+    zkdl::CpuIpaOpeningMetadata metadata;
+    metadata.commitment_index = commitment_index;
+    metadata.evaluation_commitment_index = evaluation_commitment_index;
+    metadata.outer_point = point;
+    metadata.descriptor_digest = descriptor_digest;
+    metadata.registry_digest = statement.registry_digest;
+    metadata.srs_digest = statement.srs_digest;
+    return metadata;
+}
+
+inline void zktr_absorb_header(
+    zkdl::Transcript& transcript, const zkdl::ZkTerminalRelationProof& proof,
+    const ConstraintDescriptor& descriptor, const RelationStatement& statement,
+    const std::string& operation_context, const std::vector<FrWire>& point,
+    const std::vector<std::uint32_t>& commitment_indices,
+    const std::vector<zkdl::CpuG1Point>& canonical_commitments,
+    const zkdl::CpuG1Point& blinding_generator, const zkdl::CpuG1Point& u_generator,
+    zkdl::ZkTerminalClaimLinkKind link_kind,
+    const zkdl::CpuG1Point& external_claim_commitment,
+    const FrWire& expected_public_value) {
+    std::vector<byte> encoded;
+    zkdl::append_u32(encoded, proof.version);
+    zkdl::append_string(encoded, operation_context);
+    append_constraint(encoded, descriptor);
+    zkdl::append_pedersen_context(encoded, proof.context);
+    append_digest(encoded, statement.statement_digest);
+    append_digest(encoded, statement.model_digest);
+    append_digest(encoded, statement.table_digest);
+    append_digest(encoded, statement.ledger_digest);
+    append_digest(encoded, statement.registry_digest);
+    append_digest(encoded, statement.srs_digest);
+    zkdl::append_u64(encoded, static_cast<std::uint64_t>(point.size()));
+    for (const auto& coordinate : point) zkdl::append_fr(encoded, zkdl::fr_value(coordinate));
+    zkdl::append_u64(encoded, static_cast<std::uint64_t>(commitment_indices.size()));
+    for (std::size_t index = 0U; index < commitment_indices.size(); ++index) {
+        zkdl::append_u32(encoded, commitment_indices[index]);
+        zkdl::append_g1(encoded, zkdl::cpu_g1_to_native(canonical_commitments[index]));
+    }
+    zkdl::append_g1(encoded, zkdl::cpu_g1_to_native(blinding_generator));
+    zkdl::append_g1(encoded, zkdl::cpu_g1_to_native(u_generator));
+    zkdl::append_u32(encoded, static_cast<std::uint32_t>(link_kind));
+    zkdl::append_g1(encoded, zkdl::cpu_g1_to_native(external_claim_commitment));
+    zkdl::append_fr(encoded, zkdl::fr_value(expected_public_value));
+    zkdl::append_u64(encoded, static_cast<std::uint64_t>(proof.terminal_commitments.size()));
+    for (const auto& commitment : proof.terminal_commitments)
+        zkdl::append_g1(encoded, commitment);
+    transcript.absorb("gat.zkterminal.header", encoded);
+}
+
+inline void zktr_absorb_components(
+    zkdl::Transcript& transcript, const zkdl::ZkTerminalRelationProof& proof,
+    const std::string& operation_context) {
+    for (std::size_t index = 0U; index < proof.terminal_openings.size(); ++index) {
+        std::vector<byte> encoded;
+        zkdl::serialize_hyrax_opening_v3(proof.terminal_openings[index], encoded);
+        transcript.absorb("gat.zkterminal." + operation_context + ".opening." +
+                          std::to_string(index), encoded);
+    }
+    for (std::size_t index = 0U; index < proof.product_nodes.size(); ++index) {
+        std::vector<byte> encoded;
+        zkdl::serialize_zk_product_node(proof.product_nodes[index], encoded);
+        transcript.absorb("gat.zkterminal." + operation_context + ".product." +
+                          std::to_string(index), encoded);
+    }
+    std::vector<byte> link;
+    if (proof.claim_link_kind == zkdl::ZkTerminalClaimLinkKind::ExternalEquality)
+        zkdl::serialize_pedersen_scalar_equality(proof.external_equality_binding, link);
+    else
+        zkdl::serialize_pedersen_scalar_value(proof.public_value_binding, link);
+    transcript.absorb("gat.zkterminal." + operation_context + ".link", link);
+}
+
+inline bool zktr_link_kind_valid(zkdl::ZkTerminalClaimLinkKind link_kind) {
+    return link_kind == zkdl::ZkTerminalClaimLinkKind::ExternalEquality ||
+           link_kind == zkdl::ZkTerminalClaimLinkKind::PublicValue;
+}
+
+inline bool prove_zk_terminal_relation(
+    const ConstraintDescriptor& descriptor,
+    const std::vector<std::vector<FrWire>>& tensor_values,
+    const std::vector<zkdl::CpuG1Point>& canonical_commitments,
+    const std::vector<FrWire>& tensor_blinders,
+    const std::vector<std::uint32_t>& commitment_indices,
+    const std::vector<FrWire>& evaluation_point,
+    const std::vector<zkdl::CpuG1Point>& generators,
+    const zkdl::CpuG1Point& blinding_generator,
+    const zkdl::CpuG1Point& u_generator,
+    const RelationStatement& statement,
+    zkdl::ZkTerminalClaimLinkKind link_kind,
+    const zkdl::CpuG1Point& external_claim_commitment,
+    const FrWire& external_claim_blinder,
+    const FrWire& expected_public_value,
+    const std::string& operation_context,
+    zkdl::Transcript& parent_transcript,
+    ZkTerminalRelationProverResult& result,
+    std::string* error = nullptr) {
+    try {
+        if (!zktr_link_kind_valid(link_kind) ||
+            !zktr_validate_common_inputs(
+                descriptor, tensor_values, canonical_commitments, tensor_blinders,
+                commitment_indices, evaluation_point, generators, blinding_generator,
+                u_generator, statement, operation_context, error) ||
+            !zkdl::fr_canonical(expected_public_value)) {
+            if (error && error->empty()) *error = "invalid terminal relation prover inputs";
+            return false;
+        }
+        if (link_kind == zkdl::ZkTerminalClaimLinkKind::ExternalEquality) {
+            if (!zkdl::fr_canonical(external_claim_blinder) ||
+                zkdl::fr_compare(external_claim_blinder, FrWire{}) == 0 ||
+                !zkdl::cpu_pedersen_strict_g1(external_claim_commitment, error)) {
+                if (error && error->empty()) *error = "invalid external terminal claim";
+                return false;
+            }
+        } else if (!external_claim_commitment.is_zero() ||
+                   zkdl::fr_compare(external_claim_blinder, FrWire{}) != 0) {
+            if (error) *error = "public terminal link carries an external claim witness";
+            return false;
+        }
+
+        std::vector<ZkTerminalProductPlan> plans;
+        std::vector<std::uint32_t> monomial_indices;
+        if (!zktr_build_product_plan(descriptor, tensor_values.size(), commitment_indices,
+                                     plans, monomial_indices, error)) return false;
+
+        result = ZkTerminalRelationProverResult{};
+        auto& proof = result.proof;
+        proof.claim_link_kind = link_kind;
+        proof.context = zktr_make_link_context(
+            descriptor, statement, operation_context, link_kind,
+            zksc_proof_descriptor_digest(descriptor, statement, operation_context),
+            blinding_generator, u_generator);
+        const std::array<byte, 32U> descriptor_digest = proof.context.descriptor_digest;
+        const std::vector<FrWire> weights = zkdl::cpu_ipa_mle_weights(evaluation_point);
+        result.terminal_values.reserve(tensor_values.size());
+        result.terminal_blinders.reserve(tensor_values.size());
+        proof.terminal_commitments.reserve(tensor_values.size());
+        proof.terminal_openings.reserve(tensor_values.size());
+
+        struct ScalarState {
+            FrWire value{};
+            FrWire blinder{};
+            zkdl::CpuG1Point commitment;
+        };
+        std::map<std::uint32_t, ScalarState> states;
+        for (std::size_t tensor_index = 0U; tensor_index < tensor_values.size(); ++tensor_index) {
+            const FrWire value = zkdl::cpu_ipa_inner_product(tensor_values[tensor_index], weights);
+            const FrWire tau_blinder = zkdl::cpu_fresh_csprng_scalar();
+            const zkdl::CpuG1Point terminal_commitment = zkdl::cpu_pedersen_scalar_commit(
+                value, tau_blinder, blinding_generator, u_generator);
+            if (!zkdl::cpu_pedersen_strict_g1(terminal_commitment, error) ||
+                terminal_commitment.is_zero()) {
+                if (error && error->empty()) *error = "terminal scalar commitment is invalid";
+                return false;
+            }
+            const std::uint32_t terminal_index = zktr_terminal_evaluation_index(tensor_index);
+            const zkdl::CpuIpaOpeningMetadata metadata = zktr_make_opening_metadata(
+                descriptor_digest, statement, evaluation_point, commitment_indices[tensor_index],
+                terminal_index);
+            const auto opening = zkdl::cpu_open_hyrax_v3(
+                generators, tensor_values[tensor_index], evaluation_point,
+                blinding_generator, u_generator, tensor_blinders[tensor_index],
+                tau_blinder, terminal_commitment, metadata);
+            proof.terminal_commitments.push_back(zkdl::cpu_g1_to_native(terminal_commitment));
+            proof.terminal_openings.push_back(opening.proof);
+            result.terminal_values.push_back(value);
+            result.terminal_blinders.push_back(tau_blinder);
+            states.emplace(terminal_index, ScalarState{value, tau_blinder, terminal_commitment});
+        }
+
+        result.product_blinders.reserve(plans.size());
+        for (const auto& plan : plans) {
+            const auto left = states.find(plan.left_commitment_index);
+            const auto right = states.find(plan.right_commitment_index);
+            if (left == states.end() || right == states.end()) {
+                if (error) *error = "terminal product plan references an unavailable claim";
+                return false;
+            }
+            const FrWire output_value = zkdl::fr_mul(left->second.value, right->second.value);
+            const FrWire output_blinder = zkdl::cpu_fresh_csprng_scalar();
+            const zkdl::CpuG1Point output_commitment = zkdl::cpu_pedersen_scalar_commit(
+                output_value, output_blinder, blinding_generator, u_generator);
+            const auto product_context = zktr_make_product_context(
+                statement, descriptor_digest, blinding_generator, u_generator,
+                plan.left_commitment_index, plan.right_commitment_index,
+                plan.output_commitment_index);
+            const auto product = zkdl::cpu_open_pedersen_product(
+                left->second.value, right->second.value, left->second.blinder,
+                right->second.blinder, output_blinder, left->second.commitment,
+                right->second.commitment, output_commitment, blinding_generator,
+                u_generator, product_context);
+            zkdl::ZkProductNodeProof node;
+            node.monomial_index = plan.monomial_index;
+            node.factor_step = plan.factor_step;
+            node.left_commitment_index = plan.left_commitment_index;
+            node.right_commitment_index = plan.right_commitment_index;
+            node.output_commitment_index = plan.output_commitment_index;
+            node.output_commitment = zkdl::cpu_g1_to_native(output_commitment);
+            node.product_proof = product.proof;
+            proof.product_nodes.push_back(node);
+            result.product_blinders.push_back(output_blinder);
+            states.emplace(plan.output_commitment_index,
+                           ScalarState{output_value, output_blinder, output_commitment});
+        }
+
+        FrWire residual_value = descriptor.constant;
+        FrWire residual_blinder{};
+        zkdl::CpuG1Point residual_commitment = zkdl::cpu_g1_mul(
+            u_generator, descriptor.constant);
+        for (std::size_t monomial = 0U; monomial < descriptor.terms.size(); ++monomial) {
+            const auto state = states.find(monomial_indices[monomial]);
+            if (state == states.end()) {
+                if (error) *error = "terminal monomial claim is unavailable";
+                return false;
+            }
+            const FrWire coefficient = descriptor.terms[monomial].coefficient;
+            residual_value = zkdl::fr_add(
+                residual_value, zkdl::fr_mul(coefficient, state->second.value));
+            residual_blinder = zkdl::fr_add(
+                residual_blinder, zkdl::fr_mul(coefficient, state->second.blinder));
+            residual_commitment = zkdl::cpu_g1_add(
+                residual_commitment,
+                zkdl::cpu_g1_mul(state->second.commitment, coefficient));
+        }
+        if (zkdl::fr_compare(residual_blinder, FrWire{}) == 0 ||
+            !zkdl::fr_canonical(residual_blinder) ||
+            !zkdl::cpu_g1_equal(
+                residual_commitment,
+                zkdl::cpu_pedersen_scalar_commit(
+                    residual_value, residual_blinder, blinding_generator, u_generator))) {
+            if (error) *error = "BLOCKED: terminal residual blinder/commitment is invalid";
+            return false;
+        }
+        proof.residual_commitment = zkdl::cpu_g1_to_native(residual_commitment);
+        result.residual_blinder = residual_blinder;
+        if (link_kind == zkdl::ZkTerminalClaimLinkKind::ExternalEquality) {
+            const zkdl::CpuG1Point expected_external = zkdl::cpu_pedersen_scalar_commit(
+                residual_value, external_claim_blinder, blinding_generator, u_generator);
+            if (!zkdl::cpu_g1_equal(expected_external, external_claim_commitment)) {
+                if (error) *error = "external terminal claim commitment mismatch";
+                return false;
+            }
+            proof.external_claim_commitment =
+                zkdl::cpu_g1_to_native(external_claim_commitment);
+            proof.external_equality_binding = zkdl::cpu_open_pedersen_scalar_equality(
+                residual_value, residual_blinder, external_claim_blinder,
+                residual_commitment, external_claim_commitment, blinding_generator,
+                u_generator, proof.context).proof;
+        } else {
+            if (!same_wire(residual_value, expected_public_value)) {
+                if (error) *error = "terminal residual does not match public value";
+                return false;
+            }
+            proof.external_claim_commitment = proof.residual_commitment;
+            proof.public_value_binding = zkdl::cpu_open_pedersen_scalar_value_public(
+                residual_value, residual_blinder, residual_commitment,
+                blinding_generator, u_generator, proof.context).proof;
+        }
+        std::string shape_error;
+        if (!zkdl::zk_terminal_relation_shape_valid(proof, &shape_error)) {
+            if (error) *error = shape_error.empty() ? "invalid terminal relation proof" : shape_error;
+            return false;
+        }
+        zktr_absorb_header(parent_transcript, proof, descriptor, statement, operation_context,
+                           evaluation_point, commitment_indices, canonical_commitments,
+                           blinding_generator, u_generator, link_kind,
+                           external_claim_commitment, expected_public_value);
+        zktr_absorb_components(parent_transcript, proof, operation_context);
+        return true;
+    } catch (const std::exception& exception) {
+        if (error) *error = exception.what();
+        return false;
+    }
+}
+
+inline bool verify_zk_terminal_relation(
+    const zkdl::ZkTerminalRelationProof& proof,
+    const ConstraintDescriptor& descriptor,
+    const std::vector<zkdl::CpuG1Point>& canonical_commitments,
+    const std::vector<std::uint32_t>& commitment_indices,
+    const std::vector<FrWire>& evaluation_point,
+    const std::vector<zkdl::CpuG1Point>& generators,
+    const zkdl::CpuG1Point& blinding_generator,
+    const zkdl::CpuG1Point& u_generator,
+    const RelationStatement& statement,
+    zkdl::ZkTerminalClaimLinkKind link_kind,
+    const zkdl::CpuG1Point& external_claim_commitment,
+    const FrWire& expected_public_value,
+    const std::string& operation_context,
+    zkdl::Transcript& parent_transcript,
+    ZkTerminalRelationVerifierResult& result,
+    std::string* error = nullptr) {
+    try {
+        if (!zktr_link_kind_valid(link_kind) ||
+            !zktr_validate_public_inputs(
+                descriptor, canonical_commitments.size(), canonical_commitments,
+                commitment_indices, evaluation_point, generators, blinding_generator,
+                u_generator, statement, operation_context, error) ||
+            !zkdl::fr_canonical(expected_public_value) ||
+            proof.claim_link_kind != link_kind ||
+            !zkdl::zk_terminal_relation_shape_valid(proof, error)) {
+            if (error && error->empty()) *error = "invalid terminal relation verifier inputs";
+            return false;
+        }
+        if (link_kind == zkdl::ZkTerminalClaimLinkKind::ExternalEquality) {
+            if (!zkdl::cpu_pedersen_strict_g1(external_claim_commitment, error) ||
+                external_claim_commitment.is_zero() ||
+                !zkdl::cpu_g1_equal(
+                    external_claim_commitment,
+                    zkdl::cpu_g1_from_native(proof.external_claim_commitment))) {
+                if (error && error->empty()) *error = "external terminal claim mismatch";
+                return false;
+            }
+        } else if (!external_claim_commitment.is_zero()) {
+            if (error) *error = "public terminal verifier carries an external claim";
+            return false;
+        }
+
+        const std::array<byte, 32U> descriptor_digest =
+            zksc_proof_descriptor_digest(descriptor, statement, operation_context);
+        const auto expected_context = zktr_make_link_context(
+            descriptor, statement, operation_context, link_kind, descriptor_digest,
+            blinding_generator, u_generator);
+        if (!zkdl::cpu_pedersen_context_equal(proof.context, expected_context) ||
+            proof.context.descriptor_digest != descriptor_digest ||
+            proof.context.registry_digest != statement.registry_digest ||
+            proof.context.srs_digest != statement.srs_digest) {
+            if (error) *error = "terminal relation link context mismatch";
+            return false;
+        }
+        if (proof.terminal_commitments.size() != canonical_commitments.size() ||
+            proof.terminal_openings.size() != canonical_commitments.size()) {
+            if (error) *error = "terminal relation commitment/opening count mismatch";
+            return false;
+        }
+        zktr_absorb_header(parent_transcript, proof, descriptor, statement, operation_context,
+                           evaluation_point, commitment_indices, canonical_commitments,
+                           blinding_generator, u_generator, link_kind,
+                           external_claim_commitment, expected_public_value);
+
+        std::map<std::uint32_t, zkdl::CpuG1Point> states;
+        result = ZkTerminalRelationVerifierResult{};
+        result.terminal_commitments.reserve(proof.terminal_commitments.size());
+        for (std::size_t tensor_index = 0U;
+             tensor_index < proof.terminal_commitments.size(); ++tensor_index) {
+            const zkdl::CpuG1Point terminal_commitment = zkdl::cpu_g1_from_native(
+                proof.terminal_commitments[tensor_index]);
+            const auto& opening = proof.terminal_openings[tensor_index];
+            const std::uint32_t terminal_index =
+                zktr_terminal_evaluation_index(tensor_index);
+            const auto metadata = zktr_make_opening_metadata(
+                descriptor_digest, statement, evaluation_point,
+                commitment_indices[tensor_index], terminal_index);
+            if (opening.commitment_index != commitment_indices[tensor_index] ||
+                opening.evaluation_commitment_index != terminal_index ||
+                opening.generator_size != generators.size() ||
+                opening.inner_point.size() != evaluation_point.size() ||
+                opening.outer_point.size() != evaluation_point.size() ||
+                !zkdl::cpu_g1_equal(zkdl::cpu_g1_from_native(opening.xi),
+                                    canonical_commitments[tensor_index]) ||
+                !zkdl::cpu_g1_equal(zkdl::cpu_g1_from_native(opening.tau),
+                                    terminal_commitment)) {
+                if (error) *error = "terminal Hyrax commitment/index map mismatch";
+                return false;
+            }
+            for (std::size_t bit = 0U; bit < evaluation_point.size(); ++bit) {
+                if (fr_compare_mixed(opening.inner_point[bit], evaluation_point[bit]) != 0 ||
+                    fr_compare_mixed(opening.outer_point[bit], evaluation_point[bit]) != 0) {
+                    if (error) *error = "terminal Hyrax evaluation point mismatch";
+                    return false;
+                }
+            }
+            if (!zkdl::cpu_verify_hyrax_v3(
+                    opening, canonical_commitments[tensor_index], terminal_commitment,
+                    generators, evaluation_point, blinding_generator, u_generator,
+                    metadata, error)) return false;
+            if (!states.emplace(terminal_index, terminal_commitment).second) {
+                if (error) *error = "duplicate terminal evaluation commitment index";
+                return false;
+            }
+            result.terminal_commitments.push_back(terminal_commitment);
+        }
+
+        std::vector<ZkTerminalProductPlan> plans;
+        std::vector<std::uint32_t> monomial_indices;
+        if (!zktr_build_product_plan(descriptor, canonical_commitments.size(),
+                                     commitment_indices, plans, monomial_indices, error))
+            return false;
+        if (plans.size() != proof.product_nodes.size()) {
+            if (error) *error = "terminal product DAG node count mismatch";
+            return false;
+        }
+        for (std::size_t node_index = 0U; node_index < plans.size(); ++node_index) {
+            const auto& plan = plans[node_index];
+            const auto& node = proof.product_nodes[node_index];
+            if (node.monomial_index != plan.monomial_index ||
+                node.factor_step != plan.factor_step ||
+                node.left_commitment_index != plan.left_commitment_index ||
+                node.right_commitment_index != plan.right_commitment_index ||
+                node.output_commitment_index != plan.output_commitment_index) {
+                if (error) *error = "terminal product DAG order/ref mismatch";
+                return false;
+            }
+            const auto left = states.find(plan.left_commitment_index);
+            const auto right = states.find(plan.right_commitment_index);
+            if (left == states.end() || right == states.end()) {
+                if (error) *error = "terminal product DAG references an unknown claim";
+                return false;
+            }
+            const zkdl::CpuG1Point output = zkdl::cpu_g1_from_native(node.output_commitment);
+            const auto product_context = zktr_make_product_context(
+                statement, descriptor_digest, blinding_generator, u_generator,
+                plan.left_commitment_index, plan.right_commitment_index,
+                plan.output_commitment_index);
+            if (!zkdl::cpu_g1_equal(
+                    zkdl::cpu_g1_from_native(node.product_proof.commitment_a), left->second) ||
+                !zkdl::cpu_g1_equal(
+                    zkdl::cpu_g1_from_native(node.product_proof.commitment_b), right->second) ||
+                !zkdl::cpu_g1_equal(
+                    zkdl::cpu_g1_from_native(node.product_proof.commitment_c), output) ||
+                !zkdl::cpu_verify_pedersen_product(
+                    node.product_proof, left->second, right->second, output,
+                    blinding_generator, u_generator, product_context, error))
+                return false;
+            if (!states.emplace(plan.output_commitment_index, output).second) {
+                if (error) *error = "duplicate terminal product output index";
+                return false;
+            }
+        }
+
+        zkdl::CpuG1Point residual_commitment = zkdl::cpu_g1_mul(
+            u_generator, descriptor.constant);
+        for (std::size_t monomial = 0U; monomial < descriptor.terms.size(); ++monomial) {
+            const auto state = states.find(monomial_indices[monomial]);
+            if (state == states.end()) {
+                if (error) *error = "terminal residual references an unknown monomial claim";
+                return false;
+            }
+            residual_commitment = zkdl::cpu_g1_add(
+                residual_commitment,
+                zkdl::cpu_g1_mul(state->second, descriptor.terms[monomial].coefficient));
+        }
+        if (!zkdl::cpu_g1_equal(
+                residual_commitment,
+                zkdl::cpu_g1_from_native(proof.residual_commitment))) {
+            if (error) *error = "terminal residual commitment equation mismatch";
+            return false;
+        }
+        if (link_kind == zkdl::ZkTerminalClaimLinkKind::ExternalEquality) {
+            if (!zkdl::cpu_verify_pedersen_scalar_equality(
+                    proof.external_equality_binding, residual_commitment,
+                    external_claim_commitment, blinding_generator, u_generator,
+                    proof.context, error)) return false;
+        } else if (!zkdl::cpu_verify_pedersen_scalar_value(
+                       proof.public_value_binding, expected_public_value,
+                       residual_commitment, blinding_generator, u_generator,
+                       proof.context, error)) {
+            return false;
+        }
+        zktr_absorb_components(parent_transcript, proof, operation_context);
+        result.residual_commitment = residual_commitment;
+        return true;
+    } catch (const std::exception& exception) {
+        if (error) *error = exception.what();
+        return false;
+    }
 }
 
 inline void fold_values(std::vector<FrWire>& values, const FrWire& challenge) {
@@ -1631,6 +3049,9 @@ inline bool verify_constraint(const ConstraintProof& proof,
                              const std::vector<std::string>& expected_tensor_refs,
                              const std::vector<CommitmentWire>& commitments,
                              const std::vector<zkdl::CpuG1Point>& generators,
+                             const zkdl::CpuG1Point& ipa_blinding_generator,
+                             const zkdl::CpuG1Point& ipa_u_generator,
+                             const RelationStatement& statement,
                              zkdl::Transcript& transcript,
                              std::string* error = nullptr) {
     std::vector<byte> expected_bytes, actual_bytes;
@@ -1694,9 +3115,13 @@ inline bool verify_constraint(const ConstraintProof& proof,
                            zkdl::fr_wire(challenges[round]))) {
                 if (error) *error = "relation opening point is not Fiat-Shamir bound";
                 return false;
-            }
+        }
         const zkdl::CpuG1Point expected_commitment = zkdl::cpu_g1_from_native(commitments[index].commitment);
-        if (!zkdl::cpu_verify_opening(proof.openings[i], expected_commitment, error)) return false;
+        const zkdl::CpuIpaOpeningMetadata metadata = relation_opening_metadata(
+            expected, index, {}, statement);
+        if (!zkdl::cpu_verify_opening(proof.openings[i], expected_commitment,
+                                      generators, ipa_blinding_generator,
+                                      ipa_u_generator, metadata, error)) return false;
         terminal_values.push_back(zkdl::fr_wire(proof.openings[i].value));
         if (!same_wire(terminal_values.back(), zkdl::fr_wire(proof.sumcheck.terminal_claims[i]))) {
             if (error) *error = "relation terminal claim is not opening-bound";
@@ -1747,8 +3172,11 @@ inline bool verify_constraint(const ConstraintProof& proof,
                 if (error) *error = "relation pointwise opening point mismatch";
                 return false;
             }
+        const zkdl::CpuIpaOpeningMetadata metadata = relation_opening_metadata(
+            expected, index, {}, statement);
         if (!zkdl::cpu_verify_opening(
-                opening, zkdl::cpu_g1_from_native(commitments[index].commitment), error))
+                opening, zkdl::cpu_g1_from_native(commitments[index].commitment),
+                generators, ipa_blinding_generator, ipa_u_generator, metadata, error))
             return false;
         pointwise_values[tensor_index] = zkdl::fr_wire(opening.value);
     }
@@ -1824,8 +3252,12 @@ inline bool fill_constraint_openings(
     const ConstraintDescriptor& descriptor,
     const std::vector<std::string>& operation_refs,
     const std::map<std::string, const TensorWitness*>& tensor_map,
+    const std::map<std::string, FrWire>& blinders,
     const std::vector<zkdl::CpuG1Point>& generators,
+    const zkdl::CpuG1Point& ipa_blinding_generator,
+    const zkdl::CpuG1Point& ipa_u_generator,
     const std::vector<CommitmentWire>& commitments,
+    const RelationStatement& statement,
     zkdl::Transcript& transcript, ConstraintProof& proof,
     std::string* error = nullptr) {
     if (operation_refs.empty()) {
@@ -1884,12 +3316,14 @@ inline bool fill_constraint_openings(
             }
             const std::uint32_t commitment_index = static_cast<std::uint32_t>(
                 std::distance(commitments.begin(), commitment));
+            const zkdl::CpuIpaOpeningMetadata metadata = relation_opening_metadata(
+                descriptor, commitment_index, {}, statement);
             proof.opening_commitment_indices.push_back(commitment_index);
             auto opening = zkdl::cpu_open(
                 std::vector<zkdl::CpuG1Point>(generators.begin(),
                                               generators.begin() + tensor->domain_size),
-                tensor->values, point);
-            opening.commitment_index = commitment_index;
+                tensor->values, point, ipa_blinding_generator,
+                ipa_u_generator, relation_blinding_scalar(*tensor, blinders), metadata);
             proof.openings.push_back(std::move(opening));
         }
         proof.sumcheck.terminal_claims.clear();
@@ -1923,11 +3357,13 @@ inline bool fill_constraint_openings(
             if (commitment == commitments.end()) return false;
             const std::uint32_t commitment_index = static_cast<std::uint32_t>(
                 std::distance(commitments.begin(), commitment));
+            const zkdl::CpuIpaOpeningMetadata metadata = relation_opening_metadata(
+                descriptor, commitment_index, {}, statement);
             auto opening = zkdl::cpu_open(
                 std::vector<zkdl::CpuG1Point>(generators.begin(),
                                               generators.begin() + tensor->domain_size),
-                tensor->values, pointwise);
-            opening.commitment_index = commitment_index;
+                tensor->values, pointwise, ipa_blinding_generator,
+                ipa_u_generator, relation_blinding_scalar(*tensor, blinders), metadata);
             proof.pointwise_openings.push_back(std::move(opening));
         }
         std::vector<byte> pointwise_bytes;
@@ -1967,8 +3403,12 @@ inline bool deserialize_constraint_payload(const std::vector<byte>& bytes,
 inline bool prove_sparse_route(
     const OperationDescriptor& descriptor,
     const std::map<std::string, const TensorWitness*>& tensor_map,
+    const std::map<std::string, FrWire>& blinders,
     const std::vector<zkdl::CpuG1Point>& generators,
+    const zkdl::CpuG1Point& ipa_blinding_generator,
+    const zkdl::CpuG1Point& ipa_u_generator,
     const std::vector<CommitmentWire>& commitments,
+    const RelationStatement& statement,
     zkdl::Transcript& transcript, SparseRouteProof& route,
     std::string* error);
 
@@ -1976,14 +3416,21 @@ inline bool verify_sparse_route(
     const OperationDescriptor& descriptor,
     const std::vector<CommitmentWire>& commitments,
     const std::vector<zkdl::CpuG1Point>& generators,
+    const zkdl::CpuG1Point& ipa_blinding_generator,
+    const zkdl::CpuG1Point& ipa_u_generator,
+    const RelationStatement& statement,
     zkdl::Transcript& transcript, const SparseRouteProof& route,
     std::string* error);
 
 inline bool prove_fac_line8(
     const OperationDescriptor& operation,
     const std::map<std::string, const TensorWitness*>& tensor_map,
+    const std::map<std::string, FrWire>& blinders,
     const std::vector<zkdl::CpuG1Point>& generators,
+    const zkdl::CpuG1Point& ipa_blinding_generator,
+    const zkdl::CpuG1Point& ipa_u_generator,
     const std::vector<CommitmentWire>& commitments,
+    const RelationStatement& statement,
     zkdl::Transcript& transcript, FacLine8Proof& proof,
     std::string* error = nullptr) {
     if (operation.fac_bindings.empty()) {
@@ -2018,7 +3465,9 @@ inline bool prove_fac_line8(
         selector.selector_source_ref = binding.canonical_ref;
         selector.selector_output_ref = binding.view_ref;
         SparseRouteProof route;
-        if (!prove_sparse_route(selector, tensor_map, generators, commitments,
+        if (!prove_sparse_route(selector, tensor_map, blinders, generators,
+                                ipa_blinding_generator, ipa_u_generator, commitments,
+                                statement,
                                 transcript, route, error)) return false;
         const std::vector<byte> encoded = route.serialize();
         transcript.absorb("gat.fac4dnn.line8." + operation.id + ".selector." +
@@ -2045,6 +3494,9 @@ inline bool verify_fac_line8(
     const OperationDescriptor& operation,
     const std::vector<CommitmentWire>& commitments,
     const std::vector<zkdl::CpuG1Point>& generators,
+    const zkdl::CpuG1Point& ipa_blinding_generator,
+    const zkdl::CpuG1Point& ipa_u_generator,
+    const RelationStatement& statement,
     zkdl::Transcript& transcript, const FacLine8Proof& proof,
     std::string* error = nullptr) {
     if (operation.fac_bindings.empty()) {
@@ -2081,7 +3533,9 @@ inline bool verify_fac_line8(
         selector.selector_feature_map = binding.source_feature_index;
         selector.selector_source_ref = binding.canonical_ref;
         selector.selector_output_ref = binding.view_ref;
-        if (!verify_sparse_route(selector, commitments, generators, transcript,
+        if (!verify_sparse_route(selector, commitments, generators,
+                                 ipa_blinding_generator, ipa_u_generator, statement,
+                                 transcript,
                                  proof.selector_proofs[index], error)) return false;
         const std::vector<byte> encoded = proof.selector_proofs[index].serialize();
         transcript.absorb("gat.fac4dnn.line8." + operation.id + ".selector." +
@@ -2277,7 +3731,7 @@ inline bool verify_hiding_records(
             record.visibility != expected_record_visibility ||
             record.points.size() != found->domain_size ||
             generators.size() < found->domain_size ||
-            !zkdl::cpu_g1_equal(zkdl::cpu_g1_from_native(record.value_commitment),
+            !zkdl::cpu_g1_equal(zkdl::cpu_g1_from_native(record.commitment),
                                 zkdl::cpu_g1_from_native(found->commitment))) {
             if (error) *error = "hiding commitment record is not bound to the canonical tensor commitment";
             return false;
@@ -2346,12 +3800,12 @@ inline bool verify_public_tensor_values(
             if (error) *error = "public tensor value material does not match commitment domain";
             return false;
         }
-        if (found->domain_size > context.generators.size()) {
+        if (found->domain_size > context.ipa_generators.size()) {
             if (error) *error = "public tensor commitment exceeds authenticated generator domain";
             return false;
         }
         const std::vector<zkdl::CpuG1Point> generators(
-            context.generators.begin(), context.generators.begin() + found->domain_size);
+            context.ipa_generators.begin(), context.ipa_generators.begin() + found->domain_size);
         const G1Jacobian_t expected = zkdl::cpu_g1_to_native(
             zkdl::cpu_g1_sum(generators, entry.second));
         if (!zkdl::cpu_g1_equal(zkdl::cpu_g1_from_native(found->commitment),
@@ -2385,6 +3839,8 @@ inline bool prove_matmul_primitive(
     const PrimitiveDescriptor& descriptor,
     const std::map<std::string, const TensorWitness*>& tensor_map,
     const std::vector<zkdl::CpuG1Point>& generators,
+    const zkdl::CpuG1Point& ipa_blinding_generator,
+    const zkdl::CpuG1Point& ipa_u_generator,
     std::vector<byte>& encoded, std::string* error) {
     if (descriptor.kind != 1U || descriptor.tensor_refs.size() != 3U) {
         if (error) *error = "unsupported native relation primitive";
@@ -2420,7 +3876,8 @@ inline bool prove_matmul_primitive(
         FrTensor b(shape.b_size(), b_values.data());
         FrTensor c(shape.c_size(), c_values.data());
         const zkdl::MatMulProof proof = zkdl::matmul_prove(
-            a, b, c, shape, gen_a, gen_b, gen_c);
+            a, b, c, shape, gen_a, gen_b, gen_c,
+            nullptr, ipa_blinding_generator, ipa_u_generator);
         encoded = proof.serialize();
         if (encoded.empty()) {
             if (error) *error = "zkMatMul primitive prover returned an empty proof";
@@ -2435,7 +3892,9 @@ inline bool prove_matmul_primitive(
 
 inline bool verify_matmul_primitive(
     const PrimitiveDescriptor& descriptor, const std::vector<byte>& encoded,
-    const std::vector<zkdl::CpuG1Point>& generators, std::string* error) {
+    const std::vector<zkdl::CpuG1Point>& generators,
+    const zkdl::CpuG1Point& ipa_blinding_generator,
+    const zkdl::CpuG1Point& ipa_u_generator, std::string* error) {
     if (descriptor.kind != 1U || descriptor.tensor_refs.size() != 3U || encoded.empty()) {
         if (error) *error = "invalid native relation primitive proof";
         return false;
@@ -2467,7 +3926,8 @@ inline bool verify_matmul_primitive(
     for (const auto& point : proof.commitment_a) a_view.commitments.push_back(zkdl::cpu_g1_from_native(point));
     for (const auto& point : proof.commitment_b) b_view.commitments.push_back(zkdl::cpu_g1_from_native(point));
     for (const auto& point : proof.commitment_c) c_view.commitments.push_back(zkdl::cpu_g1_from_native(point));
-    return zkdl::matmul_verify_cpu(proof, shape, a_view, b_view, &c_view, nullptr, error);
+    return zkdl::matmul_verify_cpu(proof, shape, a_view, b_view, &c_view, nullptr,
+                                   ipa_blinding_generator, ipa_u_generator, error);
 }
 
 inline bool primitive_commitment_index(
@@ -2497,8 +3957,12 @@ inline std::vector<FrWire> primitive_opening_point(
 inline bool prove_primitive_binding(
     const PrimitiveDescriptor& descriptor, const std::vector<byte>& encoded,
     const std::map<std::string, const TensorWitness*>& tensor_map,
+    const std::map<std::string, FrWire>& blinders,
     const std::vector<zkdl::CpuG1Point>& generators,
+    const zkdl::CpuG1Point& ipa_blinding_generator,
+    const zkdl::CpuG1Point& ipa_u_generator,
     const std::vector<CommitmentWire>& commitments,
+    const RelationStatement& statement,
     OperationProof::PrimitiveBinding& binding, std::string* error) {
     zkdl::MatMulProof primitive;
     if (!zkdl::MatMulProof::deserialize(encoded, primitive, error) ||
@@ -2531,18 +3995,25 @@ inline bool prove_primitive_binding(
     const std::vector<FrWire> point_a = primitive_opening_point(primitive.opening_a);
     const std::vector<FrWire> point_b = primitive_opening_point(primitive.opening_b);
     const std::vector<FrWire> point_c = primitive_opening_point(primitive.opening_c);
+    auto metadata_for = [&](const std::string& suffix, std::uint32_t index) {
+        OperationDescriptor opening_descriptor;
+        opening_descriptor.id = descriptor.tensor_refs[0] + "/" + suffix;
+        if (suffix == "B") opening_descriptor.id = descriptor.tensor_refs[1] + "/B";
+        if (suffix == "C") opening_descriptor.id = descriptor.tensor_refs[2] + "/C";
+        return relation_opening_metadata(opening_descriptor, index, {}, statement);
+    };
     binding.opening_a = zkdl::cpu_open(
         std::vector<zkdl::CpuG1Point>(generators.begin(), generators.begin() + a_domain),
-        a->second->values, point_a);
+        a->second->values, point_a, ipa_blinding_generator, ipa_u_generator,
+        relation_blinding_scalar(*a->second, blinders), metadata_for("A", binding.a_commitment_index));
     binding.opening_b = zkdl::cpu_open(
         std::vector<zkdl::CpuG1Point>(generators.begin(), generators.begin() + b_domain),
-        b->second->values, point_b);
+        b->second->values, point_b, ipa_blinding_generator, ipa_u_generator,
+        relation_blinding_scalar(*b->second, blinders), metadata_for("B", binding.b_commitment_index));
     binding.opening_c = zkdl::cpu_open(
         std::vector<zkdl::CpuG1Point>(generators.begin(), generators.begin() + c_domain),
-        c->second->values, point_c);
-    binding.opening_a.commitment_index = binding.a_commitment_index;
-    binding.opening_b.commitment_index = binding.b_commitment_index;
-    binding.opening_c.commitment_index = binding.c_commitment_index;
+        c->second->values, point_c, ipa_blinding_generator, ipa_u_generator,
+        relation_blinding_scalar(*c->second, blinders), metadata_for("C", binding.c_commitment_index));
     if (!same_wire(zkdl::fr_wire(binding.opening_a.value),
                    zkdl::fr_wire(primitive.opening_a.value)) ||
         !same_wire(zkdl::fr_wire(binding.opening_b.value),
@@ -2559,7 +4030,10 @@ inline bool verify_primitive_binding(
     const PrimitiveDescriptor& descriptor, const std::vector<byte>& encoded,
     const OperationProof::PrimitiveBinding& binding,
     const std::vector<CommitmentWire>& commitments,
-    const std::vector<zkdl::CpuG1Point>& generators, std::string* error) {
+    const std::vector<zkdl::CpuG1Point>& generators,
+    const zkdl::CpuG1Point& ipa_blinding_generator,
+    const zkdl::CpuG1Point& ipa_u_generator,
+    const RelationStatement& statement, std::string* error) {
     zkdl::MatMulProof primitive;
     if (!zkdl::MatMulProof::deserialize(encoded, primitive, error) ||
         primitive.shape != descriptor.matmul_shape ||
@@ -2576,6 +4050,12 @@ inline bool verify_primitive_binding(
         &binding.opening_a, &binding.opening_b, &binding.opening_c};
     const std::array<const zkdl::EvaluationOpeningProof*, 3U> primitive_openings = {
         &primitive.opening_a, &primitive.opening_b, &primitive.opening_c};
+    auto metadata_for = [&](std::size_t slot) {
+        OperationDescriptor opening_descriptor;
+        opening_descriptor.id = descriptor.tensor_refs[slot] + "/" +
+                                (slot == 0U ? "A" : (slot == 1U ? "B" : "C"));
+        return relation_opening_metadata(opening_descriptor, indices[slot], {}, statement);
+    };
     for (std::size_t i = 0U; i < indices.size(); ++i) {
         if (indices[i] >= commitments.size() ||
             commitments[indices[i]].tensor_id != descriptor.tensor_refs[i] ||
@@ -2595,7 +4075,10 @@ inline bool verify_primitive_binding(
             }
         if (!zkdl::cpu_verify_opening(*openings[i],
                                       zkdl::cpu_g1_from_native(commitments[indices[i]].commitment),
-                                      error) ||
+                                      std::vector<zkdl::CpuG1Point>(generators.begin(),
+                                                                    generators.begin() + domains[i]),
+                                      ipa_blinding_generator, ipa_u_generator,
+                                      metadata_for(i), error) ||
             !same_wire(zkdl::fr_wire(openings[i]->value),
                        zkdl::fr_wire(primitive_openings[i]->value))) {
             if (error && error->empty()) *error = "zkMatMul canonical row reduction opening failed";
@@ -2748,8 +4231,12 @@ inline bool route_commitment_index(
 inline bool prove_sparse_route(
     const OperationDescriptor& descriptor,
     const std::map<std::string, const TensorWitness*>& tensor_map,
+    const std::map<std::string, FrWire>& blinders,
     const std::vector<zkdl::CpuG1Point>& generators,
+    const zkdl::CpuG1Point& ipa_blinding_generator,
+    const zkdl::CpuG1Point& ipa_u_generator,
     const std::vector<CommitmentWire>& commitments,
+    const RelationStatement& statement,
     zkdl::Transcript& transcript, SparseRouteProof& route,
     std::string* error) {
     const TensorWitness* source = nullptr;
@@ -2879,14 +4366,22 @@ inline bool prove_sparse_route(
     for (const auto& challenge : route.node_point) source_point.push_back(zkdl::fr_wire(challenge));
     std::vector<FrWire> output_point = feature_point;
     for (const auto& challenge : route.edge_point) output_point.push_back(zkdl::fr_wire(challenge));
+    OperationDescriptor source_open_descriptor = descriptor;
+    source_open_descriptor.id += "/source-opening";
+    OperationDescriptor output_open_descriptor = descriptor;
+    output_open_descriptor.id += "/output-opening";
+    const zkdl::CpuIpaOpeningMetadata source_metadata = relation_opening_metadata(
+        source_open_descriptor, route.source_commitment_index, {}, statement);
+    const zkdl::CpuIpaOpeningMetadata output_metadata = relation_opening_metadata(
+        output_open_descriptor, route.output_commitment_index, {}, statement);
     route.source_opening = zkdl::cpu_open(
         std::vector<zkdl::CpuG1Point>(generators.begin(), generators.begin() + source->domain_size),
-        source->values, source_point);
-    route.source_opening.commitment_index = route.source_commitment_index;
+        source->values, source_point, ipa_blinding_generator, ipa_u_generator,
+        relation_blinding_scalar(*source, blinders), source_metadata);
     route.output_opening = zkdl::cpu_open(
         std::vector<zkdl::CpuG1Point>(generators.begin(), generators.begin() + output->domain_size),
-        output->values, output_point);
-    route.output_opening.commitment_index = route.output_commitment_index;
+        output->values, output_point, ipa_blinding_generator, ipa_u_generator,
+        relation_blinding_scalar(*output, blinders), output_metadata);
     std::vector<byte> source_opening_bytes, output_opening_bytes;
     zkdl::serialize_opening(route.source_opening, source_opening_bytes);
     zkdl::serialize_opening(route.output_opening, output_opening_bytes);
@@ -2908,6 +4403,9 @@ inline bool verify_sparse_route(
     const OperationDescriptor& descriptor,
     const std::vector<CommitmentWire>& commitments,
     const std::vector<zkdl::CpuG1Point>& generators,
+    const zkdl::CpuG1Point& ipa_blinding_generator,
+    const zkdl::CpuG1Point& ipa_u_generator,
+    const RelationStatement& statement,
     zkdl::Transcript& transcript, const SparseRouteProof& route,
     std::string* error) {
     if ((descriptor.kind != RelationKind::SparseRoute &&
@@ -3012,10 +4510,24 @@ inline bool verify_sparse_route(
             if (error) *error = "sparse route output opening point mismatch";
             return false;
         }
-    if (!zkdl::cpu_verify_opening(route.source_opening,
-                                  zkdl::cpu_g1_from_native(source_commitment.commitment), error) ||
-        !zkdl::cpu_verify_opening(route.output_opening,
-                                  zkdl::cpu_g1_from_native(output_commitment.commitment), error)) return false;
+    OperationDescriptor source_open_descriptor = descriptor;
+    source_open_descriptor.id += "/source-opening";
+    OperationDescriptor output_open_descriptor = descriptor;
+    output_open_descriptor.id += "/output-opening";
+    const zkdl::CpuIpaOpeningMetadata source_metadata = relation_opening_metadata(
+        source_open_descriptor, route.source_commitment_index, {}, statement);
+    const zkdl::CpuIpaOpeningMetadata output_metadata = relation_opening_metadata(
+        output_open_descriptor, route.output_commitment_index, {}, statement);
+    if (!zkdl::cpu_verify_opening(
+            route.source_opening, zkdl::cpu_g1_from_native(source_commitment.commitment),
+            std::vector<zkdl::CpuG1Point>(generators.begin(),
+                                          generators.begin() + source_commitment.domain_size),
+            ipa_blinding_generator, ipa_u_generator, source_metadata, error) ||
+        !zkdl::cpu_verify_opening(
+            route.output_opening, zkdl::cpu_g1_from_native(output_commitment.commitment),
+            std::vector<zkdl::CpuG1Point>(generators.begin(),
+                                          generators.begin() + output_commitment.domain_size),
+            ipa_blinding_generator, ipa_u_generator, output_metadata, error)) return false;
     const std::vector<FrWire> edge_point = [&]() {
         std::vector<FrWire> point;
         point.reserve(route.edge_point.size());
@@ -3090,8 +4602,15 @@ inline bool verify_sparse_route(
 inline bool prove(const ProverContext& context, Proof& proof, std::string* error = nullptr) {
     try {
         if (!descriptor_vector_valid(context.operations, error)) return false;
-        if (context.tensors.empty() || context.generators.empty()) {
-            if (error) *error = "relation prover requires canonical tensors and authenticated generators";
+        if (context.tensors.empty() || context.generators.empty() ||
+            context.ipa_generators.empty() || context.ipa_blinding_generator.is_zero() ||
+            context.ipa_u_generator.is_zero() ||
+            !same_g1_basis(context.generators, context.ipa_generators)) {
+            if (error) *error = "BLOCKED: relation prover requires authenticated independent IPA G/H/U basis";
+            return false;
+        }
+        if (!context.hiding_commitment_records.empty()) {
+            if (error) *error = "BLOCKED: formal GATR uses IPA knowledge openings, not hiding records";
             return false;
         }
         std::map<std::string, const TensorWitness*> tensor_map;
@@ -3111,11 +4630,11 @@ inline bool prove(const ProverContext& context, Proof& proof, std::string* error
             throw std::invalid_argument("public Y digest is not canonical");
         }
         proof.statement.public_output_digest = expected_public_digest;
-        proof.hiding_commitment_records = context.hiding_commitment_records;
+        proof.hiding_commitment_records.clear();
         const auto commitment_open_start = std::chrono::steady_clock::now();
         for (const auto& tensor : context.tensors) {
             const std::uint32_t domain = tensor.domain_size;
-            if (context.generators.size() < domain) {
+            if (context.ipa_generators.size() < domain) {
                 if (error) *error = "authenticated SRS generator domain is too small";
                 return false;
             }
@@ -3123,16 +4642,18 @@ inline bool prove(const ProverContext& context, Proof& proof, std::string* error
             commitment.tensor_id = tensor.id;
             commitment.visibility = tensor.visibility;
             commitment.domain_size = domain;
-            std::vector<zkdl::CpuG1Point> generators(context.generators.begin(),
-                                                     context.generators.begin() + domain);
-            commitment.commitment = zkdl::cpu_g1_to_native(zkdl::cpu_g1_sum(generators, tensor.values));
+            std::vector<zkdl::CpuG1Point> generators(context.ipa_generators.begin(),
+                                                     context.ipa_generators.begin() + domain);
+            zkdl::CpuG1Point blinded = zkdl::cpu_g1_sum(generators, tensor.values);
+            const FrWire randomness = relation_blinding_scalar(tensor, context.blinding_scalars);
+            if (randomness != FrWire{})
+                blinded = zkdl::cpu_g1_add(
+                    blinded, zkdl::cpu_g1_mul(context.ipa_blinding_generator, randomness));
+            commitment.commitment = zkdl::cpu_g1_to_native(blinded);
             proof.commitments.push_back(commitment);
         }
         if (!verify_model_registry(proof.commitments,
-                                   context.registered_model_commitments, error) ||
-            !verify_hiding_records(proof.commitments,
-                                   context.hiding_commitment_records,
-                                   context.generators, error)) return false;
+                                   context.registered_model_commitments, error)) return false;
         zkdl::Transcript transcript("zkdl-gat-relation-v1");
         absorb_statement(transcript, proof.statement, proof.commitments);
         absorb_hiding_records(transcript, proof.hiding_commitment_records);
@@ -3147,8 +4668,12 @@ inline bool prove(const ProverContext& context, Proof& proof, std::string* error
                                    !operation.selector_source_ref.empty();
             if (has_route) {
                 SparseRouteProof route;
-                if (!prove_sparse_route(operation, tensor_map, context.generators,
-                                        proof.commitments, transcript, route, error)) return false;
+                if (!prove_sparse_route(operation, tensor_map, context.blinding_scalars,
+                                        context.ipa_generators,
+                                        context.ipa_blinding_generator,
+                                        context.ipa_u_generator,
+                                        proof.commitments, context.statement,
+                                        transcript, route, error)) return false;
                 operation_proof.route_proof = route.serialize();
                 transcript.absorb("gat.relation.route", operation_proof.route_proof);
             } else if (!operation_proof.route_proof.empty()) {
@@ -3156,8 +4681,12 @@ inline bool prove(const ProverContext& context, Proof& proof, std::string* error
             }
             if (!operation.fac_bindings.empty()) {
                 FacLine8Proof fac;
-                if (!prove_fac_line8(operation, tensor_map, context.generators,
-                                     proof.commitments, transcript, fac, error)) return false;
+                if (!prove_fac_line8(operation, tensor_map, context.blinding_scalars,
+                                     context.ipa_generators,
+                                     context.ipa_blinding_generator,
+                                     context.ipa_u_generator, proof.commitments,
+                                     context.statement,
+                                     transcript, fac, error)) return false;
                 operation_proof.fac_proof = fac.serialize();
                 transcript.absorb("gat.relation.fac", operation_proof.fac_proof);
             } else if (!operation_proof.fac_proof.empty()) {
@@ -3169,7 +4698,12 @@ inline bool prove(const ProverContext& context, Proof& proof, std::string* error
                 if (batched.id.empty()) return false;
                 ConstraintProof payload;
                 if (!fill_constraint_openings(batched, operation.tensor_refs, tensor_map,
-                                              context.generators, proof.commitments,
+                                              context.blinding_scalars,
+                                              context.ipa_generators,
+                                              context.ipa_blinding_generator,
+                                              context.ipa_u_generator,
+                                              proof.commitments,
+                                              context.statement,
                                               transcript, payload, error)) return false;
                 operation_proof.batch_proof = serialize_constraint_payload(payload);
                 transcript.absorb("gat.relation.batch", operation_proof.batch_proof);
@@ -3178,14 +4712,21 @@ inline bool prove(const ProverContext& context, Proof& proof, std::string* error
             }
             for (const auto& primitive : operation.primitives) {
                 std::vector<byte> primitive_bytes;
-                if (!prove_matmul_primitive(primitive, tensor_map, context.generators,
+                if (!prove_matmul_primitive(primitive, tensor_map, context.ipa_generators,
+                                             context.ipa_blinding_generator,
+                                             context.ipa_u_generator,
                                              primitive_bytes, error)) return false;
                 operation_proof.primitive_proofs.push_back(std::move(primitive_bytes));
                 transcript.absorb("gat.relation.primitive", operation_proof.primitive_proofs.back());
                 OperationProof::PrimitiveBinding binding;
                 if (!prove_primitive_binding(primitive,
                                               operation_proof.primitive_proofs.back(), tensor_map,
-                                              context.generators, proof.commitments, binding, error)) return false;
+                                              context.blinding_scalars,
+                                              context.ipa_generators,
+                                              context.ipa_blinding_generator,
+                                              context.ipa_u_generator,
+                                              proof.commitments, context.statement,
+                                              binding, error)) return false;
                 operation_proof.primitive_bindings.push_back(std::move(binding));
                 std::vector<byte> binding_bytes;
                 append_primitive_binding(binding_bytes, operation_proof.primitive_bindings.back());
@@ -3222,12 +4763,18 @@ inline bool prove(const ProverContext& context, Proof& proof, std::string* error
                     std::vector<FrWire> point;
                     point.reserve(challenges.size());
                     for (const auto& challenge : challenges) point.push_back(zkdl::fr_wire(challenge));
-                    std::vector<zkdl::CpuG1Point> gens(context.generators.begin(), context.generators.begin() + tensor->domain_size);
-                    constraint.opening_commitment_indices.push_back(static_cast<std::uint32_t>(
+                    std::vector<zkdl::CpuG1Point> gens(context.ipa_generators.begin(), context.ipa_generators.begin() + tensor->domain_size);
+                    const std::uint32_t commitment_index = static_cast<std::uint32_t>(
                         std::distance(proof.commitments.begin(), std::find_if(
                             proof.commitments.begin(), proof.commitments.end(),
-                            [&](const CommitmentWire& value) { return value.tensor_id == ref; }))));
-                    constraint.openings.push_back(zkdl::cpu_open(gens, tensor->values, point));
+                            [&](const CommitmentWire& value) { return value.tensor_id == ref; })));
+                    constraint.opening_commitment_indices.push_back(commitment_index);
+                    const zkdl::CpuIpaOpeningMetadata metadata = relation_opening_metadata(
+                        descriptor, commitment_index, {}, context.statement);
+                    constraint.openings.push_back(zkdl::cpu_open(
+                        gens, tensor->values, point, context.ipa_blinding_generator,
+                        context.ipa_u_generator,
+                        relation_blinding_scalar(*tensor, context.blinding_scalars), metadata));
                 }
                 std::vector<Fr_t> reduced_terminal_values;
                 reduced_terminal_values.reserve(constraint.opening_tensor_indices.size());
@@ -3253,9 +4800,14 @@ inline bool prove(const ProverContext& context, Proof& proof, std::string* error
                     for (const auto& challenge : constraint.pointwise_point)
                         point.push_back(zkdl::fr_wire(challenge));
                     std::vector<zkdl::CpuG1Point> gens(
-                        context.generators.begin(), context.generators.begin() + tensor->domain_size);
-                    auto opening = zkdl::cpu_open(gens, tensor->values, point);
-                    opening.commitment_index = constraint.opening_commitment_indices.at(opening_index);
+                        context.ipa_generators.begin(), context.ipa_generators.begin() + tensor->domain_size);
+                    const zkdl::CpuIpaOpeningMetadata metadata = relation_opening_metadata(
+                        descriptor, constraint.opening_commitment_indices.at(opening_index), {},
+                        context.statement);
+                    auto opening = zkdl::cpu_open(
+                        gens, tensor->values, point, context.ipa_blinding_generator,
+                        context.ipa_u_generator,
+                        relation_blinding_scalar(*tensor, context.blinding_scalars), metadata);
                     constraint.pointwise_openings.push_back(std::move(opening));
                 }
                 std::vector<byte> pointwise_bytes;
@@ -3284,10 +4836,14 @@ inline bool prove(const ProverContext& context, Proof& proof, std::string* error
         std::vector<FrWire> output_point;
         for (std::uint32_t i = 0U; i < output_bits; ++i)
             output_point.push_back(zkdl::fr_wire(transcript.challenge("gat.public_output.point." + std::to_string(i))));
-        std::vector<zkdl::CpuG1Point> output_generators(context.generators.begin(),
-                                                        context.generators.begin() + output_domain);
-        proof.public_output_opening = zkdl::cpu_open(output_generators, output_values, output_point);
-        proof.public_output_opening.commitment_index = proof.public_output_commitment;
+        std::vector<zkdl::CpuG1Point> output_generators(context.ipa_generators.begin(),
+                                                        context.ipa_generators.begin() + output_domain);
+        const OperationDescriptor output_descriptor = public_output_opening_descriptor();
+        const zkdl::CpuIpaOpeningMetadata output_metadata = relation_opening_metadata(
+            output_descriptor, proof.public_output_commitment, {}, context.statement);
+        proof.public_output_opening = zkdl::cpu_open(
+            output_generators, output_values, output_point,
+            context.ipa_blinding_generator, context.ipa_u_generator, FrWire{}, output_metadata);
         std::vector<byte> public_bytes;
         zkdl::serialize_opening(proof.public_output_opening, public_bytes);
         transcript.absorb("gat.public_output.opening", public_bytes);
@@ -3318,25 +4874,28 @@ inline bool verify(const Proof& proof, const VerifierContext& context,
         if (error) *error = "relation proof statement/resource identity mismatch";
         return false;
     }
+    if (context.ipa_generators.empty() || context.ipa_blinding_generator.is_zero() ||
+        context.ipa_u_generator.is_zero() ||
+        !same_g1_basis(context.generators, context.ipa_generators)) {
+        if (error) *error = "BLOCKED: independent verifier lacks authenticated IPA G/H/U basis";
+        return false;
+    }
     if (!descriptor_vector_valid(context.operations, error) ||
         proof.operations.size() != context.operations.size() || proof.commitments.empty()) return false;
     if (!verify_tensor_contract(context, proof.commitments, error) ||
         !verify_model_registry(proof.commitments,
                                context.registered_model_commitments, error) ||
-        !verify_hiding_records(proof.commitments,
-                               context.hiding_commitment_records,
-                               context.generators, error) ||
         !verify_public_tensor_values(context, proof.commitments, error)) return false;
-    if (!hiding_records_equal(proof.hiding_commitment_records,
-                              context.hiding_commitment_records)) {
-        if (error) *error = "relation proof hiding records differ from independent verifier context";
+    if (!proof.hiding_commitment_records.empty() ||
+        !context.hiding_commitment_records.empty()) {
+        if (error) *error = "legacy hiding commitment records are rejected by formal GATR";
         return false;
     }
     std::set<std::string> commitment_ids;
     for (const auto& commitment : proof.commitments) {
         if (commitment.tensor_id.empty() || !commitment_ids.insert(commitment.tensor_id).second ||
             commitment.domain_size == 0U || log2_exact(commitment.domain_size) == std::numeric_limits<std::uint32_t>::max() ||
-            commitment.domain_size > context.generators.size()) {
+            commitment.domain_size > context.ipa_generators.size()) {
             if (error) *error = "relation proof commitment section is invalid";
             return false;
         }
@@ -3393,7 +4952,10 @@ inline bool verify(const Proof& proof, const VerifierContext& context,
             }
             SparseRouteProof route;
             if (!SparseRouteProof::deserialize(operation.route_proof, route, error) ||
-                !verify_sparse_route(expected_operation, proof.commitments, context.generators,
+                !verify_sparse_route(expected_operation, proof.commitments,
+                                     context.ipa_generators,
+                                     context.ipa_blinding_generator,
+                                     context.ipa_u_generator, context.statement,
                                      transcript, route, error)) return false;
             transcript.absorb("gat.relation.route", operation.route_proof);
         } else if (!operation.route_proof.empty()) {
@@ -3408,7 +4970,10 @@ inline bool verify(const Proof& proof, const VerifierContext& context,
             FacLine8Proof fac;
             if (!FacLine8Proof::deserialize(operation.fac_proof, fac, error) ||
                 !verify_fac_line8(expected_operation, proof.commitments,
-                                  context.generators, transcript, fac, error)) return false;
+                                  context.ipa_generators,
+                                  context.ipa_blinding_generator,
+                                  context.ipa_u_generator, context.statement,
+                                  transcript, fac, error)) return false;
             transcript.absorb("gat.relation.fac", operation.fac_proof);
         } else if (!operation.fac_proof.empty()) {
             if (error) *error = "operation carries an unexpected FAC4DNN proof";
@@ -3425,7 +4990,10 @@ inline bool verify(const Proof& proof, const VerifierContext& context,
                 expected_operation, transcript, error);
             if (batched.id.empty() ||
                 !verify_constraint(payload, batched, expected_operation.tensor_refs,
-                                   proof.commitments, context.generators, transcript, error)) return false;
+                                   proof.commitments, context.ipa_generators,
+                                   context.ipa_blinding_generator,
+                                   context.ipa_u_generator, context.statement,
+                                   transcript, error)) return false;
             transcript.absorb("gat.relation.batch", operation.batch_proof);
         } else if (!operation.batch_proof.empty()) {
             if (error) *error = "operation carries an unexpected batched family proof";
@@ -3435,13 +5003,18 @@ inline bool verify(const Proof& proof, const VerifierContext& context,
              primitive_index < expected_operation.primitives.size(); ++primitive_index) {
             if (!verify_matmul_primitive(expected_operation.primitives[primitive_index],
                                          operation.primitive_proofs[primitive_index],
-                                         context.generators, error)) return false;
+                                         context.ipa_generators,
+                                         context.ipa_blinding_generator,
+                                         context.ipa_u_generator, error)) return false;
             transcript.absorb("gat.relation.primitive",
                               operation.primitive_proofs[primitive_index]);
             if (!verify_primitive_binding(expected_operation.primitives[primitive_index],
                                           operation.primitive_proofs[primitive_index],
                                           operation.primitive_bindings[primitive_index],
-                                          proof.commitments, context.generators, error)) return false;
+                                          proof.commitments, context.ipa_generators,
+                                          context.ipa_blinding_generator,
+                                          context.ipa_u_generator, context.statement,
+                                          error)) return false;
             std::vector<byte> binding_bytes;
             append_primitive_binding(binding_bytes, operation.primitive_bindings[primitive_index]);
             transcript.absorb("gat.relation.primitive.binding", binding_bytes);
@@ -3452,7 +5025,10 @@ inline bool verify(const Proof& proof, const VerifierContext& context,
                 if (!verify_constraint(operation.constraints[constraint_index],
                                        expected_operation.constraints[constraint_index],
                                        expected_operation.tensor_refs,
-                                       proof.commitments, context.generators,
+                                       proof.commitments, context.ipa_generators,
+                                       context.ipa_blinding_generator,
+                                       context.ipa_u_generator,
+                                       context.statement,
                                        transcript, error)) return false;
         }
     }
@@ -3461,7 +5037,7 @@ inline bool verify(const Proof& proof, const VerifierContext& context,
         proof.commitments[proof.public_output_commitment].visibility != 1U ||
         proof.public_output_opening.commitment_index != proof.public_output_commitment ||
         proof.public_output_opening.generator_size != proof.commitments[proof.public_output_commitment].domain_size ||
-        proof.public_output_opening.generator_size > context.generators.size() ||
+        proof.public_output_opening.generator_size > context.ipa_generators.size() ||
         !proof.public_output_opening.outer_point.empty()) {
         if (error) *error = "public output opening reference is invalid";
         return false;
@@ -3486,7 +5062,7 @@ inline bool verify(const Proof& proof, const VerifierContext& context,
         if (error) *error = "public Y is not a canonical field vector matching its commitment domain";
         return false;
     }
-    std::vector<zkdl::CpuG1Point> output_generators(context.generators.begin(), context.generators.begin() + domain);
+    std::vector<zkdl::CpuG1Point> output_generators(context.ipa_generators.begin(), context.ipa_generators.begin() + domain);
     const G1Jacobian_t expected_public_commitment = zkdl::cpu_g1_to_native(
         zkdl::cpu_g1_sum(output_generators, public_values));
     if (!zkdl::cpu_g1_equal(zkdl::cpu_g1_from_native(
@@ -3495,9 +5071,16 @@ inline bool verify(const Proof& proof, const VerifierContext& context,
         if (error) *error = "public output commitment is not bound to verifier-supplied Y";
         return false;
     }
-    if (!zkdl::cpu_verify_opening(proof.public_output_opening,
-                                  zkdl::cpu_g1_from_native(proof.commitments[proof.public_output_commitment].commitment),
-                                  error)) return false;
+    const zkdl::CpuIpaOpeningMetadata output_metadata = relation_opening_metadata(
+        public_output_opening_descriptor(), proof.public_output_commitment, {},
+        context.statement);
+    if (!zkdl::cpu_verify_opening(
+            proof.public_output_opening,
+            zkdl::cpu_g1_from_native(proof.commitments[proof.public_output_commitment].commitment),
+            std::vector<zkdl::CpuG1Point>(context.ipa_generators.begin(),
+                                          context.ipa_generators.begin() + domain),
+            context.ipa_blinding_generator, context.ipa_u_generator,
+            output_metadata, error)) return false;
     std::vector<byte> opening_bytes;
     zkdl::serialize_opening(proof.public_output_opening, opening_bytes);
     transcript.absorb("gat.public_output.opening", opening_bytes);

@@ -36,6 +36,12 @@ public:
     zkdl::EvaluationOpeningProof open_with_proof(
         const FrTensor& t, const G1TensorJacobian& c,
         const vector<Fr_t>& u) const;
+    zkdl::EvaluationOpeningProof open_with_ipa_proof(
+        const FrTensor& t, const G1TensorJacobian& c,
+        const vector<Fr_t>& u, const G1Jacobian_t& blinding_generator,
+        const G1Jacobian_t& u_generator,
+        const zkdl::FrWire& randomness,
+        const zkdl::CpuIpaOpeningMetadata& metadata) const;
     Fr_t open(const FrTensor& t, const G1TensorJacobian& c,
               const vector<Fr_t>& u, uint& proof_size_count,
               zkdl::EvaluationOpeningProof* retained) const;
@@ -213,6 +219,30 @@ inline void matmul_absorb_statement(
     transcript.absorb("zkMatMul.statement", message);
 }
 
+inline zkdl::CpuIpaOpeningMetadata matmul_opening_metadata(
+    const std::array<byte, 32U>& statement_digest, std::uint32_t commitment_index,
+    const std::vector<Fr_t>& full_point, std::uint32_t outer_bits) {
+    if (outer_bits > full_point.size())
+        throw std::invalid_argument("zkMatMul opening outer point exceeds full point");
+    zkdl::CpuIpaOpeningMetadata metadata;
+    metadata.commitment_index = commitment_index;
+    metadata.outer_point.reserve(outer_bits);
+    for (std::size_t i = full_point.size() - outer_bits; i < full_point.size(); ++i)
+        metadata.outer_point.push_back(zkdl::fr_wire(full_point[i]));
+    std::vector<byte> descriptor_bytes;
+    descriptor_bytes.insert(descriptor_bytes.end(), statement_digest.begin(), statement_digest.end());
+    append_u32(descriptor_bytes, commitment_index);
+    for (const auto& value : full_point) append_fr(descriptor_bytes, value);
+    metadata.descriptor_digest = sha256(descriptor_bytes);
+    std::vector<byte> registry_bytes(statement_digest.begin(), statement_digest.end());
+    append_string(registry_bytes, "zkmatmul.registry");
+    metadata.registry_digest = sha256(registry_bytes);
+    std::vector<byte> srs_bytes(statement_digest.begin(), statement_digest.end());
+    append_string(srs_bytes, "zkmatmul.srs");
+    metadata.srs_digest = sha256(srs_bytes);
+    return metadata;
+}
+
 inline void matmul_append_fr_vector(std::vector<byte>& out,
                                     const std::vector<Fr_t>& values) {
     append_u64(out, static_cast<std::uint64_t>(values.size()));
@@ -254,12 +284,12 @@ inline std::vector<Fr_t> matmul_concat(const std::vector<Fr_t>& first,
 }
 
 struct MatMulProof {
-    static const std::uint32_t kVersion = 1U;
+    static const std::uint32_t kVersion = 2U;
     static const std::uint32_t kCCommitment = 1U;
     static const std::uint32_t kCPublicClaim = 2U;
 
     std::uint32_t version = kVersion;
-    std::string protocol_id = "zkdl-zkmatmul-proof-v1";
+    std::string protocol_id = "zkdl-zkmatmul-proof-v2";
     MatMulShape shape;
     std::uint32_t c_binding_mode = kCCommitment;
     std::array<byte, 32> statement_digest{};
@@ -429,7 +459,7 @@ inline bool matmul_validate_proof_shape(const MatMulProof& proof,
                                         const MatMulShape& shape,
                                         std::string* error = nullptr) {
     if (!shape.valid(error) || proof.version != MatMulProof::kVersion ||
-        proof.protocol_id != "zkdl-zkmatmul-proof-v1" || proof.shape != shape ||
+        proof.protocol_id != "zkdl-zkmatmul-proof-v2" || proof.shape != shape ||
         (proof.c_binding_mode != MatMulProof::kCCommitment &&
          proof.c_binding_mode != MatMulProof::kCPublicClaim)) {
         if (error && error->empty()) *error = "zkMatMul proof metadata mismatch";
@@ -647,6 +677,9 @@ inline bool matmul_verify_gpu_opening(const Commitment& generators,
 
 inline bool matmul_verify_cpu_opening(const MatMulCpuCommitmentView& view,
                                       const EvaluationOpeningProof& opening,
+                                      const CpuG1Point& ipa_blinding_generator,
+                                      const CpuG1Point& ipa_u_generator,
+                                      const std::array<byte, 32U>& statement_digest,
                                       std::string* error) {
     try {
         const CpuG1Point expected = matmul_cpu_mle_eval(view.commitments, opening.outer_point);
@@ -654,7 +687,24 @@ inline bool matmul_verify_cpu_opening(const MatMulCpuCommitmentView& view,
             if (error) *error = "CPU zkMatMul commitment evaluation mismatch";
             return false;
         }
-        return cpu_verify_opening(opening, expected, error);
+        std::vector<CpuG1Point> generators = view.generators;
+        if (generators.size() != opening.generator_size) {
+            if (error) *error = "zkMatMul IPA generator domain mismatch";
+            return false;
+        }
+        const std::vector<Fr_t> full_point = [&]() {
+            std::vector<Fr_t> result;
+            result.reserve(opening.inner_point.size() + opening.outer_point.size());
+            result.insert(result.end(), opening.inner_point.begin(), opening.inner_point.end());
+            result.insert(result.end(), opening.outer_point.begin(), opening.outer_point.end());
+            return result;
+        }();
+        const CpuIpaOpeningMetadata metadata = matmul_opening_metadata(
+            statement_digest, opening.commitment_index, full_point,
+            static_cast<std::uint32_t>(opening.outer_point.size()));
+        return cpu_verify_opening(opening, expected, generators,
+                                  ipa_blinding_generator, ipa_u_generator,
+                                  metadata, error);
     } catch (const std::exception& exception) {
         if (error) *error = exception.what();
         return false;
@@ -666,6 +716,8 @@ inline bool matmul_verify_cpu(const MatMulProof& proof, const MatMulShape& shape
                               const MatMulCpuCommitmentView& b,
                               const MatMulCpuCommitmentView* c,
                               const Fr_t* expected_public_claim,
+                              const CpuG1Point& ipa_blinding_generator,
+                              const CpuG1Point& ipa_u_generator,
                               std::string* error = nullptr) {
     const MatMulNativeCommitmentView native_a = matmul_native_view(a);
     const MatMulNativeCommitmentView native_b = matmul_native_view(b);
@@ -677,11 +729,27 @@ inline bool matmul_verify_cpu(const MatMulProof& proof, const MatMulShape& shape
     }
     if (!matmul_replay_core(proof, shape, native_a, native_b, native_c_ptr,
                             expected_public_claim, error)) return false;
-    if (!matmul_verify_cpu_opening(a, proof.opening_a, error) ||
-        !matmul_verify_cpu_opening(b, proof.opening_b, error)) return false;
+    if (!matmul_verify_cpu_opening(a, proof.opening_a, ipa_blinding_generator,
+                                   ipa_u_generator, proof.statement_digest, error) ||
+        !matmul_verify_cpu_opening(b, proof.opening_b, ipa_blinding_generator,
+                                   ipa_u_generator, proof.statement_digest, error)) return false;
     if (proof.has_c_opening && (c == nullptr ||
-                                !matmul_verify_cpu_opening(*c, proof.opening_c, error))) return false;
+                                !matmul_verify_cpu_opening(*c, proof.opening_c,
+                                                           ipa_blinding_generator,
+                                                           ipa_u_generator,
+                                                           proof.statement_digest, error))) return false;
     return true;
+}
+
+inline bool matmul_verify_cpu(const MatMulProof& proof, const MatMulShape& shape,
+                              const MatMulCpuCommitmentView& a,
+                              const MatMulCpuCommitmentView& b,
+                              const MatMulCpuCommitmentView* c,
+                              const Fr_t* expected_public_claim,
+                              std::string* error = nullptr) {
+    (void)proof; (void)shape; (void)a; (void)b; (void)c; (void)expected_public_claim;
+    if (error) *error = "authenticated IPA G/H/U basis is required";
+    return false;
 }
 
 inline bool matmul_verify_gpu(const MatMulProof& proof, const MatMulShape& shape,
@@ -720,7 +788,9 @@ inline void matmul_cuda_sync(const char* operation) {
 inline MatMulProof matmul_prove_internal(
     const FrTensor& a_tensor, const FrTensor& b_tensor, const FrTensor& c_tensor,
     const MatMulShape& shape, const Commitment& gen_a, const Commitment& gen_b,
-    const Commitment* gen_c, std::uint32_t* proof_size_count = nullptr) {
+    const Commitment* gen_c, std::uint32_t* proof_size_count = nullptr,
+    const G1Jacobian_t* ipa_blinding_generator = nullptr,
+    const G1Jacobian_t* ipa_u_generator = nullptr) {
     std::string error;
     if (!shape.valid(&error)) throw std::invalid_argument(error);
     if (a_tensor.size != shape.a_size() || b_tensor.size != shape.b_size() ||
@@ -730,6 +800,8 @@ inline MatMulProof matmul_prove_internal(
         throw std::invalid_argument("zkMatMul generator shape mismatch");
     if (gen_c == nullptr && c_tensor.size == 0U)
         throw std::invalid_argument("zkMatMul requires output C witness");
+    if (ipa_blinding_generator == nullptr || ipa_u_generator == nullptr)
+        throw std::invalid_argument("zkMatMul requires authenticated IPA H/U basis");
 
     const G1TensorJacobian com_a = gen_a.commit(a_tensor);
     const G1TensorJacobian com_b = gen_b.commit(b_tensor);
@@ -843,17 +915,25 @@ inline MatMulProof matmul_prove_internal(
         matmul_concat(proof.target_k, proof.phase2_challenges, proof.phase1_challenges);
     const std::vector<Fr_t> point_c =
         matmul_concat(proof.target_k, proof.target_m, proof.target_num);
-    std::uint32_t ignored_size = 0U;
-    gen_a.open(a_tensor, com_a, point_a, ignored_size, &proof.opening_a);
-    gen_b.open(b_tensor, com_b, point_b, ignored_size, &proof.opening_b);
-    proof.opening_a.commitment_index = 0U;
-    proof.opening_b.commitment_index = 1U;
+    const zkdl::CpuIpaOpeningMetadata metadata_a = matmul_opening_metadata(
+        proof.statement_digest, 0U, point_a, ceilLog2(com_a.size));
+    const zkdl::CpuIpaOpeningMetadata metadata_b = matmul_opening_metadata(
+        proof.statement_digest, 1U, point_b, ceilLog2(com_b.size));
+    proof.opening_a = gen_a.open_with_ipa_proof(
+        a_tensor, com_a, point_a, *ipa_blinding_generator, *ipa_u_generator,
+        zkdl::FrWire{}, metadata_a);
+    proof.opening_b = gen_b.open_with_ipa_proof(
+        b_tensor, com_b, point_b, *ipa_blinding_generator, *ipa_u_generator,
+        zkdl::FrWire{}, metadata_b);
     if (!matmul_fr_equal(proof.opening_a.value, terminal_a) ||
         !matmul_fr_equal(proof.opening_b.value, terminal_b))
         throw std::runtime_error("zkMatMul terminal A/B opening mismatch");
     if (gen_c != nullptr) {
-        gen_c->open(c_tensor, *com_c, point_c, ignored_size, &proof.opening_c);
-        proof.opening_c.commitment_index = 2U;
+        const zkdl::CpuIpaOpeningMetadata metadata_c = matmul_opening_metadata(
+            proof.statement_digest, 2U, point_c, ceilLog2(com_c->size));
+        proof.opening_c = gen_c->open_with_ipa_proof(
+            c_tensor, *com_c, point_c, *ipa_blinding_generator, *ipa_u_generator,
+            zkdl::FrWire{}, metadata_c);
         proof.has_c_opening = true;
         if (!matmul_fr_equal(proof.opening_c.value, proof.output_claim))
             throw std::runtime_error("zkMatMul terminal C opening mismatch");
@@ -887,11 +967,35 @@ inline MatMulProof matmul_prove(const FrTensor& a, const FrTensor& b, const FrTe
     return matmul_prove_internal(a, b, c, shape, gen_a, gen_b, &gen_c, proof_size_count);
 }
 
+inline MatMulProof matmul_prove(const FrTensor& a, const FrTensor& b, const FrTensor& c,
+                                const MatMulShape& shape, const Commitment& gen_a,
+                                const Commitment& gen_b, const Commitment& gen_c,
+                                std::uint32_t* proof_size_count,
+                                const CpuG1Point& ipa_blinding_generator,
+                                const CpuG1Point& ipa_u_generator) {
+    const G1Jacobian_t h = cpu_g1_to_native(ipa_blinding_generator);
+    const G1Jacobian_t u = cpu_g1_to_native(ipa_u_generator);
+    return matmul_prove_internal(a, b, c, shape, gen_a, gen_b, &gen_c,
+                                 proof_size_count, &h, &u);
+}
+
 inline MatMulProof matmul_prove_public(const FrTensor& a, const FrTensor& b, const FrTensor& c,
                                        const MatMulShape& shape, const Commitment& gen_a,
                                        const Commitment& gen_b,
                                        std::uint32_t* proof_size_count = nullptr) {
     return matmul_prove_internal(a, b, c, shape, gen_a, gen_b, nullptr, proof_size_count);
+}
+
+inline MatMulProof matmul_prove_public(const FrTensor& a, const FrTensor& b, const FrTensor& c,
+                                       const MatMulShape& shape, const Commitment& gen_a,
+                                       const Commitment& gen_b,
+                                       std::uint32_t* proof_size_count,
+                                       const CpuG1Point& ipa_blinding_generator,
+                                       const CpuG1Point& ipa_u_generator) {
+    const G1Jacobian_t h = cpu_g1_to_native(ipa_blinding_generator);
+    const G1Jacobian_t u = cpu_g1_to_native(ipa_u_generator);
+    return matmul_prove_internal(a, b, c, shape, gen_a, gen_b, nullptr,
+                                 proof_size_count, &h, &u);
 }
 
 }  // namespace zkdl

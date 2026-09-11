@@ -1061,40 +1061,8 @@ namespace gatzk::algebra
         record_cuda_stream_sync();
     }
 
-    // 重心插值权重计算(用于在单个挑战点x上快速评估多项式)
+   // 重心插值权重计算(用于在单个挑战点x上快速评估多项式)
     namespace
-    {
-        __device__ __forceinline__
-            gpu::GpuFr
-            barycentric_pow_u64(
-                gpu::GpuFr base,
-                std::size_t exponent)
-        {
-            auto result =
-                gpu::fr_one();
-
-            while (exponent != 0)
-            {
-                if ((exponent & 1U) != 0U)
-                {
-                    result =
-                        gpu::fr_mul(
-                            result,
-                            base);
-                }
-
-                base =
-                    gpu::fr_sqr(
-                        base);
-
-                exponent >>=
-                    1U;
-            }
-
-            return result;
-        }
-
-namespace
     {
         constexpr unsigned
             kBarycentricScanBlockSize = 256;
@@ -1132,7 +1100,6 @@ namespace
         barycentric_prepare_parallel_kernel(
             const gpu::GpuFr omega,
             const gpu::GpuFr x,
-            gpu::GpuFr *__restrict__ omega_powers,
             gpu::GpuFr *__restrict__ denominators,
             std::size_t domain_size)
         {
@@ -1207,9 +1174,6 @@ namespace
                 gpu::fr_mul(
                     block_power,
                     lane_powers[lane]);
-
-            omega_powers[index] =
-                omega_power;
 
             denominators[index] =
                 gpu::fr_sub(
@@ -1378,13 +1342,14 @@ namespace
         __global__ void
         barycentric_finalize_parallel_kernel(
             const gpu::GpuFr *__restrict__
-                omega_powers,
+                denominators,
             const gpu::GpuFr *__restrict__
                 prefixes,
             const gpu::GpuFr *__restrict__
                 suffixes,
             const gpu::GpuFr *__restrict__
                 global_inverse,
+            const gpu::GpuFr x,
             const gpu::GpuFr zero_eval,
             const gpu::GpuFr inv_n,
             gpu::GpuFr *__restrict__ weights,
@@ -1408,9 +1373,14 @@ namespace
                         suffixes[index]),
                     global_inverse[0]);
 
+            const auto omega_power =
+                gpu::fr_sub(
+                    x,
+                    denominators[index]);
+
             const auto scaled_point =
                 gpu::fr_mul(
-                    omega_powers[index],
+                    omega_power,
                     inv_n);
 
             weights[index] =
@@ -1729,9 +1699,6 @@ namespace
             domain_size *
             sizeof(gpu::GpuFr);
 
-        gpu::GpuFr *d_omega_powers =
-            nullptr;
-
         gpu::GpuFr *d_denominators =
             nullptr;
 
@@ -1756,12 +1723,6 @@ namespace
         {
             release_barycentric_scan_levels(
                 &scan_levels);
-
-            if (d_omega_powers != nullptr)
-            {
-                (void)cudaFree(
-                    d_omega_powers);
-            }
 
             if (d_denominators != nullptr)
             {
@@ -1819,9 +1780,6 @@ namespace
                 &d_omega_powers,
                 element_bytes) ||
             !allocate_vector(
-                &d_denominators,
-                element_bytes) ||
-            !allocate_vector(
                 &d_prefixes,
                 element_bytes) ||
             !allocate_vector(
@@ -1863,7 +1821,6 @@ namespace
             kBarycentricScanBlockSize>>>(
             omega,
             x,
-            d_omega_powers,
             d_denominators,
             domain_size);
 
@@ -1923,10 +1880,11 @@ namespace
             static_cast<unsigned>(
                 block_count_size),
             kBarycentricScanBlockSize>>>(
-            d_omega_powers,
+            d_denominators,
             d_prefixes,
             d_suffixes,
             d_global_inverse,
+            x,
             zero_eval,
             inv_n,
             d_weights,
@@ -1961,240 +1919,6 @@ namespace
             kernel_count);
 
         cleanup();
-
-        return true;
-    }
-    } // namespace
-
-    bool barycentric_weights_gpu(
-        const uint64_t omega_limbs[4],
-        const uint64_t x_limbs[4],
-        const uint64_t zero_eval_limbs[4],
-        const uint64_t inv_n_limbs[4],
-        uint64_t *output_weight_limbs,
-        std::size_t domain_size)
-    {
-        if (domain_size == 0)
-        {
-            return true;
-        }
-
-        gpu::GpuFr omega{};
-        gpu::GpuFr x{};
-        gpu::GpuFr zero_eval{};
-        gpu::GpuFr inv_n{};
-
-        std::memcpy(
-            omega.d,
-            omega_limbs,
-            sizeof(omega.d));
-
-        std::memcpy(
-            x.d,
-            x_limbs,
-            sizeof(x.d));
-
-        std::memcpy(
-            zero_eval.d,
-            zero_eval_limbs,
-            sizeof(zero_eval.d));
-
-        std::memcpy(
-            inv_n.d,
-            inv_n_limbs,
-            sizeof(inv_n.d));
-
-        constexpr std::size_t
-            kBarycentricChunkSize = 256;
-
-        const auto chunk_size =
-            std::min(
-                domain_size,
-                kBarycentricChunkSize);
-
-        const auto num_chunks =
-            (domain_size +
-             chunk_size - 1) /
-            chunk_size;
-
-        gpu::GpuFr *d_omega_powers =
-            nullptr;
-
-        gpu::GpuFr *d_denominators =
-            nullptr;
-
-        gpu::GpuFr *d_prefix =
-            nullptr;
-
-        gpu::GpuFr *d_chunk_products =
-            nullptr;
-
-        gpu::GpuFr *d_chunk_outer_inv =
-            nullptr;
-
-        gpu::GpuFr *d_weights =
-            nullptr;
-
-        const auto elem_bytes =
-            domain_size *
-            sizeof(gpu::GpuFr);
-
-        const auto chunk_bytes =
-            num_chunks *
-            sizeof(gpu::GpuFr);
-
-        auto cleanup =
-            [&]() noexcept
-        {
-            if (d_omega_powers != nullptr)
-            {
-                (void)cudaFree(
-                    d_omega_powers);
-            }
-
-            if (d_denominators != nullptr)
-            {
-                (void)cudaFree(
-                    d_denominators);
-            }
-
-            if (d_prefix != nullptr)
-            {
-                (void)cudaFree(
-                    d_prefix);
-            }
-
-            if (d_chunk_products != nullptr)
-            {
-                (void)cudaFree(
-                    d_chunk_products);
-            }
-
-            if (d_chunk_outer_inv != nullptr)
-            {
-                (void)cudaFree(
-                    d_chunk_outer_inv);
-            }
-
-            if (d_weights != nullptr)
-            {
-                (void)cudaFree(
-                    d_weights);
-            }
-        };
-
-        if (cudaMalloc(
-                reinterpret_cast<void **>(
-                    &d_omega_powers),
-                elem_bytes) != cudaSuccess ||
-            cudaMalloc(
-                reinterpret_cast<void **>(
-                    &d_denominators),
-                elem_bytes) != cudaSuccess ||
-            cudaMalloc(
-                reinterpret_cast<void **>(
-                    &d_prefix),
-                elem_bytes) != cudaSuccess ||
-            cudaMalloc(
-                reinterpret_cast<void **>(
-                    &d_chunk_products),
-                chunk_bytes) != cudaSuccess ||
-            cudaMalloc(
-                reinterpret_cast<void **>(
-                    &d_chunk_outer_inv),
-                chunk_bytes) != cudaSuccess ||
-            cudaMalloc(
-                reinterpret_cast<void **>(
-                    &d_weights),
-                elem_bytes) != cudaSuccess)
-        {
-            cleanup();
-            return false;
-        }
-
-        constexpr unsigned
-            kBlockSize = 128;
-
-        const auto block_count_size =
-            (num_chunks +
-             kBlockSize - 1) /
-            kBlockSize;
-
-        if (block_count_size >
-            std::numeric_limits<
-                unsigned>::max())
-        {
-            cleanup();
-            return false;
-        }
-
-        const auto block_count =
-            static_cast<unsigned>(
-                block_count_size);
-
-        barycentric_prepare_chunk_kernel<<<
-            block_count,
-            kBlockSize>>>(
-            omega,
-            x,
-            d_omega_powers,
-            d_denominators,
-            d_prefix,
-            d_chunk_products,
-            domain_size,
-            chunk_size);
-
-        auto status =
-            cudaGetLastError();
-
-        if (status != cudaSuccess)
-        {
-            cleanup();
-            return false;
-        }
-
-        barycentric_weights_finalize_kernel<<<
-            block_count,
-            kBlockSize>>>(
-            d_omega_powers,
-            d_denominators,
-            d_prefix,
-            d_chunk_outer_inv,
-            zero_eval,
-            inv_n,
-            d_weights,
-            domain_size,
-            chunk_size);
-
-        status =
-            cudaGetLastError();
-
-        if (status != cudaSuccess)
-        {
-            cleanup();
-            return false;
-        }
-
-        status =
-            cudaMemcpy(
-                output_weight_limbs,
-                d_weights,
-                elem_bytes,
-                cudaMemcpyDeviceToHost);
-
-        if (status != cudaSuccess)
-        {
-            cleanup();
-            return false;
-        }
-
-        record_cuda_d2h(
-            elem_bytes);
-
-        cleanup();
-
-        record_cuda_kernel_invocations(
-            2);
 
         return true;
     }

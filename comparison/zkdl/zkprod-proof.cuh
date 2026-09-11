@@ -27,7 +27,7 @@ namespace zkdl_prod {
 using byte = zkdl::byte;
 
 struct Proof {
-    static const std::uint32_t kVersion = 1U;
+    static const std::uint32_t kVersion = 2U;
 
     std::uint32_t version;
     std::uint32_t num;
@@ -369,11 +369,18 @@ inline zkdl::CpuG1Point hyrax_generator_eval(
     return zkdl::cpu_g1_sum(generators, weights);
 }
 
+inline zkdl::CpuIpaOpeningMetadata zkprod_opening_metadata(
+    const std::array<byte, 32U>& statement_digest, std::uint32_t commitment_index,
+    const std::vector<zkdl::FrWire>& point, std::uint32_t outer_bits);
+
 inline zkdl::EvaluationOpeningProof open_partitioned(
     const std::vector<zkdl::CpuG1Point>& generators,
     const std::vector<zkdl::FrWire>& values, std::uint32_t num,
     std::uint32_t dim, const std::vector<zkdl::FrWire>& point,
-    std::uint32_t commitment_index) {
+    std::uint32_t commitment_index,
+    const zkdl::CpuG1Point& ipa_blinding_generator,
+    const zkdl::CpuG1Point& ipa_u_generator,
+    const std::array<byte, 32U>& statement_digest) {
     const std::uint32_t inner_bits = log2_exact(dim);
     const std::uint32_t outer_bits = log2_exact(num);
     if (inner_bits == 0xffffffffU || outer_bits == 0xffffffffU ||
@@ -384,11 +391,11 @@ inline zkdl::EvaluationOpeningProof open_partitioned(
     const std::vector<zkdl::FrWire> outer(point.begin() + inner_bits,
                                            point.end());
     const std::vector<zkdl::FrWire> partial = fold_outer(values, num, dim, outer);
-    zkdl::EvaluationOpeningProof opening = zkdl::cpu_open(generators, partial, inner);
-    opening.commitment_index = commitment_index;
-    opening.outer_point.clear();
-    for (size_t i = 0; i < outer.size(); ++i)
-        opening.outer_point.push_back(zkdl::fr_value(outer[i]));
+    const zkdl::CpuIpaOpeningMetadata metadata = zkprod_opening_metadata(
+        statement_digest, commitment_index, point, outer_bits);
+    zkdl::EvaluationOpeningProof opening = zkdl::cpu_open(
+        generators, partial, inner, ipa_blinding_generator, ipa_u_generator,
+        zkdl::FrWire{}, metadata);
     return opening;
 }
 
@@ -406,6 +413,38 @@ inline void absorb_statement(
     transcript.absorb("zkprod.statement.v1", statement);
 }
 
+inline std::array<byte, 32U> zkprod_statement_digest(
+    std::uint32_t num, std::uint32_t dim,
+    const std::vector<G1Jacobian_t>& commitment_a,
+    const std::vector<G1Jacobian_t>& commitment_b,
+    const std::vector<G1Jacobian_t>& commitment_c) {
+    zkdl::Transcript transcript("zkdl-zkprod-proof-v1");
+    absorb_statement(transcript, num, dim, commitment_a, commitment_b, commitment_c);
+    return transcript.digest();
+}
+
+inline zkdl::CpuIpaOpeningMetadata zkprod_opening_metadata(
+    const std::array<byte, 32U>& statement_digest, std::uint32_t commitment_index,
+    const std::vector<zkdl::FrWire>& point, std::uint32_t outer_bits) {
+    if (outer_bits > point.size())
+        throw std::invalid_argument("zkProd opening outer point exceeds full point");
+    zkdl::CpuIpaOpeningMetadata metadata;
+    metadata.commitment_index = commitment_index;
+    for (std::size_t i = point.size() - outer_bits; i < point.size(); ++i)
+        metadata.outer_point.push_back(point[i]);
+    std::vector<byte> descriptor_bytes(statement_digest.begin(), statement_digest.end());
+    zkdl::append_u32(descriptor_bytes, commitment_index);
+    for (const auto& value : point) zkdl::append_fr(descriptor_bytes, zkdl::fr_value(value));
+    metadata.descriptor_digest = zkdl::sha256(descriptor_bytes);
+    std::vector<byte> registry_bytes(statement_digest.begin(), statement_digest.end());
+    zkdl::append_string(registry_bytes, "zkprod.registry");
+    metadata.registry_digest = zkdl::sha256(registry_bytes);
+    std::vector<byte> srs_bytes(statement_digest.begin(), statement_digest.end());
+    zkdl::append_string(srs_bytes, "zkprod.srs");
+    metadata.srs_digest = zkdl::sha256(srs_bytes);
+    return metadata;
+}
+
 inline void absorb_opening(zkdl::Transcript& transcript, const char* label,
                            const zkdl::EvaluationOpeningProof& opening) {
     std::vector<byte> encoded;
@@ -420,7 +459,9 @@ inline Proof prove_host(
     const std::vector<zkdl::FrWire>& values_c,
     const std::vector<zkdl::CpuG1Point>& generators_a,
     const std::vector<zkdl::CpuG1Point>& generators_b,
-    const std::vector<zkdl::CpuG1Point>& generators_c) {
+    const std::vector<zkdl::CpuG1Point>& generators_c,
+    const zkdl::CpuG1Point& ipa_blinding_generator,
+    const zkdl::CpuG1Point& ipa_u_generator) {
     const std::uint32_t inner_bits = log2_exact(dim);
     const std::uint32_t outer_bits = log2_exact(num);
     if (inner_bits == 0xffffffffU || outer_bits == 0xffffffffU ||
@@ -443,6 +484,7 @@ inline Proof prove_host(
     zkdl::Transcript transcript("zkdl-zkprod-proof-v1");
     absorb_statement(transcript, num, dim, proof.commitment_a,
                      proof.commitment_b, proof.commitment_c);
+    const std::array<byte, 32U> statement_digest = transcript.digest();
     proof.evaluation_point.reserve(proof.log_domain);
     for (std::uint32_t i = 0; i < proof.log_domain; ++i)
         proof.evaluation_point.push_back(
@@ -553,11 +595,17 @@ inline Proof prove_host(
             replay.challenge(sumcheck.label + ".challenge")));
     }
     proof.opening_a = open_partitioned(generators_a, values_a, num, dim,
-                                       sumcheck_point, 0U);
+                                       sumcheck_point, 0U,
+                                       ipa_blinding_generator, ipa_u_generator,
+                                       statement_digest);
     proof.opening_b = open_partitioned(generators_b, values_b, num, dim,
-                                       sumcheck_point, 1U);
+                                       sumcheck_point, 1U,
+                                       ipa_blinding_generator, ipa_u_generator,
+                                       statement_digest);
     proof.opening_c = open_partitioned(generators_c, values_c, num, dim,
-                                       evaluation_point_wires, 2U);
+                                       evaluation_point_wires, 2U,
+                                       ipa_blinding_generator, ipa_u_generator,
+                                       statement_digest);
     absorb_opening(transcript, "zkprod.opening.a", proof.opening_a);
     absorb_opening(transcript, "zkprod.opening.b", proof.opening_b);
     absorb_opening(transcript, "zkprod.opening.c", proof.opening_c);
@@ -565,6 +613,19 @@ inline Proof prove_host(
     std::string error;
     if (!proof.shape_valid(&error)) throw std::runtime_error(error);
     return proof;
+}
+
+inline Proof prove_host(
+    std::uint32_t num, std::uint32_t dim,
+    const std::vector<zkdl::FrWire>& values_a,
+    const std::vector<zkdl::FrWire>& values_b,
+    const std::vector<zkdl::FrWire>& values_c,
+    const std::vector<zkdl::CpuG1Point>& generators_a,
+    const std::vector<zkdl::CpuG1Point>& generators_b,
+    const std::vector<zkdl::CpuG1Point>& generators_c) {
+    (void)num; (void)dim; (void)values_a; (void)values_b; (void)values_c;
+    (void)generators_a; (void)generators_b; (void)generators_c;
+    throw std::invalid_argument("authenticated IPA G/H/U basis is required");
 }
 
 inline bool opening_point_matches(
@@ -600,21 +661,22 @@ inline bool verify_one_opening(
     const std::vector<zkdl::CpuG1Point>& generators,
     const std::vector<G1Jacobian_t>& commitments,
     const std::vector<zkdl::FrWire>& point, std::uint32_t num,
-    std::uint32_t dim, std::string* error) {
+    std::uint32_t dim,
+    const zkdl::CpuG1Point& ipa_blinding_generator,
+    const zkdl::CpuG1Point& ipa_u_generator,
+    const std::array<byte, 32U>& statement_digest,
+    std::string* error) {
     if (!opening_point_matches(opening, point, num, dim, error)) return false;
     const zkdl::CpuG1Point expected = commitment_eval(
         commitments,
         std::vector<zkdl::FrWire>(point.begin() + log2_exact(dim), point.end()));
-    const zkdl::CpuG1Point expected_final =
-        hyrax_generator_eval(generators,
-                             std::vector<zkdl::FrWire>(point.begin(),
-                                                       point.begin() + log2_exact(dim)));
-    if (!zkdl::cpu_g1_equal(
-            zkdl::cpu_g1_from_native(opening.rounds.back()), expected_final)) {
-        if (error) *error = "zkProd terminal generator is not bound to VK";
-        return false;
-    }
-    if (!zkdl::cpu_verify_opening(opening, expected, error)) return false;
+    if (!zkdl::cpu_verify_opening(opening, expected, generators,
+                                  ipa_blinding_generator, ipa_u_generator,
+                                  zkprod_opening_metadata(statement_digest,
+                                                          opening.commitment_index,
+                                                          point,
+                                                          log2_exact(num)),
+                                  error)) return false;
     return true;
 }
 
@@ -642,6 +704,8 @@ inline bool verify_host(
     const std::vector<G1Jacobian_t>& expected_commitment_a,
     const std::vector<G1Jacobian_t>& expected_commitment_b,
     const std::vector<G1Jacobian_t>& expected_commitment_c,
+    const zkdl::CpuG1Point& ipa_blinding_generator,
+    const zkdl::CpuG1Point& ipa_u_generator,
     std::string* error = nullptr) {
     if (!proof.shape_valid(error) || proof.num != num || proof.dim != dim)
         return false;
@@ -661,6 +725,7 @@ inline bool verify_host(
     zkdl::Transcript transcript("zkdl-zkprod-proof-v1");
     absorb_statement(transcript, num, dim, expected_commitment_a,
                      expected_commitment_b, expected_commitment_c);
+    const std::array<byte, 32U> statement_digest = transcript.digest();
     std::vector<zkdl::FrWire> evaluation_point;
     for (std::uint32_t i = 0; i < proof.log_domain; ++i)
         evaluation_point.push_back(zkdl::fr_wire(
@@ -673,6 +738,8 @@ inline bool verify_host(
 
     if (!verify_one_opening(proof.opening_c, generators_c,
                             expected_commitment_c, evaluation_point, num, dim,
+                            ipa_blinding_generator, ipa_u_generator,
+                            statement_digest,
                             error)) return false;
     std::vector<Fr_t> challenges_native;
     if (!zkdl::verify_sumcheck(proof.sumcheck, proof.opening_c.value,
@@ -687,10 +754,12 @@ inline bool verify_host(
     }
     if (!verify_one_opening(proof.opening_a, generators_a,
                             expected_commitment_a, challenges, num, dim,
-                            error) ||
+                            ipa_blinding_generator, ipa_u_generator,
+                            statement_digest, error) ||
         !verify_one_opening(proof.opening_b, generators_b,
                             expected_commitment_b, challenges, num, dim,
-                            error)) return false;
+                            ipa_blinding_generator, ipa_u_generator,
+                            statement_digest, error)) return false;
 
     if (!same_fr(zkdl::fr_wire(proof.sumcheck.terminal_claims[0]),
                  zkdl::fr_wire(proof.opening_a.value)) ||
@@ -726,6 +795,22 @@ inline bool verify_host(
         return false;
     }
     return true;
+}
+
+inline bool verify_host(
+    const Proof& proof, std::uint32_t num, std::uint32_t dim,
+    const std::vector<zkdl::CpuG1Point>& generators_a,
+    const std::vector<zkdl::CpuG1Point>& generators_b,
+    const std::vector<zkdl::CpuG1Point>& generators_c,
+    const std::vector<G1Jacobian_t>& expected_commitment_a,
+    const std::vector<G1Jacobian_t>& expected_commitment_b,
+    const std::vector<G1Jacobian_t>& expected_commitment_c,
+    std::string* error = nullptr) {
+    (void)proof; (void)num; (void)dim; (void)generators_a; (void)generators_b;
+    (void)generators_c; (void)expected_commitment_a;
+    (void)expected_commitment_b; (void)expected_commitment_c;
+    if (error) *error = "authenticated IPA G/H/U basis is required";
+    return false;
 }
 
 }  // namespace zkdl_prod

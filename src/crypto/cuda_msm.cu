@@ -404,6 +404,51 @@ namespace gatzk::crypto
             }
         }
 
+        void validate_resident_montgomery_scalars(
+            const std::uint64_t *device_scalars,
+            std::size_t capacity,
+            std::size_t required_count,
+            int source_device)
+        {
+            if (device_scalars == nullptr)
+            {
+                return;
+            }
+
+            if (capacity < required_count)
+            {
+                throw std::runtime_error(
+                    "CUDA G1 MSM resident scalar capacity is smaller than requested count");
+            }
+
+            int current_device = -1;
+
+            const auto status =
+                cudaGetDevice(
+                    &current_device);
+
+            if (status != cudaSuccess)
+            {
+                throw_cuda_error(
+                    "resident scalar device lookup",
+                    status);
+            }
+
+            if (source_device < 0 ||
+                source_device !=
+                    current_device)
+            {
+                throw std::runtime_error(
+                    "CUDA G1 MSM resident scalar belongs to a different CUDA device");
+            }
+
+            static_assert(
+                sizeof(mcl::Fr) ==
+                    sizeof(
+                        bls12_381::scalar_t),
+                "mcl and ICICLE BLS12-381 scalar widths must match");
+        }
+
         class ScopedDeviceScalarBuffer
         {
         public:
@@ -1101,7 +1146,8 @@ namespace gatzk::crypto
             std::size_t count,
             std::size_t stable_srs_capacity,
             std::size_t batch_size = 1,
-            bool bounded_integrated_scalar_staging = false)
+            bool bounded_integrated_scalar_staging = false,
+            bool resident_montgomery_scalars = false)
         {
             if (batch_size == 0)
             {
@@ -1189,12 +1235,20 @@ namespace gatzk::crypto
                 reusable_scalar_staging();
 
             const auto incremental_host_scalar_bytes =
-                scalar_staging
-                    .additional_host_bytes(
-                        staged_scalar_count);
+                resident_montgomery_scalars
+                    ? std::size_t{0}
+                    : scalar_staging
+                          .additional_host_bytes(
+                              staged_scalar_count);
 
             const auto incremental_device_scalar_bytes =
-                integrated
+                resident_montgomery_scalars
+                    ? checked_byte_count(
+                          staged_scalar_count,
+                          sizeof(
+                              bls12_381::scalar_t),
+                          "resident Montgomery conversion workspace")
+                : integrated
                     ? std::size_t{0}
                     : scalar_staging
                           .additional_device_bytes(
@@ -1231,6 +1285,15 @@ namespace gatzk::crypto
                         new_base_bytes,
                         incremental_host_scalar_bytes,
                         "integrated resident working set");
+
+                if (resident_montgomery_scalars)
+                {
+                    required_host =
+                        checked_add(
+                            required_host,
+                            incremental_device_scalar_bytes,
+                            "integrated resident Montgomery conversion workspace");
+                }
 
                 const auto reserve =
                     std::max<std::size_t>(
@@ -1329,7 +1392,13 @@ namespace gatzk::crypto
             const algebra::FieldElement *scalars,
             std::size_t count,
             std::size_t stable_srs_capacity,
-            DeviceBaseCache &cache)
+            DeviceBaseCache &cache,
+            const std::uint64_t *device_montgomery_scalars =
+                nullptr,
+            std::size_t device_montgomery_scalar_capacity =
+                0,
+            int device_montgomery_scalar_device =
+                -1)
         {
             release_stream_msm_buffers();
 
@@ -1344,55 +1413,93 @@ namespace gatzk::crypto
 
             config.are_points_on_device = true;
             config.are_points_montgomery_form = false;
-            config.are_scalars_montgomery_form = false;
             config.are_results_on_device = false;
+
             bls12_381::projective_t result;
             cudaError_t status = cudaSuccess;
 
-            auto &scalar_staging =
-                reusable_scalar_staging();
-
-            auto *converted_scalars =
-                scalar_staging.host(count);
-
-            copy_mcl_canonical_scalars_to_icicle(
-                converted_scalars,
-                scalars,
-                count);
-
-            if (cuda_msm_device_is_integrated())
+            if (device_montgomery_scalars !=
+                nullptr)
             {
-                config.are_scalars_on_device = false;
+                validate_resident_montgomery_scalars(
+                    device_montgomery_scalars,
+                    device_montgomery_scalar_capacity,
+                    count,
+                    device_montgomery_scalar_device);
+
+                config.are_scalars_on_device =
+                    true;
+
+                config.are_scalars_montgomery_form =
+                    true;
 
                 status =
                     bls12_381_msm_cuda(
-                        converted_scalars,
+                        reinterpret_cast<
+                            const bls12_381::
+                                scalar_t *>(
+                            device_montgomery_scalars),
                         device_points,
-                        static_cast<int>(count),
+                        static_cast<int>(
+                            count),
                         config,
                         &result);
             }
             else
             {
-                auto *device_scalars =
-                    scalar_staging.device(count);
+                config.are_scalars_montgomery_form =
+                    false;
 
-                copy_icicle_scalars_to_device(
-                    device_scalars,
+                auto &scalar_staging =
+                    reusable_scalar_staging();
+
+                auto *converted_scalars =
+                    scalar_staging.host(
+                        count);
+
+                copy_mcl_canonical_scalars_to_icicle(
                     converted_scalars,
+                    scalars,
                     count);
 
-                config.are_scalars_on_device = true;
+                if (cuda_msm_device_is_integrated())
+                {
+                    config.are_scalars_on_device =
+                        false;
 
-                status =
-                    bls12_381_msm_cuda(
+                    status =
+                        bls12_381_msm_cuda(
+                            converted_scalars,
+                            device_points,
+                            static_cast<int>(
+                                count),
+                            config,
+                            &result);
+                }
+                else
+                {
+                    auto *device_scalars =
+                        scalar_staging.device(
+                            count);
+
+                    copy_icicle_scalars_to_device(
                         device_scalars,
-                        device_points,
-                        static_cast<int>(count),
-                        config,
-                        &result);
-            }
+                        converted_scalars,
+                        count);
 
+                    config.are_scalars_on_device =
+                        true;
+
+                    status =
+                        bls12_381_msm_cuda(
+                            device_scalars,
+                            device_points,
+                            static_cast<int>(
+                                count),
+                            config,
+                            &result);
+                }
+            }
             if (status == cudaErrorMemoryAllocation)
             {
                 (void)cudaGetLastError();
@@ -1587,7 +1694,13 @@ namespace gatzk::crypto
             std::size_t max_count,
             std::size_t batch_size,
             std::size_t stable_srs_capacity,
-            DeviceBaseCache &cache)
+            DeviceBaseCache &cache,
+            const std::uint64_t *device_montgomery_scalars =
+                nullptr,
+            std::size_t device_montgomery_scalar_capacity =
+                0,
+            int device_montgomery_scalar_device =
+                -1)
         {
             if (outputs == nullptr ||
                 points == nullptr ||
@@ -1635,6 +1748,22 @@ namespace gatzk::crypto
                     max_count,
                     stable_srs_capacity);
 
+            if (device_montgomery_scalars !=
+                nullptr)
+            {
+                if (batch_size != 1 ||
+                    counts[0] != max_count)
+                {
+                    throw std::runtime_error(
+                        "CUDA resident Montgomery scalar chunking requires one full-width MSM");
+                }
+
+                validate_resident_montgomery_scalars(
+                    device_montgomery_scalars,
+                    device_montgomery_scalar_capacity,
+                    max_count,
+                    device_montgomery_scalar_device);
+            }
             const auto minimum_chunk =
                 std::min(
                     max_count,
@@ -1687,7 +1816,11 @@ namespace gatzk::crypto
                 }
             };
 
-            resize_scalar_staging();
+            if (device_montgomery_scalars ==
+                nullptr)
+            {
+                resize_scalar_staging();
+            }
 
             std::vector<bls12_381::projective_t>
                 results;
@@ -1922,13 +2055,15 @@ namespace gatzk::crypto
 
             bool prepare(
                 std::size_t chunk_size,
-                std::size_t scalar_batch_size = 1)
+                std::size_t scalar_batch_size = 1,
+                bool prepare_scalar_staging = true)
             {
-                if (scalar_batch_size == 0 ||
-                    chunk_size >
-                        std::numeric_limits<
-                            std::size_t>::max() /
-                            scalar_batch_size)
+                if (prepare_scalar_staging &&
+                    (scalar_batch_size == 0 ||
+                     chunk_size >
+                         std::numeric_limits<
+                             std::size_t>::max() /
+                             scalar_batch_size))
                 {
                     return false;
                 }
@@ -1941,9 +2076,19 @@ namespace gatzk::crypto
                     converted_points.resize(
                         chunk_size);
 
-                    converted_scalars.resize(
-                        chunk_size *
-                        scalar_batch_size);
+                    if (prepare_scalar_staging)
+                    {
+                        converted_scalars.resize(
+                            chunk_size *
+                            scalar_batch_size);
+                    }
+                    else
+                    {
+                        std::vector<
+                            bls12_381::scalar_t>()
+                            .swap(
+                                converted_scalars);
+                    }
                 }
                 catch (const std::bad_alloc &)
                 {
@@ -2060,11 +2205,15 @@ namespace gatzk::crypto
             }
         }
 
-        void execute_streamed_cuda_msm(
-            G1Point *output,
-            const G1Point *points,
-            const algebra::FieldElement *scalars,
-            std::size_t count)
+            if (device_montgomery_scalars !=
+                nullptr)
+            {
+                validate_resident_montgomery_scalars(
+                    device_montgomery_scalars,
+                    device_montgomery_scalar_capacity,
+                    count,
+                    device_montgomery_scalar_device);
+            }
         {
             if (count == 0)
             {
@@ -2087,7 +2236,11 @@ namespace gatzk::crypto
             auto &buffers =
                 stream_msm_buffers();
 
-            while (!buffers.prepare(chunk_size))
+            while (!buffers.prepare(
+                chunk_size,
+                1,
+                device_montgomery_scalars ==
+                    nullptr))
             {
                 if (chunk_size <= minimum_chunk)
                 {
@@ -2121,28 +2274,65 @@ namespace gatzk::crypto
                     points + offset,
                     current_count);
 
-                copy_mcl_canonical_scalars_to_icicle(
-                    buffers.converted_scalars.data(),
-                    scalars + offset,
-                    current_count);
-
                 auto config =
                     msm::default_msm_config();
 
-                config.are_points_on_device = true;
-                config.are_points_montgomery_form = false;
+                config.are_points_on_device =
+                    true;
 
-                config.are_scalars_on_device = false;
-                config.are_scalars_montgomery_form = false;
+                config.are_points_montgomery_form =
+                    false;
 
-                config.are_results_on_device = false;
+                config.are_results_on_device =
+                    false;
+
+                const bls12_381::scalar_t
+                    *msm_scalars =
+                        nullptr;
+
+                if (device_montgomery_scalars !=
+                    nullptr)
+                {
+                    config.are_scalars_on_device =
+                        true;
+
+                    config.are_scalars_montgomery_form =
+                        true;
+
+                    msm_scalars =
+                        reinterpret_cast<
+                            const bls12_381::
+                                scalar_t *>(
+                            device_montgomery_scalars) +
+                        offset;
+                }
+                else
+                {
+                    copy_mcl_canonical_scalars_to_icicle(
+                        buffers.converted_scalars.data(),
+                        scalars + offset,
+                        current_count);
+
+                    config.are_scalars_on_device =
+                        false;
+
+                    config.are_scalars_montgomery_form =
+                        false;
+
+                    msm_scalars =
+                        buffers
+                            .converted_scalars
+                            .data();
+                }
 
                 bls12_381::projective_t result;
+
                 const auto status =
                     bls12_381_msm_cuda(
-                        buffers.converted_scalars.data(),
+                        msm_scalars,
                         buffers.device_points,
-                        static_cast<int>(current_count),
+                        static_cast<int>(
+                            current_count),
                         config,
                         &result);
 
@@ -2164,7 +2354,11 @@ namespace gatzk::crypto
                                 minimum_chunk,
                                 chunk_size / 2);
 
-                        if (buffers.prepare(chunk_size))
+                        if (buffers.prepare(
+                                chunk_size,
+                                1,
+                                device_montgomery_scalars ==
+                                    nullptr))
                         {
                             break;
                         }
@@ -2614,7 +2808,10 @@ namespace gatzk::crypto
         const algebra::FieldElement *scalars,
         std::size_t count,
         bool stable_srs_bases,
-        std::size_t stable_srs_capacity)
+        std::size_t stable_srs_capacity,
+        const std::uint64_t *device_montgomery_scalars,
+        std::size_t device_montgomery_scalar_capacity,
+        int device_montgomery_scalar_device)
     {
         // CPU backend retains the existing canonical CPU MSM.
         if (!util::route2_options().cuda_field_hotspots)
@@ -2648,6 +2845,15 @@ namespace gatzk::crypto
                 "CUDA G1 MSM immutable SRS capacity "
                 "is smaller than MSM size");
         }
+                if (device_montgomery_scalars !=
+            nullptr)
+        {
+            validate_resident_montgomery_scalars(
+                device_montgomery_scalars,
+                device_montgomery_scalar_capacity,
+                count,
+                device_montgomery_scalar_device);
+        }
 
         std::lock_guard<std::mutex> execution_lock(
             cuda_msm_execution_mutex());
@@ -2672,7 +2878,9 @@ namespace gatzk::crypto
                 count,
                 stable_srs_capacity,
                 1,
-                false))
+                false,
+                device_montgomery_scalars !=
+                    nullptr))
         {
             try
             {
@@ -2682,7 +2890,10 @@ namespace gatzk::crypto
                     scalars,
                     count,
                     stable_srs_capacity,
-                    cache);
+                    cache,
+                    device_montgomery_scalars,
+                    device_montgomery_scalar_capacity,
+                    device_montgomery_scalar_device);
 
                 if (count >=
                     (1ULL << 20))
@@ -2719,7 +2930,9 @@ namespace gatzk::crypto
                 count,
                 stable_srs_capacity,
                 1,
-                true))
+                true,
+                device_montgomery_scalars !=
+                    nullptr))
         {
             try
             {
@@ -2744,7 +2957,10 @@ namespace gatzk::crypto
                     count,
                     1,
                     stable_srs_capacity,
-                    cache);
+                    cache,
+                    device_montgomery_scalars,
+                    device_montgomery_scalar_capacity,
+                    device_montgomery_scalar_device);
 
                 return true;
             }
@@ -2767,7 +2983,10 @@ namespace gatzk::crypto
                 output,
                 points,
                 scalars,
-                count);
+                count,
+                device_montgomery_scalars,
+                device_montgomery_scalar_capacity,
+                device_montgomery_scalar_device);
 
             return true;
         }
@@ -2783,7 +3002,10 @@ namespace gatzk::crypto
                 output,
                 points,
                 scalars,
-                count);
+                count,
+                device_montgomery_scalars,
+                device_montgomery_scalar_capacity,
+                device_montgomery_scalar_device);
 
             return true;
         }

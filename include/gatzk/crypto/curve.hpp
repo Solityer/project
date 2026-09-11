@@ -51,13 +51,23 @@ namespace gatzk::crypto
         // 0 keeps the backend default. Non-zero caps per-MSM worker fanout when
         // an outer batch scheduler is already using parallelism.
         std::size_t max_worker_count = 0;
+
         // The point slice belongs to immutable SRS material and may reuse
         // execution-only GLV base preparation across repeated MSMs.
         bool stable_srs_bases = false;
-        // Full accessible size of the immutable backing SRS storage.  CUDA
-        // uses this with canonical anchors to validate storage identity while
-        // sharing one uploaded maximum prefix across smaller MSM prefixes.
+
+        // Full accessible size of the immutable backing SRS storage.
         std::size_t stable_srs_capacity = 0;
+
+        // Optional execution-only CUDA-resident mcl Montgomery scalar source.
+        const std::uint64_t *device_montgomery_scalars =
+            nullptr;
+
+        std::size_t device_montgomery_scalar_capacity =
+            0;
+
+        int device_montgomery_scalar_device =
+            -1;
     };
 
     // 返回当前正式主线使用的曲线后端名称。

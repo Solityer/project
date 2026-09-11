@@ -5,6 +5,7 @@
 
 #include <array>
 #include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -48,12 +49,23 @@ struct NativeRelationWitness {
     // its Schnorr response; the core verifies the blinder knowledge before
     // opening the underlying value commitment.
     std::vector<zkdl::CommitmentRecord> hiding_commitment_records;
+    // Prover-only, one-time blinders keyed by canonical tensor id.  These
+    // values never cross the bridge ABI and are not serialized.
+    std::map<std::string, zkdl::FrWire> blinding_scalars;
     std::vector<zkdl::CpuG1Point> generators;
+    // The IPA basis is authenticated independently from the legacy/native
+    // generator vector.  Empty or mismatched material is a hard blocker.
+    std::vector<zkdl::CpuG1Point> ipa_generators;
+    zkdl::CpuG1Point ipa_blinding_generator;
+    zkdl::CpuG1Point ipa_u_generator;
     std::string registry_path;
     std::array<zkdl::byte, 32> srs_digest{};
     std::array<zkdl::byte, 32> registry_digest{};
+    std::array<zkdl::byte, 32> model_blinder_digest{};
     bool srs_authenticated = false;
     bool registry_authenticated = false;
+    bool model_blinders_authenticated = false;
+    bool model_blinders_present = false;
 };
 
 bool zkdl_gat_native_core_prove(const NativeProveRequest& request,

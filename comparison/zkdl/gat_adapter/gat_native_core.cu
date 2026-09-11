@@ -1,4 +1,6 @@
 #include "gat_native_core.cuh"
+#include "gat_native_resources.hpp"
+#include "gat_native_resources.cu"
 
 #include <algorithm>
 #include <cctype>
@@ -19,6 +21,10 @@ using FrWire = zkdl::FrWire;
 
 constexpr const char* kBridgeApi = "zkdl_native_gat_bridge_v1";
 constexpr const char* kProofScope = "full_gat_forward";
+
+bool native_power_of_two(std::uint64_t value) {
+    return value != 0U && (value & (value - 1U)) == 0U;
+}
 
 std::string digest_hex(const std::array<zkdl::byte, 32>& digest) {
     static const char* hex = "0123456789abcdef";
@@ -188,78 +194,112 @@ bool reject(NativeProofResult* result, std::string* error,
 }
 
 bool resource_admission(const Config& config, const NativeRelationWitness& witness,
-                        std::string* error) {
-    if (!witness.srs_authenticated || witness.generators.empty()) {
-        if (error) *error = "BLOCKED: native relation proof requires authenticated SRS generators";
+                        bool require_model_blinders, std::string* error) {
+    AuthenticatedSrsResource srs;
+    if (!load_authenticated_srs(config, &srs, error)) return false;
+    if (!witness.srs_authenticated || witness.srs_digest != srs.manifest_digest ||
+        witness.generators.size() != srs.generators.size() ||
+        witness.ipa_generators.size() != srs.generators.size()) {
+        if (error) *error = "BLOCKED: native witness SRS basis is not the authenticated GATZKG1C resource";
         return false;
     }
-    if (!witness.registry_authenticated || witness.registry_path.empty()) {
-        if (error) *error = "BLOCKED: native relation proof requires an authenticated verifier registry path";
+    const auto encode_point = [&](const zkdl::CpuG1Point& point,
+                                  std::vector<zkdl::byte>& encoded) {
+        std::array<zkdl::byte, kNativeG1WireBytes> wire{};
+        std::string point_error;
+        if (!zkdl_g1_wire::encode(zkdl::cpu_g1_to_native(point), wire, &point_error)) return false;
+        encoded.assign(wire.begin(), wire.end());
+        return true;
+    };
+    for (std::size_t index = 0U; index < srs.generators.size(); ++index) {
+        std::vector<zkdl::byte> generator, ipa_generator;
+        if (!encode_point(witness.generators[index], generator) ||
+            !encode_point(witness.ipa_generators[index], ipa_generator) ||
+            generator != srs.generators[index] || ipa_generator != srs.generators[index]) {
+            if (error) *error = "BLOCKED: supplied SRS/IPA generator differs from authenticated G.bin";
+            return false;
+        }
+    }
+    if ((srs.degree == 0U && srs.domain != 1U) || srs.domain == 0U ||
+        srs.count != srs.domain ||
+        !native_power_of_two(srs.domain) ||
+        (srs.domain > 1U && srs.degree < srs.domain - 1U)) {
+        if (error) *error = "BLOCKED: authenticated SRS degree/domain contract is invalid";
         return false;
     }
-    const std::filesystem::path srs_root(config.srs_path);
-    if (!std::filesystem::is_directory(srs_root)) {
-        if (error) *error = "BLOCKED: canonical SRS directory is missing: " + srs_root.string();
+    for (const auto& tensor : witness.tensors) {
+        if (tensor.domain_size == 0U || tensor.domain_size > srs.domain ||
+            (tensor.domain_size & (tensor.domain_size - 1U)) != 0U) {
+            if (error) *error = "BLOCKED: native tensor domain exceeds authenticated SRS domain: " + tensor.id;
+            return false;
+        }
+    }
+    for (const auto& shape : witness.tensor_shapes) {
+        if (shape.domain_size == 0U || shape.domain_size > srs.domain ||
+            (shape.domain_size & (shape.domain_size - 1U)) != 0U) {
+            if (error) *error = "BLOCKED: native tensor shape domain exceeds authenticated SRS domain: " + shape.id;
+            return false;
+        }
+    }
+    std::vector<zkdl::byte> h, u;
+    if (!encode_point(witness.ipa_blinding_generator, h) ||
+        !encode_point(witness.ipa_u_generator, u) || h != srs.blinding_generator ||
+        u != srs.u_generator) {
+        if (error) *error = "BLOCKED: supplied IPA H/U differs from authenticated H.bin/U.bin";
         return false;
     }
-    const std::filesystem::path manifest = srs_root / "srs_manifest.json";
-    const std::filesystem::path coefficient = srs_root / "pk_coef.bin";
-    if (!std::filesystem::is_regular_file(manifest) ||
-        !std::filesystem::is_regular_file(coefficient)) {
-        if (error) *error = "BLOCKED: canonical SRS manifest/pk_coef.bin is missing under " + srs_root.string();
-        return false;
-    }
-    std::vector<zkdl::byte> manifest_bytes;
-    if (!read_file(manifest, manifest_bytes, error)) return false;
-    if (!contains(manifest_bytes, "\"manifest_format\": \"zkgat_srs_manifest\"" ) ||
-        !contains(manifest_bytes, "\"curve_id\": \"bls12_381\"" ) ||
-        !contains(manifest_bytes, "\"pk_coef_path\": \"pk_coef.bin\"" ) ||
-        !contains(manifest_bytes, "\"srs_id\": \"" + config.srs_id + "\"")) {
-        if (error) *error = "BLOCKED: canonical SRS manifest identity/format is not authenticated";
-        return false;
-    }
-    std::array<zkdl::byte, 32> manifest_digest{};
-    manifest_digest = zkdl::sha256(manifest_bytes);
-    if (!std::equal(manifest_digest.begin(), manifest_digest.end(), witness.srs_digest.begin())) {
-        if (error) *error = "BLOCKED: supplied SRS generator identity does not match srs_manifest.json";
-        return false;
-    }
-    std::string pk_coef_hash;
-    std::array<zkdl::byte, 32> expected_pk_coef{};
-    std::array<zkdl::byte, 32> actual_pk_coef{};
-    if (!manifest_string_field(manifest_bytes, "pk_coef_hash", pk_coef_hash) ||
-        !parse_digest(pk_coef_hash, expected_pk_coef) ||
-        !file_digest(coefficient, actual_pk_coef, error) ||
-        actual_pk_coef != expected_pk_coef) {
-        if (error && error->empty()) *error = "BLOCKED: pk_coef.bin SHA-256 does not match authenticated SRS manifest";
-        return false;
-    }
-    const std::filesystem::path registry =
+    AuthenticatedModelRegistry registry;
+    if (!load_authenticated_model_registry(config, srs, &registry, error)) return false;
+    const std::filesystem::path supplied_registry =
         std::filesystem::absolute(witness.registry_path).lexically_normal();
-    const auto registry_relative = registry.lexically_relative(
-        std::filesystem::absolute(config.baseline_root).lexically_normal());
-    if (registry_relative.empty() || registry_relative.string().find("..") == 0U ||
-        std::filesystem::is_symlink(registry) || !std::filesystem::is_regular_file(registry)) {
-        if (error) *error = "BLOCKED: authenticated verifier registry is missing: " + registry.string();
+    if (!witness.registry_authenticated || witness.registry_digest != registry.digest ||
+        supplied_registry != std::filesystem::absolute(registry.path).lexically_normal() ||
+        witness.registered_model_commitments.size() != registry.model_commitments.size()) {
+        if (error) *error = "BLOCKED: native model registry identity/commitments are not authenticated";
         return false;
     }
-    std::array<zkdl::byte, 32> expected_registry{};
-    if (!parse_digest(config.verifier_registry_digest, expected_registry)) {
-        if (error) *error = "BLOCKED: verifier_registry_digest is not a canonical SHA-256";
+    std::set<std::string> supplied_ids;
+    for (const auto& expected : registry.model_commitments) {
+        const auto found = std::find_if(
+            witness.registered_model_commitments.begin(), witness.registered_model_commitments.end(),
+            [&](const relation::CommitmentWire& actual) { return actual.tensor_id == expected.tensor_id; });
+        if (found == witness.registered_model_commitments.end() ||
+            !supplied_ids.insert(found->tensor_id).second || found->visibility != 2U ||
+            found->domain_size != expected.domain_size) {
+            if (error) *error = "BLOCKED: native model registry commitment set is incomplete";
+            return false;
+        }
+        std::vector<zkdl::byte> actual;
+        if (!encode_point(zkdl::cpu_g1_from_native(found->commitment), actual) ||
+            actual != expected.commitment) {
+            if (error) *error = "BLOCKED: native model commitment differs from authenticated registry";
+            return false;
+        }
+    }
+    if (require_model_blinders) {
+        AuthenticatedModelBlinders blinders;
+        if (!load_authenticated_model_blinders(config, registry, &blinders, error)) return false;
+        if (!witness.model_blinders_authenticated ||
+            witness.model_blinder_digest != blinders.digest ||
+            witness.blinding_scalars.size() != blinders.entries.size()) {
+            if (error) *error = "BLOCKED: native model blinder sidecar identity is not authenticated";
+            return false;
+        }
+        std::set<std::string> blinder_ids;
+        for (const auto& entry : blinders.entries) {
+            const auto found = witness.blinding_scalars.find(entry.tensor_id);
+            if (found == witness.blinding_scalars.end() ||
+                !blinder_ids.insert(entry.tensor_id).second ||
+                found->second != entry.blinder) {
+                if (error) *error = "BLOCKED: native model blinder does not match authenticated sidecar: " + entry.tensor_id;
+                return false;
+            }
+        }
+    } else if (witness.model_blinders_present || witness.model_blinders_authenticated) {
+        if (error) *error = "BLOCKED: independent verifier context carries prover-only model blinders";
         return false;
     }
-    std::array<zkdl::byte, 32> registry_digest{};
-    if (!file_digest(registry, registry_digest, error)) return false;
-    if (registry_digest != expected_registry || registry_digest != witness.registry_digest) {
-        if (error) *error = "BLOCKED: verifier registry digest does not match secure config and witness";
-        return false;
-    }
-    // The restored repository has no canonical compressed-G1 decoder or
-    // manifest parser for the SRS byte layout.  Never treat a caller-supplied
-    // CpuG1Point vector as an authenticated substitute: the native path stays
-    // blocked until the original project publishes this exact loader.
-    if (error) *error = "BLOCKED: authenticated SRS compressed-G1/Fr loader is not defined by the restored zkDL tree";
-    return false;
+    return true;
 }
 
 bool statement_from_adapter(const Config& config, const Graph& graph,
@@ -2462,8 +2502,16 @@ bool decode_native_witness(const NativeRelationWitnessInput& input,
     output.registry_path = input.registry_path;
     output.srs_digest = input.srs_digest;
     output.registry_digest = input.registry_digest;
+    output.model_blinder_digest = input.model_blinder_digest;
     output.srs_authenticated = input.srs_authenticated;
     output.registry_authenticated = input.registry_authenticated;
+    output.model_blinders_authenticated = input.model_blinders_authenticated;
+    output.model_blinders_present = !input.model_blinders.empty();
+
+    if (!input.hiding_commitment_records.empty()) {
+        if (error) *error = "BLOCKED: formal GATR rejects legacy hiding-record ABI payloads";
+        return false;
+    }
 
     output.tensors.reserve(input.tensors.size());
     for (const auto& supplied : input.tensors) {
@@ -2513,16 +2561,16 @@ bool decode_native_witness(const NativeRelationWitnessInput& input,
         }
         output.registered_model_commitments.push_back(std::move(commitment));
     }
-    output.hiding_commitment_records.reserve(input.hiding_commitment_records.size());
-    for (const auto& supplied : input.hiding_commitment_records) {
-        zkdl::CommitmentRecord record;
-        std::size_t offset = 0U;
-        if (!relation::read_hiding_record(supplied.encoded, offset, record) ||
-            offset != supplied.encoded.size()) {
-            if (error) *error = "BLOCKED: native hiding commitment record is not canonical";
+    output.blinding_scalars.clear();
+    for (const auto& supplied : input.model_blinders) {
+        if (supplied.tensor_id.empty() ||
+            supplied.registry_digest != output.registry_digest ||
+            !zkdl::fr_canonical(supplied.blinder) ||
+            zkdl::fr_compare(supplied.blinder, FrWire{}) == 0 ||
+            !output.blinding_scalars.emplace(supplied.tensor_id, supplied.blinder).second) {
+            if (error) *error = "BLOCKED: native model blinder payload is not canonical or registry-bound";
             return false;
         }
-        output.hiding_commitment_records.push_back(std::move(record));
     }
     output.generators.reserve(input.generators.size());
     for (const auto& encoded : input.generators) {
@@ -2533,6 +2581,44 @@ bool decode_native_witness(const NativeRelationWitnessInput& input,
             return false;
         }
         output.generators.push_back(zkdl::cpu_g1_from_native(generator));
+    }
+    output.ipa_generators.reserve(input.ipa_generators.size());
+    for (const auto& encoded : input.ipa_generators) {
+        G1Jacobian_t generator{};
+        std::size_t offset = 0U;
+        if (!zkdl::read_g1(encoded, offset, generator) || offset != encoded.size()) {
+            if (error) *error = "BLOCKED: native IPA generator payload is not canonical";
+            return false;
+        }
+        output.ipa_generators.push_back(zkdl::cpu_g1_from_native(generator));
+    }
+    auto decode_single_ipa_point = [&](const std::vector<std::uint8_t>& encoded,
+                                       zkdl::CpuG1Point& point,
+                                       const char* label) -> bool {
+        if (encoded.empty()) {
+            if (error) *error = std::string("BLOCKED: authenticated IPA ") + label + " is missing";
+            return false;
+        }
+        G1Jacobian_t native{};
+        std::size_t offset = 0U;
+        if (!zkdl::read_g1(encoded, offset, native) || offset != encoded.size()) {
+            if (error) *error = std::string("BLOCKED: authenticated IPA ") + label + " is not canonical";
+            return false;
+        }
+        point = zkdl::cpu_g1_from_native(native);
+        if (point.is_zero()) {
+            if (error) *error = std::string("BLOCKED: authenticated IPA ") + label + " is zero";
+            return false;
+        }
+        return true;
+    };
+    if (!input.ipa_generators.empty() || !input.ipa_blinding_generator.empty() ||
+        !input.ipa_u_generator.empty()) {
+        if (input.ipa_generators.empty() ||
+            !decode_single_ipa_point(input.ipa_blinding_generator,
+                                     output.ipa_blinding_generator, "blinding generator") ||
+            !decode_single_ipa_point(input.ipa_u_generator,
+                                     output.ipa_u_generator, "U generator")) return false;
     }
     return true;
 }
@@ -2546,11 +2632,34 @@ bool context_from_request(const NativeProveRequest& request,
     }
     NativeRelationWitness witness;
     if (!decode_native_witness(*request.witness, witness, error)) return false;
-    if (!resource_admission(*request.config, witness, error)) return false;
+    if (!resource_admission(*request.config, witness, true, error)) return false;
     if (!statement_from_adapter(*request.config, *request.graph, *request.model,
                                 *request.tables, *request.relation, *request.statement,
                                 witness, context.statement, error)) return false;
     context.tensors = witness.tensors;
+    for (const auto& tensor : context.tensors) {
+        if (tensor.visibility == 1U) continue;
+        if (tensor.visibility == 2U) {
+            if (witness.blinding_scalars.find(tensor.id) == witness.blinding_scalars.end()) {
+                if (error) *error = "BLOCKED: model tensor has no authenticated prover-only blinder: " + tensor.id;
+                return false;
+            }
+            continue;
+        }
+        if (tensor.visibility != 3U) {
+            if (error) *error = "BLOCKED: relation tensor has unsupported visibility: " + tensor.id;
+            return false;
+        }
+        try {
+            // Dynamic private tensors get a fresh nonzero scalar from the
+            // native CSPRNG.  The map is keyed by canonical tensor id, so
+            // every IPA opening of this tensor reuses exactly this scalar.
+            witness.blinding_scalars.emplace(tensor.id, zkdl::cpu_fresh_csprng_scalar());
+        } catch (const std::exception& exception) {
+            if (error) *error = exception.what();
+            return false;
+        }
+    }
     if (!build_canonical_operations(*request.config, *request.tables, *request.relation,
                                     context.tensors,
                                     context.operations, request.graph, error)) return false;
@@ -2575,8 +2684,12 @@ bool context_from_request(const NativeProveRequest& request,
         }
     }
     context.generators = witness.generators;
+    context.ipa_generators = witness.ipa_generators;
+    context.ipa_blinding_generator = witness.ipa_blinding_generator;
+    context.ipa_u_generator = witness.ipa_u_generator;
     context.registered_model_commitments = witness.registered_model_commitments;
     context.hiding_commitment_records = witness.hiding_commitment_records;
+    context.blinding_scalars = witness.blinding_scalars;
     for (const auto& tensor : context.tensors)
         if (tensor.visibility == 1U) context.public_tensor_values.emplace(tensor.id, tensor.values);
     for (const auto& descriptor : context.tensor_descriptors) {
@@ -2625,8 +2738,10 @@ bool context_from_verify(const NativeVerifyRequest& request,
     }
     NativeRelationWitness supplied;
     if (!decode_native_witness(*request.public_context, supplied, error)) return false;
-    if (!supplied.srs_authenticated || !supplied.registry_authenticated || supplied.generators.empty()) {
-        if (error) *error = "BLOCKED: independent verifier context has no authenticated SRS/registry";
+    if (!supplied.srs_authenticated || !supplied.registry_authenticated || supplied.generators.empty() ||
+        supplied.ipa_generators.empty() || supplied.ipa_generators.size() != supplied.generators.size() ||
+        supplied.ipa_blinding_generator.is_zero() || supplied.ipa_u_generator.is_zero()) {
+        if (error) *error = "BLOCKED: independent verifier context has no authenticated SRS/IPA G/H/U basis";
         return false;
     }
     if (request.statement->proof_scope != kProofScope || request.relation->proof_scope != kProofScope) {
@@ -2656,10 +2771,9 @@ bool context_from_verify(const NativeVerifyRequest& request,
         if (error) *error = "independent verifier statement/resource identity is not bound to the authenticated plan";
         return false;
     }
-    // This performs the same path, manifest, SHA-256, and registry admission
-    // as proving. It intentionally ends in an explicit BLOCKED result until
-    // the restored tree provides its canonical compressed-G1/Fr loader.
-    if (!resource_admission(*request.config, supplied, error)) return false;
+    // Re-authenticate the same path, manifest, SHA-256, and registry resources
+    // as proving, while keeping the verifier context strictly public-only.
+    if (!resource_admission(*request.config, supplied, false, error)) return false;
     if (supplied.tensor_shapes.empty()) {
         if (error) *error = "BLOCKED: independent verifier lacks canonical tensor shape/padding descriptors";
         return false;
@@ -2749,6 +2863,9 @@ bool context_from_verify(const NativeVerifyRequest& request,
         }
     }
     context.generators = supplied.generators;
+    context.ipa_generators = supplied.ipa_generators;
+    context.ipa_blinding_generator = supplied.ipa_blinding_generator;
+    context.ipa_u_generator = supplied.ipa_u_generator;
     context.registered_model_commitments = supplied.registered_model_commitments;
     context.hiding_commitment_records = supplied.hiding_commitment_records;
     for (const auto& tensor : supplied.tensors)

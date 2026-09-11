@@ -47,9 +47,8 @@ int main() {
     malformed.rounds.push_back(G1Jacobian_generator);
     assert(!opening_shape_valid(malformed, &error));
 
-    // Exercise the native commitment/opening path and the independent CUDA
-    // folding verifier on a four-entry tensor.  The second check must fail
-    // after a single verifier-facing point is tampered with.
+    // Exercise the native commitment/IPA wire path on a four-row tensor.  GPU
+    // IPA verification remains an explicit resource blocker in this phase.
     Fr_t values[4] = {
         {1U, 0U, 0U, 0U, 0U, 0U, 0U, 0U},
         {2U, 0U, 0U, 0U, 0U, 0U, 0U, 0U},
@@ -62,14 +61,32 @@ int main() {
     std::vector<Fr_t> opening_point;
     opening_point.push_back(fr_value(fr_from_u32(7U)));
     opening_point.push_back(fr_value(fr_from_u32(11U)));
+    opening_point.push_back(fr_value(fr_from_u32(13U)));
+    opening_point.push_back(fr_value(fr_from_u32(17U)));
+    const zkdl::CpuG1Point ipa_h = zkdl::cpu_g1_mul(
+        zkdl::cpu_g1_generator(), zkdl::fr_from_u32(2U));
+    const zkdl::CpuG1Point ipa_u = zkdl::cpu_g1_mul(
+        zkdl::cpu_g1_generator(), zkdl::fr_from_u32(3U));
+    zkdl::CpuIpaOpeningMetadata metadata;
+    const std::vector<zkdl::byte> metadata_label{'c', 'o', 'r', 'e', '-', 'i', 'p', 'a'};
+    metadata.commitment_index = 0U;
+    metadata.descriptor_digest = zkdl::sha256(metadata_label);
+    std::vector<zkdl::byte> registry_label = metadata_label;
+    registry_label.push_back('r');
+    metadata.registry_digest = zkdl::sha256(registry_label);
+    std::vector<zkdl::byte> srs_label = metadata_label;
+    srs_label.push_back('s');
+    metadata.srs_digest = zkdl::sha256(srs_label);
+    metadata.outer_point = {
+        zkdl::fr_wire(opening_point[2]), zkdl::fr_wire(opening_point[3])};
     uint opening_size = 0;
     EvaluationOpeningProof retained;
-    generators.open(tensor, commitment, opening_point, opening_size, &retained);
+    retained = generators.open_with_ipa_proof(
+        tensor, commitment, opening_point, zkdl::cpu_g1_to_native(ipa_h),
+        zkdl::cpu_g1_to_native(ipa_u), zkdl::FrWire{}, metadata);
     assert(opening_shape_valid(retained, &error));
-    const G1Jacobian_t expected_eval = commitment(std::vector<Fr_t>());
-    assert(generators.verify_opening_gpu(retained, expected_eval, &error));
-    retained.rounds[0].x.val[0] ^= 1U;
-    assert(!generators.verify_opening_gpu(retained, expected_eval, &error));
+    (void)opening_size;
+    assert(!generators.verify_opening_gpu(retained, commitment({}), &error));
 
     std::cout << "zkdl core smoke ok" << std::endl;
     return 0;

@@ -118,6 +118,13 @@ struct Config {
     std::string srs_type;
     std::string srs_id;
     std::string srs_path;
+    // Authenticated native proof resources.  Digest values are required by
+    // the formal loader; UNAVAILABLE is an explicit fail-closed marker, not
+    // a usable default.
+    std::string srs_manifest_digest;
+    std::filesystem::path model_registry_path;
+    std::filesystem::path model_blinder_sidecar_path;
+    std::string model_blinder_sidecar_digest;
     std::string opening_mode;
     std::string binding_mode;
     std::string security_profile_id;
@@ -494,6 +501,12 @@ struct AssetManifest {
     std::string static_table_descriptor_digest;
     std::string integer_bound_ledger;
     std::string integer_bound_ledger_descriptor_digest;
+    std::string srs_path;
+    std::string srs_manifest_digest;
+    std::string model_registry_path;
+    std::string model_registry_digest;
+    std::string model_blinder_sidecar_path;
+    std::string model_blinder_sidecar_digest;
     std::string digest;
     std::vector<AssetManifestEntry> files;
 };

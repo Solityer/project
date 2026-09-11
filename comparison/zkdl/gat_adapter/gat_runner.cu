@@ -7,6 +7,7 @@
 // linked.
 
 #include "gat_native_bridge.hpp"
+#include "gat_native_resources.hpp"
 
 #include <cuda_runtime.h>
 
@@ -1280,6 +1281,13 @@ std::string json_string_field(const std::string& text, const std::string& key) {
     return match[1].str();
 }
 
+std::string json_string_field_or(const std::string& text, const std::string& key,
+                                 const std::string& fallback) {
+    const std::regex pattern("\\\"" + key + "\\\"\\s*:\\s*\\\"([^\\\"]*)\\\"");
+    std::smatch match;
+    return std::regex_search(text, match, pattern) ? match[1].str() : fallback;
+}
+
 u64 json_u64_field(const std::string& text, const std::string& key) {
     const std::regex pattern("\\\"" + key + "\\\"\\s*:\\s*([0-9]+)");
     std::smatch match;
@@ -1849,6 +1857,14 @@ AssetManifest load_asset_manifest(const Config& config) {
     result.static_table_descriptor_digest = json_string_field(manifest, "static_table_descriptor_digest");
     result.integer_bound_ledger = json_string_field(manifest, "integer_bound_ledger");
     result.integer_bound_ledger_descriptor_digest = json_string_field(manifest, "integer_bound_ledger_descriptor_digest");
+    result.srs_path = json_string_field_or(manifest, "srs_path", "UNAVAILABLE");
+    result.srs_manifest_digest = json_string_field_or(manifest, "srs_manifest_digest", "UNAVAILABLE");
+    result.model_registry_path = json_string_field_or(manifest, "model_registry_path", "UNAVAILABLE");
+    result.model_registry_digest = json_string_field_or(manifest, "model_registry_digest", "UNAVAILABLE");
+    result.model_blinder_sidecar_path = json_string_field_or(
+        manifest, "model_blinder_sidecar_path", "UNAVAILABLE");
+    result.model_blinder_sidecar_digest = json_string_field_or(
+        manifest, "model_blinder_sidecar_digest", "UNAVAILABLE");
     if (!is_digest(result.scale_chain_digest) || !is_digest(result.static_table_descriptor_digest) ||
         !is_digest(result.integer_bound_ledger_descriptor_digest) ||
         result.scale_chain_digest != config.scale_chain_digest ||
@@ -1860,6 +1876,20 @@ AssetManifest load_asset_manifest(const Config& config) {
     }
     const auto expected_config = std::filesystem::relative(config.config_path, config.baseline_root).generic_string();
     if (result.config != expected_config) fail("asset manifest config identity mismatch");
+    const auto expected_srs_path = std::filesystem::relative(
+        std::filesystem::path(config.srs_path), config.baseline_root).generic_string();
+    const auto expected_registry_path = std::filesystem::relative(
+        config.model_registry_path, config.baseline_root).generic_string();
+    const auto expected_sidecar_path = std::filesystem::relative(
+        config.model_blinder_sidecar_path, config.baseline_root).generic_string();
+    if (result.srs_path != expected_srs_path ||
+        result.srs_manifest_digest != config.srs_manifest_digest ||
+        result.model_registry_path != expected_registry_path ||
+        result.model_registry_digest != config.verifier_registry_digest ||
+        result.model_blinder_sidecar_path != expected_sidecar_path ||
+        result.model_blinder_sidecar_digest != config.model_blinder_sidecar_digest) {
+        fail("asset manifest authenticated native resource identity mismatch");
+    }
     result.digest = sha256_file(config.asset_manifest_path);
 
     const std::regex entry(
@@ -1942,7 +1972,9 @@ Config load_config(const std::filesystem::path& path) {
         "batching_rule", "self_loop_rule", "edge_sort_rule", "chunking_rule", "L", "hidden_profile", "d_in_profile",
         "K_out", "num_classes", "range_bits", "seed", "dump_trace", "auto_prepare_dataset", "model_arch_id",
         "model_param_id", "quant_cfg_id", "input_preprocess_id", "static_table_id", "degree_bound_id", "symmetrize_edges",
-        "deduplicate_edges", "batch_graphs", "srs_type", "srs_id", "srs_path", "privacy_policy", "input_privacy",
+        "deduplicate_edges", "batch_graphs", "srs_type", "srs_id", "srs_path", "srs_manifest_digest",
+        "model_registry_path", "model_blinder_sidecar_path", "model_blinder_sidecar_digest",
+        "privacy_policy", "input_privacy",
         "output_mode", "opening_mode", "binding_mode", "proof_task", "security_profile_id", "verifier_registry_digest",
         "static_table_descriptor", "integer_bound_ledger"
     };
@@ -1976,6 +2008,17 @@ Config load_config(const std::filesystem::path& path) {
     config.chunking_rule = required("chunking_rule"); config.degree_bound_id = required("degree_bound_id");
     config.srs_type = required("srs_type"); config.srs_id = required("srs_id");
     config.srs_path = local_path(config.baseline_root, required("srs_path"), "srs_path").string();
+    config.srs_manifest_digest = required("srs_manifest_digest");
+    if (config.srs_manifest_digest != "UNAVAILABLE" && !is_digest(config.srs_manifest_digest))
+        fail("srs_manifest_digest must be SHA-256 or explicit UNAVAILABLE");
+    config.model_registry_path = local_path(
+        config.baseline_root, required("model_registry_path"), "model_registry_path");
+    config.model_blinder_sidecar_path = local_path(
+        config.baseline_root, required("model_blinder_sidecar_path"), "model_blinder_sidecar_path");
+    config.model_blinder_sidecar_digest = required("model_blinder_sidecar_digest");
+    if (config.model_blinder_sidecar_digest != "UNAVAILABLE" &&
+        !is_digest(config.model_blinder_sidecar_digest))
+        fail("model_blinder_sidecar_digest must be SHA-256 or explicit UNAVAILABLE");
     config.opening_mode = required("opening_mode"); config.binding_mode = required("binding_mode");
     config.security_profile_id = required("security_profile_id"); config.verifier_registry_digest = required("verifier_registry_digest");
     if (!is_digest(config.verifier_registry_digest)) fail("verifier_registry_digest must be SHA-256");
@@ -3061,6 +3104,44 @@ std::vector<NativeFrWire> native_i64_values(const std::vector<i64>& values) {
     return result;
 }
 
+// Populate only resources that the baseline-local authenticated loaders have
+// accepted.  A missing resource is intentionally represented by empty wire
+// material and false authentication flags; native resource_admission then
+// emits the precise fail-closed BLOCKED reason.  This helper never derives a
+// generator, commitment, or blinder and never reads prover-only model values
+// when `prover_sidecar` is false.
+void populate_authenticated_resource_wire(
+    const Config& config, NativeRelationWitnessInput& output, bool prover_sidecar) {
+    output.registry_path = config.model_registry_path.string();
+
+    AuthenticatedSrsResource srs;
+    std::string resource_error;
+    if (!load_authenticated_srs(config, &srs, &resource_error)) return;
+
+    AuthenticatedModelRegistry registry;
+    if (!load_authenticated_model_registry(config, srs, &registry, &resource_error)) return;
+
+    AuthenticatedModelBlinders blinders;
+    if (prover_sidecar &&
+        !load_authenticated_model_blinders(config, registry, &blinders, &resource_error)) return;
+
+    output.srs_digest = srs.manifest_digest;
+    output.srs_authenticated = srs.authenticated;
+    output.registry_path = registry.path;
+    output.registry_digest = registry.digest;
+    output.registry_authenticated = registry.authenticated;
+    output.generators = srs.generators;
+    output.ipa_generators = srs.generators;
+    output.ipa_blinding_generator = srs.blinding_generator;
+    output.ipa_u_generator = srs.u_generator;
+    output.registered_model_commitments = registry.model_commitments;
+
+    if (!prover_sidecar) return;
+    output.model_blinder_digest = blinders.digest;
+    output.model_blinders = blinders.entries;
+    output.model_blinders_authenticated = blinders.authenticated;
+}
+
 std::vector<NativeFrWire> native_u64_values(const std::vector<u64>& values,
                                             const std::string& label) {
     std::vector<NativeFrWire> result;
@@ -3807,46 +3888,7 @@ NativeRelationWitnessInput build_native_relation_witness(
         result.tensor_shapes.push_back(std::move(shape));
     }
 
-    // Resource identity is metadata only at this seam.  A registry is marked
-    // authenticated only after the real baseline-local file is found and its
-    // SHA-256 equals the secure configuration; no placeholder registry,
-    // generator vector, VK, or SRS data is ever manufactured here.
-    result.registry_path = (config.baseline_root / "artifacts" / "verifier_registry.json").string();
-    const auto decode_digest = [](const std::string& text, std::array<std::uint8_t, 32>& output) {
-        if (!is_digest(text)) return false;
-        const auto nibble = [](char value) -> int {
-            if (value >= '0' && value <= '9') return value - '0';
-            if (value >= 'a' && value <= 'f') return value - 'a' + 10;
-            if (value >= 'A' && value <= 'F') return value - 'A' + 10;
-            return -1;
-        };
-        for (std::size_t index = 0U; index < output.size(); ++index) {
-            const int high = nibble(text[index * 2U]);
-            const int low = nibble(text[index * 2U + 1U]);
-            if (high < 0 || low < 0) return false;
-            output[index] = static_cast<std::uint8_t>((high << 4) | low);
-        }
-        return true;
-    };
-    if (!decode_digest(config.verifier_registry_digest, result.registry_digest))
-        fail("secure verifier registry identity is not a canonical SHA-256");
-    const std::filesystem::path registry(result.registry_path);
-    if (!std::filesystem::is_symlink(registry) && std::filesystem::is_regular_file(registry) &&
-        sha256_file(registry) == config.verifier_registry_digest) {
-        result.registry_authenticated = true;
-    }
-    const std::filesystem::path srs_manifest = std::filesystem::path(config.srs_path) / "srs_manifest.json";
-    if (!std::filesystem::is_symlink(srs_manifest) && std::filesystem::is_regular_file(srs_manifest)) {
-        decode_digest(sha256_file(srs_manifest), result.srs_digest);
-    }
-    // The restored tree has no canonical compressed-G1 loader.  Keep the
-    // generator domain empty and authentication false; native resource
-    // admission will return the explicit SRS BLOCKED status after this
-    // witness has been fully materialized.
-    result.srs_authenticated = false;
-    result.generators.clear();
-    result.registered_model_commitments.clear();
-    result.operations.clear();
+    populate_authenticated_resource_wire(config, result, true);
     return result;
 }
 
@@ -3854,22 +3896,6 @@ NativeRelationWitnessInput build_native_public_context(
     const Config& config, const RelationPlan& plan, const Matrix& public_output) {
     NativeRelationWitnessInput result;
     result.tensor_shapes.reserve(plan.tensor_families.size());
-    const auto decode_digest = [](const std::string& text, std::array<std::uint8_t, 32>& output) {
-        if (!is_digest(text)) return false;
-        const auto nibble = [](char value) -> int {
-            if (value >= '0' && value <= '9') return value - '0';
-            if (value >= 'a' && value <= 'f') return value - 'a' + 10;
-            if (value >= 'A' && value <= 'F') return value - 'A' + 10;
-            return -1;
-        };
-        for (std::size_t index = 0U; index < output.size(); ++index) {
-            const int high = nibble(text[index * 2U]);
-            const int low = nibble(text[index * 2U + 1U]);
-            if (high < 0 || low < 0) return false;
-            output[index] = static_cast<std::uint8_t>((high << 4) | low);
-        }
-        return true;
-    };
     for (const auto& family : plan.tensor_families) {
         NativeTensorShapeInput shape;
         shape.id = family.id;
@@ -3899,18 +3925,7 @@ NativeRelationWitnessInput build_native_public_context(
         public_family->padded_shape, "public_Y.domain"));
     tensor.values = native_embed_zero_padded(*public_family, native_matrix_values(public_output));
     result.tensors.push_back(std::move(tensor));
-    result.registry_path = (config.baseline_root / "artifacts" / "verifier_registry.json").string();
-    if (!decode_digest(config.verifier_registry_digest, result.registry_digest))
-        fail("secure verifier registry identity is not a canonical SHA-256");
-    const std::filesystem::path registry(result.registry_path);
-    if (!std::filesystem::is_symlink(registry) && std::filesystem::is_regular_file(registry) &&
-        sha256_file(registry) == config.verifier_registry_digest) {
-        result.registry_authenticated = true;
-    }
-    result.srs_authenticated = false;
-    result.generators.clear();
-    result.registered_model_commitments.clear();
-    result.operations.clear();
+    populate_authenticated_resource_wire(config, result, false);
     return result;
 }
 

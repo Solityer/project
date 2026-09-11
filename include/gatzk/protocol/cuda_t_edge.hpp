@@ -10,6 +10,11 @@
 #include "gatzk/algebra/field.hpp"
 #include "gatzk/protocol/t_edge_program.hpp"
 
+namespace gatzk::algebra
+{
+    struct CudaResidentCoefficientBuffer;
+}
+
 namespace gatzk::protocol
 {
 

@@ -111,6 +111,16 @@ def main() -> int:
         for key in relation_keys:
             if key not in values:
                 fail(f"BLOCKED: config key missing: {key}")
+        for key in (
+            "srs_path",
+            "srs_manifest_digest",
+            "model_registry_path",
+            "verifier_registry_digest",
+            "model_blinder_sidecar_path",
+            "model_blinder_sidecar_digest",
+        ):
+            if key not in values:
+                fail(f"BLOCKED: config key missing: {key}")
     cache = local_path(root, values["cache_root"], "cache_root") / values["dataset"]
     checkpoint = local_path(root, values["checkpoint_bundle"], "checkpoint_bundle")
     quant = root / "configs" / "quantization_scale_chain.cfg"
@@ -135,6 +145,33 @@ def main() -> int:
             "bytes": path.stat().st_size,
             "sha256": sha256(path),
         })
+
+    # Native IPA resources remain separately authenticated by the C++ loader.
+    # The asset manifest records their baseline-local identities when the
+    # resources are actually present, but never creates a placeholder file or
+    # substitutes a computed digest for a configured UNAVAILABLE marker.
+    srs_path_raw = values.get("srs_path", "UNAVAILABLE")
+    srs_manifest_digest = values.get("srs_manifest_digest", "UNAVAILABLE")
+    if srs_path_raw != "UNAVAILABLE" and srs_manifest_digest != "UNAVAILABLE":
+        srs_path = local_path(root, srs_path_raw, "srs_path")
+        srs_manifest = srs_path / "srs_manifest.json"
+        if srs_path.is_dir() and not srs_path.is_symlink() and srs_manifest.is_file() and not srs_manifest.is_symlink():
+            if sha256(srs_manifest) != srs_manifest_digest:
+                fail("BLOCKED: srs_manifest.json digest does not match config")
+            asset_entries.extend(files_under((srs_path,), root))
+
+    model_registry_path_raw = values.get("model_registry_path", "UNAVAILABLE")
+    model_registry_digest = values.get("verifier_registry_digest", "UNAVAILABLE")
+    if model_registry_path_raw != "UNAVAILABLE" and model_registry_digest != "UNAVAILABLE":
+        model_registry_path = local_path(root, model_registry_path_raw, "model_registry_path")
+        if model_registry_path.is_file() and not model_registry_path.is_symlink():
+            if sha256(model_registry_path) != model_registry_digest:
+                fail("BLOCKED: model registry digest does not match config")
+            asset_entries.append({
+                "path": model_registry_path.relative_to(root).as_posix(),
+                "bytes": model_registry_path.stat().st_size,
+                "sha256": sha256(model_registry_path),
+            })
     asset_entries.sort(key=lambda entry: str(entry["path"]))
     payload = {
         "schema": "zkDL_gat_asset_manifest_v1",
@@ -143,6 +180,12 @@ def main() -> int:
         "baseline_root": ".",
         "config": config_path.relative_to(root).as_posix(),
         "scale_chain_digest": sha256(quant),
+        "srs_path": srs_path_raw,
+        "srs_manifest_digest": srs_manifest_digest,
+        "model_registry_path": model_registry_path_raw,
+        "model_registry_digest": model_registry_digest,
+        "model_blinder_sidecar_path": values.get("model_blinder_sidecar_path", "UNAVAILABLE"),
+        "model_blinder_sidecar_digest": values.get("model_blinder_sidecar_digest", "UNAVAILABLE"),
         "files": asset_entries,
     }
     if relation_keys[0] in relation_digests:

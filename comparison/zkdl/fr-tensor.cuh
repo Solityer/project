@@ -92,7 +92,7 @@ DEVICE Fr_t Fr_field_mul(Fr_t a, Fr_t b);
 KERNEL void Fr_elementwise_mont_mul(GLOBAL Fr_t* arr1, GLOBAL Fr_t* arr2, GLOBAL Fr_t* arr_out, uint n) {
   const uint gid = GET_GLOBAL_ID();
   if (gid >= n) return;
-  arr_out[gid] = blstrs__scalar__Scalar_mul(arr1[gid], arr2[gid]);
+  arr_out[gid] = Fr_field_mul(arr1[gid], arr2[gid]);
 }
 
 // Broadcast montegomery multiplication

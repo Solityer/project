@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 
 namespace gatzk::algebra
 {
@@ -18,7 +19,13 @@ namespace gatzk::crypto
         const algebra::FieldElement *scalars,
         std::size_t count,
         bool stable_srs_bases,
-        std::size_t stable_srs_capacity);
+        std::size_t stable_srs_capacity,
+        const std::uint64_t *device_montgomery_scalars =
+            nullptr,
+        std::size_t device_montgomery_scalar_capacity =
+            0,
+        int device_montgomery_scalar_device =
+            -1);
 
     // Execute several independent scalar vectors against one immutable
     // SRS point slice while sharing its CUDA residency/upload.

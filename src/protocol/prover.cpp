@@ -7856,9 +7856,10 @@ namespace gatzk::protocol
                             target_size_,
                             FieldElement::zero());
 
-                    executor->finalize_coefficients(
-                        output.data(),
-                        output.size());
+                    cuda_t_edge_resident_coefficients_ =
+                        executor->finalize_coefficients(
+                            output.data(),
+                            output.size());
 
                     const auto cuda_stats_after =
                         algebra::cuda_execution_stats_snapshot();
@@ -8906,11 +8907,40 @@ namespace gatzk::protocol
                         "prove:quotient:t_N:coefficients:done:ms=" + std::to_string(elapsed_ms(
                                                                          coefficient_start, Clock::now())));
                 }
-                if (coefficients.size() > key.pk.degree_bound + 1)
+               if (coefficients.size() >
+                    key.pk.degree_bound + 1)
                 {
-                    throw std::runtime_error("materialized quotient exceeds SRS degree bound: " + label_);
+                    throw std::runtime_error(
+                        "materialized quotient exceeds SRS degree bound: " +
+                        label_);
                 }
-                return algebra::Polynomial::from_coefficients(label_, std::move(coefficients));
+
+                auto polynomial =
+                    algebra::Polynomial::
+                        from_coefficients(
+                            label_,
+                            std::move(
+                                coefficients));
+
+                if (label_ == "t_edge" &&
+                    cuda_t_edge_resident_coefficients_ !=
+                        nullptr)
+                {
+                    if (cuda_t_edge_resident_coefficients_
+                            ->capacity <
+                        polynomial.size())
+                    {
+                        throw std::runtime_error(
+                            "CUDA t_edge resident coefficient prefix is smaller than canonical polynomial");
+                    }
+
+                    polynomial
+                        .cuda_resident_coefficients =
+                        std::move(
+                            cuda_t_edge_resident_coefficients_);
+                }
+
+                return polynomial;
             }
 
         private:
@@ -11270,9 +11300,15 @@ namespace gatzk::protocol
             const ProtocolContext &context_;
             const TraceArtifacts &trace_;
             const std::map<std::string, FieldElement> &challenges_;
-            std::string label_;
+           std::string label_;
             internal::TEdgeDescriptorShape t_edge_descriptor_shape_;
             std::shared_ptr<algebra::RootOfUnityDomain> domain_;
+
+            std::shared_ptr<
+                const algebra::
+                    CudaResidentCoefficientBuffer>
+                cuda_t_edge_resident_coefficients_;
+
             std::size_t target_size_ = 0;
             std::size_t rotation_step_ = 0;
             FieldElement shift_;

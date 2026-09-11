@@ -8,7 +8,10 @@ namespace gatzk::crypto
         const algebra::FieldElement *,
         std::size_t,
         bool,
-        std::size_t)
+        std::size_t,
+        const std::uint64_t *,
+        std::size_t,
+        int)
     {
         return false;
     }
