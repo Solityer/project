@@ -2248,20 +2248,32 @@ namespace gatzk::crypto
             }
         }
 
-        if (device_montgomery_scalars !=
-            nullptr)
-        {
-            validate_resident_montgomery_scalars(
-                device_montgomery_scalars,
-                device_montgomery_scalar_capacity,
-                count,
-                device_montgomery_scalar_device);
-        }
+        void execute_streamed_cuda_msm(
+            G1Point *output,
+            const G1Point *points,
+            const algebra::FieldElement *scalars,
+            std::size_t count,
+            const std::uint64_t *device_montgomery_scalars =
+                nullptr,
+            std::size_t device_montgomery_scalar_capacity =
+                0,
+            int device_montgomery_scalar_device =
+                -1)
         {
             if (count == 0)
             {
                 *output = g1_zero();
                 return;
+            }
+
+            if (device_montgomery_scalars !=
+                nullptr)
+            {
+                validate_resident_montgomery_scalars(
+                    device_montgomery_scalars,
+                    device_montgomery_scalar_capacity,
+                    count,
+                    device_montgomery_scalar_device);
             }
 
             const auto minimum_chunk =

@@ -2378,6 +2378,15 @@ namespace gatzk::protocol
                         status);
                 }
 
+                device_leaf_slots_.front() =
+                    nullptr;
+
+                host_leaf_bound_.front() =
+                    false;
+
+                host_leaf_uploaded_prefix_.front() =
+                    0;
+
                 std::shared_ptr<void> allocation(
                     resident_coefficients,
                     [resident_device](
