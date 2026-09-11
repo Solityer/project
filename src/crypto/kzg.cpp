@@ -114,7 +114,7 @@ namespace gatzk::crypto
                 "kzg_assumption_domain_catalog_hash",
                 "domain_generator_catalog_hash",
                 "manifest_hash",
-            };
+        };
 
         constexpr std::array<std::string_view, 16>
             kCanonicalSrsEnvelopeFields = {
@@ -134,7 +134,7 @@ namespace gatzk::crypto
                 "max_object_family_count",
                 "max_coefficient_chunks",
                 "security_target_bits",
-            };
+        };
 
         enum class SrsJsonKind
         {
@@ -181,8 +181,7 @@ namespace gatzk::crypto
 
             void skip_whitespace()
             {
-                while (position_ < text_.size()
-                       && std::isspace(static_cast<unsigned char>(text_[position_])))
+                while (position_ < text_.size() && std::isspace(static_cast<unsigned char>(text_[position_])))
                     ++position_;
             }
 
@@ -225,8 +224,7 @@ namespace gatzk::crypto
                     parse_literal("null");
                     return SrsJsonValue{.kind = SrsJsonKind::Null};
                 default:
-                    if (text_[position_] == '-'
-                        || std::isdigit(static_cast<unsigned char>(text_[position_])))
+                    if (text_[position_] == '-' || std::isdigit(static_cast<unsigned char>(text_[position_])))
                     {
                         SrsJsonValue value;
                         value.kind = SrsJsonKind::Number;
@@ -269,14 +267,30 @@ namespace gatzk::crypto
                     const char escaped = text_[position_++];
                     switch (escaped)
                     {
-                    case '"': result.push_back('"'); break;
-                    case '\\': result.push_back('\\'); break;
-                    case '/': result.push_back('/'); break;
-                    case 'b': result.push_back('\b'); break;
-                    case 'f': result.push_back('\f'); break;
-                    case 'n': result.push_back('\n'); break;
-                    case 'r': result.push_back('\r'); break;
-                    case 't': result.push_back('\t'); break;
+                    case '"':
+                        result.push_back('"');
+                        break;
+                    case '\\':
+                        result.push_back('\\');
+                        break;
+                    case '/':
+                        result.push_back('/');
+                        break;
+                    case 'b':
+                        result.push_back('\b');
+                        break;
+                    case 'f':
+                        result.push_back('\f');
+                        break;
+                    case 'n':
+                        result.push_back('\n');
+                        break;
+                    case 'r':
+                        result.push_back('\r');
+                        break;
+                    case 't':
+                        result.push_back('\t');
+                        break;
                     case 'u':
                     {
                         if (position_ + 4 > text_.size())
@@ -317,14 +331,12 @@ namespace gatzk::crypto
                 if (text_[position_] == '0')
                 {
                     ++position_;
-                    if (position_ < text_.size()
-                        && std::isdigit(static_cast<unsigned char>(text_[position_])))
+                    if (position_ < text_.size() && std::isdigit(static_cast<unsigned char>(text_[position_])))
                         fail("SRS manifest number has a leading zero");
                 }
                 else if (text_[position_] >= '1' && text_[position_] <= '9')
                 {
-                    while (position_ < text_.size()
-                           && std::isdigit(static_cast<unsigned char>(text_[position_])))
+                    while (position_ < text_.size() && std::isdigit(static_cast<unsigned char>(text_[position_])))
                         ++position_;
                 }
                 else
@@ -333,22 +345,18 @@ namespace gatzk::crypto
                 {
                     ++position_;
                     const auto fraction_begin = position_;
-                    while (position_ < text_.size()
-                           && std::isdigit(static_cast<unsigned char>(text_[position_])))
+                    while (position_ < text_.size() && std::isdigit(static_cast<unsigned char>(text_[position_])))
                         ++position_;
                     if (position_ == fraction_begin)
                         fail("malformed SRS manifest fraction");
                 }
-                if (position_ < text_.size()
-                    && (text_[position_] == 'e' || text_[position_] == 'E'))
+                if (position_ < text_.size() && (text_[position_] == 'e' || text_[position_] == 'E'))
                 {
                     ++position_;
-                    if (position_ < text_.size()
-                        && (text_[position_] == '+' || text_[position_] == '-'))
+                    if (position_ < text_.size() && (text_[position_] == '+' || text_[position_] == '-'))
                         ++position_;
                     const auto exponent_begin = position_;
-                    while (position_ < text_.size()
-                           && std::isdigit(static_cast<unsigned char>(text_[position_])))
+                    while (position_ < text_.size() && std::isdigit(static_cast<unsigned char>(text_[position_])))
                         ++position_;
                     if (position_ == exponent_begin)
                         fail("malformed SRS manifest exponent");
@@ -400,8 +408,7 @@ namespace gatzk::crypto
                     {
                         if (top_level_object)
                             throw std::runtime_error(
-                                "SRS manifest contains duplicate top-level field: "
-                                + key);
+                                "SRS manifest contains duplicate top-level field: " + key);
                         throw std::runtime_error(
                             "SRS manifest contains duplicate nested field: " + key);
                     }
@@ -453,16 +460,14 @@ namespace gatzk::crypto
             {
                 if (!allowed.contains(entry.first))
                     throw std::runtime_error(
-                        "SRS manifest contains unknown/non-canonical manifest field: "
-                        + entry.first);
+                        "SRS manifest contains unknown/non-canonical manifest field: " + entry.first);
                 fields.insert(entry.first);
             }
             for (const auto field : kCanonicalSrsManifestFields)
             {
                 if (!fields.contains(std::string(field)))
                     throw std::runtime_error(
-                        "SRS manifest is missing canonical field: "
-                        + std::string(field));
+                        "SRS manifest is missing canonical field: " + std::string(field));
             }
         }
 
@@ -480,16 +485,10 @@ namespace gatzk::crypto
             const SrsJsonValue &value,
             std::string_view label)
         {
-            if (value.kind != SrsJsonKind::Number || value.scalar.empty()
-                || value.scalar.front() == '-'
-                || !std::all_of(
-                    value.scalar.begin(), value.scalar.end(),
-                    [](unsigned char character) {
-                        return character >= '0' && character <= '9';
-                    }))
+            if (value.kind != SrsJsonKind::Number || value.scalar.empty() || value.scalar.front() == '-' || !std::all_of(value.scalar.begin(), value.scalar.end(), [](unsigned char character)
+                                                                                                                         { return character >= '0' && character <= '9'; }))
                 throw std::runtime_error(
-                    "SRS manifest field must be an unsigned integer: "
-                    + std::string(label));
+                    "SRS manifest field must be an unsigned integer: " + std::string(label));
             try
             {
                 const auto parsed = std::stoull(value.scalar);
@@ -500,8 +499,7 @@ namespace gatzk::crypto
             catch (const std::exception &)
             {
                 throw std::runtime_error(
-                    "SRS manifest unsigned integer is out of range: "
-                    + std::string(label));
+                    "SRS manifest unsigned integer is out of range: " + std::string(label));
             }
         }
 
@@ -511,16 +509,14 @@ namespace gatzk::crypto
         {
             if (value.kind != SrsJsonKind::Object)
                 throw std::runtime_error(
-                    "SRS manifest nested field must be an object: "
-                    + std::string(label));
+                    "SRS manifest nested field must be an object: " + std::string(label));
             std::unordered_map<std::string, std::string> out;
             out.reserve(value.object.size());
             for (const auto &entry : value.object)
             {
                 if (entry.second.kind != SrsJsonKind::String)
                     throw std::runtime_error(
-                        "SRS manifest nested field must contain strings: "
-                        + std::string(label) + "." + entry.first);
+                        "SRS manifest nested field must contain strings: " + std::string(label) + "." + entry.first);
                 out.emplace(entry.first, entry.second.scalar);
             }
             return out;
@@ -532,8 +528,7 @@ namespace gatzk::crypto
         {
             if (value.kind != SrsJsonKind::Object)
                 throw std::runtime_error(
-                    "SRS manifest nested field must be an object: "
-                    + std::string(label));
+                    "SRS manifest nested field must be an object: " + std::string(label));
             std::unordered_map<std::string, std::size_t> out;
             out.reserve(value.object.size());
             for (const auto &entry : value.object)
@@ -557,8 +552,7 @@ namespace gatzk::crypto
                 if (!expected_set.contains(key))
                 {
                     throw std::runtime_error(
-                        "SRS manifest contains unknown/non-canonical nested field in "
-                        + label + ": " + key);
+                        "SRS manifest contains unknown/non-canonical nested field in " + label + ": " + key);
                 }
             }
             for (const auto key : expected)
@@ -566,8 +560,7 @@ namespace gatzk::crypto
                 if (!actual.contains(std::string(key)))
                 {
                     throw std::runtime_error(
-                        "SRS manifest is missing canonical nested field in "
-                        + label + ": " + std::string(key));
+                        "SRS manifest is missing canonical nested field in " + label + ": " + std::string(key));
                 }
             }
         }
@@ -932,9 +925,10 @@ namespace gatzk::crypto
             validate_srs_manifest_fields(root);
             SRSManifest manifest;
             const auto string_field =
-                [&](std::string_view key) {
-                    return manifest_string(require_manifest_field(root, key), key);
-                };
+                [&](std::string_view key)
+            {
+                return manifest_string(require_manifest_field(root, key), key);
+            };
             manifest.manifest_format = string_field("manifest_format");
             manifest.srs_id = string_field("srs_id");
             manifest.curve_id = string_field("curve_id");
@@ -1014,12 +1008,7 @@ namespace gatzk::crypto
                     break;
                 }
             }
-            if (declared_manifest_hash.empty()
-                || manifest_hash_key_position < 2
-                || text[manifest_hash_key_position - 1] != ' '
-                || text[manifest_hash_key_position - 2] != ' '
-                || sha256_hex(text.substr(0, manifest_hash_key_position - 2))
-                       != declared_manifest_hash)
+            if (declared_manifest_hash.empty() || manifest_hash_key_position < 2 || text[manifest_hash_key_position - 1] != ' ' || text[manifest_hash_key_position - 2] != ' ' || sha256_hex(text.substr(0, manifest_hash_key_position - 2)) != declared_manifest_hash)
             {
                 throw std::runtime_error("SRS manifest canonical hash mismatch");
             }
@@ -1091,13 +1080,11 @@ namespace gatzk::crypto
                 if (value.empty() || (value.size() > 1 && value.front() == '0') || !std::all_of(value.begin(), value.end(), [](unsigned char ch)
                                                                                                 { return ch >= '0' && ch <= '9'; }))
                     throw std::runtime_error(
-                        "protocol compiler max envelope integer mismatch: "
-                        + std::string(key));
+                        "protocol compiler max envelope integer mismatch: " + std::string(key));
                 const auto parsed = static_cast<std::size_t>(std::stoull(value));
                 if (parsed == 0)
                     throw std::runtime_error(
-                        "protocol compiler max envelope has zero bound: "
-                        + std::string(key));
+                        "protocol compiler max envelope has zero bound: " + std::string(key));
                 envelope_sizes.emplace(key, parsed);
             }
             if (canonical_envelope != envelope || envelope_sizes != manifest.max_instance_envelope || envelope_sizes.at("security_target_bits") != 120 || envelope_sizes.at("max_nodes") > manifest.domain_sizes.at("N") || envelope_sizes.at("max_edges") > manifest.domain_sizes.at("edge") || envelope_sizes.at("max_nodes") > std::numeric_limits<std::size_t>::max() / envelope_sizes.at("max_hidden_head_dim") || envelope_sizes.at("max_nodes") * envelope_sizes.at("max_hidden_head_dim") > manifest.domain_sizes.at("edge") || envelope_sizes.at("max_nodes") > std::numeric_limits<std::size_t>::max() / envelope_sizes.at("max_classes") || envelope_sizes.at("max_nodes") * envelope_sizes.at("max_classes") > manifest.domain_sizes.at("edge") || envelope_sizes.at("max_input_dim") > manifest.domain_sizes.at("in") || envelope_sizes.at("max_hidden_head_dim") > manifest.domain_sizes.at("d") || envelope_sizes.at("max_classes") > manifest.domain_sizes.at("C") || envelope_sizes.at("max_concat_dim") > manifest.domain_sizes.at("cat") || envelope_sizes.at("max_graphs") > envelope_sizes.at("max_nodes") || envelope_sizes.at("max_total_nodes") < envelope_sizes.at("max_nodes") || envelope_sizes.at("max_concat_dim") < envelope_sizes.at("max_hidden_head_dim") || envelope_sizes.at("max_range_bits") >= std::numeric_limits<std::size_t>::digits || manifest.domain_sizes.at("edge") < 3 || (std::size_t{1} << envelope_sizes.at("max_range_bits")) > (manifest.domain_sizes.at("edge") - 3) / 2 || envelope_sizes.at("max_coefficient_chunks") > std::numeric_limits<std::size_t>::max() / (manifest.domain_sizes.at("edge") - 1) || envelope_sizes.at("max_coefficient_object_length") > envelope_sizes.at("max_coefficient_chunks") * (manifest.domain_sizes.at("edge") - 1) || envelope_sizes.at("max_nodes") > std::numeric_limits<std::size_t>::max() / envelope_sizes.at("max_input_dim") || envelope_sizes.at("max_nodes") * envelope_sizes.at("max_input_dim") > manifest.domain_sizes.at("FH"))
@@ -2039,8 +2026,7 @@ namespace gatzk::crypto
                     path.string());
             }
 
-            const std::array<std::uint8_t, 8> expected_magic{{
-                'G', 'A', 'T', 'Z', 'K', 'G', '1', 'C'}};
+            const std::array<std::uint8_t, 8> expected_magic{{'G', 'A', 'T', 'Z', 'K', 'G', '1', 'C'}};
             if (std::memcmp(
                     header.data(),
                     expected_magic.data(),
@@ -2916,7 +2902,7 @@ namespace gatzk::crypto
             const std::size_t
                 kMaximumCudaSameSrsWaveSize =
                     util::route2_options()
-                            .cuda_field_hotspots &&
+                                .cuda_field_hotspots &&
                             cuda_g1_msm_integrated_memory_device()
                         ? 16
                         : 8;
@@ -4465,8 +4451,7 @@ namespace gatzk::crypto
                     .weights =
                         &cache->get(
                             domain,
-                            points[
-                                point_index - 1U]),
+                            points[point_index - 1U]),
                     .forward_rotation = 1,
                 };
             }
@@ -4521,8 +4506,7 @@ namespace gatzk::crypto
                     values.size())
                 {
                     value =
-                        values[
-                            rotated_index];
+                        values[rotated_index];
                 }
             }
             else
@@ -4554,8 +4538,7 @@ namespace gatzk::crypto
                     mcl::Fr::mul(
                         product,
                         values[index].native(),
-                        weights.native_weights[
-                            weight_index]);
+                        weights.native_weights[weight_index]);
 
                     mcl::Fr::add(
                         sum,
@@ -4573,8 +4556,8 @@ namespace gatzk::crypto
             {
                 value +=
                     polynomial.domain
-                            ->zero_polynomial_eval(
-                                point) *
+                        ->zero_polynomial_eval(
+                            point) *
                     algebra::horner(
                         polynomial
                             .zero_domain_blinder,
@@ -6879,17 +6862,11 @@ namespace gatzk::crypto
             if (available_size_it != manifest.domain_sizes.end())
             {
                 throw std::runtime_error(
-                    "SRS manifest lacks Lagrange material for required domain "
-                    + domain_name + ":" + std::to_string(domain_size)
-                    + "; authenticated " + base_key + " domain size is "
-                    + std::to_string(available_size_it->second)
-                    + ", so the derived static-table/domain capacity is not covered; "
-                      "refusing to continue or generate an SRS");
+                    "SRS manifest lacks Lagrange material for required domain " + domain_name + ":" + std::to_string(domain_size) + "; authenticated " + base_key + " domain size is " + std::to_string(available_size_it->second) + ", so the derived static-table/domain capacity is not covered; "
+                                                                                                                                                                                                                                     "refusing to continue or generate an SRS");
             }
             throw std::runtime_error(
-                "SRS manifest lacks Lagrange material for required domain "
-                + domain_name + ":" + std::to_string(domain_size)
-                + "; no authenticated domain-size entry exists, refusing to continue");
+                "SRS manifest lacks Lagrange material for required domain " + domain_name + ":" + std::to_string(domain_size) + "; no authenticated domain-size entry exists, refusing to continue");
         }
         std::sort(selected.begin(), selected.end());
         return selected;
@@ -6929,9 +6906,7 @@ namespace gatzk::crypto
             std::lock_guard<std::mutex> lock(cache_mutex);
             if (const auto it = cache.find(cache_key); it != cache.end())
             {
-                if (it->second.resource_identity == resource_identity
-                    && it->second.pk.resource_identity == resource_identity
-                    && it->second.vk.resource_identity == resource_identity)
+                if (it->second.resource_identity == resource_identity && it->second.pk.resource_identity == resource_identity && it->second.vk.resource_identity == resource_identity)
                     return it->second;
                 // Erase stale material before reloading.  Do not let a
                 // mismatched payload survive under the same path/config key.
@@ -7487,7 +7462,7 @@ namespace gatzk::crypto
         const G1MSMExecutionOptions
             wave_msm_options{
                 .max_worker_count = 1,
-            };
+        };
 
         SameSrsCommitWaveProfile wave_profile;
 
@@ -7499,9 +7474,9 @@ namespace gatzk::crypto
                 wave_excluded,
                 [&](std::size_t index)
                 {
-                        commit_one(
-                            index,
-                            &wave_msm_options);
+                    commit_one(
+                        index,
+                        &wave_msm_options);
                 },
                 &wave_profile);
 
@@ -7578,7 +7553,7 @@ namespace gatzk::crypto
                                               outer_worker_count,
                                               remaining_uncached_count)))
                             : 0,
-                };
+            };
 
             std::vector<
                 std::pair<
@@ -7913,7 +7888,7 @@ namespace gatzk::crypto
                     .point = point,
                     .opening_polynomial =
                         material,
-                };
+            };
 
             if (profile != nullptr)
             {
@@ -7943,15 +7918,14 @@ namespace gatzk::crypto
         {
             excluded[index] =
                 view[index].second != nullptr &&
-                view[index].second
-                        ->cuda_resident_coefficients !=
+                view[index].second->cuda_resident_coefficients !=
                     nullptr;
         }
 
         const G1MSMExecutionOptions
             wave_msm_options{
                 .max_worker_count = 1,
-            };
+        };
 
         SameSrsCommitWaveProfile wave_profile;
 
@@ -7963,9 +7937,9 @@ namespace gatzk::crypto
                 excluded,
                 [&](std::size_t index)
                 {
-                        commit_one(
-                            index,
-                            &wave_msm_options);
+                    commit_one(
+                        index,
+                        &wave_msm_options);
                 },
                 &wave_profile);
 
@@ -8017,7 +7991,7 @@ namespace gatzk::crypto
                                   cpu_count /
                                       outer_worker_count)
                             : 0,
-                };
+            };
 
             std::vector<
                 std::pair<
@@ -8422,7 +8396,7 @@ namespace gatzk::crypto
             scan_profiles{
                 profiles != nullptr ? &(*profiles)[0] : nullptr,
                 profiles != nullptr ? &(*profiles)[1] : nullptr,
-            };
+        };
 
         auto folded =
             build_streamed_folded_opening_plan_pair(

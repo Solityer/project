@@ -76,29 +76,29 @@ namespace gatzk::crypto
     // 下面这组接口只暴露群运算语义，不向 protocol 层泄漏 mcl 细节。
     G1Point g1_zero();
     G2Point g2_zero();
-    G1Point g1_add(const G1Point& lhs, const G1Point& rhs);
-    G1Point g1_sub(const G1Point& lhs, const G1Point& rhs);
-    G1Point g1_neg(const G1Point& point);
-    G1Point g1_mul(const G1Point& point, const algebra::FieldElement& scalar);
-    G1Point g1_multi_scalar_mul(const G1Point* points, const algebra::FieldElement* scalars, std::size_t count);
+    G1Point g1_add(const G1Point &lhs, const G1Point &rhs);
+    G1Point g1_sub(const G1Point &lhs, const G1Point &rhs);
+    G1Point g1_neg(const G1Point &point);
+    G1Point g1_mul(const G1Point &point, const algebra::FieldElement &scalar);
+    G1Point g1_multi_scalar_mul(const G1Point *points, const algebra::FieldElement *scalars, std::size_t count);
     G1Point g1_multi_scalar_mul_profiled(
-        const G1Point* points,
-        const algebra::FieldElement* scalars,
+        const G1Point *points,
+        const algebra::FieldElement *scalars,
         std::size_t count,
-        G1MSMProfile* profile,
-        const G1MSMExecutionOptions* options = nullptr);
-    G1Point g1_multi_scalar_mul(const std::vector<G1Point>& points, const std::vector<algebra::FieldElement>& scalars);
+        G1MSMProfile *profile,
+        const G1MSMExecutionOptions *options = nullptr);
+    G1Point g1_multi_scalar_mul(const std::vector<G1Point> &points, const std::vector<algebra::FieldElement> &scalars);
     // Reuse bounded object-level workers around several independent MSMs.
     // Per-MSM fanout remains separately capped by G1MSMExecutionOptions.
     void g1_parallel_msm_batch_workers(
         std::size_t worker_count,
-        const std::function<void(std::size_t)>& worker);
-    std::vector<G1Point> g1_mul_same_base_batch(const G1Point& point, const std::vector<algebra::FieldElement>& scalars);
-    G2Point g2_add(const G2Point& lhs, const G2Point& rhs);
-    G2Point g2_sub(const G2Point& lhs, const G2Point& rhs);
-    G2Point g2_mul(const G2Point& point, const algebra::FieldElement& scalar);
-    bool operator==(const G1Point& lhs, const G1Point& rhs);
-    bool operator==(const G2Point& lhs, const G2Point& rhs);
+        const std::function<void(std::size_t)> &worker);
+    std::vector<G1Point> g1_mul_same_base_batch(const G1Point &point, const std::vector<algebra::FieldElement> &scalars);
+    G2Point g2_add(const G2Point &lhs, const G2Point &rhs);
+    G2Point g2_sub(const G2Point &lhs, const G2Point &rhs);
+    G2Point g2_mul(const G2Point &point, const algebra::FieldElement &scalar);
+    bool operator==(const G1Point &lhs, const G1Point &rhs);
+    bool operator==(const G2Point &lhs, const G2Point &rhs);
     std::vector<std::uint8_t> serialize(const G1Point &point);
     std::vector<std::uint8_t> serialize(const G2Point &point);
 
@@ -122,23 +122,23 @@ namespace gatzk::crypto
 
     // 检查两项 pairing 是否相等，是 KZG batch verification 的基础原语。
     bool pairing_equal(
-        const G1Point& lhs_a,
-        const G2Point& rhs_a,
-        const G1Point& lhs_b,
-        const G2Point& rhs_b);
+        const G1Point &lhs_a,
+        const G2Point &rhs_a,
+        const G1Point &lhs_b,
+        const G2Point &rhs_b);
 
     // 用预处理后的第二个 G2 点检查 pairing 等式，服务 VK-only 快速验证路径。
     bool pairing_equal_with_prepared_rhs_a(
-        const G1Point& lhs_a,
-        const PreparedG2& rhs_a_prepared,
-        const G1Point& lhs_b,
-        const G2Point& rhs_b);
-        
+        const G1Point &lhs_a,
+        const PreparedG2 &rhs_a_prepared,
+        const G1Point &lhs_b,
+        const G2Point &rhs_b);
+
     // 将固定 G2 端预处理后参与 pairing，可减少 verifier 热路径的重复准备成本。
     bool pairing_product_is_one_mixed_prepared(
-        const G1Point& lhs_dynamic,
-        const G2Point& rhs_dynamic,
-        const G1Point& lhs_prepared,
-        const PreparedG2& rhs_prepared);
+        const G1Point &lhs_dynamic,
+        const G2Point &rhs_dynamic,
+        const G1Point &lhs_prepared,
+        const PreparedG2 &rhs_prepared);
 
 }

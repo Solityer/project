@@ -1061,16 +1061,17 @@ namespace gatzk::algebra
         record_cuda_stream_sync();
     }
 
-   // 重心插值权重计算(用于在单个挑战点x上快速评估多项式)
+    // 重心插值权重计算(用于在单个挑战点x上快速评估多项式)
     namespace
     {
         constexpr unsigned
             kBarycentricScanBlockSize = 256;
 
         __device__ __forceinline__
-        gpu::GpuFr barycentric_pow_u64(
-            gpu::GpuFr base,
-            std::size_t exponent)
+            gpu::GpuFr
+            barycentric_pow_u64(
+                gpu::GpuFr base,
+                std::size_t exponent)
         {
             auto result =
                 gpu::fr_one();
@@ -1117,8 +1118,7 @@ namespace gatzk::algebra
                 lane;
 
             __shared__ gpu::GpuFr
-                lane_powers[
-                    kBarycentricScanBlockSize];
+                lane_powers[kBarycentricScanBlockSize];
 
             __shared__ gpu::GpuFr
                 block_power;
@@ -1132,7 +1132,7 @@ namespace gatzk::algebra
 
             for (unsigned offset = 1;
                  offset <
-                     kBarycentricScanBlockSize;
+                 kBarycentricScanBlockSize;
                  offset <<= 1U)
             {
                 auto value =
@@ -1142,8 +1142,7 @@ namespace gatzk::algebra
                 {
                     value =
                         gpu::fr_mul(
-                            lane_powers[
-                                lane - offset],
+                            lane_powers[lane - offset],
                             value);
                 }
 
@@ -1212,8 +1211,7 @@ namespace gatzk::algebra
                     : traversal_index;
 
             __shared__ gpu::GpuFr
-                scan[
-                    kBarycentricScanBlockSize];
+                scan[kBarycentricScanBlockSize];
 
             scan[lane] =
                 active
@@ -1224,7 +1222,7 @@ namespace gatzk::algebra
 
             for (unsigned offset = 1;
                  offset <
-                     kBarycentricScanBlockSize;
+                 kBarycentricScanBlockSize;
                  offset <<= 1U)
             {
                 auto value =
@@ -1267,18 +1265,15 @@ namespace gatzk::algebra
                             ? remaining
                             : blockDim.x);
 
-                block_products[
-                    blockIdx.x] =
-                        scan[
-                            valid_count - 1U];
+                block_products[blockIdx.x] =
+                    scan[valid_count - 1U];
             }
         }
 
         __global__ void
         apply_product_block_prefix_kernel(
             gpu::GpuFr *__restrict__ output,
-            const gpu::GpuFr *__restrict__
-                block_prefixes,
+            const gpu::GpuFr *__restrict__ block_prefixes,
             std::size_t count,
             bool reverse)
         {
@@ -1305,19 +1300,15 @@ namespace gatzk::algebra
 
             output[output_index] =
                 gpu::fr_mul(
-                    block_prefixes[
-                        block_index],
+                    block_prefixes[block_index],
                     output[output_index]);
         }
 
         __global__ void
         barycentric_invert_product_kernel(
-            const gpu::GpuFr *__restrict__
-                denominators,
-            const gpu::GpuFr *__restrict__
-                prefixes,
-            gpu::GpuFr *__restrict__
-                global_inverse,
+            const gpu::GpuFr *__restrict__ denominators,
+            const gpu::GpuFr *__restrict__ prefixes,
+            gpu::GpuFr *__restrict__ global_inverse,
             std::size_t domain_size)
         {
             if (blockIdx.x != 0 ||
@@ -1341,14 +1332,10 @@ namespace gatzk::algebra
 
         __global__ void
         barycentric_finalize_parallel_kernel(
-            const gpu::GpuFr *__restrict__
-                denominators,
-            const gpu::GpuFr *__restrict__
-                prefixes,
-            const gpu::GpuFr *__restrict__
-                suffixes,
-            const gpu::GpuFr *__restrict__
-                global_inverse,
+            const gpu::GpuFr *__restrict__ denominators,
+            const gpu::GpuFr *__restrict__ prefixes,
+            const gpu::GpuFr *__restrict__ suffixes,
+            const gpu::GpuFr *__restrict__ global_inverse,
             const gpu::GpuFr x,
             const gpu::GpuFr zero_eval,
             const gpu::GpuFr inv_n,
@@ -1556,7 +1543,7 @@ namespace gatzk::algebra
             if (block_count_size > 1)
             {
                 if (level_index >=
-                    levels.size() ||
+                        levels.size() ||
                     levels[level_index]
                             .block_count !=
                         block_count_size)

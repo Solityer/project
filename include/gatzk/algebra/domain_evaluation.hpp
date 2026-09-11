@@ -19,14 +19,14 @@
 namespace gatzk::algebra
 {
     // 将挑战点编码成缓存键，供不同域上的求值权重复用。
-    inline std::string point_cache_key(const FieldElement& point)
+    inline std::string point_cache_key(const FieldElement &point)
     {
         return point.to_string();
     }
 
     inline std::string domain_point_cache_key(
-        const std::shared_ptr<RootOfUnityDomain>& domain,
-        const FieldElement& point)
+        const std::shared_ptr<RootOfUnityDomain> &domain,
+        const FieldElement &point)
     {
         if (domain == nullptr)
         {
@@ -43,8 +43,8 @@ namespace gatzk::algebra
     };
 
     inline DomainEvaluationWeights build_domain_evaluation_weights(
-        const std::shared_ptr<RootOfUnityDomain>& domain,
-        const FieldElement& point)
+        const std::shared_ptr<RootOfUnityDomain> &domain,
+        const FieldElement &point)
     {
         if (domain == nullptr)
         {
@@ -66,12 +66,12 @@ namespace gatzk::algebra
         return entry;
     }
 
-class DomainEvaluationWeightCache
+    class DomainEvaluationWeightCache
     {
     public:
-        const DomainEvaluationWeights& get(
-            const std::shared_ptr<RootOfUnityDomain>& domain,
-            const FieldElement& point)
+        const DomainEvaluationWeights &get(
+            const std::shared_ptr<RootOfUnityDomain> &domain,
+            const FieldElement &point)
         {
             const auto cache_key =
                 domain_point_cache_key(
@@ -90,10 +90,10 @@ class DomainEvaluationWeightCache
 
     private:
         template <typename Builder>
-        const DomainEvaluationWeights&
+        const DomainEvaluationWeights &
         get_or_build(
-            const std::string& cache_key,
-            Builder&& builder)
+            const std::string &cache_key,
+            Builder &&builder)
         {
             {
                 std::unique_lock<std::mutex>

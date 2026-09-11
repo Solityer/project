@@ -5494,16 +5494,16 @@ namespace gatzk::protocol
                 const bool fits_existing =
                     !chunks_.empty() &&
                     [&]()
-                    {
-                        const auto begin =
-                            util::spill_align_up(
-                                chunks_.back().used,
-                                page_size_,
-                                label);
-                        return begin <= chunks_.back().capacity &&
-                               aligned_bytes <=
-                                   chunks_.back().capacity - begin;
-                    }();
+                {
+                    const auto begin =
+                        util::spill_align_up(
+                            chunks_.back().used,
+                            page_size_,
+                            label);
+                    return begin <= chunks_.back().capacity &&
+                           aligned_bytes <=
+                               chunks_.back().capacity - begin;
+                }();
                 if (!fits_existing)
                 {
                     add_chunk(aligned_bytes, label);
@@ -6239,7 +6239,7 @@ namespace gatzk::protocol
                         consumed_elements{
                             (logical_end + 1) / 2,
                             logical_end / 2,
-                        };
+                    };
 
                     const auto lane_bytes =
                         split_lane_size_ * sizeof(FieldElement);
@@ -7169,7 +7169,7 @@ namespace gatzk::protocol
                         polynomial != nullptr)
                     {
                         if (polynomial->basis ==
-                                algebra::PolynomialBasis::Evaluation)
+                            algebra::PolynomialBasis::Evaluation)
                         {
                             return polynomial->domain != nullptr &&
                                    polynomial->domain->size ==
@@ -7343,9 +7343,8 @@ namespace gatzk::protocol
                             return false;
                         }
                         reserved_slots.insert(selected_slot);
-                        missing_sources.push_back({
-                            source.label,
-                            selected_slot});
+                        missing_sources.push_back({source.label,
+                                                   selected_slot});
                         source_slots_by_label.emplace(
                             source.label,
                             selected_slot);
@@ -8907,7 +8906,7 @@ namespace gatzk::protocol
                         "prove:quotient:t_N:coefficients:done:ms=" + std::to_string(elapsed_ms(
                                                                          coefficient_start, Clock::now())));
                 }
-               if (coefficients.size() >
+                if (coefficients.size() >
                     key.pk.degree_bound + 1)
                 {
                     throw std::runtime_error(
@@ -11300,7 +11299,7 @@ namespace gatzk::protocol
             const ProtocolContext &context_;
             const TraceArtifacts &trace_;
             const std::map<std::string, FieldElement> &challenges_;
-           std::string label_;
+            std::string label_;
             internal::TEdgeDescriptorShape t_edge_descriptor_shape_;
             std::shared_ptr<algebra::RootOfUnityDomain> domain_;
 
@@ -12312,7 +12311,7 @@ namespace gatzk::protocol
                     "P_Row_feat_qry",
                     "P_Col_feat_qry",
                     "P_I_feat_qry",
-                };
+            };
             std::erase_if(
                 labels,
                 [&](const std::string &label)
@@ -12622,7 +12621,7 @@ namespace gatzk::protocol
             config.hidden_profile,
             config.K_out,
             (std::filesystem::path(config.project_root) / "configs/quantization_scale_chain.cfg").string());
-                static std::mutex cache_mutex;
+        static std::mutex cache_mutex;
         static std::unordered_map<std::string, StaticContextCachePayload> cache;
         // 这里只复用静态上下文对象，见证和挑战相关状态必须按每次正式证明重新生成。
         const bool allow_static_context_cache =
@@ -13632,7 +13631,7 @@ namespace gatzk::protocol
 
             std::size_t
                 retained_cuda_msm_base_bytes =
-                kMinimumRetainedCudaMsmBaseBytes;
+                    kMinimumRetainedCudaMsmBaseBytes;
 
             if (crypto::
                     cuda_g1_msm_integrated_memory_device())
@@ -15177,7 +15176,7 @@ namespace gatzk::protocol
                                         .max_worker_count =
                                             inner_worker_count,
                                     },
-                                };
+                        };
                         const auto local_start = Clock::now();
                         opening_results[group_index].witness =
                             crypto::KZG::open_point_group(
@@ -15331,7 +15330,7 @@ namespace gatzk::protocol
                             pair_worksets{
                                 opening_group_workset(lhs),
                                 opening_group_workset(rhs),
-                            };
+                        };
                         std::size_t first_workset_bytes = 0;
                         std::size_t second_workset_bytes = 0;
                         std::size_t pair_workset_bytes = 0;
@@ -15454,7 +15453,7 @@ namespace gatzk::protocol
                 pair_points{
                     point_groups[pair[0]].point,
                     point_groups[pair[1]].point,
-                };
+            };
 
             std::array<FieldElement, 2>
                 pair_challenges{
@@ -15464,7 +15463,7 @@ namespace gatzk::protocol
                     derive_point_group_challenge(
                         proof.public_metadata,
                         point_groups[pair[1]]),
-                };
+            };
 
             for (std::size_t slot = 0;
                  slot < 2;
@@ -15525,7 +15524,7 @@ namespace gatzk::protocol
                             .max_worker_count = inner_worker_count,
                         },
                     },
-                };
+            };
 
             std::array<
                 crypto::BatchOpeningProfile,

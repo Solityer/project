@@ -2199,7 +2199,7 @@ namespace gatzk::algebra
                 reinterpret_cast<const mcl::Fr *>(workspace.input),
                 reinterpret_cast<
                     mcl::Fr *>(
-                        device_output),
+                    device_output),
                 half_size,
                 2,
                 ntt::NTTDir::kForward,
@@ -2425,7 +2425,7 @@ namespace gatzk::algebra
                 reinterpret_cast<const mcl::Fr *>(workspace.input),
                 reinterpret_cast<
                     mcl::Fr *>(
-                        device_output),
+                    device_output),
                 half_size,
                 2,
                 ntt::NTTDir::kForward,
@@ -2462,7 +2462,7 @@ namespace gatzk::algebra
         return true;
     }
 
-bool cuda_coset_device_to_coefficients_exact(
+    bool cuda_coset_device_to_coefficients_exact(
         const mcl::Fr *device_values,
         std::size_t size,
         const FieldElement &shift,

@@ -26,7 +26,7 @@ namespace gatzk::algebra
         bool points_precomputed = true;
 
         // 创建指定名称和大小的单位根域
-        static std::shared_ptr<RootOfUnityDomain> create(const std::string& name, std::size_t size);
+        static std::shared_ptr<RootOfUnityDomain> create(const std::string &name, std::size_t size);
 
         // 返回第 index 个点（即 omega^index）
         FieldElement point_at(std::size_t index) const;
@@ -34,17 +34,17 @@ namespace gatzk::algebra
         FieldElement point_scaled_by_inv_size_at(std::size_t index) const;
 
         // 计算零点多项式 Z(x) = x^size - 1 在x处的值
-        FieldElement zero_polynomial_eval(const FieldElement& x) const;
+        FieldElement zero_polynomial_eval(const FieldElement &x) const;
 
         // 计算第index个拉格朗日基函数L_index(x)在x处的值
-        FieldElement lagrange_basis_eval(std::size_t index, const FieldElement& x) const;
+        FieldElement lagrange_basis_eval(std::size_t index, const FieldElement &x) const;
 
-        std::vector<mcl::Fr> barycentric_weights_native(const FieldElement& x) const;
-        std::vector<FieldElement> barycentric_weights(const FieldElement& x) const;
-        std::optional<std::size_t> rotation_shift(const FieldElement& from, const FieldElement& to) const;
+        std::vector<mcl::Fr> barycentric_weights_native(const FieldElement &x) const;
+        std::vector<FieldElement> barycentric_weights(const FieldElement &x) const;
+        std::optional<std::size_t> rotation_shift(const FieldElement &from, const FieldElement &to) const;
     };
 
-struct CudaResidentCoefficientBuffer
+    struct CudaResidentCoefficientBuffer
     {
         std::shared_ptr<void> allocation;
 
@@ -59,7 +59,7 @@ struct CudaResidentCoefficientBuffer
     enum class PolynomialBasis
     {
         Coefficient, // 系数形式
-        Evaluation // 求值形式
+        Evaluation   // 求值形式
     };
 
     struct Polynomial
@@ -88,50 +88,50 @@ struct CudaResidentCoefficientBuffer
         // the canonical values P(omega^i); this coefficient vector stores R.
         std::vector<FieldElement> zero_domain_blinder;
 
-        static Polynomial from_coefficients(const std::string& name, std::vector<FieldElement> coefficients);
+        static Polynomial from_coefficients(const std::string &name, std::vector<FieldElement> coefficients);
         static Polynomial from_evaluations(
-            const std::string& name,
+            const std::string &name,
             std::vector<FieldElement> evaluations,
-            const std::shared_ptr<RootOfUnityDomain>& domain);
+            const std::shared_ptr<RootOfUnityDomain> &domain);
         static Polynomial from_shared_evaluations(
-            const std::string& name,
+            const std::string &name,
             std::shared_ptr<const std::vector<FieldElement>> evaluations,
-            const std::shared_ptr<RootOfUnityDomain>& domain);
+            const std::shared_ptr<RootOfUnityDomain> &domain);
 
-        const std::vector<FieldElement>& values() const;
+        const std::vector<FieldElement> &values() const;
         std::size_t size() const;
-        const FieldElement& value_at(std::size_t index) const;
+        const FieldElement &value_at(std::size_t index) const;
 
         void set_zero_domain_blinder(std::vector<FieldElement> coefficients);
         bool is_zero_domain_blinded() const;
-        FieldElement semantic_evaluate(const FieldElement& x) const;
+        FieldElement semantic_evaluate(const FieldElement &x) const;
 
         // 按当前基在点 `x` 上求值，是 transcript 重放、quotient 与 verifier 复算的统一入口。
-        FieldElement evaluate(const FieldElement& x) const;
+        FieldElement evaluate(const FieldElement &x) const;
     };
 
-    FieldElement horner(const std::vector<FieldElement>& coefficients, const FieldElement& x);
+    FieldElement horner(const std::vector<FieldElement> &coefficients, const FieldElement &x);
     FieldElement interpolate_at(
-        const std::vector<FieldElement>& points,
-        const std::vector<FieldElement>& values,
-        const FieldElement& x);
+        const std::vector<FieldElement> &points,
+        const std::vector<FieldElement> &values,
+        const FieldElement &x);
 
     // Materialize the exact blinded coefficient vector used by a KZG
     // commitment. The result has configured_degree + 1 entries and is never
     // trimmed according to witness-dependent high zero coefficients.
     std::vector<FieldElement> materialize_blinded_coefficients(
-        const Polynomial& polynomial,
+        const Polynomial &polynomial,
         std::size_t configured_degree);
 
     // Canonical coefficient Taylor shift fixed by the protocol compiler.
     // Computes F(X + delta) with the registered radix-2 convolution size while
     // preserving the public configured coefficient length.
     std::vector<FieldElement> coefficient_taylor_shift(
-        const std::vector<FieldElement>& coefficients,
+        const std::vector<FieldElement> &coefficients,
         std::size_t configured_degree,
-        const FieldElement& delta);
+        const FieldElement &delta);
 
     // 将矩阵按 formal 约定的行主序拍平成多项式系数列。
-    std::vector<FieldElement> flatten_matrix_coefficients(const std::vector<std::vector<FieldElement>>& matrix);
+    std::vector<FieldElement> flatten_matrix_coefficients(const std::vector<std::vector<FieldElement>> &matrix);
 
 }

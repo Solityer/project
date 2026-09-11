@@ -79,12 +79,11 @@ namespace gatzk::protocol
                 for (std::size_t index =
                          term.instruction_begin;
                      index <
-                         term.instruction_end;
+                     term.instruction_end;
                      ++index)
                 {
                     const auto &source =
-                        program.instructions[
-                            index];
+                        program.instructions[index];
 
                     auto &target =
                         compiled[index];
@@ -293,8 +292,7 @@ namespace gatzk::protocol
         {
             GpuFr values[RegisterCount];
 
-            __device__ __forceinline__
-            void store(
+            __device__ __forceinline__ void store(
                 std::uint8_t index,
                 const GpuFr &value)
             {
@@ -303,8 +301,9 @@ namespace gatzk::protocol
             }
 
             __device__ __forceinline__
-            GpuFr load(
-                std::uint8_t index) const
+                GpuFr
+                load(
+                    std::uint8_t index) const
             {
                 return values[index];
             }
@@ -318,8 +317,7 @@ namespace gatzk::protocol
             GpuFr r2;
             GpuFr r3;
 
-            __device__ __forceinline__
-            void store(
+            __device__ __forceinline__ void store(
                 std::uint8_t index,
                 const GpuFr &value)
             {
@@ -341,8 +339,9 @@ namespace gatzk::protocol
             }
 
             __device__ __forceinline__
-            GpuFr load(
-                std::uint8_t index) const
+                GpuFr
+                load(
+                    std::uint8_t index) const
             {
                 switch (index)
                 {
@@ -370,8 +369,7 @@ namespace gatzk::protocol
             GpuFr r6;
             GpuFr r7;
 
-            __device__ __forceinline__
-            void store(
+            __device__ __forceinline__ void store(
                 std::uint8_t index,
                 const GpuFr &value)
             {
@@ -405,8 +403,9 @@ namespace gatzk::protocol
             }
 
             __device__ __forceinline__
-            GpuFr load(
-                std::uint8_t index) const
+                GpuFr
+                load(
+                    std::uint8_t index) const
             {
                 switch (index)
                 {
@@ -470,7 +469,7 @@ namespace gatzk::protocol
                 const auto instruction =
                     instructions[index];
 
-               switch (instruction.opcode)
+                switch (instruction.opcode)
                 {
                 case TEdgeProgramOpcode::
                     LoadAccess:
@@ -516,8 +515,7 @@ namespace gatzk::protocol
                 {
                     registers.store(
                         instruction.dst,
-                        constants[
-                            instruction.operand]);
+                        constants[instruction.operand]);
 
                     break;
                 }
@@ -646,26 +644,22 @@ namespace gatzk::protocol
                 block_begin +
                 threadIdx.x;
 
-if (logical_index >= target_size)
+            if (logical_index >= target_size)
             {
                 return;
             }
 
             const auto block_root_power =
-                block_root_powers[
-                    blockIdx.x];
+                block_root_powers[blockIdx.x];
 
             const auto block_zero_power =
-                block_zero_powers[
-                    blockIdx.x];
+                block_zero_powers[blockIdx.x];
 
             const auto lane_root_power =
-                lane_root_powers[
-                    threadIdx.x];
+                lane_root_powers[threadIdx.x];
 
             const auto lane_zero_power =
-                lane_zero_powers[
-                    threadIdx.x];
+                lane_zero_powers[threadIdx.x];
 
             const auto half_size =
                 target_size / 2U;
@@ -986,7 +980,7 @@ if (logical_index >= target_size)
                             algebra::FieldElement::
                                 zero());
 
-                  const auto root =
+                    const auto root =
                         algebra::FieldElement::
                             root_of_unity(
                                 target_size_);
@@ -3104,7 +3098,7 @@ if (logical_index >= target_size)
         std::size_t constant_bytes = 0;
         std::size_t access_rotation_bytes = 0;
         std::size_t access_slot_bytes = 0;
-       if (!checked_count_bytes(
+        if (!checked_count_bytes(
                 shape.instruction_count,
                 sizeof(CudaTEdgeCompiledInstruction),
                 &instruction_bytes) ||
@@ -3228,7 +3222,7 @@ if (logical_index >= target_size)
             !add_host(linear_source_offset_bytes) ||
             !add_host(linear_source_count_bytes) ||
             !add_host(linear_source_blinder_bytes) ||
-           !add_host(linear_target_blinder_bytes) ||
+            !add_host(linear_target_blinder_bytes) ||
             !add_host(lane_power_bytes) ||
             !add_host(block_power_bytes) ||
             !add_host(shape.caller_host_bytes) ||
