@@ -17,19 +17,6 @@ case "$config_path" in
   "$root/configs/"*.cfg) ;;
   *) echo "setup-register: config must be under baseline-local configs/" >&2; exit 2 ;;
 esac
-srs_rel="$(awk -F= '$1 ~ /^[[:space:]]*srs_path[[:space:]]*$/ {gsub(/[[:space:]]/,"",$2); print $2}' "$config_path")"
-if [[ -z "$srs_rel" ]]; then
-  echo "setup-register: srs_path is missing" >&2
-  exit 3
-fi
-case "$srs_rel" in
-  /*|*..*) echo "setup-register: SRS path must be baseline-local" >&2; exit 3 ;;
-esac
-srs="$root/$srs_rel"
-if [[ ! -d "$srs" ]]; then
-  echo "setup-register: authenticated SRS artifact is absent: $srs" >&2
-  echo "setup-register: refusing to generate or register an untrusted replacement" >&2
-  exit 3
-fi
-echo "setup-register: official SRS authentication/registry API is not exposed by restored core" >&2
-exit 3
+python3 "$script_dir/validate_resources.py" --config "$config_path"
+echo "setup-register: resources authenticated; native zkDL registration is ready"
+echo "setup-register: no SRS, registry, commitment, or blinder was generated"

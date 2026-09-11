@@ -1,84 +1,70 @@
 #!/usr/bin/env python3
-"""Collect only production run records; never infer verification from timing."""
+"""Collect only fully verified native zkDL result artifacts.
+
+Collection is deliberately fail-closed: a timing record, a proof envelope,
+or a hand-written VERIFIED marker is not enough. Each row must pass the
+baseline-local proof/resource/independent-verifier audit in
+``result_artifacts.py``.
+"""
 
 from __future__ import annotations
 
 import argparse
 import csv
 import json
-import re
 from pathlib import Path
 
-
-REQUIRED = {
-    "schema", "dataset", "backend", "statement_id", "proof_id", "verification_status",
-    "proof_scope", "proof_size_bytes", "commitment_size_bytes", "verifier_reads_witness",
-    "gpu_kernel_executed", "silent_fallback", "output_bound", "commitment_time_seconds",
-    "prove_time_seconds", "verify_time_seconds", "error", "static_table_descriptor_digest",
-    "scale_chain_digest", "integer_bound_ledger_id", "integer_bound_ledger_digest",
-    "integer_bound_ledger_descriptor_digest",
-}
-
-IDENTITY_DIGESTS = {
-    "static_table_descriptor_digest", "scale_chain_digest", "integer_bound_ledger_digest",
-    "integer_bound_ledger_descriptor_digest",
-}
-
-
-def validate_identity_fields(row: dict[str, str], path: Path) -> None:
-    for field in IDENTITY_DIGESTS:
-        value = row[field]
-        if value != "UNAVAILABLE" and not re.fullmatch(r"[0-9a-f]{64}", value):
-            raise ValueError(f"invalid SHA-256 identity field {field} in {path}")
-    if not row["integer_bound_ledger_id"]:
-        raise ValueError(f"empty integer-bound ledger id in {path}")
-
-
-def read_record(path: Path) -> dict[str, str]:
-    values: dict[str, str] = {}
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if "=" not in line:
-            raise ValueError(f"malformed line in {path}")
-        key, value = line.split("=", 1)
-        if key in values:
-            raise ValueError(f"duplicate key {key} in {path}")
-        values[key] = value
-    missing = REQUIRED - values.keys()
-    if missing:
-        raise ValueError(f"missing fields in {path}: {sorted(missing)}")
-    return values
+from result_artifacts import ArtifactError, audit_run, require_exact_matrix
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--runs", type=Path, default=Path("runs"))
     parser.add_argument("--output", type=Path, default=Path("results/collected.json"))
-    parser.add_argument("--allow-blocked", action="store_true")
+    parser.add_argument(
+        "--require-matrix",
+        action="store_true",
+        help="require exactly the five canonical datasets on both CPU and GPU",
+    )
     args = parser.parse_args()
     root = Path(__file__).resolve().parent.parent
     runs = (root / args.runs).resolve()
-    if not runs.is_relative_to(root) or not runs.is_dir():
+    try:
+        runs.relative_to(root.resolve())
+    except ValueError:
         raise SystemExit("collect-results: runs directory must be baseline-local")
+    if not runs.is_dir():
+        raise SystemExit(f"collect-results: runs directory is missing: {runs}")
+    records = sorted(runs.rglob("run.record"))
+    if not records:
+        raise SystemExit("collect-results: no production run records")
     rows: list[dict[str, str]] = []
     failures: list[str] = []
-    for record_path in sorted(runs.rglob("run.record")):
+    for record_path in records:
         try:
-            row = read_record(record_path)
-            validate_identity_fields(row, record_path)
-        except ValueError as exc:
+            rows.append(audit_run(root, record_path.parent))
+        except ArtifactError as exc:
             failures.append(str(exc))
-            continue
-        row["run_dir"] = record_path.parent.relative_to(root).as_posix()
-        if not args.allow_blocked and row["verification_status"] != "VERIFIED":
-            failures.append(f"{record_path}: status={row['verification_status']}")
-        rows.append(row)
     if failures:
         raise SystemExit("collect-results: " + "; ".join(failures))
+    if args.require_matrix:
+        try:
+            require_exact_matrix(rows)
+        except ArtifactError as exc:
+            raise SystemExit(f"collect-results: {exc}") from exc
+    order = {"cora": 0, "citeseer": 1, "pubmed": 2, "ppi": 3, "ogbn_arxiv": 4}
+    backend_order = {"cpu": 0, "gpu": 1}
+    rows.sort(key=lambda row: (order[row["dataset"]], backend_order[row["backend"]]))
     output = (root / args.output).resolve()
-    if not output.is_relative_to(root):
+    try:
+        output.relative_to(root.resolve())
+    except ValueError:
         raise SystemExit("collect-results: output escapes baseline root")
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps({"schema": "zkDL_gat_result_collection_v1", "rows": rows}, indent=2) + "\n", encoding="utf-8")
+    output.write_text(
+        json.dumps({"schema": "zkDL_gat_result_collection_v2", "rows": rows}, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     csv_path = output.with_suffix(".csv")
     with csv_path.open("w", newline="", encoding="utf-8") as stream:
         fields = sorted({key for row in rows for key in row})

@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -17,6 +18,8 @@ ROOT = Path(__file__).resolve().parent.parent
 SCHEMAS = ROOT / "schemas"
 FIXTURES = ROOT / "tests" / "fixtures"
 SCRIPTS = ROOT / "scripts"
+sys.path.insert(0, str(SCRIPTS))
+from result_artifacts import ArtifactError, require_exact_matrix
 
 
 class ToolingTests(unittest.TestCase):
@@ -57,11 +60,17 @@ class ToolingTests(unittest.TestCase):
     def test_collector_and_final_validator(self) -> None:
         with tempfile.TemporaryDirectory(dir=ROOT / "tests") as directory:
             output = Path(directory) / "collected.json"
-            self.run_cmd("python3", str(SCRIPTS / "collect_results.py"), "--runs", "tests/fixtures/verified_run", "--output", str(output))
-            self.assertEqual(json.loads(output.read_text(encoding="utf-8"))["rows"][0]["verification_status"], "VERIFIED")
+            # A metadata-only fixture must never be accepted as a formal row:
+            # the native proof bytes and independent-verification artifacts
+            # are intentionally absent.
+            self.run_cmd("python3", str(SCRIPTS / "collect_results.py"), "--runs", "tests/fixtures/verified_run", "--output", str(output), expected=1)
         self.run_cmd("python3", str(SCRIPTS / "collect_results.py"), "--runs", "tests/fixtures/blocked_run", expected=1)
-        self.run_cmd("python3", str(SCRIPTS / "final_validate.py"), "--runs", "tests/fixtures/verified_run")
+        self.run_cmd("python3", str(SCRIPTS / "final_validate.py"), "--runs", "tests/fixtures/verified_run", expected=1)
         self.run_cmd("python3", str(SCRIPTS / "final_validate.py"), "--runs", "tests/fixtures/blocked_run", expected=1)
+
+    def test_exact_matrix_gate(self) -> None:
+        with self.assertRaises(ArtifactError):
+            require_exact_matrix([{"dataset": "cora", "backend": "cpu"}])
 
     def test_manifest_synthetic_and_negative_paths(self) -> None:
         with tempfile.TemporaryDirectory(dir=ROOT / "tests") as directory:

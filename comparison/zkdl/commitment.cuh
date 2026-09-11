@@ -6,6 +6,23 @@
 #include "proof.cuh"
 #include "cpu-backend.cuh"
 
+namespace zkdl {
+
+/* Process-local evidence counter for native CUDA cryptographic kernels.  It
+ * is incremented only after a successful CUDA synchronization in a proof
+ * operation; callers use a before/after sample as a fail-closed provenance
+ * check. */
+inline std::uint64_t& gpu_crypto_kernel_counter() noexcept {
+    static std::uint64_t count = 0U;
+    return count;
+}
+
+inline std::uint64_t gpu_crypto_kernel_invocations() noexcept {
+    return gpu_crypto_kernel_counter();
+}
+
+}  // namespace zkdl
+
 class Commitment: public G1TensorJacobian
 {   
     public:
@@ -305,14 +322,166 @@ KERNEL void zkdl_opening_verify_kernel(
     *accepted = zkdl_g1_equal(current, expected_final) ? 1 : 0;
 }
 
+/* Version-2 IPA verifier.  The Fiat--Shamir transcript and challenge
+ * derivation remain on the host, but the group folding equations and terminal
+ * equation are checked by the native CUDA BLS12-381 primitives in one
+ * independent cryptographic kernel. */
+KERNEL void zkdl_ipa_v2_verify_kernel(
+    GLOBAL G1Jacobian_t* current_generators,
+    GLOBAL G1Jacobian_t* scratch_generators,
+    GLOBAL Fr_t* current_b,
+    GLOBAL Fr_t* scratch_b,
+    GLOBAL G1Jacobian_t* rounds,
+    GLOBAL Fr_t* challenges,
+    GLOBAL Fr_t* inverse_challenges,
+    G1Jacobian_t commitment_eval,
+    G1Jacobian_t expected_commitment_eval,
+    G1Jacobian_t u_generator,
+    Fr_t value,
+    G1Jacobian_t expected_final_generator,
+    Fr_t final_a,
+    Fr_t final_b,
+    uint fold_count,
+    uint padded_size,
+    GLOBAL int* accepted)
+{
+    if (GET_GLOBAL_ID() != 0) return;
+    if (!zkdl_g1_equal(commitment_eval, expected_commitment_eval)) {
+        *accepted = 0;
+        return;
+    }
+    G1Jacobian_t current_p = G1Jacobian_add_safe(
+        commitment_eval, G1Jacobian_mul(u_generator, value));
+    G1Jacobian_t* generators = current_generators;
+    G1Jacobian_t* next_generators = scratch_generators;
+    Fr_t* b = current_b;
+    Fr_t* next_b = scratch_b;
+    uint current_size = padded_size;
+    for (uint round = 0U; round < fold_count; ++round) {
+        const Fr_t x = challenges[round];
+        const Fr_t x_inv = inverse_challenges[round];
+        const Fr_t x_sq = blstrs__scalar__Scalar_mul(x, x);
+        const Fr_t x_inv_sq = blstrs__scalar__Scalar_mul(x_inv, x_inv);
+        current_p = G1Jacobian_add_safe(
+            current_p, G1Jacobian_mul(rounds[2U * round], x_sq));
+        current_p = G1Jacobian_add_safe(
+            current_p, G1Jacobian_mul(rounds[2U * round + 1U], x_inv_sq));
+        const uint half = current_size / 2U;
+        for (uint i = 0U; i < half; ++i) {
+            next_generators[i] = G1Jacobian_add_safe(
+                G1Jacobian_mul(generators[i], x_inv),
+                G1Jacobian_mul(generators[half + i], x));
+            next_b[i] = blstrs__scalar__Scalar_add(
+                blstrs__scalar__Scalar_mul(b[i], x_inv),
+                blstrs__scalar__Scalar_mul(b[half + i], x));
+        }
+        G1Jacobian_t* generator_swap = generators;
+        generators = next_generators;
+        next_generators = generator_swap;
+        Fr_t* b_swap = b;
+        b = next_b;
+        next_b = b_swap;
+        current_size = half;
+    }
+    if (!blstrs__scalar__Scalar_eq(b[0], final_b) ||
+        !zkdl_g1_equal(generators[0], expected_final_generator)) {
+        *accepted = 0;
+        return;
+    }
+    G1Jacobian_t expected = G1Jacobian_add_safe(
+        G1Jacobian_mul(generators[0], final_a),
+        G1Jacobian_mul(u_generator,
+                       blstrs__scalar__Scalar_mul(final_a, final_b)));
+    *accepted = zkdl_g1_equal(current_p, expected) ? 1 : 0;
+}
+
 inline bool Commitment::verify_opening_gpu(const zkdl::EvaluationOpeningProof& opening,
                                            const G1Jacobian_t& expected_commitment_eval,
                                            std::string* error) const
 {
-    (void)opening;
-    (void)expected_commitment_eval;
-    if (error) *error = "BLOCKED: native GPU IPA opening verifier is not implemented";
-    return false;
+    try {
+        if (!zkdl::opening_shape_valid(opening, error) ||
+            opening.generator_size != size || opening.padded_generator_size !=
+                zkdl::cpu_ipa_padded_size(opening.generator_size) ||
+            opening.rounds.size() !=
+                2U * static_cast<std::size_t>(__builtin_ctz(opening.padded_generator_size))) {
+            if (error && error->empty()) *error = "GPU IPA opening shape mismatch";
+            return false;
+        }
+        const std::uint32_t padded_size = opening.padded_generator_size;
+        const std::uint32_t fold_count =
+            static_cast<std::uint32_t>(__builtin_ctz(padded_size));
+        std::vector<G1Jacobian_t> host_generators = to_host();
+        host_generators.resize(padded_size, G1Jacobian_t{});
+        host_generators[opening.generator_size] = opening.blinding_generator;
+        std::vector<Fr_t> host_b(padded_size, blstrs__scalar__Scalar_ZERO);
+        const std::vector<zkdl::FrWire> weights = zkdl::cpu_ipa_mle_weights(
+            [&]() {
+                std::vector<zkdl::FrWire> point;
+                point.reserve(opening.inner_point.size());
+                for (const auto& coordinate : opening.inner_point)
+                    point.push_back(zkdl::fr_wire(coordinate));
+                return point;
+            }());
+        for (std::size_t i = 0U; i < weights.size(); ++i)
+            host_b[i] = zkdl::fr_value(weights[i]);
+        std::vector<Fr_t> host_challenges, host_inverse;
+        host_challenges.reserve(fold_count);
+        host_inverse.reserve(fold_count);
+        zkdl::Transcript transcript("zkdl-ipa-opening-v2");
+        zkdl::cpu_ipa_absorb_header(transcript, opening);
+        for (std::uint32_t round = 0U; round < fold_count; ++round) {
+            std::vector<zkdl::byte> round_bytes;
+            zkdl::append_g1(round_bytes, opening.rounds[2U * round]);
+            zkdl::append_g1(round_bytes, opening.rounds[2U * round + 1U]);
+            transcript.absorb("zkdl.ipa.round", round_bytes);
+            const zkdl::FrWire challenge = zkdl::cpu_ipa_nonzero_challenge(
+                transcript, "zkdl.ipa.challenge");
+            host_challenges.push_back(zkdl::fr_value(challenge));
+            host_inverse.push_back(zkdl::fr_value(zkdl::cpu_fr_inv(challenge)));
+        }
+        G1TensorJacobian device_generators(padded_size, host_generators.data());
+        G1TensorJacobian device_scratch(padded_size);
+        FrTensor device_b(padded_size, host_b.data());
+        FrTensor device_b_scratch(padded_size);
+        G1TensorJacobian device_rounds(
+            static_cast<uint>(opening.rounds.size()), opening.rounds.data());
+        FrTensor device_challenges(fold_count, host_challenges.data());
+        FrTensor device_inverse(fold_count, host_inverse.data());
+        int* accepted = nullptr;
+        if (cudaMalloc(reinterpret_cast<void**>(&accepted), sizeof(int)) != cudaSuccess)
+            throw std::runtime_error("GPU IPA verifier allocation failed");
+        const int initial = 0;
+        cudaMemcpy(accepted, &initial, sizeof(int), cudaMemcpyHostToDevice);
+        zkdl_ipa_v2_verify_kernel<<<1, 1>>>(
+            device_generators.device_data(), device_scratch.device_data(),
+            device_b.device_data(), device_b_scratch.device_data(),
+            device_rounds.device_data(), device_challenges.device_data(),
+            device_inverse.device_data(), opening.commitment_eval,
+            expected_commitment_eval, opening.u_generator, opening.value,
+            opening.final_generator, opening.final_a, opening.final_b,
+            fold_count, padded_size, accepted);
+        const cudaError_t launch_status = cudaGetLastError();
+        if (launch_status != cudaSuccess)
+            throw std::runtime_error(std::string("GPU IPA verifier launch failed: ") +
+                                     cudaGetErrorString(launch_status));
+        const cudaError_t sync_status = cudaDeviceSynchronize();
+        if (sync_status != cudaSuccess)
+            throw std::runtime_error(std::string("GPU IPA verifier synchronization failed: ") +
+                                     cudaGetErrorString(sync_status));
+        zkdl::gpu_crypto_kernel_counter()++;
+        int accepted_host = 0;
+        cudaMemcpy(&accepted_host, accepted, sizeof(int), cudaMemcpyDeviceToHost);
+        cudaFree(accepted);
+        if (accepted_host != 1) {
+            if (error) *error = "GPU IPA terminal/folding equation rejected";
+            return false;
+        }
+        return true;
+    } catch (const std::exception& exception) {
+        if (error) *error = exception.what();
+        return false;
+    }
 }
 
 #endif

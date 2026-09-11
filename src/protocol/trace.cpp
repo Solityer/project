@@ -2516,7 +2516,7 @@ namespace gatzk::protocol
                                 .zero_domain_blinder,
                         .lease =
                             trace.spill_directory_lease,
-                    };
+            };
 
             if (!semantic_spill_cache_key.empty() &&
                 polynomial.shared_data != nullptr)
@@ -4375,16 +4375,26 @@ namespace gatzk::protocol
                 std::vector<FieldElement>{}.swap(alpha);
             }
 
-            void release_dst_vectors() const
+            void release_dst_vectors_except_sum() const
             {
                 std::vector<FieldElement>{}.swap(e_dst);
                 std::vector<FieldElement>{}.swap(e_dst_edge);
                 std::vector<FieldElement>{}.swap(m);
                 std::vector<FieldElement>{}.swap(m_edge);
-                std::vector<FieldElement>{}.swap(sum);
                 std::vector<FieldElement>{}.swap(sum_edge);
                 std::vector<FieldElement>{}.swap(inv);
                 std::vector<FieldElement>{}.swap(inv_edge);
+            }
+
+            void release_sum_vector() const
+            {
+                std::vector<FieldElement>{}.swap(sum);
+            }
+
+            void release_dst_vectors() const
+            {
+                release_dst_vectors_except_sum();
+                release_sum_vector();
             }
 
             void release_aggregate_round_div_vectors() const
@@ -4609,6 +4619,16 @@ namespace gatzk::protocol
             void release_output_psq_vectors(std::size_t head_index) const
             {
                 output_head_quantized.at(head_index).release_psq_vectors();
+            }
+
+            void release_output_dst_vectors_except_sum(std::size_t head_index) const
+            {
+                output_head_quantized.at(head_index).release_dst_vectors_except_sum();
+            }
+
+            void release_output_sum_vector(std::size_t head_index) const
+            {
+                output_head_quantized.at(head_index).release_sum_vector();
             }
 
             void release_output_dst_vectors(std::size_t head_index) const
@@ -10899,7 +10919,7 @@ namespace gatzk::protocol
                     context.kzg,
                     keep_trace_payloads,
                     metrics);
-                forward_artifacts->release_output_dst_vectors(head_index);
+                forward_artifacts->release_output_dst_vectors_except_sum(head_index);
                 forward_artifacts->report_live_bytes(
                     "output-h" + std::to_string(head_index) +
                     "-dst-committed");
@@ -10997,6 +11017,7 @@ namespace gatzk::protocol
                     context.kzg,
                     keep_trace_payloads,
                     metrics);
+                forward_artifacts->release_output_sum_vector(head_index);
                 forward_artifacts->release_output_y_pre_flat(head_index);
                 forward_artifacts->report_live_bytes(
                     "output-h" + std::to_string(head_index) +

@@ -741,17 +741,6 @@ inline bool matmul_verify_cpu(const MatMulProof& proof, const MatMulShape& shape
     return true;
 }
 
-inline bool matmul_verify_cpu(const MatMulProof& proof, const MatMulShape& shape,
-                              const MatMulCpuCommitmentView& a,
-                              const MatMulCpuCommitmentView& b,
-                              const MatMulCpuCommitmentView* c,
-                              const Fr_t* expected_public_claim,
-                              std::string* error = nullptr) {
-    (void)proof; (void)shape; (void)a; (void)b; (void)c; (void)expected_public_claim;
-    if (error) *error = "authenticated IPA G/H/U basis is required";
-    return false;
-}
-
 inline bool matmul_verify_gpu(const MatMulProof& proof, const MatMulShape& shape,
                               const Commitment& gen_a, const G1TensorJacobian& com_a,
                               const Commitment& gen_b, const G1TensorJacobian& com_b,
@@ -776,6 +765,14 @@ inline bool matmul_verify_gpu(const MatMulProof& proof, const MatMulShape& shape
     return true;
 }
 
+/* Every successful synchronization below certifies completion of a native
+ * cryptographic zkMatMul kernel phase.  The native GAT envelope samples this
+ * counter around prove/verify, so a CUDA device check or forward-only kernel
+ * cannot satisfy the GPU backend admission gate. */
+inline std::uint64_t matmul_gpu_kernel_invocations() noexcept {
+    return zkdl::gpu_crypto_kernel_invocations();
+}
+
 inline void matmul_cuda_sync(const char* operation) {
     const cudaError_t launch_status = cudaGetLastError();
     if (launch_status != cudaSuccess)
@@ -783,6 +780,7 @@ inline void matmul_cuda_sync(const char* operation) {
     const cudaError_t sync_status = cudaDeviceSynchronize();
     if (sync_status != cudaSuccess)
         throw std::runtime_error(std::string(operation) + ": " + cudaGetErrorString(sync_status));
+    ++zkdl::gpu_crypto_kernel_counter();
 }
 
 inline MatMulProof matmul_prove_internal(

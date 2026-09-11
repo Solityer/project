@@ -27,6 +27,7 @@
 #include <cstdint>
 #include <limits>
 #include <map>
+#include <numeric>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -332,7 +333,8 @@ struct OperationDescriptor {
             return false;
         }
         if (source_refs.empty() || tensor_refs.empty() ||
-            (constraints.empty() && primitives.empty() && kind != RelationKind::SparseRoute)) {
+            (constraints.empty() && primitives.empty() &&
+             kind != RelationKind::SparseRoute && kind != RelationKind::PublicOutput)) {
             if (error) *error = "relation operation descriptor has no tensor/constraint body";
             return false;
         }
@@ -567,19 +569,17 @@ struct CommitmentWire {
 
 struct ConstraintProof {
     ConstraintDescriptor descriptor;
-    // Indices into OperationDescriptor::tensor_refs for the tensors that
-    // actually occur in descriptor.  Large lookup/SignedRoundDiv operations
-    // may carry hundreds of auxiliary views, but each relation proof opens
-    // only the canonical references used by that constraint.
+    // The terminal relation wire carries one hidden evaluation opening for
+    // every canonical operation tensor.  Keep the explicit index maps on the
+    // outer wire so the independent verifier can reject a reordered or
+    // shortened terminal claim vector before it enters the transcript.
     std::vector<std::uint32_t> opening_tensor_indices;
     std::vector<std::uint32_t> opening_commitment_indices;
-    zkdl::SumcheckProof sumcheck;
-    std::vector<zkdl::EvaluationOpeningProof> openings;
-    // Independent Fiat--Shamir pointwise check.  The Sumcheck still carries
-    // the native relation reduction; this second point prevents a residual
-    // that merely cancels in the full-domain sum from being accepted.
-    std::vector<Fr_t> pointwise_point;
-    std::vector<zkdl::EvaluationOpeningProof> pointwise_openings;
+    // Formal private constraints use the native zero-knowledge Sumcheck and
+    // the Hyrax v3/Pedersen terminal relation together.  There is deliberately
+    // no ordinary Sumcheck or value-revealing IPA fallback in this wire.
+    zkdl::ZkSumcheckProof zk_sumcheck;
+    zkdl::ZkTerminalRelationProof terminal_relation;
 };
 
 struct OperationProof {
@@ -617,7 +617,7 @@ struct OperationProof {
  * verifier challenges are fixed, and the two Hyrax openings close the source
  * and routed-output claims against their canonical commitments. */
 struct SparseRouteProof {
-    static const std::uint32_t kVersion = 2U;
+    static const std::uint32_t kVersion = 3U;
     std::uint32_t version = kVersion;
     std::uint32_t source_commitment_index = std::numeric_limits<std::uint32_t>::max();
     std::uint32_t output_commitment_index = std::numeric_limits<std::uint32_t>::max();
@@ -633,14 +633,13 @@ struct SparseRouteProof {
     // FS challenges for the source-node Sumcheck variables.  They are part
     // of the wire so the verifier never has to replay or trust prover state.
     std::vector<Fr_t> node_point;
-    Fr_t output_claim{};
-    Fr_t source_sum_claim{};
-    Fr_t dst_selector_claim{};
-    Fr_t rho{};
-    Fr_t compressed_claim{};
-    zkdl::SumcheckProof sumcheck;
-    zkdl::EvaluationOpeningProof source_opening;
-    zkdl::EvaluationOpeningProof output_opening;
+    // The route is a zero-initial-claim Sumcheck.  Its terminal linear
+    // combination is linked to hidden evaluations on the two canonical
+    // tensor domains; no private evaluation scalar is present on the wire.
+    zkdl::ZkSumcheckProof sumcheck;
+    zkdl::HyraxOpeningProofV3 source_opening;
+    zkdl::HyraxOpeningProofV3 output_opening;
+    zkdl::PedersenScalarEqualityProof terminal_binding;
 
     std::vector<byte> serialize() const;
     static bool deserialize(const std::vector<byte>& bytes,
@@ -672,9 +671,9 @@ struct Proof {
     std::uint32_t version = kVersion;
     RelationStatement statement;
     std::vector<CommitmentWire> commitments;
-    // Hiding records are part of the relation proof wire.  The verifier
-    // compares them with its public context before accepting any
-    // model/private opening; the IPA opening carries the blinding witness.
+    // Legacy hiding records are kept as an explicit zero-length wire field for
+    // ABI compatibility and are rejected when non-empty.  Formal GATR binds
+    // model/private tensors through the hidden IPA/Pedersen opening proofs.
     std::vector<zkdl::CommitmentRecord> hiding_commitment_records;
     std::vector<OperationProof> operations;
     std::uint32_t public_output_commitment = std::numeric_limits<std::uint32_t>::max();
@@ -699,9 +698,9 @@ struct ProverContext {
     zkdl::CpuG1Point ipa_blinding_generator;
     zkdl::CpuG1Point ipa_u_generator;
     std::vector<CommitmentWire> registered_model_commitments;
-    // Private/model tensors are committed through the native hiding
-    // commitment object.  The record is public metadata plus a Schnorr
-    // knowledge proof; values/randomness never cross this context boundary.
+    // Legacy hiding-record ABI material is retained only for strict rejection;
+    // formal GATR uses the per-tensor Pedersen blinder carried by the native
+    // hidden openings below and requires this vector to remain empty.
     std::vector<zkdl::CommitmentRecord> hiding_commitment_records;
     // One blinder is sampled per private/model tensor and reused for every
     // opening of that canonical commitment in this proof.
@@ -715,6 +714,10 @@ struct ProverContext {
     // Optional native-core timing sink for the relation's commitment/opening
     // stage.  It is instrumentation only and never affects proof equations.
     double* commitment_open_time_seconds = nullptr;
+    // Native core sets this for a requested CUDA proof.  The relation layer
+    // currently fails closed until the complete GAT relation (not only a
+    // primitive) is implemented on native CUDA cryptographic kernels.
+    bool gpu_backend = false;
 };
 
 struct VerifierContext {
@@ -736,6 +739,10 @@ struct VerifierContext {
     std::vector<zkdl::CpuG1Point> ipa_generators;
     zkdl::CpuG1Point ipa_blinding_generator;
     zkdl::CpuG1Point ipa_u_generator;
+    // Native core sets this for a requested CUDA verification.  The relation
+    // layer currently fails closed until every proof family has a native CUDA
+    // verifier path.
+    bool gpu_backend = false;
 };
 
 inline bool same_wire(const FrWire& a, const FrWire& b) noexcept {
@@ -783,19 +790,6 @@ inline FrWire eval_constraint(const ConstraintDescriptor& descriptor,
     for (const auto& term : descriptor.terms)
         result = zkdl::fr_add(result, eval_monomial(term, values));
     return result;
-}
-
-inline std::vector<std::uint32_t> constraint_tensor_indices(
-    const ConstraintDescriptor& descriptor, std::size_t tensor_count) {
-    std::set<std::uint32_t> seen;
-    for (const auto& term : descriptor.terms)
-        for (const auto ref : term.refs)
-            if (ref < tensor_count) seen.insert(ref);
-    // A zero-term identity is used only for terminal-output plumbing.  Keep
-    // one canonical opening so that the relation still carries a bounded
-    // tensor domain and cannot be accepted from metadata alone.
-    if (seen.empty() && tensor_count != 0U) seen.insert(0U);
-    return std::vector<std::uint32_t>(seen.begin(), seen.end());
 }
 
 inline void append_fr_wire(std::vector<byte>& out, const FrWire& value) {
@@ -1223,14 +1217,13 @@ inline void append_constraint_proof(std::vector<byte>& out, const ConstraintProo
     zkdl::append_u64(out, static_cast<std::uint64_t>(proof.opening_commitment_indices.size()));
     for (const std::uint32_t index : proof.opening_commitment_indices) zkdl::append_u32(out, index);
     std::vector<byte> sumcheck;
-    zkdl::serialize_sumcheck(proof.sumcheck, sumcheck);
+    zkdl::serialize_zk_sumcheck(proof.zk_sumcheck, sumcheck);
     zkdl::append_u64(out, static_cast<std::uint64_t>(sumcheck.size()));
     out.insert(out.end(), sumcheck.begin(), sumcheck.end());
-    zkdl::append_u64(out, static_cast<std::uint64_t>(proof.openings.size()));
-    for (const auto& opening : proof.openings) zkdl::serialize_opening(opening, out);
-    append_native_fr_vector(out, proof.pointwise_point);
-    zkdl::append_u64(out, static_cast<std::uint64_t>(proof.pointwise_openings.size()));
-    for (const auto& opening : proof.pointwise_openings) zkdl::serialize_opening(opening, out);
+    std::vector<byte> terminal;
+    zkdl::serialize_zk_terminal_relation(proof.terminal_relation, terminal);
+    zkdl::append_u64(out, static_cast<std::uint64_t>(terminal.size()));
+    out.insert(out.end(), terminal.begin(), terminal.end());
 }
 
 inline bool read_constraint_proof(const std::vector<byte>& in, size_t& offset,
@@ -1245,22 +1238,21 @@ inline bool read_constraint_proof(const std::vector<byte>& in, size_t& offset,
     proof.opening_commitment_indices.resize(static_cast<size_t>(count));
     for (auto& index : proof.opening_commitment_indices)
         if (!zkdl::read_u32(in, offset, index)) return false;
-    if (!zkdl::read_u64(in, offset, proof_bytes) || proof_bytes > in.size() - offset) return false;
+    if (!zkdl::read_u64(in, offset, proof_bytes) || proof_bytes == 0U ||
+        proof_bytes > zkdl::ZkSumcheckProof::kMaxNestedProofBytes ||
+        proof_bytes > in.size() - offset) return false;
     std::vector<byte> encoded(in.begin() + static_cast<std::ptrdiff_t>(offset),
                               in.begin() + static_cast<std::ptrdiff_t>(offset + proof_bytes));
     offset += static_cast<size_t>(proof_bytes);
-    size_t inner = 0U;
-    if (!zkdl::deserialize_sumcheck(encoded, inner, proof.sumcheck) || inner != encoded.size()) return false;
-    if (!zkdl::read_u64(in, offset, count) || count == 0U || count > kMaxRelationOpenings) return false;
-    proof.openings.resize(static_cast<size_t>(count));
-    for (auto& opening : proof.openings)
-        if (!zkdl::deserialize_opening(in, offset, opening)) return false;
-    if (!read_native_fr_vector(in, offset, proof.pointwise_point) ||
-        proof.pointwise_point.size() > kMaxRelationPointBits ||
-        !zkdl::read_u64(in, offset, count) || count == 0U || count > kMaxRelationOpenings) return false;
-    proof.pointwise_openings.resize(static_cast<std::size_t>(count));
-    for (auto& opening : proof.pointwise_openings)
-        if (!zkdl::deserialize_opening(in, offset, opening)) return false;
+    if (!zkdl::deserialize_zk_sumcheck(encoded, proof.zk_sumcheck, nullptr)) return false;
+    if (!zkdl::read_u64(in, offset, proof_bytes) || proof_bytes == 0U ||
+        proof_bytes > zkdl::ZkTerminalRelationProof::kMaxNestedProofBytes ||
+        proof_bytes > in.size() - offset) return false;
+    encoded.assign(in.begin() + static_cast<std::ptrdiff_t>(offset),
+                   in.begin() + static_cast<std::ptrdiff_t>(offset + proof_bytes));
+    offset += static_cast<size_t>(proof_bytes);
+    if (!zkdl::deserialize_zk_terminal_relation(
+            encoded, proof.terminal_relation, nullptr)) return false;
     return true;
 }
 
@@ -1435,12 +1427,6 @@ inline bool FacLine8Proof::deserialize(const std::vector<byte>& bytes,
     return true;
 }
 
-inline std::vector<byte> serialize_route_sumcheck(const zkdl::SumcheckProof& proof) {
-    std::vector<byte> encoded;
-    zkdl::serialize_sumcheck(proof, encoded);
-    return encoded;
-}
-
 inline std::vector<byte> SparseRouteProof::serialize() const {
     std::vector<byte> out;
     out.reserve(1024U);
@@ -1456,16 +1442,16 @@ inline std::vector<byte> SparseRouteProof::serialize() const {
     append_native_fr_vector(out, feature_point);
     append_native_fr_vector(out, source_feature_point);
     append_native_fr_vector(out, node_point);
-    zkdl::append_fr(out, output_claim);
-    zkdl::append_fr(out, source_sum_claim);
-    zkdl::append_fr(out, dst_selector_claim);
-    zkdl::append_fr(out, rho);
-    zkdl::append_fr(out, compressed_claim);
-    const std::vector<byte> sumcheck_bytes = serialize_route_sumcheck(this->sumcheck);
+    std::vector<byte> sumcheck_bytes;
+    zkdl::serialize_zk_sumcheck(sumcheck, sumcheck_bytes);
     zkdl::append_u64(out, static_cast<std::uint64_t>(sumcheck_bytes.size()));
     out.insert(out.end(), sumcheck_bytes.begin(), sumcheck_bytes.end());
-    zkdl::serialize_opening(source_opening, out);
-    zkdl::serialize_opening(output_opening, out);
+    zkdl::serialize_hyrax_opening_v3(source_opening, out);
+    zkdl::serialize_hyrax_opening_v3(output_opening, out);
+    std::vector<byte> terminal_bytes;
+    zkdl::serialize_pedersen_scalar_equality(terminal_binding, terminal_bytes);
+    zkdl::append_u64(out, static_cast<std::uint64_t>(terminal_bytes.size()));
+    out.insert(out.end(), terminal_bytes.begin(), terminal_bytes.end());
     return out;
 }
 
@@ -1492,13 +1478,10 @@ inline bool SparseRouteProof::deserialize(const std::vector<byte>& bytes,
         !read_native_fr_vector(bytes, offset, parsed.feature_point) ||
         !read_native_fr_vector(bytes, offset, parsed.source_feature_point) ||
         !read_native_fr_vector(bytes, offset, parsed.node_point) ||
-        !zkdl::read_fr(bytes, offset, parsed.output_claim) ||
-        !zkdl::read_fr(bytes, offset, parsed.source_sum_claim) ||
-        !zkdl::read_fr(bytes, offset, parsed.dst_selector_claim) ||
-        !zkdl::read_fr(bytes, offset, parsed.rho) ||
-        !zkdl::read_fr(bytes, offset, parsed.compressed_claim) ||
         !zkdl::read_u64(bytes, offset, sumcheck_bytes) ||
-        sumcheck_bytes == 0U || sumcheck_bytes > bytes.size() - offset) {
+        sumcheck_bytes == 0U ||
+        sumcheck_bytes > zkdl::ZkSumcheckProof::kMaxNestedProofBytes ||
+        sumcheck_bytes > bytes.size() - offset) {
         if (error) *error = "truncated sparse route proof header";
         return false;
     }
@@ -1506,15 +1489,19 @@ inline bool SparseRouteProof::deserialize(const std::vector<byte>& bytes,
         bytes.begin() + static_cast<std::ptrdiff_t>(offset),
         bytes.begin() + static_cast<std::ptrdiff_t>(offset + sumcheck_bytes));
     offset += static_cast<size_t>(sumcheck_bytes);
-    size_t inner = 0U;
-    if (!zkdl::deserialize_sumcheck(sumcheck_bytes_vector, inner, parsed.sumcheck) ||
-        inner != sumcheck_bytes_vector.size() ||
-        !zkdl::deserialize_opening(bytes, offset, parsed.source_opening) ||
-        !zkdl::deserialize_opening(bytes, offset, parsed.output_opening) ||
-        offset != bytes.size()) {
+    std::uint64_t terminal_bytes = 0U;
+    if (!zkdl::deserialize_zk_sumcheck(sumcheck_bytes_vector, parsed.sumcheck, error) ||
+        !zkdl::deserialize_hyrax_opening_v3(bytes, offset, parsed.source_opening) ||
+        !zkdl::deserialize_hyrax_opening_v3(bytes, offset, parsed.output_opening) ||
+        !zkdl::read_u64(bytes, offset, terminal_bytes) || terminal_bytes == 0U ||
+        terminal_bytes > 4096U || terminal_bytes != bytes.size() - offset) {
         if (error) *error = "truncated or trailing sparse route proof";
         return false;
     }
+    const std::vector<byte> terminal(bytes.begin() + static_cast<std::ptrdiff_t>(offset),
+                                     bytes.end());
+    if (!zkdl::deserialize_pedersen_scalar_equality(terminal, parsed.terminal_binding, error))
+        return false;
     const auto power_of_two = [](std::uint32_t value) {
         return value != 0U && (value & (value - 1U)) == 0U;
     };
@@ -1526,7 +1513,15 @@ inline bool SparseRouteProof::deserialize(const std::vector<byte>& bytes,
         parsed.node_point.size() != log2_exact(parsed.node_domain) ||
         parsed.feature_point.size() != log2_exact(parsed.feature_domain) ||
         parsed.source_feature_point.size() != log2_exact(parsed.source_feature_domain) ||
-        parsed.sumcheck.terminal_claims.size() != 2U) {
+        parsed.source_feature_point.size() + parsed.node_point.size() > kMaxRelationPointBits ||
+        parsed.feature_point.size() + parsed.edge_point.size() > kMaxRelationPointBits ||
+        parsed.sumcheck.degree != 2U ||
+        parsed.sumcheck.domain_size != std::max<std::uint64_t>(
+            2U, static_cast<std::uint64_t>(parsed.node_domain) * parsed.source_feature_domain) ||
+        parsed.source_opening.generator_size !=
+            static_cast<std::uint64_t>(parsed.node_domain) * parsed.source_feature_domain ||
+        parsed.output_opening.generator_size !=
+            static_cast<std::uint64_t>(parsed.edge_domain) * parsed.feature_domain) {
         if (error) *error = "sparse route proof shape is not canonical";
         return false;
     }
@@ -1639,8 +1634,9 @@ inline void absorb_statement(zkdl::Transcript& transcript,
  * relation descriptor rather than in a second proof implementation: all
  * commitments, Sigma equations and Fiat--Shamir challenges are delegated to
  * proof.cuh/cpu-backend.cuh's authenticated Pedersen primitives.  The engine
- * is not yet wired into ConstraintProof; callers can exercise this seam while
- * the terminal DAG/opening migration is completed.
+ * is consumed by ConstraintProof together with the terminal DAG/opening
+ * relation; legacy relation families below remain fail-closed until their
+ * value-revealing wires are migrated to this native hidden interface.
  */
 struct ZkSumcheckProverResult {
     zkdl::ZkSumcheckProof proof;
@@ -2336,8 +2332,10 @@ inline bool zktr_validate_common_inputs(
         if (commitment_indices[index] >= kZkTerminalEvaluationIndexBase ||
             !seen_indices.insert(commitment_indices[index]).second ||
             tensor_values[index].size() != domain64 ||
+            // Public tensors are canonically committed without H blinding;
+            // private/model tensors are checked for a nonzero blinder by
+            // relation_blinding_scalar before this terminal helper is called.
             !zkdl::fr_canonical(tensor_blinders[index]) ||
-            zkdl::fr_compare(tensor_blinders[index], FrWire{}) == 0 ||
             !zkdl::cpu_pedersen_strict_g1(canonical_commitments[index], error)) {
             if (error && error->empty()) *error = "invalid canonical terminal tensor input";
             return false;
@@ -2988,62 +2986,6 @@ inline void fold_values(std::vector<FrWire>& values, const FrWire& challenge) {
     values.swap(folded);
 }
 
-/* A relation prover interpolates every tensor pair at the round variable
- * before evaluating its residual. */
-inline zkdl::SumcheckProof prove_constraint_exact(const ConstraintDescriptor& descriptor,
-                                                  const std::vector<const TensorWitness*>& tensors,
-                                                  zkdl::Transcript& transcript,
-                                                  std::vector<Fr_t>& challenges,
-                                                  std::vector<FrWire>& terminal_values) {
-    std::string error;
-    if (!descriptor.valid(&error)) throw std::invalid_argument(error);
-    if (tensors.empty()) throw std::invalid_argument("relation constraint has no tensor witness");
-    const std::uint32_t domain = tensors.front()->domain_size;
-    const std::uint32_t bits = log2_exact(domain);
-    if (bits == std::numeric_limits<std::uint32_t>::max())
-        throw std::invalid_argument("relation domain is not a power of two");
-    std::vector<std::vector<FrWire>> current;
-    for (const auto* tensor : tensors) {
-        if (tensor == nullptr || tensor->domain_size != domain)
-            throw std::invalid_argument("relation constraint domain mismatch");
-        current.push_back(tensor->values);
-    }
-    zkdl::SumcheckProof proof;
-    proof.label = "gat.relation." + descriptor.id;
-    proof.degree = descriptor.degree;
-    challenges.clear();
-    for (std::uint32_t round = 0U; round < bits; ++round) {
-        zkdl::SumcheckRound message;
-        const size_t next_size = current.front().size() / 2U;
-        for (std::uint32_t evaluation = 0U; evaluation <= descriptor.degree; ++evaluation) {
-            const FrWire x = zkdl::fr_from_u32(evaluation);
-            FrWire total{};
-            for (size_t row = 0U; row < next_size; ++row) {
-                std::vector<FrWire> values;
-                values.reserve(current.size());
-                for (const auto& tensor : current) {
-                    values.push_back(zkdl::fr_add(
-                        tensor[2U * row],
-                        zkdl::fr_mul(x, zkdl::fr_sub(tensor[2U * row + 1U], tensor[2U * row]))));
-                }
-                total = zkdl::fr_add(total, eval_constraint(descriptor, values));
-            }
-            message.evaluations.push_back(zkdl::fr_value(total));
-        }
-        proof.rounds.push_back(message);
-        transcript.absorb_fr(proof.label + ".round", message.evaluations);
-        const Fr_t challenge = transcript.challenge(proof.label + ".challenge");
-        challenges.push_back(challenge);
-        for (auto& tensor : current) fold_values(tensor, zkdl::fr_wire(challenge));
-    }
-    terminal_values.clear();
-    for (const auto& tensor : current) terminal_values.push_back(tensor.front());
-    proof.terminal_claims.reserve(terminal_values.size());
-    for (const auto& value : terminal_values) proof.terminal_claims.push_back(zkdl::fr_value(value));
-    proof.final_claim = zkdl::fr_value(eval_constraint(descriptor, terminal_values));
-    return proof;
-}
-
 inline bool verify_constraint(const ConstraintProof& proof,
                              const ConstraintDescriptor& expected,
                              const std::vector<std::string>& expected_tensor_refs,
@@ -3061,134 +3003,62 @@ inline bool verify_constraint(const ConstraintProof& proof,
         if (error) *error = "relation constraint descriptor mismatch";
         return false;
     }
-    const std::vector<std::uint32_t> expected_indices =
-        constraint_tensor_indices(expected, expected_tensor_refs.size());
-    if (proof.opening_tensor_indices != expected_indices) {
-        if (error) *error = "relation constraint opening tensor map is not canonical";
+    std::vector<std::uint32_t> expected_indices(expected_tensor_refs.size());
+    for (std::size_t index = 0U; index < expected_indices.size(); ++index)
+        expected_indices[index] = static_cast<std::uint32_t>(index);
+    if (expected_indices.empty() || proof.opening_tensor_indices != expected_indices ||
+        proof.opening_commitment_indices.size() != expected_indices.size()) {
+        if (error) *error = "relation constraint terminal tensor map is not canonical";
         return false;
     }
-    if (proof.opening_commitment_indices.size() != proof.openings.size() ||
-        proof.openings.size() != expected_indices.size() ||
-        proof.openings.empty() || proof.sumcheck.terminal_claims.size() != proof.openings.size()) {
-        if (error) *error = "relation constraint opening/terminal count mismatch";
-        return false;
-    }
-    if (proof.sumcheck.label != "gat.relation." + expected.id ||
-        proof.sumcheck.degree != expected.degree) {
-        if (error) *error = "relation Sumcheck label/degree is not bound to the expected constraint";
-        return false;
-    }
-    std::vector<Fr_t> challenges;
-    if (!zkdl::verify_sumcheck(proof.sumcheck, zkdl::fr_value(FrWire{}), transcript,
-                               &challenges, error)) return false;
-    if (challenges.size() != proof.openings.front().inner_point.size()) {
-        if (error) *error = "relation Sumcheck/opening point dimension mismatch";
-        return false;
-    }
-    const std::uint32_t domain = proof.openings.front().generator_size;
-    if (domain == 0U || generators.size() < domain ||
-        log2_exact(domain) == std::numeric_limits<std::uint32_t>::max() ||
-        challenges.size() > kMaxRelationPointBits ||
-        domain > (std::uint32_t(1U) << kMaxRelationPointBits) ||
-        domain != (std::uint32_t(1U) << challenges.size())) {
-        if (error) *error = "relation verifier has no authenticated generator domain";
-        return false;
-    }
-    std::vector<FrWire> terminal_values;
-    terminal_values.reserve(proof.openings.size());
-    for (size_t i = 0U; i < proof.openings.size(); ++i) {
-        const std::uint32_t tensor_index = expected_indices[i];
-        const std::uint32_t index = proof.opening_commitment_indices[i];
-        if (index >= commitments.size() || index >= commitments.size() ||
-            tensor_index >= expected_tensor_refs.size() ||
-            commitments[index].tensor_id != expected_tensor_refs[tensor_index] ||
-            commitments[index].domain_size != domain ||
-            proof.openings[i].commitment_index != index ||
-            proof.openings[i].generator_size != domain ||
-            proof.openings[i].inner_point.size() != challenges.size() ||
-            !proof.openings[i].outer_point.empty()) {
-            if (error) *error = "relation opening commitment reference mismatch";
+    std::uint32_t domain = 0U;
+    std::vector<zkdl::CpuG1Point> canonical_commitments;
+    canonical_commitments.reserve(expected_indices.size());
+    for (std::size_t i = 0U; i < expected_indices.size(); ++i) {
+        const std::uint32_t commitment_index = proof.opening_commitment_indices[i];
+        if (commitment_index >= commitments.size() ||
+            commitments[commitment_index].tensor_id != expected_tensor_refs[i]) {
+            if (error) *error = "relation terminal commitment reference mismatch";
             return false;
         }
-        for (size_t round = 0U; round < challenges.size(); ++round)
-            if (!same_wire(zkdl::fr_wire(proof.openings[i].inner_point[round]),
-                           zkdl::fr_wire(challenges[round]))) {
-                if (error) *error = "relation opening point is not Fiat-Shamir bound";
-                return false;
-        }
-        const zkdl::CpuG1Point expected_commitment = zkdl::cpu_g1_from_native(commitments[index].commitment);
-        const zkdl::CpuIpaOpeningMetadata metadata = relation_opening_metadata(
-            expected, index, {}, statement);
-        if (!zkdl::cpu_verify_opening(proof.openings[i], expected_commitment,
-                                      generators, ipa_blinding_generator,
-                                      ipa_u_generator, metadata, error)) return false;
-        terminal_values.push_back(zkdl::fr_wire(proof.openings[i].value));
-        if (!same_wire(terminal_values.back(), zkdl::fr_wire(proof.sumcheck.terminal_claims[i]))) {
-            if (error) *error = "relation terminal claim is not opening-bound";
+        if (domain == 0U) domain = commitments[commitment_index].domain_size;
+        if (commitments[commitment_index].domain_size != domain || domain == 0U ||
+            log2_exact(domain) == std::numeric_limits<std::uint32_t>::max()) {
+            if (error) *error = "relation terminal tensors do not share an authenticated MLE domain";
             return false;
         }
+        canonical_commitments.push_back(
+            zkdl::cpu_g1_from_native(commitments[commitment_index].commitment));
     }
-    std::vector<FrWire> full_terminal_values(expected_tensor_refs.size(), FrWire{});
-    for (size_t i = 0U; i < expected_indices.size(); ++i)
-        full_terminal_values[expected_indices[i]] = terminal_values[i];
-    if (!same_wire(zkdl::fr_wire(proof.sumcheck.final_claim),
-                   eval_constraint(expected, full_terminal_values))) {
-        if (error) *error = "relation terminal equation failed";
+    if (domain > (std::uint32_t(1U) << kMaxRelationPointBits) ||
+        generators.size() < domain) {
+        if (error) *error = "relation verifier has no authenticated terminal generator domain";
         return false;
     }
-
-    const std::uint32_t point_bits = log2_exact(domain);
-    if (proof.pointwise_point.size() != point_bits ||
-        proof.pointwise_openings.size() != expected_indices.size()) {
-        if (error) *error = "relation pointwise residual opening count/shape mismatch";
+    const std::vector<zkdl::CpuG1Point> terminal_generators(
+        generators.begin(), generators.begin() + domain);
+    const std::string operation_context = "gat.relation." + expected.id;
+    ZkSumcheckVerifierResult sumcheck_result;
+    if (!verify_zk_sumcheck(proof.zk_sumcheck, expected, expected.degree, domain,
+                            terminal_generators, ipa_blinding_generator,
+                            ipa_u_generator, FrWire{}, statement, operation_context,
+                            transcript, sumcheck_result, error)) return false;
+    if (sumcheck_result.challenges.size() != log2_exact(domain)) {
+        if (error) *error = "ZkSumcheck terminal point/domain mismatch";
         return false;
     }
-    for (std::uint32_t bit = 0U; bit < point_bits; ++bit) {
-        const Fr_t expected_point = transcript.challenge(
-            "gat.relation." + expected.id + ".pointwise." + std::to_string(bit));
-        if (fr_compare_mixed(expected_point, proof.pointwise_point[bit]) != 0) {
-            if (error) *error = "relation pointwise check point is not Fiat-Shamir bound";
-            return false;
-        }
-    }
-    std::vector<FrWire> pointwise_values(expected_tensor_refs.size(), FrWire{});
-    for (size_t i = 0U; i < expected_indices.size(); ++i) {
-        const std::uint32_t tensor_index = expected_indices[i];
-        const std::uint32_t index = proof.opening_commitment_indices[i];
-        const auto& opening = proof.pointwise_openings[i];
-        if (tensor_index >= expected_tensor_refs.size() ||
-            index >= commitments.size() ||
-            commitments[index].tensor_id != expected_tensor_refs[tensor_index] ||
-            opening.commitment_index != index ||
-            opening.generator_size != domain ||
-            !opening.outer_point.empty() ||
-            opening.inner_point.size() != proof.pointwise_point.size()) {
-            if (error) *error = "relation pointwise opening commitment reference mismatch";
-            return false;
-        }
-        for (size_t bit = 0U; bit < proof.pointwise_point.size(); ++bit)
-            if (!same_wire(zkdl::fr_wire(opening.inner_point[bit]),
-                           zkdl::fr_wire(proof.pointwise_point[bit]))) {
-                if (error) *error = "relation pointwise opening point mismatch";
-                return false;
-            }
-        const zkdl::CpuIpaOpeningMetadata metadata = relation_opening_metadata(
-            expected, index, {}, statement);
-        if (!zkdl::cpu_verify_opening(
-                opening, zkdl::cpu_g1_from_native(commitments[index].commitment),
-                generators, ipa_blinding_generator, ipa_u_generator, metadata, error))
-            return false;
-        pointwise_values[tensor_index] = zkdl::fr_wire(opening.value);
-    }
-    if (!same_wire(eval_constraint(expected, pointwise_values), FrWire{})) {
-        if (error) *error = "relation pointwise residual equation failed";
-        return false;
-    }
-    std::vector<byte> pointwise_bytes;
-    for (const auto& opening : proof.pointwise_openings)
-        zkdl::serialize_opening(opening, pointwise_bytes);
-    transcript.absorb("gat.relation." + expected.id + ".pointwise.openings",
-                      pointwise_bytes);
+    std::vector<FrWire> terminal_point;
+    terminal_point.reserve(sumcheck_result.challenges.size());
+    for (const auto& challenge : sumcheck_result.challenges)
+        terminal_point.push_back(zkdl::fr_wire(challenge));
+    ZkTerminalRelationVerifierResult terminal_result;
+    if (!verify_zk_terminal_relation(
+            proof.terminal_relation, expected, canonical_commitments,
+            proof.opening_commitment_indices, terminal_point, terminal_generators,
+            ipa_blinding_generator, ipa_u_generator, statement,
+            zkdl::ZkTerminalClaimLinkKind::ExternalEquality,
+            zkdl::cpu_g1_from_native(sumcheck_result.final_claim_commitment),
+            FrWire{}, operation_context, transcript, terminal_result, error)) return false;
     return true;
 }
 
@@ -3264,113 +3134,75 @@ inline bool fill_constraint_openings(
         if (error) *error = "relation batched proof has no operation tensor references";
         return false;
     }
-    std::vector<const TensorWitness*> witnesses;
-    witnesses.reserve(operation_refs.size());
+    std::vector<std::vector<FrWire>> tensor_values;
+    std::vector<zkdl::CpuG1Point> canonical_commitments;
+    std::vector<FrWire> tensor_blinders;
+    std::vector<std::uint32_t> commitment_indices;
+    tensor_values.reserve(operation_refs.size());
+    canonical_commitments.reserve(operation_refs.size());
+    tensor_blinders.reserve(operation_refs.size());
+    commitment_indices.reserve(operation_refs.size());
+    std::uint32_t domain = 0U;
     for (const auto& ref : operation_refs) {
         const auto found = tensor_map.find(ref);
         if (found == tensor_map.end() || found->second == nullptr) {
             if (error) *error = "relation batched proof tensor reference is missing: " + ref;
             return false;
         }
-        witnesses.push_back(found->second);
+        const TensorWitness& tensor = *found->second;
+        if (domain == 0U) domain = tensor.domain_size;
+        if (tensor.domain_size != domain || domain == 0U ||
+            (domain & (domain - 1U)) != 0U || generators.size() < domain) {
+            if (error) *error = "relation proof tensor references do not share an authenticated MLE domain";
+            return false;
+        }
+        const auto commitment = std::find_if(
+            commitments.begin(), commitments.end(),
+            [&](const CommitmentWire& value) { return value.tensor_id == ref; });
+        if (commitment == commitments.end() || commitment->domain_size != domain) {
+            if (error) *error = "relation proof commitment reference is missing or has the wrong domain: " + ref;
+            return false;
+        }
+        tensor_values.push_back(tensor.values);
+        canonical_commitments.push_back(zkdl::cpu_g1_from_native(commitment->commitment));
+        tensor_blinders.push_back(relation_blinding_scalar(tensor, blinders));
+        commitment_indices.push_back(static_cast<std::uint32_t>(
+            std::distance(commitments.begin(), commitment)));
     }
     try {
-        std::vector<Fr_t> challenges;
-        std::vector<FrWire> terminal_values;
+        if (domain == 0U || log2_exact(domain) == std::numeric_limits<std::uint32_t>::max() ||
+            log2_exact(domain) > kMaxRelationPointBits) {
+            if (error) *error = "relation proof domain exceeds the native MLE point cap";
+            return false;
+        }
+        proof = ConstraintProof{};
         proof.descriptor = descriptor;
-        proof.sumcheck = prove_constraint_exact(descriptor, witnesses, transcript,
-                                                challenges, terminal_values);
-        if (challenges.size() > kMaxRelationPointBits) {
-            if (error) *error = "relation batched proof exceeds the native MLE point cap";
-            return false;
-        }
-        proof.opening_tensor_indices = constraint_tensor_indices(
-            descriptor, operation_refs.size());
-        if (proof.opening_tensor_indices.empty()) {
-            if (error) *error = "relation batched proof has no canonical tensor opening";
-            return false;
-        }
-        std::vector<FrWire> point;
-        point.reserve(challenges.size());
-        for (const auto& challenge : challenges) point.push_back(zkdl::fr_wire(challenge));
-        proof.opening_commitment_indices.reserve(proof.opening_tensor_indices.size());
-        proof.openings.reserve(proof.opening_tensor_indices.size());
-        for (const auto tensor_index : proof.opening_tensor_indices) {
-            if (tensor_index >= operation_refs.size()) {
-                if (error) *error = "relation batched proof tensor opening index is out of bounds";
-                return false;
-            }
-            const std::string& ref = operation_refs[tensor_index];
-            const auto commitment = std::find_if(
-                commitments.begin(), commitments.end(),
-                [&](const CommitmentWire& value) { return value.tensor_id == ref; });
-            if (commitment == commitments.end()) {
-                if (error) *error = "relation batched proof commitment reference is missing: " + ref;
-                return false;
-            }
-            const TensorWitness* tensor = tensor_map.at(ref);
-            if (tensor->domain_size != (std::size_t(1U) << challenges.size()) ||
-                generators.size() < tensor->domain_size) {
-                if (error) *error = "relation batched proof opening domain is not authenticated";
-                return false;
-            }
-            const std::uint32_t commitment_index = static_cast<std::uint32_t>(
-                std::distance(commitments.begin(), commitment));
-            const zkdl::CpuIpaOpeningMetadata metadata = relation_opening_metadata(
-                descriptor, commitment_index, {}, statement);
-            proof.opening_commitment_indices.push_back(commitment_index);
-            auto opening = zkdl::cpu_open(
-                std::vector<zkdl::CpuG1Point>(generators.begin(),
-                                              generators.begin() + tensor->domain_size),
-                tensor->values, point, ipa_blinding_generator,
-                ipa_u_generator, relation_blinding_scalar(*tensor, blinders), metadata);
-            proof.openings.push_back(std::move(opening));
-        }
-        proof.sumcheck.terminal_claims.clear();
-        for (const auto tensor_index : proof.opening_tensor_indices)
-            proof.sumcheck.terminal_claims.push_back(
-                zkdl::fr_value(terminal_values.at(tensor_index)));
-        const std::uint32_t point_bits = log2_exact(
-            tensor_map.at(operation_refs.front())->domain_size);
-        if (point_bits == std::numeric_limits<std::uint32_t>::max()) {
-            if (error) *error = "relation batched proof pointwise domain is not a power of two";
-            return false;
-        }
-        if (point_bits > kMaxRelationPointBits) {
-            if (error) *error = "relation batched proof pointwise domain exceeds the native MLE cap";
-            return false;
-        }
-        proof.pointwise_point.reserve(point_bits);
-        for (std::uint32_t bit = 0U; bit < point_bits; ++bit)
-            proof.pointwise_point.push_back(transcript.challenge(
-                "gat.relation." + descriptor.id + ".pointwise." + std::to_string(bit)));
-        std::vector<FrWire> pointwise;
-        pointwise.reserve(proof.pointwise_point.size());
-        for (const auto& challenge : proof.pointwise_point)
-            pointwise.push_back(zkdl::fr_wire(challenge));
-        for (const auto tensor_index : proof.opening_tensor_indices) {
-            const std::string& ref = operation_refs[tensor_index];
-            const TensorWitness* tensor = tensor_map.at(ref);
-            const auto commitment = std::find_if(
-                commitments.begin(), commitments.end(),
-                [&](const CommitmentWire& value) { return value.tensor_id == ref; });
-            if (commitment == commitments.end()) return false;
-            const std::uint32_t commitment_index = static_cast<std::uint32_t>(
-                std::distance(commitments.begin(), commitment));
-            const zkdl::CpuIpaOpeningMetadata metadata = relation_opening_metadata(
-                descriptor, commitment_index, {}, statement);
-            auto opening = zkdl::cpu_open(
-                std::vector<zkdl::CpuG1Point>(generators.begin(),
-                                              generators.begin() + tensor->domain_size),
-                tensor->values, pointwise, ipa_blinding_generator,
-                ipa_u_generator, relation_blinding_scalar(*tensor, blinders), metadata);
-            proof.pointwise_openings.push_back(std::move(opening));
-        }
-        std::vector<byte> pointwise_bytes;
-        for (const auto& opening : proof.pointwise_openings)
-            zkdl::serialize_opening(opening, pointwise_bytes);
-        transcript.absorb("gat.relation." + descriptor.id + ".pointwise.openings",
-                          pointwise_bytes);
+        proof.opening_tensor_indices.resize(operation_refs.size());
+        std::iota(proof.opening_tensor_indices.begin(), proof.opening_tensor_indices.end(), 0U);
+        proof.opening_commitment_indices = commitment_indices;
+        const std::vector<zkdl::CpuG1Point> terminal_generators(
+            generators.begin(), generators.begin() + domain);
+        ZkSumcheckProverResult sumcheck_result;
+        const std::string operation_context = "gat.relation." + descriptor.id;
+        if (!prove_zk_sumcheck(
+                descriptor, tensor_values, descriptor.degree, domain, terminal_generators,
+                ipa_blinding_generator, ipa_u_generator, FrWire{}, statement,
+                operation_context, transcript, sumcheck_result, error)) return false;
+        proof.zk_sumcheck = std::move(sumcheck_result.proof);
+        std::vector<FrWire> terminal_point;
+        terminal_point.reserve(sumcheck_result.challenges.size());
+        for (const auto& challenge : sumcheck_result.challenges)
+            terminal_point.push_back(zkdl::fr_wire(challenge));
+        ZkTerminalRelationProverResult terminal_result;
+        if (!prove_zk_terminal_relation(
+                descriptor, tensor_values, canonical_commitments, tensor_blinders,
+                commitment_indices, terminal_point, terminal_generators,
+                ipa_blinding_generator, ipa_u_generator, statement,
+                zkdl::ZkTerminalClaimLinkKind::ExternalEquality,
+                zkdl::cpu_g1_from_native(sumcheck_result.proof.final_claim_commitment),
+                sumcheck_result.final_q_blinder, FrWire{}, operation_context,
+                transcript, terminal_result, error)) return false;
+        proof.terminal_relation = std::move(terminal_result.proof);
         return true;
     } catch (const std::exception& exception) {
         if (error) *error = exception.what();
@@ -3472,8 +3304,9 @@ inline bool prove_fac_line8(
         const std::vector<byte> encoded = route.serialize();
         transcript.absorb("gat.fac4dnn.line8." + operation.id + ".selector." +
                           std::to_string(index), encoded);
-        proof.selector_claims.push_back(zkdl::fr_value(zkdl::fr_sub(
-            zkdl::fr_wire(route.output_claim), zkdl::fr_wire(route.source_sum_claim))));
+        // The hidden route proves this public residual is zero.  FAC Line 8
+        // remains separately gated until its joint compression is migrated.
+        proof.selector_claims.push_back(zkdl::fr_value(FrWire{}));
         proof.selector_proofs.push_back(std::move(route));
     }
     proof.rho = transcript.challenge("gat.fac4dnn.line8." + operation.id + ".rho");
@@ -3540,9 +3373,7 @@ inline bool verify_fac_line8(
         const std::vector<byte> encoded = proof.selector_proofs[index].serialize();
         transcript.absorb("gat.fac4dnn.line8." + operation.id + ".selector." +
                           std::to_string(index), encoded);
-        const Fr_t expected_claim = zkdl::fr_value(zkdl::fr_sub(
-            zkdl::fr_wire(proof.selector_proofs[index].output_claim),
-            zkdl::fr_wire(proof.selector_proofs[index].source_sum_claim)));
+        const Fr_t expected_claim = zkdl::fr_value(FrWire{});
         if (fr_compare_mixed(expected_claim, proof.selector_claims[index]) != 0) {
             if (error) *error = "FAC4DNN selector residual claim mismatch";
             return false;
@@ -3580,6 +3411,31 @@ inline bool descriptor_vector_valid(const std::vector<OperationDescriptor>& oper
         }
     }
     return !operations.empty();
+}
+
+/* FacLine8Proof and the zkMatMul primitive binding still
+ * carry the historical value-revealing Sumcheck/IPA opening wire.  They must
+ * never be accepted as part of a formal GAT proof until each family is
+ * migrated to the native ZkSumcheck + Hyrax/Pedersen terminal interface.
+ * Keep this admission check at the relation boundary so neither the native
+ * bridge nor a direct relation caller can accidentally produce/verify a
+ * privacy-violating proof by selecting one of those operations. */
+inline bool formal_relation_components_supported(
+    const std::vector<OperationDescriptor>& operations,
+    std::string* error = nullptr) {
+    for (const auto& operation : operations) {
+        if (!operation.fac_bindings.empty()) {
+            if (error) *error =
+                "BLOCKED: formal zkDL GAT relation still has a value-revealing FAC4DNN wire";
+            return false;
+        }
+        if (!operation.primitives.empty()) {
+            if (error) *error =
+                "BLOCKED: formal zkDL GAT relation still has value-revealing zkMatMul openings";
+            return false;
+        }
+    }
+    return true;
 }
 
 inline const TensorDescriptor* find_tensor_descriptor(
@@ -3894,7 +3750,8 @@ inline bool verify_matmul_primitive(
     const PrimitiveDescriptor& descriptor, const std::vector<byte>& encoded,
     const std::vector<zkdl::CpuG1Point>& generators,
     const zkdl::CpuG1Point& ipa_blinding_generator,
-    const zkdl::CpuG1Point& ipa_u_generator, std::string* error) {
+    const zkdl::CpuG1Point& ipa_u_generator, bool gpu_backend,
+    std::string* error) {
     if (descriptor.kind != 1U || descriptor.tensor_refs.size() != 3U || encoded.empty()) {
         if (error) *error = "invalid native relation primitive proof";
         return false;
@@ -3926,6 +3783,32 @@ inline bool verify_matmul_primitive(
     for (const auto& point : proof.commitment_a) a_view.commitments.push_back(zkdl::cpu_g1_from_native(point));
     for (const auto& point : proof.commitment_b) b_view.commitments.push_back(zkdl::cpu_g1_from_native(point));
     for (const auto& point : proof.commitment_c) c_view.commitments.push_back(zkdl::cpu_g1_from_native(point));
+    if (gpu_backend) {
+        if (proof.commitment_a.size() != shape.num * shape.m ||
+            proof.commitment_b.size() != shape.num * shape.n ||
+            proof.commitment_c.size() != shape.num * shape.m) {
+            if (error) *error = "zkMatMul GPU commitment tensor shape mismatch";
+            return false;
+        }
+        std::vector<G1Jacobian_t> native_generators_a(
+            generators.size() >= shape.n ? shape.n : 0U);
+        std::vector<G1Jacobian_t> native_generators_b(
+            generators.size() >= shape.k ? shape.k : 0U);
+        for (std::uint32_t index = 0U; index < shape.n; ++index)
+            native_generators_a[index] = zkdl::cpu_g1_to_native(generators[index]);
+        for (std::uint32_t index = 0U; index < shape.k; ++index)
+            native_generators_b[index] = zkdl::cpu_g1_to_native(generators[index]);
+        Commitment gen_a(shape.n, native_generators_a.data());
+        Commitment gen_b(shape.k, native_generators_b.data());
+        G1TensorJacobian com_a(static_cast<std::uint32_t>(proof.commitment_a.size()),
+                               proof.commitment_a.data());
+        G1TensorJacobian com_b(static_cast<std::uint32_t>(proof.commitment_b.size()),
+                               proof.commitment_b.data());
+        G1TensorJacobian com_c(static_cast<std::uint32_t>(proof.commitment_c.size()),
+                               proof.commitment_c.data());
+        return zkdl::matmul_verify_gpu(proof, shape, gen_a, com_a, gen_b, com_b,
+                                       &gen_b, &com_c, nullptr, error);
+    }
     return zkdl::matmul_verify_cpu(proof, shape, a_view, b_view, &c_view, nullptr,
                                    ipa_blinding_generator, ipa_u_generator, error);
 }
@@ -4144,23 +4027,6 @@ inline bool route_tensor_shapes_valid(
     return true;
 }
 
-inline std::vector<FrWire> route_partial_feature(
-    const std::vector<FrWire>& values, std::uint32_t outer_domain,
-    std::uint32_t feature_domain, const std::vector<FrWire>& feature_point) {
-    if (values.size() != static_cast<std::uint64_t>(outer_domain) * feature_domain ||
-        feature_domain != (std::uint32_t(1U) << feature_point.size()))
-        throw std::invalid_argument("sparse route feature MLE shape mismatch");
-    std::vector<FrWire> partial(outer_domain);
-    for (std::uint32_t outer = 0U; outer < outer_domain; ++outer) {
-        std::vector<FrWire> block(
-            values.begin() + static_cast<std::ptrdiff_t>(outer * feature_domain),
-            values.begin() + static_cast<std::ptrdiff_t>((outer + 1U) * feature_domain));
-        for (const auto& challenge : feature_point) fold_values(block, challenge);
-        partial[outer] = block.front();
-    }
-    return partial;
-}
-
 inline std::vector<FrWire> public_route_selector_mle(
     const OperationDescriptor& descriptor, const std::vector<FrWire>& edge_point,
     bool destination = false) {
@@ -4228,380 +4094,18 @@ inline bool route_commitment_index(
     return true;
 }
 
-inline bool prove_sparse_route(
-    const OperationDescriptor& descriptor,
-    const std::map<std::string, const TensorWitness*>& tensor_map,
-    const std::map<std::string, FrWire>& blinders,
-    const std::vector<zkdl::CpuG1Point>& generators,
-    const zkdl::CpuG1Point& ipa_blinding_generator,
-    const zkdl::CpuG1Point& ipa_u_generator,
-    const std::vector<CommitmentWire>& commitments,
-    const RelationStatement& statement,
-    zkdl::Transcript& transcript, SparseRouteProof& route,
-    std::string* error) {
-    const TensorWitness* source = nullptr;
-    const TensorWitness* output = nullptr;
-    if (!route_tensor_shapes_valid(descriptor, tensor_map, source, output, error)) return false;
-    const std::uint32_t edge_bits = log2_exact(descriptor.selector_edge_domain);
-    const std::uint32_t node_bits = log2_exact(descriptor.selector_node_domain);
-    const std::uint32_t feature_bits = log2_exact(descriptor.selector_feature_domain);
-    const std::uint32_t source_feature_bits =
-        log2_exact(descriptor.selector_source_feature_domain);
-    if (edge_bits == std::numeric_limits<std::uint32_t>::max() ||
-        node_bits == std::numeric_limits<std::uint32_t>::max() ||
-        feature_bits == std::numeric_limits<std::uint32_t>::max() ||
-        source_feature_bits == std::numeric_limits<std::uint32_t>::max() ||
-        generators.size() < std::max(source->domain_size, output->domain_size)) {
-        if (error) *error = "sparse route has no authenticated generator domain";
-        return false;
-    }
-    route = SparseRouteProof{};
-    route.edge_domain = descriptor.selector_edge_domain;
-    route.node_domain = descriptor.selector_node_domain;
-    route.feature_domain = descriptor.selector_feature_domain;
-    route.source_feature_domain = descriptor.selector_source_feature_domain;
-    route.edge_point.reserve(edge_bits);
-    route.feature_point.reserve(feature_bits);
-    for (std::uint32_t bit = 0U; bit < edge_bits; ++bit)
-        route.edge_point.push_back(transcript.challenge(
-            "gat.route." + descriptor.id + ".edge." + std::to_string(bit)));
-    for (std::uint32_t bit = 0U; bit < feature_bits; ++bit)
-        route.feature_point.push_back(transcript.challenge(
-            "gat.route." + descriptor.id + ".feature." + std::to_string(bit)));
-    const std::vector<FrWire> edge_point = [&]() {
-        std::vector<FrWire> out;
-        out.reserve(route.edge_point.size());
-        for (const auto& value : route.edge_point) out.push_back(zkdl::fr_wire(value));
-        return out;
-    }();
-    const std::vector<FrWire> feature_point = [&]() {
-        std::vector<FrWire> out;
-        out.reserve(route.feature_point.size());
-        for (const auto& value : route.feature_point) out.push_back(zkdl::fr_wire(value));
-        return out;
-    }();
-    const std::vector<FrWire> output_by_edge = route_partial_feature(
-        output->values, descriptor.selector_edge_domain,
-        descriptor.selector_feature_domain, feature_point);
-    std::vector<FrWire> output_eval_values = output_by_edge;
-    for (const auto& challenge : edge_point) fold_values(output_eval_values, challenge);
-    route.output_claim = zkdl::fr_value(output_eval_values.front());
-    const std::vector<FrWire> selector_by_node = public_route_selector_mle(
-        descriptor, edge_point, descriptor.route_by_destination);
-    const std::vector<FrWire> selector_by_feature = public_route_feature_selector_mle(
-        descriptor, feature_point);
-    std::vector<FrWire> selector_full(
-        static_cast<std::size_t>(descriptor.selector_node_domain) *
-            descriptor.selector_source_feature_domain);
-    FrWire source_sum{};
-    for (std::uint32_t node = 0U; node < descriptor.selector_node_domain; ++node) {
-        for (std::uint32_t feature = 0U;
-             feature < descriptor.selector_source_feature_domain; ++feature) {
-            const std::size_t index = static_cast<std::size_t>(node) *
-                                      descriptor.selector_source_feature_domain + feature;
-            selector_full[index] = zkdl::fr_mul(selector_by_node[node], selector_by_feature[feature]);
-            source_sum = zkdl::fr_add(source_sum,
-                                     zkdl::fr_mul(selector_full[index], source->values[index]));
-        }
-    }
-    route.source_sum_claim = zkdl::fr_value(source_sum);
-    std::vector<FrWire> destination_by_node = public_route_selector_mle(
-        descriptor, edge_point, !descriptor.route_by_destination);
-    if (!same_wire(zkdl::fr_wire(route.output_claim), source_sum)) {
-        if (error) *error = "sparse route witness does not satisfy public selector MLE claim";
-        return false;
-    }
-    route.sumcheck.label = "gat.route." + descriptor.id;
-    route.sumcheck.degree = 2U;
-    std::vector<FrWire> current_selector = std::move(selector_full);
-    std::vector<FrWire> current_source = source->values;
-    const std::uint32_t sumcheck_rounds = source_feature_bits + node_bits;
-    for (std::uint32_t round = 0U; round < sumcheck_rounds; ++round) {
-        zkdl::SumcheckRound message;
-        const std::size_t next_size = current_selector.size() / 2U;
-        for (std::uint32_t evaluation = 0U; evaluation <= 2U; ++evaluation) {
-            const FrWire x = zkdl::fr_from_u32(evaluation);
-            FrWire total{};
-            for (std::size_t row = 0U; row < next_size; ++row) {
-                const FrWire selector_value = zkdl::fr_add(
-                    current_selector[2U * row], zkdl::fr_mul(
-                        x, zkdl::fr_sub(current_selector[2U * row + 1U],
-                                       current_selector[2U * row])));
-                const FrWire source_value = zkdl::fr_add(
-                    current_source[2U * row], zkdl::fr_mul(
-                        x, zkdl::fr_sub(current_source[2U * row + 1U],
-                                       current_source[2U * row])));
-                total = zkdl::fr_add(total, zkdl::fr_mul(selector_value, source_value));
-            }
-            message.evaluations.push_back(zkdl::fr_value(total));
-        }
-        route.sumcheck.rounds.push_back(message);
-        transcript.absorb_fr(route.sumcheck.label + ".round", message.evaluations);
-        const Fr_t challenge = transcript.challenge(route.sumcheck.label + ".challenge");
-        if (round < source_feature_bits) route.source_feature_point.push_back(challenge);
-        else route.node_point.push_back(challenge);
-        fold_values(current_selector, zkdl::fr_wire(challenge));
-        fold_values(current_source, zkdl::fr_wire(challenge));
-    }
-    route.sumcheck.terminal_claims = {
-        zkdl::fr_value(current_selector.front()), zkdl::fr_value(current_source.front())};
-    route.sumcheck.final_claim = zkdl::fr_value(zkdl::fr_mul(
-        current_selector.front(), current_source.front()));
-    for (const auto& challenge : route.node_point)
-        fold_values(destination_by_node, zkdl::fr_wire(challenge));
-    route.dst_selector_claim = zkdl::fr_value(destination_by_node.front());
-    if (route.node_point.size() != node_bits ||
-        route.source_feature_point.size() != source_feature_bits) {
-        if (error) *error = "sparse route prover lost FS challenges";
-        return false;
-    }
-    if (!route_commitment_index(commitments, descriptor.selector_source_ref,
-                                route.source_commitment_index, error) ||
-        !route_commitment_index(commitments, descriptor.selector_output_ref,
-                                route.output_commitment_index, error)) return false;
-    std::vector<FrWire> source_point;
-    source_point.reserve(source_feature_bits + node_bits);
-    for (const auto& challenge : route.source_feature_point)
-        source_point.push_back(zkdl::fr_wire(challenge));
-    for (const auto& challenge : route.node_point) source_point.push_back(zkdl::fr_wire(challenge));
-    std::vector<FrWire> output_point = feature_point;
-    for (const auto& challenge : route.edge_point) output_point.push_back(zkdl::fr_wire(challenge));
-    OperationDescriptor source_open_descriptor = descriptor;
-    source_open_descriptor.id += "/source-opening";
-    OperationDescriptor output_open_descriptor = descriptor;
-    output_open_descriptor.id += "/output-opening";
-    const zkdl::CpuIpaOpeningMetadata source_metadata = relation_opening_metadata(
-        source_open_descriptor, route.source_commitment_index, {}, statement);
-    const zkdl::CpuIpaOpeningMetadata output_metadata = relation_opening_metadata(
-        output_open_descriptor, route.output_commitment_index, {}, statement);
-    route.source_opening = zkdl::cpu_open(
-        std::vector<zkdl::CpuG1Point>(generators.begin(), generators.begin() + source->domain_size),
-        source->values, source_point, ipa_blinding_generator, ipa_u_generator,
-        relation_blinding_scalar(*source, blinders), source_metadata);
-    route.output_opening = zkdl::cpu_open(
-        std::vector<zkdl::CpuG1Point>(generators.begin(), generators.begin() + output->domain_size),
-        output->values, output_point, ipa_blinding_generator, ipa_u_generator,
-        relation_blinding_scalar(*output, blinders), output_metadata);
-    std::vector<byte> source_opening_bytes, output_opening_bytes;
-    zkdl::serialize_opening(route.source_opening, source_opening_bytes);
-    zkdl::serialize_opening(route.output_opening, output_opening_bytes);
-    transcript.absorb("gat.route." + descriptor.id + ".opening.source", source_opening_bytes);
-    transcript.absorb("gat.route." + descriptor.id + ".opening.output", output_opening_bytes);
-    route.rho = transcript.challenge("gat.fac4dnn.line8." + descriptor.id + ".rho");
-    route.compressed_claim = zkdl::fr_value(zkdl::fr_add(
-        zkdl::fr_wire(route.output_claim),
-        zkdl::fr_add(
-            zkdl::fr_mul(zkdl::fr_wire(route.rho), zkdl::fr_wire(route.source_sum_claim)),
-            zkdl::fr_mul(zkdl::fr_mul(zkdl::fr_wire(route.rho), zkdl::fr_wire(route.rho)),
-                          zkdl::fr_wire(route.dst_selector_claim)))));
-    transcript.absorb_fr("gat.fac4dnn.line8." + descriptor.id + ".eq30",
-                         {route.compressed_claim});
-    return true;
-}
-
-inline bool verify_sparse_route(
-    const OperationDescriptor& descriptor,
-    const std::vector<CommitmentWire>& commitments,
-    const std::vector<zkdl::CpuG1Point>& generators,
-    const zkdl::CpuG1Point& ipa_blinding_generator,
-    const zkdl::CpuG1Point& ipa_u_generator,
-    const RelationStatement& statement,
-    zkdl::Transcript& transcript, const SparseRouteProof& route,
-    std::string* error) {
-    if ((descriptor.kind != RelationKind::SparseRoute &&
-         descriptor.kind != RelationKind::Alpha) ||
-        route.edge_domain != descriptor.selector_edge_domain ||
-        route.node_domain != descriptor.selector_node_domain ||
-        route.feature_domain != descriptor.selector_feature_domain ||
-        route.source_feature_domain != descriptor.selector_source_feature_domain) {
-        if (error) *error = "sparse route proof/descriptor domain mismatch";
-        return false;
-    }
-    const std::uint32_t edge_bits = log2_exact(route.edge_domain);
-    const std::uint32_t node_bits = log2_exact(route.node_domain);
-    const std::uint32_t feature_bits = log2_exact(route.feature_domain);
-    const std::uint32_t source_feature_bits = log2_exact(route.source_feature_domain);
-    if (edge_bits == std::numeric_limits<std::uint32_t>::max() ||
-        node_bits == std::numeric_limits<std::uint32_t>::max() ||
-        feature_bits == std::numeric_limits<std::uint32_t>::max() ||
-        source_feature_bits == std::numeric_limits<std::uint32_t>::max() ||
-        route.edge_point.size() != edge_bits || route.node_point.size() != node_bits ||
-        route.feature_point.size() != feature_bits ||
-        route.sumcheck.label != "gat.route." + descriptor.id ||
-        route.source_feature_point.size() != source_feature_bits ||
-        route.sumcheck.degree != 2U ||
-        route.sumcheck.rounds.size() != source_feature_bits + node_bits ||
-        route.sumcheck.terminal_claims.size() != 2U ||
-        route.source_commitment_index >= commitments.size() ||
-        route.output_commitment_index >= commitments.size() ||
-        commitments[route.source_commitment_index].tensor_id != descriptor.selector_source_ref ||
-        commitments[route.output_commitment_index].tensor_id != descriptor.selector_output_ref ||
-        commitments[route.source_commitment_index].domain_size !=
-            static_cast<std::uint64_t>(route.node_domain) * route.source_feature_domain ||
-        commitments[route.output_commitment_index].domain_size !=
-            static_cast<std::uint64_t>(route.edge_domain) * route.feature_domain ||
-        generators.size() < std::max(commitments[route.source_commitment_index].domain_size,
-                                     commitments[route.output_commitment_index].domain_size)) {
-        if (error) *error = "sparse route proof shape or commitment reference is invalid";
-        return false;
-    }
-    for (std::uint32_t bit = 0U; bit < edge_bits; ++bit) {
-        const Fr_t expected = transcript.challenge(
-            "gat.route." + descriptor.id + ".edge." + std::to_string(bit));
-        if (fr_compare_mixed(expected, route.edge_point[bit]) != 0) {
-            if (error) *error = "sparse route edge challenge is not transcript-bound";
-            return false;
-        }
-    }
-    for (std::uint32_t bit = 0U; bit < feature_bits; ++bit) {
-        const Fr_t expected = transcript.challenge(
-            "gat.route." + descriptor.id + ".feature." + std::to_string(bit));
-        if (fr_compare_mixed(expected, route.feature_point[bit]) != 0) {
-            if (error) *error = "sparse route feature challenge is not transcript-bound";
-            return false;
-        }
-    }
-    std::vector<Fr_t> all_challenges;
-    if (!zkdl::verify_sumcheck(route.sumcheck, route.output_claim, transcript,
-                               &all_challenges, error) ||
-        all_challenges.size() != route.source_feature_point.size() + route.node_point.size()) return false;
-    for (std::size_t i = 0U; i < route.source_feature_point.size(); ++i)
-        if (fr_compare_mixed(all_challenges[i], route.source_feature_point[i]) != 0) {
-            if (error) *error = "sparse route source-feature challenge is not transcript-bound";
-            return false;
-        }
-    for (std::size_t i = 0U; i < route.node_point.size(); ++i)
-        if (fr_compare_mixed(all_challenges[route.source_feature_point.size() + i],
-                             route.node_point[i]) != 0) {
-            if (error) *error = "sparse route node challenge is not transcript-bound";
-            return false;
-        }
-    std::vector<FrWire> expected_source_point;
-    expected_source_point.reserve(source_feature_bits + node_bits);
-    for (const auto& value : route.source_feature_point)
-        expected_source_point.push_back(zkdl::fr_wire(value));
-    for (const auto& value : route.node_point) expected_source_point.push_back(zkdl::fr_wire(value));
-    std::vector<FrWire> expected_output_point;
-    expected_output_point.reserve(feature_bits + edge_bits);
-    for (const auto& value : route.feature_point) expected_output_point.push_back(zkdl::fr_wire(value));
-    for (const auto& value : route.edge_point) expected_output_point.push_back(zkdl::fr_wire(value));
-    const auto& source_commitment = commitments[route.source_commitment_index];
-    const auto& output_commitment = commitments[route.output_commitment_index];
-    if (route.source_opening.commitment_index != route.source_commitment_index ||
-        route.output_opening.commitment_index != route.output_commitment_index ||
-        route.source_opening.generator_size != source_commitment.domain_size ||
-        route.output_opening.generator_size != output_commitment.domain_size ||
-        route.source_opening.outer_point.size() != 0U ||
-        route.output_opening.outer_point.size() != 0U ||
-        route.source_opening.inner_point.size() != expected_source_point.size() ||
-        route.output_opening.inner_point.size() != expected_output_point.size()) {
-        if (error) *error = "sparse route opening metadata is not canonical";
-        return false;
-    }
-    for (size_t i = 0U; i < expected_source_point.size(); ++i)
-        if (fr_compare_mixed(route.source_opening.inner_point[i],
-                             expected_source_point[i]) != 0) {
-            if (error) *error = "sparse route source opening point mismatch";
-            return false;
-        }
-    for (size_t i = 0U; i < expected_output_point.size(); ++i)
-        if (fr_compare_mixed(route.output_opening.inner_point[i],
-                             expected_output_point[i]) != 0) {
-            if (error) *error = "sparse route output opening point mismatch";
-            return false;
-        }
-    OperationDescriptor source_open_descriptor = descriptor;
-    source_open_descriptor.id += "/source-opening";
-    OperationDescriptor output_open_descriptor = descriptor;
-    output_open_descriptor.id += "/output-opening";
-    const zkdl::CpuIpaOpeningMetadata source_metadata = relation_opening_metadata(
-        source_open_descriptor, route.source_commitment_index, {}, statement);
-    const zkdl::CpuIpaOpeningMetadata output_metadata = relation_opening_metadata(
-        output_open_descriptor, route.output_commitment_index, {}, statement);
-    if (!zkdl::cpu_verify_opening(
-            route.source_opening, zkdl::cpu_g1_from_native(source_commitment.commitment),
-            std::vector<zkdl::CpuG1Point>(generators.begin(),
-                                          generators.begin() + source_commitment.domain_size),
-            ipa_blinding_generator, ipa_u_generator, source_metadata, error) ||
-        !zkdl::cpu_verify_opening(
-            route.output_opening, zkdl::cpu_g1_from_native(output_commitment.commitment),
-            std::vector<zkdl::CpuG1Point>(generators.begin(),
-                                          generators.begin() + output_commitment.domain_size),
-            ipa_blinding_generator, ipa_u_generator, output_metadata, error)) return false;
-    const std::vector<FrWire> edge_point = [&]() {
-        std::vector<FrWire> point;
-        point.reserve(route.edge_point.size());
-        for (const auto& value : route.edge_point) point.push_back(zkdl::fr_wire(value));
-        return point;
-    }();
-    std::vector<FrWire> selector_terminal_outer = public_route_selector_mle(
-        descriptor, edge_point, descriptor.route_by_destination);
-    const std::vector<FrWire> selector_terminal_feature = public_route_feature_selector_mle(
-        descriptor, [&]() {
-            std::vector<FrWire> point;
-            point.reserve(route.feature_point.size());
-            for (const auto& value : route.feature_point) point.push_back(zkdl::fr_wire(value));
-            return point;
-        }());
-    std::vector<FrWire> selector_terminal(
-        static_cast<std::size_t>(route.node_domain) * route.source_feature_domain);
-    for (std::uint32_t node = 0U; node < route.node_domain; ++node)
-        for (std::uint32_t feature = 0U; feature < route.source_feature_domain; ++feature)
-            selector_terminal[static_cast<std::size_t>(node) * route.source_feature_domain + feature] =
-                zkdl::fr_mul(selector_terminal_outer[node], selector_terminal_feature[feature]);
-    for (const auto& challenge : route.source_feature_point)
-        fold_values(selector_terminal, zkdl::fr_wire(challenge));
-    for (const auto& challenge : route.node_point)
-        fold_values(selector_terminal, zkdl::fr_wire(challenge));
-    std::vector<FrWire> destination_terminal = public_route_selector_mle(
-        descriptor, edge_point, !descriptor.route_by_destination);
-    for (const auto& challenge : route.node_point)
-        fold_values(destination_terminal, zkdl::fr_wire(challenge));
-    if (fr_compare_mixed(route.sumcheck.terminal_claims[0],
-                         selector_terminal.front()) != 0 ||
-        fr_compare_mixed(route.sumcheck.terminal_claims[1],
-                         route.source_opening.value) != 0 ||
-        fr_compare_mixed(route.sumcheck.final_claim,
-                         zkdl::fr_value(zkdl::fr_mul(
-                             zkdl::fr_wire(route.sumcheck.terminal_claims[0]),
-                             zkdl::fr_wire(route.sumcheck.terminal_claims[1])))) != 0 ||
-        fr_compare_mixed(route.sumcheck.final_claim,
-                         route.source_sum_claim) != 0 ||
-        fr_compare_mixed(route.dst_selector_claim, destination_terminal.front()) != 0 ||
-        fr_compare_mixed(route.output_opening.value, route.output_claim) != 0 ||
-        fr_compare_mixed(route.source_sum_claim, route.output_claim) != 0) {
-        if (error) *error = "sparse route terminal or Equation(30) claim failed";
-        return false;
-    }
-    std::vector<byte> source_opening_bytes, output_opening_bytes;
-    zkdl::serialize_opening(route.source_opening, source_opening_bytes);
-    zkdl::serialize_opening(route.output_opening, output_opening_bytes);
-    transcript.absorb("gat.route." + descriptor.id + ".opening.source", source_opening_bytes);
-    transcript.absorb("gat.route." + descriptor.id + ".opening.output", output_opening_bytes);
-    const Fr_t expected_rho = transcript.challenge(
-        "gat.fac4dnn.line8." + descriptor.id + ".rho");
-    if (fr_compare_mixed(expected_rho, route.rho) != 0) {
-        if (error) *error = "FAC4DNN Line8 rho is not transcript-bound";
-        return false;
-    }
-    const Fr_t expected_compressed = zkdl::fr_value(zkdl::fr_add(
-        zkdl::fr_wire(route.output_claim),
-        zkdl::fr_add(
-            zkdl::fr_mul(zkdl::fr_wire(route.rho), zkdl::fr_wire(route.source_sum_claim)),
-            zkdl::fr_mul(zkdl::fr_mul(zkdl::fr_wire(route.rho), zkdl::fr_wire(route.rho)),
-                          zkdl::fr_wire(route.dst_selector_claim)))));
-    if (fr_compare_mixed(expected_compressed, route.compressed_claim) != 0) {
-        if (error) *error = "FAC4DNN Line8 Equation(30) compression failed";
-        return false;
-    }
-    transcript.absorb_fr("gat.fac4dnn.line8." + descriptor.id + ".eq30",
-                         {route.compressed_claim});
-    return true;
-}
+#include "gat_adapter/gat_sparse_route.cuh"
 
 inline bool prove(const ProverContext& context, Proof& proof, std::string* error = nullptr) {
     try {
         if (!descriptor_vector_valid(context.operations, error)) return false;
+        if (!formal_relation_components_supported(context.operations, error)) return false;
+        if (context.gpu_backend) {
+            if (error) *error =
+                "BLOCKED: formal zkDL GPU GAT proving is unavailable until every relation family "
+                "and terminal opening runs on native CUDA cryptographic kernels";
+            return false;
+        }
         if (context.tensors.empty() || context.generators.empty() ||
             context.ipa_generators.empty() || context.ipa_blinding_generator.is_zero() ||
             context.ipa_u_generator.is_zero() ||
@@ -4738,83 +4242,13 @@ inline bool prove(const ProverContext& context, Proof& proof, std::string* error
             }
             for (const auto& descriptor : operation.constraints) {
                 if (!operation.batch_family.empty()) break;
-                std::vector<const TensorWitness*> witnesses;
-                for (const auto& ref : operation.tensor_refs) {
-                    const auto found = tensor_map.find(ref);
-                    if (found == tensor_map.end()) throw std::invalid_argument("relation tensor reference is missing");
-                    witnesses.push_back(found->second);
-                }
                 ConstraintProof constraint;
-                constraint.descriptor = descriptor;
-                std::vector<Fr_t> challenges;
-                std::vector<FrWire> terminal_values;
-                constraint.sumcheck = prove_constraint_exact(descriptor, witnesses, transcript,
-                                                             challenges, terminal_values);
-                constraint.opening_tensor_indices = constraint_tensor_indices(
-                    descriptor, operation.tensor_refs.size());
-                for (std::size_t opening_index = 0U;
-                     opening_index < constraint.opening_tensor_indices.size(); ++opening_index) {
-                    const auto tensor_index = constraint.opening_tensor_indices[opening_index];
-                    const auto& ref = operation.tensor_refs.at(tensor_index);
-                    const auto found = std::find_if(proof.commitments.begin(), proof.commitments.end(),
-                                                    [&](const CommitmentWire& value) { return value.tensor_id == ref; });
-                    if (found == proof.commitments.end()) throw std::invalid_argument("relation commitment reference is missing");
-                    const auto tensor = tensor_map.at(ref);
-                    std::vector<FrWire> point;
-                    point.reserve(challenges.size());
-                    for (const auto& challenge : challenges) point.push_back(zkdl::fr_wire(challenge));
-                    std::vector<zkdl::CpuG1Point> gens(context.ipa_generators.begin(), context.ipa_generators.begin() + tensor->domain_size);
-                    const std::uint32_t commitment_index = static_cast<std::uint32_t>(
-                        std::distance(proof.commitments.begin(), std::find_if(
-                            proof.commitments.begin(), proof.commitments.end(),
-                            [&](const CommitmentWire& value) { return value.tensor_id == ref; })));
-                    constraint.opening_commitment_indices.push_back(commitment_index);
-                    const zkdl::CpuIpaOpeningMetadata metadata = relation_opening_metadata(
-                        descriptor, commitment_index, {}, context.statement);
-                    constraint.openings.push_back(zkdl::cpu_open(
-                        gens, tensor->values, point, context.ipa_blinding_generator,
-                        context.ipa_u_generator,
-                        relation_blinding_scalar(*tensor, context.blinding_scalars), metadata));
-                }
-                std::vector<Fr_t> reduced_terminal_values;
-                reduced_terminal_values.reserve(constraint.opening_tensor_indices.size());
-                for (const auto tensor_index : constraint.opening_tensor_indices)
-                    reduced_terminal_values.push_back(
-                        zkdl::fr_value(terminal_values.at(tensor_index)));
-                constraint.sumcheck.terminal_claims = reduced_terminal_values;
-                const std::uint32_t point_bits = log2_exact(
-                    operation.tensor_refs.empty() ? 0U :
-                    tensor_map.at(operation.tensor_refs.front())->domain_size);
-                if (point_bits == std::numeric_limits<std::uint32_t>::max())
-                    throw std::invalid_argument("relation pointwise domain is not a power of two");
-                for (std::uint32_t bit = 0U; bit < point_bits; ++bit)
-                    constraint.pointwise_point.push_back(transcript.challenge(
-                        "gat.relation." + descriptor.id + ".pointwise." + std::to_string(bit)));
-                for (std::size_t opening_index = 0U;
-                     opening_index < constraint.opening_tensor_indices.size(); ++opening_index) {
-                    const auto tensor_index = constraint.opening_tensor_indices[opening_index];
-                    const auto& ref = operation.tensor_refs.at(tensor_index);
-                    const auto tensor = tensor_map.at(ref);
-                    std::vector<FrWire> point;
-                    point.reserve(constraint.pointwise_point.size());
-                    for (const auto& challenge : constraint.pointwise_point)
-                        point.push_back(zkdl::fr_wire(challenge));
-                    std::vector<zkdl::CpuG1Point> gens(
-                        context.ipa_generators.begin(), context.ipa_generators.begin() + tensor->domain_size);
-                    const zkdl::CpuIpaOpeningMetadata metadata = relation_opening_metadata(
-                        descriptor, constraint.opening_commitment_indices.at(opening_index), {},
-                        context.statement);
-                    auto opening = zkdl::cpu_open(
-                        gens, tensor->values, point, context.ipa_blinding_generator,
-                        context.ipa_u_generator,
-                        relation_blinding_scalar(*tensor, context.blinding_scalars), metadata);
-                    constraint.pointwise_openings.push_back(std::move(opening));
-                }
-                std::vector<byte> pointwise_bytes;
-                for (const auto& opening : constraint.pointwise_openings)
-                    zkdl::serialize_opening(opening, pointwise_bytes);
-                transcript.absorb("gat.relation." + descriptor.id + ".pointwise.openings",
-                                  pointwise_bytes);
+                if (!fill_constraint_openings(
+                        descriptor, operation.tensor_refs, tensor_map,
+                        context.blinding_scalars, context.ipa_generators,
+                        context.ipa_blinding_generator, context.ipa_u_generator,
+                        proof.commitments, context.statement, transcript,
+                        constraint, error)) return false;
                 operation_proof.constraints.push_back(std::move(constraint));
             }
             proof.operations.push_back(std::move(operation_proof));
@@ -4881,7 +4315,14 @@ inline bool verify(const Proof& proof, const VerifierContext& context,
         return false;
     }
     if (!descriptor_vector_valid(context.operations, error) ||
-        proof.operations.size() != context.operations.size() || proof.commitments.empty()) return false;
+        !formal_relation_components_supported(context.operations, error)) return false;
+    if (context.gpu_backend) {
+        if (error) *error =
+            "BLOCKED: formal zkDL GPU GAT verification is unavailable until every relation family "
+            "and terminal opening runs on native CUDA cryptographic kernels";
+        return false;
+    }
+    if (proof.operations.size() != context.operations.size() || proof.commitments.empty()) return false;
     if (!verify_tensor_contract(context, proof.commitments, error) ||
         !verify_model_registry(proof.commitments,
                                context.registered_model_commitments, error) ||
@@ -5005,7 +4446,8 @@ inline bool verify(const Proof& proof, const VerifierContext& context,
                                          operation.primitive_proofs[primitive_index],
                                          context.ipa_generators,
                                          context.ipa_blinding_generator,
-                                         context.ipa_u_generator, error)) return false;
+                                         context.ipa_u_generator, context.gpu_backend,
+                                         error)) return false;
             transcript.absorb("gat.relation.primitive",
                               operation.primitive_proofs[primitive_index]);
             if (!verify_primitive_binding(expected_operation.primitives[primitive_index],

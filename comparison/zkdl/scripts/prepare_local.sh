@@ -36,5 +36,6 @@ if [[ -n "$run_dir" ]]; then
   runner_args=(--run-dir "$run_path")
 fi
 
+python3 "$script_dir/validate_resources.py" --config "$config_path"
 python3 "$script_dir/asset_manifest.py" --config "$config_path" "${manifest_args[@]}"
 "$root/gat_runner" prepare --config "$config_path" "${runner_args[@]}"

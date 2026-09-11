@@ -2012,10 +2012,6 @@ relation::OperationDescriptor canonical_operation(
             if (plan_operation.inputs.size() != 1U || plan_operation.outputs.size() != 1U ||
                 plan_operation.inputs.front() != plan_operation.outputs.front())
                 return unsupported("a single public_Y tensor");
-            relation::ConstraintDescriptor constraint;
-            constraint.id = operation.id + "/terminal";
-            constraint.degree = 1U;
-            operation.constraints.push_back(std::move(constraint));
         } else if (plan_operation.kind == "indexed_public_table_sumcheck") {
             return table_operation(config, tables, plan_operation, domains, families, error);
         } else if (plan_operation.kind == "segmented_max_range_sumcheck") {
@@ -2931,20 +2927,23 @@ bool zkdl_gat_native_core_prove(const NativeProveRequest& request,
         if (error) *error = "native prove result pointer is null";
         return false;
     }
-    if (request.backend == Backend::Gpu)
-        return reject(result, error,
-                      "BLOCKED: native GPU GAT proof provenance is not implemented; CPU fallback is forbidden",
-                      request.config, request.statement, request.backend);
     const auto prove_start = std::chrono::steady_clock::now();
     relation::ProverContext context;
     if (!context_from_request(request, context, error))
         return reject(result, error, error ? *error : "native relation context rejected",
                       request.config, request.statement, request.backend);
+    context.gpu_backend = request.backend == Backend::Gpu;
+    const std::uint64_t gpu_kernel_before = zkdl::gpu_crypto_kernel_invocations();
     double commitment_open_seconds = 0.0;
     context.commitment_open_time_seconds = &commitment_open_seconds;
     relation::Proof proof;
     if (!relation::prove(context, proof, error))
         return reject(result, error, error ? *error : "native relation prover rejected witness",
+                      request.config, request.statement, request.backend);
+    const std::uint64_t gpu_kernel_after = zkdl::gpu_crypto_kernel_invocations();
+    if (context.gpu_backend && gpu_kernel_after <= gpu_kernel_before)
+        return reject(result, error,
+                      "BLOCKED: formal GPU prover completed without a native cryptographic kernel",
                       request.config, request.statement, request.backend);
     result->proof_bytes = proof.serialize();
     result->envelope.native_core_api = kBridgeApi;
@@ -2965,7 +2964,7 @@ bool zkdl_gat_native_core_prove(const NativeProveRequest& request,
         std::chrono::steady_clock::now() - prove_start).count();
     result->envelope.verify_time_seconds = 0.0;
     result->envelope.verifier_reads_witness = false;
-    result->envelope.gpu_kernel_executed = false;
+    result->envelope.gpu_kernel_executed = context.gpu_backend;
     result->envelope.silent_fallback = false;
     result->envelope.output_bound = true;
     result->envelope.error.clear();
@@ -2977,10 +2976,6 @@ bool zkdl_gat_native_core_verify(const NativeVerifyRequest& request,
     const auto verify_start = std::chrono::steady_clock::now();
     if (!request.config || !request.statement || !request.envelope || !request.proof_bytes)
         return reject(nullptr, error, "native verify request lacks proof envelope/bytes",
-                      request.config, request.statement, request.backend);
-    if (request.backend == Backend::Gpu)
-        return reject(nullptr, error,
-                      "BLOCKED: native GPU GAT verifier provenance is not implemented",
                       request.config, request.statement, request.backend);
     if (request.envelope->schema_id != "zkDL_gat_proof_envelope_v1" ||
         request.envelope->statement_id != request.statement->statement_id ||
@@ -3002,6 +2997,8 @@ bool zkdl_gat_native_core_verify(const NativeVerifyRequest& request,
     if (!context_from_verify(request, context, error))
         return reject(nullptr, error, error ? *error : "independent verifier context rejected",
                       request.config, request.statement, request.backend);
+    context.gpu_backend = request.backend == Backend::Gpu;
+    const std::uint64_t gpu_kernel_before = zkdl::gpu_crypto_kernel_invocations();
     relation::Proof proof;
     std::string parse_error;
     if (!relation::Proof::deserialize(*request.proof_bytes, proof, &parse_error))
@@ -3014,6 +3011,15 @@ bool zkdl_gat_native_core_verify(const NativeVerifyRequest& request,
     }
     if (!relation::verify(proof, context, error))
         return reject(nullptr, error, error ? *error : "native relation verifier rejected proof",
+                      request.config, request.statement, request.backend);
+    const std::uint64_t gpu_kernel_after = zkdl::gpu_crypto_kernel_invocations();
+    if (context.gpu_backend && gpu_kernel_after <= gpu_kernel_before)
+        return reject(nullptr, error,
+                      "BLOCKED: formal GPU verifier completed without a native cryptographic kernel",
+                      request.config, request.statement, request.backend);
+    if ((!context.gpu_backend && request.envelope->gpu_kernel_executed) ||
+        (context.gpu_backend && !request.envelope->gpu_kernel_executed))
+        return reject(nullptr, error, "GPU cryptographic provenance flag is inconsistent",
                       request.config, request.statement, request.backend);
     request.envelope->verify_time_seconds = std::chrono::duration<double>(
         std::chrono::steady_clock::now() - verify_start).count();

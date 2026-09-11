@@ -13,5 +13,7 @@ if [[ "${ZKDL_ALLOW_FULL_DATASET_RUN:-0}" != "1" ]]; then
   exit 3
 fi
 for config in cora citeseer pubmed ppi ogbn_arxiv; do
-  "$script_dir/run_single.sh" "$root/configs/${config}_secure.cfg" "$backend" "runs/${config}_${backend}"
+  run_dir="runs/${config}_${backend}"
+  "$script_dir/run_single.sh" "$root/configs/${config}_secure.cfg" "$backend" "$run_dir"
+  "$script_dir/verify_single.sh" "$root/configs/${config}_secure.cfg" "$run_dir"
 done

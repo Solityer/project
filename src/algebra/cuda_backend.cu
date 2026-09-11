@@ -1764,7 +1764,7 @@ namespace gatzk::algebra
         };
 
         if (!allocate_vector(
-                &d_omega_powers,
+                &d_denominators,
                 element_bytes) ||
             !allocate_vector(
                 &d_prefixes,

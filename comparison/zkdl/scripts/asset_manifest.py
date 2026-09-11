@@ -15,6 +15,8 @@ import json
 from pathlib import Path
 from typing import Iterable
 
+from validate_resources import validate_blinders, validate_registry, validate_srs
+
 
 def fail(message: str) -> None:
     raise SystemExit(f"asset-manifest: {message}")
@@ -146,25 +148,41 @@ def main() -> int:
             "sha256": sha256(path),
         })
 
-    # Native IPA resources remain separately authenticated by the C++ loader.
-    # The asset manifest records their baseline-local identities when the
-    # resources are actually present, but never creates a placeholder file or
-    # substitutes a computed digest for a configured UNAVAILABLE marker.
+    # Native SRS, model registry, and prover-only blinder resources are
+    # external trusted inputs.  For canonical datasets they must already be
+    # present, baseline-local, and digest-bound; this script never generates,
+    # repairs, or downgrades them to an UNAVAILABLE marker.
     srs_path_raw = values.get("srs_path", "UNAVAILABLE")
     srs_manifest_digest = values.get("srs_manifest_digest", "UNAVAILABLE")
-    if srs_path_raw != "UNAVAILABLE" and srs_manifest_digest != "UNAVAILABLE":
-        srs_path = local_path(root, srs_path_raw, "srs_path")
-        srs_manifest = srs_path / "srs_manifest.json"
-        if srs_path.is_dir() and not srs_path.is_symlink() and srs_manifest.is_file() and not srs_manifest.is_symlink():
-            if sha256(srs_manifest) != srs_manifest_digest:
-                fail("BLOCKED: srs_manifest.json digest does not match config")
-            asset_entries.extend(files_under((srs_path,), root))
-
     model_registry_path_raw = values.get("model_registry_path", "UNAVAILABLE")
     model_registry_digest = values.get("verifier_registry_digest", "UNAVAILABLE")
-    if model_registry_path_raw != "UNAVAILABLE" and model_registry_digest != "UNAVAILABLE":
-        model_registry_path = local_path(root, model_registry_path_raw, "model_registry_path")
-        if model_registry_path.is_file() and not model_registry_path.is_symlink():
+    model_blinder_path_raw = values.get("model_blinder_sidecar_path", "UNAVAILABLE")
+    model_blinder_digest = values.get("model_blinder_sidecar_digest", "UNAVAILABLE")
+    if values["dataset"] in {"cora", "citeseer", "pubmed", "ppi", "ogbn_arxiv"}:
+        values["_config_path"] = config_path.relative_to(root).as_posix()
+        srs_path, srs_manifest, generator_digest = validate_srs(root, values)
+        model_registry_path, registry, _registry_digest = validate_registry(
+            root, values, srs_path, srs_manifest, generator_digest)
+        validate_blinders(root, values, registry, _registry_digest)
+        asset_entries.extend(files_under((srs_path,), root))
+        for resource_path in (model_registry_path, local_path(root, model_blinder_path_raw, "model_blinder_sidecar_path")):
+            asset_entries.append({
+                "path": resource_path.relative_to(root).as_posix(),
+                "bytes": resource_path.stat().st_size,
+                "sha256": sha256(resource_path),
+            })
+    elif srs_path_raw != "UNAVAILABLE" and srs_manifest_digest != "UNAVAILABLE":
+        # Non-canonical synthetic fixtures may opt into resource checks, but
+        # never receive a best-effort manifest for an absent resource.
+        srs_path = local_path(root, srs_path_raw, "srs_path")
+        if srs_path.is_symlink() or not srs_path.is_dir():
+            fail("BLOCKED: configured SRS directory is missing")
+        asset_entries.extend(files_under((srs_path,), root))
+    if values["dataset"] not in {"cora", "citeseer", "pubmed", "ppi", "ogbn_arxiv"}:
+        if model_registry_path_raw != "UNAVAILABLE" and model_registry_digest != "UNAVAILABLE":
+            model_registry_path = local_path(root, model_registry_path_raw, "model_registry_path")
+            if model_registry_path.is_symlink() or not model_registry_path.is_file():
+                fail("BLOCKED: configured model registry is missing")
             if sha256(model_registry_path) != model_registry_digest:
                 fail("BLOCKED: model registry digest does not match config")
             asset_entries.append({
