@@ -2344,6 +2344,14 @@ namespace gatzk::protocol
                 auto *resident_coefficients =
                     device_leaf_slots_.front();
 
+                std::shared_ptr<
+                    const algebra::
+                        CudaHostTransferGuard>
+                    host_transfer;
+
+                std::size_t logical_count = 0;
+                std::size_t nonzero_count = 0;
+
                 const bool executed =
                     algebra::
                         cuda_coset_device_to_coefficients_exact(
@@ -2357,12 +2365,23 @@ namespace gatzk::protocol
                                     output),
                             true,
                             reinterpret_cast<mcl::Fr *>(
-                                resident_coefficients));
+                                resident_coefficients),
+                            &host_transfer,
+                            &logical_count,
+                            &nonzero_count);
 
                 if (!executed)
                 {
                     throw std::runtime_error(
                         "CUDA t_edge device quotient INTT was not admitted");
+                }
+
+                if (logical_count == 0 ||
+                    logical_count > target_size_ ||
+                    nonzero_count > logical_count)
+                {
+                    throw std::runtime_error(
+                        "CUDA t_edge resident coefficient metadata is invalid");
                 }
 
                 int resident_device = -1;
@@ -2430,15 +2449,6 @@ namespace gatzk::protocol
                         }
                     });
 
-                device_leaf_slots_.front() =
-                    nullptr;
-
-                host_leaf_bound_.front() =
-                    false;
-
-                host_leaf_uploaded_prefix_.front() =
-                    0;
-
                 auto descriptor =
                     std::make_shared<
                         algebra::
@@ -2456,8 +2466,17 @@ namespace gatzk::protocol
                 descriptor->capacity =
                     target_size_;
 
+                descriptor->logical_count =
+                    logical_count;
+
+                descriptor->nonzero_count =
+                    nonzero_count;
+
                 descriptor->device =
                     resident_device;
+
+                descriptor->host_transfer =
+                    std::move(host_transfer);
 
                 algebra::
                     record_cuda_kernel_invocations(

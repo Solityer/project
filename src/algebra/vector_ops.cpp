@@ -1382,7 +1382,19 @@ namespace gatzk::algebra
     std::unique_ptr<CudaScaledAccumulateSession>
     create_cuda_scaled_accumulate_session(
         mcl::Fr *,
-        std::size_t)
+        std::size_t,
+        bool)
+    {
+        return nullptr;
+    }
+
+    std::shared_ptr<CudaScaledAccumulatePairSession>
+    create_cuda_scaled_accumulate_pair_session(
+        mcl::Fr *,
+        mcl::Fr *,
+        std::size_t,
+        bool,
+        bool)
     {
         return nullptr;
     }

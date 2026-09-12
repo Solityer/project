@@ -647,18 +647,27 @@ struct SparseRouteProof {
                             std::string* error = nullptr);
 };
 
+/* Prover-local output of the hidden sparse-route terminal relation.  These
+ * scalars are needed only to aggregate several Line8 terminals after the FS
+ * rho challenges have been sampled.  They are never serialized and never
+ * enter VerifierContext. */
+struct SparseRouteProverSecrets {
+    FrWire terminal_value{};
+    FrWire residual_blinder{};
+    FrWire sumcheck_blinder{};
+};
+
 /* FAC4DNN Line8 proof for a fixed, public view-binding list.  Each binding is
  * reduced by a public selector-MLE Sumcheck to one opening of its canonical
- * source commitment.  The binding residual claims are then compressed in the
- * authenticated order with one outer FS rho; no host-side gather is accepted
- * as a substitute. */
+ * source commitment.  The hidden terminal commitments are compressed in the
+ * authenticated order with FS rho challenges and connected by one Pedersen
+ * equality proof.  No terminal evaluation, residual, or compressed claim is
+ * carried on the wire. */
 struct FacLine8Proof {
-    static const std::uint32_t kVersion = 2U;
+    static const std::uint32_t kVersion = 3U;
     std::uint32_t version = kVersion;
-    Fr_t rho{};
-    Fr_t compressed_claim{};
-    std::vector<Fr_t> selector_claims;
     std::vector<SparseRouteProof> selector_proofs;
+    zkdl::PedersenScalarEqualityProof aggregate_binding;
 
     std::vector<byte> serialize() const;
     static bool deserialize(const std::vector<byte>& bytes,
@@ -1366,18 +1375,18 @@ inline bool read_native_fr_vector(const std::vector<byte>& in, size_t& offset,
 inline std::vector<byte> FacLine8Proof::serialize() const {
     std::vector<byte> out;
     out.reserve(1024U);
-    out.push_back('F'); out.push_back('A'); out.push_back('C'); out.push_back('2');
+    out.push_back('F'); out.push_back('A'); out.push_back('C'); out.push_back('3');
     zkdl::append_u32(out, version);
-    zkdl::append_fr(out, rho);
-    zkdl::append_fr(out, compressed_claim);
-    zkdl::append_u64(out, static_cast<std::uint64_t>(selector_claims.size()));
-    for (const auto& claim : selector_claims) zkdl::append_fr(out, claim);
     zkdl::append_u64(out, static_cast<std::uint64_t>(selector_proofs.size()));
     for (const auto& route : selector_proofs) {
         const std::vector<byte> encoded = route.serialize();
         zkdl::append_u64(out, static_cast<std::uint64_t>(encoded.size()));
         out.insert(out.end(), encoded.begin(), encoded.end());
     }
+    std::vector<byte> aggregate;
+    zkdl::serialize_pedersen_scalar_equality(aggregate_binding, aggregate);
+    zkdl::append_u64(out, static_cast<std::uint64_t>(aggregate.size()));
+    out.insert(out.end(), aggregate.begin(), aggregate.end());
     return out;
 }
 
@@ -1385,40 +1394,46 @@ inline bool FacLine8Proof::deserialize(const std::vector<byte>& bytes,
                                        FacLine8Proof& proof,
                                        std::string* error) {
     FacLine8Proof parsed;
-    std::uint64_t count = 0U, route_bytes = 0U;
+    std::uint64_t count = 0U, nested_bytes = 0U;
     size_t offset = 0U;
     constexpr std::uint64_t kMaxWireItems = kMaxRelationOpenings;
     if (bytes.size() < 4U || bytes[0] != 'F' || bytes[1] != 'A' ||
-        bytes[2] != 'C' || bytes[3] != '2') {
+        bytes[2] != 'C' || bytes[3] != '3') {
         if (error) *error = "invalid FAC4DNN Line8 proof magic";
         return false;
     }
     offset = 4U;
     if (!zkdl::read_u32(bytes, offset, parsed.version) || parsed.version != kVersion ||
-        !zkdl::read_fr(bytes, offset, parsed.rho) ||
-        !zkdl::read_fr(bytes, offset, parsed.compressed_claim) ||
         !zkdl::read_u64(bytes, offset, count) || count == 0U || count > kMaxWireItems) {
         if (error) *error = "invalid FAC4DNN Line8 descriptor/header";
         return false;
     }
-    parsed.selector_claims.resize(static_cast<std::size_t>(count));
-    for (auto& claim : parsed.selector_claims)
-        if (!zkdl::read_fr(bytes, offset, claim)) return false;
-    if (!zkdl::read_u64(bytes, offset, count) || count == 0U || count > kMaxWireItems ||
-        count != parsed.selector_claims.size()) return false;
     parsed.selector_proofs.resize(static_cast<std::size_t>(count));
     for (auto& route : parsed.selector_proofs) {
-        if (!zkdl::read_u64(bytes, offset, route_bytes) || route_bytes == 0U ||
-            route_bytes > bytes.size() - offset) {
+        if (!zkdl::read_u64(bytes, offset, nested_bytes) || nested_bytes == 0U ||
+            nested_bytes > bytes.size() - offset ||
+            nested_bytes > zkdl::ZkSumcheckProof::kMaxNestedProofBytes) {
             if (error) *error = "invalid FAC4DNN selector route length";
             return false;
         }
         std::vector<byte> encoded(
             bytes.begin() + static_cast<std::ptrdiff_t>(offset),
-            bytes.begin() + static_cast<std::ptrdiff_t>(offset + route_bytes));
-        offset += static_cast<std::size_t>(route_bytes);
+            bytes.begin() + static_cast<std::ptrdiff_t>(offset + nested_bytes));
+        offset += static_cast<std::size_t>(nested_bytes);
         if (!SparseRouteProof::deserialize(encoded, route, error)) return false;
     }
+    if (!zkdl::read_u64(bytes, offset, nested_bytes) || nested_bytes == 0U ||
+        nested_bytes > bytes.size() - offset ||
+        nested_bytes > zkdl::ZkSumcheckProof::kMaxNestedProofBytes) {
+        if (error) *error = "invalid FAC4DNN aggregate binding length";
+        return false;
+    }
+    std::vector<byte> aggregate(
+        bytes.begin() + static_cast<std::ptrdiff_t>(offset),
+        bytes.begin() + static_cast<std::ptrdiff_t>(offset + nested_bytes));
+    offset += static_cast<std::size_t>(nested_bytes);
+    if (!zkdl::deserialize_pedersen_scalar_equality(
+            aggregate, parsed.aggregate_binding, error)) return false;
     if (offset != bytes.size()) {
         if (error) *error = "trailing FAC4DNN Line8 proof bytes";
         return false;
@@ -3062,29 +3077,6 @@ inline bool verify_constraint(const ConstraintProof& proof,
     return true;
 }
 
-inline ConstraintDescriptor fac_line8_descriptor(const OperationDescriptor& operation,
-                                                 const Fr_t& rho) {
-    ConstraintDescriptor descriptor;
-    descriptor.id = operation.id + "/fac4dnn-line8";
-    descriptor.degree = 1U;
-    FrWire coefficient = zkdl::fr_from_u32(1U);
-    const FrWire rho_wire = zkdl::fr_wire(rho);
-    for (const auto& binding : operation.fac_bindings) {
-        const std::uint32_t view = static_cast<std::uint32_t>(
-            std::distance(operation.tensor_refs.begin(),
-                          std::find(operation.tensor_refs.begin(), operation.tensor_refs.end(),
-                                    binding.view_ref)));
-        const std::uint32_t canonical = static_cast<std::uint32_t>(
-            std::distance(operation.tensor_refs.begin(),
-                          std::find(operation.tensor_refs.begin(), operation.tensor_refs.end(),
-                                    binding.canonical_ref)));
-        descriptor.terms.push_back(Monomial{coefficient, {view}});
-        descriptor.terms.push_back(Monomial{zkdl::fr_neg(coefficient), {canonical}});
-        coefficient = zkdl::fr_mul(coefficient, rho_wire);
-    }
-    return descriptor;
-}
-
 inline ConstraintDescriptor batched_family_descriptor(
     const OperationDescriptor& operation, zkdl::Transcript& transcript,
     std::string* error = nullptr) {
@@ -3242,7 +3234,7 @@ inline bool prove_sparse_route(
     const std::vector<CommitmentWire>& commitments,
     const RelationStatement& statement,
     zkdl::Transcript& transcript, SparseRouteProof& route,
-    std::string* error);
+    std::string* error, SparseRouteProverSecrets* secrets = nullptr);
 
 inline bool verify_sparse_route(
     const OperationDescriptor& descriptor,
@@ -3253,6 +3245,161 @@ inline bool verify_sparse_route(
     const RelationStatement& statement,
     zkdl::Transcript& transcript, const SparseRouteProof& route,
     std::string* error);
+
+inline OperationDescriptor fac_line8_selector_descriptor(
+    const OperationDescriptor& operation, const FacBindingDescriptor& binding,
+    std::size_t index) {
+    OperationDescriptor selector;
+    selector.id = operation.id + "/fac4dnn-line8/selector/" + std::to_string(index);
+    selector.kind = RelationKind::SparseRoute;
+    selector.degree = 2U;
+    selector.source_refs = {binding.canonical_ref, binding.view_ref};
+    selector.tensor_refs = {binding.canonical_ref, binding.view_ref};
+    selector.mapping = operation.mapping + ";fac4dnn-public-selector";
+    selector.padding = operation.padding + ";fac4dnn-selector-masked";
+    selector.terminal_claim = operation.terminal_claim;
+    selector.terminal_point = operation.terminal_point;
+    selector.public_route = true;
+    selector.requires_reindex = true;
+    selector.selector_edge_domain = binding.view_outer_domain;
+    selector.selector_node_domain = binding.canonical_outer_domain;
+    selector.selector_feature_domain = binding.view_feature_domain;
+    selector.selector_source_feature_domain = binding.canonical_feature_domain;
+    selector.selector_src = binding.source_outer_index;
+    selector.selector_dst = binding.source_outer_index;
+    selector.selector_active = binding.selector_active;
+    selector.selector_feature_map = binding.source_feature_index;
+    selector.selector_source_ref = binding.canonical_ref;
+    selector.selector_output_ref = binding.view_ref;
+    return selector;
+}
+
+inline bool fac_line8_commitment_index(
+    const std::vector<CommitmentWire>& commitments, const std::string& tensor_id,
+    std::uint32_t& index, std::string* error) {
+    const auto found = std::find_if(
+        commitments.begin(), commitments.end(), [&](const CommitmentWire& commitment) {
+            return commitment.tensor_id == tensor_id;
+        });
+    if (found == commitments.end() || found->domain_size == 0U ||
+        found->domain_size > (std::uint32_t(1U) << kMaxRelationPointBits)) {
+        if (error) *error = "FAC4DNN canonical commitment is missing or out of bounds: " + tensor_id;
+        return false;
+    }
+    index = static_cast<std::uint32_t>(std::distance(commitments.begin(), found));
+    return true;
+}
+
+inline bool fac_line8_absorb_header(
+    const OperationDescriptor& operation, const RelationStatement& statement,
+    const std::vector<CommitmentWire>& commitments,
+    const zkdl::CpuG1Point& ipa_blinding_generator,
+    const zkdl::CpuG1Point& ipa_u_generator, zkdl::Transcript& transcript,
+    std::array<byte, 32U>& digest, std::string* error) {
+    if (!operation.valid(error) || operation.fac_bindings.empty() ||
+        operation.fac_bindings.size() > kMaxRelationOpenings ||
+        !zktr_all_statement_digests_valid(statement, error)) return false;
+    std::vector<byte> encoded;
+    zkdl::append_u32(encoded, FacLine8Proof::kVersion);
+    append_statement(encoded, statement);
+    append_operation(encoded, operation);
+    zkdl::append_u64(encoded, static_cast<std::uint64_t>(operation.fac_bindings.size()));
+    for (const auto& binding : operation.fac_bindings) {
+        std::uint32_t canonical_index = 0U, view_index = 0U;
+        if (!fac_line8_commitment_index(
+                commitments, binding.canonical_ref, canonical_index, error) ||
+            !fac_line8_commitment_index(
+                commitments, binding.view_ref, view_index, error)) return false;
+        zkdl::append_string(encoded, binding.canonical_ref);
+        zkdl::append_string(encoded, binding.view_ref);
+        zkdl::append_u32(encoded, canonical_index);
+        zkdl::append_u32(encoded, view_index);
+        append_commitment(encoded, commitments[canonical_index]);
+        append_commitment(encoded, commitments[view_index]);
+    }
+    zkdl::append_g1(encoded, zkdl::cpu_g1_to_native(ipa_blinding_generator));
+    zkdl::append_g1(encoded, zkdl::cpu_g1_to_native(ipa_u_generator));
+    transcript.absorb("gat.fac4dnn.line8.header", encoded);
+    digest = zkdl::sha256(encoded);
+    return digest != std::array<byte, 32U>{};
+}
+
+inline std::vector<FrWire> fac_line8_rho_challenges(
+    const OperationDescriptor& operation, zkdl::Transcript& transcript) {
+    std::vector<FrWire> rho;
+    rho.reserve(operation.fac_bindings.size());
+    for (std::size_t index = 0U; index < operation.fac_bindings.size(); ++index)
+        rho.push_back(zkdl::cpu_ipa_nonzero_challenge(
+            transcript, "gat.fac4dnn.line8." + operation.id + ".rho." +
+                            std::to_string(index)));
+    return rho;
+}
+
+inline std::array<byte, 32U> fac_line8_aggregate_digest(
+    const std::array<byte, 32U>& header_digest,
+    const std::vector<FrWire>& rho,
+    const std::vector<SparseRouteProof>& routes) {
+    std::vector<byte> encoded(header_digest.begin(), header_digest.end());
+    zkdl::append_u64(encoded, static_cast<std::uint64_t>(routes.size()));
+    for (std::size_t index = 0U; index < routes.size(); ++index) {
+        zkdl::append_fr(encoded, zkdl::fr_value(rho[index]));
+        const std::vector<byte> route_bytes = routes[index].serialize();
+        append_digest(encoded, zkdl::sha256(route_bytes));
+        zkdl::append_g1(encoded, routes[index].terminal_binding.commitment_1);
+        zkdl::append_g1(encoded, routes[index].terminal_binding.commitment_2);
+        zkdl::append_g1(encoded, routes[index].sumcheck.final_claim_commitment);
+    }
+    return zkdl::sha256(encoded);
+}
+
+inline zkdl::PedersenProofContext fac_line8_aggregate_context(
+    const std::array<byte, 32U>& digest, const RelationStatement& statement,
+    const zkdl::CpuG1Point& ipa_blinding_generator,
+    const zkdl::CpuG1Point& ipa_u_generator) {
+    constexpr std::uint32_t kAggregateResidualIndex = 0xF0000100U;
+    constexpr std::uint32_t kAggregateSumcheckIndex = 0xF0000101U;
+    return zksc_make_context(
+        zkdl::PedersenProofContext::kOperationScalarEquality, 1U, 0U,
+        kAggregateResidualIndex, kAggregateSumcheckIndex,
+        zkdl::cpu_ipa_basis_digest({}, ipa_blinding_generator,
+                                    ipa_u_generator, 0U),
+        digest, statement);
+}
+
+inline bool fac_line8_aggregate_commitments(
+    const std::vector<SparseRouteProof>& routes, const std::vector<FrWire>& rho,
+    zkdl::CpuG1Point& residual_commitment,
+    zkdl::CpuG1Point& sumcheck_commitment, std::string* error) {
+    if (routes.empty() || routes.size() != rho.size()) {
+        if (error) *error = "FAC4DNN aggregate terminal shape mismatch";
+        return false;
+    }
+    residual_commitment = zkdl::CpuG1Point{};
+    sumcheck_commitment = zkdl::CpuG1Point{};
+    for (std::size_t index = 0U; index < routes.size(); ++index) {
+        std::string point_error;
+        if (!zkdl::pedersen_wire_g1_valid(
+                routes[index].terminal_binding.commitment_1, &point_error) ||
+            !zkdl::pedersen_wire_g1_valid(
+                routes[index].terminal_binding.commitment_2, &point_error)) {
+            if (error) *error = point_error.empty()
+                ? "FAC4DNN aggregate contains an invalid terminal commitment"
+                : point_error;
+            return false;
+        }
+        residual_commitment = zkdl::cpu_g1_add(
+            residual_commitment,
+            zkdl::cpu_g1_mul(
+                zkdl::cpu_g1_from_native(
+                    routes[index].terminal_binding.commitment_1), rho[index]));
+        sumcheck_commitment = zkdl::cpu_g1_add(
+            sumcheck_commitment,
+            zkdl::cpu_g1_mul(
+                zkdl::cpu_g1_from_native(
+                    routes[index].terminal_binding.commitment_2), rho[index]));
+    }
+    return true;
+}
 
 inline bool prove_fac_line8(
     const OperationDescriptor& operation,
@@ -3265,62 +3412,75 @@ inline bool prove_fac_line8(
     const RelationStatement& statement,
     zkdl::Transcript& transcript, FacLine8Proof& proof,
     std::string* error = nullptr) {
-    if (operation.fac_bindings.empty()) {
-        if (error) *error = "FAC4DNN proof requested with an empty public binding list";
+    try {
+        proof = FacLine8Proof{};
+        std::array<byte, 32U> header_digest{};
+        if (!fac_line8_absorb_header(
+                operation, statement, commitments, ipa_blinding_generator,
+                ipa_u_generator, transcript, header_digest, error)) return false;
+        proof.selector_proofs.reserve(operation.fac_bindings.size());
+        std::vector<SparseRouteProverSecrets> terminal_secrets;
+        terminal_secrets.reserve(operation.fac_bindings.size());
+        for (std::size_t index = 0U; index < operation.fac_bindings.size(); ++index) {
+            const OperationDescriptor selector = fac_line8_selector_descriptor(
+                operation, operation.fac_bindings[index], index);
+            SparseRouteProof route;
+            SparseRouteProverSecrets secrets;
+            if (!prove_sparse_route(
+                    selector, tensor_map, blinders, generators,
+                    ipa_blinding_generator, ipa_u_generator, commitments,
+                    statement, transcript, route, error, &secrets)) return false;
+            const std::vector<byte> encoded = route.serialize();
+            transcript.absorb(
+                "gat.fac4dnn.line8." + operation.id + ".selector." +
+                    std::to_string(index), encoded);
+            proof.selector_proofs.push_back(std::move(route));
+            terminal_secrets.push_back(secrets);
+        }
+        const std::vector<FrWire> rho = fac_line8_rho_challenges(operation, transcript);
+        zkdl::CpuG1Point residual_commitment, sumcheck_commitment;
+        if (!fac_line8_aggregate_commitments(
+                proof.selector_proofs, rho, residual_commitment,
+                sumcheck_commitment, error)) return false;
+        FrWire aggregate_value{};
+        FrWire residual_blinder{};
+        FrWire sumcheck_blinder{};
+        for (std::size_t index = 0U; index < terminal_secrets.size(); ++index) {
+            aggregate_value = zkdl::fr_add(
+                aggregate_value,
+                zkdl::fr_mul(rho[index], terminal_secrets[index].terminal_value));
+            residual_blinder = zkdl::fr_add(
+                residual_blinder,
+                zkdl::fr_mul(rho[index], terminal_secrets[index].residual_blinder));
+            sumcheck_blinder = zkdl::fr_add(
+                sumcheck_blinder,
+                zkdl::fr_mul(rho[index], terminal_secrets[index].sumcheck_blinder));
+        }
+        if (residual_blinder == FrWire{} || sumcheck_blinder == FrWire{}) {
+            if (error) *error =
+                "FAC4DNN aggregate blinder is zero; retry with fresh proof randomness";
+            return false;
+        }
+        const auto aggregate_digest = fac_line8_aggregate_digest(
+            header_digest, rho, proof.selector_proofs);
+        proof.aggregate_binding = zkdl::cpu_open_pedersen_scalar_equality(
+            aggregate_value, residual_blinder, sumcheck_blinder,
+            residual_commitment, sumcheck_commitment,
+            ipa_blinding_generator, ipa_u_generator,
+            fac_line8_aggregate_context(
+                aggregate_digest, statement, ipa_blinding_generator,
+                ipa_u_generator)).proof;
+        std::vector<byte> aggregate_bytes;
+        zkdl::serialize_pedersen_scalar_equality(
+            proof.aggregate_binding, aggregate_bytes);
+        transcript.absorb(
+            "gat.fac4dnn.line8." + operation.id + ".aggregate",
+            aggregate_bytes);
+        return true;
+    } catch (const std::exception& exception) {
+        if (error) *error = exception.what();
         return false;
     }
-    proof = FacLine8Proof{};
-    proof.selector_claims.reserve(operation.fac_bindings.size());
-    proof.selector_proofs.reserve(operation.fac_bindings.size());
-    for (std::size_t index = 0U; index < operation.fac_bindings.size(); ++index) {
-        const FacBindingDescriptor& binding = operation.fac_bindings[index];
-        OperationDescriptor selector;
-        selector.id = operation.id + "/fac4dnn-line8/selector/" + std::to_string(index);
-        selector.kind = RelationKind::SparseRoute;
-        selector.degree = 2U;
-        selector.source_refs = {binding.canonical_ref, binding.view_ref};
-        selector.tensor_refs = {binding.canonical_ref, binding.view_ref};
-        selector.mapping = operation.mapping + ";fac4dnn-public-selector";
-        selector.padding = operation.padding + ";fac4dnn-selector-masked";
-        selector.terminal_claim = operation.terminal_claim;
-        selector.terminal_point = operation.terminal_point;
-        selector.public_route = true;
-        selector.requires_reindex = true;
-        selector.selector_edge_domain = binding.view_outer_domain;
-        selector.selector_node_domain = binding.canonical_outer_domain;
-        selector.selector_feature_domain = binding.view_feature_domain;
-        selector.selector_source_feature_domain = binding.canonical_feature_domain;
-        selector.selector_src = binding.source_outer_index;
-        selector.selector_dst = binding.source_outer_index;
-        selector.selector_active = binding.selector_active;
-        selector.selector_feature_map = binding.source_feature_index;
-        selector.selector_source_ref = binding.canonical_ref;
-        selector.selector_output_ref = binding.view_ref;
-        SparseRouteProof route;
-        if (!prove_sparse_route(selector, tensor_map, blinders, generators,
-                                ipa_blinding_generator, ipa_u_generator, commitments,
-                                statement,
-                                transcript, route, error)) return false;
-        const std::vector<byte> encoded = route.serialize();
-        transcript.absorb("gat.fac4dnn.line8." + operation.id + ".selector." +
-                          std::to_string(index), encoded);
-        // The hidden route proves this public residual is zero.  FAC Line 8
-        // remains separately gated until its joint compression is migrated.
-        proof.selector_claims.push_back(zkdl::fr_value(FrWire{}));
-        proof.selector_proofs.push_back(std::move(route));
-    }
-    proof.rho = transcript.challenge("gat.fac4dnn.line8." + operation.id + ".rho");
-    FrWire compressed{};
-    FrWire power = zkdl::fr_from_u32(1U);
-    for (const auto& claim : proof.selector_claims) {
-        compressed = zkdl::fr_add(compressed,
-                                  zkdl::fr_mul(power, zkdl::fr_wire(claim)));
-        power = zkdl::fr_mul(power, zkdl::fr_wire(proof.rho));
-    }
-    proof.compressed_claim = zkdl::fr_value(compressed);
-    transcript.absorb_fr("gat.fac4dnn.line8." + operation.id + ".eq30",
-                         {proof.compressed_claim});
-    return true;
 }
 
 inline bool verify_fac_line8(
@@ -3332,73 +3492,53 @@ inline bool verify_fac_line8(
     const RelationStatement& statement,
     zkdl::Transcript& transcript, const FacLine8Proof& proof,
     std::string* error = nullptr) {
-    if (operation.fac_bindings.empty()) {
-        if (error) *error = "FAC4DNN proof carries no expected public binding list";
-        return false;
-    }
-    if (proof.version != FacLine8Proof::kVersion ||
-        proof.selector_claims.size() != operation.fac_bindings.size() ||
-        proof.selector_proofs.size() != operation.fac_bindings.size()) {
-        if (error) *error = "FAC4DNN selector proof count/version mismatch";
-        return false;
-    }
-    for (std::size_t index = 0U; index < operation.fac_bindings.size(); ++index) {
-        const FacBindingDescriptor& binding = operation.fac_bindings[index];
-        OperationDescriptor selector;
-        selector.id = operation.id + "/fac4dnn-line8/selector/" + std::to_string(index);
-        selector.kind = RelationKind::SparseRoute;
-        selector.degree = 2U;
-        selector.source_refs = {binding.canonical_ref, binding.view_ref};
-        selector.tensor_refs = {binding.canonical_ref, binding.view_ref};
-        selector.mapping = operation.mapping + ";fac4dnn-public-selector";
-        selector.padding = operation.padding + ";fac4dnn-selector-masked";
-        selector.terminal_claim = operation.terminal_claim;
-        selector.terminal_point = operation.terminal_point;
-        selector.public_route = true;
-        selector.requires_reindex = true;
-        selector.selector_edge_domain = binding.view_outer_domain;
-        selector.selector_node_domain = binding.canonical_outer_domain;
-        selector.selector_feature_domain = binding.view_feature_domain;
-        selector.selector_source_feature_domain = binding.canonical_feature_domain;
-        selector.selector_src = binding.source_outer_index;
-        selector.selector_dst = binding.source_outer_index;
-        selector.selector_active = binding.selector_active;
-        selector.selector_feature_map = binding.source_feature_index;
-        selector.selector_source_ref = binding.canonical_ref;
-        selector.selector_output_ref = binding.view_ref;
-        if (!verify_sparse_route(selector, commitments, generators,
-                                 ipa_blinding_generator, ipa_u_generator, statement,
-                                 transcript,
-                                 proof.selector_proofs[index], error)) return false;
-        const std::vector<byte> encoded = proof.selector_proofs[index].serialize();
-        transcript.absorb("gat.fac4dnn.line8." + operation.id + ".selector." +
-                          std::to_string(index), encoded);
-        const Fr_t expected_claim = zkdl::fr_value(FrWire{});
-        if (fr_compare_mixed(expected_claim, proof.selector_claims[index]) != 0) {
-            if (error) *error = "FAC4DNN selector residual claim mismatch";
+    try {
+        if (proof.version != FacLine8Proof::kVersion ||
+            operation.fac_bindings.empty() ||
+            proof.selector_proofs.size() != operation.fac_bindings.size()) {
+            if (error) *error = "FAC4DNN selector proof count/version mismatch";
             return false;
         }
-    }
-    const Fr_t expected_rho = transcript.challenge(
-        "gat.fac4dnn.line8." + operation.id + ".rho");
-    if (fr_compare_mixed(expected_rho, proof.rho) != 0) {
-        if (error) *error = "FAC4DNN rho is not transcript-bound";
+        std::array<byte, 32U> header_digest{};
+        if (!fac_line8_absorb_header(
+                operation, statement, commitments, ipa_blinding_generator,
+                ipa_u_generator, transcript, header_digest, error)) return false;
+        for (std::size_t index = 0U; index < operation.fac_bindings.size(); ++index) {
+            const OperationDescriptor selector = fac_line8_selector_descriptor(
+                operation, operation.fac_bindings[index], index);
+            if (!verify_sparse_route(
+                    selector, commitments, generators, ipa_blinding_generator,
+                    ipa_u_generator, statement, transcript,
+                    proof.selector_proofs[index], error)) return false;
+            const std::vector<byte> encoded = proof.selector_proofs[index].serialize();
+            transcript.absorb(
+                "gat.fac4dnn.line8." + operation.id + ".selector." +
+                    std::to_string(index), encoded);
+        }
+        const std::vector<FrWire> rho = fac_line8_rho_challenges(operation, transcript);
+        zkdl::CpuG1Point residual_commitment, sumcheck_commitment;
+        if (!fac_line8_aggregate_commitments(
+                proof.selector_proofs, rho, residual_commitment,
+                sumcheck_commitment, error)) return false;
+        const auto aggregate_digest = fac_line8_aggregate_digest(
+            header_digest, rho, proof.selector_proofs);
+        if (!zkdl::cpu_verify_pedersen_scalar_equality(
+                proof.aggregate_binding, residual_commitment,
+                sumcheck_commitment, ipa_blinding_generator, ipa_u_generator,
+                fac_line8_aggregate_context(
+                    aggregate_digest, statement, ipa_blinding_generator,
+                    ipa_u_generator), error)) return false;
+        std::vector<byte> aggregate_bytes;
+        zkdl::serialize_pedersen_scalar_equality(
+            proof.aggregate_binding, aggregate_bytes);
+        transcript.absorb(
+            "gat.fac4dnn.line8." + operation.id + ".aggregate",
+            aggregate_bytes);
+        return true;
+    } catch (const std::exception& exception) {
+        if (error) *error = exception.what();
         return false;
     }
-    FrWire compressed{};
-    FrWire power = zkdl::fr_from_u32(1U);
-    for (const auto& claim : proof.selector_claims) {
-        compressed = zkdl::fr_add(compressed,
-                                  zkdl::fr_mul(power, zkdl::fr_wire(claim)));
-        power = zkdl::fr_mul(power, zkdl::fr_wire(expected_rho));
-    }
-    if (fr_compare_mixed(zkdl::fr_value(compressed), proof.compressed_claim) != 0) {
-        if (error) *error = "FAC4DNN compressed claim does not match terminal equation";
-        return false;
-    }
-    transcript.absorb_fr("gat.fac4dnn.line8." + operation.id + ".eq30",
-                         {proof.compressed_claim});
-    return true;
 }
 
 inline bool descriptor_vector_valid(const std::vector<OperationDescriptor>& operations,

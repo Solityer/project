@@ -2435,8 +2435,90 @@ namespace gatzk::crypto
             return tail_length >= min_tail_length;
         }
 
+        const algebra::
+            CudaResidentCoefficientBuffer *
+            validated_cuda_resident_coefficients(
+                const algebra::Polynomial &polynomial)
+        {
+            const auto *resident =
+                polynomial
+                    .cuda_resident_coefficients
+                    .get();
+
+            if (resident == nullptr)
+            {
+                return nullptr;
+            }
+
+            if (polynomial.basis !=
+                    algebra::PolynomialBasis::
+                        Coefficient ||
+                polynomial.shared_data != nullptr ||
+                resident
+                        ->device_montgomery_limbs ==
+                    nullptr ||
+                resident->device < 0 ||
+                resident->logical_count == 0 ||
+                resident->logical_count >
+                    polynomial.size() ||
+                resident->logical_count >
+                    resident->capacity ||
+                resident->nonzero_count >
+                    resident->logical_count)
+            {
+                throw std::runtime_error(
+                    "invalid CUDA resident coefficient metadata");
+            }
+
+            return resident;
+        }
+
+        void finalize_cuda_resident_coefficient_material(
+            algebra::Polynomial *polynomial)
+        {
+            if (polynomial == nullptr)
+            {
+                throw std::runtime_error(
+                    "null CUDA resident coefficient material");
+            }
+
+            const auto *resident =
+                validated_cuda_resident_coefficients(
+                    *polynomial);
+
+            if (resident == nullptr)
+            {
+                return;
+            }
+
+            const auto logical_count =
+                resident->logical_count;
+
+            if (resident->host_transfer !=
+                nullptr)
+            {
+                resident->host_transfer
+                    ->wait();
+            }
+
+            polynomial->data.resize(
+                logical_count);
+
+            polynomial
+                ->cuda_resident_coefficients
+                .reset();
+        }
+
         std::size_t estimated_commitment_msm_work(const algebra::Polynomial &polynomial)
         {
+            if (const auto *resident =
+                    validated_cuda_resident_coefficients(
+                        polynomial);
+                resident != nullptr)
+            {
+                return resident->nonzero_count;
+            }
+
             const auto &values = polynomial.values();
             if (values.empty())
             {
@@ -3155,6 +3237,9 @@ namespace gatzk::crypto
             G1Point point;
             bool constant_tail_folding = false;
             bool semantic_commitment_reuse = false;
+            std::size_t committed_vector_length =
+                polynomial.size();
+
             // 系数多项式采用SRS powers + MSM
             if (polynomial.basis == algebra::PolynomialBasis::Coefficient)
             {
@@ -3162,52 +3247,54 @@ namespace gatzk::crypto
                 {
                     throw std::runtime_error("missing coefficient proving SRS");
                 }
-                if (polynomial.size() > pk.powers_g1->size() || polynomial.size() > pk.degree_bound + 1)
+
+                const auto *resident =
+                    validated_cuda_resident_coefficients(
+                        polynomial);
+
+                if (resident != nullptr)
+                {
+                    committed_vector_length =
+                        resident->logical_count;
+                }
+
+                if (committed_vector_length > pk.powers_g1->size() || committed_vector_length > pk.degree_bound + 1)
                 {
                     throw std::runtime_error("coefficient polynomial exceeds SRS degree bound: " + polynomial.name);
                 }
+
                 stable_msm_options.stable_srs_capacity =
                     pk.powers_g1->size();
 
-                if (polynomial
-                        .cuda_resident_coefficients !=
-                    nullptr)
+                if (resident != nullptr)
                 {
-                    const auto &resident =
-                        *polynomial
-                             .cuda_resident_coefficients;
-
-                    if (resident
-                                .device_montgomery_limbs ==
-                            nullptr ||
-                        resident.capacity <
-                            polynomial.size() ||
-                        resident.device < 0)
-                    {
-                        throw std::runtime_error(
-                            "coefficient polynomial has invalid CUDA-resident scalar material: " +
-                            polynomial.name);
-                    }
-
                     stable_msm_options
                         .device_montgomery_scalars =
                         resident
-                            .device_montgomery_limbs;
+                            ->device_montgomery_limbs;
 
                     stable_msm_options
                         .device_montgomery_scalar_capacity =
-                        resident.capacity;
+                        resident->capacity;
 
                     stable_msm_options
                         .device_montgomery_scalar_device =
-                        resident.device;
+                        resident->device;
+
+                    stable_msm_options
+                        .device_montgomery_scalar_nonzero_count_known =
+                        true;
+
+                    stable_msm_options
+                        .device_montgomery_scalar_nonzero_count =
+                        resident->nonzero_count;
                 }
 
                 point =
                     g1_multi_scalar_mul_profiled(
                         pk.powers_g1->data(),
                         polynomial.values().data(),
-                        polynomial.size(),
+                        committed_vector_length,
                         profile != nullptr
                             ? &msm_profile
                             : nullptr,
@@ -3337,7 +3424,7 @@ namespace gatzk::crypto
                 profile->name = polynomial.name;
                 profile->basis = polynomial_basis_name(polynomial);
                 profile->domain = polynomial_domain_name(polynomial);
-                profile->vector_length = polynomial.size();
+                profile->vector_length = committed_vector_length;
                 profile->nonzero_scalar_count = msm_profile.nonzero_scalar_count;
                 profile->effective_scalar_count = msm_profile.effective_scalar_count;
                 profile->zero_scalar_skipping = msm_profile.zero_scalar_skipping;
@@ -3420,9 +3507,8 @@ namespace gatzk::crypto
                     msm_options,
                     reuse_cache);
 
-            material
-                ->cuda_resident_coefficients
-                .reset();
+            finalize_cuda_resident_coefficient_material(
+                material.get());
 
             return Commitment{
                 .name = name,
@@ -3696,26 +3782,45 @@ namespace gatzk::crypto
             std::vector<FieldElement> folded_zero_domain_blinder;
             std::vector<FieldElement> scaled_claim_sums;
 
+            bool folded_values_pristine =
+                true;
+
             std::unique_ptr<
                 algebra::CudaScaledAccumulateSession>
                 cuda_fold_session;
+
+            std::shared_ptr<
+                algebra::CudaScaledAccumulatePairSession>
+                cuda_pair_fold_session;
         };
 
         void finish_cuda_fold_session(
             FoldedEvaluationGroup *group)
         {
-            if (group == nullptr ||
-                group->cuda_fold_session ==
-                    nullptr)
+            if (group == nullptr)
             {
                 return;
             }
 
-            group->cuda_fold_session
-                ->finish();
+            if (group->cuda_pair_fold_session !=
+                nullptr)
+            {
+                group->cuda_pair_fold_session
+                    ->finish();
 
-            group->cuda_fold_session
-                .reset();
+                group->cuda_pair_fold_session
+                    .reset();
+            }
+
+            if (group->cuda_fold_session !=
+                nullptr)
+            {
+                group->cuda_fold_session
+                    ->finish();
+
+                group->cuda_fold_session
+                    .reset();
+            }
         }
 
         struct FoldedOpeningPlan
@@ -3723,7 +3828,116 @@ namespace gatzk::crypto
             std::vector<FieldElement> coefficient_fold;
             std::vector<FieldElement> coefficient_scaled_claim_sums;
             std::vector<FoldedEvaluationGroup> evaluation_groups;
+
+            bool coefficient_fold_pristine =
+                true;
+
+            std::unique_ptr<
+                algebra::CudaScaledAccumulateSession>
+                cuda_coefficient_fold_session;
         };
+
+        void finish_cuda_coefficient_fold_session(
+            FoldedOpeningPlan *plan)
+        {
+            if (plan == nullptr ||
+                plan->cuda_coefficient_fold_session ==
+                    nullptr)
+            {
+                return;
+            }
+
+            plan->cuda_coefficient_fold_session
+                ->finish();
+
+            plan->cuda_coefficient_fold_session
+                .reset();
+        }
+
+        void accumulate_coefficient_fold(
+            FoldedOpeningPlan *plan,
+            const std::vector<FieldElement> &source,
+            const FieldElement &scale,
+            std::size_t worker_cap)
+        {
+            if (plan == nullptr)
+            {
+                throw std::runtime_error(
+                    "null coefficient opening fold plan");
+            }
+
+            if (scale.is_zero())
+            {
+                return;
+            }
+
+            if (plan->coefficient_fold.empty() &&
+                scale == FieldElement::one())
+            {
+                plan->coefficient_fold =
+                    source;
+
+                plan->coefficient_fold_pristine =
+                    false;
+
+                return;
+            }
+
+            if (plan->coefficient_fold.size() <
+                source.size())
+            {
+                finish_cuda_coefficient_fold_session(
+                    plan);
+
+                plan->coefficient_fold.resize(
+                    source.size(),
+                    FieldElement::zero());
+            }
+
+            auto *target_native =
+                FieldElement::mutable_native_array_data(
+                    plan->coefficient_fold.data());
+
+            const auto *source_native =
+                FieldElement::native_array_data(
+                    source.data());
+
+            if (plan->cuda_coefficient_fold_session ==
+                nullptr)
+            {
+                plan->cuda_coefficient_fold_session =
+                    algebra::
+                        create_cuda_scaled_accumulate_session(
+                            target_native,
+                            plan->coefficient_fold.size(),
+                            plan->coefficient_fold_pristine);
+            }
+
+            if (plan->cuda_coefficient_fold_session !=
+                nullptr)
+            {
+                plan->cuda_coefficient_fold_session
+                    ->accumulate_range(
+                        source_native,
+                        scale.native(),
+                        0,
+                        source.size());
+
+                plan->coefficient_fold_pristine =
+                    false;
+
+                return;
+            }
+
+            accumulate_scaled_coefficients(
+                &plan->coefficient_fold,
+                source,
+                scale,
+                worker_cap);
+
+            plan->coefficient_fold_pristine =
+                false;
+        }
 
         struct DeferredStreamedSemanticSource
         {
@@ -3859,9 +4073,8 @@ namespace gatzk::crypto
                     label);
             }
 
-            if (group == nullptr ||
-                source_values.size() >
-                    group->folded_values.size())
+            if (source_values.size() >
+                group->folded_values.size())
             {
                 throw std::runtime_error(
                     "streamed evaluation polynomial exceeds its domain: " +
@@ -3871,6 +4084,13 @@ namespace gatzk::crypto
             if (scale.is_zero())
             {
                 return;
+            }
+
+            if (group->cuda_pair_fold_session !=
+                nullptr)
+            {
+                finish_cuda_fold_session(
+                    group);
             }
 
             auto *folded_base_native =
@@ -3895,7 +4115,8 @@ namespace gatzk::crypto
                     algebra::
                         create_cuda_scaled_accumulate_session(
                             folded_base_native,
-                            group->folded_values.size());
+                            group->folded_values.size(),
+                            group->folded_values_pristine);
             }
 
             if (group->cuda_fold_session !=
@@ -3907,6 +4128,9 @@ namespace gatzk::crypto
                         scale_native,
                         target_offset,
                         source_values.size());
+
+                group->folded_values_pristine =
+                    false;
 
                 return;
             }
@@ -3942,6 +4166,9 @@ namespace gatzk::crypto
                         }
                     });
             }
+
+            group->folded_values_pristine =
+                false;
         }
 
         void accumulate_streamed_evaluation_source_pair(
@@ -4008,6 +4235,41 @@ namespace gatzk::crypto
                 return;
             }
 
+            const auto shared_pair_session =
+                first_group
+                    ->cuda_pair_fold_session;
+
+            if (shared_pair_session != nullptr &&
+                shared_pair_session ==
+                    second_group
+                        ->cuda_pair_fold_session &&
+                !shared_pair_session->finished())
+            {
+                shared_pair_session
+                    ->accumulate_range(
+                        FieldElement::
+                            native_array_data(
+                                source_values.data()),
+                        first_scale.native(),
+                        second_scale.native(),
+                        target_offset,
+                        source_values.size());
+
+                first_group->folded_values_pristine =
+                    false;
+
+                second_group->folded_values_pristine =
+                    false;
+
+                return;
+            }
+
+            finish_cuda_fold_session(
+                first_group);
+
+            finish_cuda_fold_session(
+                second_group);
+
             auto *first_base_native =
                 FieldElement::
                     mutable_native_array_data(
@@ -4020,6 +4282,54 @@ namespace gatzk::crypto
                         second_group->folded_values
                             .data());
 
+            const auto *source_native =
+                FieldElement::
+                    native_array_data(
+                        source_values.data());
+
+            if (first_group->folded_values.size() ==
+                second_group->folded_values.size())
+            {
+                auto pair_session =
+                    algebra::
+                        create_cuda_scaled_accumulate_pair_session(
+                            first_base_native,
+                            second_base_native,
+                            first_group->folded_values
+                                .size(),
+                            first_group
+                                ->folded_values_pristine,
+                            second_group
+                                ->folded_values_pristine);
+
+                if (pair_session != nullptr)
+                {
+                    first_group
+                        ->cuda_pair_fold_session =
+                        pair_session;
+
+                    second_group
+                        ->cuda_pair_fold_session =
+                        pair_session;
+
+                    pair_session
+                        ->accumulate_range(
+                            source_native,
+                            first_scale.native(),
+                            second_scale.native(),
+                            target_offset,
+                            source_values.size());
+
+                    first_group->folded_values_pristine =
+                        false;
+
+                    second_group->folded_values_pristine =
+                        false;
+
+                    return;
+                }
+            }
+
             auto *first_native =
                 first_base_native +
                 target_offset;
@@ -4028,66 +4338,11 @@ namespace gatzk::crypto
                 second_base_native +
                 target_offset;
 
-            const auto *source_native =
-                FieldElement::
-                    native_array_data(
-                        source_values.data());
-
             const auto first_scale_native =
                 first_scale.native();
 
             const auto second_scale_native =
                 second_scale.native();
-
-            if (first_group->cuda_fold_session ==
-                nullptr)
-            {
-                first_group->cuda_fold_session =
-                    algebra::
-                        create_cuda_scaled_accumulate_session(
-                            first_base_native,
-                            first_group->folded_values
-                                .size());
-            }
-
-            if (second_group->cuda_fold_session ==
-                nullptr)
-            {
-                second_group->cuda_fold_session =
-                    algebra::
-                        create_cuda_scaled_accumulate_session(
-                            second_base_native,
-                            second_group->folded_values
-                                .size());
-            }
-
-            if (first_group->cuda_fold_session !=
-                    nullptr &&
-                second_group->cuda_fold_session !=
-                    nullptr)
-            {
-                first_group->cuda_fold_session
-                    ->accumulate_range(
-                        source_native,
-                        first_scale_native,
-                        target_offset,
-                        source_values.size());
-
-                second_group->cuda_fold_session
-                    ->accumulate_range(
-                        source_native,
-                        second_scale_native,
-                        target_offset,
-                        source_values.size());
-
-                return;
-            }
-
-            finish_cuda_fold_session(
-                first_group);
-
-            finish_cuda_fold_session(
-                second_group);
 
             if (!algebra::
                     try_cuda_scaled_accumulate_pair_native(
@@ -4141,6 +4396,12 @@ namespace gatzk::crypto
                         }
                     });
             }
+
+            first_group->folded_values_pristine =
+                false;
+
+            second_group->folded_values_pristine =
+                false;
         }
         std::size_t validated_file_backed_semantic_source_count(
             const OpeningSemanticSourceInfo &info,
@@ -4729,7 +4990,11 @@ namespace gatzk::crypto
                 {
                     if (!term.scale.is_zero())
                     {
-                        accumulate_scaled_coefficients(&plan.coefficient_fold, polynomial.values(), term.scale, worker_cap);
+                        accumulate_coefficient_fold(
+                            &plan,
+                            polynomial.values(),
+                            term.scale,
+                            worker_cap);
                     }
                     for (std::size_t point_index = 0; point_index < point_count; ++point_index)
                     {
@@ -4807,6 +5072,9 @@ namespace gatzk::crypto
                         }
                     });
             }
+            finish_cuda_coefficient_fold_session(
+                &plan);
+
             trim_zero_coefficients(&plan.coefficient_fold);
             return plan;
         }
@@ -5267,8 +5535,8 @@ namespace gatzk::crypto
                 {
                     if (!scale.is_zero())
                     {
-                        accumulate_scaled_coefficients(
-                            &plan.coefficient_fold,
+                        accumulate_coefficient_fold(
+                            &plan,
                             material->values(),
                             scale,
                             worker_cap);
@@ -5332,6 +5600,9 @@ namespace gatzk::crypto
                     group.scaled_claim_sums[point_index] += claimed_values[i][point_index] * scale;
                 }
             }
+
+            finish_cuda_coefficient_fold_session(
+                &plan);
 
             trim_zero_coefficients(
                 &plan.coefficient_fold);
@@ -7393,6 +7664,21 @@ namespace gatzk::crypto
             const auto &[name, polynomial] =
                 named_polynomials[index];
 
+            if (polynomial != nullptr &&
+                polynomial
+                        ->cuda_resident_coefficients !=
+                    nullptr &&
+                polynomial
+                        ->cuda_resident_coefficients
+                        ->host_transfer !=
+                    nullptr)
+            {
+                polynomial
+                    ->cuda_resident_coefficients
+                    ->host_transfer
+                    ->wait();
+            }
+
             CommitObjectProfile
                 object_profile;
 
@@ -7878,9 +8164,8 @@ namespace gatzk::crypto
                         : nullptr,
                     options);
 
-            material
-                ->cuda_resident_coefficients
-                .reset();
+            finalize_cuda_resident_coefficient_material(
+                material.get());
 
             out[index] =
                 Commitment{

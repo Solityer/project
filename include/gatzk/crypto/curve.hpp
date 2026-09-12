@@ -68,6 +68,12 @@ namespace gatzk::crypto
 
         int device_montgomery_scalar_device =
             -1;
+
+        bool device_montgomery_scalar_nonzero_count_known =
+            false;
+
+        std::size_t device_montgomery_scalar_nonzero_count =
+            0;
     };
 
     // 返回当前正式主线使用的曲线后端名称。

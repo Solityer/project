@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <memory>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -12,6 +13,7 @@
 
 #include "gatzk/algebra/cuda_field.cuh"
 #include "gatzk/algebra/cuda_ntt_device.hpp"
+#include "gatzk/algebra/polynomial.hpp"
 #include "gatzk/algebra/vector_ops.hpp"
 #include "gatzk/util/effective_memory.hpp"
 
@@ -114,6 +116,169 @@ namespace gatzk::algebra
             throw std::runtime_error(
                 std::string("CUDA quotient NTT ") + operation + " failed: " + cudaGetErrorString(status));
         }
+
+        class CudaRegisteredHostTransferGuard final
+            : public CudaHostTransferGuard
+        {
+        public:
+            CudaRegisteredHostTransferGuard(
+                void *host_pointer,
+                cudaEvent_t event,
+                int device,
+                bool unregister_on_wait)
+                : host_pointer_(host_pointer),
+                  event_(event),
+                  device_(device),
+                  unregister_on_wait_(unregister_on_wait)
+            {
+            }
+
+            ~CudaRegisteredHostTransferGuard() override
+            {
+                complete_noexcept();
+            }
+
+            void wait() const override
+            {
+                std::lock_guard<std::mutex>
+                    lock(mutex_);
+
+                if (completed_)
+                {
+                    return;
+                }
+
+                const auto status =
+                    complete_locked();
+
+                if (status != cudaSuccess)
+                {
+                    throw_cuda_ntt_error(
+                        "asynchronous coefficient transfer completion",
+                        status);
+                }
+            }
+
+        private:
+            cudaError_t complete_locked() const noexcept
+            {
+                int previous_device = -1;
+
+                auto first_error =
+                    cudaGetDevice(
+                        &previous_device);
+
+                if (first_error != cudaSuccess)
+                {
+                    return first_error;
+                }
+
+                bool switched_device = false;
+
+                if (previous_device != device_)
+                {
+                    const auto status =
+                        cudaSetDevice(
+                            device_);
+
+                    if (status != cudaSuccess)
+                    {
+                        return status;
+                    }
+
+                    switched_device = true;
+                }
+
+                first_error = cudaSuccess;
+
+                if (event_ != nullptr)
+                {
+                    const auto status =
+                        cudaEventSynchronize(
+                            event_);
+
+                    if (first_error == cudaSuccess &&
+                        status != cudaSuccess)
+                    {
+                        first_error = status;
+                    }
+                }
+
+                if (unregister_on_wait_ &&
+                    host_pointer_ != nullptr)
+                {
+                    const auto status =
+                        cudaHostUnregister(
+                            host_pointer_);
+
+                    if (first_error == cudaSuccess &&
+                        status != cudaSuccess)
+                    {
+                        first_error = status;
+                    }
+
+                    unregister_on_wait_ = false;
+                }
+
+                if (event_ != nullptr)
+                {
+                    const auto status =
+                        cudaEventDestroy(
+                            event_);
+
+                    if (first_error == cudaSuccess &&
+                        status != cudaSuccess)
+                    {
+                        first_error = status;
+                    }
+
+                    event_ = nullptr;
+                }
+
+                completed_ = true;
+
+                if (switched_device)
+                {
+                    const auto status =
+                        cudaSetDevice(
+                            previous_device);
+
+                    if (first_error == cudaSuccess &&
+                        status != cudaSuccess)
+                    {
+                        first_error = status;
+                    }
+                }
+
+                return first_error;
+            }
+
+            void complete_noexcept() const noexcept
+            {
+                std::lock_guard<std::mutex>
+                    lock(mutex_);
+
+                if (!completed_)
+                {
+                    (void)complete_locked();
+                }
+            }
+
+            void *host_pointer_ = nullptr;
+
+            mutable cudaEvent_t event_ =
+                nullptr;
+
+            int device_ = -1;
+
+            mutable bool unregister_on_wait_ =
+                false;
+
+            mutable bool completed_ =
+                false;
+
+            mutable std::mutex mutex_;
+        };
 
         void enqueue_default_stream_wait(
             cudaStream_t producer_stream,
@@ -964,6 +1129,7 @@ namespace gatzk::algebra
             output[2 * index + 1] =
                 input[index + half_size];
         }
+        template <bool TrackCoefficientShape>
         __global__ void
         combine_inverse_coset_kernel(
             const GpuFr *even_values,
@@ -973,7 +1139,8 @@ namespace gatzk::algebra
             GpuFr omega_inverse,
             GpuFr inverse_two,
             GpuFr shift_inverse,
-            GpuFr shift_inverse_half)
+            GpuFr shift_inverse_half,
+            unsigned long long *coefficient_shape)
         {
             const auto chunk =
                 static_cast<std::size_t>(
@@ -985,71 +1152,184 @@ namespace gatzk::algebra
                 chunk *
                 kCosetPowerChunkElements;
 
-            if (begin >= half_size)
+            if constexpr (!TrackCoefficientShape)
             {
-                return;
+                if (begin >= half_size)
+                {
+                    return;
+                }
             }
 
-            const auto end =
-                min(
-                    half_size,
-                    begin +
-                        kCosetPowerChunkElements);
+            unsigned long long local_nonzero_count = 0;
+            unsigned long long local_last_nonzero_exclusive = 0;
 
-            auto omega_power =
-                fr_pow_u64(
-                    omega_inverse,
-                    begin);
-
-            auto shift_power =
-                fr_pow_u64(
-                    shift_inverse,
-                    begin);
-
-            for (std::size_t index = begin;
-                 index < end;
-                 ++index)
+            if (begin < half_size)
             {
-                const auto odd_scaled =
-                    algebra::gpu::fr_mul(
-                        odd_values[index],
-                        omega_power);
+                const auto end =
+                    min(
+                        half_size,
+                        begin +
+                            kCosetPowerChunkElements);
 
-                const auto first =
-                    algebra::gpu::fr_mul(
-                        algebra::gpu::fr_add(
-                            even_values[index],
-                            odd_scaled),
-                        inverse_two);
+                auto omega_power =
+                    fr_pow_u64(
+                        omega_inverse,
+                        begin);
 
-                const auto second =
-                    algebra::gpu::fr_mul(
-                        algebra::gpu::fr_sub(
-                            even_values[index],
-                            odd_scaled),
-                        inverse_two);
+                auto shift_power =
+                    fr_pow_u64(
+                        shift_inverse,
+                        begin);
 
-                output[index] =
-                    algebra::gpu::fr_mul(
-                        first,
-                        shift_power);
+                for (std::size_t index = begin;
+                     index < end;
+                     ++index)
+                {
+                    const auto odd_scaled =
+                        algebra::gpu::fr_mul(
+                            odd_values[index],
+                            omega_power);
 
-                output[index + half_size] =
-                    algebra::gpu::fr_mul(
-                        second,
+                    const auto first =
+                        algebra::gpu::fr_mul(
+                            algebra::gpu::fr_add(
+                                even_values[index],
+                                odd_scaled),
+                            inverse_two);
+
+                    const auto second =
+                        algebra::gpu::fr_mul(
+                            algebra::gpu::fr_sub(
+                                even_values[index],
+                                odd_scaled),
+                            inverse_two);
+
+                    const auto first_output =
+                        algebra::gpu::fr_mul(
+                            first,
+                            shift_power);
+
+                    const auto second_output =
+                        algebra::gpu::fr_mul(
+                            second,
+                            algebra::gpu::fr_mul(
+                                shift_power,
+                                shift_inverse_half));
+
+                    output[index] =
+                        first_output;
+
+                    output[index + half_size] =
+                        second_output;
+
+                    if constexpr (TrackCoefficientShape)
+                    {
+                        if (!algebra::gpu::fr_is_zero(
+                                first_output))
+                        {
+                            ++local_nonzero_count;
+
+                            const auto last =
+                                static_cast<unsigned long long>(
+                                    index + 1U);
+
+                            if (last >
+                                local_last_nonzero_exclusive)
+                            {
+                                local_last_nonzero_exclusive =
+                                    last;
+                            }
+                        }
+
+                        if (!algebra::gpu::fr_is_zero(
+                                second_output))
+                        {
+                            ++local_nonzero_count;
+
+                            const auto last =
+                                static_cast<unsigned long long>(
+                                    index +
+                                    half_size +
+                                    1U);
+
+                            if (last >
+                                local_last_nonzero_exclusive)
+                            {
+                                local_last_nonzero_exclusive =
+                                    last;
+                            }
+                        }
+                    }
+
+                    omega_power =
+                        algebra::gpu::fr_mul(
+                            omega_power,
+                            omega_inverse);
+
+                    shift_power =
                         algebra::gpu::fr_mul(
                             shift_power,
-                            shift_inverse_half));
+                            shift_inverse);
+                }
+            }
 
-                omega_power =
-                    algebra::gpu::fr_mul(
-                        omega_power,
-                        omega_inverse);
+            if constexpr (TrackCoefficientShape)
+            {
+                extern __shared__ unsigned long long
+                    shared_shape[];
 
-                shift_power =
-                    algebra::gpu::fr_mul(
-                        shift_power,
-                        shift_inverse);
+                auto *shared_nonzero =
+                    shared_shape;
+
+                auto *shared_last =
+                    shared_shape +
+                    blockDim.x;
+
+                shared_nonzero[threadIdx.x] =
+                    local_nonzero_count;
+
+                shared_last[threadIdx.x] =
+                    local_last_nonzero_exclusive;
+
+                __syncthreads();
+
+                for (unsigned stride =
+                         blockDim.x / 2U;
+                     stride != 0;
+                     stride >>= 1U)
+                {
+                    if (threadIdx.x < stride)
+                    {
+                        shared_nonzero[threadIdx.x] +=
+                            shared_nonzero[threadIdx.x +
+                                           stride];
+
+                        const auto candidate =
+                            shared_last[threadIdx.x +
+                                        stride];
+
+                        if (candidate >
+                            shared_last[threadIdx.x])
+                        {
+                            shared_last[threadIdx.x] =
+                                candidate;
+                        }
+                    }
+
+                    __syncthreads();
+                }
+
+                if (threadIdx.x == 0 &&
+                    shared_nonzero[0] != 0)
+                {
+                    atomicAdd(
+                        coefficient_shape,
+                        shared_nonzero[0]);
+
+                    atomicMax(
+                        coefficient_shape + 1,
+                        shared_last[0]);
+                }
             }
         }
 
@@ -2468,7 +2748,12 @@ namespace gatzk::algebra
         const FieldElement &shift,
         mcl::Fr *host_coefficients,
         bool wait_for_default_stream,
-        mcl::Fr *device_coefficients)
+        mcl::Fr *device_coefficients,
+        std::shared_ptr<
+            const CudaHostTransferGuard>
+            *host_transfer,
+        std::size_t *logical_coefficient_count,
+        std::size_t *nonzero_coefficient_count)
     {
         if (device_values == nullptr ||
             host_coefficients == nullptr ||
@@ -2478,6 +2763,16 @@ namespace gatzk::algebra
         {
             return false;
         }
+
+        if (host_transfer != nullptr)
+        {
+            host_transfer->reset();
+        }
+
+        const bool track_coefficient_shape =
+            host_transfer != nullptr ||
+            logical_coefficient_count != nullptr ||
+            nonzero_coefficient_count != nullptr;
 
         const auto half_size =
             size / 2;
@@ -2618,30 +2913,103 @@ namespace gatzk::algebra
                  kBlockSize - 1) /
                 kBlockSize);
 
-        combine_inverse_coset_kernel<<<
-            combine_blocks,
-            kBlockSize,
-            0,
-            stream>>>(
-            reinterpret_cast<
-                const GpuFr *>(
-                workspace.output),
-            reinterpret_cast<
-                const GpuFr *>(
-                workspace.output +
-                half_size),
-            reinterpret_cast<
-                GpuFr *>(
-                workspace.input),
-            half_size,
-            gpu_field(
-                omega_inverse),
-            gpu_field(
-                inverse_two),
-            gpu_field(
-                shift_inverse),
-            gpu_field(
-                shift_inverse_half));
+        unsigned long long
+            *device_coefficient_shape =
+                nullptr;
+
+        if (track_coefficient_shape)
+        {
+            status =
+                cudaMallocAsync(
+                    reinterpret_cast<void **>(
+                        &device_coefficient_shape),
+                    2U *
+                        sizeof(
+                            unsigned long long),
+                    stream);
+
+            if (status != cudaSuccess)
+            {
+                throw_cuda_ntt_error(
+                    "coefficient shape allocation",
+                    status);
+            }
+
+            status =
+                cudaMemsetAsync(
+                    device_coefficient_shape,
+                    0,
+                    2U *
+                        sizeof(
+                            unsigned long long),
+                    stream);
+
+            if (status != cudaSuccess)
+            {
+                throw_cuda_ntt_error(
+                    "coefficient shape initialization",
+                    status);
+            }
+
+            combine_inverse_coset_kernel<
+                true><<<
+                combine_blocks,
+                kBlockSize,
+                2U *
+                    kBlockSize *
+                    sizeof(
+                        unsigned long long),
+                stream>>>(
+                reinterpret_cast<
+                    const GpuFr *>(
+                    workspace.output),
+                reinterpret_cast<
+                    const GpuFr *>(
+                    workspace.output +
+                    half_size),
+                reinterpret_cast<
+                    GpuFr *>(
+                    workspace.input),
+                half_size,
+                gpu_field(
+                    omega_inverse),
+                gpu_field(
+                    inverse_two),
+                gpu_field(
+                    shift_inverse),
+                gpu_field(
+                    shift_inverse_half),
+                device_coefficient_shape);
+        }
+        else
+        {
+            combine_inverse_coset_kernel<
+                false><<<
+                combine_blocks,
+                kBlockSize,
+                0,
+                stream>>>(
+                reinterpret_cast<
+                    const GpuFr *>(
+                    workspace.output),
+                reinterpret_cast<
+                    const GpuFr *>(
+                    workspace.output +
+                    half_size),
+                reinterpret_cast<
+                    GpuFr *>(
+                    workspace.input),
+                half_size,
+                gpu_field(
+                    omega_inverse),
+                gpu_field(
+                    inverse_two),
+                gpu_field(
+                    shift_inverse),
+                gpu_field(
+                    shift_inverse_half),
+                nullptr);
+        }
 
         status =
             cudaGetLastError();
@@ -2675,6 +3043,313 @@ namespace gatzk::algebra
                     "resident coefficient copy",
                     status);
             }
+        }
+
+        std::size_t resolved_logical_count =
+            size;
+
+        std::size_t resolved_nonzero_count =
+            size;
+
+        if (track_coefficient_shape)
+        {
+            std::array<
+                unsigned long long,
+                2>
+                host_coefficient_shape{0, 0};
+
+            status =
+                cudaMemcpyAsync(
+                    host_coefficient_shape.data(),
+                    device_coefficient_shape,
+                    sizeof(
+                        host_coefficient_shape),
+                    cudaMemcpyDeviceToHost,
+                    stream);
+
+            if (status != cudaSuccess)
+            {
+                throw_cuda_ntt_error(
+                    "coefficient shape download",
+                    status);
+            }
+
+            record_cuda_d2h(
+                sizeof(
+                    host_coefficient_shape));
+
+            status =
+                cudaFreeAsync(
+                    device_coefficient_shape,
+                    stream);
+
+            if (status != cudaSuccess)
+            {
+                throw_cuda_ntt_error(
+                    "coefficient shape release",
+                    status);
+            }
+
+            device_coefficient_shape =
+                nullptr;
+
+            cudaEvent_t shape_ready =
+                nullptr;
+
+            status =
+                cudaEventCreateWithFlags(
+                    &shape_ready,
+                    cudaEventDisableTiming);
+
+            if (status != cudaSuccess)
+            {
+                throw_cuda_ntt_error(
+                    "coefficient shape event creation",
+                    status);
+            }
+
+            status =
+                cudaEventRecord(
+                    shape_ready,
+                    stream);
+
+            if (status == cudaSuccess)
+            {
+                status =
+                    cudaEventSynchronize(
+                        shape_ready);
+            }
+
+            const auto destroy_status =
+                cudaEventDestroy(
+                    shape_ready);
+
+            if (status != cudaSuccess)
+            {
+                throw_cuda_ntt_error(
+                    "coefficient shape dependency",
+                    status);
+            }
+
+            if (destroy_status != cudaSuccess)
+            {
+                throw_cuda_ntt_error(
+                    "coefficient shape event destruction",
+                    destroy_status);
+            }
+
+            if (host_coefficient_shape[1] >
+                static_cast<
+                    unsigned long long>(
+                    size))
+            {
+                throw std::runtime_error(
+                    "CUDA coefficient shape exceeds transform size");
+            }
+
+            resolved_nonzero_count =
+                static_cast<std::size_t>(
+                    host_coefficient_shape[0]);
+
+            resolved_logical_count =
+                host_coefficient_shape[1] == 0
+                    ? std::size_t{1}
+                    : static_cast<std::size_t>(
+                          host_coefficient_shape[1]);
+
+            if (resolved_nonzero_count >
+                resolved_logical_count)
+            {
+                throw std::runtime_error(
+                    "CUDA coefficient nonzero count exceeds logical coefficient count");
+            }
+        }
+
+        if (logical_coefficient_count != nullptr)
+        {
+            *logical_coefficient_count =
+                resolved_logical_count;
+        }
+
+        if (nonzero_coefficient_count != nullptr)
+        {
+            *nonzero_coefficient_count =
+                resolved_nonzero_count;
+        }
+
+        if (host_transfer != nullptr)
+        {
+            const auto host_bytes =
+                checked_ntt_bytes(
+                    resolved_logical_count,
+                    1);
+
+            bool unregister_on_wait =
+                false;
+
+            status =
+                cudaHostRegister(
+                    host_coefficients,
+                    host_bytes,
+                    cudaHostRegisterDefault);
+
+            if (status == cudaSuccess)
+            {
+                unregister_on_wait =
+                    true;
+            }
+            else if (
+                status ==
+                cudaErrorHostMemoryAlreadyRegistered)
+            {
+                (void)cudaGetLastError();
+            }
+            else
+            {
+                (void)cudaGetLastError();
+
+                status =
+                    cudaMemcpyAsync(
+                        host_coefficients,
+                        workspace.input,
+                        host_bytes,
+                        cudaMemcpyDeviceToHost,
+                        stream);
+
+                if (status != cudaSuccess)
+                {
+                    throw_cuda_ntt_error(
+                        "coefficient download",
+                        status);
+                }
+
+                record_cuda_d2h(
+                    host_bytes);
+
+                status =
+                    cudaStreamSynchronize(
+                        stream);
+
+                if (status != cudaSuccess)
+                {
+                    throw_cuda_ntt_error(
+                        "coefficient synchronization",
+                        status);
+                }
+
+                record_cuda_stream_sync();
+
+                return true;
+            }
+
+            cudaEvent_t transfer_done =
+                nullptr;
+
+            status =
+                cudaEventCreateWithFlags(
+                    &transfer_done,
+                    cudaEventDisableTiming);
+
+            if (status != cudaSuccess)
+            {
+                if (unregister_on_wait)
+                {
+                    (void)cudaHostUnregister(
+                        host_coefficients);
+                }
+
+                throw_cuda_ntt_error(
+                    "coefficient transfer event creation",
+                    status);
+            }
+
+            status =
+                cudaMemcpyAsync(
+                    host_coefficients,
+                    workspace.input,
+                    host_bytes,
+                    cudaMemcpyDeviceToHost,
+                    stream);
+
+            if (status != cudaSuccess)
+            {
+                (void)cudaEventDestroy(
+                    transfer_done);
+
+                if (unregister_on_wait)
+                {
+                    (void)cudaHostUnregister(
+                        host_coefficients);
+                }
+
+                throw_cuda_ntt_error(
+                    "coefficient download",
+                    status);
+            }
+
+            record_cuda_d2h(
+                host_bytes);
+
+            status =
+                cudaEventRecord(
+                    transfer_done,
+                    stream);
+
+            if (status != cudaSuccess)
+            {
+                const auto synchronize_status =
+                    cudaStreamSynchronize(
+                        stream);
+
+                if (unregister_on_wait)
+                {
+                    (void)cudaHostUnregister(
+                        host_coefficients);
+                }
+
+                (void)cudaEventDestroy(
+                    transfer_done);
+
+                if (synchronize_status != cudaSuccess)
+                {
+                    throw_cuda_ntt_error(
+                        "coefficient transfer recovery synchronization",
+                        synchronize_status);
+                }
+
+                throw_cuda_ntt_error(
+                    "coefficient transfer event recording",
+                    status);
+            }
+
+            try
+            {
+                *host_transfer =
+                    std::make_shared<
+                        CudaRegisteredHostTransferGuard>(
+                        host_coefficients,
+                        transfer_done,
+                        device,
+                        unregister_on_wait);
+            }
+            catch (...)
+            {
+                (void)cudaEventSynchronize(
+                    transfer_done);
+
+                if (unregister_on_wait)
+                {
+                    (void)cudaHostUnregister(
+                        host_coefficients);
+                }
+
+                (void)cudaEventDestroy(
+                    transfer_done);
+
+                throw;
+            }
+
+            return true;
         }
 
         status =

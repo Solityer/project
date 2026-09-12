@@ -16,6 +16,17 @@ inline std::vector<FrWire> sparse_route_point(const std::vector<Fr_t>& point) {
     return result;
 }
 
+// Relation tensors are flattened row-major and fold_values consumes the
+// least-significant (contiguous) axis first.  The native Hyrax weight builder
+// grows its basis in the opposite direction, so its point argument must be
+// the exact reverse of the Sumcheck/public-selector fold order.  Keep this
+// conversion local to the adapter: changing the official Hyrax convention
+// would alter every existing native opening call site.
+inline std::vector<FrWire> sparse_route_hyrax_point(
+    const std::vector<FrWire>& fold_order_point) {
+    return std::vector<FrWire>(fold_order_point.rbegin(), fold_order_point.rend());
+}
+
 inline bool sparse_route_public_inputs_valid(
     const OperationDescriptor& descriptor, const std::vector<CommitmentWire>& commitments,
     const std::vector<zkdl::CpuG1Point>& generators, const RelationStatement& statement,
@@ -130,7 +141,8 @@ inline bool prove_sparse_route(
     const std::vector<zkdl::CpuG1Point>& generators,
     const zkdl::CpuG1Point& ipa_blinding_generator, const zkdl::CpuG1Point& ipa_u_generator,
     const std::vector<CommitmentWire>& commitments, const RelationStatement& statement,
-    zkdl::Transcript& transcript, SparseRouteProof& route, std::string* error) {
+    zkdl::Transcript& transcript, SparseRouteProof& route, std::string* error,
+    SparseRouteProverSecrets* secrets) {
     try {
         const TensorWitness* source = nullptr;
         const TensorWitness* output = nullptr;
@@ -154,8 +166,10 @@ inline bool prove_sparse_route(
                 "gat.route." + descriptor.id + ".feature." + std::to_string(bit)));
         const auto edge_point = sparse_route_point(route.edge_point);
         const auto feature_point = sparse_route_point(route.feature_point);
-        std::vector<FrWire> output_point = feature_point;
-        output_point.insert(output_point.end(), edge_point.begin(), edge_point.end());
+        std::vector<FrWire> output_fold_point = feature_point;
+        output_fold_point.insert(output_fold_point.end(), edge_point.begin(), edge_point.end());
+        const std::vector<FrWire> output_point =
+            sparse_route_hyrax_point(output_fold_point);
         const FrWire output_value = zkdl::cpu_ipa_inner_product(
             output->values, zkdl::cpu_ipa_mle_weights(output_point));
         const std::uint32_t domain = std::max(2U, source->domain_size);
@@ -179,9 +193,11 @@ inline bool prove_sparse_route(
             sumcheck_result.challenges.begin() + source_feature_bits);
         route.node_point.assign(sumcheck_result.challenges.begin() + source_feature_bits,
                                  sumcheck_result.challenges.begin() + source_bits);
-        std::vector<FrWire> source_point = sparse_route_point(route.source_feature_point);
+        std::vector<FrWire> source_fold_point = sparse_route_point(route.source_feature_point);
         const auto node_point = sparse_route_point(route.node_point);
-        source_point.insert(source_point.end(), node_point.begin(), node_point.end());
+        source_fold_point.insert(source_fold_point.end(), node_point.begin(), node_point.end());
+        const std::vector<FrWire> source_point =
+            sparse_route_hyrax_point(source_fold_point);
         const auto terminal_digest = sparse_route_terminal_digest(header_digest, route);
         const auto source_metadata = zktr_make_opening_metadata(terminal_digest, statement,
             source_point, route.source_commitment_index, zktr_terminal_evaluation_index(0U));
@@ -226,6 +242,11 @@ inline bool prove_sparse_route(
             ipa_blinding_generator, ipa_u_generator,
             sparse_route_terminal_context(terminal_digest, statement,
                                            ipa_blinding_generator, ipa_u_generator)).proof;
+        if (secrets != nullptr) {
+            secrets->terminal_value = residual;
+            secrets->residual_blinder = residual_blinder;
+            secrets->sumcheck_blinder = sumcheck_result.final_q_blinder;
+        }
         sparse_route_absorb_terminal(transcript, route);
         return true;
     } catch (const std::exception& exception) {
@@ -279,7 +300,7 @@ inline bool verify_sparse_route(
         if (!verify_zk_sumcheck(route.sumcheck, constraint, 2U, std::max(2U, source_domain),
                 generators, ipa_blinding_generator, ipa_u_generator, FrWire{}, statement,
                 constraint.id, transcript, sumcheck_result, error)) return false;
-        std::vector<FrWire> source_point;
+        std::vector<FrWire> source_fold_point;
         for (std::size_t bit = 0U; bit < log2_exact(source_domain); ++bit) {
             const auto& coordinate = bit < source_feature_bits
                 ? route.source_feature_point[bit] : route.node_point[bit - source_feature_bits];
@@ -287,12 +308,16 @@ inline bool verify_sparse_route(
                 if (error) *error = "sparse route source challenge mismatch";
                 return false;
             }
-            source_point.push_back(zkdl::fr_wire(coordinate));
+            source_fold_point.push_back(zkdl::fr_wire(coordinate));
         }
+        const std::vector<FrWire> source_point =
+            sparse_route_hyrax_point(source_fold_point);
         const auto edge_point = sparse_route_point(route.edge_point);
         const auto feature_point = sparse_route_point(route.feature_point);
-        std::vector<FrWire> output_point = feature_point;
-        output_point.insert(output_point.end(), edge_point.begin(), edge_point.end());
+        std::vector<FrWire> output_fold_point = feature_point;
+        output_fold_point.insert(output_fold_point.end(), edge_point.begin(), edge_point.end());
+        const std::vector<FrWire> output_point =
+            sparse_route_hyrax_point(output_fold_point);
         const auto terminal_digest = sparse_route_terminal_digest(header_digest, route);
         const auto source_tau = zkdl::cpu_g1_from_native(route.source_opening.tau);
         const auto output_tau = zkdl::cpu_g1_from_native(route.output_opening.tau);

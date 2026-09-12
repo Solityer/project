@@ -973,6 +973,8 @@ namespace gatzk::protocol
                 std::uint32_t lhs = 0;
                 std::uint32_t rhs = 0;
                 std::uint32_t operand = 0;
+
+                std::size_t stack_cost = 1;
             };
 
             TEdgeProgramScalar make_node(
@@ -990,6 +992,108 @@ namespace gatzk::protocol
                         "index overflow");
                 }
 
+                std::size_t stack_cost = 1;
+
+                switch (opcode)
+                {
+                case TEdgeProgramOpcode::
+                    LoadAccess:
+                case TEdgeProgramOpcode::
+                    LoadConstant:
+                {
+                    stack_cost = 1;
+                    break;
+                }
+
+                case TEdgeProgramOpcode::
+                    Negate:
+                {
+                    if (lhs >= nodes_.size())
+                    {
+                        throw std::runtime_error(
+                            "t_edge negate node dependency is invalid");
+                    }
+
+                    stack_cost =
+                        nodes_[lhs]
+                            .stack_cost;
+
+                    break;
+                }
+
+                case TEdgeProgramOpcode::
+                    Subtract:
+                {
+                    if (lhs >= nodes_.size() ||
+                        rhs >= nodes_.size())
+                    {
+                        throw std::runtime_error(
+                            "t_edge subtraction node dependency is invalid");
+                    }
+
+                    const auto lhs_cost =
+                        nodes_[lhs]
+                            .stack_cost;
+
+                    const auto rhs_cost =
+                        nodes_[rhs]
+                            .stack_cost;
+
+                    stack_cost =
+                        std::max(
+                            lhs_cost,
+                            std::size_t{1} +
+                                rhs_cost);
+
+                    break;
+                }
+
+                case TEdgeProgramOpcode::Add:
+                case TEdgeProgramOpcode::
+                    Multiply:
+                {
+                    if (lhs >= nodes_.size() ||
+                        rhs >= nodes_.size())
+                    {
+                        throw std::runtime_error(
+                            "t_edge commutative node dependency is invalid");
+                    }
+
+                    const auto lhs_cost =
+                        nodes_[lhs]
+                            .stack_cost;
+
+                    const auto rhs_cost =
+                        nodes_[rhs]
+                            .stack_cost;
+
+                    const auto larger_cost =
+                        std::max(
+                            lhs_cost,
+                            rhs_cost);
+
+                    const auto smaller_cost =
+                        std::min(
+                            lhs_cost,
+                            rhs_cost);
+
+                    stack_cost =
+                        std::max(
+                            larger_cost,
+                            std::size_t{1} +
+                                smaller_cost);
+
+                    break;
+                }
+                }
+
+                if (stack_cost >
+                    kMaximumProgramStackDepth)
+                {
+                    throw std::runtime_error(
+                        "t_edge symbolic expression exceeds maximum CUDA stack depth");
+                }
+
                 const auto index =
                     static_cast<std::uint32_t>(
                         nodes_.size());
@@ -1000,6 +1104,8 @@ namespace gatzk::protocol
                         .lhs = lhs,
                         .rhs = rhs,
                         .operand = operand,
+                        .stack_cost =
+                            stack_cost,
                     });
 
                 return TEdgeProgramScalar(
@@ -1115,11 +1221,8 @@ namespace gatzk::protocol
                     return;
                 }
 
-                case TEdgeProgramOpcode::Add:
                 case TEdgeProgramOpcode::
                     Subtract:
-                case TEdgeProgramOpcode::
-                    Multiply:
                 {
                     emit_node(
                         node.lhs,
@@ -1129,6 +1232,59 @@ namespace gatzk::protocol
 
                     emit_node(
                         node.rhs,
+                        required_accesses,
+                        stack_depth,
+                        maximum_depth);
+
+                    if (*stack_depth < 2)
+                    {
+                        throw std::runtime_error(
+                            "invalid t_edge "
+                            "binary expression "
+                            "stack");
+                    }
+
+                    --*stack_depth;
+
+                    program_.instructions
+                        .push_back(
+                            TEdgeProgramInstruction{
+                                .opcode =
+                                    node.opcode,
+                                .operand = 0,
+                            });
+
+                    return;
+                }
+
+                case TEdgeProgramOpcode::Add:
+                case TEdgeProgramOpcode::
+                    Multiply:
+                {
+                    auto first_node =
+                        node.lhs;
+
+                    auto second_node =
+                        node.rhs;
+
+                    if (nodes_[second_node]
+                            .stack_cost >
+                        nodes_[first_node]
+                            .stack_cost)
+                    {
+                        std::swap(
+                            first_node,
+                            second_node);
+                    }
+
+                    emit_node(
+                        first_node,
+                        required_accesses,
+                        stack_depth,
+                        maximum_depth);
+
+                    emit_node(
+                        second_node,
                         required_accesses,
                         stack_depth,
                         maximum_depth);

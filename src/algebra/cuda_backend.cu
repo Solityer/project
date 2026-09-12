@@ -323,7 +323,8 @@ namespace gatzk::algebra
         public:
             CudaScaledAccumulateSessionImpl(
                 mcl::Fr *host_target,
-                std::size_t element_count)
+                std::size_t element_count,
+                bool target_is_zero)
                 : host_target_(host_target),
                   element_count_(element_count),
                   zero_copy_target_(
@@ -403,25 +404,46 @@ namespace gatzk::algebra
                             status);
                     }
 
-                    status =
-                        cudaMemcpyAsync(
-                            device_target_,
-                            host_target_,
-                            target_bytes,
-                            cudaMemcpyHostToDevice,
-                            stream_);
-
-                    if (status != cudaSuccess)
+                    if (target_is_zero)
                     {
-                        release_noexcept();
+                        status =
+                            cudaMemsetAsync(
+                                device_target_,
+                                0,
+                                target_bytes,
+                                stream_);
 
-                        throw_scaled_accumulate_cuda_error(
-                            "session target upload",
-                            status);
+                        if (status != cudaSuccess)
+                        {
+                            release_noexcept();
+
+                            throw_scaled_accumulate_cuda_error(
+                                "session target initialization",
+                                status);
+                        }
                     }
+                    else
+                    {
+                        status =
+                            cudaMemcpyAsync(
+                                device_target_,
+                                host_target_,
+                                target_bytes,
+                                cudaMemcpyHostToDevice,
+                                stream_);
 
-                    record_cuda_h2d(
-                        target_bytes);
+                        if (status != cudaSuccess)
+                        {
+                            release_noexcept();
+
+                            throw_scaled_accumulate_cuda_error(
+                                "session target upload",
+                                status);
+                        }
+
+                        record_cuda_h2d(
+                            target_bytes);
+                    }
                 }
             }
 
@@ -656,12 +678,484 @@ namespace gatzk::algebra
             cudaStream_t stream_ =
                 nullptr;
         };
+
+        class CudaScaledAccumulatePairSessionImpl final
+            : public CudaScaledAccumulatePairSession
+        {
+        public:
+            CudaScaledAccumulatePairSessionImpl(
+                mcl::Fr *first_host_target,
+                mcl::Fr *second_host_target,
+                std::size_t element_count,
+                bool first_target_is_zero,
+                bool second_target_is_zero)
+                : first_host_target_(first_host_target),
+                  second_host_target_(second_host_target),
+                  element_count_(element_count),
+                  zero_copy_targets_(
+                      cuda_backend_unified_addressing_available())
+            {
+                if (first_host_target_ == nullptr ||
+                    second_host_target_ == nullptr ||
+                    first_host_target_ == second_host_target_ ||
+                    element_count_ == 0)
+                {
+                    throw std::runtime_error(
+                        "CUDA paired scaled accumulate session received invalid target storage");
+                }
+
+                if (element_count_ >
+                    std::numeric_limits<std::size_t>::max() /
+                        sizeof(gpu::GpuFr))
+                {
+                    throw std::runtime_error(
+                        "CUDA paired scaled accumulate session byte-size overflow");
+                }
+
+                target_bytes_ =
+                    element_count_ *
+                    sizeof(gpu::GpuFr);
+
+                source_capacity_ =
+                    std::min<std::size_t>(
+                        element_count_,
+                        std::size_t{1} << 20);
+
+                auto status =
+                    cudaStreamCreateWithFlags(
+                        &stream_,
+                        cudaStreamNonBlocking);
+
+                if (status != cudaSuccess)
+                {
+                    stream_ = nullptr;
+
+                    throw_scaled_accumulate_cuda_error(
+                        "paired session stream creation",
+                        status);
+                }
+
+                try
+                {
+                    status =
+                        cudaMalloc(
+                            reinterpret_cast<void **>(
+                                &device_source_),
+                            source_capacity_ *
+                                sizeof(gpu::GpuFr));
+
+                    if (status != cudaSuccess)
+                    {
+                        throw_scaled_accumulate_cuda_error(
+                            "paired session source allocation",
+                            status);
+                    }
+
+                    if (zero_copy_targets_)
+                    {
+                        first_device_target_ =
+                            reinterpret_cast<
+                                gpu::GpuFr *>(
+                                first_host_target_);
+
+                        second_device_target_ =
+                            reinterpret_cast<
+                                gpu::GpuFr *>(
+                                second_host_target_);
+
+                        return;
+                    }
+
+                    status =
+                        cudaMalloc(
+                            reinterpret_cast<void **>(
+                                &first_device_target_),
+                            target_bytes_);
+
+                    if (status != cudaSuccess)
+                    {
+                        throw_scaled_accumulate_cuda_error(
+                            "paired session first target allocation",
+                            status);
+                    }
+
+                    status =
+                        cudaMalloc(
+                            reinterpret_cast<void **>(
+                                &second_device_target_),
+                            target_bytes_);
+
+                    if (status != cudaSuccess)
+                    {
+                        throw_scaled_accumulate_cuda_error(
+                            "paired session second target allocation",
+                            status);
+                    }
+
+                    if (first_target_is_zero)
+                    {
+                        status =
+                            cudaMemsetAsync(
+                                first_device_target_,
+                                0,
+                                target_bytes_,
+                                stream_);
+                    }
+                    else
+                    {
+                        status =
+                            cudaMemcpyAsync(
+                                first_device_target_,
+                                first_host_target_,
+                                target_bytes_,
+                                cudaMemcpyHostToDevice,
+                                stream_);
+
+                        if (status == cudaSuccess)
+                        {
+                            record_cuda_h2d(
+                                target_bytes_);
+                        }
+                    }
+
+                    if (status != cudaSuccess)
+                    {
+                        throw_scaled_accumulate_cuda_error(
+                            "paired session first target initialization",
+                            status);
+                    }
+
+                    if (second_target_is_zero)
+                    {
+                        status =
+                            cudaMemsetAsync(
+                                second_device_target_,
+                                0,
+                                target_bytes_,
+                                stream_);
+                    }
+                    else
+                    {
+                        status =
+                            cudaMemcpyAsync(
+                                second_device_target_,
+                                second_host_target_,
+                                target_bytes_,
+                                cudaMemcpyHostToDevice,
+                                stream_);
+
+                        if (status == cudaSuccess)
+                        {
+                            record_cuda_h2d(
+                                target_bytes_);
+                        }
+                    }
+
+                    if (status != cudaSuccess)
+                    {
+                        throw_scaled_accumulate_cuda_error(
+                            "paired session second target initialization",
+                            status);
+                    }
+                }
+                catch (...)
+                {
+                    release_noexcept();
+                    throw;
+                }
+            }
+
+            ~CudaScaledAccumulatePairSessionImpl() override
+            {
+                if (!finished_)
+                {
+                    try
+                    {
+                        finish();
+                    }
+                    catch (...)
+                    {
+                    }
+                }
+
+                release_noexcept();
+            }
+
+            void accumulate_range(
+                const mcl::Fr *source,
+                const mcl::Fr &first_scale,
+                const mcl::Fr &second_scale,
+                std::size_t target_offset,
+                std::size_t element_count) override
+            {
+                if (finished_ ||
+                    source == nullptr ||
+                    target_offset > element_count_ ||
+                    element_count >
+                        element_count_ -
+                            target_offset)
+                {
+                    throw std::runtime_error(
+                        "CUDA paired scaled accumulate session received invalid range");
+                }
+
+                if (element_count == 0 ||
+                    (first_scale.isZero() &&
+                     second_scale.isZero()))
+                {
+                    return;
+                }
+
+                gpu::GpuFr first_gpu_scale{};
+                gpu::GpuFr second_gpu_scale{};
+
+                std::memcpy(
+                    first_gpu_scale.d,
+                    &first_scale,
+                    sizeof(first_gpu_scale.d));
+
+                std::memcpy(
+                    second_gpu_scale.d,
+                    &second_scale,
+                    sizeof(second_gpu_scale.d));
+
+                constexpr unsigned
+                    kBlockSize = 256;
+
+                std::size_t processed = 0;
+
+                while (processed <
+                       element_count)
+                {
+                    const auto current_count =
+                        std::min(
+                            source_capacity_,
+                            element_count -
+                                processed);
+
+                    const auto byte_count =
+                        current_count *
+                        sizeof(gpu::GpuFr);
+
+                    auto status =
+                        cudaMemcpyAsync(
+                            device_source_,
+                            source + processed,
+                            byte_count,
+                            cudaMemcpyHostToDevice,
+                            stream_);
+
+                    if (status != cudaSuccess)
+                    {
+                        throw_scaled_accumulate_cuda_error(
+                            "paired session source upload",
+                            status);
+                    }
+
+                    record_cuda_h2d(
+                        byte_count);
+
+                    const auto block_count_size =
+                        (current_count +
+                         kBlockSize - 1) /
+                        kBlockSize;
+
+                    if (block_count_size >
+                        std::numeric_limits<
+                            unsigned>::max())
+                    {
+                        throw std::runtime_error(
+                            "CUDA paired scaled accumulate session grid exceeds CUDA launch limits");
+                    }
+
+                    scaled_accumulate_pair_kernel<<<
+                        static_cast<unsigned>(
+                            block_count_size),
+                        kBlockSize,
+                        0,
+                        stream_>>>(
+                        first_device_target_ +
+                            target_offset +
+                            processed,
+                        second_device_target_ +
+                            target_offset +
+                            processed,
+                        device_source_,
+                        first_gpu_scale,
+                        second_gpu_scale,
+                        current_count);
+
+                    status =
+                        cudaGetLastError();
+
+                    if (status != cudaSuccess)
+                    {
+                        throw_scaled_accumulate_cuda_error(
+                            "paired session kernel launch",
+                            status);
+                    }
+
+                    record_cuda_kernel_invocations(
+                        1);
+
+                    processed +=
+                        current_count;
+                }
+
+                record_cuda_opening_fold_call();
+            }
+
+            void finish() override
+            {
+                if (finished_)
+                {
+                    return;
+                }
+
+                if (!zero_copy_targets_)
+                {
+                    auto status =
+                        cudaMemcpyAsync(
+                            first_host_target_,
+                            first_device_target_,
+                            target_bytes_,
+                            cudaMemcpyDeviceToHost,
+                            stream_);
+
+                    if (status != cudaSuccess)
+                    {
+                        throw_scaled_accumulate_cuda_error(
+                            "paired session first target download",
+                            status);
+                    }
+
+                    record_cuda_d2h(
+                        target_bytes_);
+
+                    status =
+                        cudaMemcpyAsync(
+                            second_host_target_,
+                            second_device_target_,
+                            target_bytes_,
+                            cudaMemcpyDeviceToHost,
+                            stream_);
+
+                    if (status != cudaSuccess)
+                    {
+                        throw_scaled_accumulate_cuda_error(
+                            "paired session second target download",
+                            status);
+                    }
+
+                    record_cuda_d2h(
+                        target_bytes_);
+                }
+
+                const auto status =
+                    cudaStreamSynchronize(
+                        stream_);
+
+                if (status != cudaSuccess)
+                {
+                    throw_scaled_accumulate_cuda_error(
+                        "paired session synchronization",
+                        status);
+                }
+
+                record_cuda_stream_sync();
+
+                finished_ = true;
+            }
+
+            bool finished() const noexcept override
+            {
+                return finished_;
+            }
+
+        private:
+            void release_noexcept() noexcept
+            {
+                if (stream_ != nullptr &&
+                    !finished_)
+                {
+                    (void)cudaStreamSynchronize(
+                        stream_);
+                }
+
+                if (!zero_copy_targets_)
+                {
+                    if (first_device_target_ !=
+                        nullptr)
+                    {
+                        (void)cudaFree(
+                            first_device_target_);
+                    }
+
+                    if (second_device_target_ !=
+                        nullptr)
+                    {
+                        (void)cudaFree(
+                            second_device_target_);
+                    }
+                }
+
+                if (device_source_ != nullptr)
+                {
+                    (void)cudaFree(
+                        device_source_);
+                }
+
+                if (stream_ != nullptr)
+                {
+                    (void)cudaStreamDestroy(
+                        stream_);
+                }
+
+                first_device_target_ =
+                    nullptr;
+
+                second_device_target_ =
+                    nullptr;
+
+                device_source_ =
+                    nullptr;
+
+                stream_ =
+                    nullptr;
+            }
+
+            mcl::Fr *first_host_target_ =
+                nullptr;
+
+            mcl::Fr *second_host_target_ =
+                nullptr;
+
+            gpu::GpuFr *first_device_target_ =
+                nullptr;
+
+            gpu::GpuFr *second_device_target_ =
+                nullptr;
+
+            gpu::GpuFr *device_source_ =
+                nullptr;
+
+            std::size_t element_count_ = 0;
+            std::size_t target_bytes_ = 0;
+            std::size_t source_capacity_ = 0;
+
+            bool zero_copy_targets_ = false;
+            bool finished_ = false;
+
+            cudaStream_t stream_ =
+                nullptr;
+        };
     }
 
     std::unique_ptr<CudaScaledAccumulateSession>
     create_cuda_scaled_accumulate_session(
         mcl::Fr *target,
-        std::size_t element_count)
+        std::size_t element_count,
+        bool target_is_zero)
     {
         if (element_count == 0 ||
             !util::route2_options()
@@ -690,7 +1184,51 @@ namespace gatzk::algebra
         return std::make_unique<
             CudaScaledAccumulateSessionImpl>(
             target,
-            element_count);
+            element_count,
+            target_is_zero);
+    }
+
+    std::shared_ptr<CudaScaledAccumulatePairSession>
+    create_cuda_scaled_accumulate_pair_session(
+        mcl::Fr *first_target,
+        mcl::Fr *second_target,
+        std::size_t element_count,
+        bool first_target_is_zero,
+        bool second_target_is_zero)
+    {
+        if (element_count == 0 ||
+            !util::route2_options()
+                 .cuda_field_hotspots)
+        {
+            return nullptr;
+        }
+
+        const auto minimum_size =
+            cuda_backend_unified_addressing_available()
+                ? (std::size_t{1} << 20)
+                : (std::size_t{1} << 22);
+
+        if (element_count <
+            minimum_size)
+        {
+            return nullptr;
+        }
+
+        if (first_target == nullptr ||
+            second_target == nullptr ||
+            first_target == second_target)
+        {
+            throw std::runtime_error(
+                "CUDA paired scaled accumulate session received invalid targets");
+        }
+
+        return std::make_shared<
+            CudaScaledAccumulatePairSessionImpl>(
+            first_target,
+            second_target,
+            element_count,
+            first_target_is_zero,
+            second_target_is_zero);
     }
 
     void release_cuda_scaled_accumulate_workspace()

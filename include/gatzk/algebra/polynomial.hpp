@@ -44,6 +44,14 @@ namespace gatzk::algebra
         std::optional<std::size_t> rotation_shift(const FieldElement &from, const FieldElement &to) const;
     };
 
+    class CudaHostTransferGuard
+    {
+    public:
+        virtual ~CudaHostTransferGuard() = default;
+
+        virtual void wait() const = 0;
+    };
+
     struct CudaResidentCoefficientBuffer
     {
         std::shared_ptr<void> allocation;
@@ -53,7 +61,15 @@ namespace gatzk::algebra
 
         std::size_t capacity = 0;
 
+        std::size_t logical_count = 0;
+
+        std::size_t nonzero_count = 0;
+
         int device = -1;
+
+        std::shared_ptr<
+            const CudaHostTransferGuard>
+            host_transfer;
     };
 
     enum class PolynomialBasis
@@ -65,12 +81,6 @@ namespace gatzk::algebra
     struct Polynomial
     {
         std::string name;
-
-        // Execution-only CUDA coefficient ownership. This sidecar is excluded
-        // from serialization, transcript construction and polynomial semantics.
-        std::shared_ptr<
-            const CudaResidentCoefficientBuffer>
-            cuda_resident_coefficients;
 
         // 当前多项式持有的表示基。
         PolynomialBasis basis = PolynomialBasis::Coefficient;
@@ -87,6 +97,14 @@ namespace gatzk::algebra
         // Private evaluation traces commit to P + Z_domain * R. `data` keeps
         // the canonical values P(omega^i); this coefficient vector stores R.
         std::vector<FieldElement> zero_domain_blinder;
+
+        // Execution-only CUDA coefficient ownership. Keep this member after
+        // host polynomial storage so its transfer guard is destroyed first.
+        // This sidecar is excluded from serialization, transcript construction
+        // and polynomial semantics.
+        std::shared_ptr<
+            const CudaResidentCoefficientBuffer>
+            cuda_resident_coefficients;
 
         static Polynomial from_coefficients(const std::string &name, std::vector<FieldElement> coefficients);
         static Polynomial from_evaluations(

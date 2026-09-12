@@ -1522,6 +1522,66 @@ namespace gatzk::crypto
                 "G1 MSM resident CUDA scalar capacity is smaller than input count");
         }
 
+        const bool
+            resident_nonzero_count_known =
+                device_montgomery_scalars !=
+                    nullptr &&
+                options != nullptr &&
+                options
+                    ->device_montgomery_scalar_nonzero_count_known;
+
+        if (resident_nonzero_count_known)
+        {
+            const auto known_nonzero_count =
+                options
+                    ->device_montgomery_scalar_nonzero_count;
+
+            if (known_nonzero_count > count)
+            {
+                throw std::runtime_error(
+                    "G1 MSM resident CUDA scalar nonzero count exceeds input count");
+            }
+
+            if (profile != nullptr)
+            {
+                profile->nonzero_scalar_count =
+                    known_nonzero_count;
+
+                profile->effective_scalar_count =
+                    known_nonzero_count == 0
+                        ? 0
+                        : count;
+
+                profile->zero_scalar_skipping =
+                    known_nonzero_count != count;
+
+                profile->sparse_compaction =
+                    known_nonzero_count == 0;
+            }
+
+            if (known_nonzero_count == 0)
+            {
+                return out;
+            }
+
+            if (!execute_cuda_msm_when_requested(
+                    &out,
+                    points,
+                    scalars,
+                    count,
+                    stable_srs_bases,
+                    stable_srs_capacity,
+                    device_montgomery_scalars,
+                    device_montgomery_scalar_capacity,
+                    device_montgomery_scalar_device))
+            {
+                throw std::runtime_error(
+                    "resident CUDA scalar MSM attempted a CPU fallback");
+            }
+
+            return out;
+        }
+
         const auto zero_scalar =
             algebra::FieldElement::zero();
         std::size_t nonzero_count = 0;

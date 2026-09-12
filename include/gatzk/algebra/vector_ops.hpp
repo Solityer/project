@@ -39,7 +39,33 @@ namespace gatzk::algebra
     std::unique_ptr<CudaScaledAccumulateSession>
     create_cuda_scaled_accumulate_session(
         mcl::Fr *target,
-        std::size_t element_count);
+        std::size_t element_count,
+        bool target_is_zero = false);
+
+    class CudaScaledAccumulatePairSession
+    {
+    public:
+        virtual ~CudaScaledAccumulatePairSession() = default;
+
+        virtual void accumulate_range(
+            const mcl::Fr *source,
+            const mcl::Fr &first_scale,
+            const mcl::Fr &second_scale,
+            std::size_t target_offset,
+            std::size_t element_count) = 0;
+
+        virtual void finish() = 0;
+
+        virtual bool finished() const noexcept = 0;
+    };
+
+    std::shared_ptr<CudaScaledAccumulatePairSession>
+    create_cuda_scaled_accumulate_pair_session(
+        mcl::Fr *first_target,
+        mcl::Fr *second_target,
+        std::size_t element_count,
+        bool first_target_is_zero = false,
+        bool second_target_is_zero = false);
 
     // 返回当前构建与运行环境解析出的代数后端信息。
     AlgebraBackend configured_algebra_backend();

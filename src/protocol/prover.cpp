@@ -7932,9 +7932,6 @@ namespace gatzk::protocol
                                 cuda_stats_after.h2d_operations,
                                 cuda_stats_before.h2d_operations)));
 
-                    trim_field_coefficients(
-                        &output);
-
                     cuda_t_edge_transient_leaf_mode_ =
                         false;
 
@@ -8925,12 +8922,22 @@ namespace gatzk::protocol
                     cuda_t_edge_resident_coefficients_ !=
                         nullptr)
                 {
-                    if (cuda_t_edge_resident_coefficients_
-                            ->capacity <
-                        polynomial.size())
+                    const auto &resident =
+                        *cuda_t_edge_resident_coefficients_;
+
+                    if (resident.device_montgomery_limbs ==
+                            nullptr ||
+                        resident.device < 0 ||
+                        resident.logical_count == 0 ||
+                        resident.logical_count >
+                            polynomial.size() ||
+                        resident.logical_count >
+                            resident.capacity ||
+                        resident.nonzero_count >
+                            resident.logical_count)
                     {
                         throw std::runtime_error(
-                            "CUDA t_edge resident coefficient prefix is smaller than canonical polynomial");
+                            "CUDA t_edge resident coefficient metadata is invalid");
                     }
 
                     polynomial

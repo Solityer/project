@@ -1,12 +1,14 @@
 #pragma once
 
 #include <cstddef>
+#include <memory>
 #include <mcl/bn.hpp>
 
 #include "gatzk/algebra/field.hpp"
 
 namespace gatzk::algebra
 {
+    class CudaHostTransferGuard;
     // Snapshot of the thread-local bounded NTT workspace.  Admission callers
     // use this to account for already resident input/output/scratch buffers;
     // the snapshot performs no allocation and is safe for fail-closed checks.
@@ -48,7 +50,12 @@ namespace gatzk::algebra
         const FieldElement &shift,
         mcl::Fr *host_coefficients,
         bool wait_for_default_stream = false,
-        mcl::Fr *device_coefficients = nullptr);
+        mcl::Fr *device_coefficients = nullptr,
+        std::shared_ptr<
+            const CudaHostTransferGuard>
+            *host_transfer = nullptr,
+        std::size_t *logical_coefficient_count = nullptr,
+        std::size_t *nonzero_coefficient_count = nullptr);
 
     bool cuda_coset_evaluations_to_host_exact(
         const mcl::Fr *values,
