@@ -19,6 +19,9 @@ namespace gatzk::protocol
         Negate,
     };
 
+    inline constexpr std::size_t
+        kMaximumProgramStackDepth = 64;
+
     struct TEdgeProgramInstruction
     {
         TEdgeProgramOpcode opcode =

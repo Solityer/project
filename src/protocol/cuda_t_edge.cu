@@ -31,9 +31,6 @@ namespace gatzk::protocol
                 std::numeric_limits<
                     std::uint32_t>::max();
 
-        constexpr std::size_t
-            kMaximumProgramStackDepth = 64;
-
         constexpr unsigned
             kTEdgeExecutionBlockSize = 256;
 
