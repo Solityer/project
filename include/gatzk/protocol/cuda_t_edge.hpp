@@ -151,6 +151,15 @@ namespace gatzk::protocol
         bool leaf_exact_ntt_supported,
         const CudaTEdgeExecutorAdmissionShape &shape);
 
+    bool cuda_t_edge_update_resident_coefficient_ranges(
+        const algebra::CudaResidentCoefficientBuffer &resident,
+        const algebra::FieldElement *host_coefficients,
+        std::size_t host_coefficient_count,
+        std::size_t first_offset,
+        std::size_t first_count,
+        std::size_t second_offset,
+        std::size_t second_count);
+
     void release_cuda_t_edge_executor_cache();
 
 } // namespace gatzk::protocol

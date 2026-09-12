@@ -3452,6 +3452,187 @@ namespace gatzk::protocol
                host.effective_available_bytes -
                    host_reserve;
     }
+
+    bool cuda_t_edge_update_resident_coefficient_ranges(
+        const algebra::CudaResidentCoefficientBuffer &resident,
+        const algebra::FieldElement *host_coefficients,
+        std::size_t host_coefficient_count,
+        std::size_t first_offset,
+        std::size_t first_count,
+        std::size_t second_offset,
+        std::size_t second_count)
+    {
+        if (resident.allocation == nullptr ||
+            resident.device_montgomery_limbs == nullptr ||
+            resident.device < 0 ||
+            host_coefficients == nullptr)
+        {
+            throw std::runtime_error(
+                "CUDA t_edge resident coefficient update received invalid storage");
+        }
+
+        const auto range_valid =
+            [&](std::size_t offset,
+                std::size_t count)
+        {
+            return offset <=
+                       host_coefficient_count &&
+                   count <=
+                       host_coefficient_count -
+                           offset &&
+                   offset <=
+                       resident.capacity &&
+                   count <=
+                       resident.capacity -
+                           offset &&
+                   count <=
+                       std::numeric_limits<
+                           std::size_t>::max() /
+                           sizeof(mcl::Fr);
+        };
+
+        if (!range_valid(
+                first_offset,
+                first_count) ||
+            !range_valid(
+                second_offset,
+                second_count))
+        {
+            throw std::runtime_error(
+                "CUDA t_edge resident coefficient update range exceeds storage");
+        }
+
+        if (first_count == 0 &&
+            second_count == 0)
+        {
+            return true;
+        }
+
+        int previous_device = -1;
+
+        auto status =
+            cudaGetDevice(
+                &previous_device);
+
+        if (status != cudaSuccess)
+        {
+            throw std::runtime_error(
+                std::string(
+                    "CUDA t_edge resident coefficient device lookup failed: ") +
+                cudaGetErrorString(
+                    status));
+        }
+
+        const bool switched_device =
+            previous_device !=
+            resident.device;
+
+        if (switched_device)
+        {
+            status =
+                cudaSetDevice(
+                    resident.device);
+
+            if (status != cudaSuccess)
+            {
+                throw std::runtime_error(
+                    std::string(
+                        "CUDA t_edge resident coefficient device selection failed: ") +
+                    cudaGetErrorString(
+                        status));
+            }
+        }
+
+        auto *device_coefficients =
+            reinterpret_cast<mcl::Fr *>(
+                const_cast<std::uint64_t *>(
+                    resident
+                        .device_montgomery_limbs));
+
+        const auto *native_host_coefficients =
+            algebra::FieldElement::
+                native_array_data(
+                    host_coefficients);
+
+        const auto copy_range =
+            [&](std::size_t offset,
+                std::size_t count)
+        {
+            if (count == 0)
+            {
+                return cudaSuccess;
+            }
+
+            const auto byte_count =
+                count *
+                sizeof(mcl::Fr);
+
+            const auto copy_status =
+                cudaMemcpy(
+                    device_coefficients +
+                        offset,
+                    native_host_coefficients +
+                        offset,
+                    byte_count,
+                    cudaMemcpyHostToDevice);
+
+            if (copy_status ==
+                cudaSuccess)
+            {
+                algebra::record_cuda_h2d(
+                    byte_count);
+            }
+
+            return copy_status;
+        };
+
+        auto copy_status =
+            copy_range(
+                first_offset,
+                first_count);
+
+        if (copy_status ==
+            cudaSuccess)
+        {
+            copy_status =
+                copy_range(
+                    second_offset,
+                    second_count);
+        }
+
+        cudaError_t restore_status =
+            cudaSuccess;
+
+        if (switched_device)
+        {
+            restore_status =
+                cudaSetDevice(
+                    previous_device);
+        }
+
+        if (copy_status !=
+            cudaSuccess)
+        {
+            throw std::runtime_error(
+                std::string(
+                    "CUDA t_edge resident coefficient update failed: ") +
+                cudaGetErrorString(
+                    copy_status));
+        }
+
+        if (restore_status !=
+            cudaSuccess)
+        {
+            throw std::runtime_error(
+                std::string(
+                    "CUDA t_edge resident coefficient device restore failed: ") +
+                cudaGetErrorString(
+                    restore_status));
+        }
+
+        return true;
+    }
+
     void release_cuda_t_edge_executor_cache()
     {
     }

@@ -11882,34 +11882,337 @@ namespace gatzk::protocol
         {
             std::vector<std::pair<std::string, algebra::Polynomial>> out;
             out.reserve(quotients.size() * 2);
+
             for (auto &[label, quotient] : quotients)
             {
                 if (quotient.basis != algebra::PolynomialBasis::Coefficient)
                 {
                     throw std::runtime_error("quotient masking requires coefficient basis: " + label);
                 }
-                auto mask = sample_quotient_mask(context, label);
-                const auto domain_size = quotient_domain_size(context, label);
-                const auto required_size = domain_size + mask.size();
-                if (required_size > context.kzg.pk.degree_bound + 1)
+
+                const auto resident =
+                    quotient.cuda_resident_coefficients;
+
+                if (resident != nullptr)
+                {
+                    if (label != "t_edge" ||
+                        resident->allocation == nullptr ||
+                        resident->device_montgomery_limbs == nullptr ||
+                        resident->device < 0 ||
+                        resident->logical_count == 0 ||
+                        resident->logical_count > resident->capacity ||
+                        resident->nonzero_count > resident->logical_count ||
+                        resident->logical_count > quotient.data.size())
+                    {
+                        throw std::runtime_error(
+                            "invalid CUDA resident quotient coefficient metadata: " +
+                            label);
+                    }
+                }
+
+                auto mask =
+                    sample_quotient_mask(
+                        context,
+                        label);
+
+                const auto domain_size =
+                    quotient_domain_size(
+                        context,
+                        label);
+
+                if (domain_size >
+                    std::numeric_limits<std::size_t>::max() -
+                        mask.size())
+                {
+                    throw std::runtime_error(
+                        "masked quotient size overflow: " +
+                        label);
+                }
+
+                const auto required_size =
+                    domain_size +
+                    mask.size();
+
+                if (required_size >
+                    context.kzg.pk.degree_bound + 1)
                 {
                     throw std::runtime_error("masked quotient exceeds SRS degree bound: " + label);
                 }
-                if (quotient.data.size() < required_size)
+
+                if (resident != nullptr &&
+                    required_size >
+                        resident->capacity)
                 {
-                    quotient.data.resize(required_size, FieldElement::zero());
+                    throw std::runtime_error(
+                        "masked CUDA resident quotient exceeds resident coefficient capacity: " +
+                        label);
                 }
-                for (std::size_t i = 0; i < mask.size(); ++i)
+
+                if (resident != nullptr &&
+                    resident->host_transfer !=
+                        nullptr)
                 {
-                    quotient.data[i] -= mask[i];
-                    quotient.data[domain_size + i] += mask[i];
+                    resident->host_transfer
+                        ->wait();
                 }
+
+                if (quotient.data.size() <
+                    required_size)
+                {
+                    quotient.data.resize(
+                        required_size,
+                        FieldElement::zero());
+                }
+
+                std::vector<std::size_t>
+                    affected_indices;
+
+                std::vector<std::uint8_t>
+                    affected_nonzero_before;
+
+                if (resident != nullptr)
+                {
+                    affected_indices.reserve(
+                        mask.size() * 2);
+
+                    for (std::size_t i = 0;
+                         i < mask.size();
+                         ++i)
+                    {
+                        affected_indices.push_back(
+                            i);
+
+                        affected_indices.push_back(
+                            domain_size + i);
+                    }
+
+                    std::sort(
+                        affected_indices.begin(),
+                        affected_indices.end());
+
+                    affected_indices.erase(
+                        std::unique(
+                            affected_indices.begin(),
+                            affected_indices.end()),
+                        affected_indices.end());
+
+                    affected_nonzero_before.reserve(
+                        affected_indices.size());
+
+                    for (const auto index :
+                         affected_indices)
+                    {
+                        if (index >=
+                                resident->logical_count &&
+                            !quotient.data[index]
+                                 .is_zero())
+                        {
+                            throw std::runtime_error(
+                                "CUDA resident quotient metadata excludes a nonzero host coefficient: " +
+                                label);
+                        }
+
+                        affected_nonzero_before.push_back(
+                            quotient.data[index]
+                                    .is_zero()
+                                ? std::uint8_t{0}
+                                : std::uint8_t{1});
+                    }
+                }
+
+                for (std::size_t i = 0;
+                     i < mask.size();
+                     ++i)
+                {
+                    quotient.data[i] -=
+                        mask[i];
+
+                    quotient.data[
+                        domain_size + i] +=
+                        mask[i];
+                }
+
+                if (resident != nullptr)
+                {
+                    auto updated_nonzero_count =
+                        resident->nonzero_count;
+
+                    for (std::size_t position = 0;
+                         position <
+                         affected_indices.size();
+                         ++position)
+                    {
+                        const auto index =
+                            affected_indices[
+                                position];
+
+                        const bool was_nonzero =
+                            affected_nonzero_before[
+                                position] != 0;
+
+                        const bool is_nonzero =
+                            !quotient.data[index]
+                                 .is_zero();
+
+                        if (!was_nonzero &&
+                            is_nonzero)
+                        {
+                            if (updated_nonzero_count ==
+                                std::numeric_limits<
+                                    std::size_t>::max())
+                            {
+                                throw std::runtime_error(
+                                    "CUDA resident quotient nonzero count overflow: " +
+                                    label);
+                            }
+
+                            ++updated_nonzero_count;
+                        }
+                        else if (
+                            was_nonzero &&
+                            !is_nonzero)
+                        {
+                            if (updated_nonzero_count ==
+                                0)
+                            {
+                                throw std::runtime_error(
+                                    "CUDA resident quotient nonzero count underflow: " +
+                                    label);
+                            }
+
+                            --updated_nonzero_count;
+                        }
+                    }
+
+                    auto updated_logical_count =
+                        resident->logical_count;
+
+                    for (const auto index :
+                         affected_indices)
+                    {
+                        if (!quotient.data[index]
+                                 .is_zero())
+                        {
+                            updated_logical_count =
+                                std::max(
+                                    updated_logical_count,
+                                    index + 1);
+                        }
+                    }
+
+                    if (updated_nonzero_count ==
+                        0)
+                    {
+                        updated_logical_count =
+                            1;
+                    }
+                    else if (
+                        updated_logical_count ==
+                            resident->logical_count &&
+                        std::binary_search(
+                            affected_indices.begin(),
+                            affected_indices.end(),
+                            resident->logical_count -
+                                1) &&
+                        quotient.data[
+                            resident->logical_count -
+                            1]
+                            .is_zero())
+                    {
+                        while (
+                            updated_logical_count >
+                                0 &&
+                            quotient.data[
+                                updated_logical_count -
+                                1]
+                                .is_zero())
+                        {
+                            --updated_logical_count;
+                        }
+
+                        if (updated_logical_count ==
+                            0)
+                        {
+                            throw std::runtime_error(
+                                "CUDA resident quotient logical count became inconsistent: " +
+                                label);
+                        }
+                    }
+
+                    if (updated_logical_count >
+                            resident->capacity ||
+                        updated_nonzero_count >
+                            updated_logical_count)
+                    {
+                        throw std::runtime_error(
+                            "updated CUDA resident quotient metadata is invalid: " +
+                            label);
+                    }
+
+#if GATZK_ENABLE_CUDA_BACKEND
+                    if (!cuda_t_edge_update_resident_coefficient_ranges(
+                            *resident,
+                            quotient.data.data(),
+                            quotient.data.size(),
+                            0,
+                            mask.size(),
+                            domain_size,
+                            mask.size()))
+                    {
+                        throw std::runtime_error(
+                            "CUDA resident quotient mask synchronization was not executed: " +
+                            label);
+                    }
+#else
+                    throw std::runtime_error(
+                        "CUDA resident quotient material is unavailable in a non-CUDA build");
+#endif
+
+                    auto updated_resident =
+                        std::make_shared<
+                            algebra::
+                                CudaResidentCoefficientBuffer>();
+
+                    updated_resident->allocation =
+                        resident->allocation;
+
+                    updated_resident->
+                        device_montgomery_limbs =
+                            resident->
+                                device_montgomery_limbs;
+
+                    updated_resident->capacity =
+                        resident->capacity;
+
+                    updated_resident->logical_count =
+                        updated_logical_count;
+
+                    updated_resident->nonzero_count =
+                        updated_nonzero_count;
+
+                    updated_resident->device =
+                        resident->device;
+
+                    updated_resident->host_transfer.reset();
+
+                    quotient.cuda_resident_coefficients =
+                        std::move(
+                            updated_resident);
+                }
+
                 auto mask_polynomial = algebra::Polynomial::from_coefficients(
                     quotient_mask_label(label),
                     std::move(mask));
-                out.push_back({label, std::move(quotient)});
-                out.push_back({mask_polynomial.name, std::move(mask_polynomial)});
+
+                out.push_back(
+                    {label,
+                     std::move(quotient)});
+
+                out.push_back(
+                    {mask_polynomial.name,
+                     std::move(mask_polynomial)});
             }
+
             return out;
         }
 
