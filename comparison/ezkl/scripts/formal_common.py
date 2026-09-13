@@ -27,6 +27,7 @@ CANONICAL_PROOF_SCOPE = "full_gat"
 CANONICAL_PRIVACY = "model_and_trace_hidden"
 CANONICAL_STATEMENT_MODE = "external"
 CANONICAL_OUTPUT_MODE = "public_logits"
+NATIVE_SECURITY_PROFILE_ID = "halo2-kzg-shplonk"
 CANONICAL_CONTRACT_KEYS = {
     "schema_version",
     "baseline",
@@ -312,8 +313,8 @@ def validate_config(config: Path, dataset: str) -> dict[str, str]:
         pass
     elif not HEX64.fullmatch(values.get("trusted_srs_sha256", "")):
         abort(f"{config} has an invalid trusted_srs_sha256")
-    if values.get("ezkl_security_profile_id") in (None, "", "official_ezkl_native_pending"):
-        abort(f"{config} has no pinned native ezkl security profile")
+    if values.get("ezkl_security_profile_id") != NATIVE_SECURITY_PROFILE_ID:
+        abort(f"{config} must pin native ezkl security profile {NATIVE_SECURITY_PROFILE_ID}")
     if "verifier_registry_digest" in values:
         abort(f"{config} still references the main-experiment verifier registry")
     return values

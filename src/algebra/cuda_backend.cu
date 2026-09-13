@@ -2380,9 +2380,12 @@ namespace gatzk::algebra
 
                 const auto valid_count =
                     static_cast<unsigned>(
-                        std::min<std::size_t>(
-                            remaining,
-                            blockDim.x));
+                        remaining <
+                                static_cast<std::size_t>(
+                                    blockDim.x)
+                            ? remaining
+                            : static_cast<std::size_t>(
+                                  blockDim.x));
 
                 block_sums[blockIdx.x] =
                     scan[valid_count - 1U];
