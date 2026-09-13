@@ -751,25 +751,34 @@ namespace gatzk::protocol
                         // Scanning those pageable public columns on CPU avoids
                         // the unified-memory CUDA zero-copy penalty while
                         // leaving every other backend caller on automatic
-                        // placement.
-                        const bool cpu_large_fh_working_set =
-                            lazy_fh_public_enabled(context_) && context_.local.num_nodes >= (1ULL << 16) && domain->size >= (1ULL << 20);
-                        const auto rotated_values = backend->evaluate_with_native_weight_rotations(
-                            *labels,
-                            weight_entry.native_weights,
-                            rotations,
-                            cpu_large_fh_working_set
-                                ? algebra::EvaluationExecutionPolicy::CpuOnly
-                                : algebra::EvaluationExecutionPolicy::Automatic);
-                        if (cpu_large_fh_working_set && metrics_ != nullptr && !cpu_large_fh_route_noted_)
+                        const auto rotated_values =
+                            backend
+                                ->evaluate_with_native_weight_rotations(
+                                    *labels,
+                                    weight_entry.native_weights,
+                                    rotations,
+                                    algebra::
+                                        EvaluationExecutionPolicy::
+                                            Automatic);
+
+                        if (lazy_fh_public_enabled(context_) &&
+                            domain->size >=
+                                (1ULL << 20) &&
+                            metrics_ != nullptr &&
+                            !cpu_large_fh_route_noted_)
                         {
                             if (!metrics_->notes.empty())
                             {
-                                metrics_->notes += "; ";
+                                metrics_->notes +=
+                                    "; ";
                             }
+
                             metrics_->notes +=
-                                "verifier_public_eval_route=cpu_large_fh_working_set";
-                            cpu_large_fh_route_noted_ = true;
+                                "verifier_public_eval_route="
+                                "automatic_gpu_direct_columns";
+
+                            cpu_large_fh_route_noted_ =
+                                true;
                         }
                         for (std::size_t point_index = 0; point_index < points.size(); ++point_index)
                         {
@@ -1507,7 +1516,7 @@ namespace gatzk::protocol
                              "edge", 2, PayloadValueKind::MaskedPrivateValue},
                             {output_bias_view_label(head, "R_qry"),
                              "edge", 2, PayloadValueKind::MaskedPrivateValue},
-                        };
+                    };
                     expected_evaluations.insert(
                         expected_evaluations.begin(),
                         expected_aggregation_relation_evaluations.begin(),

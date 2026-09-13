@@ -216,6 +216,19 @@ pub async fn run(command: Commands) -> Result<String, EZKLError> {
             public_output,
             gpu,
         ),
+        Commands::GatStatement {
+            dataset,
+            resource_manifest,
+            circuit_ref,
+            statement,
+            public_output,
+        } => gat_statement(
+            dataset,
+            resource_manifest,
+            circuit_ref,
+            statement,
+            public_output,
+        ),
         Commands::GatWitness {
             dataset,
             compiled_circuit,
@@ -1998,6 +2011,110 @@ fn public_instances_from_statement(
     });
     circuit.load_graph_witness(&witness)?;
     Ok(vec![circuit.prepare_public_inputs(&witness)?])
+}
+
+/// Produce the independent public boundary consumed by the formal runner.
+///
+/// This is deliberately a Rust-owned producer: resource authentication,
+/// canonical quantization and the reference GAT relation all stay on the
+/// official ezkl baseline path.  It emits no witness and never consumes a
+/// proof artifact.
+fn gat_statement(
+    dataset: String,
+    resource_manifest: PathBuf,
+    circuit_ref_path: PathBuf,
+    statement_path: PathBuf,
+    public_output_path: PathBuf,
+) -> Result<String, EZKLError> {
+    require_formal_local_path(&resource_manifest, "resource manifest")?;
+    require_formal_regular_file(&circuit_ref_path, "setup CircuitRef")?;
+    require_formal_local_path(&statement_path, "public statement")?;
+    require_formal_local_path(&public_output_path, "public output")?;
+    for (path, label) in [
+        (&statement_path, "public statement"),
+        (&public_output_path, "public output"),
+    ] {
+        if let Ok(metadata) = std::fs::symlink_metadata(path) {
+            if metadata.file_type().is_symlink() {
+                return Err(format!("{} must not be a symlink: {}", label, path.display()).into());
+            }
+            return Err(format!("{} already exists: {}", label, path.display()).into());
+        }
+    }
+
+    let baseline_root = std::env::current_dir()?;
+    let loaded = load_dataset_with_manifest(&baseline_root, &resource_manifest, &dataset)
+        .map_err(EZKLError::from)?;
+    let setup_context = load_setup_circuit_ref(&circuit_ref_path)?;
+    let mut spec = loaded.spec.clone();
+    spec.circuit_ref = Some(setup_context.native.clone());
+    spec.validate().map_err(EZKLError::from)?;
+    let trace = crate::gat_adapter::evaluate(&spec, RoundingMode::NearestTiesAway)
+        .map_err(EZKLError::from)?;
+
+    let public_output = serde_json::json!({
+        "dataset": loaded.dataset,
+        "Y": trace.output,
+    });
+    let mut output_bytes = serde_json::to_vec_pretty(&public_output)?;
+    output_bytes.push(b'\n');
+    std::fs::write(&public_output_path, &output_bytes)?;
+    let public_output_sha256 = crate::gat_adapter::schema::sha256_digest(&output_bytes)
+        .map_err(EZKLError::from)?;
+    let y = public_output
+        .get("Y")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| "generated public output has no Y array".to_string())?
+        .iter()
+        .map(|value| {
+            value
+                .as_i64()
+                .map(i128::from)
+                .ok_or_else(|| "generated public output contains a non-integer Y value".to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(EZKLError::from)?;
+    let output_digest = crate::gat_adapter::output_digest(&y).map_err(EZKLError::from)?;
+
+    let mut statement = PublicStatement {
+        schema_version: 1,
+        relation_id: "R_GAT-ezkl".into(),
+        proof_scope: "full_gat".into(),
+        privacy_policy: "model_and_trace_hidden".into(),
+        public_statement_mode: "external".into(),
+        output_mode: "public_logits".into(),
+        dataset: dataset.clone(),
+        model_arch_id: spec.model.model_arch_id.clone(),
+        quant_cfg_id: spec.quant_cfg_id.clone(),
+        static_table_id: spec.tables.static_tables_id.clone(),
+        degree_bound_id: spec.ledger.ledger_id.clone(),
+        ezkl_security_profile_id: spec.ezkl_security_profile_id.clone(),
+        public_ezkl: crate::gat_adapter::PublicEzkl {
+            topology: spec.topology.clone(),
+            static_tables: crate::gat_adapter::DigestIdentity {
+                id: spec.tables.static_tables_id.clone(),
+                digest: spec.tables.static_tables_digest.clone(),
+            },
+            quant: spec.quantization.clone(),
+            ledger: spec.ledger_identity.clone(),
+            circuit: setup_context,
+            model_hash: spec.model_binding.hash.clone(),
+            model: spec.model_binding.clone(),
+            feature_table: spec.features.clone(),
+            node_ids: spec.graph.node_ids.clone(),
+            src: spec.graph.src.clone(),
+            dst: spec.graph.dst.clone(),
+            node_ptr: spec.graph.node_ptr.clone(),
+            edge_ptr: spec.graph.edge_ptr.clone(),
+            y,
+        },
+        output_digest,
+        public_output_sha256,
+        statement_digest: String::new(),
+    };
+    statement.statement_digest = statement.digest_without_self().map_err(EZKLError::from)?;
+    statement.save(&statement_path).map_err(EZKLError::from)?;
+    Ok(statement_path.display().to_string())
 }
 
 fn gat_prepare(

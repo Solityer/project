@@ -171,6 +171,50 @@ namespace gatzk::algebra
         const mcl::Fr &second_scale,
         std::size_t element_count);
 
+    bool try_cuda_batch_inverse_native(
+        const mcl::Fr *input,
+        mcl::Fr *output,
+        std::size_t element_count);
+
+    bool try_cuda_opening_inverse_denominators_native(
+        mcl::Fr *output,
+        std::size_t domain_size,
+        const FieldElement &omega,
+        const FieldElement &point);
+
+    bool try_cuda_opening_quotient_assembly_native(
+        const mcl::Fr *folded_values,
+        mcl::Fr *quotient_values,
+        const mcl::Fr &scaled_claim_sum,
+        std::size_t element_count);
+
+    bool try_cuda_logup_inverse_columns_native(
+        const mcl::Fr *table,
+        const mcl::Fr *query,
+        const mcl::Fr *q_table,
+        const mcl::Fr *q_query,
+        const mcl::Fr &beta,
+        mcl::Fr *table_inverse,
+        mcl::Fr *query_inverse,
+        std::size_t element_count);
+
+    bool try_cuda_logup_accumulator_native(
+        const mcl::Fr *table_inverse,
+        const mcl::Fr *query_inverse,
+        const mcl::Fr *multiplicity,
+        const mcl::Fr *q_table,
+        const mcl::Fr *q_query,
+        mcl::Fr *accumulator,
+        std::size_t active_count,
+        std::size_t element_count);
+
+    bool try_cuda_scaled_prefix_accumulator_native(
+        const mcl::Fr *values,
+        const mcl::Fr &scale,
+        mcl::Fr *accumulator,
+        std::size_t active_count,
+        std::size_t element_count);
+
     // 在 GPU 上构造重心权重，供 domain opening 与大列求值热点复用。
     bool barycentric_weights_gpu(
         const uint64_t omega_limbs[4],

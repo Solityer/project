@@ -18,7 +18,7 @@ option(GATZK_ENABLE_PACKED_FFT_DEFAULT "Enable packed domain evaluation backend 
 option(GATZK_ENABLE_ROTATED_FFT_KERNEL_DEFAULT "Enable fused rotated-point FFT/NTT kernel backend by default" ON)
 option(GATZK_ENABLE_COMPACT_TRACE_LAYOUT_DEFAULT "Enable compact trace/materialization layout by default" ON)
 option(GATZK_ENABLE_FAST_VERIFY_PAIRING_DEFAULT "Enable fast verifier pairing route by default" ON)
-option(GATZK_ENABLE_NATIVE_ARCH "Enable -march=native for local performance runs; keep OFF for reproducible portable builds" OFF)
+option(GATZK_ENABLE_NATIVE_ARCH "Enable -march=native for local performance runs; keep OFF for reproducible portable builds" ON)
 set(GATZK_CRYPTO_BACKEND "mcl" CACHE STRING "Crypto backend preference; only mcl is supported")
 set_property(CACHE GATZK_CRYPTO_BACKEND PROPERTY STRINGS mcl)
 

@@ -9,10 +9,12 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <initializer_list>
 #include <limits>
 #include <set>
 #include <sstream>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -23,7 +25,12 @@ using Byte = std::uint8_t;
 using Digest = std::array<Byte, 32U>;
 constexpr std::size_t kG1Size = 48U;
 constexpr std::uint32_t kFrameVersion = 1U;
-constexpr std::uint64_t kMaxSrsPoints = 1ULL << 19U;
+// The proof context consumes one selected prefix chunk.  There is therefore
+// no protocol-wide 2^19 cap: a larger relation-family domain is represented
+// by its own authenticated frame (or by a larger selected chunk), while
+// unrelated families are never concatenated into one global domain.  The
+// byte bound is an operational allocation guard, not a domain truncation.
+constexpr std::uint64_t kMaxSrsFrameBytes = 1ULL << 32U;
 constexpr std::size_t kMaxJsonResourceBytes = 1U << 26U;
 constexpr const char* kUnavailable = "UNAVAILABLE";
 
@@ -32,7 +39,7 @@ void set_error(std::string* error, const std::string& message) {
 }
 
 bool read_bytes(const std::filesystem::path& path, std::vector<Byte>& bytes,
-                std::string* error) {
+                std::string* error, std::uint64_t max_bytes = kMaxJsonResourceBytes) {
     std::ifstream input(path, std::ios::binary);
     if (!input) {
         set_error(error, "BLOCKED: cannot open authenticated resource: " + path.string());
@@ -40,7 +47,7 @@ bool read_bytes(const std::filesystem::path& path, std::vector<Byte>& bytes,
     }
     input.seekg(0, std::ios::end);
     const std::streamoff size = input.tellg();
-    if (size < 0 || static_cast<std::uint64_t>(size) > kMaxJsonResourceBytes) {
+    if (size < 0 || static_cast<std::uint64_t>(size) > max_bytes) {
         set_error(error, "BLOCKED: authenticated resource has invalid size: " + path.string());
         return false;
     }
@@ -368,7 +375,7 @@ bool decode_frame(const std::vector<Byte>& bytes, PointFrame& frame,
         !frame_u64(bytes, offset, frame.domain) ||
         !frame_u64(bytes, offset, frame.degree) ||
         frame.version != kFrameVersion || frame.point_size != kG1Size ||
-        frame.count == 0U || frame.count > kMaxSrsPoints ||
+        frame.count == 0U ||
         frame.domain == 0U || frame.count > std::numeric_limits<std::size_t>::max() / kG1Size) {
         set_error(error, "BLOCKED: GATZKG1C frame header is invalid");
         return false;
@@ -541,6 +548,296 @@ bool expected_file_digest(const std::filesystem::path& path, std::string& output
     return true;
 }
 
+bool optional_json_u64(const std::string& text, const char* key,
+                       std::uint64_t& value, bool& present) {
+    const std::string marker = std::string("\"") + key + "\"";
+    if (text.find(marker) == std::string::npos) {
+        present = false;
+        return true;
+    }
+    present = true;
+    return json_u64_field(text, key, value);
+}
+
+bool first_json_string(const std::string& text,
+                       std::initializer_list<const char*> keys,
+                       std::string& value, bool& present) {
+    present = false;
+    for (const char* key : keys) {
+        const std::string marker = std::string("\"") + key + "\"";
+        if (text.find(marker) == std::string::npos) continue;
+        present = true;
+        return json_string_field(text, key, value);
+    }
+    return true;
+}
+
+bool transcript_field(const std::string& object, std::string& digest,
+                      bool& present) {
+    if (!first_json_string(object,
+                           {"ceremony_transcript_sha256", "ceremony_transcript_hash",
+                            "transcript_sha256", "transcript_hash"},
+                           digest, present)) return false;
+    if (present) return true;
+    std::string nested;
+    if (resource_field_string(object, "setup", "transcript_sha256", nested)) {
+        digest = std::move(nested);
+        present = true;
+        return true;
+    }
+    if (resource_field_string(object, "ceremony", "transcript_sha256", nested)) {
+        digest = std::move(nested);
+        present = true;
+        return true;
+    }
+    return true;
+}
+
+bool seed_field(const std::string& object, std::string& digest, bool& present) {
+    if (!first_json_string(object, {"ceremony_seed_sha256", "seed_sha256"},
+                           digest, present)) return false;
+    if (present) return true;
+    std::string nested;
+    if (resource_field_string(object, "setup", "seed_sha256", nested)) {
+        digest = std::move(nested);
+        present = true;
+    }
+    return true;
+}
+
+bool generator_id_field(const std::string& object, std::string& value,
+                        bool& present) {
+    if (!first_json_string(object, {"generator_id", "generator"}, value, present)) return false;
+    return true;
+}
+
+bool parse_chunk_frame_ref(const std::string& object, const char* label,
+                           const std::filesystem::path& root, std::string& path,
+                           std::string& digest, std::uint64_t& count,
+                           std::string* error) {
+    std::string raw_path;
+    if (!resource_field_string(object, label, "path", raw_path) ||
+        !resource_field_string(object, label, "sha256", digest) ||
+        !resource_field_u64(object, label, "count", count) ||
+        count == 0U || !canonical_digest_text(digest)) {
+        set_error(error, std::string("BLOCKED: SRS chunk omits canonical ") + label +
+                  " path/digest/count");
+        return false;
+    }
+    std::filesystem::path checked;
+    if (!relative_resource_path(root, raw_path, checked, error)) return false;
+    path = checked.lexically_relative(root).generic_string();
+    return !path.empty();
+}
+
+bool parse_srs_chunk(const std::string& object, const std::string& family_id,
+                     std::uint64_t ordinal, const std::filesystem::path& root,
+                     const std::string& manifest_generator,
+                     const std::string& manifest_transcript,
+                     const std::string& manifest_seed, bool legacy,
+                     AuthenticatedSrsResource::Chunk& chunk,
+                     std::string* error) {
+    chunk = AuthenticatedSrsResource::Chunk{};
+    chunk.family_id = family_id;
+    if (chunk.family_id.empty()) {
+        set_error(error, "BLOCKED: SRS chunk has empty relation family id");
+        return false;
+    }
+    bool present = false;
+    if (!first_json_string(object, {"chunk_id", "id"}, chunk.chunk_id, present)) {
+        set_error(error, "BLOCKED: SRS chunk id is malformed");
+        return false;
+    }
+    if (!present) chunk.chunk_id = chunk.family_id + "/chunk" + std::to_string(ordinal);
+    if (chunk.chunk_id.empty()) {
+        set_error(error, "BLOCKED: SRS chunk has empty chunk id");
+        return false;
+    }
+    if (!optional_json_u64(object, "chunk_index", chunk.chunk_index, present)) {
+        set_error(error, "BLOCKED: SRS chunk_index is malformed");
+        return false;
+    }
+    if (!present) chunk.chunk_index = ordinal;
+    if (!optional_json_u64(object, "point_offset", chunk.point_offset, present)) {
+        set_error(error, "BLOCKED: SRS point_offset is malformed");
+        return false;
+    }
+    std::uint64_t point_size = 0U;
+    if (!json_u64_field(object, "point_count", chunk.point_count) ||
+        !json_u64_field(object, "domain", chunk.domain) ||
+        !json_u64_field(object, "degree", chunk.degree) ||
+        !json_u64_field(object, "point_size", point_size) ||
+        chunk.point_count == 0U || chunk.domain == 0U ||
+        chunk.point_count != chunk.domain || point_size != kG1Size ||
+        !power_of_two(chunk.domain) ||
+        chunk.degree < (chunk.domain == 1U ? 0U : chunk.domain - 1U) ||
+        chunk.point_offset > std::numeric_limits<std::uint64_t>::max() - chunk.point_count) {
+        set_error(error, "BLOCKED: SRS chunk point_count/domain/degree/point_size is invalid");
+        return false;
+    }
+    chunk.point_size = static_cast<std::uint32_t>(point_size);
+    // The native zkDL proof consumes a prefix basis.  A nonzero offset is
+    // still parsed and authenticated as metadata, but cannot be silently
+    // reinterpreted as the first generator of a different basis.
+    if (chunk.point_offset != 0U) {
+        set_error(error, "BLOCKED: native zkDL SRS chunk point_offset must be zero for prefix basis");
+        return false;
+    }
+    bool has_generator = false;
+    if (!generator_id_field(object, chunk.generator_id, has_generator)) {
+        set_error(error, "BLOCKED: SRS chunk generator_id is malformed");
+        return false;
+    }
+    if (!has_generator) chunk.generator_id = manifest_generator;
+    if (chunk.generator_id.empty()) {
+        set_error(error, "BLOCKED: SRS chunk has no authenticated generator_id");
+        return false;
+    }
+    bool has_transcript = false;
+    if (!transcript_field(object, chunk.ceremony_transcript_digest, has_transcript)) {
+        set_error(error, "BLOCKED: SRS chunk ceremony transcript is malformed");
+        return false;
+    }
+    if (!has_transcript) chunk.ceremony_transcript_digest = manifest_transcript;
+    if (!canonical_digest_text(chunk.ceremony_transcript_digest)) {
+        set_error(error, "BLOCKED: SRS chunk ceremony transcript digest is not canonical");
+        return false;
+    }
+    bool has_seed = false;
+    if (!seed_field(object, chunk.ceremony_seed_digest, has_seed)) {
+        set_error(error, "BLOCKED: SRS chunk ceremony seed is malformed");
+        return false;
+    }
+    if (!has_seed) chunk.ceremony_seed_digest = manifest_seed;
+    if (!chunk.ceremony_seed_digest.empty() &&
+        !canonical_digest_text(chunk.ceremony_seed_digest)) {
+        set_error(error, "BLOCKED: SRS chunk ceremony seed digest is not canonical");
+        return false;
+    }
+    std::uint64_t g_count = 0U, h_count = 0U, u_count = 0U;
+    if (!parse_chunk_frame_ref(object, "G", root, chunk.g_path, chunk.g_digest, g_count, error) ||
+        !parse_chunk_frame_ref(object, "H", root, chunk.h_path, chunk.h_digest, h_count, error) ||
+        !parse_chunk_frame_ref(object, "U", root, chunk.u_path, chunk.u_digest, u_count, error) ||
+        g_count != chunk.point_count || h_count != 1U || u_count != 1U) {
+        set_error(error, "BLOCKED: SRS chunk G/H/U point counts are not domain-bound");
+        return false;
+    }
+    bool has_generator_digest = false;
+    std::string declared_generator_digest;
+    if (!first_json_string(object, {"generator_digest", "g_digest"},
+                           declared_generator_digest, has_generator_digest)) {
+        set_error(error, "BLOCKED: SRS chunk generator digest is malformed");
+        return false;
+    }
+    if (has_generator_digest) {
+        if (!canonical_digest_text(declared_generator_digest) ||
+            declared_generator_digest != chunk.g_digest) {
+            set_error(error, "BLOCKED: SRS chunk generator_digest does not bind G frame");
+            return false;
+        }
+    }
+    chunk.generator_digest = chunk.g_digest;
+    (void)legacy;
+    return true;
+}
+
+bool materialize_srs_chunk(const std::filesystem::path& root,
+                           AuthenticatedSrsResource::Chunk& chunk,
+                           std::string* error) {
+    if (chunk.authenticated && chunk.materialized) return true;
+    std::filesystem::path g_path, h_path, u_path;
+    if (!relative_resource_path(root, chunk.g_path, g_path, error) ||
+        !relative_resource_path(root, chunk.h_path, h_path, error) ||
+        !relative_resource_path(root, chunk.u_path, u_path, error)) return false;
+    std::vector<Byte> g_bytes, h_bytes, u_bytes;
+    if (!read_bytes(g_path, g_bytes, error, kMaxSrsFrameBytes) ||
+        !read_bytes(h_path, h_bytes, error, kMaxSrsFrameBytes) ||
+        !read_bytes(u_path, u_bytes, error, kMaxSrsFrameBytes)) return false;
+    const auto check_digest = [&](const std::vector<Byte>& bytes,
+                                  const std::string& expected, const char* label) {
+        if (resource_digest_hex(zkdl::sha256(bytes)) != expected) {
+            set_error(error, std::string("BLOCKED: SRS chunk ") + label +
+                      " frame digest mismatch");
+            return false;
+        }
+        return true;
+    };
+    if (!check_digest(g_bytes, chunk.g_digest, "G") ||
+        !check_digest(h_bytes, chunk.h_digest, "H") ||
+        !check_digest(u_bytes, chunk.u_digest, "U")) return false;
+    PointFrame g_frame, h_frame, u_frame;
+    if (!decode_frame(g_bytes, g_frame, error) ||
+        !decode_frame(h_bytes, h_frame, error) ||
+        !decode_frame(u_bytes, u_frame, error) ||
+        g_frame.count != chunk.point_count || h_frame.count != 1U ||
+        u_frame.count != 1U || g_frame.domain != chunk.domain ||
+        h_frame.domain != chunk.domain || u_frame.domain != chunk.domain ||
+        g_frame.degree != chunk.degree || h_frame.degree != chunk.degree ||
+        u_frame.degree != chunk.degree || !canonical_point_set(g_frame.points)) {
+        set_error(error, "BLOCKED: SRS chunk frame header is not manifest-bound");
+        return false;
+    }
+    if (g_frame.points.end() !=
+            std::find(g_frame.points.begin(), g_frame.points.end(), h_frame.points.front()) ||
+        g_frame.points.end() !=
+            std::find(g_frame.points.begin(), g_frame.points.end(), u_frame.points.front()) ||
+        h_frame.points.front() == u_frame.points.front()) {
+        set_error(error, "BLOCKED: SRS chunk G/H/U roles are not independent");
+        return false;
+    }
+    chunk.generators = std::move(g_frame.points);
+    chunk.blinding_generator = std::move(h_frame.points.front());
+    chunk.u_generator = std::move(u_frame.points.front());
+    chunk.materialized = true;
+    chunk.authenticated = true;
+    return true;
+}
+
+bool choose_default_chunk(const std::string& manifest,
+                          const std::vector<AuthenticatedSrsResource::Chunk>& chunks,
+                          std::size_t& selected, std::string* error) {
+    std::string default_family, default_chunk;
+    bool has_family = false, has_chunk = false;
+    if (!first_json_string(manifest, {"default_family_id", "default_family"},
+                           default_family, has_family) ||
+        !first_json_string(manifest, {"default_chunk_id", "default_chunk"},
+                           default_chunk, has_chunk)) {
+        set_error(error, "BLOCKED: SRS default chunk identity is malformed");
+        return false;
+    }
+    if (has_family || has_chunk) {
+        bool found = false;
+        for (std::size_t i = 0U; i < chunks.size(); ++i) {
+            if ((!has_family || chunks[i].family_id == default_family) &&
+                (!has_chunk || chunks[i].chunk_id == default_chunk)) {
+                if (found) {
+                    set_error(error, "BLOCKED: SRS manifest has duplicate default chunk identity");
+                    return false;
+                }
+                selected = i;
+                found = true;
+            }
+        }
+        if (!found) {
+            set_error(error, "BLOCKED: SRS manifest default chunk is not present");
+            return false;
+        }
+        return true;
+    }
+    selected = 0U;
+    for (std::size_t i = 1U; i < chunks.size(); ++i) {
+        const auto& candidate = chunks[i];
+        const auto& current = chunks[selected];
+        if (candidate.domain > current.domain ||
+            (candidate.domain == current.domain &&
+             std::tie(candidate.family_id, candidate.chunk_id, candidate.chunk_index) <
+                 std::tie(current.family_id, current.chunk_id, current.chunk_index))) {
+            selected = i;
+        }
+    }
+    return true;
+}
+
 }  // namespace
 
 bool load_authenticated_srs(const Config& config,
@@ -591,81 +888,265 @@ bool load_authenticated_srs(const Config& config,
         set_error(error, "BLOCKED: canonical SRS manifest identity/encoding mismatch");
         return false;
     }
-    std::uint64_t domain = 0U, degree = 0U, point_size = 0U;
-    if (!json_u64_field(manifest, "domain", domain) ||
-        !json_u64_field(manifest, "degree", degree) ||
-        !json_u64_field(manifest, "point_size", point_size) ||
-        !power_of_two(domain) || domain > kMaxSrsPoints ||
-        (degree == 0U && domain != 1U) ||
-        (domain > 1U && degree < domain - 1U) ||
-        point_size != kG1Size) {
-        set_error(error, "BLOCKED: canonical SRS manifest domain/degree/point_size is invalid");
+    std::uint64_t manifest_version = 1U;
+    bool ignored_version_presence = false;
+    if (!optional_json_u64(manifest, "manifest_version", manifest_version, ignored_version_presence) ||
+        manifest_version == 0U) {
+        set_error(error, "BLOCKED: SRS manifest_version is malformed");
         return false;
     }
-    const auto frame_path = [&](const char* label, std::filesystem::path& path) {
-        std::string raw;
-        if (!resource_field_string(manifest, label, "path", raw)) {
-            set_error(error, std::string("BLOCKED: SRS manifest omits ") + label + " path");
+    // Only read common metadata from the v1 setup object here.  A v2
+    // manifest intentionally repeats generator/transcript identities inside
+    // every family/chunk; searching the whole JSON object for one global key
+    // would incorrectly treat those legitimate repetitions as duplicates.
+    std::string manifest_generator, manifest_transcript, manifest_seed;
+    bool has_transcript = false;
+    const bool legacy_layout = manifest.find("\"families\"") == std::string::npos &&
+                               manifest.find("\"chunks\"") == std::string::npos &&
+                               manifest.find("\"family_chunks\"") == std::string::npos;
+    if (legacy_layout) {
+        has_transcript = resource_field_string(manifest, "setup", "transcript_sha256",
+                                               manifest_transcript);
+        bool ignored_seed_presence = false;
+        if (!seed_field(manifest, manifest_seed, ignored_seed_presence)) {
+            set_error(error, "BLOCKED: SRS manifest ceremony seed metadata is malformed");
             return false;
         }
-        if (!relative_resource_path(root, raw, path, error)) return false;
-        return true;
-    };
-    std::filesystem::path g_path, h_path, u_path;
-    if (!frame_path("G", g_path) || !frame_path("H", h_path) || !frame_path("U", u_path)) return false;
-    std::vector<Byte> g_bytes, h_bytes, u_bytes;
-    if (!read_bytes(g_path, g_bytes, error) || !read_bytes(h_path, h_bytes, error) ||
-        !read_bytes(u_path, u_bytes, error)) return false;
-    std::string g_digest_text, h_digest_text, u_digest_text;
-    std::uint64_t g_count = 0U, h_count = 0U, u_count = 0U;
-    if (!manifest_resource_digest(manifest, "G", identity, g_digest_text, g_count) ||
-        !manifest_resource_digest(manifest, "H", identity, h_digest_text, h_count) ||
-        !manifest_resource_digest(manifest, "U", identity, u_digest_text, u_count) ||
-        !canonical_digest_text(g_digest_text) || !canonical_digest_text(h_digest_text) ||
-        !canonical_digest_text(u_digest_text)) {
-        set_error(error, "BLOCKED: canonical SRS manifest point metadata is malformed");
-        return false;
-    }
-    const auto check_file_hash = [&](const std::vector<Byte>& bytes, const std::string& expected,
-                                     const char* label) {
-        if (resource_digest_hex(zkdl::sha256(bytes)) != expected) {
-            set_error(error, std::string("BLOCKED: ") + label + " file digest mismatch");
+        manifest_generator = "GATZKG1C";
+        if (!has_transcript) {
+            set_error(error, "BLOCKED: SRS manifest ceremony transcript is missing");
             return false;
         }
-        return true;
-    };
-    if (!check_file_hash(g_bytes, g_digest_text, "G") ||
-        !check_file_hash(h_bytes, h_digest_text, "H") ||
-        !check_file_hash(u_bytes, u_digest_text, "U")) return false;
-    PointFrame g_frame, h_frame, u_frame;
-    if (!decode_frame(g_bytes, g_frame, error) || !decode_frame(h_bytes, h_frame, error) ||
-        !decode_frame(u_bytes, u_frame, error)) return false;
-    if (!manifest_resource_frame(manifest, "G", g_frame, domain, domain, degree, error) ||
-        !manifest_resource_frame(manifest, "H", h_frame, 1U, domain, degree, error) ||
-        !manifest_resource_frame(manifest, "U", u_frame, 1U, domain, degree, error) ||
-        !canonical_point_set(g_frame.points)) return false;
-    if (g_frame.points.size() != g_count || h_frame.points.size() != h_count ||
-        u_frame.points.size() != u_count || h_frame.points.size() != 1U || u_frame.points.size() != 1U) {
-        set_error(error, "BLOCKED: SRS frame count does not match manifest");
+    }
+    if (!manifest_transcript.empty() && !canonical_digest_text(manifest_transcript)) {
+        set_error(error, "BLOCKED: SRS manifest ceremony transcript digest is not canonical");
         return false;
     }
-    if (g_frame.points.end() != std::find(g_frame.points.begin(), g_frame.points.end(), h_frame.points.front()) ||
-        g_frame.points.end() != std::find(g_frame.points.begin(), g_frame.points.end(), u_frame.points.front()) ||
-        h_frame.points.front() == u_frame.points.front()) {
-        set_error(error, "BLOCKED: SRS G/H/U roles are not independent");
+    if (!manifest_seed.empty() && !canonical_digest_text(manifest_seed)) {
+        set_error(error, "BLOCKED: SRS manifest ceremony seed digest is not canonical");
+        return false;
+    }
+    std::string chunking_rule;
+    bool has_chunking_rule = false;
+    if (!first_json_string(manifest, {"chunking_rule", "srs_chunking_rule"},
+                           chunking_rule, has_chunking_rule)) {
+        set_error(error, "BLOCKED: SRS manifest chunking_rule is malformed");
+        return false;
+    }
+
+    std::vector<AuthenticatedSrsResource::Chunk> chunks;
+    const bool has_families = manifest.find("\"families\"") != std::string::npos;
+    const bool has_chunks = manifest.find("\"chunks\"") != std::string::npos;
+    const bool has_family_chunks = manifest.find("\"family_chunks\"") != std::string::npos;
+    if ((has_families || has_chunks || has_family_chunks) && manifest_version < 2U) {
+        set_error(error, "BLOCKED: per-family SRS manifest requires manifest_version >= 2");
+        return false;
+    }
+    if (has_families) {
+        std::vector<std::string> families;
+        if (!json_object_array(manifest, "families", families)) {
+            set_error(error, "BLOCKED: SRS families array is malformed");
+            return false;
+        }
+        for (const auto& family_object : families) {
+            std::string family_id;
+            bool family_present = false;
+            if (!first_json_string(family_object, {"family_id", "id"}, family_id,
+                                   family_present) || !family_present || family_id.empty()) {
+                set_error(error, "BLOCKED: SRS family has no canonical family_id");
+                return false;
+            }
+            std::vector<std::string> family_chunks;
+            if (!json_object_array(family_object, "chunks", family_chunks) || family_chunks.empty()) {
+                set_error(error, "BLOCKED: SRS family has no canonical chunks");
+                return false;
+            }
+            for (std::size_t index = 0U; index < family_chunks.size(); ++index) {
+                AuthenticatedSrsResource::Chunk chunk;
+                if (!parse_srs_chunk(family_chunks[index], family_id, index, root,
+                                     manifest_generator, manifest_transcript, manifest_seed,
+                                     false, chunk, error)) return false;
+                chunks.push_back(std::move(chunk));
+            }
+        }
+    } else if (has_chunks || has_family_chunks) {
+        const char* key = has_chunks ? "chunks" : "family_chunks";
+        std::vector<std::string> chunk_objects;
+        if (!json_object_array(manifest, key, chunk_objects)) {
+            set_error(error, "BLOCKED: SRS chunk array is malformed");
+            return false;
+        }
+        for (std::size_t index = 0U; index < chunk_objects.size(); ++index) {
+            std::string family_id;
+            bool family_present = false;
+            if (!first_json_string(chunk_objects[index], {"family_id", "family"},
+                                   family_id, family_present) || !family_present || family_id.empty()) {
+                set_error(error, "BLOCKED: flat SRS chunk has no canonical family_id");
+                return false;
+            }
+            AuthenticatedSrsResource::Chunk chunk;
+            if (!parse_srs_chunk(chunk_objects[index], family_id, index, root,
+                                 manifest_generator, manifest_transcript, manifest_seed,
+                                 false, chunk, error)) return false;
+            chunks.push_back(std::move(chunk));
+        }
+    } else {
+        // Backward-compatible v1 parser for prepare_form_resources.py.  The
+        // old layout is one prefix chunk only; it is never expanded into a
+        // synthetic global domain and core admission checks its capacity.
+        if (manifest_version > 1U) {
+            set_error(error, "BLOCKED: chunked SRS manifest has no family/chunk entries");
+            return false;
+        }
+        std::uint64_t domain = 0U, degree = 0U, point_size = 0U;
+        if (!json_u64_field(manifest, "domain", domain) ||
+            !json_u64_field(manifest, "degree", degree) ||
+            !json_u64_field(manifest, "point_size", point_size) ||
+            !power_of_two(domain) || domain == 0U ||
+            degree < (domain == 1U ? 0U : domain - 1U) || point_size != kG1Size) {
+            set_error(error, "BLOCKED: canonical v1 SRS manifest domain/degree/point_size is invalid");
+            return false;
+        }
+        std::string gp, gd, hp, hd, up, ud;
+        std::uint64_t gc = 0U, hc = 0U, uc = 0U;
+        if (!manifest_resource_digest(manifest, "G", gp, gd, gc) ||
+            !manifest_resource_digest(manifest, "H", hp, hd, hc) ||
+            !manifest_resource_digest(manifest, "U", up, ud, uc)) {
+            set_error(error, "BLOCKED: canonical v1 SRS manifest point metadata is malformed");
+            return false;
+        }
+        if (manifest_transcript.empty()) {
+            set_error(error, "BLOCKED: canonical v1 SRS manifest lacks ceremony transcript digest");
+            return false;
+        }
+        std::ostringstream legacy;
+        legacy << "{\"chunk_id\":\"legacy-v1\",\"chunk_index\":0,"
+               << "\"point_offset\":0,\"point_count\":" << domain
+               << ",\"domain\":" << domain << ",\"degree\":" << degree
+               << ",\"point_size\":" << point_size
+               << ",\"G\":{\"path\":\"" << gp << "\",\"sha256\":\"" << gd
+               << "\",\"count\":" << gc << "},\"H\":{\"path\":\"" << hp
+               << "\",\"sha256\":\"" << hd << "\",\"count\":" << hc
+               << "},\"U\":{\"path\":\"" << up << "\",\"sha256\":\"" << ud
+               << "\",\"count\":" << uc << "}}";
+        AuthenticatedSrsResource::Chunk chunk;
+        if (!parse_srs_chunk(legacy.str(), "*", 0U, root, "GATZKG1C",
+                             manifest_transcript, manifest_seed, true, chunk, error)) return false;
+        chunks.push_back(std::move(chunk));
+        chunking_rule = "legacy_v1_prefix";
+    }
+    if (chunks.empty()) {
+        set_error(error, "BLOCKED: authenticated SRS manifest has no chunks");
+        return false;
+    }
+    if (!has_chunking_rule && chunking_rule.empty())
+        chunking_rule = "per_family_prefix_v1";
+    if (!config.chunking_rule.empty() && config.chunking_rule != "none" &&
+        config.chunking_rule != chunking_rule) {
+        set_error(error, "BLOCKED: SRS manifest chunking_rule differs from secure config");
+        return false;
+    }
+    std::set<std::string> identities;
+    std::set<std::pair<std::string, std::uint64_t>> indexes;
+    for (const auto& chunk : chunks) {
+        const std::string identity_key = chunk.family_id + "\n" + chunk.chunk_id;
+        if (!identities.insert(identity_key).second ||
+            !indexes.insert({chunk.family_id, chunk.chunk_index}).second) {
+            set_error(error, "BLOCKED: SRS manifest has duplicate family/chunk identity");
+            return false;
+        }
+        if (!manifest_generator.empty() && chunk.generator_id != manifest_generator) {
+            set_error(error, "BLOCKED: SRS chunk generator_id differs from manifest");
+            return false;
+        }
+        if (!manifest_transcript.empty() &&
+            chunk.ceremony_transcript_digest != manifest_transcript) {
+            set_error(error, "BLOCKED: SRS chunk ceremony transcript differs from manifest");
+            return false;
+        }
+        if (!manifest_seed.empty() && chunk.ceremony_seed_digest != manifest_seed) {
+            set_error(error, "BLOCKED: SRS chunk ceremony seed differs from manifest");
+            return false;
+        }
+    }
+    std::size_t selected = 0U;
+    if (!choose_default_chunk(manifest, chunks, selected, error)) return false;
+    if (!materialize_srs_chunk(root, chunks[selected], error)) return false;
+    const auto& selected_chunk = chunks[selected];
+    Digest selected_generator_digest{};
+    if (!resource_parse_digest(selected_chunk.generator_digest, selected_generator_digest)) {
+        set_error(error, "BLOCKED: selected SRS generator digest is not canonical");
         return false;
     }
     resource->manifest_path = manifest_path.string();
     resource->manifest_digest = actual_manifest;
-    resource->generator_digest = zkdl::sha256(g_bytes);
-    resource->count = g_frame.count;
-    resource->domain = domain;
-    resource->degree = degree;
-    resource->point_size = static_cast<std::uint32_t>(point_size);
-    resource->generators = std::move(g_frame.points);
-    resource->blinding_generator = std::move(h_frame.points.front());
-    resource->u_generator = std::move(u_frame.points.front());
+    resource->generator_digest = selected_generator_digest;
+    resource->chunking_rule = chunking_rule;
+    resource->generator_id = selected_chunk.generator_id;
+    resource->ceremony_transcript_digest = selected_chunk.ceremony_transcript_digest;
+    const std::string selected_family_id = selected_chunk.family_id;
+    const std::string selected_chunk_id = selected_chunk.chunk_id;
+    const std::uint64_t selected_chunk_index = selected_chunk.chunk_index;
+    const std::uint64_t selected_count = selected_chunk.point_count;
+    const std::uint64_t selected_domain = selected_chunk.domain;
+    const std::uint64_t selected_degree = selected_chunk.degree;
+    const std::uint32_t selected_point_size = selected_chunk.point_size;
+    resource->chunks = std::move(chunks);
+    resource->selected_family_id = selected_family_id;
+    resource->selected_chunk_id = selected_chunk_id;
+    resource->selected_chunk_index = selected_chunk_index;
+    resource->count = selected_count;
+    resource->domain = selected_domain;
+    resource->degree = selected_degree;
+    resource->point_size = selected_point_size;
+    resource->generators = resource->chunks[selected].generators;
+    resource->blinding_generator = resource->chunks[selected].blinding_generator;
+    resource->u_generator = resource->chunks[selected].u_generator;
     resource->authenticated = true;
+    return true;
+}
+
+bool select_authenticated_srs_chunk(AuthenticatedSrsResource* resource,
+                                     const std::string& family_id,
+                                     std::uint64_t required_domain,
+                                     const AuthenticatedSrsResource::Chunk** chunk,
+                                     std::string* error) {
+    if (!resource || !chunk) {
+        set_error(error, "BLOCKED: SRS chunk selector output is null");
+        return false;
+    }
+    *chunk = nullptr;
+    if (!resource->authenticated || resource->manifest_path.empty() ||
+        !power_of_two(required_domain) || required_domain == 0U) {
+        set_error(error, "BLOCKED: SRS chunk selector has invalid authenticated request");
+        return false;
+    }
+    std::size_t selected = resource->chunks.size();
+    for (std::size_t i = 0U; i < resource->chunks.size(); ++i) {
+        const auto& candidate = resource->chunks[i];
+        if (candidate.family_id != family_id && candidate.family_id != "*") continue;
+        if (candidate.point_count < required_domain || candidate.domain < required_domain) continue;
+        if (selected == resource->chunks.size() ||
+            std::tie(candidate.domain, candidate.chunk_index, candidate.chunk_id) <
+                std::tie(resource->chunks[selected].domain,
+                         resource->chunks[selected].chunk_index,
+                         resource->chunks[selected].chunk_id)) selected = i;
+    }
+    if (selected == resource->chunks.size()) {
+        set_error(error, "BLOCKED: authenticated SRS manifest has no chunk for relation family/domain: " +
+                  family_id + "/" + std::to_string(required_domain));
+        return false;
+    }
+    const std::filesystem::path root = std::filesystem::path(resource->manifest_path).parent_path();
+    if (!materialize_srs_chunk(root, resource->chunks[selected], error)) return false;
+    const auto& selected_chunk = resource->chunks[selected];
+    if (selected_chunk.domain < required_domain ||
+        selected_chunk.generators.size() < required_domain ||
+        selected_chunk.blinding_generator.empty() || selected_chunk.u_generator.empty()) {
+        set_error(error, "BLOCKED: authenticated SRS selected chunk does not cover relation domain");
+        return false;
+    }
+    *chunk = &selected_chunk;
     return true;
 }
 
@@ -717,14 +1198,16 @@ bool load_authenticated_model_registry(const Config& config,
         set_error(error, "BLOCKED: model registry config identity mismatch");
         return false;
     }
+    std::string registry_identity_digest;
     if (!registry_digest_field(text, "srs_manifest_digest", value, error) ||
         value != resource_digest_hex(srs.manifest_digest) ||
         !registry_digest_field(text, "generator_digest", value, error) ||
         value != resource_digest_hex(srs.generator_digest) ||
         !registry_digest_field(text, "config_digest", value, error) ||
         value != config.config_digest ||
+        !registry_digest_field(text, "registry_identity_digest", registry_identity_digest, error) ||
         !registry_digest_field(text, "verifier_registry_digest", value, error) ||
-        value != config.verifier_registry_digest ||
+        value != registry_identity_digest ||
         !registry_digest_field(text, "scale_chain_digest", value, error) ||
         value != config.scale_chain_digest) {
         set_error(error, "BLOCKED: model registry SRS/config/scale identity mismatch");
@@ -763,7 +1246,7 @@ bool load_authenticated_model_registry(const Config& config,
         if (!required_registry_string(object, "tensor_id", commitment.tensor_id, error) ||
             !ids.insert(commitment.tensor_id).second ||
             !json_u64_field(object, "domain_size", domain) || domain == 0U ||
-            domain > kMaxSrsPoints || !power_of_two(domain) ||
+            domain > std::numeric_limits<std::uint32_t>::max() || !power_of_two(domain) ||
             !json_u64_array(object, "logical_shape", logical_shape) ||
             !json_u64_array(object, "padded_shape", padded_shape) ||
             !product_equals(padded_shape, domain) ||

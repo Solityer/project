@@ -6784,11 +6784,13 @@ namespace gatzk::protocol
                         "is missing evaluation plan");
                 }
 
-                // The dedicated executor is intentionally reserved for the
-                // large route.  Smaller/unselected requests remain on the
-                // canonical CPU implementation by contract.
-                if (target_size_ <=
-                    (std::size_t{1} << 24))
+                // Route every transform size admitted by the exact CUDA
+                // coset policy through the device-resident quotient executor.
+                // On GB10/UVA this intentionally includes smaller formal
+                // workloads that were previously forced back to CPU.
+                if (!algebra::
+                        should_use_cuda_coset_transform(
+                            target_size_))
                 {
                     return false;
                 }
@@ -6912,7 +6914,9 @@ namespace gatzk::protocol
                     program);
 
                 const bool large_cuda_route_selected =
-                    target_size_ > (std::size_t{1} << 24);
+                    algebra::
+                        should_use_cuda_coset_transform(
+                            target_size_);
 
                 // CUDA t_edge materializes registered derived
                 // linear views directly instead of going through

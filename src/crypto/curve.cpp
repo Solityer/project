@@ -975,23 +975,11 @@ namespace gatzk::crypto
                             auto *request =
                                 group.requests[offset];
 
-                            // A cold singleton cannot amortize SRS
-                            // normalization/upload/cache preparation.
-                            // Return it to the canonical CPU route.
-                            // If the immutable prefix is already resident,
-                            // CUDA reuse remains profitable and stays enabled.
-                            if (!cuda_g1_msm_resident_prefix_available(
-                                    request->points,
-                                    request->count,
-                                    request
-                                        ->stable_srs_capacity))
-                            {
-                                request->executed_on_cuda =
-                                    false;
-
-                                continue;
-                            }
-
+                            // The first stable-SRS CUDA use is allowed to seed
+                            // the resident base cache.  Returning a cold
+                            // singleton to CPU prevents later commitments and
+                            // openings from amortizing the immutable SRS
+                            // preparation cost.
                             if (!try_cuda_g1_msm(
                                     request->output,
                                     request->points,
@@ -1002,7 +990,7 @@ namespace gatzk::crypto
                                         ->stable_srs_capacity))
                             {
                                 throw std::runtime_error(
-                                    "CUDA resident singleton MSM "
+                                    "CUDA stable-SRS singleton MSM "
                                     "attempted an unexpected fallback");
                             }
 
@@ -1646,6 +1634,41 @@ namespace gatzk::crypto
                 }
 
                 return out;
+            }
+
+            // A large immutable-SRS MSM should retain the original stable
+            // base vector on CUDA.  The CPU single/grouped/sparse routes below
+            // can destroy SRS residency by constructing temporary point
+            // vectors and can spend substantial ARM time reducing G1 points
+            // before the GPU is allowed to run.
+            if (stable_srs_bases &&
+                util::route2_options()
+                    .cuda_field_hotspots &&
+                count >=
+                    (std::size_t{1} << 14))
+            {
+                if (profile != nullptr)
+                {
+                    profile->zero_scalar_skipping =
+                        nonzero_count != count;
+
+                    profile->sparse_compaction =
+                        false;
+
+                    profile->effective_scalar_count =
+                        count;
+                }
+
+                if (execute_cuda_msm_when_requested(
+                        &out,
+                        points,
+                        scalars,
+                        count,
+                        true,
+                        stable_srs_capacity))
+                {
+                    return out;
+                }
             }
 
             if (try_single_nonzero_scalar_msm(

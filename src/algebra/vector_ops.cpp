@@ -43,6 +43,50 @@ namespace gatzk::algebra
         const uint64_t second_scale_limbs[4],
         std::size_t element_count);
 
+    bool batch_inverse_cuda(
+        const mcl::Fr *input,
+        mcl::Fr *output,
+        std::size_t element_count);
+
+    bool opening_inverse_denominators_cuda(
+        mcl::Fr *output,
+        std::size_t domain_size,
+        const mcl::Fr &omega,
+        const mcl::Fr &point);
+
+    bool opening_quotient_assembly_cuda(
+        const mcl::Fr *folded_values,
+        mcl::Fr *quotient_values,
+        const mcl::Fr &scaled_claim_sum,
+        std::size_t element_count);
+
+    bool logup_inverse_columns_cuda(
+        const mcl::Fr *table,
+        const mcl::Fr *query,
+        const mcl::Fr *q_table,
+        const mcl::Fr *q_query,
+        const mcl::Fr &beta,
+        mcl::Fr *table_inverse,
+        mcl::Fr *query_inverse,
+        std::size_t element_count);
+
+    bool logup_accumulator_cuda(
+        const mcl::Fr *table_inverse,
+        const mcl::Fr *query_inverse,
+        const mcl::Fr *multiplicity,
+        const mcl::Fr *q_table,
+        const mcl::Fr *q_query,
+        mcl::Fr *accumulator,
+        std::size_t active_count,
+        std::size_t element_count);
+
+    bool scaled_prefix_accumulator_cuda(
+        const mcl::Fr *values,
+        const mcl::Fr &scale,
+        mcl::Fr *accumulator,
+        std::size_t active_count,
+        std::size_t element_count);
+
     bool cuda_intt_in_place_exact(
         mcl::Fr *values,
         std::size_t size);
@@ -1599,29 +1643,18 @@ namespace gatzk::algebra
 
         const auto min_index_count =
             direct_pageable_host_access
-                ? (1ULL << 20)
+                ? (1ULL << 18)
                 : (1ULL << 22);
 
         const auto min_bucket_count =
             direct_pageable_host_access
-                ? 1024ULL
+                ? 256ULL
                 : 4096ULL;
 
         const auto min_indices_per_bucket =
             direct_pageable_host_access
-                ? 256ULL
+                ? 64ULL
                 : 1024ULL;
-
-        // On pageable-host-page-table devices the current explicit
-        // host conversion / allocation / transfer implementation is
-        // empirically faster through 2^21 indices, but slower at 2^22
-        // even with only 2^12 buckets. Do not extrapolate CUDA past
-        // the largest measured-fast workload on that execution path.
-        if (direct_pageable_host_access &&
-            index_count > (1ULL << 21))
-        {
-            return false;
-        }
 
         return index_count >= min_index_count &&
                bucket_count >= min_bucket_count &&
@@ -1632,9 +1665,11 @@ namespace gatzk::algebra
     bool should_use_cuda_intt(
         std::size_t size)
     {
-        constexpr std::size_t
+        const std::size_t
             kCudaInttMinimumSize =
-                std::size_t{1} << 23;
+                cuda_backend_unified_addressing_available()
+                    ? (std::size_t{1} << 18)
+                    : (std::size_t{1} << 23);
 
         constexpr std::size_t
             kCudaInttMaximumSize =
@@ -1658,9 +1693,11 @@ namespace gatzk::algebra
     bool should_use_cuda_ntt(
         std::size_t size)
     {
-        constexpr std::size_t
+        const std::size_t
             kCudaNttMinimumSize =
-                std::size_t{1} << 23;
+                cuda_backend_unified_addressing_available()
+                    ? (std::size_t{1} << 18)
+                    : (std::size_t{1} << 23);
 
         constexpr std::size_t
             kCudaNttMaximumSize =
@@ -1684,9 +1721,11 @@ namespace gatzk::algebra
     bool should_use_cuda_ntt_pair(
         std::size_t size)
     {
-        constexpr std::size_t
+        const std::size_t
             kCudaPairMinimumSize =
-                std::size_t{1} << 23;
+                cuda_backend_unified_addressing_available()
+                    ? (std::size_t{1} << 18)
+                    : (std::size_t{1} << 23);
 
         constexpr std::size_t
             kCudaPairMaximumSize =
@@ -1715,8 +1754,11 @@ namespace gatzk::algebra
         // staged radix-2/radix-4 extensions up to a 2^26 lane (2^27 target).
         // Keep the historical lower admission boundary so small transforms do
         // not pay a CUDA launch and pageable staging cost.
-        constexpr std::size_t kMinimumTargetSize =
-            std::size_t{1} << 24;
+        const std::size_t kMinimumTargetSize =
+            cuda_backend_unified_addressing_available()
+                ? (std::size_t{1} << 20)
+                : (std::size_t{1} << 24);
+
         constexpr std::size_t kMaximumTargetSize =
             std::size_t{1} << 27;
 
@@ -1732,6 +1774,260 @@ namespace gatzk::algebra
         return true;
     }
 
+    bool try_cuda_batch_inverse_native(
+        const mcl::Fr *input,
+        mcl::Fr *output,
+        std::size_t element_count)
+    {
+        if (!cuda_field_route_enabled() ||
+            !cuda_backend_unified_addressing_available() ||
+            element_count <
+                (std::size_t{1} << 18))
+        {
+            return false;
+        }
+
+        if (input == nullptr ||
+            output == nullptr)
+        {
+            throw std::runtime_error(
+                "CUDA batch inverse received a null native buffer");
+        }
+
+#if GATZK_ENABLE_CUDA_BACKEND
+        if (!batch_inverse_cuda(
+                input,
+                output,
+                element_count))
+        {
+            throw std::runtime_error(
+                "selected CUDA batch inverse was unavailable");
+        }
+
+        return true;
+#else
+        return false;
+#endif
+    }
+
+    bool try_cuda_opening_inverse_denominators_native(
+        mcl::Fr *output,
+        std::size_t domain_size,
+        const FieldElement &omega,
+        const FieldElement &point)
+    {
+        if (!cuda_field_route_enabled() ||
+            !cuda_backend_unified_addressing_available() ||
+            domain_size <
+                (std::size_t{1} << 18))
+        {
+            return false;
+        }
+
+        if (output == nullptr)
+        {
+            throw std::runtime_error(
+                "CUDA opening denominator inverse received a null output");
+        }
+
+#if GATZK_ENABLE_CUDA_BACKEND
+        if (!opening_inverse_denominators_cuda(
+                output,
+                domain_size,
+                omega.native(),
+                point.native()))
+        {
+            throw std::runtime_error(
+                "selected CUDA opening denominator inverse was unavailable");
+        }
+
+        return true;
+#else
+        return false;
+#endif
+    }
+
+    bool try_cuda_opening_quotient_assembly_native(
+        const mcl::Fr *folded_values,
+        mcl::Fr *quotient_values,
+        const mcl::Fr &scaled_claim_sum,
+        std::size_t element_count)
+    {
+        if (!cuda_field_route_enabled() ||
+            !cuda_backend_unified_addressing_available() ||
+            element_count <
+                (std::size_t{1} << 18))
+        {
+            return false;
+        }
+
+        if (folded_values == nullptr ||
+            quotient_values == nullptr)
+        {
+            throw std::runtime_error(
+                "CUDA opening quotient assembly received a null buffer");
+        }
+
+#if GATZK_ENABLE_CUDA_BACKEND
+        if (!opening_quotient_assembly_cuda(
+                folded_values,
+                quotient_values,
+                scaled_claim_sum,
+                element_count))
+        {
+            throw std::runtime_error(
+                "selected CUDA opening quotient assembly was unavailable");
+        }
+
+        return true;
+#else
+        return false;
+#endif
+    }
+
+    bool try_cuda_logup_inverse_columns_native(
+        const mcl::Fr *table,
+        const mcl::Fr *query,
+        const mcl::Fr *q_table,
+        const mcl::Fr *q_query,
+        const mcl::Fr &beta,
+        mcl::Fr *table_inverse,
+        mcl::Fr *query_inverse,
+        std::size_t element_count)
+    {
+        if (!(cuda_field_route_enabled() ||
+              cuda_trace_route_enabled()) ||
+            !cuda_backend_unified_addressing_available() ||
+            element_count <
+                (std::size_t{1} << 18))
+        {
+            return false;
+        }
+
+        if (table == nullptr ||
+            query == nullptr ||
+            q_table == nullptr ||
+            q_query == nullptr ||
+            table_inverse == nullptr ||
+            query_inverse == nullptr)
+        {
+            throw std::runtime_error(
+                "CUDA LogUp inverse received a null buffer");
+        }
+
+#if GATZK_ENABLE_CUDA_BACKEND
+        if (!logup_inverse_columns_cuda(
+                table,
+                query,
+                q_table,
+                q_query,
+                beta,
+                table_inverse,
+                query_inverse,
+                element_count))
+        {
+            throw std::runtime_error(
+                "selected CUDA LogUp inverse was unavailable");
+        }
+
+        return true;
+#else
+        return false;
+#endif
+    }
+
+    bool try_cuda_logup_accumulator_native(
+        const mcl::Fr *table_inverse,
+        const mcl::Fr *query_inverse,
+        const mcl::Fr *multiplicity,
+        const mcl::Fr *q_table,
+        const mcl::Fr *q_query,
+        mcl::Fr *accumulator,
+        std::size_t active_count,
+        std::size_t element_count)
+    {
+        if (!(cuda_field_route_enabled() ||
+              cuda_trace_route_enabled()) ||
+            !cuda_backend_unified_addressing_available() ||
+            active_count <
+                (std::size_t{1} << 18))
+        {
+            return false;
+        }
+
+        if (table_inverse == nullptr ||
+            query_inverse == nullptr ||
+            multiplicity == nullptr ||
+            q_table == nullptr ||
+            q_query == nullptr ||
+            accumulator == nullptr)
+        {
+            throw std::runtime_error(
+                "CUDA LogUp accumulator received a null buffer");
+        }
+
+#if GATZK_ENABLE_CUDA_BACKEND
+        if (!logup_accumulator_cuda(
+                table_inverse,
+                query_inverse,
+                multiplicity,
+                q_table,
+                q_query,
+                accumulator,
+                active_count,
+                element_count))
+        {
+            throw std::runtime_error(
+                "selected CUDA LogUp accumulator was unavailable");
+        }
+
+        return true;
+#else
+        return false;
+#endif
+    }
+
+    bool try_cuda_scaled_prefix_accumulator_native(
+        const mcl::Fr *values,
+        const mcl::Fr &scale,
+        mcl::Fr *accumulator,
+        std::size_t active_count,
+        std::size_t element_count)
+    {
+        if (!(cuda_field_route_enabled() ||
+              cuda_trace_route_enabled()) ||
+            !cuda_backend_unified_addressing_available() ||
+            active_count <
+                (std::size_t{1} << 18))
+        {
+            return false;
+        }
+
+        if (values == nullptr ||
+            accumulator == nullptr)
+        {
+            throw std::runtime_error(
+                "CUDA prefix accumulator received a null buffer");
+        }
+
+#if GATZK_ENABLE_CUDA_BACKEND
+        if (!scaled_prefix_accumulator_cuda(
+                values,
+                scale,
+                accumulator,
+                active_count,
+                element_count))
+        {
+            throw std::runtime_error(
+                "selected CUDA prefix accumulator was unavailable");
+        }
+
+        return true;
+#else
+        return false;
+#endif
+    }
+
     bool try_cuda_scaled_accumulate_native(
         mcl::Fr *target,
         const mcl::Fr *source,
@@ -1744,7 +2040,7 @@ namespace gatzk::algebra
         // dominate the opening fold.
         const auto min_cuda_elements =
             cuda_backend_unified_addressing_available()
-                ? (1ULL << 20)
+                ? (1ULL << 18)
                 : (1ULL << 22);
 
         if (element_count < min_cuda_elements ||

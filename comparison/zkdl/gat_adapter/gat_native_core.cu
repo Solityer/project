@@ -203,6 +203,63 @@ bool resource_admission(const Config& config, const NativeRelationWitness& witne
         if (error) *error = "BLOCKED: native witness SRS basis is not the authenticated GATZKG1C resource";
         return false;
     }
+    // The formal proof API accepts one basis vector, so the manifest's
+    // family/chunk registry must select a common authenticated prefix for all
+    // tensor families in this proof.  We still perform selection separately
+    // for every family: this rejects a missing family entry and checks that a
+    // smaller family chunk is an exact prefix of the common chunk, rather
+    // than silently concatenating unrelated domains or truncating a large
+    // family to 2^19 points.
+    std::map<std::string, std::uint64_t> required_domains;
+    for (const auto& tensor : witness.tensors) {
+        const auto found = required_domains.find(tensor.id);
+        if (found != required_domains.end() && found->second != tensor.domain_size) {
+            if (error) *error = "BLOCKED: relation family has inconsistent SRS domain: " + tensor.id;
+            return false;
+        }
+        required_domains[tensor.id] = tensor.domain_size;
+    }
+    for (const auto& shape : witness.tensor_shapes) {
+        const auto found = required_domains.find(shape.id);
+        if (found != required_domains.end() && found->second != shape.domain_size) {
+            if (error) *error = "BLOCKED: tensor shape has inconsistent SRS domain: " + shape.id;
+            return false;
+        }
+        required_domains[shape.id] = shape.domain_size;
+    }
+    if (required_domains.empty()) {
+        if (error) *error = "BLOCKED: native witness has no relation-family SRS domain requests";
+        return false;
+    }
+    for (const auto& requirement : required_domains) {
+        const AuthenticatedSrsResource::Chunk* selected = nullptr;
+        if (!select_authenticated_srs_chunk(&srs, requirement.first,
+                                            requirement.second, &selected, error)) return false;
+        if (!selected || selected->generators.size() < requirement.second ||
+            selected->domain > srs.domain || srs.generators.size() < selected->domain ||
+            selected->generator_id != srs.generator_id ||
+            selected->ceremony_transcript_digest != srs.ceremony_transcript_digest ||
+            selected->blinding_generator != srs.blinding_generator ||
+            selected->u_generator != srs.u_generator) {
+            if (error) *error = "BLOCKED: SRS family/chunk is not compatible with the common public chunk: " +
+                                 requirement.first;
+            return false;
+        }
+        for (std::uint64_t index = 0U; index < selected->domain; ++index) {
+            if (selected->generators[static_cast<std::size_t>(index)] !=
+                srs.generators[static_cast<std::size_t>(index)]) {
+                if (error) *error = "BLOCKED: SRS family/chunk generator prefix differs from common public chunk: " +
+                                     requirement.first;
+                return false;
+            }
+        }
+    }
+    if (srs.count != srs.domain || srs.generators.size() != srs.count ||
+        srs.domain == 0U || !native_power_of_two(srs.domain) ||
+        (srs.domain > 1U && srs.degree < srs.domain - 1U)) {
+        if (error) *error = "BLOCKED: authenticated common SRS chunk has invalid point/domain contract";
+        return false;
+    }
     const auto encode_point = [&](const zkdl::CpuG1Point& point,
                                   std::vector<zkdl::byte>& encoded) {
         std::array<zkdl::byte, kNativeG1WireBytes> wire{};
@@ -221,8 +278,7 @@ bool resource_admission(const Config& config, const NativeRelationWitness& witne
         }
     }
     if ((srs.degree == 0U && srs.domain != 1U) || srs.domain == 0U ||
-        srs.count != srs.domain ||
-        !native_power_of_two(srs.domain) ||
+        srs.count != srs.domain || !native_power_of_two(srs.domain) ||
         (srs.domain > 1U && srs.degree < srs.domain - 1U)) {
         if (error) *error = "BLOCKED: authenticated SRS degree/domain contract is invalid";
         return false;
@@ -1179,7 +1235,10 @@ bool padded_matrix_shape(
         if (error) *error = "BLOCKED: canonical padded matrix inner dimension does not match kernel";
         return false;
     }
-    primitive.kind = 1U;
+    // Kind 2 is the formal hidden committed-coefficient matrix proof.  The
+    // historical kind-1 zkMatMul wire remains reserved for explicit legacy
+    // rejection and is never emitted by the canonical GAT descriptor.
+    primitive.kind = 2U;
     primitive.matmul_shape.num = 1U;
     primitive.matmul_shape.m = static_cast<std::uint32_t>(input->padded_shape[0]);
     primitive.matmul_shape.n = static_cast<std::uint32_t>(input_inner);

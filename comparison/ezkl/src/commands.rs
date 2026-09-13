@@ -475,6 +475,27 @@ pub enum Commands {
         gpu: bool,
     },
 
+    /// Produce the verifier-facing public GAT statement and logits from the
+    /// authenticated baseline-local resources and setup CircuitRef.
+    #[command(name = "gat-statement")]
+    GatStatement {
+        /// Canonical dataset name.
+        #[arg(long)]
+        dataset: String,
+        /// Baseline-local authenticated resource manifest.
+        #[arg(long, default_value = "resources/resource_manifest.json", value_hint = clap::ValueHint::FilePath)]
+        resource_manifest: PathBuf,
+        /// CircuitRef emitted by the setup phase.
+        #[arg(long, value_hint = clap::ValueHint::FilePath)]
+        circuit_ref: PathBuf,
+        /// External verifier-facing public statement output.
+        #[arg(long, value_hint = clap::ValueHint::FilePath)]
+        statement: PathBuf,
+        /// External canonical public logits output.
+        #[arg(long, value_hint = clap::ValueHint::FilePath)]
+        public_output: PathBuf,
+    },
+
     /// Construct a complete GraphWitness for a prepared canonical GAT circuit.
     #[command(name = "gat-witness")]
     GatWitness {

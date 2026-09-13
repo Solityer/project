@@ -11,8 +11,10 @@ INCLUDES := -I$(CUDA_PATH)/include # -I$(LIBTORCH_PATH)/include -I$(LIBTORCH_PAT
 LIBS := -L$(CUDA_PATH)/lib64 -lcudart -lcrypto # -L$(LIBTORCH_PATH)/lib -ltorch -ltorch_cpu -ltorch_cuda -lc10 -lc10_cuda
 
 
-# NVCC compiler flags
-NVCC_FLAGS := -arch=sm_80
+# NVCC compiler flags.  CUDA_ARCH is deliberately overrideable so the binary
+# is always built for the machine on which the formal run is performed.
+CUDA_ARCH ?= sm_121
+NVCC_FLAGS := -arch=$(CUDA_ARCH)
 
 # Source and target files
 SRCS := $(wildcard *.cu)

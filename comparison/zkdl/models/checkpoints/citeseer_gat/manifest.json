@@ -9,7 +9,7 @@
     64
   ],
   "dataset": "citeseer",
-  "degree_bound_id": "auto",
+  "degree_bound_id": "zkdl_degree_v2_citeseer_ceremony_required",
   "edge_sort_rule": "edge_gid_then_dst_stable",
   "family_schema": "multi_layer_multi_head",
   "hidden_head_specs": [

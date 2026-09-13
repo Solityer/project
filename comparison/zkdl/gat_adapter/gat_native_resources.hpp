@@ -19,6 +19,44 @@ struct AuthenticatedSrsResource {
     std::string manifest_path;
     std::array<std::uint8_t, 32U> manifest_digest{};
     std::array<std::uint8_t, 32U> generator_digest{};
+    // A manifest may contain one authenticated prefix basis per relation
+    // family/chunk.  `generators` below is only the deterministic common
+    // execution chunk selected for the current request; chunks are never
+    // concatenated into an unbounded global SRS domain.
+    struct Chunk {
+        std::string family_id;
+        std::string chunk_id;
+        std::uint64_t chunk_index = 0U;
+        std::uint64_t point_offset = 0U;
+        std::uint64_t point_count = 0U;
+        std::uint64_t domain = 0U;
+        std::uint64_t degree = 0U;
+        std::uint32_t point_size = 0U;
+        std::string generator_id;
+        std::string ceremony_transcript_digest;
+        std::string ceremony_seed_digest;
+        std::string g_path;
+        std::string h_path;
+        std::string u_path;
+        std::string g_digest;
+        std::string h_digest;
+        std::string u_digest;
+        // Canonical digest of the G frame; retained separately so the
+        // selected chunk identity is explicit in resource metadata.
+        std::string generator_digest;
+        std::vector<std::vector<std::uint8_t>> generators;
+        std::vector<std::uint8_t> blinding_generator;
+        std::vector<std::uint8_t> u_generator;
+        bool materialized = false;
+        bool authenticated = false;
+    };
+    std::string chunking_rule;
+    std::string generator_id;
+    std::string ceremony_transcript_digest;
+    std::vector<Chunk> chunks;
+    std::string selected_family_id;
+    std::string selected_chunk_id;
+    std::uint64_t selected_chunk_index = 0U;
     std::uint64_t count = 0U;
     std::uint64_t domain = 0U;
     std::uint64_t degree = 0U;
@@ -65,6 +103,18 @@ struct AuthenticatedModelBlinders {
 bool load_authenticated_srs(const Config& config,
                              AuthenticatedSrsResource* resource,
                              std::string* error = nullptr);
+
+// Select the smallest authenticated prefix chunk that covers one canonical
+// relation-family domain.  The returned pointer remains owned by `resource`.
+// Callers must use the common chunk material exposed by `resource` for the
+// native proof context; this helper authenticates family/chunk choice and
+// materializes its independent authenticated basis.  The caller that binds
+// it to the common proof basis must perform the exact-prefix comparison.
+bool select_authenticated_srs_chunk(AuthenticatedSrsResource* resource,
+                                     const std::string& family_id,
+                                     std::uint64_t required_domain,
+                                     const AuthenticatedSrsResource::Chunk** chunk,
+                                     std::string* error = nullptr);
 bool load_authenticated_model_registry(const Config& config,
                                        const AuthenticatedSrsResource& srs,
                                        AuthenticatedModelRegistry* resource,

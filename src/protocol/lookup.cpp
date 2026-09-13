@@ -1,4 +1,5 @@
 #include "gatzk/protocol/lookup.hpp"
+#include "gatzk/algebra/vector_ops.hpp"
 
 #include <algorithm>
 #include <future>
@@ -27,6 +28,15 @@ namespace gatzk::protocol
         {
             out.assign(values.size(), mcl::Fr{});
             if (values.empty())
+            {
+                return;
+            }
+
+            if (algebra::
+                    try_cuda_batch_inverse_native(
+                        values.data(),
+                        out.data(),
+                        values.size()))
             {
                 return;
             }
@@ -215,18 +225,47 @@ namespace gatzk::protocol
         out.inverses = build_active_prefix_inverse_column(
             tuples, active_length, beta);
         out.accumulator.assign(
-            tuples.size(), FieldElement::zero());
+            tuples.size(),
+            FieldElement::zero());
+
+        if (algebra::
+                try_cuda_scaled_prefix_accumulator_native(
+                    FieldElement::
+                        native_array_data(
+                            out.inverses.data()),
+                    active_multiplicity.native(),
+                    FieldElement::
+                        mutable_native_array_data(
+                            out.accumulator.data()),
+                    active_length,
+                    tuples.size()))
+        {
+            return out;
+        }
+
         mcl::Fr running;
         running.clear();
-        for (std::size_t i = 0; i < active_length; ++i)
+
+        for (std::size_t i = 0;
+             i < active_length;
+             ++i)
         {
             mcl::Fr term;
+
             mcl::Fr::mul(
                 term,
                 active_multiplicity.native(),
                 out.inverses[i].native());
-            mcl::Fr::add(running, running, term);
-            out.accumulator[i + 1] = FieldElement::from_native(running);
+
+            mcl::Fr::add(
+                running,
+                running,
+                term);
+
+            out.accumulator[i + 1] =
+                FieldElement::
+                    from_native(
+                        running);
         }
         if (active_length + 1 < tuples.size())
         {
@@ -253,8 +292,41 @@ namespace gatzk::protocol
                 throw std::runtime_error("lookup inverse column input size mismatch");
             }
             LogUpInverseColumns out;
-            out.table.assign(n, FieldElement::zero());
-            out.query.assign(n, FieldElement::zero());
+            out.table.assign(
+                n,
+                FieldElement::zero());
+
+            out.query.assign(
+                n,
+                FieldElement::zero());
+
+            if (n != 0 &&
+                algebra::
+                    try_cuda_logup_inverse_columns_native(
+                        FieldElement::
+                            native_array_data(
+                                table.data()),
+                        FieldElement::
+                            native_array_data(
+                                query.data()),
+                        FieldElement::
+                            native_array_data(
+                                q_table.data()),
+                        FieldElement::
+                            native_array_data(
+                                q_query.data()),
+                        beta.native(),
+                        FieldElement::
+                            mutable_native_array_data(
+                                out.table.data()),
+                        FieldElement::
+                            mutable_native_array_data(
+                                out.query.data()),
+                        n))
+            {
+                return out;
+            }
+
             thread_local std::vector<mcl::Fr> denominators;
             thread_local std::vector<mcl::Fr> inverses;
             denominators.clear();
@@ -338,8 +410,40 @@ namespace gatzk::protocol
             {
                 return accumulator;
             }
-            active_count = std::min(active_count, n - 1U);
-            const auto one = FieldElement::one();
+            active_count =
+                std::min(
+                    active_count,
+                    n - 1U);
+
+            if (algebra::
+                    try_cuda_logup_accumulator_native(
+                        FieldElement::
+                            native_array_data(
+                                table_inverse.data()),
+                        FieldElement::
+                            native_array_data(
+                                query_inverse.data()),
+                        FieldElement::
+                            native_array_data(
+                                multiplicity.data()),
+                        FieldElement::
+                            native_array_data(
+                                q_table.data()),
+                        FieldElement::
+                            native_array_data(
+                                q_query.data()),
+                        FieldElement::
+                            mutable_native_array_data(
+                                accumulator.data()),
+                        active_count,
+                        n))
+            {
+                return accumulator;
+            }
+
+            const auto one =
+                FieldElement::one();
+
             const auto accumulate_range = [&](
                                               std::size_t begin,
                                               std::size_t end,

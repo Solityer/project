@@ -2797,14 +2797,11 @@ namespace gatzk::crypto
                 return std::nullopt;
             }
 
-            // The explicit same-SRS wave handles dense immutable-SRS MSMs.
-            // Sparse and constant-tail objects retain their specialized path,
-            // where compaction changes the effective point vector.
-            if (estimated_work !=
-                polynomial.size())
-            {
-                return std::nullopt;
-            }
+            // CUDA execution preserves the immutable SRS point vector even
+            // when the logical scalar vector is sparse or has a constant
+            // tail.  Keep such objects eligible for same-SRS scheduling;
+            // the lower MSM execution layer owns the exact scalar route.
+            (void)estimated_work;
 
             if (polynomial.basis ==
                 algebra::PolynomialBasis::Coefficient)
@@ -6316,11 +6313,26 @@ namespace gatzk::crypto
                 opening_evaluation_scratch.resize(
                     group.domain->size);
 
-                build_opening_inverse_denominators(
-                    &opening_evaluation_scratch,
-                    group.domain,
-                    point,
-                    worker_cap);
+                const bool
+                    cuda_inverse_denominators =
+                        algebra::
+                            try_cuda_opening_inverse_denominators_native(
+                                FieldElement::
+                                    mutable_native_array_data(
+                                        opening_evaluation_scratch
+                                            .data()),
+                                group.domain->size,
+                                group.domain->omega,
+                                point);
+
+                if (!cuda_inverse_denominators)
+                {
+                    build_opening_inverse_denominators(
+                        &opening_evaluation_scratch,
+                        group.domain,
+                        point,
+                        worker_cap);
+                }
 
                 if (profile != nullptr)
                 {
@@ -6341,46 +6353,63 @@ namespace gatzk::crypto
                     FieldElement::mutable_native_array_data(
                         opening_evaluation_scratch.data());
 
-                mcl::Fr zero;
-                zero.clear();
-
-                mcl::Fr base_numerator;
-
-                mcl::Fr::sub(
-                    base_numerator,
-                    zero,
-                    group.scaled_claim_sums[point_index]
-                        .native());
-
                 const auto *folded_values_native =
                     FieldElement::native_array_data(
                         group.folded_values.data());
 
-                parallel_for_chunks_capped(
-                    group.domain->size,
-                    1ULL << 15,
-                    worker_cap,
-                    [&](std::size_t begin,
-                        std::size_t end)
-                    {
-                        for (std::size_t row = begin;
-                             row < end;
-                             ++row)
+                const bool
+                    cuda_quotient_assembly =
+                        algebra::
+                            try_cuda_opening_quotient_assembly_native(
+                                folded_values_native,
+                                quotient_values_native,
+                                group
+                                    .scaled_claim_sums[point_index]
+                                    .native(),
+                                group.domain->size);
+
+                if (!cuda_quotient_assembly)
+                {
+                    mcl::Fr zero;
+                    zero.clear();
+
+                    mcl::Fr base_numerator;
+
+                    mcl::Fr::sub(
+                        base_numerator,
+                        zero,
+                        group
+                            .scaled_claim_sums[point_index]
+                            .native());
+
+                    parallel_for_chunks_capped(
+                        group.domain->size,
+                        1ULL << 15,
+                        worker_cap,
+                        [&](std::size_t begin,
+                            std::size_t end)
                         {
-                            mcl::Fr native_numerator =
-                                base_numerator;
+                            for (std::size_t row =
+                                     begin;
+                                 row < end;
+                                 ++row)
+                            {
+                                mcl::Fr
+                                    native_numerator =
+                                        base_numerator;
 
-                            mcl::Fr::add(
-                                native_numerator,
-                                native_numerator,
-                                folded_values_native[row]);
+                                mcl::Fr::add(
+                                    native_numerator,
+                                    native_numerator,
+                                    folded_values_native[row]);
 
-                            mcl::Fr::mul(
-                                quotient_values_native[row],
-                                native_numerator,
-                                quotient_values_native[row]);
-                        }
-                    });
+                                mcl::Fr::mul(
+                                    quotient_values_native[row],
+                                    native_numerator,
+                                    quotient_values_native[row]);
+                            }
+                        });
+                }
 
                 if (profile != nullptr)
                 {

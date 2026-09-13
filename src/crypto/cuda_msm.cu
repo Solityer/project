@@ -217,7 +217,7 @@ namespace gatzk::crypto
 
             const auto worker_count =
                 std::min<std::size_t>(
-                    8,
+                    32,
                     std::min(
                         hardware_workers,
                         useful_workers));
@@ -731,6 +731,7 @@ namespace gatzk::crypto
         {
             bls12_381::affine_t *device_points = nullptr;
             std::size_t uploaded_count = 0;
+            std::size_t allocated_count = 0;
             std::size_t byte_count = 0;
             std::uint64_t last_use = 0;
             BaseStorageFingerprint fingerprint;
@@ -847,20 +848,83 @@ namespace gatzk::crypto
                         found->second.last_use = ++use_clock_;
                         return found->second.device_points;
                     }
+                    else if (
+                        found->second.allocated_count >=
+                        count)
+                    {
+                        const auto old_count =
+                            found->second.uploaded_count;
+
+                        upload_normalized_points(
+                            found->second.device_points +
+                                old_count,
+                            points +
+                                old_count,
+                            count -
+                                old_count);
+
+                        found->second.uploaded_count =
+                            count;
+
+                        found->second.last_use =
+                            ++use_clock_;
+
+                        return found->second
+                            .device_points;
+                    }
                     else
                     {
-                        // Replace a smaller prefix.  This avoids storing many
-                        // overlapping copies for the same powers/Lagrange SRS.
-                        erase_entry(found, "base-prefix upgrade");
+                        // Only replace the allocation when its reserved
+                        // capacity is genuinely insufficient.  Ordinary
+                        // prefix growth appends only the missing suffix.
+                        erase_entry(
+                            found,
+                            "base-prefix capacity upgrade");
+
                         found = entries_.end();
                     }
                 }
 
-                const auto byte_count =
+                std::size_t allocation_count =
+                    count;
+
+                if (count <
+                    storage_capacity)
+                {
+                    const auto doubled =
+                        count <=
+                                std::numeric_limits<
+                                    std::size_t>::max() /
+                                    2
+                            ? count * 2
+                            : storage_capacity;
+
+                    allocation_count =
+                        std::min(
+                            storage_capacity,
+                            doubled);
+                }
+
+                auto byte_count =
                     checked_byte_count(
-                        count,
+                        allocation_count,
                         sizeof(bls12_381::affine_t),
                         "resident base cache");
+
+                if (byte_count >
+                    kDeviceBaseCacheLimitBytes)
+                {
+                    allocation_count =
+                        count;
+
+                    byte_count =
+                        checked_byte_count(
+                            allocation_count,
+                            sizeof(
+                                bls12_381::
+                                    affine_t),
+                            "resident base cache");
+                }
 
                 if (byte_count > kDeviceBaseCacheLimitBytes)
                 {
@@ -909,6 +973,7 @@ namespace gatzk::crypto
                     BaseCacheEntry{
                         device_points,
                         count,
+                        allocation_count,
                         byte_count,
                         ++use_clock_,
                         fingerprint,
@@ -1447,29 +1512,42 @@ namespace gatzk::crypto
             }
             else
             {
-                config.are_scalars_montgomery_form =
-                    false;
+                const bool
+                    direct_montgomery_host =
+                        cuda_msm_device_is_integrated() &&
+                        algebra::
+                            cuda_backend_unified_addressing_available();
 
-                auto &scalar_staging =
-                    reusable_scalar_staging();
-
-                auto *converted_scalars =
-                    scalar_staging.host(
-                        count);
-
-                copy_mcl_canonical_scalars_to_icicle(
-                    converted_scalars,
-                    scalars,
-                    count);
-
-                if (cuda_msm_device_is_integrated())
+                if (direct_montgomery_host)
                 {
+                    static_assert(
+                        sizeof(
+                            algebra::FieldElement) ==
+                            sizeof(mcl::Fr),
+                        "FieldElement must wrap exactly one mcl::Fr");
+
+                    static_assert(
+                        sizeof(mcl::Fr) ==
+                            sizeof(
+                                bls12_381::
+                                    scalar_t),
+                        "mcl::Fr and ICICLE scalar storage must match");
+
                     config.are_scalars_on_device =
                         false;
 
+                    config.are_scalars_montgomery_form =
+                        true;
+
                     status =
                         bls12_381_msm_cuda(
-                            converted_scalars,
+                            reinterpret_cast<
+                                const bls12_381::
+                                    scalar_t *>(
+                                algebra::
+                                    FieldElement::
+                                        native_array_data(
+                                            scalars)),
                             device_points,
                             static_cast<int>(
                                 count),
@@ -1478,26 +1556,58 @@ namespace gatzk::crypto
                 }
                 else
                 {
-                    auto *device_scalars =
-                        scalar_staging.device(
+                    config.are_scalars_montgomery_form =
+                        false;
+
+                    auto &scalar_staging =
+                        reusable_scalar_staging();
+
+                    auto *converted_scalars =
+                        scalar_staging.host(
                             count);
 
-                    copy_icicle_scalars_to_device(
-                        device_scalars,
+                    copy_mcl_canonical_scalars_to_icicle(
                         converted_scalars,
+                        scalars,
                         count);
 
-                    config.are_scalars_on_device =
-                        true;
+                    if (cuda_msm_device_is_integrated())
+                    {
+                        config.are_scalars_on_device =
+                            false;
 
-                    status =
-                        bls12_381_msm_cuda(
+                        status =
+                            bls12_381_msm_cuda(
+                                converted_scalars,
+                                device_points,
+                                static_cast<int>(
+                                    count),
+                                config,
+                                &result);
+                    }
+                    else
+                    {
+                        auto *device_scalars =
+                            scalar_staging.device(
+                                count);
+
+                        copy_icicle_scalars_to_device(
                             device_scalars,
-                            device_points,
-                            static_cast<int>(
-                                count),
-                            config,
-                            &result);
+                            converted_scalars,
+                            count);
+
+                        config.are_scalars_on_device =
+                            true;
+
+                        status =
+                            bls12_381_msm_cuda(
+                                device_scalars,
+                                device_points,
+                                static_cast<int>(
+                                    count),
+                                config,
+                                &result);
+                    }
                 }
             }
             if (status == cudaErrorMemoryAllocation)
@@ -2276,6 +2386,14 @@ namespace gatzk::crypto
                     device_montgomery_scalar_device);
             }
 
+            const bool
+                direct_montgomery_host =
+                    device_montgomery_scalars ==
+                        nullptr &&
+                    cuda_msm_device_is_integrated() &&
+                    algebra::
+                        cuda_backend_unified_addressing_available();
+
             const auto minimum_chunk =
                 std::min(
                     count,
@@ -2295,7 +2413,8 @@ namespace gatzk::crypto
                 chunk_size,
                 1,
                 device_montgomery_scalars ==
-                    nullptr))
+                        nullptr &&
+                    !direct_montgomery_host))
             {
                 if (chunk_size <= minimum_chunk)
                 {
@@ -2361,6 +2480,31 @@ namespace gatzk::crypto
                             device_montgomery_scalars) +
                         offset;
                 }
+                else if (direct_montgomery_host)
+                {
+                    static_assert(
+                        sizeof(mcl::Fr) ==
+                            sizeof(
+                                bls12_381::
+                                    scalar_t),
+                        "mcl::Fr and ICICLE scalar storage must match");
+
+                    config.are_scalars_on_device =
+                        false;
+
+                    config.are_scalars_montgomery_form =
+                        true;
+
+                    msm_scalars =
+                        reinterpret_cast<
+                            const bls12_381::
+                                scalar_t *>(
+                            algebra::
+                                FieldElement::
+                                    native_array_data(
+                                        scalars +
+                                        offset));
+                }
                 else
                 {
                     copy_mcl_canonical_scalars_to_icicle(
@@ -2379,7 +2523,6 @@ namespace gatzk::crypto
                             .converted_scalars
                             .data();
                 }
-
                 bls12_381::projective_t result;
 
                 const auto status =
@@ -2413,7 +2556,8 @@ namespace gatzk::crypto
                                 chunk_size,
                                 1,
                                 device_montgomery_scalars ==
-                                    nullptr))
+                                        nullptr &&
+                                    !direct_montgomery_host))
                         {
                             break;
                         }
