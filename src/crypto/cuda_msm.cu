@@ -1705,7 +1705,8 @@ namespace gatzk::crypto
             auto *batched_scalars =
                 scalar_staging.host(
                     total_scalar_count);
-                        const bool
+
+            const bool
                 direct_montgomery_host =
                     cuda_msm_device_is_integrated() &&
                     algebra::
@@ -1720,8 +1721,6 @@ namespace gatzk::crypto
                                 scalar_t),
                     "mcl::Fr and ICICLE scalar storage must match");
             }
-
-            for (std::size_t batch = 0;
 
             for (std::size_t batch = 0;
                  batch < batch_size;
@@ -1746,8 +1745,7 @@ namespace gatzk::crypto
                             algebra::
                                 FieldElement::
                                     native_array_data(
-                                        scalar_vectors[
-                                            batch]),
+                                        scalar_vectors[batch]),
                             checked_byte_count(
                                 counts[batch],
                                 sizeof(
@@ -1920,6 +1918,25 @@ namespace gatzk::crypto
                     max_count,
                     device_montgomery_scalar_device);
             }
+
+            const bool
+                direct_montgomery_host =
+                    device_montgomery_scalars ==
+                        nullptr &&
+                    cuda_msm_device_is_integrated() &&
+                    algebra::
+                        cuda_backend_unified_addressing_available();
+
+            if (direct_montgomery_host)
+            {
+                static_assert(
+                    sizeof(mcl::Fr) ==
+                        sizeof(
+                            bls12_381::
+                                scalar_t),
+                    "mcl::Fr and ICICLE scalar storage must match");
+            }
+
             const auto minimum_chunk =
                 std::min(
                     max_count,
@@ -2077,15 +2094,40 @@ namespace gatzk::crypto
                                           offset)
                                 : std::size_t{0};
 
-                        copy_mcl_canonical_scalars_to_icicle(
+                        auto *batch_scalars =
                             converted_scalars.data() +
-                                batch *
-                                    current_count,
-                            valid_count == 0
-                                ? nullptr
-                                : scalar_vectors[batch] +
-                                      offset,
-                            valid_count);
+                            batch *
+                                current_count;
+
+                        if (direct_montgomery_host)
+                        {
+                            if (valid_count != 0)
+                            {
+                                std::memcpy(
+                                    batch_scalars,
+                                    algebra::
+                                        FieldElement::
+                                            native_array_data(
+                                                scalar_vectors[batch] +
+                                                offset),
+                                    checked_byte_count(
+                                        valid_count,
+                                        sizeof(
+                                            bls12_381::
+                                                scalar_t),
+                                        "chunked batch raw Montgomery scalars"));
+                            }
+                        }
+                        else
+                        {
+                            copy_mcl_canonical_scalars_to_icicle(
+                                batch_scalars,
+                                valid_count == 0
+                                    ? nullptr
+                                    : scalar_vectors[batch] +
+                                          offset,
+                                valid_count);
+                        }
 
                         std::fill(
                             converted_scalars.data() +
@@ -2106,7 +2148,7 @@ namespace gatzk::crypto
                         false;
 
                     config.are_scalars_montgomery_form =
-                        false;
+                        direct_montgomery_host;
 
                     status =
                         bls12_381_msm_cuda(
@@ -2697,6 +2739,22 @@ namespace gatzk::crypto
                 }
             }
 
+            const bool
+                direct_montgomery_host =
+                    cuda_msm_device_is_integrated() &&
+                    algebra::
+                        cuda_backend_unified_addressing_available();
+
+            if (direct_montgomery_host)
+            {
+                static_assert(
+                    sizeof(mcl::Fr) ==
+                        sizeof(
+                            bls12_381::
+                                scalar_t),
+                    "mcl::Fr and ICICLE scalar storage must match");
+            }
+
             const auto minimum_chunk =
                 std::min(
                     max_count,
@@ -2770,16 +2828,42 @@ namespace gatzk::crypto
                                   counts[batch] - offset)
                             : std::size_t{0};
 
-                    copy_mcl_canonical_scalars_to_icicle(
+                    auto *batch_scalars =
                         buffers
-                                .converted_scalars
-                                .data() +
-                            batch *
-                                current_count,
-                        valid_count == 0
-                            ? nullptr
-                            : scalar_vectors[batch] + offset,
-                        valid_count);
+                            .converted_scalars
+                            .data() +
+                        batch *
+                            current_count;
+
+                    if (direct_montgomery_host)
+                    {
+                        if (valid_count != 0)
+                        {
+                            std::memcpy(
+                                batch_scalars,
+                                algebra::
+                                    FieldElement::
+                                        native_array_data(
+                                            scalar_vectors[batch] +
+                                            offset),
+                                checked_byte_count(
+                                    valid_count,
+                                    sizeof(
+                                        bls12_381::
+                                            scalar_t),
+                                    "streamed batch raw Montgomery scalars"));
+                        }
+                    }
+                    else
+                    {
+                        copy_mcl_canonical_scalars_to_icicle(
+                            batch_scalars,
+                            valid_count == 0
+                                ? nullptr
+                                : scalar_vectors[batch] +
+                                      offset,
+                            valid_count);
+                    }
 
                     std::fill(
                         buffers
@@ -2815,7 +2899,7 @@ namespace gatzk::crypto
                     false;
 
                 config.are_scalars_montgomery_form =
-                    false;
+                    direct_montgomery_host;
 
                 config.are_results_on_device =
                     false;
