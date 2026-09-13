@@ -16,6 +16,8 @@
 #include <sys/random.h>
 #endif
 
+#include <mutex>
+
 namespace zkdl {
 
 /* All IPA openings are bound to the public relation descriptor before the
@@ -388,16 +390,128 @@ inline std::uint32_t cpu_ipa_padded_size(std::uint32_t generator_size) {
     return padded;
 }
 
+/*
+ * Strict G1 decoding is intentionally expensive: the wire codec checks the
+ * curve and the prime-order subgroup for every point.  Formal proving and
+ * independent verification repeatedly pass the same authenticated basis
+ * through that boundary, so retain only a small positive cache.  The cache
+ * key is a versioned, fixed-width host representation of every coordinate,
+ * together with the complete basis shape and domain.  It is hashed for the
+ * lookup index and compared byte-for-byte before a hit is accepted.  Thus a
+ * digest collision cannot turn an unvalidated or different basis into a hit.
+ * Entries are added only after all strict checks have succeeded; failures are
+ * never cached.  Large bases are deliberately not retained to keep the
+ * process-wide cache bounded in both entry count and memory.
+ */
+struct CpuPedersenBasisCacheEntry {
+    bool occupied = false;
+    std::array<byte, 32U> key_digest{};
+    std::vector<byte> key;
+    std::array<byte, 32U> canonical_digest{};
+    std::uint64_t last_used = 0U;
+};
+
+struct CpuPedersenBasisCache {
+    static constexpr std::size_t kMaxEntries = 8U;
+    static constexpr std::size_t kMaxKeyBytes = 1U << 20U;
+    std::mutex mutex;
+    std::array<CpuPedersenBasisCacheEntry, kMaxEntries> entries{};
+    std::uint64_t clock = 0U;
+};
+
+inline CpuPedersenBasisCache& cpu_pedersen_basis_cache() {
+    static CpuPedersenBasisCache cache;
+    return cache;
+}
+
+inline void cpu_pedersen_basis_cache_append_point(
+    std::vector<byte>& key, const CpuG1Point& point) {
+    for (const auto limb : point.x) append_u32(key, limb);
+    for (const auto limb : point.y) append_u32(key, limb);
+    for (const auto limb : point.z) append_u32(key, limb);
+}
+
+inline std::vector<byte> cpu_pedersen_basis_cache_key(
+    const std::vector<CpuG1Point>& generators, const CpuG1Point& h,
+    const CpuG1Point& u, std::uint32_t padded_size) {
+    const std::size_t point_bytes = 3U * CpuFp{}.size() * sizeof(std::uint32_t);
+    if (generators.size() >
+        (CpuPedersenBasisCache::kMaxKeyBytes - 128U) / point_bytes)
+        return {};
+    static constexpr char kDomain[] = "zkdl.cpu-pedersen-basis-cache.v1";
+    std::vector<byte> key;
+    key.reserve(sizeof(kDomain) - 1U + 4U + 8U + 4U +
+                (generators.size() + 2U) * point_bytes);
+    append_u32(key, static_cast<std::uint32_t>(sizeof(kDomain) - 1U));
+    key.insert(key.end(), kDomain, kDomain + sizeof(kDomain) - 1U);
+    append_u64(key, static_cast<std::uint64_t>(generators.size()));
+    append_u32(key, padded_size);
+    for (const auto& generator : generators)
+        cpu_pedersen_basis_cache_append_point(key, generator);
+    cpu_pedersen_basis_cache_append_point(key, h);
+    cpu_pedersen_basis_cache_append_point(key, u);
+    return key;
+}
+
+inline bool cpu_pedersen_basis_cache_lookup(
+    const std::vector<byte>& key, std::array<byte, 32U>& canonical_digest) {
+    if (key.empty() || key.size() > CpuPedersenBasisCache::kMaxKeyBytes)
+        return false;
+    const std::array<byte, 32U> key_digest = sha256(key);
+    CpuPedersenBasisCache& cache = cpu_pedersen_basis_cache();
+    std::lock_guard<std::mutex> lock(cache.mutex);
+    for (auto& entry : cache.entries) {
+        if (entry.occupied && entry.key_digest == key_digest && entry.key == key) {
+            canonical_digest = entry.canonical_digest;
+            entry.last_used = ++cache.clock;
+            return true;
+        }
+    }
+    return false;
+}
+
+inline void cpu_pedersen_basis_cache_store(
+    const std::vector<byte>& key, const std::array<byte, 32U>& canonical_digest) {
+    if (key.empty() || key.size() > CpuPedersenBasisCache::kMaxKeyBytes) return;
+    const std::array<byte, 32U> key_digest = sha256(key);
+    CpuPedersenBasisCache& cache = cpu_pedersen_basis_cache();
+    std::lock_guard<std::mutex> lock(cache.mutex);
+    CpuPedersenBasisCacheEntry* selected = nullptr;
+    for (auto& entry : cache.entries) {
+        if (entry.occupied && entry.key_digest == key_digest && entry.key == key) {
+            selected = &entry;
+            break;
+        }
+        if (!entry.occupied && selected == nullptr) selected = &entry;
+    }
+    if (selected == nullptr) {
+        selected = &cache.entries.front();
+        for (auto& entry : cache.entries)
+            if (entry.last_used < selected->last_used) selected = &entry;
+    }
+    selected->occupied = true;
+    selected->key_digest = key_digest;
+    selected->key = key;
+    selected->canonical_digest = canonical_digest;
+    selected->last_used = ++cache.clock;
+}
+
 inline std::array<byte, 32U> cpu_ipa_basis_digest(
     const std::vector<CpuG1Point>& generators, const CpuG1Point& h,
     const CpuG1Point& u, std::uint32_t padded_size) {
+    const std::vector<byte> cache_key = cpu_pedersen_basis_cache_key(
+        generators, h, u, padded_size);
+    std::array<byte, 32U> cached_digest{};
+    if (cpu_pedersen_basis_cache_lookup(cache_key, cached_digest)) return cached_digest;
     std::vector<byte> encoded;
     append_u32(encoded, static_cast<std::uint32_t>(generators.size()));
     append_u32(encoded, padded_size);
     for (const auto& generator : generators) append_g1(encoded, cpu_g1_to_native(generator));
     append_g1(encoded, cpu_g1_to_native(h));
     append_g1(encoded, cpu_g1_to_native(u));
-    return sha256(encoded);
+    const std::array<byte, 32U> digest = sha256(encoded);
+    cpu_pedersen_basis_cache_store(cache_key, digest);
+    return digest;
 }
 
 inline FrWire cpu_ipa_inner_product(const std::vector<FrWire>& left,
@@ -419,8 +533,9 @@ inline std::vector<FrWire> cpu_ipa_mle_weights(const std::vector<FrWire>& point)
         const FrWire u = point[bit];
         const FrWire one_minus = fr_sub(one, u);
         for (size_t i = old_size; i-- > 0U;) {
-            weights[2U * i] = fr_mul(weights[i], one_minus);
-            weights[2U * i + 1U] = fr_mul(weights[i], u);
+            const FrWire parent = weights[i];
+            weights[2U * i] = fr_mul(parent, one_minus);
+            weights[2U * i + 1U] = fr_mul(parent, u);
         }
     }
     return weights;
@@ -434,11 +549,15 @@ inline FrWire cpu_ipa_nonzero_challenge(Transcript& transcript, const std::strin
     return challenge;
 }
 
-inline bool cpu_pedersen_strict_g1(const CpuG1Point& point,
-                                   std::string* error = nullptr) {
+inline bool cpu_pedersen_strict_g1(
+    const CpuG1Point& point, std::string* error = nullptr,
+    std::array<byte, 48U>* encoded_out = nullptr) {
     std::array<byte, 48U> encoded{};
     std::string point_error;
-    if (zkdl_g1_wire::encode(cpu_g1_to_native(point), encoded, &point_error)) return true;
+    if (zkdl_g1_wire::encode(cpu_g1_to_native(point), encoded, &point_error)) {
+        if (encoded_out != nullptr) *encoded_out = encoded;
+        return true;
+    }
     if (error) *error = point_error.empty() ? "invalid Pedersen G1 point" : point_error;
     return false;
 }
@@ -457,9 +576,20 @@ inline bool cpu_pedersen_basis_valid(const std::vector<CpuG1Point>& generators,
         if (error) *error = "Pedersen basis shape or H/U independence is invalid";
         return false;
     }
-    if (!cpu_pedersen_strict_g1(h, error) || !cpu_pedersen_strict_g1(u, error)) return false;
+    const std::vector<byte> cache_key = cpu_pedersen_basis_cache_key(
+        generators, h, u, expected_size);
+    std::array<byte, 32U> cached_digest{};
+    if (cpu_pedersen_basis_cache_lookup(cache_key, cached_digest)) return true;
+    std::array<byte, 48U> encoded_h{};
+    std::array<byte, 48U> encoded_u{};
+    if (!cpu_pedersen_strict_g1(h, error, &encoded_h) ||
+        !cpu_pedersen_strict_g1(u, error, &encoded_u)) return false;
+    std::vector<byte> canonical_encoding;
+    append_u32(canonical_encoding, static_cast<std::uint32_t>(generators.size()));
+    append_u32(canonical_encoding, expected_size);
+    std::array<byte, 48U> encoded_point{};
     for (const auto& generator : generators) {
-        if (generator.is_zero() || !cpu_pedersen_strict_g1(generator, error)) {
+        if (generator.is_zero() || !cpu_pedersen_strict_g1(generator, error, &encoded_point)) {
             if (error && error->empty()) *error = "Pedersen basis contains an invalid point";
             return false;
         }
@@ -467,7 +597,14 @@ inline bool cpu_pedersen_basis_valid(const std::vector<CpuG1Point>& generators,
             if (error) *error = "Pedersen basis reuses H/U";
             return false;
         }
+        canonical_encoding.insert(canonical_encoding.end(), encoded_point.begin(), encoded_point.end());
     }
+    canonical_encoding.insert(canonical_encoding.end(), encoded_h.begin(), encoded_h.end());
+    canonical_encoding.insert(canonical_encoding.end(), encoded_u.begin(), encoded_u.end());
+    /* The digest layout is kept byte-for-byte identical to
+     * cpu_ipa_basis_digest's authenticated basis digest.  The cache entry is
+     * published only after the complete strict validation above. */
+    cpu_pedersen_basis_cache_store(cache_key, sha256(canonical_encoding));
     return true;
 }
 

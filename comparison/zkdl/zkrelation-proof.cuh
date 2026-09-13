@@ -3066,6 +3066,7 @@ inline bool verify_constraint(const ConstraintProof& proof,
     terminal_point.reserve(sumcheck_result.challenges.size());
     for (const auto& challenge : sumcheck_result.challenges)
         terminal_point.push_back(zkdl::fr_wire(challenge));
+    std::reverse(terminal_point.begin(), terminal_point.end());
     ZkTerminalRelationVerifierResult terminal_result;
     if (!verify_zk_terminal_relation(
             proof.terminal_relation, expected, canonical_commitments,
@@ -3185,6 +3186,7 @@ inline bool fill_constraint_openings(
         terminal_point.reserve(sumcheck_result.challenges.size());
         for (const auto& challenge : sumcheck_result.challenges)
             terminal_point.push_back(zkdl::fr_wire(challenge));
+        std::reverse(terminal_point.begin(), terminal_point.end());
         ZkTerminalRelationProverResult terminal_result;
         if (!prove_zk_terminal_relation(
                 descriptor, tensor_values, canonical_commitments, tensor_blinders,
@@ -3553,20 +3555,18 @@ inline bool descriptor_vector_valid(const std::vector<OperationDescriptor>& oper
     return !operations.empty();
 }
 
-/* FacLine8Proof and the zkMatMul primitive binding still
- * carry the historical value-revealing Sumcheck/IPA opening wire.  They must
- * never be accepted as part of a formal GAT proof until each family is
- * migrated to the native ZkSumcheck + Hyrax/Pedersen terminal interface.
- * Keep this admission check at the relation boundary so neither the native
- * bridge nor a direct relation caller can accidentally produce/verify a
- * privacy-violating proof by selecting one of those operations. */
+/* FAC4DNN Line8 has been migrated to hidden proof objects, but its canonical
+ * fold-point/Hyrax evaluation identity has not yet passed the bounded native
+ * roundtrip gate.  Keep it fail-closed rather than admitting an unvalidated
+ * view binding.  The official zkMatMul primitive binding remains independently
+ * blocked because it still carries historical value-revealing openings. */
 inline bool formal_relation_components_supported(
     const std::vector<OperationDescriptor>& operations,
     std::string* error = nullptr) {
     for (const auto& operation : operations) {
         if (!operation.fac_bindings.empty()) {
             if (error) *error =
-                "BLOCKED: formal zkDL GAT relation still has a value-revealing FAC4DNN wire";
+                "BLOCKED: formal zkDL FAC4DNN Line8 canonical MLE/opening identity is not validated";
             return false;
         }
         if (!operation.primitives.empty()) {

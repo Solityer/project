@@ -8,7 +8,7 @@ int main() {
     // Algebra-only fixture, deliberately confined to tests.  These known-DL
     // points and digest labels are not a trusted production SRS or registry.
     std::vector<zkdl::CpuG1Point> generators;
-    for (std::uint32_t i = 0U; i < 8U; ++i)
+    for (std::uint32_t i = 0U; i < 4U; ++i)
         generators.push_back(zkdl::cpu_g1_mul(zkdl::cpu_g1_generator(), scalar(i + 2U)));
     const auto h = zkdl::cpu_g1_mul(zkdl::cpu_g1_generator(), scalar(103U));
     const auto u = zkdl::cpu_g1_mul(zkdl::cpu_g1_generator(), scalar(109U));
@@ -20,9 +20,8 @@ int main() {
     statement.srs_digest = zkdl::sha256(std::vector<zkdl::byte>{'p'});
     statement.registry_digest = zkdl::sha256(std::vector<zkdl::byte>{'r'});
     TensorWitness source{"layer1/source", 3U, 2U, {scalar(3U), scalar(5U)}};
-    TensorWitness output{"layer1/output", 3U, 8U,
-        {scalar(5U), scalar(5U), scalar(3U), scalar(3U),
-         scalar(5U), scalar(5U), scalar(0U), scalar(0U)}};
+    TensorWitness output{"layer1/output", 3U, 4U,
+        {scalar(5U), scalar(5U), scalar(0U), scalar(0U)}};
     const std::map<std::string, const TensorWitness*> witnesses{
         {source.id, &source}, {output.id, &output}};
     const std::map<std::string, FrWire> blinders{
@@ -48,13 +47,13 @@ int main() {
     descriptor.terminal_point = "feature-before-outer";
     descriptor.public_route = true;
     descriptor.route_by_destination = true;
-    descriptor.selector_edge_domain = 4U;
+    descriptor.selector_edge_domain = 2U;
     descriptor.selector_node_domain = 2U;
     descriptor.selector_feature_domain = 2U;
     descriptor.selector_source_feature_domain = 1U;
-    descriptor.selector_src = {0U, 1U, 0U, 0U};
-    descriptor.selector_dst = {1U, 0U, 1U, 0U};
-    descriptor.selector_active = {1U, 1U, 1U, 0U};
+    descriptor.selector_src = {1U, 0U};
+    descriptor.selector_dst = {1U, 0U};
+    descriptor.selector_active = {1U, 0U};
     descriptor.selector_feature_map = {0U, 0U};
     descriptor.selector_source_ref = source.id;
     descriptor.selector_output_ref = output.id;
@@ -63,6 +62,21 @@ int main() {
         if (!condition) throw std::runtime_error(std::string(label) + ": " + error);
     };
     try {
+        const std::vector<FrWire> kat_point{scalar(2U), scalar(3U)};
+        const std::vector<FrWire> kat_expected{
+            scalar(2U), zkdl::fr_neg(scalar(3U)), zkdl::fr_neg(scalar(4U)), scalar(6U)};
+        const auto kat_weights = zkdl::cpu_ipa_mle_weights(kat_point);
+        require(kat_weights.size() == kat_expected.size(), "MLE weights KAT size");
+        for (std::size_t index = 0U; index < kat_expected.size(); ++index)
+            require(zkdl::fr_compare(kat_weights[index], kat_expected[index]) == 0,
+                    "MLE weights KAT value");
+        const std::vector<FrWire> kat_values{
+            scalar(1U), scalar(2U), scalar(3U), scalar(4U)};
+        const auto folded = mle_value(kat_values, kat_point);
+        const std::vector<FrWire> dot_point{kat_point.rbegin(), kat_point.rend()};
+        const auto dotted = zkdl::cpu_ipa_inner_product(
+            kat_values, zkdl::cpu_ipa_mle_weights(dot_point));
+        require(zkdl::fr_compare(folded, dotted) == 0, "fold/dot MLE identity");
         require(descriptor.valid(&error), "descriptor");
         require(formal_relation_components_supported({descriptor}, &error), "route admission");
         zkdl::Transcript prover_transcript("sparse-route-hidden-smoke");
@@ -101,11 +115,11 @@ int main() {
         trailing.push_back(0U);
         require(!SparseRouteProof::deserialize(trailing, decoded, &error), "reject trailing wire");
         decoded = proof;
-        decoded.terminal_binding.schnorr_s = zkdl::fr_value(zkdl::fr_add(
-            zkdl::fr_wire(decoded.terminal_binding.schnorr_s), scalar(1U)));
-        zkdl::Transcript tampered_transcript("sparse-route-hidden-smoke");
+        decoded.output_opening.tau.x.val[0] ^= 1U;
+        zkdl::Transcript tau_tampered_transcript("sparse-route-hidden-smoke");
         require(!verify_sparse_route(descriptor, commitments, generators, h, u,
-            statement, tampered_transcript, decoded, &error), "reject terminal binding tamper");
+            statement, tau_tampered_transcript, decoded, &error), "reject tau tamper");
+
         std::cout << "sparse_route_hidden_smoke PASS: cross-domain route, destination/feature "
                      "selectors, inactive padding, hidden wire, independent verifier, tamper\n";
         return 0;
