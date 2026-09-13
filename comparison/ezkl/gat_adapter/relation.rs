@@ -484,7 +484,6 @@ fn aggregate(
 pub fn evaluate(model: &CanonicalGat, mode: RoundingMode) -> Result<GatTrace, String> {
     model.validate()?;
     let modulus = modulus_from_spec(model)?;
-    let hidden_recovery_scale = scale_multiplier_i128(model.scales.s_agg_pre, "s_agg_pre")?;
     let output_recovery_scale = scale_multiplier_i128(model.scales.s_out_pre, "s_out_pre")?;
     let output_head_scale = scale_multiplier_i128(model.scales.s_out_head, "s_out_head")?;
     let output_head_count = i128::try_from(model.model.output_heads.len())
@@ -518,7 +517,7 @@ pub fn evaluate(model: &CanonicalGat, mode: RoundingMode) -> Result<GatTrace, St
                 &model.tables.exp,
                 mode,
                 &modulus,
-                hidden_recovery_scale,
+                scale_multiplier_i128(model.scales.s_agg_pre[layer_idx], "s_agg_pre hidden layer")?,
                 scale_multiplier_i128(
                     model.scales.s_h_prime[layer_idx][head_idx],
                     "hidden projection scale",

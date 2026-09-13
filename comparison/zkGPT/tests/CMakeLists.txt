@@ -18,6 +18,10 @@ add_executable(native_gkr_matmul_session_smoke native_gkr_matmul_session_smoke.c
 target_link_libraries(native_gkr_matmul_session_smoke PRIVATE gat_adapter)
 add_test(NAME native_gkr_matmul_session_smoke COMMAND native_gkr_matmul_session_smoke)
 
+add_executable(native_lasso_range_smoke native_lasso_range_smoke.cpp)
+target_link_libraries(native_lasso_range_smoke PRIVATE gat_adapter)
+add_test(NAME native_lasso_range_smoke COMMAND native_lasso_range_smoke)
+
 
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)

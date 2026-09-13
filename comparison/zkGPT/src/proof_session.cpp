@@ -161,9 +161,14 @@ std::string NativeProofStatement::basis_digest_for(
     append_u64(encoded, l_dimension);
     append_string(encoded, G.serializeToHexStr());
     append_u64(encoded, generators.size());
+    // The statement binds the canonical generator setup, not one particular
+    // evaluation point.  Each opening still carries and verifies its own
+    // canonical evaluation basis in the Hyrax wire.  Keeping the evaluation
+    // basis out of this setup digest is required for the three independent
+    // W/Aux/L terminal openings on the same padded domain.
+    (void)basis;
     for (std::size_t i = 0; i < generators.size(); ++i) {
         append_string(encoded, generators[i].serializeToHexStr());
-        append_string(encoded, basis[i].getStr(16));
     }
     F digest;
     digest.setHashOf(encoded.data(), encoded.size());

@@ -727,6 +727,8 @@ impl GatOp {
         channels: usize,
         use_elu: bool,
         bounds: &BoundFamily,
+        recovery_scale: i32,
+        elu_output_scale: i32,
         projected_scale: i32,
         attention_src_scale: i32,
         attention_dst_scale: i32,
@@ -843,11 +845,6 @@ impl GatOp {
                     &[&numerator],
                     &(-bounds.max_aggregation_num, bounds.max_aggregation_num),
                 )?;
-                let recovery_scale = if use_elu {
-                    self.spec.scales.s_agg_pre
-                } else {
-                    self.spec.scales.s_out_pre
-                };
                 let recovery_multiplier = scale_exponent_to_multiplier(recovery_scale)
                     .map_err(|_| CircuitError::UnsupportedOp)
                     .and_then(|value| {
@@ -884,9 +881,9 @@ impl GatOp {
                 )?;
                 let q = if use_elu {
                     let mut q = q;
-                    q.set_scale(self.spec.scales.s_agg_pre);
+                    q.set_scale(recovery_scale);
                     let mut elu = self.exact_lookup(config, region, &q, &self.spec.tables.elu)?;
-                    elu.set_scale(self.spec.scales.s_agg);
+                    elu.set_scale(elu_output_scale);
                     elu
                 } else {
                     let mut q = q;
@@ -989,6 +986,8 @@ impl Op<Fp> for GatOp {
                     layer.d_head,
                     true,
                     bounds,
+                    self.spec.scales.s_agg_pre[layer_idx],
+                    self.spec.scales.s_agg[layer_idx],
                     self.spec.scales.s_h_prime[layer_idx][head_idx],
                     self.spec.scales.s_a_src_hidden[layer_idx][head_idx],
                     self.spec.scales.s_a_dst_hidden[layer_idx][head_idx],
@@ -1037,6 +1036,8 @@ impl Op<Fp> for GatOp {
                 self.spec.model.classes,
                 false,
                 bounds,
+                self.spec.scales.s_out_pre,
+                self.spec.scales.s_out_pre,
                 self.spec.scales.s_y_prime[head_idx],
                 self.spec.scales.s_a_src_output[head_idx],
                 self.spec.scales.s_a_dst_output[head_idx],

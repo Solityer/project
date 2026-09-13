@@ -43,7 +43,8 @@ void prove_dot_product(G1 comm_x, G1 comm_y, Fr* a, G1*g ,G1& G,Fr* x,Fr y,int n
 void prove_dot_product_with_session(G1 comm_x, G1 comm_y, Fr* a, G1*g,
                                     G1& G, Fr* x, Fr y, int n,
                                     NativeProofSession &session,
-                                    const std::string &label);
+                                    const std::string &label,
+                                    bool enforce_statement_basis = true);
 G1* prover_commit(ll* w, G1* g, int l,int thread_n=1);
 G1* prover_commit(Fr* w, G1* g, int l,int thread=1);
 G1* prover_commit(int* w, G1* g, int l,int thread=1);
@@ -62,7 +63,9 @@ bool verify_opening_with_session(
     const G1 &comm_x, const Fr &eval, const G1 &G,
     const std::vector<G1> &generators, const std::vector<Fr> &basis,
     const NativeProofSession &session, const std::string &label,
-    std::string *reason = nullptr);
+    std::string *reason = nullptr,
+    bool enforce_statement_basis = true,
+    bool allow_trailing_unrelated = false);
 }
 
 

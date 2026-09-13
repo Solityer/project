@@ -36,6 +36,31 @@ pub fn sha256_digest(bytes: &[u8]) -> Result<String, String> {
     }
 }
 
+/// Encode one canonical logical tensor name using the checkpoint bundle's
+/// NPZ key rule.  Logical names remain the identity in the manifest and text
+/// dump; this encoding is only the deterministic archive key.  Callers must
+/// build the reverse map over the complete manifest and reject collisions so
+/// that an alias can never silently select another tensor.
+pub fn canonical_tensor_archive_key(name: &str) -> Result<String, String> {
+    if name.is_empty() {
+        return Err("canonical tensor name must not be empty".into());
+    }
+    if name.contains('\0') || name.contains('\\') {
+        return Err(format!(
+            "canonical tensor name contains a forbidden path character: {}",
+            name
+        ));
+    }
+    let encoded = name.replace('/', "__").replace(':', "__");
+    if encoded.is_empty() || encoded.contains('/') || encoded.contains(':') {
+        return Err(format!(
+            "canonical tensor archive key is not encodable: {}",
+            name
+        ));
+    }
+    Ok(encoded)
+}
+
 fn append_i128(out: &mut Vec<u8>, value: i128) {
     out.extend_from_slice(&value.to_le_bytes());
 }
@@ -534,12 +559,12 @@ pub struct ScaleChain {
     pub s_a_src_hidden: Vec<Vec<i32>>,
     /// Hidden destination-attention scales by layer/head.
     pub s_a_dst_hidden: Vec<Vec<i32>>,
-    /// Hidden aggregation pre-ELU scale.
-    pub s_agg_pre: i32,
-    /// Hidden ELU output scale.
-    pub s_agg: i32,
-    /// Concatenation scale.
-    pub s_cat: i32,
+    /// Hidden aggregation pre-ELU scale by hidden layer.
+    pub s_agg_pre: Vec<i32>,
+    /// Hidden ELU output scale by hidden layer.
+    pub s_agg: Vec<i32>,
+    /// Hidden concatenation scale by hidden layer.
+    pub s_cat: Vec<i32>,
     /// Output projection scales by head.
     pub s_w_output: Vec<i32>,
     /// Output projection scale by head.
@@ -602,6 +627,9 @@ impl ScaleChain {
             || self.s_h_prime.len() != layers - 1
             || self.s_a_src_hidden.len() != layers - 1
             || self.s_a_dst_hidden.len() != layers - 1
+            || self.s_agg_pre.len() != layers - 1
+            || self.s_agg.len() != layers - 1
+            || self.s_cat.len() != layers - 1
             || hidden_heads.len() != layers - 1
             || self.s_w_output.len() != output_heads
             || self.s_y_prime.len() != output_heads
@@ -615,14 +643,14 @@ impl ScaleChain {
             self.s_input,
             self.s_delta,
             self.s_exp,
-            self.s_agg_pre,
-            self.s_agg,
-            self.s_cat,
             self.s_out_pre,
             self.s_out_head,
             self.s_out,
         ];
         all_scales.extend(self.s_h.iter().copied());
+        all_scales.extend(self.s_agg_pre.iter().copied());
+        all_scales.extend(self.s_agg.iter().copied());
+        all_scales.extend(self.s_cat.iter().copied());
         all_scales.extend(self.s_w_output.iter().copied());
         all_scales.extend(self.s_y_prime.iter().copied());
         all_scales.extend(self.s_a_src_output.iter().copied());
@@ -650,15 +678,13 @@ impl ScaleChain {
         if self.s_h[0] != self.s_input
             || self.s_cat != self.s_agg
             || self.s_out != self.s_out_head
-            || self.s_agg_pre <= 0
-            || self.s_agg <= 0
             || self.s_out_pre <= 0
             || self.s_out_head <= 0
         {
             return Err("input/concat/output scale closure is not canonical".into());
         }
         for layer in 0..layers - 1 {
-            if self.s_h[layer + 1] != self.s_cat {
+            if self.s_h[layer + 1] != self.s_cat[layer] {
                 return Err(format!(
                     "hidden concat transition at layer {} does not close to s_cat",
                     layer
@@ -688,7 +714,14 @@ impl ScaleChain {
                     ));
                 }
             }
+            if self.s_agg_pre[layer] <= 0 || self.s_agg[layer] <= 0 || self.s_cat[layer] <= 0 {
+                return Err(format!(
+                    "invalid hidden aggregation scale at layer {}",
+                    layer
+                ));
+            }
         }
+        self.shared_elu_scales()?;
         for head in 0..output_heads {
             if self.s_y_prime[head] != self.s_h[layers - 1] + self.s_w_output[head]
                 || self.s_y_prime[head] + self.s_a_src_output[head] != self.s_delta
@@ -701,30 +734,76 @@ impl ScaleChain {
         Ok(())
     }
 
+    /// Return the shared ELU table scales after proving that every hidden
+    /// layer uses the same authenticated table domain.
+    pub fn shared_elu_scales(&self) -> Result<(i32, i32), String> {
+        let (&input, rest_input) = self
+            .s_agg_pre
+            .split_first()
+            .ok_or_else(|| "missing hidden aggregation input scales".to_string())?;
+        let (&output, rest_output) = self
+            .s_agg
+            .split_first()
+            .ok_or_else(|| "missing hidden aggregation output scales".to_string())?;
+        if rest_input.iter().any(|value| *value != input)
+            || rest_output.iter().any(|value| *value != output)
+        {
+            return Err("hidden layers require one shared authenticated ELU table scale".into());
+        }
+        Ok((input, output))
+    }
+
+    /// Serialize the typed chain in the canonical source format used by the
+    /// checkpoint manifests and the main GAT implementation.
+    pub fn canonical_serialization(&self) -> Result<String, String> {
+        let source_value =
+            |value: i32| scale_exponent_to_multiplier(value).map(|value| value.to_string());
+        let vector = |values: &[i32]| {
+            values
+                .iter()
+                .copied()
+                .map(source_value)
+                .collect::<Result<Vec<_>, _>>()
+                .map(|values| values.join(","))
+        };
+        let matrix = |values: &[Vec<i32>]| {
+            values
+                .iter()
+                .map(|row| vector(row).map(|row| format!("[{}]", row)))
+                .collect::<Result<Vec<_>, _>>()
+                .map(|values| values.join(";"))
+        };
+        Ok(format!(
+            "schema=gat_l3_scale_chain|S_input={}|S_Delta={}|S_exp={}|S_H=[{}]|S_W_hidden=[{}]|S_H_prime_hidden=[{}]|S_a_src_hidden=[{}]|S_a_dst_hidden=[{}]|S_agg_pre=[{}]|S_agg=[{}]|S_cat=[{}]|S_out_pre={}|S_out_head={}|S_out={}|S_W_output=[{}]|S_Y_prime_output=[{}]|S_a_src_output=[{}]|S_a_dst_output=[{}]|S_b_output=[{}]|S_inv=field_exact|S_alpha=field_exact|round=nearest_ties_away|rescale=none|output_average=signed_round_div",
+            source_value(self.s_input)?,
+            source_value(self.s_delta)?,
+            source_value(self.s_exp)?,
+            vector(&self.s_h)?,
+            matrix(&self.s_w_hidden)?,
+            matrix(&self.s_h_prime)?,
+            matrix(&self.s_a_src_hidden)?,
+            matrix(&self.s_a_dst_hidden)?,
+            vector(&self.s_agg_pre)?,
+            vector(&self.s_agg)?,
+            vector(&self.s_cat)?,
+            source_value(self.s_out_pre)?,
+            source_value(self.s_out_head)?,
+            source_value(self.s_out)?,
+            vector(&self.s_w_output)?,
+            vector(&self.s_y_prime)?,
+            vector(&self.s_a_src_output)?,
+            vector(&self.s_a_dst_output)?,
+            vector(&self.s_b_output)?,
+        ))
+    }
+
     /// Canonical bytes covered by the quantization identity.
     pub fn canonical_bytes(&self) -> Vec<u8> {
         let mut out = b"ezkl-gat-quant-v1".to_vec();
-        for scale in [
-            self.s_input,
-            self.s_delta,
-            self.s_exp,
-            self.s_agg_pre,
-            self.s_agg,
-            self.s_cat,
-            self.s_out_pre,
-            self.s_out_head,
-            self.s_out,
-        ] {
+        for scale in [self.s_input, self.s_delta, self.s_exp] {
             out.extend_from_slice(&scale.to_le_bytes());
         }
-        for group in [
-            self.s_h.as_slice(),
-            self.s_w_output.as_slice(),
-            self.s_y_prime.as_slice(),
-            self.s_a_src_output.as_slice(),
-            self.s_a_dst_output.as_slice(),
-            self.s_b_output.as_slice(),
-        ] {
+        for group in [self.s_h.as_slice()] {
             append_usize(&mut out, group.len());
             for scale in group {
                 out.extend_from_slice(&scale.to_le_bytes());
@@ -742,6 +821,31 @@ impl ScaleChain {
                 for scale in layer {
                     out.extend_from_slice(&scale.to_le_bytes());
                 }
+            }
+        }
+        for group in [
+            self.s_agg_pre.as_slice(),
+            self.s_agg.as_slice(),
+            self.s_cat.as_slice(),
+        ] {
+            append_usize(&mut out, group.len());
+            for scale in group {
+                out.extend_from_slice(&scale.to_le_bytes());
+            }
+        }
+        for scale in [self.s_out_pre, self.s_out_head, self.s_out] {
+            out.extend_from_slice(&scale.to_le_bytes());
+        }
+        for group in [
+            self.s_w_output.as_slice(),
+            self.s_y_prime.as_slice(),
+            self.s_a_src_output.as_slice(),
+            self.s_a_dst_output.as_slice(),
+            self.s_b_output.as_slice(),
+        ] {
+            append_usize(&mut out, group.len());
+            for scale in group {
+                out.extend_from_slice(&scale.to_le_bytes());
             }
         }
         out
@@ -1368,6 +1472,7 @@ impl CanonicalGat {
             return Err("quantization identity does not match scale chain".into());
         }
         self.tables.validate()?;
+        let (elu_input_scale, elu_output_scale) = self.scales.shared_elu_scales()?;
         for (label, table, input_scale, output_scale) in [
             (
                 "lrelu",
@@ -1381,12 +1486,7 @@ impl CanonicalGat {
                 self.scales.s_delta,
                 self.scales.s_exp,
             ),
-            (
-                "elu",
-                &self.tables.elu,
-                self.scales.s_agg_pre,
-                self.scales.s_agg,
-            ),
+            ("elu", &self.tables.elu, elu_input_scale, elu_output_scale),
         ] {
             if table.input_scale != input_scale || table.output_scale != output_scale {
                 return Err(format!(

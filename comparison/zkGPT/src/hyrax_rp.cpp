@@ -1,7 +1,9 @@
 #undef NDEBUG
 #include "hyrax_rp.hpp"
+#include "hyrax.hpp"
 #include <cmath>
 #include <iostream>
+#include <memory>
 
 #include <chrono>
 
@@ -446,4 +448,63 @@ void range_proof_open(Fr*w,Fr*r,Fr eval,G1&G,G1*g,G1*comm,int l)
     auto duration_ms4 = duration_cast<milliseconds>(end4 - start4);
     //cout << "open group: " << duration_ms4.count() << " ms" << endl;
     //verf.stop("total verify :");
+}
+
+bool range_proof_open_with_session(
+    const std::vector<Fr> &witness, const std::vector<Fr> &point,
+    const G1 &G, const std::vector<G1> &generators,
+    G1 &commitment, Fr &evaluation, NativeProofSession &session,
+    const std::string &label, std::string *reason,
+    bool enforce_statement_basis) {
+    const std::size_t checkpoint = session.checkpoint();
+    try {
+        if (label.empty() || witness.size() < 2 ||
+            (witness.size() & (witness.size() - 1)) != 0 ||
+            generators.size() != witness.size() || point.empty() ||
+            point.size() >= sizeof(std::size_t) * 8 ||
+            (std::size_t(1) << point.size()) != witness.size())
+            throw std::invalid_argument("native range opening dimensions are invalid");
+        if (!G.isValid() || G.isZero() || !G.isValidOrder())
+            throw std::invalid_argument("native range opening generator is invalid");
+        for (const G1 &generator : generators) {
+            if (!generator.isValid() || generator.isZero() || !generator.isValidOrder())
+                throw std::invalid_argument("native range opening basis is invalid");
+        }
+        std::unique_ptr<Fr[]> eq(range_proof_get_eq(
+            const_cast<Fr *>(point.data()), static_cast<int>(point.size())));
+        std::vector<Fr> basis(witness.size());
+        for (std::size_t i = 0; i < witness.size(); ++i) basis[i] = eq[i];
+        commitment = perdersen_commit(const_cast<G1 *>(generators.data()),
+                                       const_cast<Fr *>(witness.data()),
+                                       static_cast<int>(witness.size()));
+        evaluation = 0;
+        for (std::size_t i = 0; i < witness.size(); ++i)
+            evaluation += basis[i] * witness[i];
+        prove_dot_product_with_session(
+            commitment, G * evaluation, basis.data(),
+            const_cast<G1 *>(generators.data()), const_cast<G1 &>(G),
+            const_cast<Fr *>(witness.data()), evaluation,
+            static_cast<int>(witness.size()), session, label,
+            enforce_statement_basis);
+        return true;
+    } catch (const std::exception &error) {
+        session.rollback(checkpoint);
+        if (reason != nullptr) *reason = error.what();
+        return false;
+    }
+}
+
+bool range_proof_verify_opening_with_session(
+    const G1 &commitment, const Fr &evaluation, const G1 &G,
+    const std::vector<G1> &generators, const std::vector<Fr> &basis,
+    const NativeProofSession &session, const std::string &label,
+    std::string *reason, bool enforce_statement_basis) {
+    if (basis.size() != generators.size() || basis.size() < 2 ||
+        (basis.size() & (basis.size() - 1)) != 0) {
+        if (reason != nullptr) *reason = "native range opening basis dimensions are invalid";
+        return false;
+    }
+    return hyrax::verify_opening_with_session(
+        commitment, evaluation, G, generators, basis, session, label, reason,
+        enforce_statement_basis);
 }

@@ -468,7 +468,8 @@ Pack bullet_reduce_with_session(G1 gamma, Fr *a, G1 *g, int n,
 void prove_dot_product_with_session(G1 comm_x, G1 comm_y, Fr *a, G1 *g,
                                     G1 &G, Fr *x, Fr y, int n,
                                     NativeProofSession &session,
-                                    const std::string &label) {
+                                    const std::string &label,
+                                    bool enforce_statement_basis) {
     const std::size_t checkpoint = session.checkpoint();
     try {
         if (label.empty() || a == nullptr || g == nullptr || x == nullptr ||
@@ -480,7 +481,7 @@ void prove_dot_product_with_session(G1 comm_x, G1 comm_y, Fr *a, G1 *g,
         for (const G1 &generator : generators)
             if (!valid_point(generator, true))
                 throw std::invalid_argument("invalid Hyrax generator");
-        if (session.statement().basis_digest !=
+        if (enforce_statement_basis && session.statement().basis_digest !=
             NativeProofStatement::basis_digest_for(G, generators, basis, n))
             throw std::invalid_argument("Hyrax basis digest does not match statement");
         session.absorb(label + "/basis", basis_encoding(G, generators, basis));
@@ -682,7 +683,8 @@ bool verify_opening_with_session(
     const G1 &comm_x, const Fr &eval, const G1 &G,
     const std::vector<G1> &generators, const std::vector<Fr> &basis,
     const NativeProofSession &session, const std::string &label,
-    std::string *reason) {
+    std::string *reason, bool enforce_statement_basis,
+    bool allow_trailing_unrelated) {
     try {
         if (label.empty() || generators.empty() || generators.size() != basis.size() ||
             (generators.size() & (generators.size() - 1)) != 0) {
@@ -700,7 +702,7 @@ bool verify_opening_with_session(
             }
         }
         if (!session.replay(reason)) return false;
-        if (session.statement().basis_digest !=
+        if (enforce_statement_basis && session.statement().basis_digest !=
             NativeProofStatement::basis_digest_for(G, generators, basis,
                                                    session.statement().l_dimension)) {
             set_open_reason(reason, "Hyrax basis digest does not match statement");
@@ -866,9 +868,21 @@ bool verify_opening_with_session(
             return false;
         }
 
-        if (position != session.messages().size()) {
+        if (!allow_trailing_unrelated && position != session.messages().size()) {
             set_open_reason(reason, "Hyrax opening has a post-terminal message");
             return false;
+        }
+        if (allow_trailing_unrelated) {
+            const std::string opening_prefix = label + "/";
+            const std::string challenge_prefix = "challenge/" + label + "/";
+            for (std::size_t index = position; index < session.messages().size(); ++index) {
+                const std::string &message_label = session.messages()[index].label;
+                if (has_prefix(message_label, opening_prefix) ||
+                    has_prefix(message_label, challenge_prefix)) {
+                    set_open_reason(reason, "Hyrax opening has a trailing protocol message");
+                    return false;
+                }
+            }
         }
         return true;
     } catch (const std::exception &error) {

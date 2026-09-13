@@ -10,9 +10,9 @@ use crate::gat_adapter::manifest::{
     AuthenticatedResource, ResourceManifest, ResourceSourceSnapshot,
 };
 use crate::gat_adapter::schema::{
-    multiplier_to_scale_exponent, sha256_digest, CanonicalGat, CanonicalGraph, CanonicalModel,
-    DigestIdentity, HeadWeights, HiddenLayerSpec, IntegerBoundLedger, ModelBinding, ScaleChain,
-    StaticTables, GAT_SCHEMA_VERSION,
+    canonical_tensor_archive_key, multiplier_to_scale_exponent, sha256_digest, CanonicalGat,
+    CanonicalGraph, CanonicalModel, DigestIdentity, HeadWeights, HiddenLayerSpec,
+    IntegerBoundLedger, ModelBinding, ScaleChain, StaticTables, GAT_SCHEMA_VERSION,
 };
 use crate::graph::modules::native_poseidon_hash_string;
 use halo2curves::bn256::Fr;
@@ -418,7 +418,7 @@ fn validate_checkpoint(
         return Err("checkpoint shape/topology does not match dataset metadata".into());
     }
     if checkpoint.family_schema != "multi_layer_multi_head"
-        || checkpoint.output_average_rule != "signed_round_div"
+        || checkpoint.output_average_rule != "per_head_bias_then_arithmetic_mean"
         || checkpoint.input_preprocess_id != meta.input_preprocess_id
     {
         return Err("checkpoint protocol identity mismatch".into());
@@ -434,6 +434,8 @@ fn validate_checkpoint(
             "quant_cfg_id" => &checkpoint.quant_cfg_id,
             "static_table_id" => &checkpoint.static_table_id,
             "degree_bound_id" => &checkpoint.degree_bound_id,
+            "static_table_digest" => &checkpoint.static_table_digest,
+            "degree_bound_digest" => &checkpoint.degree_bound_digest,
             _ => unreachable!(),
         };
         if secure.get(key) != Some(expected) {
@@ -467,6 +469,9 @@ fn parse_scale_list(cfg: &BTreeMap<String, String>, key: &str) -> Result<Vec<i32
 
 fn parse_quant_chain(path: &Path, checkpoint: &CheckpointManifest) -> Result<ScaleChain, String> {
     let cfg = parse_cfg(path)?;
+    if cfg.get("schema").map(String::as_str) != Some("gat_l3_scale_chain") {
+        return Err("quantization scale-chain schema mismatch".into());
+    }
     let id = cfg
         .get("quant_cfg_id")
         .ok_or_else(|| "missing quant_cfg_id".to_string())?;
@@ -489,9 +494,9 @@ fn parse_quant_chain(path: &Path, checkpoint: &CheckpointManifest) -> Result<Sca
         s_h_prime: Vec::new(),
         s_a_src_hidden: Vec::new(),
         s_a_dst_hidden: Vec::new(),
-        s_agg_pre: scalar("s_agg_pre")?,
-        s_agg: scalar("s_agg")?,
-        s_cat: scalar("s_cat")?,
+        s_agg_pre: parse_scale_list(&cfg, "s_agg_pre")?,
+        s_agg: parse_scale_list(&cfg, "s_agg")?,
+        s_cat: parse_scale_list(&cfg, "s_cat")?,
         s_w_output: parse_scale_list(&cfg, "s_w_output")?,
         s_y_prime: parse_scale_list(&cfg, "s_y_prime")?,
         s_a_src_output: parse_scale_list(&cfg, "s_a_src_output")?,
@@ -533,6 +538,9 @@ fn parse_quant_chain(path: &Path, checkpoint: &CheckpointManifest) -> Result<Sca
             .collect::<Vec<_>>(),
         checkpoint.output_heads,
     )?;
+    if checkpoint.quantization_scale_chain != scales.canonical_serialization()? {
+        return Err("checkpoint quantization_scale_chain is not canonical".into());
+    }
     Ok(scales)
 }
 
@@ -755,6 +763,37 @@ fn parse_tensor_archive(
     path: &Path,
     manifest: &CheckpointManifest,
 ) -> Result<BTreeMap<String, ParsedTensor>, String> {
+    if manifest.tensor_count != manifest.tensor_index.len() {
+        return Err("checkpoint tensor manifest count mismatch".into());
+    }
+    let mut archive_to_name = BTreeMap::new();
+    for (name, meta) in &manifest.tensor_index {
+        let expected_archive_key = canonical_tensor_archive_key(name)?;
+        if meta.archive_key != expected_archive_key {
+            return Err(format!(
+                "tensor archive key mismatch for {}: expected {}, got {}",
+                name, expected_archive_key, meta.archive_key
+            ));
+        }
+        if meta.dtype != "float32" {
+            return Err(format!(
+                "unsupported tensor dtype for {}: {}",
+                name, meta.dtype
+            ));
+        }
+        if meta.shape.is_empty() || meta.shape.iter().any(|dimension| *dimension == 0) {
+            return Err(format!("invalid tensor shape for {}", name));
+        }
+        if archive_to_name
+            .insert(meta.archive_key.clone(), name.clone())
+            .is_some()
+        {
+            return Err(format!(
+                "tensor archive key collision for {}",
+                meta.archive_key
+            ));
+        }
+    }
     let text = fs::read_to_string(path).map_err(|e| format!("read {}: {}", path.display(), e))?;
     let mut result = BTreeMap::new();
     let mut current_name: Option<String> = None;
@@ -845,14 +884,15 @@ fn parse_tensor_archive(
         &mut current_shape,
         &mut values,
     )?;
-    if result.len() != manifest.tensor_count || result.len() != manifest.tensor_index.len() {
+    if result.len() != manifest.tensor_count || result.len() != archive_to_name.len() {
         return Err("tensor archive count mismatch".into());
     }
     for (name, meta) in &manifest.tensor_index {
         let tensor = result
             .get(name)
             .ok_or_else(|| format!("missing tensor {}", name))?;
-        if tensor.shape != meta.shape || meta.dtype != "float32" || meta.archive_key != *name {
+        let header_archive_key = canonical_tensor_archive_key(name)?;
+        if header_archive_key != meta.archive_key || tensor.shape != meta.shape {
             return Err(format!("tensor metadata mismatch for {}", name));
         }
     }
