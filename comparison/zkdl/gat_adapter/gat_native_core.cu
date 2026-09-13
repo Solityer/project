@@ -785,8 +785,20 @@ relation::OperationDescriptor table_operation(
     std::int64_t minimum = 0;
     const std::vector<std::int64_t>& selected = lookup_table(tables, plan_operation, minimum, error);
     if (selected.empty()) return relation::OperationDescriptor{};
-    if ((selected.size() & (selected.size() - 1U)) != 0U) {
-        if (error) *error = "BLOCKED: authenticated table size is not a power of two for " + operation.id;
+    const TensorFamily* table_family = tensor_family(families, operation.public_table_ref);
+    if (table_family == nullptr || table_family->logical_shape.size() != 1U ||
+        table_family->logical_shape.front() != selected.size() ||
+        table_family->padded_shape.size() != 1U ||
+        table_family->padded_shape.front() == 0U ||
+        table_family->padded_shape.front() < selected.size() ||
+        (table_family->padded_shape.front() & (table_family->padded_shape.front() - 1U)) != 0U) {
+        if (error) *error = "BLOCKED: authenticated table logical/padded shape is inconsistent for " + operation.id;
+        return relation::OperationDescriptor{};
+    }
+    const std::uint64_t table_domain = table_family->padded_shape.front();
+    if (domains.at(operation.public_table_ref) != table_domain ||
+        table_domain > std::numeric_limits<std::uint32_t>::max()) {
+        if (error) *error = "BLOCKED: authenticated table domain is not a native power-of-two domain for " + operation.id;
         return relation::OperationDescriptor{};
     }
     // The fixed multiplication-tree family is intentionally bounded by the
@@ -796,7 +808,11 @@ relation::OperationDescriptor table_operation(
         if (error) *error = "BLOCKED: authenticated table domain exceeds native lookup-family cap for " + operation.id;
         return relation::OperationDescriptor{};
     }
-    const std::uint32_t depth = ceil_log2(selected.size());
+    const std::uint32_t depth = ceil_log2(static_cast<std::size_t>(table_domain));
+    operation.public_table_selector.assign(static_cast<std::size_t>(table_domain),
+                                           zkdl::fr_from_u32(0U));
+    for (std::size_t index = 0U; index < selected.size(); ++index)
+        operation.public_table_selector[index] = zkdl::fr_from_u32(1U);
     const std::string query = view_or_ref(plan_operation, domains, "query", plan_operation.inputs.front());
     const std::string index = view_or_ref(plan_operation, domains, "index", plan_operation.inputs.size() > 2U ? plan_operation.inputs[2] : plan_operation.inputs.front());
     const std::string output = aligned_output(plan_operation, domains);
@@ -883,12 +899,27 @@ relation::OperationDescriptor table_operation(
             operation.constraints.push_back(std::move(one_constraint));
         }
     }
+    // Q_table is the authenticated legal-row selector.  This relation is
+    // separate from the output map so a padded table index cannot simply
+    // select a canonical zero row and satisfy the function equation.
+    relation::ConstraintDescriptor table_membership;
+    table_membership.id = operation.id + "/table-membership";
+    table_membership.degree = 1U;
+    table_membership.constant = zkdl::fr_neg(zkdl::fr_from_u32(1U));
+    for (std::uint32_t index = 0U; index < table_domain; ++index) {
+        if (operation.public_table_selector[index] == zkdl::fr_from_u32(1U))
+            table_membership.terms.push_back(monomial(
+                zkdl::fr_from_u32(1U), {local_ref(operation, chi[depth][index])}));
+    }
+    operation.constraints.push_back(std::move(table_membership));
+
     relation::ConstraintDescriptor output_constraint;
     output_constraint.id = operation.id + "/table-output";
     output_constraint.degree = 1U;
     output_constraint.terms.push_back(monomial(zkdl::fr_neg(zkdl::fr_from_u32(1U)), {local_ref(operation, output)}));
     for (std::uint32_t i = 0U; i < selected.size(); ++i)
-        output_constraint.terms.push_back(monomial(relation::fr_from_signed_i64(selected[i]), {local_ref(operation, chi[depth][i])}));
+        output_constraint.terms.push_back(monomial(relation::fr_from_signed_i64(selected[i]),
+                                                   {local_ref(operation, chi[depth][i])}));
     operation.constraints.push_back(std::move(output_constraint));
     std::string validation_error;
     if (!operation.valid(&validation_error)) {

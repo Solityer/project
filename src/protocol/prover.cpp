@@ -8008,7 +8008,229 @@ namespace gatzk::protocol
                     throw std::runtime_error(
                         "SRS degree bound is too small for quotient polynomial " + label_ + ": need coefficients=" + std::to_string(target_size_) + " but degree_bound+1=" + std::to_string(key.pk.degree_bound + 1));
                 }
-                const auto root = FieldElement::root_of_unity(target_size_);
+                const auto root =
+                    FieldElement::root_of_unity(
+                        target_size_);
+
+                const auto t_n_evaluation_plan =
+                    label_ == "t_N"
+                        ? build_t_n_evaluation_plan(
+                              context_,
+                              challenges_)
+                        : std::shared_ptr<
+                              const TNEvaluationPlan>{};
+
+                std::unordered_map<
+                    std::string,
+                    QuotientCosetValuesPtr>
+                    t_n_public_source_expected_cosets;
+
+                const TNPublicSourceFoldEvalFn
+                    t_n_public_source_fold_eval =
+                        [&](const std::string &source_fold_object,
+                            std::size_t index)
+                    -> FieldElement
+                {
+                    const auto it =
+                        t_n_public_source_expected_cosets.find(
+                            source_fold_object);
+
+                    if (it ==
+                            t_n_public_source_expected_cosets.end() ||
+                        it->second == nullptr)
+                    {
+                        throw std::runtime_error(
+                            "t_N public-source expected coset is missing: " +
+                            source_fold_object);
+                    }
+
+                    if (index >=
+                        it->second->size())
+                    {
+                        throw std::runtime_error(
+                            "t_N public-source expected coset index is out of range: " +
+                            source_fold_object);
+                    }
+
+                    return (*it->second)[index];
+                };
+
+                const auto prepare_t_n_public_source_expected_cosets =
+                    [&]()
+                {
+                    if (label_ != "t_N")
+                    {
+                        return;
+                    }
+
+                    if (!t_n_public_source_expected_cosets.empty())
+                    {
+                        return;
+                    }
+
+                    if (domain_ == nullptr ||
+                        context_.domains.n == nullptr ||
+                        domain_->name !=
+                            context_.domains.n->name ||
+                        domain_->size !=
+                            context_.domains.n->size)
+                    {
+                        throw std::runtime_error(
+                            "t_N public-source precompute has an invalid N domain");
+                    }
+
+                    const auto specs =
+                        matrix_fold_binding_specs(
+                            context_);
+
+                    std::size_t public_source_count =
+                        0;
+
+                    for (const auto &spec :
+                         specs)
+                    {
+                        if (spec.public_source)
+                        {
+                            ++public_source_count;
+                        }
+                    }
+
+                    t_n_public_source_expected_cosets.reserve(
+                        public_source_count);
+
+                    progress_note(
+                        "prove:quotient:t_N:"
+                        "public_source_fold:precompute:start:"
+                        "count=" +
+                        std::to_string(
+                            public_source_count));
+
+                    for (const auto &spec :
+                         specs)
+                    {
+                        if (!spec.public_source)
+                        {
+                            continue;
+                        }
+
+                        if (spec.source_rows >
+                            context_.local.features.size())
+                        {
+                            throw std::runtime_error(
+                                "t_N public-source fold row count exceeds public feature rows: " +
+                                spec.source_fold_object);
+                        }
+
+                        if (spec.source_rows >
+                            domain_->size)
+                        {
+                            throw std::runtime_error(
+                                "t_N public-source fold exceeds N domain: " +
+                                spec.source_fold_object);
+                        }
+
+                        const auto lambda =
+                            challenges_.at(
+                                spec.lambda_challenge);
+
+                        std::vector<FieldElement>
+                            expected_evaluations(
+                                domain_->size,
+                                FieldElement::zero());
+
+                        parallel_for_chunks_static(
+                            spec.source_rows,
+                            std::size_t{64},
+                            0,
+                            [&](std::size_t begin,
+                                std::size_t end)
+                            {
+                                for (std::size_t row = begin;
+                                     row < end;
+                                     ++row)
+                                {
+                                    if (spec.width >
+                                        context_.local.features
+                                            .at(row)
+                                            .size())
+                                    {
+                                        throw std::runtime_error(
+                                            "t_N public-source fold width exceeds public feature width: " +
+                                            spec.source_fold_object);
+                                    }
+
+                                    auto row_fold =
+                                        FieldElement::zero();
+
+                                    for (std::size_t column = 0;
+                                         column <
+                                         spec.width;
+                                         ++column)
+                                    {
+                                        row_fold =
+                                            row_fold *
+                                                lambda +
+                                            context_.local.features
+                                                .at(row)
+                                                .at(column);
+                                    }
+
+                                    expected_evaluations[row] =
+                                        row_fold;
+                                }
+                            });
+
+                        const auto synthetic_label =
+                            std::string(
+                                "__tN_public_source_expected:") +
+                            spec.source_fold_object;
+
+                        auto expected_polynomial =
+                            algebra::Polynomial::
+                                from_evaluations(
+                                    synthetic_label,
+                                    std::move(
+                                        expected_evaluations),
+                                    domain_);
+
+                        auto expected_coset =
+                            materialize_polynomial_coset(
+                                expected_polynomial,
+                                synthetic_label);
+
+                        if (expected_coset == nullptr ||
+                            expected_coset->size() !=
+                                target_size_)
+                        {
+                            throw std::runtime_error(
+                                "t_N public-source expected coset has the wrong size: " +
+                                spec.source_fold_object);
+                        }
+
+                        const auto [_, inserted] =
+                            t_n_public_source_expected_cosets
+                                .emplace(
+                                    spec.source_fold_object,
+                                    std::move(
+                                        expected_coset));
+
+                        if (!inserted)
+                        {
+                            throw std::runtime_error(
+                                "duplicate t_N public-source fold object: " +
+                                spec.source_fold_object);
+                        }
+                    }
+
+                    progress_note(
+                        "prove:quotient:t_N:"
+                        "public_source_fold:precompute:done:"
+                        "count=" +
+                        std::to_string(
+                            t_n_public_source_expected_cosets
+                                .size()));
+                };
+
                 auto evaluate_at_index = [&](
                                              std::size_t i,
                                              const FieldElement &z,
@@ -8160,7 +8382,21 @@ namespace gatzk::protocol
                     }
                     else if (label_ == "t_N")
                     {
-                        return evaluate_t_n(context_, challenges_, eval, z);
+                        if (t_n_evaluation_plan == nullptr)
+                        {
+                            throw std::runtime_error(
+                                "t_N quotient materialization is missing its evaluation plan");
+                        }
+
+                        return evaluate_t_n(
+                            context_,
+                            challenges_,
+                            eval,
+                            z,
+                            t_n_evaluation_plan.get(),
+                            boundary_values,
+                            &t_n_public_source_fold_eval,
+                            i);
                     }
                     else if (label_ == "t_in")
                     {
@@ -8322,12 +8558,20 @@ namespace gatzk::protocol
                     {
                         (void)coset_values_ptr(dependency_label);
                     }
-                    seed_fast_coset_lookup(dependency_labels);
+
+                    seed_fast_coset_lookup(
+                        dependency_labels);
+
                     if (label_ == "t_N")
                     {
+                        prepare_t_n_public_source_expected_cosets();
+
                         progress_note(
-                            "prove:quotient:t_N:coset_prewarm:done:ms=" + std::to_string(elapsed_ms(
-                                                                              prewarm_start, Clock::now())));
+                            "prove:quotient:t_N:coset_prewarm:done:ms=" +
+                            std::to_string(
+                                elapsed_ms(
+                                    prewarm_start,
+                                    Clock::now())));
                     }
                 }
                 if (label_ == "t_edge" &&
@@ -8365,7 +8609,9 @@ namespace gatzk::protocol
                     const auto boundary_shifted_zero =
                         shift_.pow(domain_->size);
 
-                    if (label_ == "t_edge" || label_ == "t_FH")
+                    if (label_ == "t_edge" ||
+                        label_ == "t_FH" ||
+                        label_ == "t_N")
                     {
                         if (target_size_ % domain_->size != 0)
                         {
@@ -8410,7 +8656,9 @@ namespace gatzk::protocol
                                          static_cast<std::uint64_t>(
                                              begin));
 
-                        if (label_ == "t_edge" || label_ == "t_FH")
+                        if (label_ == "t_edge" ||
+                            label_ == "t_FH" ||
+                            label_ == "t_N")
                         {
                             if (denominator_products == nullptr)
                             {
@@ -8569,6 +8817,8 @@ namespace gatzk::protocol
                                        : std::size_t{2048})
                                 : (label_ == "t_edge"
                                        ? std::size_t{1024}
+                                   : label_ == "t_N"
+                                       ? std::size_t{512}
                                        : std::size_t{32768});
 
                         if (bounded_file_backed_evaluation)
@@ -8757,6 +9007,13 @@ namespace gatzk::protocol
                                 const auto evaluation_count =
                                     evaluation_end - evaluation_begin;
 
+                                const auto requested_task_count =
+                                    evaluation_count == 0
+                                        ? std::size_t{1}
+                                        : std::size_t{1} +
+                                              (evaluation_count - 1) /
+                                                  min_points_per_task;
+
                                 const auto task_count =
                                     std::min<std::size_t>(
                                         std::min<std::size_t>(
@@ -8764,7 +9021,23 @@ namespace gatzk::protocol
                                             32),
                                         std::max<std::size_t>(
                                             1,
-                                            evaluation_count / min_points_per_task));
+                                            requested_task_count));
+
+                                if (label_ == "t_N")
+                                {
+                                    progress_note(
+                                        "prove:quotient:t_N:"
+                                        "evaluation_scheduler:"
+                                        "workers=" +
+                                        std::to_string(
+                                            task_count) +
+                                        ":points=" +
+                                        std::to_string(
+                                            evaluation_count) +
+                                        ":min_points_per_task=" +
+                                        std::to_string(
+                                            min_points_per_task));
+                                }
 
                                 const auto chunk_size =
                                     (evaluation_count + task_count - 1) / task_count;
@@ -11546,66 +11819,212 @@ namespace gatzk::protocol
                 }
                 return std::pair<std::string, algebra::Polynomial>{label, std::move(polynomial)};
             };
+            const auto worker_count =
+                worker_count_for_labels();
 
-            const auto worker_count = worker_count_for_labels();
-            const auto t_edge_it = std::find(labels.begin(), labels.end(), "t_edge");
-            const auto edge_size = context.domains.edge != nullptr ? context.domains.edge->size : 0;
-            if (worker_count > 1 && t_edge_it != labels.end() && edge_size >= (1ULL << 15))
+            const auto t_edge_it =
+                std::find(
+                    labels.begin(),
+                    labels.end(),
+                    "t_edge");
+
+            const auto t_n_it =
+                std::find(
+                    labels.begin(),
+                    labels.end(),
+                    "t_N");
+
+            const auto edge_size =
+                context.domains.edge != nullptr
+                    ? context.domains.edge->size
+                    : 0;
+
+            const auto n_size =
+                context.domains.n != nullptr
+                    ? context.domains.n->size
+                    : 0;
+
+            const bool prioritize_t_edge =
+                worker_count > 1 &&
+                t_edge_it != labels.end() &&
+                edge_size >=
+                    (1ULL << 15);
+
+            // t_N owns substantial inner parallelism.  Running it inside the
+            // outer quotient worker pool would oversubscribe the same CPU
+            // cores with t_FH/in/d/cat/C materialization workers.
+            const bool prioritize_t_n =
+                worker_count > 1 &&
+                t_n_it != labels.end() &&
+                n_size >=
+                    (1ULL << 12);
+
+            if (prioritize_t_edge ||
+                prioritize_t_n)
             {
-                append_note(metrics, "quotient_materialization_t_edge_priority=1");
-                std::vector<std::optional<std::pair<std::string, algebra::Polynomial>>> results(labels.size());
-                const auto t_edge_index = static_cast<std::size_t>(std::distance(labels.begin(), t_edge_it));
-                results[t_edge_index] = materialize_one("t_edge");
+                std::vector<
+                    std::optional<
+                        std::pair<
+                            std::string,
+                            algebra::Polynomial>>>
+                    results(
+                        labels.size());
 
-                std::vector<std::size_t> remaining_indices;
-                remaining_indices.reserve(labels.size() - 1);
-                for (std::size_t i = 0; i < labels.size(); ++i)
+                std::vector<bool>
+                    completed(
+                        labels.size(),
+                        false);
+
+                if (prioritize_t_edge)
                 {
-                    if (i != t_edge_index)
+                    append_note(
+                        metrics,
+                        "quotient_materialization_t_edge_priority=1");
+
+                    const auto t_edge_index =
+                        static_cast<std::size_t>(
+                            std::distance(
+                                labels.begin(),
+                                t_edge_it));
+
+                    results[t_edge_index] =
+                        materialize_one(
+                            "t_edge");
+
+                    completed[t_edge_index] =
+                        true;
+                }
+
+                if (prioritize_t_n)
+                {
+                    append_note(
+                        metrics,
+                        "quotient_materialization_t_N_exclusive=1");
+
+                    const auto t_n_index =
+                        static_cast<std::size_t>(
+                            std::distance(
+                                labels.begin(),
+                                t_n_it));
+
+                    if (!completed[t_n_index])
                     {
-                        remaining_indices.push_back(i);
+                        results[t_n_index] =
+                            materialize_one(
+                                "t_N");
+
+                        completed[t_n_index] =
+                            true;
                     }
                 }
-                const auto remaining_worker_count = std::min<std::size_t>(worker_count, remaining_indices.size());
+
+                std::vector<std::size_t>
+                    remaining_indices;
+
+                remaining_indices.reserve(
+                    labels.size());
+
+                for (std::size_t index = 0;
+                     index < labels.size();
+                     ++index)
+                {
+                    if (!completed[index])
+                    {
+                        remaining_indices.push_back(
+                            index);
+                    }
+                }
+
+                const auto remaining_worker_count =
+                    std::min<std::size_t>(
+                        worker_count,
+                        remaining_indices.size());
+
+                if (!remaining_indices.empty())
+                {
+                    append_note(
+                        metrics,
+                        "parallel_quotient_materialization_workers_after_exclusive=" +
+                            std::to_string(
+                                remaining_worker_count));
+                }
+
                 if (remaining_worker_count <= 1)
                 {
-                    for (const auto index : remaining_indices)
+                    for (const auto index :
+                         remaining_indices)
                     {
-                        results[index] = materialize_one(labels[index]);
+                        results[index] =
+                            materialize_one(
+                                labels[index]);
                     }
                 }
                 else
                 {
-                    append_note(metrics, "parallel_quotient_materialization_workers_after_t_edge=" + std::to_string(remaining_worker_count));
-                    std::atomic<std::size_t> next{0};
-                    std::vector<std::future<void>> futures;
-                    futures.reserve(remaining_worker_count);
-                    for (std::size_t worker = 0; worker < remaining_worker_count; ++worker)
+                    std::atomic<std::size_t>
+                        next{0};
+
+                    std::vector<
+                        std::future<void>>
+                        futures;
+
+                    futures.reserve(
+                        remaining_worker_count);
+
+                    for (std::size_t worker = 0;
+                         worker <
+                         remaining_worker_count;
+                         ++worker)
                     {
-                        futures.push_back(std::async(std::launch::async, [&]()
-                                                     {
-                    while (true) {
-                        const auto offset = next.fetch_add(1);
-                        if (offset >= remaining_indices.size()) {
-                            break;
-                        }
-                        const auto index = remaining_indices[offset];
-                        results[index] = materialize_one(labels[index]);
-                    } }));
+                        futures.push_back(
+                            std::async(
+                                std::launch::async,
+                                [&]()
+                                {
+                                    while (true)
+                                    {
+                                        const auto offset =
+                                            next.fetch_add(
+                                                1);
+
+                                        if (offset >=
+                                            remaining_indices
+                                                .size())
+                                        {
+                                            break;
+                                        }
+
+                                        const auto index =
+                                            remaining_indices[offset];
+
+                                        results[index] =
+                                            materialize_one(
+                                                labels[index]);
+                                    }
+                                }));
                     }
-                    for (auto &future : futures)
+
+                    for (auto &future :
+                         futures)
                     {
                         future.get();
                     }
                 }
-                for (auto &result : results)
+
+                for (auto &result :
+                     results)
                 {
                     if (!result.has_value())
                     {
-                        throw std::runtime_error("missing t_edge-priority quotient materialization result");
+                        throw std::runtime_error(
+                            "missing exclusive quotient materialization result");
                     }
-                    out.push_back(std::move(*result));
+
+                    out.push_back(
+                        std::move(
+                            *result));
                 }
+
                 return out;
             }
             if (worker_count <= 1)

@@ -193,6 +193,13 @@ struct StaticTables {
     std::vector<std::int64_t> lrelu;
     std::vector<std::int64_t> elu;
     std::vector<std::int64_t> exp;
+    // The logical table rows are not necessarily a power of two.  These
+    // authenticated domains describe the canonical zero-padded MLE table
+    // used by the native relation and its public Q_table selector.
+    std::uint64_t lrelu_padded_domain = 0;
+    std::uint64_t elu_padded_domain = 0;
+    std::uint64_t exp_padded_domain = 0;
+    std::string padding_rule;
     std::string generator_id;
     std::string version;
     std::string scale_id;

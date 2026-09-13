@@ -414,6 +414,10 @@ std::string digest_tables(const StaticTables& tables) {
     hash_string(tables.domain_id);
     hash_string(tables.row_order);
     hash_string(tables.spec_hash);
+    hash_string(tables.padding_rule);
+    hash_u64(hash, tables.lrelu_padded_domain);
+    hash_u64(hash, tables.elu_padded_domain);
+    hash_u64(hash, tables.exp_padded_domain);
     hash_i64(hash, tables.lrelu_min); hash_i64(hash, tables.lrelu_max);
     hash_i64(hash, tables.elu_min); hash_i64(hash, tables.elu_max);
     hash_u64(hash, tables.exp_max);
@@ -1419,7 +1423,9 @@ void validate_field_bound(i64 value, const std::string& label) {
 void validate_static_tables(const Config& config, StaticTables* tables) {
     if (!tables || !tables->authenticated) fail("BLOCKED: static table descriptor is not authenticated");
     if (tables->quant_cfg_id != config.quant_cfg_id || tables->scale_id.empty() || tables->domain_id.empty() ||
-        tables->row_order != "ascending_index_min_to_max" || tables->generator_id.empty() || tables->version.empty()) {
+        tables->row_order != "ascending_index_min_to_max" ||
+        tables->padding_rule != "next_power_of_two_zero_v1" ||
+        tables->generator_id.empty() || tables->version.empty()) {
         fail("authenticated static table descriptor identity mismatch");
     }
     const auto lrelu_rows = checked_domain_rows(tables->lrelu_min, tables->lrelu_max, "LeakyReLU");
@@ -1428,6 +1434,21 @@ void validate_static_tables(const Config& config, StaticTables* tables) {
         fail("BLOCKED: ExpMap table domain is too large");
     }
     const auto exp_rows = tables->exp_max + 1;
+    const auto next_power_of_two = [](std::uint64_t value) {
+        if (value == 0U) return std::uint64_t{0U};
+        std::uint64_t result = 1U;
+        while (result < value) {
+            if (result > std::numeric_limits<std::uint64_t>::max() / 2U)
+                fail("authenticated static table padded domain overflows");
+            result <<= 1U;
+        }
+        return result;
+    };
+    if (tables->lrelu_padded_domain != next_power_of_two(lrelu_rows) ||
+        tables->elu_padded_domain != next_power_of_two(elu_rows) ||
+        tables->exp_padded_domain != next_power_of_two(exp_rows)) {
+        fail("authenticated static table padded domain is not canonical");
+    }
     if (tables->lrelu.size() != lrelu_rows || tables->elu.size() != elu_rows ||
         tables->exp.size() != exp_rows || tables->lrelu.empty() || tables->elu.empty() || tables->exp.empty()) {
         fail("authenticated static table row count does not match its descriptor domain");
@@ -1478,6 +1499,7 @@ StaticTables load_static_table_descriptor(const Config& config) {
     tables.scale_id = json_scalar(text, "scale_id");
     tables.domain_id = json_scalar(text, "domain_id");
     tables.row_order = json_scalar(text, "row_order");
+    tables.padding_rule = json_scalar(text, "padding_rule");
     tables.spec_hash = json_scalar(text, "spec_hash");
     tables.digest = json_scalar(text, "digest");
     if (json_scalar(text, "static_table_id") != config.static_table_id) fail("static table descriptor id mismatch");
@@ -1486,6 +1508,9 @@ StaticTables load_static_table_descriptor(const Config& config) {
     tables.elu_min = json_i64_value(text, "elu_min");
     tables.elu_max = json_i64_value(text, "elu_max");
     tables.exp_max = json_u64_value(text, "exp_max");
+    tables.lrelu_padded_domain = json_u64_value(text, "lrelu_padded_domain");
+    tables.elu_padded_domain = json_u64_value(text, "elu_padded_domain");
+    tables.exp_padded_domain = json_u64_value(text, "exp_padded_domain");
     tables.lrelu = json_i64_array(text, "lrelu");
     tables.elu = json_i64_array(text, "elu");
     tables.exp = json_i64_array(text, "exp");

@@ -107,6 +107,40 @@ namespace gatzk::protocol
         std::vector<OutputHeadEvaluationConstants> output_heads;
     };
 
+    struct TNEvaluationPlan
+    {
+        struct MatrixFoldPlan
+        {
+            MatrixFoldBindingSpec spec;
+            algebra::FieldElement lambda;
+            algebra::FieldElement barycentric_scale;
+        };
+
+        struct FlatMatrixPlan
+        {
+            FlatMatrixBindingSpec spec;
+            algebra::FieldElement lambda;
+            algebra::FieldElement row_base;
+        };
+
+        struct BroadcastFlatPlan
+        {
+            BroadcastFlatBindingSpec spec;
+            algebra::FieldElement row_base;
+            algebra::FieldElement class_sum;
+        };
+
+        algebra::FieldElement alpha_quot;
+
+        // These registries are immutable for one ProtocolContext.  Building
+        // them once prevents the quotient point loop from reconstructing the
+        // complete binding/schema metadata thousands or millions of times.
+        std::vector<BindingRelationMeta> binding_metadata;
+        std::vector<MatrixFoldPlan> matrix_fold_plans;
+        std::vector<FlatMatrixPlan> flat_matrix_plans;
+        std::vector<BroadcastFlatPlan> broadcast_flat_plans;
+    };
+
     // 实现各工作域 quotient 恒等式的求值逻辑，
     // prove 会在hidden_point或挑战点上构造相应承诺，verify 会按同一公式重算并检查 opening。
     namespace
@@ -3138,199 +3172,1060 @@ namespace gatzk::protocol
             boundary_values);
     }
 
+    std::shared_ptr<const TNEvaluationPlan>
+    build_t_n_evaluation_plan(
+        const ProtocolContext &context,
+        const std::map<std::string, FieldElement> &challenges)
+    {
+        auto plan =
+            std::make_shared<TNEvaluationPlan>();
+
+        plan->alpha_quot =
+            challenges.at("alpha_quot");
+
+        plan->binding_metadata =
+            build_binding_relation_metadata(context);
+
+        // Validate the immutable matrix registry once.  The old implementation
+        // repeated this structural work at every quotient-coset point.
+        for (const auto &binding :
+             plan->binding_metadata)
+        {
+            for (const auto &matrix :
+                 binding.canonical_matrices)
+            {
+                if (matrix.canonical_domain !=
+                        context.domains.n->name ||
+                    matrix.column_objects.size() !=
+                        matrix.column_count ||
+                    matrix.row_count !=
+                        context.local.num_nodes)
+                {
+                    throw std::runtime_error(
+                        "invalid canonical matrix quotient registry: " +
+                        matrix.relation_id);
+                }
+            }
+
+            for (const auto &relation :
+                 binding.aggregation_relations)
+            {
+                const auto contains_matrix =
+                    [&](const std::string &object)
+                {
+                    return std::any_of(
+                        binding.canonical_matrices.begin(),
+                        binding.canonical_matrices.end(),
+                        [&](const auto &matrix)
+                        {
+                            return matrix.matrix_object ==
+                                   object;
+                        });
+                };
+
+                if (!contains_matrix(
+                        relation.source_matrix_object))
+                {
+                    throw std::runtime_error(
+                        "aggregation quotient canonical matrix missing: " +
+                        relation.source_matrix_object);
+                }
+
+                if (!contains_matrix(
+                        relation.target_matrix_object))
+                {
+                    throw std::runtime_error(
+                        "aggregation quotient canonical matrix missing: " +
+                        relation.target_matrix_object);
+                }
+            }
+        }
+
+        const auto matrix_fold_specs =
+            matrix_fold_binding_specs(context);
+
+        plan->matrix_fold_plans.reserve(
+            matrix_fold_specs.size());
+
+        for (const auto &spec :
+             matrix_fold_specs)
+        {
+            const auto lambda =
+                challenges.at(
+                    spec.lambda_challenge);
+
+            const auto rho =
+                challenges.at(
+                    spec.source_point_challenge);
+
+            plan->matrix_fold_plans.push_back(
+                TNEvaluationPlan::MatrixFoldPlan{
+                    .spec = spec,
+                    .lambda = lambda,
+                    .barycentric_scale =
+                        context.domains.n
+                            ->zero_polynomial_eval(rho) *
+                        context.domains.n->inv_size,
+                });
+        }
+
+        const auto flat_specs =
+            flat_matrix_binding_specs(context);
+
+        plan->flat_matrix_plans.reserve(
+            flat_specs.size());
+
+        for (const auto &spec :
+             flat_specs)
+        {
+            const auto lambda =
+                challenges.at(
+                    spec.lambda_challenge);
+
+            plan->flat_matrix_plans.push_back(
+                TNEvaluationPlan::FlatMatrixPlan{
+                    .spec = spec,
+                    .lambda = lambda,
+                    .row_base =
+                        lambda.pow(
+                            spec.columns),
+                });
+        }
+
+        const auto broadcast_specs =
+            broadcast_flat_binding_specs(context);
+
+        plan->broadcast_flat_plans.reserve(
+            broadcast_specs.size());
+
+        for (const auto &spec :
+             broadcast_specs)
+        {
+            const auto lambda =
+                challenges.at(
+                    spec.lambda_challenge);
+
+            plan->broadcast_flat_plans.push_back(
+                TNEvaluationPlan::BroadcastFlatPlan{
+                    .spec = spec,
+                    .row_base =
+                        lambda.pow(
+                            spec.width),
+                    .class_sum =
+                        geometric_sum(
+                            lambda,
+                            spec.width),
+                });
+        }
+
+        return plan;
+    }
+
     FieldElement evaluate_t_n(
         const ProtocolContext &context,
         const std::map<std::string, FieldElement> &challenges,
         const EvalFn &eval,
-        const FieldElement &z)
+        const FieldElement &z,
+        const TNEvaluationPlan *evaluation_plan,
+        const QuotientBoundaryValues *boundary_values,
+        const TNPublicSourceFoldEvalFn *public_source_fold_eval,
+        std::size_t evaluation_index)
     {
+        const auto owned_plan =
+            evaluation_plan == nullptr
+                ? build_t_n_evaluation_plan(
+                      context,
+                      challenges)
+                : std::shared_ptr<
+                      const TNEvaluationPlan>{};
+
+        const auto &plan =
+            evaluation_plan != nullptr
+                ? *evaluation_plan
+                : *owned_plan;
+
         // N 域负责把边上广播的量重新收回到目标点，并补上分母倒数、PSQ 目标表和 route 节点侧约束。
-        const auto omega_z = z * context.domains.n->omega;
-        const auto boundary = boundary_lagrange_values(*context.domains.n, z);
-        const auto first = boundary.first;
-        const auto last = boundary.last;
-        const auto not_last = FieldElement::one() - last;
-        const auto zero_eval = boundary.zero;
-        const auto q_n = eval("P_Q_N", z);
-        QuotientAccumulator acc(challenges.at("alpha_quot"));
+        const auto omega_z =
+            z * context.domains.n->omega;
+
+        const auto boundary =
+            boundary_values != nullptr
+                ? *boundary_values
+                : boundary_lagrange_values(
+                      *context.domains.n,
+                      z);
+
+        const auto first =
+            boundary.first;
+
+        const auto last =
+            boundary.last;
+
+        const auto not_last =
+            FieldElement::one() - last;
+
+        const auto zero_eval =
+            boundary.zero;
+
+        const auto q_n =
+            eval("P_Q_N", z);
+
+        QuotientAccumulator acc(
+            plan.alpha_quot);
 
         for (std::size_t layer_index = 0;
-             layer_index < context.model.hidden_layers.size();
+             layer_index <
+             context.model.hidden_layers.size();
              ++layer_index)
         {
             for (std::size_t local_head_index = 0;
-                 local_head_index < context.model.hidden_layers[layer_index].heads.size();
+                 local_head_index <
+                 context.model.hidden_layers[layer_index]
+                     .heads.size();
                  ++local_head_index)
             {
-                const auto prefix = hidden_head_prefix(layer_index, local_head_index) + "_";
-                const auto challenge = [&](std::string_view base)
-                {
-                    return hidden_challenge_name(base, layer_index, local_head_index);
-                };
-                const auto beta_src = challenges.at(challenge("beta_src_h"));
-                const auto beta_dst = challenges.at(challenge("beta_dst_h"));
-                const auto eta_src = challenges.at(challenge("eta_src_h"));
-                const auto eta_dst = challenges.at(challenge("eta_dst_h"));
-                const auto beta_t = challenges.at(challenge("beta_t_h"));
-                const auto eta_t = challenges.at(challenge("eta_t_h"));
-                const auto lambda_psq = challenges.at(challenge("lambda_psq_h"));
+                const auto prefix =
+                    hidden_head_prefix(
+                        layer_index,
+                        local_head_index) +
+                    "_";
 
-                acc.add(first * eval(prefix + "R_src_node", z));
-                acc.add(q_n * ((eval(prefix + "Table_src", z) + beta_src) * eval(prefix + "J_src_node", z) - FieldElement::one()));
-                acc.add(not_last * route_node_step(eval(prefix + "R_src_node", omega_z), eval(prefix + "R_src_node", z), eval(prefix + "Table_src", z), beta_src, q_n, eval(prefix + "m_src", z)));
-                acc.add(first * eval(prefix + "R_dst_node", z));
-                acc.add(q_n * ((eval(prefix + "Table_dst", z) + beta_dst) * eval(prefix + "J_dst_node", z) - FieldElement::one()));
-                acc.add(not_last * route_node_step(eval(prefix + "R_dst_node", omega_z), eval(prefix + "R_dst_node", z), eval(prefix + "Table_dst", z), beta_dst, q_n, eval(prefix + "m_dst", z)));
-                acc.add(first * eval(prefix + "R_t_node", z));
-                acc.add(q_n * ((eval(prefix + "Table_t", z) + beta_t) * eval(prefix + "J_t_node", z) - FieldElement::one()));
-                acc.add(not_last * route_node_step(eval(prefix + "R_t_node", omega_z), eval(prefix + "R_t_node", z), eval(prefix + "Table_t", z), beta_t, q_n, eval(prefix + "m_t", z)));
-                acc.add(q_n * (eval(prefix + "Sum", z) * eval(prefix + "inv", z) - FieldElement::one()));
-                acc.add(q_n * (eval(prefix + "T_psq", z) - eval(prefix + "Sum", z) - lambda_psq * eval(prefix + "H_agg_pre_star", z)));
-                acc.add(eval(prefix + "Table_src", z) - (eval("P_I", z) + eta_src * eval(prefix + "E_src", z) + eta_src.pow(2) * eval(prefix + "H_star", z)));
-                acc.add(eval(prefix + "Table_dst", z) - (eval("P_I", z) + eta_dst * eval(prefix + "E_dst", z) + eta_dst.pow(2) * eval(prefix + "M", z) + eta_dst.pow(3) * eval(prefix + "Sum", z) + eta_dst.pow(4) * eval(prefix + "inv", z) + eta_dst.pow(5) * eval(prefix + "H_agg_star", z)));
-                acc.add(eval(prefix + "Table_t", z) - (eval("P_I", z) + eta_t * eval(prefix + "T_psq", z)));
-                acc.add(zero_on_unselected(q_n, eval(prefix + "E_src", z)));
-                acc.add(zero_on_unselected(q_n, eval(prefix + "E_dst", z)));
-                acc.add(zero_on_unselected(q_n, eval(prefix + "M", z)));
-                acc.add(zero_on_unselected(q_n, eval(prefix + "Sum", z)));
-                acc.add(zero_on_unselected(q_n, eval(prefix + "inv", z)));
-                acc.add(zero_on_unselected(q_n, eval(prefix + "H_star", z)));
-                acc.add(zero_on_unselected(q_n, eval(prefix + "H_agg_pre_star", z)));
-                acc.add(zero_on_unselected(q_n, eval(prefix + "H_agg_star", z)));
-                acc.add(zero_on_unselected(q_n, eval(prefix + "Table_src", z)));
-                acc.add(zero_on_unselected(q_n, eval(prefix + "m_src", z)));
-                acc.add(zero_on_unselected(q_n, eval(prefix + "Table_dst", z)));
-                acc.add(zero_on_unselected(q_n, eval(prefix + "m_dst", z)));
-                acc.add(zero_on_unselected(q_n, eval(prefix + "T_psq", z)));
-                acc.add(zero_on_unselected(q_n, eval(prefix + "Table_t", z)));
-                acc.add(zero_on_unselected(q_n, eval(prefix + "m_t", z)));
+                const auto challenge =
+                    [&](std::string_view base)
+                {
+                    return hidden_challenge_name(
+                        base,
+                        layer_index,
+                        local_head_index);
+                };
+
+                const auto beta_src =
+                    challenges.at(
+                        challenge("beta_src_h"));
+
+                const auto beta_dst =
+                    challenges.at(
+                        challenge("beta_dst_h"));
+
+                const auto eta_src =
+                    challenges.at(
+                        challenge("eta_src_h"));
+
+                const auto eta_dst =
+                    challenges.at(
+                        challenge("eta_dst_h"));
+
+                const auto beta_t =
+                    challenges.at(
+                        challenge("beta_t_h"));
+
+                const auto eta_t =
+                    challenges.at(
+                        challenge("eta_t_h"));
+
+                const auto lambda_psq =
+                    challenges.at(
+                        challenge("lambda_psq_h"));
+
+                const auto eta_src_sq =
+                    eta_src * eta_src;
+
+                const auto eta_dst_sq =
+                    eta_dst * eta_dst;
+
+                const auto eta_dst_cu =
+                    eta_dst_sq * eta_dst;
+
+                const auto eta_dst_4 =
+                    eta_dst_cu * eta_dst;
+
+                const auto eta_dst_5 =
+                    eta_dst_4 * eta_dst;
+
+                acc.add(
+                    first *
+                    eval(
+                        prefix + "R_src_node",
+                        z));
+
+                acc.add(
+                    q_n *
+                    ((eval(
+                          prefix + "Table_src",
+                          z) +
+                      beta_src) *
+                         eval(
+                             prefix +
+                                 "J_src_node",
+                             z) -
+                     FieldElement::one()));
+
+                acc.add(
+                    not_last *
+                    route_node_step(
+                        eval(
+                            prefix +
+                                "R_src_node",
+                            omega_z),
+                        eval(
+                            prefix +
+                                "R_src_node",
+                            z),
+                        eval(
+                            prefix +
+                                "Table_src",
+                            z),
+                        beta_src,
+                        q_n,
+                        eval(
+                            prefix +
+                                "m_src",
+                            z)));
+
+                acc.add(
+                    first *
+                    eval(
+                        prefix + "R_dst_node",
+                        z));
+
+                acc.add(
+                    q_n *
+                    ((eval(
+                          prefix + "Table_dst",
+                          z) +
+                      beta_dst) *
+                         eval(
+                             prefix +
+                                 "J_dst_node",
+                             z) -
+                     FieldElement::one()));
+
+                acc.add(
+                    not_last *
+                    route_node_step(
+                        eval(
+                            prefix +
+                                "R_dst_node",
+                            omega_z),
+                        eval(
+                            prefix +
+                                "R_dst_node",
+                            z),
+                        eval(
+                            prefix +
+                                "Table_dst",
+                            z),
+                        beta_dst,
+                        q_n,
+                        eval(
+                            prefix +
+                                "m_dst",
+                            z)));
+
+                acc.add(
+                    first *
+                    eval(
+                        prefix + "R_t_node",
+                        z));
+
+                acc.add(
+                    q_n *
+                    ((eval(
+                          prefix + "Table_t",
+                          z) +
+                      beta_t) *
+                         eval(
+                             prefix +
+                                 "J_t_node",
+                             z) -
+                     FieldElement::one()));
+
+                acc.add(
+                    not_last *
+                    route_node_step(
+                        eval(
+                            prefix +
+                                "R_t_node",
+                            omega_z),
+                        eval(
+                            prefix +
+                                "R_t_node",
+                            z),
+                        eval(
+                            prefix +
+                                "Table_t",
+                            z),
+                        beta_t,
+                        q_n,
+                        eval(
+                            prefix +
+                                "m_t",
+                            z)));
+
+                acc.add(
+                    q_n *
+                    (eval(prefix + "Sum", z) *
+                         eval(prefix + "inv", z) -
+                     FieldElement::one()));
+
+                acc.add(
+                    q_n *
+                    (eval(prefix + "T_psq", z) -
+                     eval(prefix + "Sum", z) -
+                     lambda_psq *
+                         eval(
+                             prefix +
+                                 "H_agg_pre_star",
+                             z)));
+
+                acc.add(
+                    eval(
+                        prefix + "Table_src",
+                        z) -
+                    (eval("P_I", z) +
+                     eta_src *
+                         eval(
+                             prefix + "E_src",
+                             z) +
+                     eta_src_sq *
+                         eval(
+                             prefix + "H_star",
+                             z)));
+
+                acc.add(
+                    eval(
+                        prefix + "Table_dst",
+                        z) -
+                    (eval("P_I", z) +
+                     eta_dst *
+                         eval(
+                             prefix + "E_dst",
+                             z) +
+                     eta_dst_sq *
+                         eval(
+                             prefix + "M",
+                             z) +
+                     eta_dst_cu *
+                         eval(
+                             prefix + "Sum",
+                             z) +
+                     eta_dst_4 *
+                         eval(
+                             prefix + "inv",
+                             z) +
+                     eta_dst_5 *
+                         eval(
+                             prefix +
+                                 "H_agg_star",
+                             z)));
+
+                acc.add(
+                    eval(
+                        prefix + "Table_t",
+                        z) -
+                    (eval("P_I", z) +
+                     eta_t *
+                         eval(
+                             prefix + "T_psq",
+                             z)));
+
+                acc.add(
+                    zero_on_unselected(
+                        q_n,
+                        eval(
+                            prefix + "E_src",
+                            z)));
+
+                acc.add(
+                    zero_on_unselected(
+                        q_n,
+                        eval(
+                            prefix + "E_dst",
+                            z)));
+
+                acc.add(
+                    zero_on_unselected(
+                        q_n,
+                        eval(
+                            prefix + "M",
+                            z)));
+
+                acc.add(
+                    zero_on_unselected(
+                        q_n,
+                        eval(
+                            prefix + "Sum",
+                            z)));
+
+                acc.add(
+                    zero_on_unselected(
+                        q_n,
+                        eval(
+                            prefix + "inv",
+                            z)));
+
+                acc.add(
+                    zero_on_unselected(
+                        q_n,
+                        eval(
+                            prefix + "H_star",
+                            z)));
+
+                acc.add(
+                    zero_on_unselected(
+                        q_n,
+                        eval(
+                            prefix +
+                                "H_agg_pre_star",
+                            z)));
+
+                acc.add(
+                    zero_on_unselected(
+                        q_n,
+                        eval(
+                            prefix +
+                                "H_agg_star",
+                            z)));
+
+                acc.add(
+                    zero_on_unselected(
+                        q_n,
+                        eval(
+                            prefix + "Table_src",
+                            z)));
+
+                acc.add(
+                    zero_on_unselected(
+                        q_n,
+                        eval(
+                            prefix + "m_src",
+                            z)));
+
+                acc.add(
+                    zero_on_unselected(
+                        q_n,
+                        eval(
+                            prefix + "Table_dst",
+                            z)));
+
+                acc.add(
+                    zero_on_unselected(
+                        q_n,
+                        eval(
+                            prefix + "m_dst",
+                            z)));
+
+                acc.add(
+                    zero_on_unselected(
+                        q_n,
+                        eval(
+                            prefix + "T_psq",
+                            z)));
+
+                acc.add(
+                    zero_on_unselected(
+                        q_n,
+                        eval(
+                            prefix + "Table_t",
+                            z)));
+
+                acc.add(
+                    zero_on_unselected(
+                        q_n,
+                        eval(
+                            prefix + "m_t",
+                            z)));
             }
         }
 
-        for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
+        for (std::size_t head_index = 0;
+             head_index <
+             context.model.output_layer.heads.size();
+             ++head_index)
         {
-            const auto prefix = output_head_prefix(head_index) + "_";
-            const auto beta_src_out = challenges.at(output_challenge_name("beta_src_out", head_index));
-            const auto beta_dst_out = challenges.at(output_challenge_name("beta_dst_out", head_index));
-            const auto eta_src_out = challenges.at(output_challenge_name("eta_src_out", head_index));
-            const auto eta_dst_out = challenges.at(output_challenge_name("eta_dst_out", head_index));
-            const auto beta_t_out = challenges.at(output_challenge_name("beta_t_out", head_index));
-            const auto eta_t_out = challenges.at(output_challenge_name("eta_t_out", head_index));
-            const auto lambda_out = challenges.at(output_challenge_name("lambda_out", head_index));
+            const auto prefix =
+                output_head_prefix(
+                    head_index) +
+                "_";
 
-            acc.add(first * eval(prefix + "R_src_node", z));
-            acc.add(q_n * ((eval(prefix + "Table_src", z) + beta_src_out) * eval(prefix + "J_src_node", z) - FieldElement::one()));
-            acc.add(not_last * route_node_step(eval(prefix + "R_src_node", omega_z), eval(prefix + "R_src_node", z), eval(prefix + "Table_src", z), beta_src_out, q_n, eval(prefix + "m_src", z)));
-            acc.add(first * eval(prefix + "R_dst_node", z));
-            acc.add(q_n * ((eval(prefix + "Table_dst", z) + beta_dst_out) * eval(prefix + "J_dst_node", z) - FieldElement::one()));
-            acc.add(not_last * route_node_step(eval(prefix + "R_dst_node", omega_z), eval(prefix + "R_dst_node", z), eval(prefix + "Table_dst", z), beta_dst_out, q_n, eval(prefix + "m_dst", z)));
-            acc.add(first * eval(prefix + "R_t_node", z));
-            acc.add(q_n * ((eval(prefix + "Table_t", z) + beta_t_out) * eval(prefix + "J_t_node", z) - FieldElement::one()));
-            acc.add(not_last * route_node_step(eval(prefix + "R_t_node", omega_z), eval(prefix + "R_t_node", z), eval(prefix + "Table_t", z), beta_t_out, q_n, eval(prefix + "m_t", z)));
-            acc.add(q_n * (eval(prefix + "Sum", z) * eval(prefix + "inv", z) - FieldElement::one()));
-            acc.add(q_n * (eval(prefix + "T", z) - eval(prefix + "Sum", z) - lambda_out * eval(prefix + "Y_star", z)));
-            acc.add(eval(prefix + "Table_src", z) - (eval("P_I", z) + eta_src_out * eval(prefix + "E_src", z)));
-            acc.add(eval(prefix + "Table_dst", z) - (eval("P_I", z) + eta_dst_out * eval(prefix + "E_dst", z) + eta_dst_out.pow(2) * eval(prefix + "M", z) + eta_dst_out.pow(3) * eval(prefix + "Sum", z) + eta_dst_out.pow(4) * eval(prefix + "inv", z) + eta_dst_out.pow(5) * eval(prefix + "Y_star", z)));
-            acc.add(eval(prefix + "Table_t", z) - (eval("P_I", z) + eta_t_out * eval(prefix + "T", z)));
-            acc.add(zero_on_unselected(q_n, eval(prefix + "E_src", z)));
-            acc.add(zero_on_unselected(q_n, eval(prefix + "E_dst", z)));
-            acc.add(zero_on_unselected(q_n, eval(prefix + "M", z)));
-            acc.add(zero_on_unselected(q_n, eval(prefix + "Sum", z)));
-            acc.add(zero_on_unselected(q_n, eval(prefix + "inv", z)));
-            acc.add(zero_on_unselected(q_n, eval(prefix + "Y_prime_star", z)));
-            acc.add(zero_on_unselected(q_n, eval(prefix + "Y_star", z)));
-            acc.add(zero_on_unselected(q_n, eval(prefix + "T", z)));
-            acc.add(zero_on_unselected(q_n, eval(prefix + "Table_src", z)));
-            acc.add(zero_on_unselected(q_n, eval(prefix + "m_src", z)));
-            acc.add(zero_on_unselected(q_n, eval(prefix + "Table_dst", z)));
-            acc.add(zero_on_unselected(q_n, eval(prefix + "m_dst", z)));
-            acc.add(zero_on_unselected(q_n, eval(prefix + "Table_t", z)));
-            acc.add(zero_on_unselected(q_n, eval(prefix + "m_t", z)));
+            const auto beta_src_out =
+                challenges.at(
+                    output_challenge_name(
+                        "beta_src_out",
+                        head_index));
+
+            const auto beta_dst_out =
+                challenges.at(
+                    output_challenge_name(
+                        "beta_dst_out",
+                        head_index));
+
+            const auto eta_src_out =
+                challenges.at(
+                    output_challenge_name(
+                        "eta_src_out",
+                        head_index));
+
+            const auto eta_dst_out =
+                challenges.at(
+                    output_challenge_name(
+                        "eta_dst_out",
+                        head_index));
+
+            const auto beta_t_out =
+                challenges.at(
+                    output_challenge_name(
+                        "beta_t_out",
+                        head_index));
+
+            const auto eta_t_out =
+                challenges.at(
+                    output_challenge_name(
+                        "eta_t_out",
+                        head_index));
+
+            const auto lambda_out =
+                challenges.at(
+                    output_challenge_name(
+                        "lambda_out",
+                        head_index));
+
+            const auto eta_dst_out_sq =
+                eta_dst_out * eta_dst_out;
+
+            const auto eta_dst_out_cu =
+                eta_dst_out_sq * eta_dst_out;
+
+            const auto eta_dst_out_4 =
+                eta_dst_out_cu * eta_dst_out;
+
+            const auto eta_dst_out_5 =
+                eta_dst_out_4 * eta_dst_out;
+
+            acc.add(
+                first *
+                eval(
+                    prefix + "R_src_node",
+                    z));
+
+            acc.add(
+                q_n *
+                ((eval(
+                      prefix + "Table_src",
+                      z) +
+                  beta_src_out) *
+                     eval(
+                         prefix +
+                             "J_src_node",
+                         z) -
+                 FieldElement::one()));
+
+            acc.add(
+                not_last *
+                route_node_step(
+                    eval(
+                        prefix +
+                            "R_src_node",
+                        omega_z),
+                    eval(
+                        prefix +
+                            "R_src_node",
+                        z),
+                    eval(
+                        prefix +
+                            "Table_src",
+                        z),
+                    beta_src_out,
+                    q_n,
+                    eval(
+                        prefix + "m_src",
+                        z)));
+
+            acc.add(
+                first *
+                eval(
+                    prefix + "R_dst_node",
+                    z));
+
+            acc.add(
+                q_n *
+                ((eval(
+                      prefix + "Table_dst",
+                      z) +
+                  beta_dst_out) *
+                     eval(
+                         prefix +
+                             "J_dst_node",
+                         z) -
+                 FieldElement::one()));
+
+            acc.add(
+                not_last *
+                route_node_step(
+                    eval(
+                        prefix +
+                            "R_dst_node",
+                        omega_z),
+                    eval(
+                        prefix +
+                            "R_dst_node",
+                        z),
+                    eval(
+                        prefix +
+                            "Table_dst",
+                        z),
+                    beta_dst_out,
+                    q_n,
+                    eval(
+                        prefix + "m_dst",
+                        z)));
+
+            acc.add(
+                first *
+                eval(
+                    prefix + "R_t_node",
+                    z));
+
+            acc.add(
+                q_n *
+                ((eval(
+                      prefix + "Table_t",
+                      z) +
+                  beta_t_out) *
+                     eval(
+                         prefix +
+                             "J_t_node",
+                         z) -
+                 FieldElement::one()));
+
+            acc.add(
+                not_last *
+                route_node_step(
+                    eval(
+                        prefix +
+                            "R_t_node",
+                        omega_z),
+                    eval(
+                        prefix +
+                            "R_t_node",
+                        z),
+                    eval(
+                        prefix +
+                            "Table_t",
+                        z),
+                    beta_t_out,
+                    q_n,
+                    eval(
+                        prefix + "m_t",
+                        z)));
+
+            acc.add(
+                q_n *
+                (eval(prefix + "Sum", z) *
+                     eval(prefix + "inv", z) -
+                 FieldElement::one()));
+
+            acc.add(
+                q_n *
+                (eval(prefix + "T", z) -
+                 eval(prefix + "Sum", z) -
+                 lambda_out *
+                     eval(
+                         prefix + "Y_star",
+                         z)));
+
+            acc.add(
+                eval(
+                    prefix + "Table_src",
+                    z) -
+                (eval("P_I", z) +
+                 eta_src_out *
+                     eval(
+                         prefix + "E_src",
+                         z)));
+
+            acc.add(
+                eval(
+                    prefix + "Table_dst",
+                    z) -
+                (eval("P_I", z) +
+                 eta_dst_out *
+                     eval(
+                         prefix + "E_dst",
+                         z) +
+                 eta_dst_out_sq *
+                     eval(
+                         prefix + "M",
+                         z) +
+                 eta_dst_out_cu *
+                     eval(
+                         prefix + "Sum",
+                         z) +
+                 eta_dst_out_4 *
+                     eval(
+                         prefix + "inv",
+                         z) +
+                 eta_dst_out_5 *
+                     eval(
+                         prefix + "Y_star",
+                         z)));
+
+            acc.add(
+                eval(
+                    prefix + "Table_t",
+                    z) -
+                (eval("P_I", z) +
+                 eta_t_out *
+                     eval(
+                         prefix + "T",
+                         z)));
+
+            for (const auto *suffix : {
+                     "E_src",
+                     "E_dst",
+                     "M",
+                     "Sum",
+                     "inv",
+                     "Y_prime_star",
+                     "Y_star",
+                     "T",
+                     "Table_src",
+                     "m_src",
+                     "Table_dst",
+                     "m_dst",
+                     "Table_t",
+                     "m_t",
+                 })
+            {
+                acc.add(
+                    zero_on_unselected(
+                        q_n,
+                        eval(
+                            prefix + suffix,
+                            z)));
+            }
         }
 
         for (const auto &binding :
-             build_binding_relation_metadata(context))
+             plan.binding_metadata)
         {
-            for (const auto &matrix : binding.canonical_matrices)
+            for (const auto &matrix :
+                 binding.canonical_matrices)
             {
-                if (matrix.canonical_domain != context.domains.n->name || matrix.column_objects.size() != matrix.column_count || matrix.row_count != context.local.num_nodes)
-                    throw std::runtime_error(
-                        "invalid canonical matrix quotient registry: " + matrix.relation_id);
-                const auto compression = challenges.at(
-                    matrix.compression_challenge_label);
-                auto expected = FieldElement::zero();
-                auto power = FieldElement::one();
-                for (const auto &column : matrix.column_objects)
+                const auto compression =
+                    challenges.at(
+                        matrix
+                            .compression_challenge_label);
+
+                auto expected =
+                    FieldElement::zero();
+
+                auto power =
+                    FieldElement::one();
+
+                for (const auto &column :
+                     matrix.column_objects)
                 {
-                    expected += power * eval(column, z);
-                    power *= compression;
-                    acc.add(zero_on_unselected(
-                        q_n, eval(column, z)));
+                    const auto column_value =
+                        eval(column, z);
+
+                    expected +=
+                        power *
+                        column_value;
+
+                    power *=
+                        compression;
+
+                    acc.add(
+                        zero_on_unselected(
+                            q_n,
+                            column_value));
                 }
-                acc.add(q_n * (eval(matrix.compressed_object, z) - expected));
+
+                acc.add(
+                    q_n *
+                    (eval(
+                         matrix.compressed_object,
+                         z) -
+                     expected));
             }
-            for (const auto &relation : binding.aggregation_relations)
+
+            for (const auto &relation :
+                 binding.aggregation_relations)
             {
-                const auto find_matrix = [&](const std::string &object)
+                const auto find_matrix =
+                    [&](const std::string &object)
                     -> const CanonicalMatrixRelationMeta &
                 {
-                    const auto it = std::find_if(
-                        binding.canonical_matrices.begin(),
-                        binding.canonical_matrices.end(),
-                        [&](const auto &matrix)
-                        { return matrix.matrix_object == object; });
-                    if (it == binding.canonical_matrices.end())
+                    const auto it =
+                        std::find_if(
+                            binding.canonical_matrices.begin(),
+                            binding.canonical_matrices.end(),
+                            [&](const auto &matrix)
+                            {
+                                return matrix.matrix_object ==
+                                       object;
+                            });
+
+                    if (it ==
+                        binding.canonical_matrices.end())
+                    {
                         throw std::runtime_error(
-                            "aggregation quotient canonical matrix missing: " + object);
+                            "aggregation quotient canonical matrix missing: " +
+                            object);
+                    }
+
                     return *it;
                 };
-                const auto compression = challenges.at(
-                    relation.compression_challenge_label);
-                const auto compressed_columns = [&](
-                                                    const CanonicalMatrixRelationMeta &matrix)
+
+                const auto compression =
+                    challenges.at(
+                        relation
+                            .compression_challenge_label);
+
+                const auto compressed_columns =
+                    [&](const CanonicalMatrixRelationMeta &matrix)
                 {
-                    auto value = FieldElement::zero();
-                    auto power = FieldElement::one();
-                    for (const auto &column : matrix.column_objects)
+                    auto value =
+                        FieldElement::zero();
+
+                    auto power =
+                        FieldElement::one();
+
+                    for (const auto &column :
+                         matrix.column_objects)
                     {
-                        value += power * eval(column, z);
-                        power *= compression;
+                        value +=
+                            power *
+                            eval(
+                                column,
+                                z);
+
+                        power *=
+                            compression;
                     }
+
                     return value;
                 };
-                acc.add(q_n * (eval(relation.source_node_object, z) - compressed_columns(find_matrix(
-                                                                          relation.source_matrix_object))));
-                acc.add(q_n * (eval(relation.target_node_object, z) - compressed_columns(find_matrix(
-                                                                          relation.target_matrix_object))));
-                acc.add(zero_on_unselected(
-                    q_n, eval(relation.source_node_object, z)));
-                acc.add(zero_on_unselected(
-                    q_n, eval(relation.target_node_object, z)));
+
+                acc.add(
+                    q_n *
+                    (eval(
+                         relation.source_node_object,
+                         z) -
+                     compressed_columns(
+                         find_matrix(
+                             relation
+                                 .source_matrix_object))));
+
+                acc.add(
+                    q_n *
+                    (eval(
+                         relation.target_node_object,
+                         z) -
+                     compressed_columns(
+                         find_matrix(
+                             relation
+                                 .target_matrix_object))));
+
+                acc.add(
+                    zero_on_unselected(
+                        q_n,
+                        eval(
+                            relation.source_node_object,
+                            z)));
+
+                acc.add(
+                    zero_on_unselected(
+                        q_n,
+                        eval(
+                            relation.target_node_object,
+                            z)));
+
                 for (const auto *route : {
                          &relation.source_route,
-                         &relation.target_route})
+                         &relation.target_route,
+                     })
                 {
-                    const auto beta = challenges.at(
-                        route->beta_challenge_label);
-                    const auto eta = challenges.at(
-                        route->eta_challenge_label);
-                    const auto accumulator = eval(
-                        route->node_accumulator_object, z);
-                    const auto accumulator_next = eval(
-                        route->node_accumulator_object, omega_z);
-                    const auto table = eval(route->table_object, z);
-                    const auto inverse = eval(
-                        route->node_inverse_object, z);
-                    const auto multiplicity = eval(
-                        route->multiplicity_object, z);
-                    acc.add(first * accumulator);
-                    acc.add(q_n * ((table + beta) * inverse - FieldElement::one()));
-                    acc.add((FieldElement::one() - q_n) * inverse);
-                    acc.add(not_last * route_node_step(
-                                           accumulator_next, accumulator, table, beta,
-                                           q_n, multiplicity));
-                    acc.add(table - (eval("P_AggBind_index_N", z) + eta * eval(route->node_value_object, z)));
-                    acc.add(zero_on_unselected(q_n, table));
+                    const auto beta =
+                        challenges.at(
+                            route
+                                ->beta_challenge_label);
+
+                    const auto eta =
+                        challenges.at(
+                            route
+                                ->eta_challenge_label);
+
+                    const auto accumulator =
+                        eval(
+                            route
+                                ->node_accumulator_object,
+                            z);
+
+                    const auto accumulator_next =
+                        eval(
+                            route
+                                ->node_accumulator_object,
+                            omega_z);
+
+                    const auto table =
+                        eval(
+                            route->table_object,
+                            z);
+
+                    const auto inverse =
+                        eval(
+                            route
+                                ->node_inverse_object,
+                            z);
+
+                    const auto multiplicity =
+                        eval(
+                            route
+                                ->multiplicity_object,
+                            z);
+
+                    acc.add(
+                        first *
+                        accumulator);
+
+                    acc.add(
+                        q_n *
+                        ((table + beta) *
+                             inverse -
+                         FieldElement::one()));
+
+                    acc.add(
+                        (FieldElement::one() -
+                         q_n) *
+                        inverse);
+
+                    acc.add(
+                        not_last *
+                        route_node_step(
+                            accumulator_next,
+                            accumulator,
+                            table,
+                            beta,
+                            q_n,
+                            multiplicity));
+
+                    acc.add(
+                        table -
+                        (eval(
+                             "P_AggBind_index_N",
+                             z) +
+                         eta *
+                             eval(
+                                 route
+                                     ->node_value_object,
+                                 z)));
+
+                    acc.add(
+                        zero_on_unselected(
+                            q_n,
+                            table));
                 }
             }
         }
@@ -3359,12 +4254,15 @@ namespace gatzk::protocol
                             column),
                         z);
 
-                power *= compression;
+                power *=
+                    compression;
             }
 
             acc.add(
                 q_n *
-                (eval(target_object, z) -
+                (eval(
+                     target_object,
+                     z) -
                  expected));
         };
 
@@ -3377,7 +4275,8 @@ namespace gatzk::protocol
                 context.model.hidden_layers[layer];
 
             for (std::size_t head = 0;
-                 head < hidden_layer.heads.size();
+                 head <
+                 hidden_layer.heads.size();
                  ++head)
             {
                 const auto prefix =
@@ -3419,7 +4318,8 @@ namespace gatzk::protocol
                 hidden_layer.shape.head_dim;
 
             const auto concat_object =
-                hidden_layer_concat_label(layer);
+                hidden_layer_concat_label(
+                    layer);
 
             for (std::size_t column = 0;
                  column < concat_width;
@@ -3455,7 +4355,8 @@ namespace gatzk::protocol
                 hidden_layer_concat_star_label(
                     layer),
                 challenges.at(
-                    hidden_concat_xi_name(layer)),
+                    hidden_concat_xi_name(
+                        layer)),
                 concat_width);
         }
 
@@ -3465,10 +4366,12 @@ namespace gatzk::protocol
              ++head)
         {
             const auto prefix =
-                output_head_prefix(head);
+                output_head_prefix(
+                    head);
 
             const auto xi =
-                challenges.at("xi_out");
+                challenges.at(
+                    "xi_out");
 
             add_canonical_compression(
                 prefix + "_Y_prime",
@@ -3477,55 +4380,78 @@ namespace gatzk::protocol
                 context.local.num_classes);
 
             add_canonical_compression(
-                output_y_lin_label(head),
+                output_y_lin_label(
+                    head),
                 prefix + "_Y_star",
                 xi,
                 context.local.num_classes);
         }
 
-        for (const auto &spec :
-             matrix_fold_binding_specs(context))
+        for (const auto &planned :
+             plan.matrix_fold_plans)
         {
-            const auto lambda =
-                challenges.at(
-                    spec.lambda_challenge);
+            const auto &spec =
+                planned.spec;
+
+            const auto &lambda =
+                planned.lambda;
 
             auto expected_source_fold =
                 FieldElement::zero();
 
             if (spec.public_source)
             {
-                const auto public_weights =
-                    context.domains.n
-                        ->barycentric_weights(z);
-
-                for (std::size_t row = 0;
-                     row < spec.source_rows;
-                     ++row)
+                if (public_source_fold_eval !=
+                    nullptr)
                 {
-                    auto row_fold =
-                        FieldElement::zero();
+                    // Prover materialization uses the independently derived
+                    // public-source polynomial on the exact quotient coset.
+                    // The verifier leaves this callback null and recomputes
+                    // the same interpolation directly from public features.
+                    expected_source_fold =
+                        (*public_source_fold_eval)(
+                            spec.source_fold_object,
+                            evaluation_index);
+                }
+                else
+                {
+                    const auto public_weights =
+                        context.domains.n
+                            ->barycentric_weights(
+                                z);
 
-                    for (std::size_t column = 0;
-                         column < spec.width;
-                         ++column)
+                    for (std::size_t row = 0;
+                         row <
+                         spec.source_rows;
+                         ++row)
                     {
-                        row_fold =
-                            row_fold * lambda +
-                            context.local.features
-                                .at(row)
-                                .at(column);
-                    }
+                        auto row_fold =
+                            FieldElement::zero();
 
-                    expected_source_fold +=
-                        public_weights[row] *
-                        row_fold;
+                        for (std::size_t column = 0;
+                             column <
+                             spec.width;
+                             ++column)
+                        {
+                            row_fold =
+                                row_fold *
+                                    lambda +
+                                context.local.features
+                                    .at(row)
+                                    .at(column);
+                        }
+
+                        expected_source_fold +=
+                            public_weights[row] *
+                            row_fold;
+                    }
                 }
             }
             else
             {
                 for (std::size_t column = 0;
-                     column < spec.width;
+                     column <
+                     spec.width;
                      ++column)
                 {
                     expected_source_fold =
@@ -3533,7 +4459,8 @@ namespace gatzk::protocol
                             lambda +
                         eval(
                             canonical_matrix_column_label(
-                                spec.source_matrix_object,
+                                spec
+                                    .source_matrix_object,
                                 column),
                             z);
                 }
@@ -3548,16 +4475,12 @@ namespace gatzk::protocol
 
             const auto rho =
                 challenges.at(
-                    spec.source_point_challenge);
+                    spec
+                        .source_point_challenge);
 
             const auto source_weight_label =
                 spec.source_accumulator_object +
                 "_Weight";
-
-            const auto barycentric_scale =
-                context.domains.n
-                    ->zero_polynomial_eval(rho) *
-                context.domains.n->inv_size;
 
             acc.add(
                 q_n *
@@ -3565,16 +4488,19 @@ namespace gatzk::protocol
                      source_weight_label,
                      z) *
                      (rho - z) -
-                 barycentric_scale * z));
+                 planned.barycentric_scale *
+                     z));
 
             const auto source_current =
                 eval(
-                    spec.source_accumulator_object,
+                    spec
+                        .source_accumulator_object,
                     z);
 
             const auto source_next =
                 eval(
-                    spec.source_accumulator_object,
+                    spec
+                        .source_accumulator_object,
                     omega_z);
 
             acc.add(
@@ -3587,7 +4513,8 @@ namespace gatzk::protocol
                 (source_next -
                  source_current -
                  eval(
-                     spec.source_fold_object,
+                     spec
+                         .source_fold_object,
                      z) *
                      eval(
                          source_weight_label,
@@ -3595,27 +4522,29 @@ namespace gatzk::protocol
 
             acc.add(
                 not_last *
-                (FieldElement::one() - q_n) *
+                (FieldElement::one() -
+                 q_n) *
                 (source_next -
                  source_current));
         }
 
-        for (const auto &spec :
-             flat_matrix_binding_specs(context))
+        for (const auto &planned :
+             plan.flat_matrix_plans)
         {
-            const auto lambda =
-                challenges.at(
-                    spec.lambda_challenge);
+            const auto &spec =
+                planned.spec;
 
             auto expected =
                 FieldElement::zero();
 
             for (std::size_t column = 0;
-                 column < spec.columns;
+                 column <
+                 spec.columns;
                  ++column)
             {
                 expected =
-                    expected * lambda +
+                    expected *
+                        planned.lambda +
                     eval(
                         canonical_matrix_column_label(
                             spec.matrix_object,
@@ -3632,17 +4561,15 @@ namespace gatzk::protocol
 
             const auto current =
                 eval(
-                    spec.row_accumulator_object,
+                    spec
+                        .row_accumulator_object,
                     z);
 
             const auto next =
                 eval(
-                    spec.row_accumulator_object,
+                    spec
+                        .row_accumulator_object,
                     omega_z);
-
-            const auto row_base =
-                lambda.pow(
-                    spec.columns);
 
             acc.add(
                 first *
@@ -3652,42 +4579,36 @@ namespace gatzk::protocol
                 not_last *
                 q_n *
                 (next -
-                 row_base * current -
+                 planned.row_base *
+                     current -
                  eval(
                      spec.row_fold_object,
                      z)));
 
             acc.add(
                 not_last *
-                (FieldElement::one() - q_n) *
+                (FieldElement::one() -
+                 q_n) *
                 (next - current));
         }
 
-        for (const auto &spec :
-             broadcast_flat_binding_specs(context))
+        for (const auto &planned :
+             plan.broadcast_flat_plans)
         {
-            const auto lambda =
-                challenges.at(
-                    spec.lambda_challenge);
+            const auto &spec =
+                planned.spec;
 
             const auto current =
                 eval(
-                    spec.node_accumulator_object,
+                    spec
+                        .node_accumulator_object,
                     z);
 
             const auto next =
                 eval(
-                    spec.node_accumulator_object,
+                    spec
+                        .node_accumulator_object,
                     omega_z);
-
-            const auto row_base =
-                lambda.pow(
-                    spec.width);
-
-            const auto class_sum =
-                geometric_sum(
-                    lambda,
-                    spec.width);
 
             acc.add(
                 first *
@@ -3697,19 +4618,32 @@ namespace gatzk::protocol
                 not_last *
                 q_n *
                 (next -
-                 row_base * current -
+                 planned.row_base *
+                     current -
                  eval(
                      spec.node_object,
                      z) *
-                     class_sum));
+                     planned.class_sum));
 
             acc.add(
                 not_last *
-                (FieldElement::one() - q_n) *
-                (next - current));
+                (FieldElement::one() -
+                 q_n) *
+                (next -
+                 current));
         }
 
-        return acc.value() / zero_eval;
+        const auto numerator =
+            acc.value();
+
+        if (boundary.zero_inverse.has_value())
+        {
+            return numerator *
+                   *boundary.zero_inverse;
+        }
+
+        return numerator /
+               zero_eval;
     }
 
     FieldElement evaluate_t_in(

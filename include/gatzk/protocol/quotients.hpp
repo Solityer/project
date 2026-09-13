@@ -20,6 +20,15 @@ namespace gatzk::protocol
     // 统一的“按标签在点上取值”回调接口，供 quotient 逻辑屏蔽 prove / verify 的数据来源差异。
     using EvalFn = std::function<algebra::FieldElement(const std::string &, const algebra::FieldElement &)>;
 
+    // Prover-side t_N materialization may replace the repeated public-source
+    // barycentric interpolation with the exact same public polynomial already
+    // materialized on the quotient coset.  The verifier deliberately leaves
+    // this callback unset and evaluates the source-of-truth equation directly.
+    using TNPublicSourceFoldEvalFn =
+        std::function<algebra::FieldElement(
+            const std::string &,
+            std::size_t)>;
+
     // `t_FH` 额外输出的执行侧剖面。
     struct FHQuotientProfile
     {
@@ -28,6 +37,7 @@ namespace gatzk::protocol
     };
 
     struct TEdgeEvaluationPlan;
+    struct TNEvaluationPlan;
 
     struct QuotientBoundaryValues
     {
@@ -97,6 +107,10 @@ namespace gatzk::protocol
         const ProtocolContext &context,
         const std::map<std::string, algebra::FieldElement> &challenges);
 
+    std::shared_ptr<const TNEvaluationPlan> build_t_n_evaluation_plan(
+        const ProtocolContext &context,
+        const std::map<std::string, algebra::FieldElement> &challenges);
+
     // 返回某个工作域 opening bundle 中必须出现的标签顺序。
     // 该顺序会同时影响 prover 组包、verifier 取值和 proof_size_bytes 统计。
     std::vector<std::string> domain_opening_labels(const ProtocolContext &context, const std::string &domain_name);
@@ -140,7 +154,11 @@ namespace gatzk::protocol
         const ProtocolContext &context,
         const std::map<std::string, algebra::FieldElement> &challenges,
         const EvalFn &eval,
-        const algebra::FieldElement &z);
+        const algebra::FieldElement &z,
+        const TNEvaluationPlan *evaluation_plan = nullptr,
+        const QuotientBoundaryValues *boundary_values = nullptr,
+        const TNPublicSourceFoldEvalFn *public_source_fold_eval = nullptr,
+        std::size_t evaluation_index = 0);
 
     algebra::FieldElement evaluate_t_in(
         const ProtocolContext &context,

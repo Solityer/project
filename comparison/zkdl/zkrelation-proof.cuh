@@ -43,8 +43,12 @@ using FrWire = zkdl::FrWire;
 // Relation-family wire caps are deliberately finite.  They are large enough
 // for the configured lookup/range domains, but never become an unbounded
 // parser escape hatch for malformed proof bytes.
-constexpr std::size_t kMaxRelationConstraints = 4096U;
-constexpr std::size_t kMaxRelationTerms = 1U << 16;
+// Lookup compatibility tables are authenticated logical ranges padded to a
+// native power-of-two MLE domain.  The multiplication tree therefore needs
+// a constraint budget larger than the old 4096-entry parser cap for the
+// shipped range_bits=12/14 configurations.
+constexpr std::size_t kMaxRelationConstraints = 1U << 20;
+constexpr std::size_t kMaxRelationTerms = 1U << 20;
 constexpr std::size_t kMaxRelationOpenings = 4096U;
 // Native tensor domains are admitted at most up to 2^30.  Point vectors are
 // consequently bounded to the corresponding number of MLE coordinates; this
@@ -307,6 +311,11 @@ struct OperationDescriptor {
     std::string batch_family;
     // Authenticated static-table tensor id for indexed lookup families.
     std::string public_table_ref;
+    // Canonical public Q_table selector for the logical (unpadded) table
+    // rows.  It is descriptor material, not a prover-supplied witness: the
+    // adapter derives it from the authenticated table shape and the native
+    // relation binds every query's chi leaf to this selector.
+    std::vector<FrWire> public_table_selector;
     // A broadcast divisor that is a public scale/constant rather than a
     // witness tensor (output-scale alignment and final head averaging).
     bool has_public_divisor = false;
@@ -401,6 +410,29 @@ struct OperationDescriptor {
         if (batch_family == "indexed_public_table" &&
             std::find(source_refs.begin(), source_refs.end(), public_table_ref) == source_refs.end()) {
             if (error) *error = "indexed table relation does not expose its table in the public source set";
+            return false;
+        }
+        if (batch_family == "indexed_public_table") {
+            if (public_table_selector.empty() ||
+                (public_table_selector.size() & (public_table_selector.size() - 1U)) != 0U) {
+                if (error) *error = "indexed table relation has no power-of-two Q_table selector";
+                return false;
+            }
+            bool has_legal_row = false;
+            for (const auto& selector : public_table_selector) {
+                if (!zkdl::fr_canonical(selector) ||
+                    (selector != zkdl::fr_from_u32(0U) && selector != zkdl::fr_from_u32(1U))) {
+                    if (error) *error = "indexed table Q_table selector is not canonical boolean material";
+                    return false;
+                }
+                has_legal_row = has_legal_row || selector == zkdl::fr_from_u32(1U);
+            }
+            if (!has_legal_row) {
+                if (error) *error = "indexed table Q_table selector has no legal row";
+                return false;
+            }
+        } else if (!public_table_selector.empty()) {
+            if (error) *error = "non-table relation carries a Q_table selector";
             return false;
         }
         if (batch_family != "indexed_public_table" && !public_table_ref.empty()) {
@@ -1056,6 +1088,7 @@ inline void append_operation(std::vector<byte>& out, const OperationDescriptor& 
     }
     zkdl::append_string(out, descriptor.batch_family);
     zkdl::append_string(out, descriptor.public_table_ref);
+    append_fr_vector(out, descriptor.public_table_selector);
     zkdl::append_u32(out, descriptor.has_public_divisor ? 1U : 0U);
     append_fr_wire(out, descriptor.public_divisor);
     zkdl::append_u64(out, static_cast<std::uint64_t>(descriptor.primitives.size()));
@@ -1249,6 +1282,7 @@ inline bool read_operation_strict(const std::vector<byte>& in, size_t& offset,
     std::uint32_t has_public_divisor = 0U;
     if (!zkdl::read_string(in, offset, descriptor.batch_family) ||
         !zkdl::read_string(in, offset, descriptor.public_table_ref) ||
+        !read_fr_vector(in, offset, descriptor.public_table_selector) ||
         !zkdl::read_u32(in, offset, has_public_divisor) || has_public_divisor > 1U ||
         !read_fr_wire(in, offset, descriptor.public_divisor) ||
         !zkdl::read_u64(in, offset, count) || count > 8U) return false;
@@ -3924,6 +3958,22 @@ inline bool verify_tensor_contract(const VerifierContext& context,
                 table_values == context.public_tensor_values.end()) {
                 if (error) *error = "indexed table relation lacks an authenticated public table descriptor/value map";
                 return false;
+            }
+            if (table->padded_shape.size() != 1U ||
+                operation.public_table_selector.size() != table->domain_size ||
+                table->logical_shape.size() != 1U ||
+                table->logical_shape.front() == 0U ||
+                table->logical_shape.front() > table->domain_size) {
+                if (error) *error = "indexed table Q_table selector does not match authenticated table shape";
+                return false;
+            }
+            for (std::size_t index = 0U; index < operation.public_table_selector.size(); ++index) {
+                const FrWire expected = index < table->logical_shape.front()
+                    ? zkdl::fr_from_u32(1U) : zkdl::fr_from_u32(0U);
+                if (operation.public_table_selector[index] != expected) {
+                    if (error) *error = "indexed table Q_table selector is not canonical for the authenticated table";
+                    return false;
+                }
             }
         }
         std::uint32_t aligned_domain = 0U;
