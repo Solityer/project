@@ -1,2 +1,0 @@
-gat_adapter_smoke 1 0.00220002
----

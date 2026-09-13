@@ -1,1 +1,0 @@
-<_ as halo2_proofs::poly::commitment::CommitmentScheme>::ParamsProver == <Scheme as halo2_proofs::poly::commitment::CommitmentScheme>::ParamsProver

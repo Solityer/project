@@ -1,2 +1,0 @@
-/usr/bin/ar qc libgat_adapter.a CMakeFiles/gat_adapter.dir/gat_parser.cpp.o CMakeFiles/gat_adapter.dir/gat_forward.cpp.o CMakeFiles/gat_adapter.dir/gat_native.cpp.o CMakeFiles/gat_adapter.dir/gat_proof.cpp.o CMakeFiles/gat_adapter.dir/gat_cuda_stub.cpp.o
-/usr/bin/ranlib libgat_adapter.a

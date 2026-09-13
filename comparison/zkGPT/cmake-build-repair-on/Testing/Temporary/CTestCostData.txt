@@ -1,3 +1,0 @@
-gat_adapter_smoke 1 0.116922
-gat_proof_plan_smoke 1 0.00708
----
