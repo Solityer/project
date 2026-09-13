@@ -29,6 +29,7 @@ pub struct FormalCliContract {
     pub proof_instance_binding: String,
     pub official_chain: Vec<String>,
     pub prepare_command: String,
+    pub producer_command: String,
     pub witness_command: String,
     pub prove_command: String,
     pub verify_command: String,
@@ -42,6 +43,7 @@ pub struct FormalCliContract {
 #[serde(deny_unknown_fields)]
 pub struct RequiredFlags {
     pub prepare: Vec<String>,
+    pub producer: Vec<String>,
     pub witness: Vec<String>,
     pub prove: Vec<String>,
     pub verify: Vec<String>,
@@ -67,27 +69,36 @@ impl FormalCliContract {
             proof_instance_binding: "native_public_instances".into(),
             official_chain: vec![
                 "gat-prepare".into(),
+                "gat-produce".into(),
                 "gat-witness".into(),
                 "prove".into(),
                 "verify".into(),
             ],
             prepare_command: "gat-prepare".into(),
+            producer_command: "gat-produce".into(),
             witness_command: "gat-witness".into(),
             prove_command: "prove".into(),
             verify_command: "verify".into(),
-                required_flags: RequiredFlags {
-                    prepare: vec![
-                        "--dataset".into(),
-                        "--phase".into(),
-                        "--resource-manifest".into(),
+            required_flags: RequiredFlags {
+                prepare: vec![
+                    "--dataset".into(),
+                    "--phase".into(),
+                    "--resource-manifest".into(),
                     "--output-dir".into(),
                     "--srs-path".into(),
                     "--public-statement".into(),
                     "--public-output".into(),
                     "--gpu".into(),
                 ],
+                producer: vec![
+                    "--dataset".into(),
+                    "--resource-manifest".into(),
+                    "--output-dir".into(),
+                    "--gpu".into(),
+                ],
                 witness: vec![
                     "--dataset".into(),
+                    "--resource-manifest".into(),
                     "--compiled-circuit".into(),
                     "--statement".into(),
                     "--output".into(),
@@ -109,6 +120,7 @@ impl FormalCliContract {
                     "--statement".into(),
                     "--public-output".into(),
                     "--artifact-manifest".into(),
+                    "--resource-manifest".into(),
                 ],
             },
             native_backend: "halo2-kzg-shplonk".into(),

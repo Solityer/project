@@ -21,6 +21,7 @@
     "proof_instance_binding",
     "official_chain",
     "prepare_command",
+    "producer_command",
     "witness_command",
     "prove_command",
     "verify_command",
@@ -44,28 +45,32 @@
     "gpu_evidence_required": {"const": true},
     "proof_instance_binding": {"const": "native_public_instances"},
     "official_chain": {
-      "const": ["gat-prepare", "gat-witness", "prove", "verify"]
+      "const": ["gat-prepare", "gat-produce", "gat-witness", "prove", "verify"]
     },
     "prepare_command": {"const": "gat-prepare"},
+    "producer_command": {"const": "gat-produce"},
     "witness_command": {"const": "gat-witness"},
     "prove_command": {"const": "prove"},
     "verify_command": {"const": "verify"},
     "required_flags": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["prepare", "witness", "prove", "verify"],
+      "required": ["prepare", "producer", "witness", "prove", "verify"],
       "properties": {
         "prepare": {
           "const": ["--dataset", "--phase", "--resource-manifest", "--output-dir", "--srs-path", "--public-statement", "--public-output", "--gpu"]
         },
+        "producer": {
+          "const": ["--dataset", "--resource-manifest", "--output-dir", "--gpu"]
+        },
         "witness": {
-          "const": ["--dataset", "--compiled-circuit", "--statement", "--output", "--gpu"]
+          "const": ["--dataset", "--resource-manifest", "--compiled-circuit", "--statement", "--output", "--gpu"]
         },
         "prove": {
           "const": ["--witness", "--compiled-circuit", "--pk-path", "--proof-path", "--srs-path", "--check-mode"]
         },
         "verify": {
-          "const": ["--settings-path", "--proof-path", "--vk-path", "--srs-path", "--statement", "--public-output", "--artifact-manifest"]
+          "const": ["--settings-path", "--proof-path", "--vk-path", "--srs-path", "--statement", "--public-output", "--artifact-manifest", "--resource-manifest"]
         }
       }
     },

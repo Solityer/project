@@ -23,7 +23,10 @@ namespace gatzk::crypto
         const std::size_t *,
         std::size_t,
         std::size_t,
-        std::size_t)
+        std::size_t,
+        const std::uint64_t *const *,
+        const std::size_t *,
+        const int *)
     {
         return false;
     }

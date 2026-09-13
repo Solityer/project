@@ -66,8 +66,8 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--binary", default="target/release/ezkl")
     p.add_argument("--config")
-    p.add_argument("--public-statement", help="external public statement JSON")
-    p.add_argument("--public-output", help="external complete public logits Y")
+    p.add_argument("--public-statement", help="deprecated external statement override")
+    p.add_argument("--public-output", help="deprecated external public-output override")
     p.add_argument("--srs", help="trusted official ezkl SRS")
     p.add_argument("--srs-sha256", help="trusted SHA-256 for the SRS")
     p.add_argument("--settings")
@@ -210,8 +210,8 @@ def print_plan(args: argparse.Namespace, config: Path, output: Path) -> None:
     print(f"dataset={args.dataset} backend={args.backend}")
     print(f"config={baseline_relative(config, 'config')}")
     print(f"output_dir={baseline_relative(output, 'output-dir')}")
-    print("execution order: gat-prepare --phase setup -> external statement/Y producer -> gat-prepare --phase final -> gat-witness -> prove -> verify")
-    print("rerun with --execute-formal and explicit external --public-statement/--public-output/--srs-sha256")
+    print("execution order: gat-prepare --phase setup -> gat-produce -> gat-prepare --phase final -> gat-witness -> prove -> verify")
+    print("rerun with --execute-formal and --srs-sha256; statement/Y are produced by the native baseline-local producer")
 
 
 def main(args: argparse.Namespace) -> int:
@@ -323,19 +323,33 @@ def main(args: argparse.Namespace) -> int:
 
     require_file(output / "circuit_ref.json", "setup circuit reference")
 
-    if args.public_statement is None or args.public_output is None:
-        abort(
-            "gat-prepare --phase setup completed, but no external statement producer "
-            "is available; provide --public-statement and --public-output produced "
-            "after setup before --phase final"
-        )
-    statement = ensure_relative_arg(args.public_statement, "public-statement")
-    public_output = ensure_relative_arg(args.public_output, "public-output")
+    if args.public_statement is not None or args.public_output is not None:
+        abort("formal runner uses the baseline-local gat-produce command; external statement/Y overrides are not accepted")
+    statement = output / "statement.json"
+    public_output = output / "public_output.json"
     reject_forbidden_path(statement, "public-statement")
     reject_forbidden_path(public_output, "public-output")
     if "qat_best_logits" in public_output.name or "qat_best_logits" in public_output.as_posix():
         abort("qat_best_logits is not a formal public output")
-    require_file(statement, "external public statement")
+    producer_command = [
+        str(binary),
+        contract["producer_command"],
+        "--dataset",
+        args.dataset,
+        "--resource-manifest",
+        "resources/resource_manifest.json",
+        "--output-dir",
+        cli_path(output, "output-dir"),
+    ]
+    if args.backend == "gpu":
+        producer_command.append("--gpu")
+    producer_ms = run_command(
+        producer_command,
+        logs / "producer.log",
+        phase="baseline-local statement/Y production",
+        env=env,
+    )
+    require_file(statement, "baseline-local public statement")
     public_values = public_output_values(public_output, dataset=args.dataset)
     env["EZKL_GAT_PUBLIC_STATEMENT"] = str(statement)
     env["EZKL_GAT_PUBLIC_OUTPUT"] = str(public_output)
@@ -363,7 +377,7 @@ def main(args: argparse.Namespace) -> int:
     final_ms = run_command(
         final_command,
         logs / "final.log",
-        phase="GAT prepare final (external statement binding)",
+        phase="GAT prepare final (producer statement binding)",
         env=env,
     )
     require_file(artifact_manifest, "artifact identity manifest")
@@ -403,6 +417,8 @@ def main(args: argparse.Namespace) -> int:
             contract["witness_command"],
             "--dataset",
             args.dataset,
+            "--resource-manifest",
+            "resources/resource_manifest.json",
             "--compiled-circuit",
             cli_path(compiled, "compiled circuit"),
             "--statement",
@@ -458,6 +474,8 @@ def main(args: argparse.Namespace) -> int:
             cli_path(public_output, "public output"),
             "--artifact-manifest",
             cli_path(artifact_manifest, "artifact identity manifest"),
+            "--resource-manifest",
+            "resources/resource_manifest.json",
         ],
         logs / "verify.log",
         phase="independent official ezkl verify",
@@ -533,6 +551,7 @@ def main(args: argparse.Namespace) -> int:
         "core_run_manifest_sha256": sha256(core_manifest),
         "phase_timings_ms": {
             "prepare_compile_setup": round(prepare_ms, 3),
+            "statement_y_production": round(producer_ms, 3),
             "witness_generation": round(witness_ms, 3),
             "prove": round(prove_ms, 3),
             "verify": round(verify_ms, 3),

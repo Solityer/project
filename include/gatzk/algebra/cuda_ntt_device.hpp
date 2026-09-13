@@ -9,6 +9,7 @@
 namespace gatzk::algebra
 {
     class CudaHostTransferGuard;
+    struct CudaResidentCoefficientBuffer;
     // Snapshot of the thread-local bounded NTT workspace.  Admission callers
     // use this to account for already resident input/output/scratch buffers;
     // the snapshot performs no allocation and is safe for fail-closed checks.
@@ -81,4 +82,13 @@ namespace gatzk::algebra
         std::size_t size,
         const FieldElement &shift,
         mcl::Fr *host_coefficients);
+
+    bool cuda_coset_host_to_resident_coefficients_exact(
+        const mcl::Fr *host_values,
+        std::size_t size,
+        const FieldElement &shift,
+        mcl::Fr *host_coefficients,
+        std::shared_ptr<
+            const CudaResidentCoefficientBuffer>
+            *resident_coefficients);
 }

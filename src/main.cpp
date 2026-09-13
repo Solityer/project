@@ -288,6 +288,15 @@ namespace
             try
             {
                 gatzk::algebra::
+                    release_cuda_scan_workspace();
+            }
+            catch (...)
+            {
+            }
+
+            try
+            {
+                gatzk::algebra::
                     release_cuda_weighted_dot_cache();
             }
             catch (...)

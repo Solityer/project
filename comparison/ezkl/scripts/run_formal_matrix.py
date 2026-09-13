@@ -37,7 +37,6 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--execute-formal", action="store_true", help="execute all ten user-owned formal cells")
     result.add_argument("--dry-run", action="store_true", help="print the matrix plan (the default)")
     result.add_argument("--runner", default="scripts/run_single_dataset.py")
-    result.add_argument("--public-root", help="baseline-local directory containing <dataset>.statement.json and <dataset>.Y.json")
     result.add_argument("--srs-root", help="baseline-local directory containing <dataset>_formal_srs")
     result.add_argument("--srs-digests", help="baseline-local JSON object mapping dataset to trusted SRS SHA-256")
     result.add_argument("--binary-cpu", default="target/release/ezkl")
@@ -64,19 +63,11 @@ def load_digests(path: Path) -> dict[str, str]:
     return {dataset: require_digest(value[dataset], f"SRS digest for {dataset}") for dataset in DATASETS}
 
 
-def cell_paths(public_root: Path, srs_root: Path, dataset: str) -> tuple[Path, Path, Path]:
-    statement = public_root / f"{dataset}.statement.json"
-    public_output = public_root / f"{dataset}.Y.json"
+def cell_paths(srs_root: Path, dataset: str) -> Path:
     srs = srs_root / f"{dataset}_formal_srs"
-    for path, label in (
-        (statement, f"{dataset} public statement"),
-        (public_output, f"{dataset} public output"),
-    ):
-        reject_forbidden_path(path, label)
-        require_file(path, label)
     reject_forbidden_path(srs, f"{dataset} SRS")
     require_formal_srs(srs, f"{dataset} trusted official ezkl SRS")
-    return statement, public_output, srs
+    return srs
 
 
 def command_for(
@@ -85,8 +76,6 @@ def command_for(
     backend: str,
     *,
     config: Path,
-    statement: Path,
-    public_output: Path,
     srs: Path,
     srs_digest: str | None,
     binary: Path,
@@ -109,10 +98,6 @@ def command_for(
         backend,
         "--config",
         cli_path(config),
-        "--public-statement",
-        cli_path(statement),
-        "--public-output",
-        cli_path(public_output),
         "--srs",
         cli_path(srs),
         "--binary",
@@ -143,7 +128,7 @@ def main(args: argparse.Namespace) -> int:
     print("ezkl formal matrix plan: 5 datasets x 2 backends")
     print("execution=" + ("requested" if execute else "dry-run; no compile/setup/prove/verify was run"))
     if not execute:
-        print("execute mode requires baseline-local --public-root, --srs-root and --srs-digests with real operator-provided SHA-256 values")
+        print("execute mode requires baseline-local --srs-root and --srs-digests with real operator-provided SHA-256 values")
 
     if not execute:
         for dataset in DATASETS:
@@ -156,8 +141,6 @@ def main(args: argparse.Namespace) -> int:
                             dataset,
                             backend,
                             config=config,
-                            statement=Path(f"<public-root>/{dataset}.statement.json"),
-                            public_output=Path(f"<public-root>/{dataset}.Y.json"),
                             srs=Path(f"<srs-root>/{dataset}_formal_srs"),
                             srs_digest=None,
                             binary=Path(args.binary_gpu if backend == "gpu" else args.binary_cpu),
@@ -168,9 +151,8 @@ def main(args: argparse.Namespace) -> int:
                 )
         return 0
 
-    if not args.public_root or not args.srs_root or not args.srs_digests:
-        abort("--execute-formal requires --public-root, --srs-root and --srs-digests")
-    public_root = path_arg(args.public_root, "public-root")
+    if not args.srs_root or not args.srs_digests:
+        abort("--execute-formal requires --srs-root and --srs-digests")
     srs_root = path_arg(args.srs_root, "srs-root")
     digest_map = load_digests(path_arg(args.srs_digests, "srs-digests"))
     binaries = {"cpu": path_arg(args.binary_cpu, "binary-cpu"), "gpu": path_arg(args.binary_gpu, "binary-gpu")}
@@ -178,7 +160,7 @@ def main(args: argparse.Namespace) -> int:
         require_file(binary, f"{backend} official ezkl binary")
     cells: list[tuple[str, str, list[str]]] = []
     for dataset in DATASETS:
-        statement, public_output, srs = cell_paths(public_root, srs_root, dataset)
+        srs = cell_paths(srs_root, dataset)
         config = config_root / f"{dataset}_secure.cfg"
         reject_forbidden_path(config, f"{dataset} config")
         require_file(config, f"{dataset} canonical secure config")
@@ -188,8 +170,6 @@ def main(args: argparse.Namespace) -> int:
                 dataset,
                 backend,
                 config=config,
-                statement=statement,
-                public_output=public_output,
                 srs=srs,
                 srs_digest=digest_map[dataset],
                 binary=binaries[backend],

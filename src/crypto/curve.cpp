@@ -800,6 +800,18 @@ namespace gatzk::crypto
         G1Point *output = nullptr;
         const G1Point *points = nullptr;
         const algebra::FieldElement *scalars = nullptr;
+
+        const std::uint64_t
+            *device_montgomery_scalars =
+                nullptr;
+
+        std::size_t
+            device_montgomery_scalar_capacity =
+                0;
+
+        int device_montgomery_scalar_device =
+            -1;
+
         std::size_t count = 0;
         std::size_t stable_srs_capacity = 0;
         bool executed_on_cuda = false;
@@ -822,12 +834,23 @@ namespace gatzk::crypto
             const G1Point *points,
             const algebra::FieldElement *scalars,
             std::size_t count,
-            std::size_t stable_srs_capacity)
+            std::size_t stable_srs_capacity,
+            const std::uint64_t
+                *device_montgomery_scalars,
+            std::size_t
+                device_montgomery_scalar_capacity,
+            int device_montgomery_scalar_device)
         {
             PendingCudaMsmRequest request{
                 .output = output,
                 .points = points,
                 .scalars = scalars,
+                .device_montgomery_scalars =
+                    device_montgomery_scalars,
+                .device_montgomery_scalar_capacity =
+                    device_montgomery_scalar_capacity,
+                .device_montgomery_scalar_device =
+                    device_montgomery_scalar_device,
                 .count = count,
                 .stable_srs_capacity =
                     stable_srs_capacity,
@@ -886,6 +909,9 @@ namespace gatzk::crypto
             const G1Point *points = nullptr;
             std::size_t stable_srs_capacity = 0;
 
+            bool resident_scalars = false;
+            int resident_scalar_device = -1;
+
             std::vector<
                 PendingCudaMsmRequest *>
                 requests;
@@ -922,10 +948,23 @@ namespace gatzk::crypto
                         groups.end(),
                         [&](const CompatibleGroup &candidate)
                         {
+                            const bool
+                                request_resident =
+                                    request
+                                        ->device_montgomery_scalars !=
+                                    nullptr;
+
                             return candidate.points ==
                                        request->points &&
                                    candidate.stable_srs_capacity ==
-                                       request->stable_srs_capacity;
+                                       request->stable_srs_capacity &&
+                                   candidate.resident_scalars ==
+                                       request_resident &&
+                                   (!request_resident ||
+                                    candidate
+                                            .resident_scalar_device ==
+                                        request
+                                            ->device_montgomery_scalar_device);
                         });
 
                 if (group == groups.end())
@@ -933,8 +972,20 @@ namespace gatzk::crypto
                     CompatibleGroup created;
                     created.points =
                         request->points;
+
                     created.stable_srs_capacity =
                         request->stable_srs_capacity;
+
+                    created.resident_scalars =
+                        request
+                            ->device_montgomery_scalars !=
+                        nullptr;
+
+                    created.resident_scalar_device =
+                        created.resident_scalars
+                            ? request
+                                  ->device_montgomery_scalar_device
+                            : -1;
                     created.requests.push_back(
                         request);
 
@@ -987,7 +1038,13 @@ namespace gatzk::crypto
                                     request->count,
                                     true,
                                     request
-                                        ->stable_srs_capacity))
+                                        ->stable_srs_capacity,
+                                    request
+                                        ->device_montgomery_scalars,
+                                    request
+                                        ->device_montgomery_scalar_capacity,
+                                    request
+                                        ->device_montgomery_scalar_device))
                             {
                                 throw std::runtime_error(
                                     "CUDA stable-SRS singleton MSM "
@@ -1015,6 +1072,28 @@ namespace gatzk::crypto
                             counts(
                                 current_batch);
 
+                        std::vector<
+                            const std::uint64_t *>
+                            device_scalar_vectors;
+
+                        std::vector<std::size_t>
+                            device_scalar_capacities;
+
+                        std::vector<int>
+                            device_scalar_devices;
+
+                        if (group.resident_scalars)
+                        {
+                            device_scalar_vectors.resize(
+                                current_batch);
+
+                            device_scalar_capacities.resize(
+                                current_batch);
+
+                            device_scalar_devices.resize(
+                                current_batch);
+                        }
+
                         std::size_t max_count = 0;
 
                         for (std::size_t batch = 0;
@@ -1033,6 +1112,24 @@ namespace gatzk::crypto
                             counts[batch] =
                                 request->count;
 
+                            if (group.resident_scalars)
+                            {
+                                device_scalar_vectors[
+                                    batch] =
+                                    request
+                                        ->device_montgomery_scalars;
+
+                                device_scalar_capacities[
+                                    batch] =
+                                    request
+                                        ->device_montgomery_scalar_capacity;
+
+                                device_scalar_devices[
+                                    batch] =
+                                    request
+                                        ->device_montgomery_scalar_device;
+                            }
+
                             max_count =
                                 std::max(
                                     max_count,
@@ -1046,7 +1143,19 @@ namespace gatzk::crypto
                                 counts.data(),
                                 max_count,
                                 current_batch,
-                                group.stable_srs_capacity))
+                                group.stable_srs_capacity,
+                                group.resident_scalars
+                                    ? device_scalar_vectors
+                                          .data()
+                                    : nullptr,
+                                group.resident_scalars
+                                    ? device_scalar_capacities
+                                          .data()
+                                    : nullptr,
+                                group.resident_scalars
+                                    ? device_scalar_devices
+                                          .data()
+                                    : nullptr))
                         {
                             throw std::runtime_error(
                                 "CUDA same-SRS batch "
@@ -1274,9 +1383,7 @@ namespace gatzk::crypto
             kMinimumCoalescedMsmCount =
                 1ULL << 12;
 
-        if (device_montgomery_scalars ==
-                nullptr &&
-            stable_srs_bases &&
+        if (stable_srs_bases &&
             count >=
                 kMinimumCoalescedMsmCount)
         {
@@ -1289,7 +1396,10 @@ namespace gatzk::crypto
                     points,
                     scalars,
                     count,
-                    stable_srs_capacity);
+                    stable_srs_capacity,
+                    device_montgomery_scalars,
+                    device_montgomery_scalar_capacity,
+                    device_montgomery_scalar_device);
             }
         }
 

@@ -1423,6 +1423,10 @@ namespace gatzk::algebra
     {
     }
 
+    void release_cuda_scan_workspace()
+    {
+    }
+
     std::unique_ptr<CudaScaledAccumulateSession>
     create_cuda_scaled_accumulate_session(
         mcl::Fr *,

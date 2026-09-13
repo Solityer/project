@@ -7,6 +7,7 @@
 
 #include "prover.hpp"
 #include "hyrax.hpp"
+#include "proof_session.hpp"
 using namespace hyrax;
 using std::unique_ptr;
 class verifier 
@@ -17,7 +18,12 @@ public:
 
     verifier(prover *pr, const layeredCircuit &cir);
 
-    void prove(int commit_thread=4);
+    // Run the native verifier/prover loop.  When a proof session is supplied,
+    // verifier challenges are transcript-bound and all native polynomial
+    // messages are appended to that session; the arithmetic protocol itself
+    // remains the original GKR/Lasso/Hyrax implementation.
+    bool prove(int commit_thread=4);
+    bool prove_with_session(NativeProofSession &session, int commit_thread=4);
     void range_prove(double range_prover_time_) { range_prover_time = range_prover_time_; };
 
     timer total_timer, total_slow_timer;
@@ -28,6 +34,11 @@ public:
     Commit_return comm;
     
 private:
+    NativeProofSession *session_ = nullptr;
+    F challenge(const std::string &label);
+    void absorb_field(const std::string &label, const F &value);
+    void absorb_fields(const std::string &label, const std::vector<F> &values);
+
     vector<vector<F>> r_u, r_v;
     vector<F> final_claim_u0, final_claim_v0;
     bool verifyGKR();

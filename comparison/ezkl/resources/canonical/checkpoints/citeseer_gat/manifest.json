@@ -9,7 +9,7 @@
     64
   ],
   "dataset": "citeseer",
-  "degree_bound_id": "auto",
+  "degree_bound_id": "ledger:gat:citeseer:v1",
   "edge_sort_rule": "edge_gid_then_dst_stable",
   "family_schema": "multi_layer_multi_head",
   "hidden_head_specs": [
@@ -178,7 +178,7 @@
   "selection_metric": "validation_loss",
   "self_loop_rule": "per_node",
   "split_format": "node_masks",
-  "static_table_id": "tables:lrelu+elu+exp+range",
+  "static_table_id": "tables:gat:citeseer:v1",
   "subgraph_rule": "whole_graph",
   "task_type": "transductive_node_classification",
   "tensor_count": 56,
@@ -683,5 +683,7 @@
         6
       ]
     }
-  }
+  },
+  "static_table_digest": "628a4a3fa4fe67b24f1cc6752aa38172648bc4814c7f1412bc343b00efccc99b",
+  "degree_bound_digest": "744e15f52394f3e6da31629204b59ad165444268bde244f3f2e6940ad9b8a4e5"
 }

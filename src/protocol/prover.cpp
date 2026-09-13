@@ -190,11 +190,19 @@ namespace gatzk::protocol
                 catch (...)
                 {
                 }
-
                 try
                 {
                     algebra::
                         release_cuda_scaled_accumulate_workspace();
+                }
+                catch (...)
+                {
+                }
+
+                try
+                {
+                    algebra::
+                        release_cuda_scan_workspace();
                 }
                 catch (...)
                 {
@@ -8858,6 +8866,11 @@ namespace gatzk::protocol
                 std::vector<FieldElement>
                     coefficients;
 
+                std::shared_ptr<
+                    const algebra::
+                        CudaResidentCoefficientBuffer>
+                    cuda_generic_resident_coefficients;
+
                 if (cuda_t_edge_route)
                 {
                     coefficients =
@@ -8880,17 +8893,38 @@ namespace gatzk::protocol
                         target_size_,
                         FieldElement::zero());
 
+                    constexpr std::size_t
+                        kResidentCoefficientThreshold =
+                            std::size_t{1} << 18;
+
+                    const bool
+                        keep_coefficients_resident =
+                            target_size_ >=
+                            kResidentCoefficientThreshold;
+
                     const bool cuda_materialized =
-                        algebra::
-                            cuda_coset_host_to_coefficients_exact(
-                                FieldElement::
-                                    native_array_data(
-                                        quotient_values.data()),
-                                target_size_,
-                                shift_,
-                                FieldElement::
-                                    mutable_native_array_data(
-                                        coefficients.data()));
+                        keep_coefficients_resident
+                            ? algebra::
+                                  cuda_coset_host_to_resident_coefficients_exact(
+                                      FieldElement::
+                                          native_array_data(
+                                              quotient_values.data()),
+                                      target_size_,
+                                      shift_,
+                                      FieldElement::
+                                          mutable_native_array_data(
+                                              coefficients.data()),
+                                      &cuda_generic_resident_coefficients)
+                            : algebra::
+                                  cuda_coset_host_to_coefficients_exact(
+                                      FieldElement::
+                                          native_array_data(
+                                              quotient_values.data()),
+                                      target_size_,
+                                      shift_,
+                                      FieldElement::
+                                          mutable_native_array_data(
+                                              coefficients.data()));
 
                     if (cuda_materialized)
                     {
@@ -8988,6 +9022,34 @@ namespace gatzk::protocol
                         .cuda_resident_coefficients =
                         std::move(
                             cuda_t_edge_resident_coefficients_);
+                }
+                else if (
+                    cuda_generic_resident_coefficients !=
+                    nullptr)
+                {
+                    const auto &resident =
+                        *cuda_generic_resident_coefficients;
+
+                    if (resident.device_montgomery_limbs ==
+                            nullptr ||
+                        resident.device < 0 ||
+                        resident.logical_count == 0 ||
+                        resident.logical_count >
+                            polynomial.size() ||
+                        resident.logical_count >
+                            resident.capacity ||
+                        resident.nonzero_count >
+                            resident.logical_count)
+                    {
+                        throw std::runtime_error(
+                            "CUDA generic quotient resident coefficient metadata is invalid: " +
+                            label_);
+                    }
+
+                    polynomial
+                        .cuda_resident_coefficients =
+                        std::move(
+                            cuda_generic_resident_coefficients);
                 }
 
                 return polynomial;
@@ -11939,8 +12001,7 @@ namespace gatzk::protocol
 
                 if (resident != nullptr)
                 {
-                    if (label != "t_edge" ||
-                        resident->allocation == nullptr ||
+                    if (resident->allocation == nullptr ||
                         resident->device_montgomery_limbs == nullptr ||
                         resident->device < 0 ||
                         resident->logical_count == 0 ||

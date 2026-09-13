@@ -36,7 +36,16 @@ namespace gatzk::crypto
         const std::size_t *counts,
         std::size_t max_count,
         std::size_t batch_size,
-        std::size_t stable_srs_capacity);
+        std::size_t stable_srs_capacity,
+        const std::uint64_t *const
+            *device_montgomery_scalar_vectors =
+                nullptr,
+        const std::size_t
+            *device_montgomery_scalar_capacities =
+                nullptr,
+        const int
+            *device_montgomery_scalar_devices =
+                nullptr);
 
     // Execution-only residency probe used by the scheduling layer.
     // A cold singleton SRS request may remain on CPU instead of paying an

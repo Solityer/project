@@ -1,0 +1,1 @@
+{"rustc":6358318008725120562,"features":"[\"std\"]","declared_features":"[\"default\", \"std\"]","target":13722501572940206277,"profile":270604042639691234,"path":10784344816879498785,"deps":[],"local":[{"CheckDepInfo":{"dep_info":"release/.fingerprint/ucd-trie-d85ba1394561f17b/dep-lib-ucd_trie","checksum":false}}],"rustflags":[],"config":2069994364910194474,"compile_kind":0}

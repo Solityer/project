@@ -84,7 +84,7 @@ pyo3 = { version = "0.27.2", features = [
     "abi3-py37",
     "macros",
 ], default-features = false, optional = true }
-pyo3-async-runtimes = { git = "https://github.com/PyO3/pyo3-async-runtimes", version = "0.27.0", features = [
+pyo3-async-runtimes = { git = "https://github.com/PyO3/pyo3-async-runtimes", rev = "19176f5effcce74759fa648883c5d8dd0fc4d78a", version = "0.27.0", features = [
     "attributes",
     "tokio-runtime",
 ], default-features = false, optional = true }
@@ -267,17 +267,6 @@ mimalloc = ["dep:mimalloc"]
 reusable-verifier = []
 
 
-[patch.'https://github.com/zkonduit/halo2']
-halo2_proofs = { git = "https://github.com/zkonduit/halo2#1dd2090741f006fd031a07da7f3c9dfce5e0015e", package = "halo2_proofs", branch= "ac/conditional-compilation-icicle2", features = [
-    "circuit-params", "mv-lookup"
-] }
-
-[patch.'https://github.com/zkonduit/halo2#f441c920be45f8f05d2c06a173d82e8885a5ed4d']
-halo2_proofs = { git = "https://github.com/zkonduit/halo2#1dd2090741f006fd031a07da7f3c9dfce5e0015e", package = "halo2_proofs", branch= "ac/conditional-compilation-icicle2", features = [
-    "circuit-params", "mv-lookup"
-] }
-
-
 [patch.crates-io]
 uniffi_testing = { git = "https://github.com/ElusAegis/uniffi-rs", branch = "feat/testing-feature-build-fix" }
 
@@ -295,5 +284,3 @@ opt-level = 3
 
 [package.metadata.wasm-pack.profile.release]
 wasm-opt = ["-O4", "--flexible-inline-max-function-size", "4294967295"]
-
-

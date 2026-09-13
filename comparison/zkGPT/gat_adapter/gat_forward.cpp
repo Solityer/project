@@ -33,12 +33,16 @@ Wide abs_wide(Int value) {
 }
 
 const char *bn254_modulus_string() {
-    return "21888242871839275222246405745257275088548364400416034343698204186575808495617";
+    // This is the scalar modulus of the bundled mcl::BN254 profile
+    // (3rd/mcl's BN254.r), which is the Field used by the native zkGPT
+    // prover.  Keep the ledger bound to that exact native field rather than
+    // silently accepting the Ethereum/alt-BN254 scalar modulus.
+    return "16798108731015832284940804142231733909759579603404752749028378864165570215949";
 }
 
 const char *bn254_half_modulus_string() {
     // floor((r - 1) / 2), where r is the BN254 scalar-field modulus.
-    return "10944121435919637611123202872628637544274182200208017171849102093287904247808";
+    return "8399054365507916142470402071115866954879789801702376374514189432082785107974";
 }
 
 std::string wide_decimal(Wide value) {

@@ -75,10 +75,9 @@ void prover::sumcheckInitAll(const vector<F>::const_iterator &r_0_from_v)
  *
  * @param the random combination coefficiants for multiple reduction points
  */
-void prover::sumcheckInit(const F &alpha_0, const F &beta_0) 
+void prover::sumcheckInit(const F &alpha_0, const F &beta_0)
 {
     prove_timer.start();
-    auto &cur = C.circuit[sumcheck_id];
     alpha = alpha_0;
     beta = beta_0;
     r_0 = r_u[sumcheck_id].begin();
@@ -420,7 +419,7 @@ void prover::sumcheckLassoInit(const vector<F> &s_u, const vector<F> &s_v,const 
         }
     }
     round = 0;
-    prove_timer.stop();
+    ggg.stop();
 }
 
 quadratic_poly prover::sumcheckUpdate1(const F &previous_random) {

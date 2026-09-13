@@ -45,6 +45,7 @@ CANONICAL_CONTRACT_KEYS = {
     "proof_instance_binding",
     "official_chain",
     "prepare_command",
+    "producer_command",
     "witness_command",
     "prove_command",
     "verify_command",
@@ -52,7 +53,7 @@ CANONICAL_CONTRACT_KEYS = {
     "native_backend",
     "gpu_backend",
 }
-CONTRACT_CHAIN = ("gat-prepare", "gat-witness", "prove", "verify")
+CONTRACT_CHAIN = ("gat-prepare", "gat-produce", "gat-witness", "prove", "verify")
 FORBIDDEN_PATH_MARKERS = (
     "dummy",
     "gen-srs",
@@ -233,15 +234,25 @@ def load_cli_contract() -> dict[str, Any]:
         abort("GAT adapter contract does not enumerate the complete official ezkl chain")
     commands = {
         key: contract.get(key)
-        for key in ("prepare_command", "witness_command", "prove_command", "verify_command")
+        for key in (
+            "prepare_command",
+            "producer_command",
+            "witness_command",
+            "prove_command",
+            "verify_command",
+        )
     }
     for key, command in commands.items():
         if not isinstance(command, str) or not COMMAND.fullmatch(command):
             abort(f"GAT adapter contract has an invalid {key}")
         if command in {"gen-srs", "get-srs", "mock", "gen-random-data", "calibrate-settings"}:
             abort(f"GAT adapter contract maps {key} to a forbidden non-formal command")
-    if commands["prepare_command"] != "gat-prepare" or commands["witness_command"] != "gat-witness":
-        abort("GAT adapter contract must expose gat-prepare and gat-witness")
+    if (
+        commands["prepare_command"] != "gat-prepare"
+        or commands["producer_command"] != "gat-produce"
+        or commands["witness_command"] != "gat-witness"
+    ):
+        abort("GAT adapter contract must expose gat-prepare, gat-produce and gat-witness")
     if commands["prove_command"] != "prove" or commands["verify_command"] != "verify":
         abort("GAT adapter contract must use official prove and verify commands")
     if contract.get("proof_instance_binding") != "native_public_instances":
@@ -251,7 +262,13 @@ def load_cli_contract() -> dict[str, Any]:
     if contract.get("gpu_backend") != "icicle-cuda":
         abort("GAT adapter contract does not identify the ICICLE CUDA backend")
     flags = contract.get("required_flags")
-    if not isinstance(flags, dict) or set(flags) != {"prepare", "witness", "prove", "verify"}:
+    if not isinstance(flags, dict) or set(flags) != {
+        "prepare",
+        "producer",
+        "witness",
+        "prove",
+        "verify",
+    }:
         abort("GAT adapter contract required_flags schema mismatch")
     for stage, values in flags.items():
         if not isinstance(values, list) or not values or any(
@@ -269,11 +286,19 @@ def load_cli_contract() -> dict[str, Any]:
             "--public-output",
             "--gpu",
         },
-        "witness": {"--dataset", "--compiled-circuit", "--statement", "--output", "--gpu"},
+        "producer": {"--dataset", "--resource-manifest", "--output-dir", "--gpu"},
+        "witness": {
+            "--dataset",
+            "--resource-manifest",
+            "--compiled-circuit",
+            "--statement",
+            "--output",
+            "--gpu",
+        },
         "prove": {"--witness", "--compiled-circuit", "--pk-path", "--proof-path", "--srs-path", "--check-mode"},
         "verify": {
             "--settings-path", "--proof-path", "--vk-path", "--srs-path", "--statement",
-            "--public-output", "--artifact-manifest",
+            "--public-output", "--artifact-manifest", "--resource-manifest",
         },
     }
     for stage, required in required_flag_sets.items():
@@ -315,6 +340,11 @@ def validate_config(config: Path, dataset: str) -> dict[str, str]:
         abort(f"{config} has an invalid trusted_srs_sha256")
     if values.get("ezkl_security_profile_id") != NATIVE_SECURITY_PROFILE_ID:
         abort(f"{config} must pin native ezkl security profile {NATIVE_SECURITY_PROFILE_ID}")
+    for key in ("static_table_id", "degree_bound_id"):
+        if not values.get(key) or values[key] == "auto":
+            abort(f"{config} must bind an explicit {key}")
+    for key in ("static_table_digest", "degree_bound_digest"):
+        require_digest(values.get(key, ""), f"{config} {key}")
     if "verifier_registry_digest" in values:
         abort(f"{config} still references the main-experiment verifier registry")
     return values

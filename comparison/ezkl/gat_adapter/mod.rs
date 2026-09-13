@@ -23,7 +23,10 @@ pub mod statement;
 
 pub use builder::{build_model, build_model_for_run_args, PUBLIC_INPUT_NAMES};
 pub use cli::{FormalCliContract, RequiredFlags};
-pub use loader::{load_dataset, load_dataset_with_manifest, write_generated_metadata, LoadedGat};
+pub use loader::{
+    load_dataset, load_dataset_with_manifest, load_relation_resources_with_manifest,
+    write_generated_metadata, AuthenticatedRelationResources, LoadedGat,
+};
 pub use manifest::{
     artifact_file, ArtifactFile, ArtifactManifest, BoundCircuitRef, CoreRunManifest, GpuEvidence,
     GpuProvenance, ResourceFile, ResourceManifest, SrsProvenance,

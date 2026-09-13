@@ -6,6 +6,15 @@ add_executable(gat_proof_plan_smoke gat_proof_plan_smoke.cpp)
 target_link_libraries(gat_proof_plan_smoke PRIVATE gat_adapter)
 add_test(NAME gat_proof_plan_smoke COMMAND gat_proof_plan_smoke)
 
+add_executable(native_proof_session_smoke native_proof_session_smoke.cpp)
+target_link_libraries(native_proof_session_smoke PRIVATE gat_adapter)
+add_test(NAME native_proof_session_smoke COMMAND native_proof_session_smoke)
+
+add_executable(native_hyrax_session_smoke native_hyrax_session_smoke.cpp)
+target_link_libraries(native_hyrax_session_smoke PRIVATE gat_adapter)
+add_test(NAME native_hyrax_session_smoke COMMAND native_hyrax_session_smoke)
+
+
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
     add_test(NAME gat_script_schema

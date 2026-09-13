@@ -125,6 +125,21 @@ std::string output_tensor_name(std::size_t head, const char *kind) {
     return out.str();
 }
 
+// Keep the proof-plan translation unit self-contained.  The forward
+// implementation has equivalent private helpers, but those intentionally do
+// not cross the adapter source boundary.
+std::string hidden_family(std::size_t layer, std::size_t head) {
+    std::ostringstream out;
+    out << "hidden/layer" << layer << "/head" << head;
+    return out.str();
+}
+
+std::string output_family(std::size_t head) {
+    std::ostringstream out;
+    out << "output/head" << head;
+    return out.str();
+}
+
 Int quantize_model_value(double value, Int scale) {
     if (scale <= 0) throw std::invalid_argument("model quantization scale must be positive");
     const long double scaled = static_cast<long double>(value) * static_cast<long double>(scale);
@@ -1038,6 +1053,9 @@ std::string plan_encoding(const GatCircuitPlan &plan) {
     return encoded;
 }
 
+bool validate_gat_circuit_plan_impl(const GatCircuitPlan &plan,
+                                    std::string *reason);
+
 GatCircuitPlan build_plan_impl(const Graph &graph, const Model &model,
                                const QuantConfig &quant, const ForwardResult *forward) {
     graph.validate();
@@ -1444,7 +1462,7 @@ GatCircuitPlan build_plan_impl(const Graph &graph, const Model &model,
         softmax.output_offset = a.alpha;
         softmax.coordinate_rule = "edge_gid_then_dst_stable[e].destination_group=dst[e]";
         softmax.group_rule = "Q_grp_new/Q_grp_end destination-group recurrence";
-        softmax.constraints = {"group_max=max(leaky_score) by dst", "delta=group_max-leaky_score", "exp=T_exp(delta)", "group_sum=sum(exp)", "group_inverse*group_sum=1", "max_selector one-hot by group", "alpha=exp*group_inverse[dst]"};
+        softmax.constraints = {"group_max=max(leaky_score) by dst", "delta=group_max-leaky_score", "exp=T_exp(delta)", "group_sum=sum(exp)", "group_inverse*group_sum=1", "max_selector one-hot by group", "alpha=exp*group_inverse[dst]", "Q_grp_new/Q_grp_end destination-group recurrence"};
         plan.sparse_gkr.push_back(softmax);
         append_checkpoint(plan, softmax.relation_id + ".delta", softmax.relation_id, "Aux", graph.edges(), a.delta,
                           "Aux[row_major_exact[edge]]");
@@ -1485,7 +1503,12 @@ GatCircuitPlan build_plan_impl(const Graph &graph, const Model &model,
         }
         const std::size_t output_range_queries = checked_mul(projection_coordinates, 12, "output range query wiring");
         for (std::size_t index = 0; index < output_range_queries; ++index) output_unary.push_back({index, range_query_cursor + index, 0, 1});
-        append_explicit_layer(plan, layerType::ADD_BIAS, std::max<std::size_t>(1, projection_coordinates), output_unary, output_binary, true);
+        // Range/division query wires are independent GKR outputs.  Their
+        // coordinates must be part of the native layer domain even when they
+        // outnumber the public-logit coordinates.
+        append_explicit_layer(plan, layerType::ADD_BIAS,
+                              std::max<std::size_t>(projection_coordinates, output_range_queries),
+                              output_unary, output_binary, true);
         range_query_cursor = checked_add(range_query_cursor, output_range_queries, "output range query cursor");
         append_checkpoint(plan, "rounding/output/" + family, "rounding", "Aux", checked_mul(projection_coordinates, 9, "output division coordinates"),
                           a.divisions, "Aux[row_major_exact[node,col,witness_component]]");
@@ -1586,11 +1609,11 @@ GatCircuitPlan build_plan_impl(const Graph &graph, const Model &model,
     plan.has_placeholder = false;
     if (plan.registry.descriptors.empty() || !plan.registry.covers_all_segments()) plan.official_layered = false;
     std::string plan_reason;
-    if (!validate_gat_circuit_plan(plan, &plan_reason)) throw std::invalid_argument("canonical GAT proof plan validation failed: " + plan_reason);
+    if (!validate_gat_circuit_plan_impl(plan, &plan_reason)) throw std::invalid_argument("canonical GAT proof plan validation failed: " + plan_reason);
     return plan;
 }
 
-bool validate_gat_circuit_plan(const GatCircuitPlan &plan, std::string *reason) {
+bool validate_gat_circuit_plan_impl(const GatCircuitPlan &plan, std::string *reason) {
     const auto fail = [reason](const std::string &message) {
         if (reason != nullptr) *reason = message;
         return false;
@@ -1947,6 +1970,10 @@ bool forbidden_payload(const std::string &value) {
 }
 
 } // namespace
+
+bool validate_gat_circuit_plan(const GatCircuitPlan &plan, std::string *reason) {
+    return validate_gat_circuit_plan_impl(plan, reason);
+}
 
 GatCircuitPlan build_gat_circuit_plan(const Graph &graph, const Model &model,
                                       const QuantConfig &quant,

@@ -485,6 +485,9 @@ namespace gatzk::algebra
             IcicleScalar *scratch_a = nullptr;
             IcicleScalar *scratch_b = nullptr;
 
+            unsigned long long
+                *coefficient_shape = nullptr;
+
             std::size_t capacity_bytes = 0;
             int device = -1;
             cudaStream_t stream = nullptr;
@@ -692,6 +695,44 @@ namespace gatzk::algebra
                 return buffer_count * capacity_bytes;
             }
 
+            unsigned long long *
+            coefficient_shape_buffer()
+            {
+                if (coefficient_shape !=
+                    nullptr)
+                {
+                    return coefficient_shape;
+                }
+
+                if (stream == nullptr)
+                {
+                    throw std::runtime_error(
+                        "CUDA NTT coefficient-shape workspace has no stream");
+                }
+
+                const auto status =
+                    cudaMallocAsync(
+                        reinterpret_cast<
+                            void **>(
+                            &coefficient_shape),
+                        2U *
+                            sizeof(
+                                unsigned long long),
+                        stream);
+
+                if (status != cudaSuccess)
+                {
+                    coefficient_shape =
+                        nullptr;
+
+                    throw_cuda_ntt_error(
+                        "persistent coefficient-shape allocation",
+                        status);
+                }
+
+                return coefficient_shape;
+            }
+
             bool can_reuse(
                 std::size_t required_bytes,
                 int current_device,
@@ -739,6 +780,14 @@ namespace gatzk::algebra
                             stream);
                     }
 
+                    if (coefficient_shape !=
+                        nullptr)
+                    {
+                        (void)cudaFreeAsync(
+                            coefficient_shape,
+                            stream);
+                    }
+
                     (void)cudaStreamSynchronize(
                         stream);
 
@@ -750,6 +799,7 @@ namespace gatzk::algebra
                 output = nullptr;
                 scratch_a = nullptr;
                 scratch_b = nullptr;
+                coefficient_shape = nullptr;
                 capacity_bytes = 0;
                 stream = nullptr;
                 device = -1;
@@ -2913,28 +2963,14 @@ namespace gatzk::algebra
                  kBlockSize - 1) /
                 kBlockSize);
 
-        unsigned long long
-            *device_coefficient_shape =
-                nullptr;
+        auto *device_coefficient_shape =
+            track_coefficient_shape
+                ? workspace
+                      .coefficient_shape_buffer()
+                : nullptr;
 
         if (track_coefficient_shape)
         {
-            status =
-                cudaMallocAsync(
-                    reinterpret_cast<void **>(
-                        &device_coefficient_shape),
-                    2U *
-                        sizeof(
-                            unsigned long long),
-                    stream);
-
-            if (status != cudaSuccess)
-            {
-                throw_cuda_ntt_error(
-                    "coefficient shape allocation",
-                    status);
-            }
-
             status =
                 cudaMemsetAsync(
                     device_coefficient_shape,
@@ -3045,6 +3081,13 @@ namespace gatzk::algebra
             }
         }
 
+        if (device_coefficients != nullptr)
+        {
+            enqueue_default_stream_wait(
+                stream,
+                "resident coefficient consumer dependency");
+        }
+
         std::size_t resolved_logical_count =
             size;
 
@@ -3077,21 +3120,6 @@ namespace gatzk::algebra
             record_cuda_d2h(
                 sizeof(
                     host_coefficient_shape));
-
-            status =
-                cudaFreeAsync(
-                    device_coefficient_shape,
-                    stream);
-
-            if (status != cudaSuccess)
-            {
-                throw_cuda_ntt_error(
-                    "coefficient shape release",
-                    status);
-            }
-
-            device_coefficient_shape =
-                nullptr;
 
             cudaEvent_t shape_ready =
                 nullptr;
@@ -3792,6 +3820,271 @@ namespace gatzk::algebra
             size,
             shift,
             host_coefficients);
+    }
+
+        bool cuda_coset_host_to_resident_coefficients_exact(
+        const mcl::Fr *host_values,
+        std::size_t size,
+        const FieldElement &shift,
+        mcl::Fr *host_coefficients,
+        std::shared_ptr<
+            const CudaResidentCoefficientBuffer>
+            *resident_coefficients)
+    {
+        if (resident_coefficients ==
+            nullptr)
+        {
+            throw std::runtime_error(
+                "CUDA resident coefficient output descriptor is null");
+        }
+
+        resident_coefficients->reset();
+
+        if (host_values == nullptr ||
+            host_coefficients == nullptr ||
+            !valid_bounded_coset_target(
+                size))
+        {
+            return false;
+        }
+
+        const auto total_bytes =
+            checked_ntt_bytes(
+                size,
+                1);
+
+        int device = 0;
+
+        auto status =
+            cudaGetDevice(
+                &device);
+
+        if (status != cudaSuccess)
+        {
+            throw_cuda_ntt_error(
+                "resident coefficient device lookup",
+                status);
+        }
+
+        auto &workspace =
+            cuda_ntt_workspace();
+
+        if (!admit_large_coset_workspace(
+                size,
+                device,
+                workspace,
+                total_bytes))
+        {
+            return false;
+        }
+
+        if (!workspace.ensure(
+                total_bytes,
+                device))
+        {
+            return false;
+        }
+
+        const auto stream =
+            workspace.stream;
+
+        mcl::Fr *device_coefficients =
+            nullptr;
+
+        status =
+            cudaMallocAsync(
+                reinterpret_cast<
+                    void **>(
+                    &device_coefficients),
+                total_bytes,
+                stream);
+
+        if (status ==
+            cudaErrorMemoryAllocation)
+        {
+            (void)cudaGetLastError();
+
+            return false;
+        }
+
+        if (status != cudaSuccess)
+        {
+            throw_cuda_ntt_error(
+                "resident coefficient allocation",
+                status);
+        }
+
+        const auto cleanup_device =
+            [&]() noexcept
+        {
+            if (device_coefficients !=
+                nullptr)
+            {
+                (void)cudaFreeAsync(
+                    device_coefficients,
+                    stream);
+
+                (void)cudaStreamSynchronize(
+                    stream);
+
+                device_coefficients =
+                    nullptr;
+            }
+        };
+
+        status =
+            cudaMemcpyAsync(
+                workspace.output,
+                host_values,
+                total_bytes,
+                cudaMemcpyHostToDevice,
+                stream);
+
+        if (status != cudaSuccess)
+        {
+            cleanup_device();
+
+            throw_cuda_ntt_error(
+                "resident quotient upload",
+                status);
+        }
+
+        record_cuda_h2d(
+            total_bytes);
+
+        std::shared_ptr<
+            const CudaHostTransferGuard>
+            host_transfer;
+
+        std::size_t logical_count = 0;
+        std::size_t nonzero_count = 0;
+
+        bool executed = false;
+
+        try
+        {
+            executed =
+                cuda_coset_device_to_coefficients_exact(
+                    reinterpret_cast<
+                        const mcl::Fr *>(
+                        workspace.output),
+                    size,
+                    shift,
+                    host_coefficients,
+                    false,
+                    device_coefficients,
+                    &host_transfer,
+                    &logical_count,
+                    &nonzero_count);
+        }
+        catch (...)
+        {
+            cleanup_device();
+            throw;
+        }
+
+        if (!executed)
+        {
+            cleanup_device();
+            return false;
+        }
+
+        if (logical_count == 0 ||
+            logical_count > size ||
+            nonzero_count >
+                logical_count)
+        {
+            cleanup_device();
+
+            throw std::runtime_error(
+                "CUDA resident coefficient metadata is invalid");
+        }
+
+        auto *owned_device_coefficients =
+            device_coefficients;
+
+        device_coefficients =
+            nullptr;
+
+        std::shared_ptr<void>
+            allocation(
+                owned_device_coefficients,
+                [device](
+                    void *pointer) noexcept
+                {
+                    if (pointer == nullptr)
+                    {
+                        return;
+                    }
+
+                    int previous_device = -1;
+
+                    if (cudaGetDevice(
+                            &previous_device) !=
+                        cudaSuccess)
+                    {
+                        (void)cudaGetLastError();
+                        return;
+                    }
+
+                    if (previous_device !=
+                        device)
+                    {
+                        if (cudaSetDevice(
+                                device) !=
+                            cudaSuccess)
+                        {
+                            (void)cudaGetLastError();
+                            return;
+                        }
+                    }
+
+                    (void)cudaFree(
+                        pointer);
+
+                    if (previous_device !=
+                        device)
+                    {
+                        (void)cudaSetDevice(
+                            previous_device);
+                    }
+                });
+
+        auto descriptor =
+            std::make_shared<
+                CudaResidentCoefficientBuffer>();
+
+        descriptor->allocation =
+            std::move(
+                allocation);
+
+        descriptor
+            ->device_montgomery_limbs =
+            reinterpret_cast<
+                const std::uint64_t *>(
+                owned_device_coefficients);
+
+        descriptor->capacity =
+            size;
+
+        descriptor->logical_count =
+            logical_count;
+
+        descriptor->nonzero_count =
+            nonzero_count;
+
+        descriptor->device =
+            device;
+
+        descriptor->host_transfer =
+            std::move(
+                host_transfer);
+
+        *resident_coefficients =
+            std::move(
+                descriptor);
+
+        return true;
     }
 
     bool cuda_ntt_in_place_exact(

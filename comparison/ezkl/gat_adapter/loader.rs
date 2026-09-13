@@ -36,6 +36,19 @@ pub struct LoadedGat {
     pub source_snapshot: ResourceSourceSnapshot,
 }
 
+/// Authenticated public relation resources used by formal verification.
+///
+/// This path intentionally parses only the manifest, secure registry
+/// configuration, static tables and integer ledger. It does not load
+/// checkpoint tensors or reconstruct the private model.
+#[derive(Clone, Debug)]
+pub struct AuthenticatedRelationResources {
+    pub tables: StaticTables,
+    pub ledger: IntegerBoundLedger,
+    pub quantization: DigestIdentity,
+    pub resource_manifest_sha256: String,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TensorMeta {
@@ -69,6 +82,8 @@ struct CheckpointManifest {
     d_in_profile: Vec<usize>,
     dataset: String,
     degree_bound_id: String,
+    static_table_digest: String,
+    degree_bound_digest: String,
     edge_sort_rule: String,
     family_schema: String,
     hidden_head_specs: Vec<serde_json::Value>,
@@ -138,6 +153,55 @@ pub fn load_dataset_with_manifest(
     )
 }
 
+/// Authenticate the current resource manifest and parse only the public
+/// table/ledger registry required by a verifier.
+pub fn load_relation_resources_with_manifest(
+    baseline_root: &Path,
+    manifest_path: &Path,
+    dataset: &str,
+) -> Result<AuthenticatedRelationResources, String> {
+    let dataset = canonical_dataset_name(dataset)?;
+    let manifest = ResourceManifest::load_from_baseline(baseline_root, manifest_path)?;
+    let resources = manifest.authenticate(baseline_root)?;
+    let manifest_bytes = fs::read(manifest_path)
+        .map_err(|e| format!("read resource manifest {}: {}", manifest_path.display(), e))?;
+    let resource_manifest_sha256 = sha256_digest(&manifest_bytes)?;
+    let secure_cfg = resource_path(&resources, &format!("configs/{}_secure.cfg", dataset))?;
+    let secure = parse_cfg(&secure_cfg.path)?;
+    require_cfg(
+        &secure,
+        &[
+            "checkpoint_bundle",
+            "quant_cfg_id",
+            "static_table_id",
+            "degree_bound_id",
+            "static_table_digest",
+            "degree_bound_digest",
+        ],
+    )?;
+    let checkpoint_manifest = resource_path(
+        &resources,
+        &format!(
+            "{}/manifest.json",
+            secure["checkpoint_bundle"].trim_start_matches("resources/canonical/")
+        ),
+    )?;
+    let quant_cfg = resource_path(&resources, "configs/quantization_scale_chain.cfg")?;
+    let checkpoint: CheckpointManifest = parse_json(&checkpoint_manifest.path)?;
+    let scales = parse_quant_chain(&quant_cfg.path, &checkpoint)?;
+    let quantization = DigestIdentity {
+        id: checkpoint.quant_cfg_id,
+        digest: sha256_digest(&scales.canonical_bytes())?,
+    };
+    let (tables, ledger) = load_exact_relation_resources(&resources, &dataset, &secure)?;
+    Ok(AuthenticatedRelationResources {
+        tables,
+        ledger,
+        quantization,
+        resource_manifest_sha256,
+    })
+}
+
 fn canonical_dataset_name(name: &str) -> Result<String, String> {
     let name = name.trim().to_ascii_lowercase();
     match name.as_str() {
@@ -193,7 +257,7 @@ fn load_from_resources(
     let graph = parse_graph(&edges_path.path, &meta, dataset, resources)?;
     let tensors = parse_tensor_archive(&tensors_txt.path, &checkpoint)?;
     let model = build_model(&checkpoint, &quant, &tensors)?;
-    let (tables, ledger) = load_exact_relation_resources(resources, &secure)?;
+    let (tables, ledger) = load_exact_relation_resources(resources, dataset, &secure)?;
     let topology = DigestIdentity {
         id: graph.topology_id.clone(),
         digest: graph.topology_digest.clone(),
@@ -358,7 +422,13 @@ fn validate_checkpoint(
     {
         return Err("checkpoint protocol identity mismatch".into());
     }
-    for key in ["quant_cfg_id", "static_table_id", "degree_bound_id"] {
+    for key in [
+        "quant_cfg_id",
+        "static_table_id",
+        "degree_bound_id",
+        "static_table_digest",
+        "degree_bound_digest",
+    ] {
         let expected = match key {
             "quant_cfg_id" => &checkpoint.quant_cfg_id,
             "static_table_id" => &checkpoint.static_table_id,
@@ -517,10 +587,18 @@ fn parse_features(
         }
         let norm = if meta.input_preprocess_id == "row_normalize" {
             let sum: f64 = raw.iter().map(|(_, x)| *x).sum();
-            if !sum.is_finite() || sum <= 0.0 {
+            if !sum.is_finite() || sum < 0.0 {
                 return Err(format!("row {} has invalid normalization sum", row));
             }
-            sum
+            // Canonical sparse exports contain a small number of all-zero
+            // rows.  Row normalization leaves those rows at the zero vector;
+            // treating their denominator as one is the exact integer
+            // preprocessing convention and does not introduce a fallback.
+            if sum == 0.0 {
+                1.0
+            } else {
+                sum
+            }
         } else {
             1.0
         };
@@ -603,13 +681,28 @@ fn parse_graph(
     let mut raw = Vec::<(usize, usize, usize)>::new();
     for (order, line) in text.lines().enumerate() {
         let mut it = line.split_whitespace();
-        let src = parse_usize(it.next().ok_or("edge missing src")?, "edge src")?;
-        let dst = parse_usize(it.next().ok_or("edge missing dst")?, "edge dst")?;
-        if it.next().is_some() || src >= meta.num_nodes || dst >= meta.num_nodes {
+        let first = parse_usize(it.next().ok_or("edge missing source")?, "edge source")?;
+        let second = parse_usize(
+            it.next().ok_or("edge missing destination")?,
+            "edge destination",
+        )?;
+        let (declared_graph, src, dst) = if dataset == "ppi" {
+            let dst = it.next().ok_or("ppi edge missing destination")?;
+            if it.next().is_some() {
+                return Err(format!("invalid edge at line {}", order + 1));
+            }
+            (Some(first), second, parse_usize(dst, "edge destination")?)
+        } else {
+            if it.next().is_some() {
+                return Err(format!("invalid edge at line {}", order + 1));
+            }
+            (None, first, second)
+        };
+        if src >= meta.num_nodes || dst >= meta.num_nodes {
             return Err(format!("invalid edge at line {}", order + 1));
         }
         let g = graph_for_node[src];
-        if graph_for_node[dst] != g {
+        if declared_graph.is_some_and(|declared| declared != g) || graph_for_node[dst] != g {
             return Err(format!("edge crosses graph boundary at line {}", order + 1));
         }
         raw.push((g, src, dst));
@@ -928,23 +1021,32 @@ fn tensor_quantized(
 
 fn load_exact_relation_resources(
     resources: &[AuthenticatedResource],
+    dataset: &str,
     secure: &BTreeMap<String, String>,
 ) -> Result<(StaticTables, IntegerBoundLedger), String> {
     // Exact lookup rows and the per-family integer-bound certificate are
     // protocol inputs.  They must be authenticated files, never generated
     // from host floating point values or inferred from model weights.
-    let table = resources.iter().find(|resource| {
-        resource.record.path == "resources/canonical/tables/gat_static_tables.json"
-    });
-    let ledger = resources.iter().find(|resource| {
-        resource.record.path == "resources/canonical/ledgers/gat_integer_ledger.json"
-    });
+    let table_path = format!(
+        "resources/canonical/tables/{}/gat_static_tables.json",
+        dataset
+    );
+    let ledger_path = format!(
+        "resources/canonical/ledgers/{}/gat_integer_ledger.json",
+        dataset
+    );
+    let table = resources
+        .iter()
+        .find(|resource| resource.record.path == table_path);
+    let ledger = resources
+        .iter()
+        .find(|resource| resource.record.path == ledger_path);
     let mut missing = Vec::new();
     if table.is_none() {
-        missing.push("resources/canonical/tables/gat_static_tables.json");
+        missing.push(table_path.as_str());
     }
     if ledger.is_none() {
-        missing.push("resources/canonical/ledgers/gat_integer_ledger.json");
+        missing.push(ledger_path.as_str());
     }
     if !missing.is_empty() {
         return Err(format!(
@@ -962,11 +1064,29 @@ fn load_exact_relation_resources(
     if &tables.static_tables_id != expected_table_id {
         return Err("unsupported_exact_relation: authenticated table registry id disagrees with secure config".into());
     }
+    let expected_table_digest = secure
+        .get("static_table_digest")
+        .ok_or_else(|| "missing static_table_digest in secure config".to_string())?;
+    if &tables.static_tables_digest != expected_table_digest {
+        return Err(
+            "unsupported_exact_relation: authenticated table digest disagrees with secure config"
+                .into(),
+        );
+    }
     let expected_ledger_id = secure
         .get("degree_bound_id")
         .ok_or_else(|| "missing degree_bound_id in secure config".to_string())?;
     if expected_ledger_id == "auto" || &ledger.ledger_id != expected_ledger_id {
         return Err("unsupported_exact_relation: secure config does not bind an authenticated exact integer ledger".into());
+    }
+    let expected_ledger_digest = secure
+        .get("degree_bound_digest")
+        .ok_or_else(|| "missing degree_bound_digest in secure config".to_string())?;
+    if &ledger.ledger_digest != expected_ledger_digest {
+        return Err(
+            "unsupported_exact_relation: authenticated ledger digest disagrees with secure config"
+                .into(),
+        );
     }
     Ok((tables, ledger))
 }

@@ -4,8 +4,8 @@
   "resource_root": "resources/canonical",
   "source_snapshot": {
     "root": "/home/pzh/project",
-    "git_commit": "07d35a2edf69085bc2047dcf138bf1768ba8e671",
-    "git_tree": "3fc5e857e8973076da3120b4695ad87267f68878"
+    "git_commit": "af33ba4517c478039edf6d7e25ddc8a831b1611f",
+    "git_tree": "b475962e30b84e17a24ba6a2c84de733317d0153"
   },
   "files": [
     {
@@ -271,8 +271,8 @@
     },
     {
       "path": "resources/canonical/checkpoints/citeseer_gat/manifest.json",
-      "size": 17243,
-      "sha256": "14c0066b4bf0fc30a5f2d2846164f596645db7a9c590b246c9221da0e8f81597",
+      "size": 17443,
+      "sha256": "f59f7f4de611f07e71ad240d8348674c4d13520219586aa7a4412505d627fb32",
       "source_path": "/home/pzh/project/artifacts/checkpoints/citeseer_gat/manifest.json",
       "source_sha256": "7b1e0c7efa70fd38ccc9d5aa0113aa879cd5d04bbb8fa2c2b0f935b845ba4d23",
       "dataset": "citeseer",
@@ -316,8 +316,8 @@
     },
     {
       "path": "resources/canonical/checkpoints/cora_gat/manifest.json",
-      "size": 17235,
-      "sha256": "68ec0a01fc2c8dc0736a04c3b41eb9b3e69f8021046be420d8807daf7570219d",
+      "size": 17427,
+      "sha256": "df316eb2afda8e6dd3f96c913f4a2b0aded55a3deb5d3a9b35b29eafa4bee134",
       "source_path": "/home/pzh/project/artifacts/checkpoints/cora_gat/manifest.json",
       "source_sha256": "ef7dca57894e41d6e932a8ea803e869a184eef57ea6d2ac66e0eaa2ab3790a6f",
       "dataset": "cora",
@@ -406,8 +406,8 @@
     },
     {
       "path": "resources/canonical/checkpoints/ppi_gat/manifest.json",
-      "size": 17235,
-      "sha256": "3f4178f4cd8c52b3a026e0b47e15cbdc33330c06c74f32d1c808334d5c90b39e",
+      "size": 17425,
+      "sha256": "198a85b24c2533f19d494f7fa8f42805a07be703cb6170c722084f63d03ad974",
       "source_path": "/home/pzh/project/artifacts/checkpoints/ppi_gat/manifest.json",
       "source_sha256": "786f29b61871e1d81d4954cc14d93cd4a4c7a44eaad9cc100f6f197e5ebbe58b",
       "dataset": "ppi",
@@ -451,8 +451,8 @@
     },
     {
       "path": "resources/canonical/checkpoints/pubmed_gat/manifest.json",
-      "size": 17229,
-      "sha256": "fcf5d7030c8d813037d3d9c1e853cfc01dc68723dcac4b50e7b325b7ae0f9920",
+      "size": 17425,
+      "sha256": "0625d78ed19f181919074a29b08d4b5ecae31a9c15415fd1268c9c44a827f85d",
       "source_path": "/home/pzh/project/artifacts/checkpoints/pubmed_gat/manifest.json",
       "source_sha256": "93a590c3d4b2e3e192e90de53074a7a9d6939d7f6b0a163d8e10c612445c287b",
       "dataset": "pubmed",
@@ -487,8 +487,8 @@
     },
     {
       "path": "resources/canonical/configs/citeseer_secure.cfg",
-      "size": 1244,
-      "sha256": "dcfc9e6831dca4440939843c1d79063df5e4e757065019a1f47bf06126cf7883",
+      "size": 1421,
+      "sha256": "2b3f50c09a97f0c95302abb24bd7183d1cbccea96eeb4c39d1cb056c98fd81d6",
       "source_path": "/home/pzh/project/configs/citeseer_secure.cfg",
       "source_sha256": "9e4411688cef032759986158b2cc2b2ffd3bdd28af77c001e22ba774c4c2598c",
       "dataset": "citeseer",
@@ -496,8 +496,8 @@
     },
     {
       "path": "resources/canonical/configs/cora_secure.cfg",
-      "size": 1220,
-      "sha256": "ec73c3c3ea3c172ebdca2568e0531eb400b3834a8eb5583a0f86db8b91d7a6c9",
+      "size": 1389,
+      "sha256": "4c933c6aa58e809596b7e15dc1f75659b810eaed91f659f1e73ab8c4ef665ad1",
       "source_path": "/home/pzh/project/configs/cora_secure.cfg",
       "source_sha256": "478e1635ab5c7492c71daed4f1b09d1931a758b237800da10d2c329507020cb7",
       "dataset": "cora",
@@ -505,8 +505,8 @@
     },
     {
       "path": "resources/canonical/configs/ogbn_arxiv_secure.cfg",
-      "size": 1281,
-      "sha256": "4da01e2e5e99a67aba86d89695abf2354364b942d0dd8509ce6345dd846ad8cd",
+      "size": 1270,
+      "sha256": "15e71494925e7f3365d1d01089af2d4f586291f0d694039e2a82d77daab1ddd3",
       "source_path": "/home/pzh/project/configs/ogbn_arxiv_secure.cfg",
       "source_sha256": "2474ad2e34b949401bf8c514496d32fbdf7b26f70329495472ccae39f1c2762d",
       "dataset": "ogbn_arxiv",
@@ -514,8 +514,8 @@
     },
     {
       "path": "resources/canonical/configs/ppi_secure.cfg",
-      "size": 1238,
-      "sha256": "b828f724a5a4dfdc4f00281939c04d93be7c868112e50df4db0e2a0d80528e10",
+      "size": 1405,
+      "sha256": "1c5a8e99cb84d6d90446640283d05b72857598246cb3ece09e73ce5224376dfb",
       "source_path": "/home/pzh/project/configs/ppi_secure.cfg",
       "source_sha256": "254952f9b7586f4d66bf7e9f8a932f366eac5725b4019511c6d2a83791d2883c",
       "dataset": "ppi",
@@ -523,8 +523,8 @@
     },
     {
       "path": "resources/canonical/configs/pubmed_secure.cfg",
-      "size": 1231,
-      "sha256": "db55e7990199c7e02c6fc73415c3c564a850ac052dc820b06600cb549f201660",
+      "size": 1404,
+      "sha256": "e33767ad1d980fd4c7cd768bb950854af1eedaf69fd61abd0895303a1a3752de",
       "source_path": "/home/pzh/project/configs/pubmed_secure.cfg",
       "source_sha256": "16bc646a9f3c10a0e64cd133ce64b3fee81ab7bb4cf4c160dedffadcb133e540",
       "dataset": "pubmed",
@@ -538,6 +538,78 @@
       "source_sha256": "7846f59a43b9490603457ce73ad52ce4b6df684de9ec69280ffb47d76cd911da",
       "dataset": "all",
       "role": "canonical_quantization_config"
+    },
+    {
+      "path": "resources/canonical/ledgers/citeseer/gat_integer_ledger.json",
+      "size": 8264,
+      "sha256": "8c36c4beee4a1ace4e476dd3879f4db413bacb5b7a282bd87b4df4e12f7a97fd",
+      "source_path": "/home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py",
+      "source_sha256": "cf7a0df0bfe541943812d89ed559f0146323da3079042f5ac01b340a16e52cc2",
+      "dataset": "citeseer",
+      "role": "baseline_local_integer_bound_ledger"
+    },
+    {
+      "path": "resources/canonical/ledgers/cora/gat_integer_ledger.json",
+      "size": 8279,
+      "sha256": "190f624e2814ca44cf543499a3be8968e370b4b853cae9003f9936377c0bbb6b",
+      "source_path": "/home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py",
+      "source_sha256": "cf7a0df0bfe541943812d89ed559f0146323da3079042f5ac01b340a16e52cc2",
+      "dataset": "cora",
+      "role": "baseline_local_integer_bound_ledger"
+    },
+    {
+      "path": "resources/canonical/ledgers/ppi/gat_integer_ledger.json",
+      "size": 8344,
+      "sha256": "357bfff850f12038e2b7b030ddb03a673c8a0d8a669b5f1878c211f4f622632d",
+      "source_path": "/home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py",
+      "source_sha256": "cf7a0df0bfe541943812d89ed559f0146323da3079042f5ac01b340a16e52cc2",
+      "dataset": "ppi",
+      "role": "baseline_local_integer_bound_ledger"
+    },
+    {
+      "path": "resources/canonical/ledgers/pubmed/gat_integer_ledger.json",
+      "size": 8265,
+      "sha256": "7d552f0a019dc5181a4f1169cd92f355650883f0acfc8e270298d090cf4024a0",
+      "source_path": "/home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py",
+      "source_sha256": "cf7a0df0bfe541943812d89ed559f0146323da3079042f5ac01b340a16e52cc2",
+      "dataset": "pubmed",
+      "role": "baseline_local_integer_bound_ledger"
+    },
+    {
+      "path": "resources/canonical/tables/citeseer/gat_static_tables.json",
+      "size": 1755912,
+      "sha256": "e86e2e7010b4cab1388dbd532178463a74541cbff4e6d9d1d6d82f24dc368aed",
+      "source_path": "/home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py",
+      "source_sha256": "cf7a0df0bfe541943812d89ed559f0146323da3079042f5ac01b340a16e52cc2",
+      "dataset": "citeseer",
+      "role": "baseline_local_exact_static_tables"
+    },
+    {
+      "path": "resources/canonical/tables/cora/gat_static_tables.json",
+      "size": 1755872,
+      "sha256": "16ece7d72633dd3b7de696815808eb4aa35146df97fb6715cec5109fa8176302",
+      "source_path": "/home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py",
+      "source_sha256": "cf7a0df0bfe541943812d89ed559f0146323da3079042f5ac01b340a16e52cc2",
+      "dataset": "cora",
+      "role": "baseline_local_exact_static_tables"
+    },
+    {
+      "path": "resources/canonical/tables/ppi/gat_static_tables.json",
+      "size": 7192770,
+      "sha256": "c47401dba41a0130b9a144a9a75e1c136c800497a4ddd6efd2aaaba61ccdbdc9",
+      "source_path": "/home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py",
+      "source_sha256": "cf7a0df0bfe541943812d89ed559f0146323da3079042f5ac01b340a16e52cc2",
+      "dataset": "ppi",
+      "role": "baseline_local_exact_static_tables"
+    },
+    {
+      "path": "resources/canonical/tables/pubmed/gat_static_tables.json",
+      "size": 1755892,
+      "sha256": "41cb5e18e93b9064913d818cf3d0be622712d11b0b1f675263028ac27f22b8a6",
+      "source_path": "/home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py",
+      "source_sha256": "cf7a0df0bfe541943812d89ed559f0146323da3079042f5ac01b340a16e52cc2",
+      "dataset": "pubmed",
+      "role": "baseline_local_exact_static_tables"
     }
   ]
 }

@@ -9,7 +9,7 @@
     64
   ],
   "dataset": "cora",
-  "degree_bound_id": "auto",
+  "degree_bound_id": "ledger:gat:cora:v1",
   "edge_sort_rule": "edge_gid_then_dst_stable",
   "family_schema": "multi_layer_multi_head",
   "hidden_head_specs": [
@@ -178,7 +178,7 @@
   "selection_metric": "validation_loss",
   "self_loop_rule": "per_node",
   "split_format": "node_masks",
-  "static_table_id": "tables:lrelu+elu+exp+range",
+  "static_table_id": "tables:gat:cora:v1",
   "subgraph_rule": "whole_graph",
   "task_type": "transductive_node_classification",
   "tensor_count": 56,
@@ -683,5 +683,7 @@
         7
       ]
     }
-  }
+  },
+  "static_table_digest": "6cf76af7a00ed9122de533059c786ccd01c145059d57f657e2abbae5e73d3ddf",
+  "degree_bound_digest": "ac73158a629615cc8df9a16f6c5e3378a61ff3c91d6f455b00a0700d371f3a72"
 }

@@ -1,4 +1,5 @@
 #include "hyrax.hpp"
+#include "proof_session.hpp"
 #include "timer.hpp"
 #include <cmath>
 #include <thread>
@@ -6,8 +7,29 @@
 #include <mutex>
 #include <iostream>
 #include <chrono>
+#include <sstream>
+#include <stdexcept>
 using namespace std;
 using namespace mcl::bn;
+
+namespace {
+
+std::string point_encoding(const G1 &point) {
+    return point.serializeToHexStr();
+}
+
+void absorb_fold(NativeProofSession &session, const std::string &label,
+                 const G1 &gamma_minus1, const G1 &gamma_1,
+                 const Fr &cross_left, const Fr &cross_right) {
+    std::ostringstream payload;
+    payload << point_encoding(gamma_minus1) << '|'
+            << point_encoding(gamma_1) << '|'
+            << cross_left.getStr(16) << '|'
+            << cross_right.getStr(16);
+    session.absorb(label, payload.str());
+}
+
+} // namespace
 
 const int MAX_MSM_LEN=1e4;
 const int COMM_OPT_MAX=65536; //don't optimize if larger than this
@@ -365,12 +387,74 @@ Pack bullet_reduce(G1 gamma, Fr*a,G1*g,int n,G1& G,Fr* x,Fr y,bool need_free) //
     return bullet_reduce(gamma_prime,aprime,gprime,n/2,G,xprime,yprime,true);
 }   
 
-void prove_dot_product(G1 comm_x, G1 comm_y, Fr* a, G1*g ,G1& G,Fr* x,Fr y,int n)  // y= <a,x> , 
+void prove_dot_product(G1 comm_x, G1 comm_y, Fr* a, G1*g ,G1& G,Fr* x,Fr y,int n)  // y= <a,x> ,
 {
     G1 gamma=comm_x+comm_y;
     Pack p=bullet_reduce(gamma,a,g,n,G,x,y);
     assert(p.y==p.x*p.a);
     assert(p.gamma==p.g*p.x+G*p.y);
+}
+
+namespace {
+
+Pack bullet_reduce_with_session(G1 gamma, Fr *a, G1 *g, int n,
+                                G1 &G, Fr *x, Fr y,
+                                NativeProofSession &session,
+                                const std::string &label, int round) {
+    if (n == 1) {
+        Pack result(gamma, a[0], g[0], x[0], y);
+        session.absorb(label + "/terminal",
+                       point_encoding(gamma) + "|" + point_encoding(g[0]) +
+                       "|" + a[0].getStr(16) + "|" + x[0].getStr(16) +
+                       "|" + y.getStr(16));
+        if (result.y != result.x * result.a ||
+            result.gamma != result.g * result.x + G * result.y)
+            throw std::runtime_error("Hyrax terminal opening relation failed");
+        return result;
+    }
+    G1 gamma_minus1, gamma_1;
+    Fr x1a2 = 0, x2a1 = 0;
+    for (int i = 0; i < n / 2; ++i) {
+        x1a2 += x[i] * a[n / 2 + i];
+        x2a1 += x[n / 2 + i] * a[i];
+    }
+    gamma_minus1 = G * x1a2 + perdersen_commit(g + n / 2, x, n / 2);
+    gamma_1 = G * x2a1 + perdersen_commit(g, x + n / 2, n / 2);
+    absorb_fold(session, label + "/fold/" + std::to_string(round),
+                gamma_minus1, gamma_1, x1a2, x2a1);
+    const Fr c = session.challenge(label + "/c/" + std::to_string(round));
+    Fr invc;
+    Fr::inv(invc, c);
+    G1 gamma_prime = gamma_minus1 * c * c + gamma_1 * invc * invc + gamma;
+    std::vector<Fr> aprime(n / 2);
+    std::vector<G1> gprime(n / 2);
+    std::vector<Fr> xprime(n / 2);
+    for (int i = 0; i < n / 2; ++i) {
+        aprime[i] = a[i] * invc + a[i + n / 2] * c;
+        gprime[i] = g[i] * invc + g[i + n / 2] * c;
+        xprime[i] = c * x[i] + invc * x[i + n / 2];
+    }
+    const Fr yprime = c * c * x1a2 + invc * invc * x2a1 + y;
+    const Pack result = bullet_reduce_with_session(
+        gamma_prime, aprime.data(), gprime.data(), n / 2, G, xprime.data(), yprime, session,
+        label, round + 1);
+    return result;
+}
+
+} // namespace
+
+void prove_dot_product_with_session(G1 comm_x, G1 comm_y, Fr *a, G1 *g,
+                                    G1 &G, Fr *x, Fr y, int n,
+                                    NativeProofSession &session,
+                                    const std::string &label) {
+    session.absorb(label + "/evaluation",
+                   point_encoding(comm_x) + "|" + y.getStr(16));
+    const G1 gamma = comm_x + comm_y;
+    const Pack result = bullet_reduce_with_session(gamma, a, g, n, G, x, y,
+                                                   session, label, 0);
+    if (result.y != result.x * result.a ||
+        result.gamma != result.g * result.x + G * result.y)
+        throw std::runtime_error("Hyrax transcript opening relation failed");
 }
 static ThreadSafeQueue<int> workerq,endq;
 
@@ -454,5 +538,231 @@ pair<double,double> open(Fr*w,Fr*r,Fr eval,G1&G,G1*g,Fr*L,Fr*R,G1*tk,int l)
     prover_time+=verf.elapse_sec();
     verifier_time+=blt_vtime;
     return make_pair(prover_time,verifier_time);
+}
+
+pair<double,double> open_with_session(Fr *w, Fr *r, Fr eval, G1 &G, G1 *g,
+                                      Fr *L, Fr *R, G1 *tk, int l,
+                                      NativeProofSession &session,
+                                      const std::string &label) {
+    double prover_time = 0, verifier_time = 0;
+    const int halfl = l / 2;
+    const int colnum = (1 << (l - halfl));
+    timer verf;
+    verf.start();
+    Fr *RT = new Fr[colnum];
+    compute_RT(w, R, l, g, RT);
+    verf.stop();
+    prover_time += verf.elapse_sec();
+    verf.start();
+    G1 tprime = compute_Tprime(l, R, tk);
+    verf.stop();
+    prover_time += verf.elapse_sec();
+    verifier_time += verf.elapse_sec();
+    verf.start();
+    prove_dot_product_with_session(tprime, G * eval, L, g, G, RT, eval,
+                                   colnum, session, label + "/bullet");
+    verf.stop();
+    prover_time += verf.elapse_sec();
+    verifier_time += blt_vtime;
+    delete[] RT;
+    return make_pair(prover_time, verifier_time);
+}
+
+namespace {
+
+void set_open_reason(std::string *reason, const std::string &message) {
+    if (reason != nullptr) *reason = message;
+}
+
+bool split_open_payload(const std::string &payload, std::size_t expected,
+                        std::vector<std::string> &parts) {
+    parts.clear();
+    std::size_t begin = 0;
+    while (true) {
+        const std::size_t end = payload.find('|', begin);
+        parts.push_back(payload.substr(begin, end == std::string::npos ? end : end - begin));
+        if (parts.size() > expected) return false;
+        if (end == std::string::npos) break;
+        begin = end + 1;
+    }
+    return parts.size() == expected;
+}
+
+bool decode_open_field(const std::string &encoded, Fr &value) {
+    if (encoded.empty() || encoded.size() > 128) return false;
+    try {
+        value.setStr(encoded, 16);
+        return value.getStr(16) == encoded;
+    } catch (...) {
+        return false;
+    }
+}
+
+bool decode_open_point(const std::string &encoded, G1 &value) {
+    if (encoded.empty() || encoded.size() > 4096) return false;
+    try {
+        value.deserializeHexStr(encoded);
+        return value.serializeToHexStr() == encoded;
+    } catch (...) {
+        return false;
+    }
+}
+
+const NativeProofMessage *find_open_message(
+    const NativeProofSession &session, const std::string &label,
+    std::string *reason) {
+    const NativeProofMessage *found = nullptr;
+    for (const NativeProofMessage &message : session.messages()) {
+        if (message.label != label) continue;
+        if (found != nullptr) {
+            set_open_reason(reason, "duplicate Hyrax opening message: " + label);
+            return nullptr;
+        }
+        found = &message;
+    }
+    if (found == nullptr) set_open_reason(reason, "missing Hyrax opening message: " + label);
+    return found;
+}
+
+bool has_prefix(const std::string &value, const std::string &prefix) {
+    return value.compare(0, prefix.size(), prefix) == 0;
+}
+
+} // namespace
+
+bool verify_opening_with_session(
+    const G1 &comm_x, const Fr &eval, const G1 &G,
+    const std::vector<G1> &generators, const std::vector<Fr> &basis,
+    const NativeProofSession &session, const std::string &label,
+    std::string *reason) {
+    try {
+        if (label.empty() || generators.empty() || generators.size() != basis.size() ||
+            (generators.size() & (generators.size() - 1)) != 0) {
+            set_open_reason(reason, "Hyrax opening basis is not a non-empty power-of-two vector");
+            return false;
+        }
+        if (!session.replay(reason)) return false;
+
+        const NativeProofMessage *evaluation = find_open_message(
+            session, label + "/evaluation", reason);
+        if (evaluation == nullptr) return false;
+        std::vector<std::string> evaluation_parts;
+        if (!split_open_payload(evaluation->payload, 2, evaluation_parts)) {
+            set_open_reason(reason, "malformed Hyrax evaluation message");
+            return false;
+        }
+        G1 encoded_comm;
+        Fr encoded_eval;
+        if (!decode_open_point(evaluation_parts[0], encoded_comm) ||
+            !decode_open_field(evaluation_parts[1], encoded_eval) ||
+            encoded_comm != comm_x || encoded_eval != eval) {
+            set_open_reason(reason, "Hyrax evaluation message does not match the public claim");
+            return false;
+        }
+
+        std::vector<G1> folded_generators = generators;
+        std::vector<Fr> folded_basis = basis;
+        G1 folded_gamma = comm_x + G * eval;
+        Fr folded_eval = eval;
+        std::size_t round_count = 0;
+        for (std::size_t size = generators.size(); size > 1; size >>= 1) ++round_count;
+        for (std::size_t round = 0; round < round_count; ++round) {
+            const std::string fold_label = label + "/fold/" + std::to_string(round);
+            const NativeProofMessage *fold = find_open_message(session, fold_label, reason);
+            if (fold == nullptr) return false;
+            const NativeProofMessage *challenge = find_open_message(
+                session, "challenge/" + label + "/c/" + std::to_string(round), reason);
+            if (challenge == nullptr) return false;
+            std::vector<std::string> fold_parts;
+            if (!split_open_payload(fold->payload, 4, fold_parts)) {
+                set_open_reason(reason, "malformed Hyrax fold message");
+                return false;
+            }
+            G1 gamma_minus1, gamma_1;
+            Fr cross_left, cross_right, c;
+            if (!decode_open_point(fold_parts[0], gamma_minus1) ||
+                !decode_open_point(fold_parts[1], gamma_1) ||
+                !decode_open_field(fold_parts[2], cross_left) ||
+                !decode_open_field(fold_parts[3], cross_right) ||
+                !decode_open_field(challenge->payload, c) || c.isZero()) {
+                set_open_reason(reason, "malformed Hyrax fold field or point");
+                return false;
+            }
+            Fr inv_c;
+            Fr::inv(inv_c, c);
+            folded_gamma = gamma_minus1 * c * c + gamma_1 * inv_c * inv_c + folded_gamma;
+            folded_eval = c * c * cross_left + inv_c * inv_c * cross_right + folded_eval;
+
+            const std::size_t half = folded_generators.size() / 2;
+            std::vector<G1> next_generators(half);
+            std::vector<Fr> next_basis(half);
+            for (std::size_t i = 0; i < half; ++i) {
+                next_generators[i] = folded_generators[i] * inv_c +
+                                     folded_generators[i + half] * c;
+                next_basis[i] = folded_basis[i] * inv_c +
+                                folded_basis[i + half] * c;
+            }
+            folded_generators.swap(next_generators);
+            folded_basis.swap(next_basis);
+        }
+
+        const NativeProofMessage *terminal = find_open_message(
+            session, label + "/terminal", reason);
+        if (terminal == nullptr) return false;
+        std::vector<std::string> terminal_parts;
+        if (!split_open_payload(terminal->payload, 5, terminal_parts)) {
+            set_open_reason(reason, "malformed Hyrax terminal opening");
+            return false;
+        }
+        G1 terminal_gamma, terminal_generator;
+        Fr terminal_basis, terminal_x, terminal_eval;
+        if (!decode_open_point(terminal_parts[0], terminal_gamma) ||
+            !decode_open_point(terminal_parts[1], terminal_generator) ||
+            !decode_open_field(terminal_parts[2], terminal_basis) ||
+            !decode_open_field(terminal_parts[3], terminal_x) ||
+            !decode_open_field(terminal_parts[4], terminal_eval) ||
+            folded_generators.size() != 1 || folded_basis.size() != 1 ||
+            terminal_gamma != folded_gamma || terminal_generator != folded_generators[0] ||
+            terminal_basis != folded_basis[0] || terminal_eval != folded_eval ||
+            terminal_eval != terminal_x * terminal_basis ||
+            terminal_gamma != terminal_generator * terminal_x + G * terminal_eval) {
+            set_open_reason(reason, "Hyrax terminal opening relation failed");
+            return false;
+        }
+
+        const std::string fold_prefix = label + "/fold/";
+        const std::string challenge_prefix = "challenge/" + label + "/c/";
+        const std::string opening_prefix = label + "/";
+        for (const NativeProofMessage &message : session.messages()) {
+            if (has_prefix(message.label, opening_prefix) &&
+                message.label != label + "/evaluation" &&
+                message.label != label + "/terminal" &&
+                !has_prefix(message.label, fold_prefix)) {
+                set_open_reason(reason, "unexpected Hyrax opening message");
+                return false;
+            }
+            if (has_prefix(message.label, fold_prefix)) {
+                bool expected = false;
+                for (std::size_t round = 0; round < round_count; ++round)
+                    if (message.label == fold_prefix + std::to_string(round)) expected = true;
+                if (!expected) {
+                    set_open_reason(reason, "unexpected Hyrax fold message");
+                    return false;
+                }
+            } else if (has_prefix(message.label, challenge_prefix)) {
+                bool expected = false;
+                for (std::size_t round = 0; round < round_count; ++round)
+                    if (message.label == challenge_prefix + std::to_string(round)) expected = true;
+                if (!expected) {
+                    set_open_reason(reason, "unexpected Hyrax challenge message");
+                    return false;
+                }
+            }
+        }
+        return true;
+    } catch (const std::exception &error) {
+        set_open_reason(reason, error.what());
+        return false;
+    }
 }
 }

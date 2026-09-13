@@ -6,6 +6,7 @@
 #include <utils.hpp>
 #include <circuit.h>
 #include <iostream>
+#include <sstream>
 
 using namespace std;
 using namespace mcl::bn;
@@ -185,18 +186,50 @@ void verifier::predicatePhase2(u8 layer_id)
         bin_value[gate.l] += beta_g[gate.g] * beta_u[gate.u] * beta_v[gate.v] * gate.sc;
 }
 
-void verifier::prove(int commit_thread) 
+F verifier::challenge(const std::string &label) {
+    if (session_ != nullptr) return session_->challenge(label);
+    F value;
+    value.setByCSPRNG();
+    return value;
+}
+
+void verifier::absorb_field(const std::string &label, const F &value) {
+    if (session_ != nullptr) session_->absorb_field(label, value);
+}
+
+void verifier::absorb_fields(const std::string &label, const std::vector<F> &values) {
+    if (session_ != nullptr) session_->absorb_fields(label, values);
+}
+
+bool verifier::prove(int commit_thread)
 {
+    (void)commit_thread;
     cout<<"Circuit Initiation finished"<<endl;
     cout<<"Proving Service started"<<endl;
-    verifyGKR(); 
-    verifyLasso(); 
-    openCommit();
+    const bool gkr_ok = verifyGKR();
+    const bool lasso_ok = gkr_ok && verifyLasso();
+    const bool opening_ok = lasso_ok && openCommit();
     cout<<"Our results:"<<endl;
     cout<<"Matrix multiplication Prover time: "<<matrix_time<<"s"<<endl;
     cout<<"Total Prover time: "<<prover_time + range_prover_time<<"s"<<endl;
     cout<<"Verifier time: "<<verifier_time<<"s"<<endl;
     cout<<"Proof size: "<<(double)(p->proof_size)/1024.0<<"KB"<<endl;
+    return gkr_ok && lasso_ok && opening_ok;
+}
+
+bool verifier::prove_with_session(NativeProofSession &session, int commit_thread) {
+    if (!session.valid()) return false;
+    NativeProofSession *previous = session_;
+    session_ = &session;
+    bool result = false;
+    try {
+        result = prove(commit_thread);
+    } catch (...) {
+        session_ = previous;
+        throw;
+    }
+    session_ = previous;
+    return result && session.replay();
 }
 
 Fr * init_book_keeping(int m,int n,vector<Fr> &vec,int offset, vector<Fr> & ra)
@@ -444,14 +477,61 @@ pair<Fr,Fr> sum_check_product(Fr* f,Fr* g,int m,Fr* r,Fr ans)
         return sum_check_product(new_f,new_g,m-1,r+1,new_ans);
 }
 
+// Session-bound variant of the native dedicated matrix-product Sumcheck.  It
+// keeps the original polynomial/folding arithmetic, but records each
+// prover polynomial before deriving the next challenge instead of consuming
+// verifier-side CSPRNG state.  The independent verifier can replay these
+// degree-two messages without accessing the product witness.
+pair<Fr,Fr> sum_check_product_session(Fr* f, Fr* g, int m,
+                                       NativeProofSession &session,
+                                       const std::string &label, Fr ans,
+                                       int round = 0) {
+    Fr A = 0, B = 0, C = 0;
+    std::vector<Fr> zf(1 << m), zg(1 << m);
+    for (int k = 0; k < (1 << m); ++k) {
+        zf[k] = 2 * f[k * 2 + 1] - f[k * 2];
+        zg[k] = 2 * g[k * 2 + 1] - g[k * 2];
+        C += zf[k] * zg[k];
+    }
+    for (int k = 0; k < (1 << (m + 1)); ++k) {
+        if (k & 1) B += f[k] * g[k];
+        else A += f[k] * g[k];
+    }
+    Fr a = (C + A) / 2 - B;
+    Fr b = 2 * B - C / 2 - 3 * A / 2;
+    Fr c = A;
+    if (ans != (a + b + c) + c)
+        throw std::runtime_error("native matrix Sumcheck initial claim mismatch");
+    session.absorb_fields(label + "/poly/" + std::to_string(round),
+                          std::vector<F>{a, b, c});
+    const Fr send_r = session.challenge(label + "/r/" + std::to_string(round));
+    std::vector<Fr> new_f(1 << m), new_g(1 << m);
+    for (int k = 0; k < (1 << m); ++k) {
+        new_f[k] = (1 - send_r) * f[k * 2] + send_r * f[k * 2 + 1];
+        new_g[k] = (1 - send_r) * g[k * 2] + send_r * g[k * 2 + 1];
+    }
+    const Fr new_ans = send_r * send_r * a + send_r * b + c;
+    if (m == 0) {
+        const bool terminal_ok = (new_ans - new_f[0] * new_g[0]).isZero();
+        const pair<Fr, Fr> result(new_f[0], new_g[0]);
+        if (!terminal_ok)
+            throw std::runtime_error("native matrix Sumcheck terminal mismatch");
+        return result;
+    }
+    const pair<Fr, Fr> result = sum_check_product_session(
+        new_f.data(), new_g.data(), m - 1, session, label, new_ans, round + 1);
+    return result;
+}
+
 
 bool verifier::verifyGKR() 
 {
     
-    F alpha = F_ONE, beta = F_ZERO, relu_rou, final_claim_u1, final_claim_v1;
+    F alpha = F_ONE, beta = F_ZERO, relu_rou;
+    F final_claim_u1 = F_ZERO, final_claim_v1 = F_ZERO;
     r_u[C.size].resize(C.circuit[C.size - 1].bit_length);
     for (i8 i = 0; i < C.circuit[C.size - 1].bit_length; ++i)
-        r_u[C.size][i].setByCSPRNG();
+        r_u[C.size][i] = challenge("gkr/output/r_u/" + std::to_string(static_cast<int>(i)));
     vector<F>::const_iterator r_0 = r_u[C.size].begin();
     vector<F>::const_iterator r_1;
 
@@ -486,7 +566,7 @@ bool verifier::verifyGKR()
         // phase 1
         if (cur.zero_start_id < cur.size)
         {
-            relu_rou.setByCSPRNG();
+            relu_rou = challenge("gkr/layer/" + std::to_string(static_cast<int>(i)) + "/relu");
         }
         else 
             relu_rou = F_ONE;
@@ -504,20 +584,26 @@ bool verifier::verifyGKR()
                 r_u[i][j]=r_u[i+1][j-m+k];
             for (int j = m; j < m+k; ++j)
                 r_v[i][j]=r_u[i+1][j-m];
-            for(int j=0;j<m;j++)
-            {
-                r_u[i][j].setByCSPRNG();
-                r_v[i][j]=r_u[i][j];
-            }
-        
             prev_u1=final_claim_u1;
             previousRandom = F_ZERO;
+            absorb_field("gkr/layer/" + std::to_string(static_cast<int>(i)) + "/matmul/claim", prev_u1);
+            for(int j=0;j<m;j++)
+            {
+                r_u[i][j] = challenge("gkr/layer/" + std::to_string(static_cast<int>(i)) + "/matmul/r_u/" + std::to_string(j));
+                r_v[i][j]=r_u[i][j];
+            }
             Fr sum=0;
             ptimer.start();
             mat_timer.start();
             Fr* pa=init_book_keeping(m,n,p->val[0],p->fc_input_id[now_fc_id],r_u[i]);
             Fr* pb=init_book_keeping_fast(m,k,p->mat_val[now_fc_id],r_v[i]);
-            pair<Fr,Fr> oracle=sum_check_product(pa,pb,m-1,r_u[i].data(),prev_u1);
+            pair<Fr,Fr> oracle;
+            if (session_ != nullptr)
+                oracle = sum_check_product_session(pa, pb, m - 1, *session_,
+                                                   "gkr/layer/" + std::to_string(static_cast<int>(i)) + "/matmul",
+                                                   prev_u1);
+            else
+                oracle = sum_check_product(pa,pb,m-1,r_u[i].data(),prev_u1);
             mat_timer.stop();
             ptimer.stop();
             matrix_time+=mat_timer.elapse_sec();
@@ -526,6 +612,9 @@ bool verifier::verifyGKR()
             final_claim_u1=0;
             final_claim_v0[i]=oracle.second;
             final_claim_v1=0;
+            absorb_fields("gkr/layer/" + std::to_string(static_cast<int>(i)) + "/matmul/claims",
+                          std::vector<F>{final_claim_u0[i], final_claim_u1,
+                                         final_claim_v0[i], final_claim_v1});
         }
         else
         {
@@ -536,8 +625,10 @@ bool verifier::verifyGKR()
             ptimer.stop();
             prover_time+=ptimer.elapse_sec();            
             r_u[i].resize(cur.max_bl_u);
-            for (int j = 0; j < cur.max_bl_u; ++j) 
-                r_u[i][j].setByCSPRNG();
+            for (int j = 0; j < cur.max_bl_u; ++j) {
+                if (session_ == nullptr)
+                    r_u[i][j].setByCSPRNG();
+            }
             sc.start();
             for (i8 j = 0; j < cur.max_bl_u; ++j) 
             {
@@ -545,14 +636,17 @@ bool verifier::verifyGKR()
                 ptimer.start();
                 quadratic_poly poly = p->sumcheckUpdate1(previousRandom);
                 ptimer.stop();
-                prover_time+=ptimer.elapse_sec();     
-                
+                prover_time+=ptimer.elapse_sec();
+                absorb_fields("gkr/layer/" + std::to_string(static_cast<int>(i)) + "/phase1/poly/" + std::to_string(j),
+                              std::vector<F>{poly.a, poly.b, poly.c});
 
                 vtimer.start();
                 cur_claim = poly.eval(F_ZERO) + poly.eval(F_ONE);
+                if (session_ != nullptr)
+                    r_u[i][j] = challenge("gkr/layer/" + std::to_string(static_cast<int>(i)) + "/phase1/r/" + std::to_string(j));
                 nxt_claim = poly.eval(r_u[i][j]);
 
-                if (cur_claim != previousSum) 
+                if (cur_claim != previousSum)
                 {
                     cerr << cur_claim << ' ' << previousSum << endl;
                     fprintf(stderr, "Verification fail, phase1, circuit %d, current bit %d\n", i, j);
@@ -568,6 +662,8 @@ bool verifier::verifyGKR()
             prev_u1=final_claim_u1;
             ptimer.start();
             p->sumcheckFinalize1(previousRandom, final_claim_u0[i], final_claim_u1);
+            absorb_fields("gkr/layer/" + std::to_string(static_cast<int>(i)) + "/phase1/claims",
+                          std::vector<F>{final_claim_u0[i], final_claim_u1});
             betaInitPhase1(i, alpha, beta, r_0, r_1, relu_rou);
             predicatePhase1(i);
             ptimer.stop();
@@ -578,8 +674,10 @@ bool verifier::verifyGKR()
                 timer normal_timer2;
                 normal_timer2.start();
                 r_v[i].resize(cur.max_bl_v);
-                for (int j = 0; j < cur.max_bl_v; ++j) 
-                    r_v[i][j].setByCSPRNG();
+                for (int j = 0; j < cur.max_bl_v; ++j) {
+                    if (session_ == nullptr)
+                        r_v[i][j].setByCSPRNG();
+                }
               
                 ptimer.start();
                 p->sumcheckInitPhase2();
@@ -592,9 +690,13 @@ bool verifier::verifyGKR()
                         ptimer.start();
                         quadratic_poly poly = p->sumcheckUpdate2(previousRandom);
                         ptimer.stop();
-                        prover_time+=ptimer.elapse_sec();     
+                        prover_time+=ptimer.elapse_sec();
+                        absorb_fields("gkr/layer/" + std::to_string(static_cast<int>(i)) + "/phase2/poly/" + std::to_string(j),
+                                      std::vector<F>{poly.a, poly.b, poly.c});
                         vtimer.start();
-                        if (poly.eval(F_ZERO) + poly.eval(F_ONE) != previousSum) 
+                        if (session_ != nullptr)
+                            r_v[i][j] = challenge("gkr/layer/" + std::to_string(static_cast<int>(i)) + "/phase2/r/" + std::to_string(j));
+                        if (poly.eval(F_ZERO) + poly.eval(F_ONE) != previousSum)
                         {
                             fprintf(stderr, "Verification fail, phase2, circuit level %d, current bit %d, total is %d\n", i, j,
                                     cur.max_bl_v);
@@ -610,6 +712,8 @@ bool verifier::verifyGKR()
                 prev_v1=final_claim_v1;
                 ptimer.start();
                 p->sumcheckFinalize2(previousRandom, final_claim_v0[i], final_claim_v1);
+                absorb_fields("gkr/layer/" + std::to_string(static_cast<int>(i)) + "/phase2/claims",
+                              std::vector<F>{final_claim_v0[i], final_claim_v1});
                 betaInitPhase2(i);
                 predicatePhase2(i);
                 ptimer.stop();
@@ -633,11 +737,11 @@ bool verifier::verifyGKR()
         
 
         if (~cur.bit_length_u[1])
-            alpha.setByCSPRNG();
-        else 
+            alpha = challenge("gkr/layer/" + std::to_string(static_cast<int>(i)) + "/alpha");
+        else
             alpha.clear();
         if ((~cur.bit_length_v[1]) || cur.ty == layerType::FFT)
-            beta.setByCSPRNG();
+            beta = challenge("gkr/layer/" + std::to_string(static_cast<int>(i)) + "/beta");
         else 
             beta.clear();
         previousSum = alpha * final_claim_u1 + beta * final_claim_v1;
@@ -660,15 +764,35 @@ bool verifier::verifyLasso()
     timer ptimer,vtimer;
     auto &cur = C.circuit[0];
 
+    // Bind the public lookup/constraint shape before any Lasso challenge is
+    // derived.  This is deliberately only a structural context binding;
+    // the native LC_f/M_f/input-consistency argument remains unsupported and
+    // therefore still keeps the formal masked_full adapter fail-closed.
+    if (session_ != nullptr) {
+        std::ostringstream context;
+        context << "lasso-context-v1|" << C.size;
+        for (int layer = 0; layer < C.size; ++layer) {
+            const auto &shape = C.circuit[layer];
+            context << '|' << static_cast<int>(shape.bit_length)
+                    << ':' << static_cast<int>(shape.max_bl_u)
+                    << ':' << static_cast<int>(shape.max_bl_v)
+                    << ':' << shape.size_u[0] << ':' << shape.size_v[0];
+        }
+        session_->absorb("lasso/LC/context", context.str());
+    }
+
     vector<F> sig_u(C.size - 1);
-    for (int i = 0; i < C.size - 1; ++i) 
-        sig_u[i].setByCSPRNG();
+    for (int i = 0; i < C.size - 1; ++i) {
+        sig_u[i] = challenge("lasso/sig_u/" + std::to_string(i));
+    }
     vector<F> sig_v(C.size - 1);
-    for (int i = 0; i < C.size - 1; ++i) 
-        sig_v[i].setByCSPRNG();
+    for (int i = 0; i < C.size - 1; ++i) {
+        sig_v[i] = challenge("lasso/sig_v/" + std::to_string(i));
+    }
     r_u[0].resize(cur.bit_length);
-    for (int i = 0; i < cur.bit_length; ++i) 
-        r_u[0][i].setByCSPRNG();
+    for (int i = 0; i < cur.bit_length; ++i) {
+        if (session_ == nullptr) r_u[0][i].setByCSPRNG();
+    }
     auto r_0 = r_u[0].begin();
     
     F previousSum = F_ZERO;
@@ -808,10 +932,14 @@ bool verifier::verifyLasso()
         vtimer.start();
         Fr aa=(C+A)/2-B,bb=2*B-C/2-3*A/2,cc=A;
         Fr g1=aa+bb+cc,g0=cc;
-        if(i!=n)
-            assert(previousSum==g0+g1);
-        if(i!=n)
-            previousSum=aa*r_u[0][i]*r_u[0][i]+bb*r_u[0][i]+cc; 
+        absorb_fields("lasso/poly/" + std::to_string(i),
+                      std::vector<F>{aa, bb, cc});
+        if(i!=n) {
+            if (session_ != nullptr)
+                r_u[0][i] = challenge("lasso/r/" + std::to_string(i));
+            if (previousSum != g0 + g1) return false;
+            previousSum=aa*r_u[0][i]*r_u[0][i]+bb*r_u[0][i]+cc;
+        }
         vtimer.stop();
         verifier_time+=vtimer.elapse_sec();
     }
@@ -821,6 +949,7 @@ bool verifier::verifyLasso()
     F gr = F_ZERO;
 
     eval_in=pa2[n][0];
+    absorb_field("lasso/eval_in", eval_in);
     
     beta_g.resize(1ULL << cur.bit_length);
     ptimer.start();
@@ -852,7 +981,7 @@ bool verifier::verifyLasso()
     beta_v.clear();
 
     vtimer.start();
-    assert (eval_in * gr == previousSum);
+    if (eval_in * gr != previousSum) return false;
     vtimer.stop();
     verifier_time+=vtimer.elapse_sec();
 
@@ -891,7 +1020,7 @@ __int128 convertx(Fr x)
         V=-V;	
     return V;	
 }
-bool verifier::openCommit() 
+bool verifier::openCommit()
 {
     Fr*Lp=new Fr[1<<(comm.l/2)],*Rp=new Fr[1<<(comm.l-comm.l/2)];
     timer verify_input;
@@ -900,8 +1029,20 @@ bool verifier::openCommit()
     int rownum=(1<<comm.l/2),colnum=(1<<(comm.l-comm.l/2));
     
     ll* row=new ll[1<<comm.l];
-    pair<double,double> tim=hyrax::open(comm.w,r_u[0].data(),eval_in,comm.G,comm.g,Lp,Rp,comm.comm,comm.l);
+    pair<double,double> tim;
+    if (session_ != nullptr) {
+        std::vector<F> point(r_u[0].begin(), r_u[0].end());
+        absorb_fields("hyrax/opening/r", point);
+        absorb_field("hyrax/opening/eval", eval_in);
+        tim = hyrax::open_with_session(comm.w, r_u[0].data(), eval_in,
+                                       comm.G, comm.g, Lp, Rp, comm.comm,
+                                       comm.l, *session_, "hyrax/opening");
+    } else {
+        tim = hyrax::open(comm.w,r_u[0].data(),eval_in,comm.G,comm.g,Lp,Rp,comm.comm,comm.l);
+    }
     prover_time+=tim.first;
     verifier_time+=tim.second;
+    delete[] Lp;
+    delete[] Rp;
     return true;
 }

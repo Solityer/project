@@ -7,14 +7,18 @@ or commit.
 
 ## Source identity
 
-- Workspace Git commit at the time this record was written:
-  `07d35a2edf69085bc2047dcf138bf1768ba8e671`.
+- Workspace Git commit at the time this record was refreshed:
+  `af33ba4517c478039edf6d7e25ddc8a831b1611f`.
 - `comparison/zkdl` is not a separate Git repository; its source identity is
   therefore the workspace commit plus the working-tree hashes below.
-- The restored tree contains no authenticated upstream URL, release tag,
-  archive digest, or upstream commit identifier.  The upstream project,
-  version, and archive origin are consequently **UNCONFIRMED**.  This record
-  does not invent them.
+- The official upstream is `https://github.com/SafeAILab/zkDL`, branch `main`,
+  commit `b40427cabbd7e1e8ddc7fde8b560b64ff874c7f9`.  This identity was
+  checked with `git ls-remote` and a depth-one clone on 2026-09-13.
+- The upstream README advertises v1.0.0, but the repository has no matching
+  tag and its GitHub Releases page has no releases or release assets.  The
+  upstream tree contains no GATZKG1C frames, IPA G/H/U basis, SRS ceremony
+  transcript/seed, or authoritative digest for such material.  Consequently
+  no trusted zkDL proof resource is authenticated here.
 - The copied dataset/checkpoint origin is also not encoded in the restored
   baseline.  `asset_manifest.py` authenticates the bytes present under this
   baseline root, but it cannot prove where an earlier copy was obtained.
@@ -27,12 +31,12 @@ with the command shown below.
 
 ```text
 256975986f1076df731d32dd3dc80442932699b55c42f0b7e2410e748c8df43e  bls12-381.cuh
-9af0b75d66ad00f55369ecd004513983ed6f65b3b57b39a48f106266e1c2cad0  fr-tensor.cuh
-49d43e67bbbbf9ed13ae53d00b5f43dfd9ca76c28b43e9098b4f1a3cce0f4f16  g1-tensor.cuh
-a32d28aac23638ffc729af932cd78d1a1dfbfcf620f0819dd18a6cfe853b9ef6  commitment.cuh
-ce6f2bcc814a0ac6ac12db0ed77483b54cd7ad2719c53dc5e824297f94d2086f  proof.cuh
-08caa51355a679db80c2ec62030f94b8291eb9fbcf0fc5814de53e30fec4afaa  zkmatmul.cuh
-25dd312b2cd2f1461bffc0549a9f364c564b69d05b987f38b8db804362cf07e5  zkprod.cuh
+f8ee3ec70433d856e433f2023232c5bc12a053ba65671024916e379a61a0b5c7  fr-tensor.cuh
+d11724cdd2311662f877359a330e9a1fac6020d6c8d35d2077b4ebef05aa8e04  g1-tensor.cuh
+368c23d589396ebfae09c6d9dba7768f046719bf57ac15d4e2169cd07020734f  commitment.cuh
+e1b5bb128c23c01c22aeccb92be18e50aa2cf5bf2d965653af58e07c482ef9b2  proof.cuh
+29f808afc4b4ed161247b3140002a79daf39b76a90c412f5c084a15a1274b4ed  zkmatmul.cuh
+d68d802a47f395d55e7fb301e5fb0c5d2c86ea4ffa20b257518fe4a10216ee7a  zkprod.cuh
 12ee5563c3ccb60c6eddc5094057faf6fac2261c675fbeaf87d7886f8f9e38c2  zkrelu.cuh
 57438ef2d2d32554c75f7df01242ef1952e9fee6abdd0421410f0c860499c94e  zkfc.cuh
 747111e1cfc848a389f3a93b495c6fedb831b8c17f258b8f17181b161c008111  demo.cu
@@ -53,11 +57,12 @@ only the adapter translation units and include/link rules.  Configurations,
 copied assets, schemas, scripts, provenance, and test-only fixtures remain
 under `comparison/zkdl/`.
 
-The current workspace status also contains pre-existing uncommitted changes
-to `commitment.cuh`, `fr-tensor.cuh`, `g1-tensor.cuh`, and `proof.cuh`.  They
-were not modified while writing this provenance record and are not treated as
-authenticated upstream provenance.  Formal use must review those changes
-against the actual upstream source before declaring the baseline ready.
+The local `commitment.cuh`, `fr-tensor.cuh`, `g1-tensor.cuh`, and `proof.cuh`
+files differ from the pinned upstream snapshot and are not treated as
+authenticated upstream provenance.  The local `zkmatmul.cuh` and
+`zkprod.cuh` files are baseline adaptation additions, not upstream files.
+Formal use must review these changes against the pinned upstream source
+before declaring the baseline ready.
 
 ## Proof readiness
 

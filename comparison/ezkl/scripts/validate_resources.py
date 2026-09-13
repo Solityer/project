@@ -21,8 +21,8 @@ from typing import Any, NoReturn
 
 SCHEMA_VERSION = 1
 MANIFEST_REL = Path("resources/resource_manifest.json")
-EXPECTED_CANONICAL_FILE_COUNT = 59
-EXPECTED_CANONICAL_BYTES = 202_007_204
+EXPECTED_CANONICAL_FILE_COUNT = 67
+EXPECTED_CANONICAL_BYTES = 214_502_255
 CHECKPOINT_DATASETS = {
     "cora_gat": "cora",
     "citeseer_gat": "citeseer",
@@ -113,6 +113,18 @@ def source_for(local_rel: Path, source_root: Path) -> tuple[Path, str, str]:
             fail(f"unrecognized secure config dataset: {dataset}")
         source = source_root / "configs" / name
         role = "canonical_secure_config"
+    elif parts[:3] == ("resources", "canonical", "tables") and len(parts) == 5:
+        dataset = parts[3]
+        if dataset not in {"cora", "citeseer", "pubmed", "ppi"}:
+            fail(f"unrecognized generated table dataset: {dataset}")
+        source = source_root / "comparison" / "ezkl" / "scripts" / "generate_gat_resources.py"
+        role = "baseline_local_exact_static_tables"
+    elif parts[:3] == ("resources", "canonical", "ledgers") and len(parts) == 5:
+        dataset = parts[3]
+        if dataset not in {"cora", "citeseer", "pubmed", "ppi"}:
+            fail(f"unrecognized generated ledger dataset: {dataset}")
+        source = source_root / "comparison" / "ezkl" / "scripts" / "generate_gat_resources.py"
+        role = "baseline_local_integer_bound_ledger"
     else:
         fail(f"unexpected canonical resource path: {local_rel}")
     return source, dataset, role

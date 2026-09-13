@@ -21,6 +21,7 @@ namespace gatzk::algebra
 
     void release_cuda_ntt_workspace();
     void release_cuda_scaled_accumulate_workspace();
+    void release_cuda_scan_workspace();
 
     class CudaScaledAccumulateSession
     {

@@ -95,7 +95,7 @@ int main() {
     const QuantConfig quant = quant_fixture();
     const GatCircuitPlan plan = build_gat_circuit_plan(graph_fixture(), model, quant);
     if (!plan.official_layered || plan.has_placeholder || plan.circuit.circuit.size() <= 1 ||
-        plan.matmuls.size() != 18 || plan.sparse_gkr.empty() || plan.lasso.size() != 4 ||
+        plan.matmuls.size() != 54 || plan.sparse_gkr.empty() || plan.lasso.size() != 4 ||
         plan.checkpoints.empty() || !plan.registry.covers_all_segments()) return 1;
     const NativePrimitiveEvidence evidence = exercise_official_primitives("proof-plan-smoke");
     if (!evidence.sumcheck_called || !evidence.gkr_path_bound || !evidence.lasso_range_called ||
