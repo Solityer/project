@@ -1554,7 +1554,16 @@ namespace gatzk::protocol
                     {
                         return hidden_challenge_name(base, layer_index, head_index);
                     };
-                    specs.push_back({"mu_" + suffix + "_proj", prefix + "H_prime", challenge("y_proj_h")});
+                    specs.push_back({
+                        "mu_" + suffix + "_proj",
+                        prefix + "H_star",
+                        challenge("rho_proj_h"),
+                    });
+                    specs.push_back({
+                        external_mask_eval_name("mu_" + suffix + "_proj"),
+                        external_mask_label(prefix + "H_star"),
+                        challenge("rho_proj_h"),
+                    });
                     specs.push_back({"mu_" + suffix + "_src", prefix + "E_src", challenge("y_src_h")});
                     specs.push_back({hidden_score_mask_eval_name(layer_index, head_index, "src"),
                                      hidden_score_mask_label(layer_index, head_index, "src"),
@@ -1596,8 +1605,14 @@ namespace gatzk::protocol
                 const auto prefix = output_head_prefix(head_index);
                 specs.push_back({
                     output_external_eval_name("proj", head_index),
-                    prefix + "_Y_prime",
-                    output_challenge_name("y_proj_out", head_index),
+                    prefix + "_Y_prime_star",
+                    output_challenge_name("rho_proj_out", head_index),
+                });
+                specs.push_back({
+                    external_mask_eval_name(
+                        output_external_eval_name("proj", head_index)),
+                    external_mask_label(prefix + "_Y_prime_star"),
+                    output_challenge_name("rho_proj_out", head_index),
                 });
                 specs.push_back({
                     output_external_eval_name("src", head_index),
@@ -2893,14 +2908,20 @@ namespace gatzk::protocol
                     accum->abs_qry.clear();
                 };
 
-                const bool need_q_tbl = q_tbl_index < labels.size();
-                const bool need_row_tbl = row_tbl_index < labels.size();
-                const bool need_col_tbl = col_tbl_index < labels.size();
-                const bool need_th = th_index < labels.size();
                 const bool need_q_qry = q_qry_index < labels.size();
                 const bool need_row_qry = row_qry_index < labels.size();
                 const bool need_col_qry = col_qry_index < labels.size();
                 const bool need_abs_qry = abs_qry_index < labels.size();
+                const bool need_q_tbl =
+                    q_tbl_index < labels.size() ||
+                    (full_feature_identity && need_q_qry);
+                const bool need_row_tbl =
+                    row_tbl_index < labels.size() ||
+                    (full_feature_identity && (need_row_qry || need_abs_qry));
+                const bool need_col_tbl =
+                    col_tbl_index < labels.size() ||
+                    (full_feature_identity && need_col_qry);
+                const bool need_th = th_index < labels.size();
 
                 std::vector<mcl::Fr> column_values(feature_count);
                 for (std::size_t column = 0; column < feature_count; ++column)
@@ -3616,9 +3637,28 @@ namespace gatzk::protocol
                     return;
                 }
 
+                std::vector<std::string> point_cache_suffixes;
+                point_cache_suffixes.reserve(points.size());
+                for (const auto &point : points)
+                {
+                    point_cache_suffixes.push_back(
+                        "@" + algebra::point_cache_key(point));
+                }
+
                 std::unordered_map<std::string, std::pair<std::shared_ptr<algebra::RootOfUnityDomain>, std::vector<std::string>>> groups;
                 for (const auto &label : labels)
                 {
+                    const bool all_points_cached = std::all_of(
+                        point_cache_suffixes.begin(),
+                        point_cache_suffixes.end(),
+                        [&](const std::string &suffix)
+                        {
+                            return value_cache_.contains(label + suffix);
+                        });
+                    if (all_points_cached)
+                    {
+                        continue;
+                    }
                     const auto *polynomial = lookup_polynomial(label);
                     if (polynomial == nullptr || polynomial->basis != algebra::PolynomialBasis::Evaluation || polynomial->domain == nullptr)
                     {
@@ -12027,8 +12067,7 @@ namespace gatzk::protocol
                     quotient.data[i] -=
                         mask[i];
 
-                    quotient.data[
-                        domain_size + i] +=
+                    quotient.data[domain_size + i] +=
                         mask[i];
                 }
 
@@ -12043,12 +12082,10 @@ namespace gatzk::protocol
                          ++position)
                     {
                         const auto index =
-                            affected_indices[
-                                position];
+                            affected_indices[position];
 
                         const bool was_nonzero =
-                            affected_nonzero_before[
-                                position] != 0;
+                            affected_nonzero_before[position] != 0;
 
                         const bool is_nonzero =
                             !quotient.data[index]
@@ -12114,17 +12151,15 @@ namespace gatzk::protocol
                             affected_indices.end(),
                             resident->logical_count -
                                 1) &&
-                        quotient.data[
-                            resident->logical_count -
-                            1]
+                        quotient.data[resident->logical_count -
+                                      1]
                             .is_zero())
                     {
                         while (
                             updated_logical_count >
                                 0 &&
-                            quotient.data[
-                                updated_logical_count -
-                                1]
+                            quotient.data[updated_logical_count -
+                                          1]
                                 .is_zero())
                         {
                             --updated_logical_count;
@@ -12176,10 +12211,8 @@ namespace gatzk::protocol
                     updated_resident->allocation =
                         resident->allocation;
 
-                    updated_resident->
-                        device_montgomery_limbs =
-                            resident->
-                                device_montgomery_limbs;
+                    updated_resident->device_montgomery_limbs =
+                        resident->device_montgomery_limbs;
 
                     updated_resident->capacity =
                         resident->capacity;
@@ -12921,7 +12954,10 @@ namespace gatzk::protocol
                                context.compiler_artifact->instance_canonical_bytes);
     }
 
-    ProtocolContext build_context(const util::AppConfig &config, RunMetrics *metrics)
+    ProtocolContext build_context(
+        const util::AppConfig &config,
+        RunMetrics *metrics,
+        bool retain_static_context_for_reuse)
     {
         // Resolve the registered scale chain before cache lookup so every
         // context identity includes the complete typed chain, not only an ID.
@@ -13854,7 +13890,8 @@ namespace gatzk::protocol
                 "static context identity changed while loading private resources");
         const bool cacheable_static_context =
             context.domains.fh != nullptr && context.domains.edge != nullptr && context.domains.fh->size < (1ULL << 24) && context.domains.edge->size < (1ULL << 22);
-        if (allow_static_context_cache && cacheable_static_context)
+        if (retain_static_context_for_reuse &&
+            allow_static_context_cache && cacheable_static_context)
         {
             std::lock_guard<std::mutex> lock(cache_mutex);
             cache[cache_key] = StaticContextCachePayload{

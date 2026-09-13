@@ -353,11 +353,7 @@ int main(int argc, char **argv)
             updated.export_dir = export_dir.string();
             return updated;
         };
-        // 全图实例先把大对象初始化和正式测量拆开，避免冷启动污染 warm 主表。
-        auto memory_safe_warm_required = [](const gatzk::util::AppConfig &config)
-        {
-            return config.batching_rule == "whole_graph_single" && config.subgraph_rule == "whole_graph";
-        };
+        // Static resources are prepared once by run_once before proof timing.
         auto parse_switch = [](const std::string &value, const std::string &name)
         {
             if (value == "on" || value == "true" || value == "1")
@@ -674,7 +670,10 @@ int main(int argc, char **argv)
             // 正式主线从这里开始：先构静态上下文，再物化 trace、生成 proof，最后复验并导出产物。
             progress(mode_label + ":context:start");
             const auto context_start = std::chrono::steady_clock::now();
-            const auto context = gatzk::protocol::build_context(run_config, &metrics);
+            const auto context = gatzk::protocol::build_context(
+                run_config,
+                &metrics,
+                false);
             const auto context_end = std::chrono::steady_clock::now();
             progress(mode_label + ":context:done");
             metrics.context_build_ms = std::chrono::duration<double, std::milli>(context_end - context_start).count();
@@ -722,11 +721,41 @@ int main(int argc, char **argv)
             gatzk::protocol::timing::
                 start_prove_timer(&metrics);
 
-            const auto proof =
-                gatzk::protocol::prove(
-                    context,
-                    trace,
-                    &metrics);
+            const auto proof = [&]()
+            {
+                try
+                {
+                    return gatzk::protocol::prove(
+                        context,
+                        trace,
+                        &metrics);
+                }
+                catch (const std::exception &)
+                {
+                    try
+                    {
+                        const auto failed_at = std::chrono::steady_clock::now();
+                        const auto prove_wall_until_failure_ms =
+                            std::chrono::duration<double, std::milli>(
+                                failed_at - metrics.prove_timer_wall_start)
+                                .count();
+                        std::cerr
+                            << "[failure-profile] stage=prove"
+                            << " diagnostic_only=true"
+                            << " context_build_ms=" << format_ms(metrics.context_build_ms)
+                            << " trace_wall_ms=" << format_ms(trace_elapsed_ms)
+                            << " prove_wall_until_failure_ms="
+                            << format_ms(prove_wall_until_failure_ms)
+                            << " commitment_ms_so_far="
+                            << format_ms(metrics.commitment_time_ms)
+                            << '\n';
+                    }
+                    catch (...)
+                    {
+                    }
+                    throw;
+                }
+            }();
 
             ScopedProverCudaExecutionStateRelease
                 prover_cuda_execution_state_release;
@@ -1055,33 +1084,14 @@ int main(int argc, char **argv)
             return final_accepted;
         };
 
-        auto warm_up_context = [&](const gatzk::util::AppConfig &run_config, const std::string &label)
-        {
-            progress(label + ":context:start");
-            const auto context = gatzk::protocol::build_context(run_config, nullptr);
-            (void)context;
-            progress(label + ":context:done");
-        };
-
-        bool accepted = false;
-        std::vector<std::string> export_segments;
+        std::vector<std::string> segments;
         if (!export_tag.empty())
         {
-            export_segments.push_back(export_tag);
+            segments.push_back(export_tag);
         }
-        // warm-up 只预热执行层缓存和大对象初始化，不写正式 benchmark 结论。
-        if (memory_safe_warm_required(loaded_config))
-        {
-            warm_up_context(with_export_suffix(loaded_config, export_segments), "light-warmup");
-        }
-        else
-        {
-            warm_up_context(with_export_suffix(loaded_config, export_segments), "warmup");
-        }
-        auto segments = export_segments;
         segments.push_back("warm");
-        // measured run 固定写到 warm 目录下，作为 formal 主表与 manifest 的真源。
-        accepted = run_once(with_export_suffix(loaded_config, segments), "warm");
+        const bool accepted = run_once(
+            with_export_suffix(loaded_config, segments), "warm");
         return accepted ? 0 : 1;
     }
     catch (const std::exception &error)

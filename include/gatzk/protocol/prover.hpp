@@ -48,10 +48,10 @@ namespace gatzk::protocol
         const std::vector<SpilledEvaluationRequest> &requests,
         std::size_t max_workers = 4);
 
-    // 构建一次 formal run 的静态上下文，包括数据、模型、工作域、表与静态承诺。
     ProtocolContext build_context(
         const util::AppConfig &config,
-        RunMetrics *metrics = nullptr);
+        RunMetrics *metrics = nullptr,
+        bool retain_static_context_for_reuse = true);
 
     // 消费 trace 生成最终 proof。
     // 这里必须保持 commitment 顺序、challenge 顺序与 proof schema 稳定。

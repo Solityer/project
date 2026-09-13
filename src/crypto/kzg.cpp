@@ -3748,6 +3748,56 @@ namespace gatzk::crypto
                 } });
         }
 
+        std::string coefficient_opening_failure_diagnostic(
+            const std::vector<Commitment> &commitments,
+            const std::vector<FieldElement> &claimed_values,
+            const FieldElement &point,
+            const std::vector<FieldElement> &folded_coefficients,
+            const FieldElement &folded_claim)
+        {
+            try
+            {
+                if (commitments.size() != claimed_values.size())
+                {
+                    return " [diagnostic=input_shape_mismatch]";
+                }
+                std::size_t unavailable = 0;
+                std::size_t checked = 0;
+                for (std::size_t i = 0; i < commitments.size(); ++i)
+                {
+                    const auto &material = commitments[i].opening_polynomial;
+                    if (material == nullptr)
+                    {
+                        ++unavailable;
+                        continue;
+                    }
+                    if (material->basis != algebra::PolynomialBasis::Coefficient)
+                    {
+                        continue;
+                    }
+                    ++checked;
+                    if (!(material->evaluate(point) == claimed_values[i]))
+                    {
+                        return " [diagnostic=coefficient_claim_mismatch; object=" +
+                               commitments[i].name +
+                               "; claim_index=" + std::to_string(i) + "]";
+                    }
+                }
+                const bool folded_matches =
+                    algebra::horner(folded_coefficients, point) == folded_claim;
+                return std::string(" [diagnostic=") +
+                       (folded_matches
+                            ? "fold_matches_claim_check_quotient_or_msm_error"
+                            : "fold_mismatch_check_accumulation_and_claim_sources") +
+                       "; checked_coefficient_objects=" + std::to_string(checked) +
+                       "; unavailable_materials=" + std::to_string(unavailable) + "]";
+            }
+            catch (...)
+            {
+                return " [diagnostic=unavailable_original_failure_preserved]";
+            }
+        }
+
         bool all_zero(const std::vector<FieldElement> &values)
         {
             return std::all_of(values.begin(), values.end(), [](const FieldElement &value)
@@ -8567,15 +8617,35 @@ namespace gatzk::crypto
         const auto witness_start =
             Clock::now();
 
-        const auto witness =
-            open_single_point_fold(
-                folded_plan,
-                0,
-                point,
-                key.pk,
-                profile,
-                field_worker_cap,
-                msm_options);
+        const auto witness = [&]()
+        {
+            try
+            {
+                return open_single_point_fold(
+                    folded_plan,
+                    0,
+                    point,
+                    key.pk,
+                    profile,
+                    field_worker_cap,
+                    msm_options);
+            }
+            catch (const std::exception &error)
+            {
+                if (!std::string_view(error.what()).starts_with("opening mismatch for folded coefficient group:"))
+                {
+                    throw;
+                }
+                throw std::runtime_error(
+                    std::string(error.what()) +
+                    coefficient_opening_failure_diagnostic(
+                        commitments,
+                        claimed_values,
+                        point,
+                        folded_plan.coefficient_fold,
+                        folded_plan.coefficient_scaled_claim_sums.at(0)));
+            }
+        }();
 
         if (profile != nullptr)
         {
@@ -8758,8 +8828,9 @@ namespace gatzk::crypto
                     ? &(*profiles)[group]
                     : nullptr;
 
-            witnesses[group] =
-                open_single_point_fold(
+            try
+            {
+                witnesses[group] = open_single_point_fold(
                     folded.plans[group],
                     0,
                     points[group],
@@ -8767,6 +8838,22 @@ namespace gatzk::crypto
                     profile,
                     field_worker_caps[group],
                     msm_options);
+            }
+            catch (const std::exception &error)
+            {
+                if (!std::string_view(error.what()).starts_with("opening mismatch for folded coefficient group:"))
+                {
+                    throw;
+                }
+                throw std::runtime_error(
+                    std::string(error.what()) +
+                    coefficient_opening_failure_diagnostic(
+                        commitments[group],
+                        claimed_values[group],
+                        points[group],
+                        folded.plans[group].coefficient_fold,
+                        folded.plans[group].coefficient_scaled_claim_sums.at(0)));
+            }
 
             if (profile != nullptr)
             {
