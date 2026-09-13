@@ -533,7 +533,7 @@ namespace gatzk::algebra
                     {
                         status =
                             cudaMemcpyAsync(
-                                source_values,
+                                device_source_,
                                 source +
                                     processed,
                                 byte_count,
@@ -986,7 +986,7 @@ namespace gatzk::algebra
                     {
                         status =
                             cudaMemcpyAsync(
-                                source_values,
+                                device_source_,
                                 source +
                                     processed,
                                 byte_count,

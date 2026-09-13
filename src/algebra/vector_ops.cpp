@@ -2080,7 +2080,7 @@ namespace gatzk::algebra
     {
         const auto min_cuda_elements =
             cuda_backend_unified_addressing_available()
-                ? (1ULL << 20)
+                ? (1ULL << 18)
                 : (1ULL << 22);
 
         if (element_count < min_cuda_elements ||

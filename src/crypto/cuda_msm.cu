@@ -1705,6 +1705,23 @@ namespace gatzk::crypto
             auto *batched_scalars =
                 scalar_staging.host(
                     total_scalar_count);
+                        const bool
+                direct_montgomery_host =
+                    cuda_msm_device_is_integrated() &&
+                    algebra::
+                        cuda_backend_unified_addressing_available();
+
+            if (direct_montgomery_host)
+            {
+                static_assert(
+                    sizeof(mcl::Fr) ==
+                        sizeof(
+                            bls12_381::
+                                scalar_t),
+                    "mcl::Fr and ICICLE scalar storage must match");
+            }
+
+            for (std::size_t batch = 0;
 
             for (std::size_t batch = 0;
                  batch < batch_size;
@@ -1716,11 +1733,36 @@ namespace gatzk::crypto
                         "CUDA resident MSM batch request exceeds max count");
                 }
 
-                copy_mcl_canonical_scalars_to_icicle(
+                auto *batch_scalars =
                     batched_scalars +
-                        batch * max_count,
-                    scalar_vectors[batch],
-                    counts[batch]);
+                    batch * max_count;
+
+                if (direct_montgomery_host)
+                {
+                    if (counts[batch] != 0)
+                    {
+                        std::memcpy(
+                            batch_scalars,
+                            algebra::
+                                FieldElement::
+                                    native_array_data(
+                                        scalar_vectors[
+                                            batch]),
+                            checked_byte_count(
+                                counts[batch],
+                                sizeof(
+                                    bls12_381::
+                                        scalar_t),
+                                "resident batch raw Montgomery scalars"));
+                    }
+                }
+                else
+                {
+                    copy_mcl_canonical_scalars_to_icicle(
+                        batch_scalars,
+                        scalar_vectors[batch],
+                        counts[batch]);
+                }
 
                 std::fill(
                     batched_scalars +
@@ -1733,7 +1775,11 @@ namespace gatzk::crypto
 
             if (cuda_msm_device_is_integrated())
             {
-                config.are_scalars_on_device = false;
+                config.are_scalars_on_device =
+                    false;
+
+                config.are_scalars_montgomery_form =
+                    direct_montgomery_host;
 
                 status =
                     bls12_381_msm_cuda(
