@@ -390,9 +390,8 @@ namespace gatzk::algebra
         ScaledAccumulateStreamPool &
         scaled_accumulate_stream_pool()
         {
-            thread_local
-                ScaledAccumulateStreamPool
-                    pool;
+            thread_local ScaledAccumulateStreamPool
+                pool;
 
             return pool;
         }
@@ -812,7 +811,7 @@ namespace gatzk::algebra
                     sizeof(gpu::GpuFr);
 
                 source_capacity_ =
-                    zero_copy_target_
+                    zero_copy_targets_
                         ? element_count_
                         : std::min<std::size_t>(
                               element_count_,
@@ -1220,12 +1219,6 @@ namespace gatzk::algebra
                 {
                     (void)cudaFree(
                         device_source_);
-                }
-
-                if (stream_ != nullptr)
-                {
-                    (void)cudaStreamDestroy(
-                        stream_);
                 }
 
                 first_device_target_ =
@@ -2775,9 +2768,8 @@ namespace gatzk::algebra
         PersistentScanWorkspace &
         persistent_scan_workspace()
         {
-            thread_local
-                PersistentScanWorkspace
-                    workspace;
+            thread_local PersistentScanWorkspace
+                workspace;
 
             return workspace;
         }
@@ -3930,227 +3922,6 @@ namespace gatzk::algebra
                 "batch inverse synchronization",
                 status);
         }
-
-        record_cuda_kernel_invocations(
-            kernel_count);
-
-        record_cuda_stream_sync();
-
-        if (host_error != 0)
-        {
-            throw std::runtime_error(
-                "CUDA batch inverse encountered zero");
-        }
-
-        return true;
-    }
-    {
-        if (element_count == 0)
-        {
-            return true;
-        }
-
-        if (!cuda_backend_unified_addressing_available())
-        {
-            return false;
-        }
-
-        if (input == nullptr ||
-            output == nullptr)
-        {
-            throw std::runtime_error(
-                "CUDA batch inverse received null storage");
-        }
-
-        static_assert(
-            sizeof(mcl::Fr) ==
-            sizeof(gpu::GpuFr));
-
-        auto *prefixes =
-            static_cast<gpu::GpuFr *>(
-                nullptr);
-
-        auto *suffixes =
-            static_cast<gpu::GpuFr *>(
-                nullptr);
-
-        auto *global_inverse =
-            static_cast<gpu::GpuFr *>(
-                nullptr);
-
-        unsigned int *error =
-            nullptr;
-
-        std::vector<
-            BarycentricScanLevel>
-            scan_levels;
-
-        const auto cleanup = [&]()
-        {
-            release_barycentric_scan_levels(
-                &scan_levels);
-
-            if (prefixes != nullptr)
-            {
-                cudaFree(prefixes);
-            }
-
-            if (suffixes != nullptr)
-            {
-                cudaFree(suffixes);
-            }
-
-            if (global_inverse != nullptr)
-            {
-                cudaFree(global_inverse);
-            }
-
-            if (error != nullptr)
-            {
-                cudaFree(error);
-            }
-        };
-
-        const auto bytes =
-            element_count *
-            sizeof(gpu::GpuFr);
-
-        if (cudaMalloc(
-                reinterpret_cast<void **>(
-                    &prefixes),
-                bytes) != cudaSuccess ||
-            cudaMalloc(
-                reinterpret_cast<void **>(
-                    &suffixes),
-                bytes) != cudaSuccess ||
-            cudaMalloc(
-                reinterpret_cast<void **>(
-                    &global_inverse),
-                sizeof(gpu::GpuFr)) !=
-                cudaSuccess ||
-            cudaMalloc(
-                reinterpret_cast<void **>(
-                    &error),
-                sizeof(unsigned int)) !=
-                cudaSuccess)
-        {
-            cleanup();
-
-            throw std::runtime_error(
-                "CUDA batch inverse workspace allocation failed");
-        }
-
-        if (!allocate_barycentric_scan_levels(
-                element_count,
-                &scan_levels))
-        {
-            cleanup();
-
-            throw std::runtime_error(
-                "CUDA batch inverse scan workspace allocation failed");
-        }
-
-        cudaMemset(
-            error,
-            0,
-            sizeof(unsigned int));
-
-        constexpr unsigned block_size =
-            256;
-
-        const auto blocks =
-            static_cast<unsigned>(
-                (element_count +
-                 block_size - 1U) /
-                block_size);
-
-        const auto *gpu_input =
-            reinterpret_cast<
-                const gpu::GpuFr *>(
-                input);
-
-        auto *gpu_output =
-            reinterpret_cast<
-                gpu::GpuFr *>(
-                output);
-
-        validate_nonzero_kernel<<<
-            blocks,
-            block_size>>>(
-            gpu_input,
-            error,
-            element_count);
-
-        std::size_t kernel_count = 1;
-
-        if (!launch_exclusive_product_scan(
-                gpu_input,
-                prefixes,
-                element_count,
-                false,
-                scan_levels,
-                0,
-                &kernel_count) ||
-            !launch_exclusive_product_scan(
-                gpu_input,
-                suffixes,
-                element_count,
-                true,
-                scan_levels,
-                0,
-                &kernel_count))
-        {
-            cleanup();
-
-            throw std::runtime_error(
-                "CUDA batch inverse scan failed");
-        }
-
-        barycentric_invert_product_kernel<<<
-            1,
-            1>>>(
-            gpu_input,
-            prefixes,
-            global_inverse,
-            element_count);
-
-        ++kernel_count;
-
-        inverse_finalize_kernel<<<
-            blocks,
-            block_size>>>(
-            prefixes,
-            suffixes,
-            global_inverse,
-            gpu_output,
-            element_count,
-            false);
-
-        ++kernel_count;
-
-        const auto sync_status =
-            cudaDeviceSynchronize();
-
-        if (sync_status != cudaSuccess)
-        {
-            cleanup();
-
-            throw std::runtime_error(
-                std::string(
-                    "CUDA batch inverse synchronization failed: ") +
-                cudaGetErrorString(
-                    sync_status));
-        }
-
-        unsigned int host_error = 0;
-
-        cudaMemcpy(
-            &host_error,
-            error,
-            sizeof(host_error),
-            cudaMemcpyDeviceToHost);
-
-        cleanup();
 
         record_cuda_kernel_invocations(
             kernel_count);

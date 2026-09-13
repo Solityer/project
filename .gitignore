@@ -7,3 +7,6 @@ __pycache__/
 runs/
 artifacts/
 data/cache/build_cpu_diag/
+# Build artifacts
+comparison/ezkl/target/
+comparison/zkGPT/cmake-build-*/

@@ -1415,6 +1415,17 @@ namespace gatzk::algebra
         return false;
     }
 
+    bool cuda_coset_host_to_resident_coefficients_exact(
+        const mcl::Fr *,
+        std::size_t,
+        const FieldElement &,
+        mcl::Fr *,
+        std::shared_ptr<
+            const CudaResidentCoefficientBuffer> *)
+    {
+        return false;
+    }
+
     void release_cuda_ntt_workspace()
     {
     }

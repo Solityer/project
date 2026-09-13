@@ -1790,13 +1790,10 @@ namespace gatzk::crypto
                 if (resident_scalar_batch)
                 {
                     validate_resident_montgomery_scalars(
-                        device_montgomery_scalar_vectors[
-                            batch],
-                        device_montgomery_scalar_capacities[
-                            batch],
+                        device_montgomery_scalar_vectors[batch],
+                        device_montgomery_scalar_capacities[batch],
                         counts[batch],
-                        device_montgomery_scalar_devices[
-                            batch]);
+                        device_montgomery_scalar_devices[batch]);
 
                     auto *batch_scalars =
                         device_batched_scalars +
@@ -1812,8 +1809,7 @@ namespace gatzk::crypto
                                 reinterpret_cast<
                                     const bls12_381::
                                         scalar_t *>(
-                                    device_montgomery_scalar_vectors[
-                                        batch]),
+                                    device_montgomery_scalar_vectors[batch]),
                                 checked_byte_count(
                                     counts[batch],
                                     sizeof(
@@ -1874,8 +1870,7 @@ namespace gatzk::crypto
                             algebra::
                                 FieldElement::
                                     native_array_data(
-                                        scalar_vectors[
-                                            batch]),
+                                        scalar_vectors[batch]),
                             checked_byte_count(
                                 counts[batch],
                                 sizeof(
@@ -1888,10 +1883,8 @@ namespace gatzk::crypto
                 {
                     copy_mcl_canonical_scalars_to_icicle(
                         batch_scalars,
-                        scalar_vectors[
-                            batch],
-                        counts[
-                            batch]);
+                        scalar_vectors[batch],
+                        counts[batch]);
                 }
 
                 std::fill(
@@ -2002,202 +1995,7 @@ namespace gatzk::crypto
                 record_cuda_kernel_invocations(
                     1);
         }
-        {
-            if (counts == nullptr || max_count == 0)
-            {
-                throw std::runtime_error(
-                    "CUDA resident MSM batch received invalid count metadata");
-            }
 
-            release_stream_msm_buffers();
-
-            auto *device_points =
-                cache.get_or_prepare(
-                    points,
-                    max_count,
-                    stable_srs_capacity);
-
-            if (max_count >
-                std::numeric_limits<std::size_t>::max() /
-                    batch_size)
-            {
-                throw std::runtime_error(
-                    "CUDA G1 MSM batch scalar-count overflow");
-            }
-
-            const auto total_scalar_count =
-                max_count * batch_size;
-
-            std::vector<
-                bls12_381::projective_t>
-                results;
-
-            try
-            {
-                results.resize(batch_size);
-            }
-            catch (const std::bad_alloc &)
-            {
-                throw CudaMsmResourcePressure(
-                    "CUDA G1 MSM resident batch result staging "
-                    "exhausted host memory");
-            }
-            auto config =
-                msm::default_msm_config();
-
-            config.points_size =
-                static_cast<int>(max_count);
-
-            config.batch_size =
-                static_cast<int>(batch_size);
-            config.are_points_on_device = true;
-            config.are_points_montgomery_form = false;
-            config.are_scalars_montgomery_form = false;
-            config.are_results_on_device = false;
-
-            cudaError_t status = cudaSuccess;
-
-            auto &scalar_staging =
-                reusable_scalar_staging();
-
-            auto *batched_scalars =
-                scalar_staging.host(
-                    total_scalar_count);
-
-            const bool
-                direct_montgomery_host =
-                    cuda_msm_device_is_integrated() &&
-                    algebra::
-                        cuda_backend_unified_addressing_available();
-
-            if (direct_montgomery_host)
-            {
-                static_assert(
-                    sizeof(mcl::Fr) ==
-                        sizeof(
-                            bls12_381::
-                                scalar_t),
-                    "mcl::Fr and ICICLE scalar storage must match");
-            }
-
-            for (std::size_t batch = 0;
-                 batch < batch_size;
-                 ++batch)
-            {
-                if (counts[batch] > max_count)
-                {
-                    throw std::runtime_error(
-                        "CUDA resident MSM batch request exceeds max count");
-                }
-
-                auto *batch_scalars =
-                    batched_scalars +
-                    batch * max_count;
-
-                if (direct_montgomery_host)
-                {
-                    if (counts[batch] != 0)
-                    {
-                        std::memcpy(
-                            batch_scalars,
-                            algebra::
-                                FieldElement::
-                                    native_array_data(
-                                        scalar_vectors[batch]),
-                            checked_byte_count(
-                                counts[batch],
-                                sizeof(
-                                    bls12_381::
-                                        scalar_t),
-                                "resident batch raw Montgomery scalars"));
-                    }
-                }
-                else
-                {
-                    copy_mcl_canonical_scalars_to_icicle(
-                        batch_scalars,
-                        scalar_vectors[batch],
-                        counts[batch]);
-                }
-
-                std::fill(
-                    batched_scalars +
-                        batch * max_count +
-                        counts[batch],
-                    batched_scalars +
-                        (batch + 1) * max_count,
-                    bls12_381::scalar_t{});
-            }
-
-            if (cuda_msm_device_is_integrated())
-            {
-                config.are_scalars_on_device =
-                    false;
-
-                config.are_scalars_montgomery_form =
-                    direct_montgomery_host;
-
-                status =
-                    bls12_381_msm_cuda(
-                        batched_scalars,
-                        device_points,
-                        static_cast<int>(max_count),
-                        config,
-                        results.data());
-            }
-            else
-            {
-                auto *device_scalars =
-                    scalar_staging.device(
-                        total_scalar_count);
-
-                copy_icicle_scalars_to_device(
-                    device_scalars,
-                    batched_scalars,
-                    total_scalar_count);
-
-                config.are_scalars_on_device = true;
-
-                status =
-                    bls12_381_msm_cuda(
-                        device_scalars,
-                        device_points,
-                        static_cast<int>(max_count),
-                        config,
-                        results.data());
-            }
-
-            if (status == cudaErrorMemoryAllocation)
-            {
-                (void)cudaGetLastError();
-
-                throw CudaMsmResourcePressure(
-                    "CUDA G1 MSM resident batch execution "
-                    "exhausted available memory");
-            }
-
-            if (status != cudaSuccess)
-            {
-                throw_cuda_error(
-                    "batched ICICLE execution",
-                    status);
-            }
-
-            for (std::size_t batch = 0;
-                 batch < batch_size;
-                 ++batch)
-            {
-                *outputs[batch] =
-                    to_mcl_point(
-                        results[batch],
-                        "resident_batch",
-                        max_count,
-                        config.c,
-                        batch);
-            }
-
-            algebra::record_cuda_kernel_invocations(1);
-        }
         void execute_cached_base_chunked_cuda_msm_batch(
             G1Point *const *outputs,
             const G1Point *points,
@@ -3784,17 +3582,13 @@ namespace gatzk::crypto
                 throw std::runtime_error(
                     "CUDA G1 MSM batch request exceeds max count");
             }
-                        if (resident_scalar_batch)
+            if (resident_scalar_batch)
             {
                 validate_resident_montgomery_scalars(
-                    device_montgomery_scalar_vectors[
-                        batch],
-                    device_montgomery_scalar_capacities[
-                        batch],
-                    counts[
-                        batch],
-                    device_montgomery_scalar_devices[
-                        batch]);
+                    device_montgomery_scalar_vectors[batch],
+                    device_montgomery_scalar_capacities[batch],
+                    counts[batch],
+                    device_montgomery_scalar_devices[batch]);
             }
         }
 
@@ -3925,16 +3719,13 @@ namespace gatzk::crypto
                         stable_srs_capacity,
                         cache,
                         resident_scalar_batch
-                            ? device_montgomery_scalar_vectors[
-                                  batch]
+                            ? device_montgomery_scalar_vectors[batch]
                             : nullptr,
                         resident_scalar_batch
-                            ? device_montgomery_scalar_capacities[
-                                  batch]
+                            ? device_montgomery_scalar_capacities[batch]
                             : 0,
                         resident_scalar_batch
-                            ? device_montgomery_scalar_devices[
-                                  batch]
+                            ? device_montgomery_scalar_devices[batch]
                             : -1);
                 }
 
@@ -3960,13 +3751,23 @@ namespace gatzk::crypto
 
         // Route 3: on UMA, retain the cached SRS and bound only the scalar
         // dimension when a full-width resident wave is not admissible.
+        //
+        // Resident device scalar vectors are executed one member at a time
+        // below, so admission must reflect the actual peak batch width of one
+        // instead of conservatively multiplying the bounded staging envelope
+        // by the outer same-base batch size.
+        const auto bounded_batch_size =
+            resident_scalar_batch
+                ? std::size_t{1}
+                : batch_size;
+
         if (integrated &&
             resident_cuda_msm_is_safe(
                 cache,
                 points,
                 max_count,
                 stable_srs_capacity,
-                batch_size,
+                bounded_batch_size,
                 true,
                 resident_scalar_batch))
         {
@@ -4009,12 +3810,9 @@ namespace gatzk::crypto
                             1,
                             stable_srs_capacity,
                             cache,
-                            device_montgomery_scalar_vectors[
-                                batch],
-                            device_montgomery_scalar_capacities[
-                                batch],
-                            device_montgomery_scalar_devices[
-                                batch]);
+                            device_montgomery_scalar_vectors[batch],
+                            device_montgomery_scalar_capacities[batch],
+                            device_montgomery_scalar_devices[batch]);
                     }
                 }
                 else

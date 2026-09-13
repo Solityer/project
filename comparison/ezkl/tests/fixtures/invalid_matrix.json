@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "baseline": "ezkl",
+  "collection_status": "COLLECTED_PENDING_FINAL_VALIDATION",
+  "relation_id": "R_GAT-ezkl",
+  "datasets": ["cora", "citeseer", "pubmed", "ppi", "ogbn_arxiv"],
+  "backends": ["cpu", "gpu"],
+  "cell_count": 0,
+  "source_tree_sha256": "",
+  "resource_manifest_sha256": "",
+  "pair_consistency_checked": false,
+  "cells": []
+}

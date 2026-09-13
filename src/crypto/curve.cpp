@@ -1114,18 +1114,15 @@ namespace gatzk::crypto
 
                             if (group.resident_scalars)
                             {
-                                device_scalar_vectors[
-                                    batch] =
+                                device_scalar_vectors[batch] =
                                     request
                                         ->device_montgomery_scalars;
 
-                                device_scalar_capacities[
-                                    batch] =
+                                device_scalar_capacities[batch] =
                                     request
                                         ->device_montgomery_scalar_capacity;
 
-                                device_scalar_devices[
-                                    batch] =
+                                device_scalar_devices[batch] =
                                     request
                                         ->device_montgomery_scalar_device;
                             }

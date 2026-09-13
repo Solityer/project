@@ -1,0 +1,382 @@
+#!/usr/bin/env python3
+"""Collect the ten baseline-local ezkl result cells fail-closed.
+
+Collection is an audit step, not an assertion of readiness.  Missing cells,
+missing artifacts, unverified native instances, stale identities, or CPU/GPU
+relation mismatches terminate with a non-zero status.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from formal_common import (
+    BACKENDS,
+    CANONICAL_OUTPUT_MODE,
+    CANONICAL_PRIVACY,
+    CANONICAL_PROOF_SCOPE,
+    CANONICAL_RELATION,
+    CANONICAL_STATEMENT_MODE,
+    DATASETS,
+    ROOT,
+    ContractError,
+    abort,
+    canonical_json_digest,
+    load_json,
+    local_path,
+    print_error,
+    reject_forbidden_path,
+    require_circuit_ref,
+    require_digest,
+    require_exact_keys,
+    require_file,
+    require_positive_timings,
+    public_output_values,
+    resource_manifest_hash,
+    sha256,
+    source_tree_hash,
+    validate_artifact_identity,
+    validate_gpu_evidence,
+    validate_gpu_evidence_document,
+    validate_public_output,
+    validate_public_statement,
+)
+
+
+REQUIRED_RESULT_KEYS = {
+    "schema_version",
+    "status",
+    "dataset",
+    "backend",
+    "proof_scope",
+    "privacy_policy",
+    "public_statement_mode",
+    "output_mode",
+    "relation_id",
+    "quant_cfg_id",
+    "static_tables_id",
+    "public_statement_sha256",
+    "public_output_sha256",
+    "srs_sha256",
+    "srs_provenance",
+    "settings_sha256",
+    "compiled_circuit_sha256",
+    "vk_sha256",
+    "pk_sha256",
+    "proof_sha256",
+    "proof_size_bytes",
+    "binary_sha256",
+    "source_tree_sha256",
+    "resource_manifest_sha256",
+    "verifier_reads_witness",
+    "proof_contains_private_witness",
+    "native_verify_result",
+    "native_public_instance_binding",
+    "phase_timings_ms",
+    "gpu_evidence",
+    "circuit_ref",
+    "proof_instances",
+    "public_statement_path",
+    "public_output_path",
+    "srs_path",
+    "settings_path",
+    "compiled_circuit_path",
+    "vk_path",
+    "pk_path",
+    "binary_path",
+    "artifact_manifest_path",
+    "artifact_manifest_sha256",
+    "proof_path",
+    "core_run_manifest_sha256",
+}
+PATH_DIGESTS = {
+    "public_statement_path": "public_statement_sha256",
+    "public_output_path": "public_output_sha256",
+    "srs_path": "srs_sha256",
+    "settings_path": "settings_sha256",
+    "compiled_circuit_path": "compiled_circuit_sha256",
+    "vk_path": "vk_sha256",
+    "pk_path": "pk_sha256",
+    "binary_path": "binary_sha256",
+    "proof_path": "proof_sha256",
+    "artifact_manifest_path": "artifact_manifest_sha256",
+}
+PAIR_FIELDS = (
+    "relation_id",
+    "proof_scope",
+    "privacy_policy",
+    "public_statement_mode",
+    "output_mode",
+    "quant_cfg_id",
+    "static_tables_id",
+    "public_statement_sha256",
+    "public_output_sha256",
+    "srs_sha256",
+    "srs_provenance",
+    "settings_sha256",
+    "compiled_circuit_sha256",
+    "vk_sha256",
+    "source_tree_sha256",
+    "resource_manifest_sha256",
+    "circuit_ref",
+)
+
+
+def parser() -> argparse.ArgumentParser:
+    result = argparse.ArgumentParser(description=__doc__)
+    result.add_argument("--runs-root", default="runs/formal")
+    result.add_argument("--output", default="results/formal_matrix.json")
+    return result
+
+
+def path_from_result(value: Any, label: str) -> Path:
+    if not isinstance(value, str) or not value:
+        abort(f"result field {label} is not a path")
+    path = local_path(value, label)
+    reject_forbidden_path(path, label)
+    return require_file(path, label)
+
+
+def validate_proof_instances(result: dict[str, Any], proof: Path) -> dict[str, Any]:
+    document = load_json(proof, "verifier-facing proof")
+    instances = document.get("instances")
+    if not isinstance(instances, list) or not instances or any(not isinstance(item, list) for item in instances):
+        abort(f"{proof} does not expose a native instances array")
+    count = sum(len(item) for item in instances)
+    if count <= 0:
+        abort(f"{proof} has no native public instances")
+    expected = result["proof_instances"]
+    if not isinstance(expected, dict):
+        abort("result proof_instances must be an object")
+    required = {
+        "proof_field",
+        "encoding",
+        "sha256",
+        "count",
+        "public_statement_sha256",
+        "public_output_sha256",
+        "native_binding",
+    }
+    if not required.issubset(expected):
+        abort(f"result proof_instances is missing fields: {sorted(required - set(expected))}")
+    digest = canonical_json_digest(instances)
+    if expected["proof_field"] != "instances" or expected["encoding"] != "canonical-json":
+        abort("result proof_instances encoding is not canonical native instances")
+    if expected["sha256"] != digest or expected["count"] != count:
+        abort("proof instance digest/count mismatch")
+    if expected["public_statement_sha256"] != result["public_statement_sha256"]:
+        abort("proof instances are not bound to the external public statement")
+    if expected["public_output_sha256"] != result["public_output_sha256"]:
+        abort("proof instances are not bound to external public output Y")
+    if expected["native_binding"] is not True:
+        abort("proof instances lack native public-instance binding")
+    return expected
+
+
+def validate_cell(path: Path) -> dict[str, Any]:
+    result = load_json(path, f"result cell {path}")
+    unknown = set(result) - REQUIRED_RESULT_KEYS
+    if unknown:
+        abort(f"{path} has unknown result fields: {sorted(unknown)}")
+    missing = REQUIRED_RESULT_KEYS - set(result)
+    if missing:
+        abort(f"{path} is missing result fields: {sorted(missing)}")
+    if result["schema_version"] != 1 or result["status"] != "VERIFY_OK":
+        abort(f"{path} is not a verified native result")
+    dataset = result["dataset"]
+    backend = result["backend"]
+    if dataset not in DATASETS or backend not in BACKENDS:
+        abort(f"{path} has an unknown dataset/backend")
+    if result["proof_scope"] != CANONICAL_PROOF_SCOPE:
+        abort(f"{path} is not full_gat")
+    if result["privacy_policy"] != CANONICAL_PRIVACY:
+        abort(f"{path} has the wrong privacy policy")
+    if result["public_statement_mode"] != CANONICAL_STATEMENT_MODE or result["output_mode"] != CANONICAL_OUTPUT_MODE:
+        abort(f"{path} has the wrong public statement/output mode")
+    if result["relation_id"] != CANONICAL_RELATION:
+        abort(f"{path} has the wrong relation id")
+    if not isinstance(result["quant_cfg_id"], str) or not result["quant_cfg_id"]:
+        abort(f"{path} has no quantization identity")
+    if not isinstance(result["static_tables_id"], str) or not result["static_tables_id"]:
+        abort(f"{path} has no static-table identity")
+    if result["verifier_reads_witness"] is not False or result["proof_contains_private_witness"] is not False:
+        abort(f"{path} violates the verifier/witness boundary")
+    if result["native_verify_result"] is not True or result["native_public_instance_binding"] is not True:
+        abort(f"{path} has no native verify/public-instance attestation")
+    circuit_ref = require_circuit_ref(result["circuit_ref"])
+    for key in ("public_statement_sha256", "public_output_sha256", "srs_sha256", "settings_sha256", "compiled_circuit_sha256", "vk_sha256", "pk_sha256", "proof_sha256", "binary_sha256", "source_tree_sha256", "resource_manifest_sha256", "artifact_manifest_sha256", "core_run_manifest_sha256"):
+        require_digest(result[key], f"{path}:{key}")
+    if isinstance(result["proof_size_bytes"], bool) or not isinstance(result["proof_size_bytes"], int) or result["proof_size_bytes"] <= 0:
+        abort(f"{path} has no positive proof size")
+    require_positive_timings(result["phase_timings_ms"], f"{path}:phase_timings_ms")
+    for field, digest_field in PATH_DIGESTS.items():
+        artifact = path_from_result(result[field], field)
+        if sha256(artifact) != result[digest_field]:
+            abort(f"{path} digest mismatch for {field}")
+    proof = path_from_result(result["proof_path"], "proof")
+    if proof.stat().st_size != result["proof_size_bytes"]:
+        abort(f"{path} proof_size_bytes does not match proof file")
+    statement = path_from_result(result["public_statement_path"], "public statement")
+    public_output = path_from_result(result["public_output_path"], "public output")
+    statement_document = validate_public_statement(
+        statement,
+        dataset=dataset,
+        circuit_ref=circuit_ref,
+        public_output_sha256=result["public_output_sha256"],
+        quant_cfg_id=result["quant_cfg_id"],
+        static_tables_id=result["static_tables_id"],
+    )
+    if public_output_values(public_output, dataset=dataset) != statement_document["public_ezkl"]["y"]:
+        abort(f"{path} public output Y disagrees element-by-element with statement")
+    validate_proof_instances(result, proof)
+    proof_document = load_json(proof, "verifier-facing proof")
+    proof_flat = [value for column in proof_document["instances"] for value in column]
+    if proof_flat != statement_document["native_instances"]:
+        abort(f"{path} proof native instances disagree element-by-element with statement")
+    artifact_manifest = path_from_result(result["artifact_manifest_path"], "artifact identity manifest")
+    artifact = validate_artifact_identity(
+        artifact_manifest,
+        dataset=dataset,
+        backend=backend,
+        binary=path_from_result(result["binary_path"], "binary"),
+        srs=path_from_result(result["srs_path"], "SRS"),
+        settings=path_from_result(result["settings_path"], "settings"),
+        compiled=path_from_result(result["compiled_circuit_path"], "compiled circuit"),
+        vk=path_from_result(result["vk_path"], "verification key"),
+        pk=path_from_result(result["pk_path"], "proving key"),
+    )
+    if artifact["statement_sha256"] != result["public_statement_sha256"]:
+        abort(f"{path} artifact statement identity is not externally bound")
+    artifact_records = {record["path"]: record for record in artifact["files"]}
+    for name, digest in (
+        ("statement.json", result["public_statement_sha256"]),
+        ("public_output.json", result["public_output_sha256"]),
+    ):
+        if name not in artifact_records or artifact_records[name]["sha256"] != digest:
+            abort(f"{path} artifact file {name} is not bound to the public boundary")
+    core_path = path.parent / "core_run_manifest.json"
+    core = load_json(core_path, "core run manifest")
+    require_exact_keys(
+        core,
+        {
+            "schema_version",
+            "relation_id",
+            "dataset",
+            "backend",
+            "proof_scope",
+            "privacy_policy",
+            "public_statement_mode",
+            "output_mode",
+            "native_verify_result",
+            "native_public_instance_binding",
+            "verifier_reads_witness",
+            "proof_contains_private_witness",
+            "public_statement_sha256",
+            "public_output_sha256",
+            "proof_instances_sha256",
+            "proof_instance_count",
+            "circuit_ref",
+        },
+        "core run manifest",
+    )
+    if (
+        core["schema_version"] != 1
+        or core["relation_id"] != CANONICAL_RELATION
+        or core["dataset"] != dataset
+        or core["backend"] != backend
+        or core["proof_scope"] != CANONICAL_PROOF_SCOPE
+        or core["privacy_policy"] != CANONICAL_PRIVACY
+        or core["public_statement_mode"] != CANONICAL_STATEMENT_MODE
+        or core["output_mode"] != CANONICAL_OUTPUT_MODE
+        or core["native_verify_result"] is not True
+        or core["native_public_instance_binding"] is not True
+        or core["verifier_reads_witness"] is not False
+        or core["proof_contains_private_witness"] is not False
+        or core["public_statement_sha256"] != result["public_statement_sha256"]
+        or core["public_output_sha256"] != result["public_output_sha256"]
+        or core["circuit_ref"] != artifact["circuit_ref"]
+    ):
+        abort(f"{path} core run manifest is not a successful native external binding")
+    require_digest(core["public_statement_sha256"], "core public statement digest")
+    require_digest(core["public_output_sha256"], "core public output digest")
+    require_digest(core["proof_instances_sha256"], "core proof instance digest")
+    if not isinstance(core["proof_instance_count"], int) or core["proof_instance_count"] <= 0:
+        abort(f"{path} core proof instance count is invalid")
+    if (
+        core["proof_instances_sha256"] != result["proof_instances"]["sha256"]
+        or core["proof_instance_count"] != result["proof_instances"]["count"]
+    ):
+        abort(f"{path} core proof-instance attestation does not match the native proof")
+    if sha256(core_path) != result["core_run_manifest_sha256"]:
+        abort(f"{path} core run manifest digest mismatch")
+    if artifact["circuit_ref"] != circuit_ref:
+        abort(f"{path} circuit_ref does not match artifact identity")
+    if result["srs_provenance"] != artifact["srs_provenance"]:
+        abort(f"{path} SRS provenance does not match artifact identity")
+    validate_gpu_evidence_from_result(result)
+    if result["source_tree_sha256"] != source_tree_hash() or result["resource_manifest_sha256"] != resource_manifest_hash():
+        abort(f"{path} source/resource identity is stale")
+    result["_result_path"] = path.relative_to(ROOT).as_posix()
+    return result
+
+
+def validate_gpu_evidence_from_result(result: dict[str, Any]) -> None:
+    validate_gpu_evidence_document(result["gpu_evidence"], backend=result["backend"])
+
+
+def check_pair_consistency(cells: list[dict[str, Any]]) -> None:
+    by_dataset = {(cell["dataset"], cell["backend"]): cell for cell in cells}
+    for dataset in DATASETS:
+        cpu = by_dataset[(dataset, "cpu")]
+        gpu = by_dataset[(dataset, "gpu")]
+        for field in PAIR_FIELDS:
+            if cpu[field] != gpu[field]:
+                abort(f"CPU/GPU relation mismatch for {dataset}: field={field}")
+
+
+def main(args: argparse.Namespace) -> int:
+    runs_root = local_path(args.runs_root, "runs-root")
+    output = local_path(args.output, "collector output")
+    reject_forbidden_path(output, "collector output")
+    if output.is_symlink():
+        abort(f"collector output must not be a symlink: {output}")
+    cells: list[dict[str, Any]] = []
+    for dataset in DATASETS:
+        for backend in BACKENDS:
+            result_path = runs_root / dataset / backend / "result.json"
+            reject_forbidden_path(result_path, f"{dataset}/{backend} result")
+            cells.append(validate_cell(result_path))
+    if len(cells) != len(DATASETS) * len(BACKENDS):
+        abort("collector did not obtain exactly ten cells")
+    check_pair_consistency(cells)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    document = {
+        "schema_version": 1,
+        "baseline": "ezkl",
+        "collection_status": "COLLECTED_PENDING_FINAL_VALIDATION",
+        "relation_id": CANONICAL_RELATION,
+        "datasets": list(DATASETS),
+        "backends": list(BACKENDS),
+        "cell_count": len(cells),
+        "source_tree_sha256": source_tree_hash(),
+        "resource_manifest_sha256": resource_manifest_hash(),
+        "pair_consistency_checked": True,
+        "collected_at_utc": datetime.now(timezone.utc).isoformat(),
+        "cells": cells,
+    }
+    output.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n")
+    print(f"collected {len(cells)} verified result cells into {output.relative_to(ROOT)}; final validation remains required")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main(parser().parse_args()))
+    except (ContractError, OSError, json.JSONDecodeError) as exc:
+        raise SystemExit(print_error(exc))

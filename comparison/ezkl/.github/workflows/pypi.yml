@@ -1,0 +1,388 @@
+name: Build and Publish Python Bindings
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "The tag to release"
+        required: true
+  push:
+    tags:
+      - "*"
+
+defaults:
+  run:
+    working-directory: .
+
+jobs:
+  macos:
+    permissions:
+      contents: read
+    runs-on: macos-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    strategy:
+      matrix:
+        target: [x86_64, universal2-apple-darwin]
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 #v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@b64ffcaf5b410884ad320a9cfac8866006a109aa #v4.8.0
+        with:
+          python-version: 3.12
+          architecture: x64
+
+      - name: Set pyproject.toml version to match github tag
+        shell: bash
+        run: |
+          mv pyproject.toml pyproject.toml.orig
+          sed "s/0\\.0\\.0/${RELEASE_TAG//v}/" pyproject.toml.orig >pyproject.toml
+
+      - name: Set Cargo.toml version to match github tag
+        shell: bash
+        run: |
+          mv Cargo.toml Cargo.toml.orig
+          sed "s/0\\.0\\.0/${RELEASE_TAG//v}/" Cargo.toml.orig >Cargo.toml
+          mv Cargo.lock Cargo.lock.orig
+          sed "s/0\\.0\\.0/${RELEASE_TAG//v}/" Cargo.lock.orig >Cargo.lock
+
+      - uses: actions-rust-lang/setup-rust-toolchain@fb51252c7ba57d633bc668f941da052e410add48 #v1.0.6
+        with:
+          toolchain: nightly-2025-12-01
+          override: true
+          components: rustfmt, clippy
+          cache: false
+
+      - name: Build wheels
+        if: matrix.target == 'universal2-apple-darwin'
+        uses: PyO3/maturin-action@5f8a1b3b0aad13193f46c9131f9b9e663def8ce5 #v1.46.0
+        with:
+          target: ${{ matrix.target }}
+          args: --release --out dist --features python-bindings
+      - name: Build wheels
+        if: matrix.target == 'x86_64'
+        uses: PyO3/maturin-action@5f8a1b3b0aad13193f46c9131f9b9e663def8ce5 #v1.46.0
+        with:
+          target: ${{ matrix.target }}
+          args: --release --out dist --features python-bindings
+      - name: Install built wheel
+        if: matrix.target == 'universal2-apple-darwin'
+        run: |
+          pip install ezkl --no-index --find-links dist --force-reinstall
+          python -c "import ezkl"
+
+      - name: Upload wheels
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 #v4.6.0
+        with:
+          name: dist-macos-${{ matrix.target }}
+          path: dist
+
+  windows:
+    permissions:
+      contents: read
+    runs-on: windows-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    strategy:
+      matrix:
+        target: [x64, x86]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 #v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@b64ffcaf5b410884ad320a9cfac8866006a109aa #v4.8.0
+        with:
+          python-version: 3.12
+          architecture: ${{ matrix.target }}
+
+      - name: Set pyproject.toml version to match github tag
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          mv pyproject.toml pyproject.toml.orig
+          sed "s/0\\.0\\.0/${RELEASE_TAG//v}/" pyproject.toml.orig >pyproject.toml
+
+      - name: Set Cargo.toml version to match github tag
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          mv Cargo.toml Cargo.toml.orig
+          sed "s/0\\.0\\.0/${RELEASE_TAG//v}/" Cargo.toml.orig >Cargo.toml
+          mv Cargo.lock Cargo.lock.orig
+          sed "s/0\\.0\\.0/${RELEASE_TAG//v}/" Cargo.lock.orig >Cargo.lock
+
+      - uses: actions-rust-lang/setup-rust-toolchain@fb51252c7ba57d633bc668f941da052e410add48 #v1.0.6
+        with:
+          toolchain: nightly-2025-12-01
+          override: true
+          components: rustfmt, clippy
+          cache: false
+
+      - name: Build wheels
+        uses: PyO3/maturin-action@5f8a1b3b0aad13193f46c9131f9b9e663def8ce5 #v1.46.0
+        with:
+          target: ${{ matrix.target }}
+          args: --release --out dist --features python-bindings
+      - name: Install built wheel
+        run: |
+          pip install ezkl --no-index --find-links dist --force-reinstall
+          python -c "import ezkl"
+
+      - name: Upload wheels
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 #v4.6.0 #v4.6.0
+        with:
+          name: dist-windows-${{ matrix.target }}
+          path: dist
+
+  linux:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    strategy:
+      matrix:
+        target: [x86_64]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 #v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@b64ffcaf5b410884ad320a9cfac8866006a109aa #v4.8.0
+        with:
+          python-version: 3.12
+          architecture: x64
+
+      - name: Set pyproject.toml version to match github tag
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          mv pyproject.toml pyproject.toml.orig
+          sed "s/0\\.0\\.0/${RELEASE_TAG//v}/" pyproject.toml.orig >pyproject.toml
+
+      - name: Set Cargo.toml version to match github tag
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          mv Cargo.toml Cargo.toml.orig
+          sed "s/0\\.0\\.0/${RELEASE_TAG//v}/" Cargo.toml.orig >Cargo.toml
+          mv Cargo.lock Cargo.lock.orig
+          sed "s/0\\.0\\.0/${RELEASE_TAG//v}/" Cargo.lock.orig >Cargo.lock
+
+      - name: Install required libraries
+        shell: bash
+        run: |
+          sudo apt-get update && sudo apt-get install -y openssl pkg-config libssl-dev
+
+      - name: Build wheels
+        uses: PyO3/maturin-action@5f8a1b3b0aad13193f46c9131f9b9e663def8ce5 #v1.46.0
+        with:
+          target: ${{ matrix.target }}
+          manylinux: auto
+          args: --release --out dist --features python-bindings
+          before-script-linux: |
+            # If we're running on rhel centos, install needed packages.
+            if command -v yum &> /dev/null; then
+                yum update -y && yum install -y perl-core openssl openssl-devel pkgconfig libatomic
+
+                # If we're running on i686 we need to symlink libatomic
+                # in order to build openssl with -latomic flag.
+                if [[ ! -d "/usr/lib64" ]]; then
+                    ln -s /usr/lib/libatomic.so.1 /usr/lib/libatomic.so
+                fi
+            else
+                # If we're running on debian-based system.
+                apt update -y && apt-get install -y libssl-dev openssl pkg-config
+            fi
+
+      - name: Install built wheel
+        if: matrix.target == 'x86_64'
+        run: |
+          pip install ezkl --no-index --find-links dist --force-reinstall
+          python -c "import ezkl"
+
+      - name: Upload wheels
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 #v4.6.0
+        with:
+          name: dist-linux-${{ matrix.target }}
+          path: dist
+
+  musllinux:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    strategy:
+      matrix:
+        target:
+          - x86_64-unknown-linux-musl
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 #v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@b64ffcaf5b410884ad320a9cfac8866006a109aa #v4.8.0
+        with:
+          python-version: 3.12
+          architecture: x64
+
+      - name: Set pyproject.toml version to match github tag
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          mv pyproject.toml pyproject.toml.orig
+          sed "s/0\\.0\\.0/${RELEASE_TAG//v}/" pyproject.toml.orig >pyproject.toml
+
+      - name: Set Cargo.toml version to match github tag
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          mv Cargo.toml Cargo.toml.orig
+          sed "s/0\\.0\\.0/${RELEASE_TAG//v}/" Cargo.toml.orig >Cargo.toml
+          mv Cargo.lock Cargo.lock.orig
+          sed "s/0\\.0\\.0/${RELEASE_TAG//v}/" Cargo.lock.orig >Cargo.lock
+
+      - name: Install required libraries
+        shell: bash
+        run: |
+          sudo apt-get update && sudo apt-get install -y pkg-config libssl-dev
+
+      - name: Build wheels
+        uses: PyO3/maturin-action@5f8a1b3b0aad13193f46c9131f9b9e663def8ce5 #v1.46.0
+        with:
+          target: ${{ matrix.target }}
+          manylinux: musllinux_1_2
+          args: --release --out dist --features python-bindings
+
+      - name: Install built wheel
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        uses: addnab/docker-run-action@3e77f186b7a929ef010f183a9e24c0f9955ea609
+        with:
+          image: alpine:latest
+          options: -v ${{ github.workspace }}:/io -w /io
+          run: |
+            apk add py3-pip
+            pip3 install -U pip
+            python3 -m venv .venv
+            source .venv/bin/activate
+            pip3 install ezkl --no-index --find-links /io/dist/ --force-reinstall
+            python3 -c "import ezkl"
+
+      - name: Upload wheels
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 #v4.6.0
+        with:
+          name: dist-musllinux-${{ matrix.target }}
+          path: dist
+
+  musllinux-cross:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    strategy:
+      matrix:
+        platform:
+          - target: aarch64-unknown-linux-musl
+            arch: aarch64
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 #v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@b64ffcaf5b410884ad320a9cfac8866006a109aa #v4.8.0
+        with:
+          python-version: 3.12
+
+      - name: Set pyproject.toml version to match github tag
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          mv pyproject.toml pyproject.toml.orig
+          sed "s/0\\.0\\.0/${RELEASE_TAG//v}/" pyproject.toml.orig >pyproject.toml
+
+      - name: Set Cargo.toml version to match github tag
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          mv Cargo.toml Cargo.toml.orig
+          sed "s/0\\.0\\.0/${RELEASE_TAG//v}/" Cargo.toml.orig >Cargo.toml
+          mv Cargo.lock Cargo.lock.orig
+          sed "s/0\\.0\\.0/${RELEASE_TAG//v}/" Cargo.lock.orig >Cargo.lock
+
+      - name: Build wheels
+        uses: PyO3/maturin-action@5f8a1b3b0aad13193f46c9131f9b9e663def8ce5 #v1.46.0
+        with:
+          target: ${{ matrix.platform.target }}
+          manylinux: musllinux_1_2
+          args: --release --out dist --features python-bindings
+
+      - uses: uraimo/run-on-arch-action@5397f9e30a9b62422f302092631c99ae1effcd9e #v2.8.1
+        name: Install built wheel
+        with:
+          arch: ${{ matrix.platform.arch }}
+          distro: alpine_latest
+          githubToken: ${{ github.token }}
+          run: |
+            apk add py3-pip
+            python3 -m venv .venv
+            source .venv/bin/activate
+            pip3 install -U pip
+            pip3 install ezkl --no-index --find-links dist/ --force-reinstall
+            python3 -c "import ezkl"
+
+      - name: Upload wheels
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 #v4.6.0
+        with:
+          name: dist-musllinux-${{ matrix.platform.target }}
+          path: dist
+
+  pypi-publish:
+    name: Uploads release to PyPI
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    if: "startsWith(github.ref, 'refs/tags/')"
+    needs: [macos, windows, linux, musllinux, musllinux-cross]
+    steps:
+      - uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 #v4.1.8
+        with:
+          pattern: dist-*
+          merge-multiple: true
+          path: wheels
+      - name: List Files
+        run: ls -R
+
+      # # publishes to TestPyPI
+      # - name: Publish package distribution to TestPyPI
+      #   uses: pypa/gh-action-pypi-publish@76f52bc884231f62b9a034ebfe128415bbaabdfc  #v1.12.4
+      #   with:
+      #     repository-url: https://test.pypi.org/legacy/
+      #     packages-dir: ./
+
+      # publishes to PyPI
+      - name: Publish package distributions to PyPI
+        uses: pypa/gh-action-pypi-publish@76f52bc884231f62b9a034ebfe128415bbaabdfc #v1.12.4
+        with:
+          packages-dir: ./wheels
+
+  doc-publish:
+    permissions:
+      contents: read
+    name: Trigger ReadTheDocs Build
+    runs-on: ubuntu-latest
+    needs: pypi-publish
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 #v4.2.2
+        with:
+          persist-credentials: false
+      - name: Trigger RTDs build
+        uses: dfm/rtds-action@618148c547f4b56cdf4fa4dcf3a94c91ce025f2d
+        with:
+          webhook_url: ${{ secrets.RTDS_WEBHOOK_URL }}
+          webhook_token: ${{ secrets.RTDS_WEBHOOK_TOKEN }}
+          commit_ref: ${{ github.ref_name }}

@@ -3822,7 +3822,7 @@ namespace gatzk::algebra
             host_coefficients);
     }
 
-        bool cuda_coset_host_to_resident_coefficients_exact(
+    bool cuda_coset_host_to_resident_coefficients_exact(
         const mcl::Fr *host_values,
         std::size_t size,
         const FieldElement &shift,
