@@ -14,6 +14,10 @@ add_executable(native_hyrax_session_smoke native_hyrax_session_smoke.cpp)
 target_link_libraries(native_hyrax_session_smoke PRIVATE gat_adapter)
 add_test(NAME native_hyrax_session_smoke COMMAND native_hyrax_session_smoke)
 
+add_executable(native_masked_hyrax_smoke native_masked_hyrax_smoke.cpp)
+target_link_libraries(native_masked_hyrax_smoke PRIVATE gat_adapter)
+add_test(NAME native_masked_hyrax_smoke COMMAND native_masked_hyrax_smoke)
+
 add_executable(native_gkr_matmul_session_smoke native_gkr_matmul_session_smoke.cpp)
 target_link_libraries(native_gkr_matmul_session_smoke PRIVATE gat_adapter)
 add_test(NAME native_gkr_matmul_session_smoke COMMAND native_gkr_matmul_session_smoke)
@@ -21,6 +25,14 @@ add_test(NAME native_gkr_matmul_session_smoke COMMAND native_gkr_matmul_session_
 add_executable(native_lasso_range_smoke native_lasso_range_smoke.cpp)
 target_link_libraries(native_lasso_range_smoke PRIVATE gat_adapter)
 add_test(NAME native_lasso_range_smoke COMMAND native_lasso_range_smoke)
+
+add_executable(native_masked_sumcheck_smoke native_masked_sumcheck_smoke.cpp)
+target_link_libraries(native_masked_sumcheck_smoke PRIVATE gat_adapter)
+add_test(NAME native_masked_sumcheck_smoke COMMAND native_masked_sumcheck_smoke)
+
+add_executable(masked_core_smoke masked_core_smoke.cpp)
+target_link_libraries(masked_core_smoke PRIVATE gat_adapter)
+add_test(NAME masked_core_smoke COMMAND masked_core_smoke)
 
 
 find_package(Python3 COMPONENTS Interpreter QUIET)

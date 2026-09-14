@@ -32,7 +32,8 @@ namespace gatzk::algebra
             const mcl::Fr *source,
             const mcl::Fr &scale,
             std::size_t target_offset,
-            std::size_t element_count) = 0;
+            std::size_t element_count,
+            bool source_is_ephemeral = false) = 0;
 
         virtual void finish() = 0;
     };
@@ -53,7 +54,8 @@ namespace gatzk::algebra
             const mcl::Fr &first_scale,
             const mcl::Fr &second_scale,
             std::size_t target_offset,
-            std::size_t element_count) = 0;
+            std::size_t element_count,
+            bool source_is_ephemeral = false) = 0;
 
         virtual void finish() = 0;
 

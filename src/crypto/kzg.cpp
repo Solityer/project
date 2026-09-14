@@ -4105,7 +4105,8 @@ namespace gatzk::crypto
             const FieldElement &scale,
             const std::string &label,
             std::size_t worker_cap,
-            std::size_t target_offset = 0)
+            std::size_t target_offset = 0,
+            bool source_is_ephemeral = false)
         {
             if (group == nullptr ||
                 target_offset >
@@ -4174,7 +4175,8 @@ namespace gatzk::crypto
                         source_native,
                         scale_native,
                         target_offset,
-                        source_values.size());
+                        source_values.size(),
+                        source_is_ephemeral);
 
                 group->folded_values_pristine =
                     false;
@@ -4226,7 +4228,8 @@ namespace gatzk::crypto
             const FieldElement &second_scale,
             const std::string &label,
             std::size_t worker_cap,
-            std::size_t target_offset = 0)
+            std::size_t target_offset = 0,
+            bool source_is_ephemeral = false)
         {
             if (first_group == nullptr ||
                 second_group == nullptr ||
@@ -4300,7 +4303,8 @@ namespace gatzk::crypto
                         first_scale.native(),
                         second_scale.native(),
                         target_offset,
-                        source_values.size());
+                        source_values.size(),
+                        source_is_ephemeral);
 
                 first_group->folded_values_pristine =
                     false;
@@ -4365,7 +4369,8 @@ namespace gatzk::crypto
                             first_scale.native(),
                             second_scale.native(),
                             target_offset,
-                            source_values.size());
+                            source_values.size(),
+                            source_is_ephemeral);
 
                     first_group->folded_values_pristine =
                         false;
@@ -4668,7 +4673,8 @@ namespace gatzk::crypto
                         scale,
                         info.file_path,
                         worker_cap,
-                        offset);
+                        offset,
+                        true);
                 });
         }
 
@@ -4721,7 +4727,8 @@ namespace gatzk::crypto
                         second_scale,
                         info.file_path,
                         worker_cap,
-                        offset);
+                        offset,
+                        true);
                 });
         }
 

@@ -9,6 +9,9 @@
 #include "prover.hpp"
 #include "range_prover.hpp"
 #include "proof_session.hpp"
+#include "verifier.hpp"
+#include "native_masked_sumcheck.hpp"
+#include "native_lasso.hpp"
 
 #include <cstdint>
 #include <string>
@@ -153,6 +156,14 @@ struct ModelRegistration {
     std::string binding_digest;
     std::string registration_digest;
     std::string status;
+
+    // Prover-only state.  This value is deliberately absent from the JSON
+    // registration wire and is never consulted by the independent verifier.
+    // The long-lived W commitment blinds a canonical padding coordinate; the
+    // prover must retain that fresh scalar in memory to open the same
+    // commitment during this process.
+    Fr com_W_padding_mask = Fr(0);
+    bool has_private_padding_mask = false;
 };
 
 // Uses the official Hyrax Pedersen commitment primitive.  The blinding scalar
@@ -178,9 +189,39 @@ CommitmentWire commit_private_segment(const std::vector<Int> &values,
                                       const std::string &basis_label,
                                       std::size_t padded_domain);
 
+// Prover-side commitment material.  The scalar is intentionally returned only
+// through this in-memory object; callers must keep it in a private process
+// secret store and must never place it in model_registration.json or any
+// verifier-facing artifact.
+struct ProverCommitment {
+    CommitmentWire wire;
+    Fr blinder = Fr(0);
+};
+
+ProverCommitment commit_private_segment_for_prover(
+    const std::vector<Int> &values, const std::string &basis_label,
+    std::size_t padded_domain);
+
+// Persist/recover only the prover-side blinder for a long-lived com_W.  The
+// file is baseline-local, identity-bound, and created with owner-only
+// permissions; it is never part of model_registration.json or a verifier
+// context.  A mismatched registration, basis, point, or trailing payload is
+// rejected fail-closed.
+bool write_prover_commitment_secret(const ModelRegistration &registration,
+                                    const std::string &path,
+                                    std::string *reason = nullptr);
+bool read_prover_commitment_secret(const ModelRegistration &registration,
+                                   const std::string &path, Fr &blinder,
+                                   std::string *reason = nullptr);
+
 struct TranscriptMessage {
     std::string label;
     std::string payload;
+    // NativeProofSession message type and original global order.  Keeping
+    // these on the artifact wire allows the independent verifier to rebuild
+    // the exact typed transcript instead of checking section digests only.
+    std::uint8_t kind = 1;
+    std::uint64_t sequence = 0;
 };
 
 class FiatShamirTranscript {
@@ -206,8 +247,8 @@ struct ProofSection {
 // or opening randomness is present: those belong to the public context or to
 // the prover and are never serialized.
 struct GatProofArtifact {
-    std::uint32_t version = 1;
-    std::string schema = "zkgpt-gat-proof-v1";
+    std::uint32_t version = 2;
+    std::string schema = "zkgpt-gat-proof-v2";
     std::string relation_id = "R_GAT-zkGPT";
     std::string privacy_profile;
     std::string statement_digest;
@@ -218,10 +259,19 @@ struct GatProofArtifact {
     ProofSection Pi_GKR{"Pi_GKR", {}};
     ProofSection Pi_combine{"Pi_combine", {}};
     ProofSection Pi_open{"Pi_open", {}};
+    // The section summaries above are retained for collector compatibility,
+    // but are not the proof boundary.  A production artifact carries the
+    // complete typed native transcript and statement so an independent
+    // verifier can replay Fiat--Shamir and consume every native proof object.
+    std::string native_domain = "zkgpt-native-gat-fs-v1";
+    NativeProofStatement native_statement;
+    std::vector<NativeProofMessage> native_messages;
     std::string transcript_digest;
 
     bool has_private_payload() const;
     bool valid_wire(std::string *reason = nullptr) const;
+    bool native_session(NativeProofSession &out,
+                       std::string *reason = nullptr) const;
     bool write(const std::string &path, std::string *reason = nullptr) const;
     static bool read(const std::string &path, GatProofArtifact &out,
                      std::string *reason = nullptr);
@@ -293,6 +343,27 @@ struct ProveResult {
     GatProofArtifact artifact;
 };
 
+// Bounded adapter-only bridge for exercising the native GKR transcript.  It
+// deliberately produces a diagnostic artifact, not a formal GAT proof:
+// Lasso, MatMul aggregation, terminal Hyrax openings, and masked_full
+// composition are not asserted by this helper.  The public context, output
+// vector, and dynamic commitment wires are still authenticated in the native
+// statement and in the typed session so serialization and tamper checks use
+// the same wire that the production path will consume.
+struct GkrOnlyArtifactResult {
+    bool generated = false;
+    std::string diagnostic;
+    GatProofArtifact artifact;
+};
+
+GkrOnlyArtifactResult prove_gkr_only_artifact(
+    prover &native_prover, const VerifierContext &context,
+    const CommitmentWire &com_aux, const CommitmentWire &com_L,
+    const G1 &G, const std::vector<G1> &generators,
+    const std::vector<Fr> &basis, std::size_t l_dimension,
+    const std::vector<F> &public_output,
+    const std::vector<NativeGkrMatmulShape> &matmuls);
+
 // The native zkGPT code exposes the interactive GKR/Lasso verifier only as an
 // internal method and does not expose a serializable masking transcript.  The
 // formal prover therefore refuses to emit a successful artifact until a
@@ -332,6 +403,72 @@ struct NativePrimitiveEvidence {
     bool hyrax_commit_called = false;
     std::vector<std::string> messages;
 };
+
+// A baseline-local, protocol-native core proof input.  It is deliberately
+// generic so a bounded smoke can exercise the exact masked GKR/MatMul and
+// Hyrax transcript grammar without loading a dataset.  The formal GAT
+// adapter fills these vectors from its canonical circuit/trace; Lasso remains
+// a separate relation family and is not silently replaced here.
+struct MaskedCoreWitness {
+    std::vector<Fr> public_input;
+    std::vector<Fr> w;
+    std::vector<Fr> aux;
+    std::vector<Fr> l_qry;
+    std::vector<Fr> public_output;
+    std::vector<std::vector<Fr>> gkr_round_polys;
+    std::vector<Fr> gkr_terminal_values;
+    std::vector<Fr> gkr_coefficients;
+    std::vector<std::vector<Fr>> matmul_round_polys;
+    std::vector<Fr> matmul_terminal_values;
+    // Optional pre-generated dynamic commitments.  Formal callers use these
+    // to bind the statement digest before constructing the transcript; the
+    // fallback is useful only for bounded diagnostic callers.
+    ProverCommitment com_aux;
+    ProverCommitment com_L;
+    bool has_dynamic_commitments = false;
+};
+
+struct MaskedCoreResult {
+    bool generated = false;
+    std::string diagnostic;
+    GatProofArtifact artifact;
+    CommitmentWire com_aux;
+    CommitmentWire com_L;
+};
+
+// Generate and authenticate the baseline-native masked core transcript.  All
+// three private segments must use the same power-of-two MLE domain and the
+// same transcript-derived evaluation point.  `com_W_blinder` is prover-only;
+// no opening randomness or raw witness enters the returned artifact.
+MaskedCoreResult prove_masked_core(
+    const NativeProofStatement &statement, const CommitmentWire &com_W,
+    const Fr &com_W_blinder, const std::string &basis_id, const G1 &H,
+    const std::vector<G1> &generators, const MaskedCoreWitness &witness,
+    const std::string &statement_digest);
+
+// Same core bridge with the native masked Lasso transcript as the first
+// canonical section.  The family matrices/query remain prover-side inputs;
+// the resulting artifact contains only the native masked Lasso messages.
+MaskedCoreResult prove_masked_core_with_lasso(
+    const NativeProofStatement &statement, const CommitmentWire &com_W,
+    const Fr &com_W_blinder, const std::string &basis_id, const G1 &H,
+    const std::vector<G1> &generators, const MaskedCoreWitness &witness,
+    std::vector<NativeLassoFamilyProver> &families,
+    NativeLassoQueryProver &query, const std::string &statement_digest);
+
+// Independent core verifier.  It consumes only public output/claim
+// descriptors, commitments, the artifact and public generators.  It never
+// receives W/Aux/L or a blinding scalar.  The Lasso family is intentionally
+// left to native_lasso_verify_bundle by the formal adapter.
+bool verify_masked_core(
+    const GatProofArtifact &artifact, const CommitmentWire &com_W,
+    const std::string &basis_id, const G1 &H,
+    const std::vector<G1> &generators,
+    const std::vector<Fr> &public_input,
+    const std::vector<Fr> &public_output,
+    const std::vector<Fr> &gkr_coefficients,
+    std::size_t gkr_rounds, const Fr &matmul_initial_claim,
+    std::size_t matmul_rounds, std::string *reason = nullptr);
 
 // Short, bounded bridge used by tests and diagnostics.  It executes the
 // official prover/range/Hyrax primitives on a one-gate relation; it is not a

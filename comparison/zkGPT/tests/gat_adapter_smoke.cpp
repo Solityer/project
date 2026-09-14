@@ -1,6 +1,7 @@
 #include "gat_proof.hpp"
 
 #include <cassert>
+#include <cstdio>
 #include <functional>
 #include <iostream>
 
@@ -165,6 +166,25 @@ int main() {
     assert(registration.opening_policy == "same_r_three_openings_v1");
     assert(registration_matches_model(model, quant, proof_plan.input_layout, registration));
 
+    const std::string com_w_secret_path = "/tmp/zkgpt-gat-com-w-secret-smoke";
+    std::remove(com_w_secret_path.c_str());
+    std::string secret_reason;
+    assert(write_prover_commitment_secret(registration, com_w_secret_path,
+                                          &secret_reason));
+    Fr recovered_com_w_blinder;
+    assert(read_prover_commitment_secret(registration, com_w_secret_path,
+                                         recovered_com_w_blinder,
+                                         &secret_reason));
+    assert(recovered_com_w_blinder == registration.com_W_padding_mask);
+    ModelRegistration wrong_secret_identity = registration;
+    wrong_secret_identity.registration_digest[0] =
+        wrong_secret_identity.registration_digest[0] == '0' ? '1' : '0';
+    assert(!read_prover_commitment_secret(wrong_secret_identity,
+                                          com_w_secret_path,
+                                          recovered_com_w_blinder,
+                                          &secret_reason));
+    std::remove(com_w_secret_path.c_str());
+
     Model manifest_tampered = model;
     manifest_tampered.manifest.model_param_id += "-tampered";
     assert(!registration_matches_model(manifest_tampered, quant, proof_plan.input_layout, registration));
@@ -240,6 +260,70 @@ int main() {
     root_tampered.statement_root_digest[0] =
         root_tampered.statement_root_digest[0] == '0' ? '1' : '0';
     assert(!root_tampered.valid());
+
+    // Bounded native GKR-only adapter closure.  The circuit is synthetic and
+    // intentionally tiny, while Y/context/commitments come from the same
+    // authenticated public context above.  This exercises the production
+    // artifact wire without claiming masked_full proof completeness.
+    VerifierContext synthetic_context = context;
+    synthetic_context.public_logits.values.assign(result.logits.values.size(), Int(1));
+    std::vector<F> gkr_output(result.logits.values.size(), Fr(1));
+    prover synthetic;
+    synthetic.C.init(0, 2);
+    synthetic.C.circuit[0].ty = layerType::INPUT;
+    synthetic.C.circuit[0].size = static_cast<u32>(gkr_output.size());
+    synthetic.C.circuit[0].zero_start_id = synthetic.C.circuit[0].size;
+    synthetic.C.circuit[0].bit_length = 4;
+    synthetic.C.circuit[1].ty = layerType::ADD_BIAS;
+    synthetic.C.circuit[1].size = static_cast<u32>(gkr_output.size());
+    synthetic.C.circuit[1].zero_start_id = synthetic.C.circuit[1].size;
+    synthetic.C.circuit[1].bit_length = 3;
+    for (u32 index = 0; index < gkr_output.size(); ++index)
+        synthetic.C.circuit[1].uni_gates.emplace_back(index, index, 0, 1);
+    synthetic.C.initSubset();
+    synthetic.val.resize(2);
+    synthetic.val[0] = gkr_output;
+    synthetic.val[1] = gkr_output;
+    const GkrOnlyArtifactResult gkr_result = prove_gkr_only_artifact(
+        synthetic, synthetic_context, com_aux, com_L, basis_G, basis_generators,
+        basis_scalars, 4, gkr_output, {});
+    assert(gkr_result.generated);
+    assert(gkr_result.artifact.privacy_profile == "gkr_only_diagnostic");
+    const std::string artifact_path = "/tmp/zkgpt-gkr-only-smoke.artifact";
+    std::string artifact_reason;
+    assert(gkr_result.artifact.write(artifact_path, &artifact_reason));
+    GatProofArtifact serialized_artifact;
+    assert(GatProofArtifact::read(artifact_path, serialized_artifact,
+                                  &artifact_reason));
+    NativeProofSession serialized_session;
+    assert(serialized_artifact.native_session(serialized_session,
+                                               &artifact_reason));
+    assert(verify_gkr_transcript(serialized_session, synthetic.C, gkr_output,
+                                 {}, &artifact_reason));
+    assert(!verify_gat(synthetic_context, serialized_artifact,
+                       &artifact_reason));
+
+    GatProofArtifact tampered_artifact = serialized_artifact;
+    bool tampered_claim = false;
+    for (NativeProofMessage &message : tampered_artifact.native_messages) {
+        if (message.kind == NativeProofMessageKind::FieldVector &&
+            message.label.find("/claims") != std::string::npos &&
+            message.payload.size() > sizeof(std::uint64_t) * 2) {
+            const std::size_t first_value_offset = sizeof(std::uint64_t) * 2;
+            message.payload[first_value_offset] =
+                message.payload[first_value_offset] == '0' ? '1' : '0';
+            tampered_claim = true;
+            break;
+        }
+    }
+    assert(tampered_claim);
+    NativeProofSession tampered_session;
+    assert(tampered_artifact.native_session(tampered_session,
+                                            &artifact_reason));
+    assert(!verify_gkr_transcript(tampered_session, synthetic.C, gkr_output,
+                                  {}, &artifact_reason));
+    assert(!tampered_artifact.valid_wire(&artifact_reason));
+    std::remove(artifact_path.c_str());
     std::cout << "gat_adapter_smoke: PASS relation/rounding/PPI/descriptors\n";
     return 0;
 }

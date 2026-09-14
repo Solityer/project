@@ -2,7 +2,6 @@
 #define ZKGPT_NATIVE_LASSO_HPP
 
 #include "hyrax_rp.hpp"
-#include "native_range.hpp"
 
 #include <cstddef>
 #include <string>
@@ -23,6 +22,11 @@ struct NativeLassoFamilyPublic {
     std::size_t padded_queries = 0;
     std::size_t padding_index = 0;
     F padding_value = F_ZERO;
+    // Optional adapter-provided statement identities.  When present they
+    // must match the native statement fields; otherwise the canonical local
+    // digests below are used (for standalone native tests/legacy callers).
+    std::string statement_tables_digest;
+    std::string statement_resources_digest;
 };
 
 struct NativeLassoFamilyProver : NativeLassoFamilyPublic {
@@ -37,12 +41,21 @@ struct NativeLassoQueryProver {
     std::vector<G1> generators;
     std::vector<F> values;
     G1 commitment;
+    // The dynamic L_qry commitment is a hiding Pedersen MLE commitment.  The
+    // blinding scalar remains prover-only and is never serialized.
+    std::string basis_id;
+    G1 blinding_generator;
+    F commitment_blinding = F_ZERO;
+    bool has_commitment_blinding = false;
+    std::string statement_l_digest;
 };
 
 struct NativeLassoQueryPublic {
     G1 G;
     std::vector<G1> generators;
     G1 commitment;
+    std::string basis_id;
+    std::string statement_l_digest;
 };
 
 struct NativeLassoBundleResult {

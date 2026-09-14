@@ -26,7 +26,8 @@ std::vector<G1> generators(const std::string &prefix, std::size_t count) {
 NativeProofStatement statement_for(const G1 &G,
                                    const std::vector<G1> &l_generators,
                                    const std::vector<NativeLassoFamilyPublic> &families,
-                                   const G1 &com_l) {
+                                   const G1 &com_l,
+                                   const G1 &query_blinding_generator) {
     const std::string context_root =
         "00000000000000000000000000000000000000000000000000000000000000aa";
     std::vector<Fr> setup_basis(l_generators.size(), Fr(0));
@@ -40,7 +41,8 @@ NativeProofStatement statement_for(const G1 &G,
         "00000000000000000000000000000000000000000000000000000000000000ad",
         native_lasso_query_digest(com_l, l_generators.size()),
         NativeProofStatement::basis_digest_for(
-            G, l_generators, setup_basis, l_generators.size()),
+            query_blinding_generator, l_generators, setup_basis,
+            l_generators.size()),
         l_generators.size(),
         context_root};
     return statement;
@@ -164,9 +166,28 @@ int main() {
     query.G = G;
     query.generators = l_generators;
     query.values = {Fr(5), Fr(7), Fr(11), Fr(13), Fr(17), Fr(19), Fr(23), Fr(29)};
-    query.commitment = perdersen_commit(query.generators.data(), query.values.data(), 8);
+    query.basis_id =
+        "0000000000000000000000000000000000000000000000000000000000000001";
+    const hyrax::PedersenMleCommitment query_commitment =
+        hyrax::pedersen_commit_mle(query.generators, query.values, query.basis_id);
+    query.commitment = query_commitment.commitment;
+    query.blinding_generator = query_commitment.blinding_generator;
+    query.commitment_blinding = query_commitment.blinding;
+    query.has_commitment_blinding = true;
+    query.statement_l_digest =
+        native_lasso_query_digest(query.commitment, query.values.size());
+    const std::string tables_digest = native_lasso_tables_digest(public_families);
+    const std::string resources_digest = native_lasso_resources_digest(public_families);
+    for (NativeLassoFamilyProver &family : families) {
+        family.statement_tables_digest = tables_digest;
+        family.statement_resources_digest = resources_digest;
+    }
+    public_families.clear();
+    for (const NativeLassoFamilyProver &family : families)
+        public_families.push_back(family);
     const NativeProofStatement statement =
-        statement_for(G, l_generators, public_families, query.commitment);
+        statement_for(G, l_generators, public_families, query.commitment,
+                      query.blinding_generator);
     NativeProofSession produced("native-lasso-range-v1", statement);
     NativeLassoBundleResult proved;
     std::string reason;
@@ -174,11 +195,34 @@ int main() {
         std::cerr << "native Lasso prove failed: " << reason << '\n';
         return 1;
     }
-    NativeLassoQueryPublic public_query{G, l_generators, query.commitment};
+    NativeLassoQueryPublic public_query{G, l_generators, query.commitment,
+                                        query.basis_id, query.statement_l_digest};
     if (!native_lasso_verify_bundle(produced, public_families, public_query,
                                     nullptr, &reason)) {
         std::cerr << "native Lasso independent verify failed: " << reason << '\n';
         return 2;
+    }
+
+    bool saw_masked_terminal = false;
+    for (const NativeProofMessage &message : produced.messages()) {
+        if (message.label.find("/terminal") == std::string::npos) continue;
+        if (message.kind != NativeProofMessageKind::FieldVector) {
+            std::cerr << "raw terminal message kind leaked\n";
+            return 3;
+        }
+        saw_masked_terminal = true;
+        if (message.label.find("/d-onehot/sum/terminal") != std::string::npos) {
+            std::vector<F> values;
+            if (!decode_vector(message.payload, values) ||
+                values.size() != 1 || values[0] == Fr(1)) {
+                std::cerr << "raw one-hot terminal leaked\n";
+                return 4;
+            }
+        }
+    }
+    if (!saw_masked_terminal) {
+        std::cerr << "masked terminal surface is missing\n";
+        return 5;
     }
 
     std::size_t first_challenge = produced.messages().size();
@@ -195,14 +239,14 @@ int main() {
             found |= produced.messages()[j].label == label;
         if (!found) {
             std::cerr << "LC_f was not fixed before the first challenge\n";
-            return 3;
+            return 6;
         }
     }
 
     const std::string path = "/tmp/zkgpt-native-lasso-range.bin";
     if (!produced.write(path, &reason)) {
         std::cerr << "native Lasso wire write failed: " << reason << '\n';
-        return 4;
+        return 7;
     }
     NativeProofSession restored;
     if (!NativeProofSession::read(path, restored, &reason) ||
@@ -210,7 +254,7 @@ int main() {
                                     nullptr, &reason)) {
         std::cerr << "native Lasso serialized verify failed: " << reason << '\n';
         std::remove(path.c_str());
-        return 5;
+        return 8;
     }
 
     std::vector<std::size_t> reordered(restored.messages().size());
@@ -225,7 +269,7 @@ int main() {
         commitment_b == restored.messages().size()) {
         std::cerr << "LC_f commitment messages are missing\n";
         std::remove(path.c_str());
-        return 6;
+        return 9;
     }
     std::swap(reordered[commitment_a], reordered[commitment_b]);
     NativeProofSession reordered_session = rebuild(restored, reordered);
@@ -233,7 +277,7 @@ int main() {
                                    nullptr, &reason)) {
         std::cerr << "LC_f reorder was accepted\n";
         std::remove(path.c_str());
-        return 7;
+        return 10;
     }
 
     NativeLassoQueryPublic wrong_query = public_query;
@@ -242,7 +286,7 @@ int main() {
                                    nullptr, &reason)) {
         std::cerr << "Open_L commitment tamper was accepted\n";
         std::remove(path.c_str());
-        return 8;
+        return 11;
     }
     std::vector<NativeLassoFamilyPublic> wrong_tables = public_families;
     wrong_tables[0].table[0] += Fr(1);
@@ -250,7 +294,7 @@ int main() {
                                    nullptr, &reason)) {
         std::cerr << "table identity tamper was accepted\n";
         std::remove(path.c_str());
-        return 9;
+        return 12;
     }
     std::vector<NativeLassoFamilyPublic> wrong_matrix = public_families;
     hashAndMapToG1(wrong_matrix[0].matrix_generators[0], "native-lasso/wrong-M");
@@ -258,7 +302,7 @@ int main() {
                                    nullptr, &reason)) {
         std::cerr << "M_f basis identity tamper was accepted\n";
         std::remove(path.c_str());
-        return 10;
+        return 13;
     }
     NativeProofSession post_terminal = restored;
     post_terminal.absorb("lasso/post-terminal", "forbidden");
@@ -266,7 +310,89 @@ int main() {
                                    nullptr, &reason)) {
         std::cerr << "post-terminal insertion was accepted\n";
         std::remove(path.c_str());
-        return 11;
+        return 14;
+    }
+
+    std::vector<NativeLassoFamilyPublic> wrong_resources = public_families;
+    wrong_resources[0].resource_id = "resource-a-v2";
+    if (native_lasso_verify_bundle(restored, wrong_resources, public_query,
+                                   nullptr, &reason)) {
+        std::cerr << "resource identity tamper was accepted\n";
+        std::remove(path.c_str());
+        return 15;
+    }
+    std::vector<NativeLassoFamilyPublic> wrong_bound_identity = public_families;
+    wrong_bound_identity[0].statement_tables_digest = std::string(64, 'b');
+    if (native_lasso_verify_bundle(restored, wrong_bound_identity, public_query,
+                                   nullptr, &reason)) {
+        std::cerr << "adapter table digest tamper was accepted\n";
+        std::remove(path.c_str());
+        return 16;
+    }
+    NativeLassoQueryPublic wrong_query_identity = public_query;
+    wrong_query_identity.statement_l_digest = std::string(64, 'c');
+    if (native_lasso_verify_bundle(restored, public_families, wrong_query_identity,
+                                   nullptr, &reason)) {
+        std::cerr << "adapter L_qry digest tamper was accepted\n";
+        std::remove(path.c_str());
+        return 17;
+    }
+
+    std::vector<NativeProofMessage> tampered_messages = restored.messages();
+    bool changed_message = false;
+    for (NativeProofMessage &message : tampered_messages) {
+        if (message.kind == NativeProofMessageKind::Field &&
+            message.label == "lasso/a/b-boolean/claim") {
+            message.payload = Fr(1).getStr(16);
+            changed_message = true;
+            break;
+        }
+    }
+    NativeProofSession tampered_session;
+    const bool tampered_wire_ok =
+        changed_message && NativeProofSession::from_messages(
+            restored.domain(), restored.statement(), tampered_messages,
+            tampered_session, &reason);
+    if (tampered_wire_ok &&
+        native_lasso_verify_bundle(tampered_session, public_families, public_query,
+                                   nullptr, &reason)) {
+        std::cerr << "transcript tamper was accepted\n";
+        std::remove(path.c_str());
+        return 18;
+    }
+
+    NativeLassoQueryProver fresh_query = query;
+    const hyrax::PedersenMleCommitment fresh_commitment =
+        hyrax::pedersen_commit_mle(fresh_query.generators, fresh_query.values,
+                                    fresh_query.basis_id);
+    fresh_query.commitment = fresh_commitment.commitment;
+    fresh_query.blinding_generator = fresh_commitment.blinding_generator;
+    fresh_query.commitment_blinding = fresh_commitment.blinding;
+    fresh_query.has_commitment_blinding = true;
+    fresh_query.statement_l_digest =
+        native_lasso_query_digest(fresh_query.commitment,
+                                  fresh_query.values.size());
+    const NativeProofStatement fresh_statement =
+        statement_for(G, l_generators, public_families, fresh_query.commitment,
+                      fresh_query.blinding_generator);
+    NativeProofSession fresh_session("native-lasso-range-v1", fresh_statement);
+    std::vector<NativeLassoFamilyProver> fresh_families = families;
+    if (!native_lasso_prove_bundle(fresh_session, fresh_families, fresh_query,
+                                   nullptr, &reason)) {
+        std::cerr << "fresh masked Lasso proof failed: " << reason << '\n';
+        std::remove(path.c_str());
+        return 19;
+    }
+    NativeLassoQueryPublic fresh_public_query{
+        G, l_generators, fresh_query.commitment, fresh_query.basis_id,
+        fresh_query.statement_l_digest};
+    if (!native_lasso_verify_bundle(fresh_session, public_families,
+                                    fresh_public_query, nullptr, &reason) ||
+        fresh_query.commitment == query.commitment ||
+        fresh_session.digest() == produced.digest()) {
+        std::cerr << "fresh masked Lasso commitment/transcript was reused\n";
+        std::remove(path.c_str());
+        return 20;
     }
 
     NativeProofSession range_session("native-range-v1", statement);
@@ -297,7 +423,9 @@ int main() {
         return 13;
     }
 
-    NativeProofSession rp_session("native-rp-v1", statement);
+    NativeProofStatement rp_statement =
+        statement_for(G, l_generators, public_families, query.commitment, G);
+    NativeProofSession rp_session("native-rp-v1", rp_statement);
     std::vector<F> rp_point{Fr(2), Fr(3), Fr(5)};
     G1 rp_commitment;
     Fr rp_eval;

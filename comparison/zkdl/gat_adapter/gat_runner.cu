@@ -1479,7 +1479,10 @@ void validate_static_tables(const Config& config, StaticTables* tables) {
     std::ostringstream spec;
     spec << config.static_table_id << "\n" << tables->generator_id << "\n" << tables->version << "\n"
          << tables->scale_id << "\n" << tables->domain_id << "\n" << tables->row_order << "\n"
-         << config.range_bits << "\n" << tables->lrelu_min << "\n" << tables->lrelu_max << "\n" << tables->exp_max;
+         << tables->padding_rule << "\n" << config.range_bits << "\n"
+         << tables->lrelu_min << "\n" << tables->lrelu_max << "\n" << tables->exp_max << "\n"
+         << tables->lrelu_padded_domain << "\n" << tables->elu_padded_domain << "\n"
+         << tables->exp_padded_domain << "\n";
     if (tables->spec_hash != sha256_text(spec.str())) fail("authenticated static table specification hash mismatch");
 }
 
@@ -2578,7 +2581,12 @@ RelationPlan build_relation_plan(const Config& config, const Graph& graph, const
         add_tensor(stage + "/trace/aggregate_num", "witness", "node-major-little-endian", "node", {graph.nodes, out_dim}, {"aggregate_num"}, order, "integer_group_sum", 1);
         add_tensor(stage + "/trace/aggregate_pre_field", "witness", "node-major-little-endian", "node", {graph.nodes, out_dim}, {"aggregate_pre_field"}, order, "field_group_sum", 2);
         add_tensor(stage + "/trace/consistency_residual_field", "witness", "node-major-field-little-endian", "node", {graph.nodes, out_dim}, {"consistency"}, order, "field_integer_consistency:bls12-381-fr", 2);
-        add_tensor(stage + "/trace/rounddiv_aux", "witness", "node-major-little-endian", "aux", {graph.nodes, 8, out_dim}, {"division"}, order, "signed_round_div_auxiliary", 1);
+        // The native witness is serialized row -> column -> channel
+        // (sigma,z,a,q,r,delta,divisor,reserved).  Keep the authenticated
+        // descriptor in that same order; the previous [node,8,out_dim]
+        // declaration silently interpreted the flat witness as
+        // row -> channel -> column.
+        add_tensor(stage + "/trace/rounddiv_aux", "witness", "node-major-column-channel-little-endian", "channel", {graph.nodes, out_dim, 8}, {"division"}, order, "rounddiv_auxiliary:node-column-channel", 1);
         add_tensor(stage + "/trace/rounddiv_a_inverse", "witness", "node-major-field-little-endian", "aux", {graph.nodes, out_dim}, {"a_inverse"}, order, "field_exact:bls12-381-fr", 1);
         add_tensor(stage + "/trace/rounddiv_divisor_inverse", "witness", "node-major-field-little-endian", "aux", {graph.nodes, out_dim}, {"divisor_inverse"}, order, "field_exact:bls12-381-fr", 1);
         add_tensor(stage + "/trace/aggregate_pre", "witness", "node-major-little-endian", "node", {graph.nodes, out_dim}, {"aggregate_pre"}, order, "signed_round_div", 1);

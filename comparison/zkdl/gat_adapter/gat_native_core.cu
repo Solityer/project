@@ -754,6 +754,13 @@ bool add_fac_feature_column(
     const std::map<std::string, const TensorFamily*>& families,
     std::uint32_t column, std::string* error);
 
+// Table-operation construction is defined before the shared family lookup
+// helper below; declare the helper here so the CUDA translation unit sees the
+// same family-map lookup used by all later operation builders.
+const TensorFamily* tensor_family(
+    const std::map<std::string, const TensorFamily*>& families,
+    const std::string& id);
+
 relation::OperationDescriptor table_operation(
     const Config& config, const StaticTables& tables,
     const OperationFamily& plan_operation,
@@ -1095,8 +1102,29 @@ bool add_fac_feature_block(
     std::vector<std::uint32_t> outer_map(view_outer);
     for (std::uint32_t index = 0U; index < view_outer; ++index) outer_map[index] = index;
     std::vector<std::uint32_t> feature_map(view_feature);
-    for (std::uint32_t index = 0U; index < view_feature; ++index)
-        feature_map[index] = block * view_feature + index;
+    const TensorFamily* canonical_family = tensor_family(families, canonical_ref);
+    if (canonical_family == nullptr) {
+        if (error) *error = "BLOCKED: FAC4DNN feature-block canonical family is missing: " + canonical_ref;
+        return false;
+    }
+    // rounddiv_aux is canonically [node, column, channel] because the
+    // runner emits row -> column -> channel.  Other feature blocks retain
+    // the native contiguous channel-major layout.  Both mappings are public
+    // and enter the FAC binding transcript.
+    if (canonical_family->mapping == "rounddiv_auxiliary:node-column-channel") {
+        if (canonical_family->padded_shape.size() != 3U ||
+            canonical_family->padded_shape.back() == 0U ||
+            block >= canonical_family->padded_shape.back()) {
+            if (error) *error = "BLOCKED: rounddiv_auxiliary channel descriptor is malformed: " + canonical_ref;
+            return false;
+        }
+        const std::uint32_t channels = static_cast<std::uint32_t>(canonical_family->padded_shape.back());
+        for (std::uint32_t index = 0U; index < view_feature; ++index)
+            feature_map[index] = index * channels + block;
+    } else {
+        for (std::uint32_t index = 0U; index < view_feature; ++index)
+            feature_map[index] = block * view_feature + index;
+    }
     return add_fac_binding_spec(operation, view_ref, canonical_ref, domains,
                                 view_outer, canonical_outer, view_feature,
                                 canonical_feature, std::move(outer_map),
@@ -1699,11 +1727,11 @@ relation::OperationDescriptor signed_round_operation(
             add_ref(operation, ref);
         }
     }
-    // The auxiliary stack is the canonical node-major [sigma,z,a,q,r,
-    // delta,divisor,reserved] view emitted by the runner.  Each operation
-    // view is a public feature block of that authenticated tensor, so every
-    // quotient/remainder/sign witness is linked before the batched family is
-    // opened.
+    // The auxiliary stack is the canonical node/column/channel view emitted
+    // by the runner: [node, column, sigma|z|a|q|r|delta|divisor|reserved].
+    // Each operation view is a strided public feature block of that
+    // authenticated tensor, so every quotient/remainder/sign witness is
+    // linked before the batched family is opened.
     if (plan_operation.outputs.size() > 1U) {
         const std::string aux = plan_operation.outputs[1];
         if (!add_fac_feature_block(operation, sigma, aux, domains, families, 0U, error) ||

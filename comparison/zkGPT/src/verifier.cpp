@@ -3,16 +3,185 @@
 //
 #include "verifier.hpp"
 #include "global_var.hpp"
+#include "native_protocol.hpp"
 #include <utils.hpp>
 #include <circuit.h>
 #include <iostream>
 #include <sstream>
 #include <memory>
+#include <stdexcept>
 
 using namespace std;
 using namespace mcl::bn;
 vector<F> beta_v;
 static vector<F> beta_u, beta_gs;
+
+namespace {
+
+bool decode_transcript_field(const std::string &payload, F &value) {
+    if (payload.empty() || payload.size() > 128) return false;
+    try {
+        value.setStr(payload, 16);
+        return value.getStr(16) == payload;
+    } catch (...) {
+        return false;
+    }
+}
+
+bool decode_transcript_fields(const std::string &payload,
+                              std::vector<F> &values) {
+    values.clear();
+    std::size_t offset = 0;
+    auto read_u64 = [&](std::uint64_t &value) {
+        if (payload.size() - offset < sizeof(std::uint64_t)) return false;
+        value = 0;
+        for (unsigned byte = 0; byte < 8; ++byte)
+            value |= static_cast<std::uint64_t>(
+                         static_cast<unsigned char>(payload[offset++])) << (8 * byte);
+        return true;
+    };
+    std::uint64_t count = 0;
+    if (!read_u64(count) || count > (1ULL << 20)) return false;
+    values.reserve(static_cast<std::size_t>(count));
+    for (std::uint64_t index = 0; index < count; ++index) {
+        std::uint64_t size = 0;
+        if (!read_u64(size) || size == 0 || size > 128 ||
+            size > payload.size() - offset) return false;
+        F value;
+        if (!decode_transcript_field(
+                payload.substr(offset, static_cast<std::size_t>(size)), value))
+            return false;
+        offset += static_cast<std::size_t>(size);
+        values.push_back(value);
+    }
+    return offset == payload.size();
+}
+
+const NativeProofMessage *find_transcript_message(
+    const NativeProofSession &session, NativeProofMessageKind kind,
+    const std::string &label, std::string *reason) {
+    const NativeProofMessage *found = nullptr;
+    for (const NativeProofMessage &message : session.messages()) {
+        if (message.kind != kind || message.label != label) continue;
+        if (found != nullptr) {
+            if (reason != nullptr) *reason = "duplicate GKR transcript message: " + label;
+            return nullptr;
+        }
+        found = &message;
+    }
+    if (found == nullptr && reason != nullptr)
+        *reason = "missing GKR transcript message: " + label;
+    return found;
+}
+
+bool transcript_challenge(const NativeProofSession &session,
+                          const std::string &label, F &value,
+                          std::string *reason) {
+    const NativeProofMessage *message = find_transcript_message(
+        session, NativeProofMessageKind::Challenge, "challenge/" + label, reason);
+    return message != nullptr && decode_transcript_field(message->payload, value);
+}
+
+bool transcript_claims(const NativeProofSession &session,
+                       const std::string &label, std::size_t expected,
+                       std::vector<F> &values, std::string *reason) {
+    const NativeProofMessage *message = find_transcript_message(
+        session, NativeProofMessageKind::FieldVector, label + "/claims", reason);
+    if (message == nullptr || !decode_transcript_fields(message->payload, values) ||
+        values.size() != expected) {
+        if (reason != nullptr) *reason = "malformed GKR terminal claims: " + label;
+        return false;
+    }
+    return true;
+}
+
+F transcript_mle_eval(const std::vector<F> &values, const std::vector<F> &point) {
+    if (point.empty()) {
+        if (values.size() != 1) throw std::invalid_argument("GKR scalar output domain is invalid");
+        return values[0];
+    }
+    if (point.size() >= sizeof(std::size_t) * 8)
+        throw std::invalid_argument("GKR output point dimension is invalid");
+    const std::size_t domain = std::size_t(1) << point.size();
+    if (values.size() > domain) throw std::invalid_argument("GKR output exceeds MLE domain");
+    std::vector<F> folded(domain, F_ZERO);
+    std::copy(values.begin(), values.end(), folded.begin());
+    std::size_t active = domain;
+    for (const F &coordinate : point) {
+        const std::size_t half = active >> 1;
+        for (std::size_t index = 0; index < half; ++index)
+            folded[index] = folded[index * 2] * (F_ONE - coordinate) +
+                            folded[index * 2 + 1] * coordinate;
+        active = half;
+    }
+    return folded[0];
+}
+
+void transcript_beta_phase1(const layer &current, std::size_t depth,
+                            const std::vector<F> &r0,
+                            const std::vector<F> &r1,
+                            const std::vector<F> &ru,
+                            const F &alpha, const F &beta,
+                            const F &relu_rou,
+                            std::vector<F> &beta_g,
+                            std::vector<F> &beta_u) {
+    beta_g.resize(std::size_t(1) << current.bit_length);
+    initBetaTable(beta_g, current.bit_length, r0.begin(), r1.begin(),
+                  alpha, beta);
+    if (current.zero_start_id < current.size)
+        for (u32 gate = current.zero_start_id;
+             gate < (std::size_t(1) << current.bit_length); ++gate)
+            beta_g[gate] *= relu_rou;
+    beta_u.resize(std::size_t(1) << current.max_bl_u);
+    initBetaTable(beta_u, current.max_bl_u, ru.begin(), F_ONE);
+    (void)depth;
+}
+
+F transcript_predicate_phase1(const layer &current,
+                              const std::vector<F> &beta_g,
+                              const std::vector<F> &beta_u,
+                              std::vector<F> &uni,
+                              std::vector<F> &bin) {
+    uni.assign(2, F_ZERO);
+    bin.assign(3, F_ZERO);
+    for (const uniGate &gate : current.uni_gates)
+        uni[gate.lu] += beta_g[gate.g] * beta_u[gate.u] * gate.sc;
+    for (const binGate &gate : current.bin_gates)
+        bin[gate.l] += beta_g[gate.g] * beta_u[gate.u] * gate.sc;
+    return F_ZERO;
+}
+
+void transcript_predicate_phase2(const layer &current,
+                                 const std::vector<F> &beta_g,
+                                 const std::vector<F> &beta_u,
+                                 const std::vector<F> &beta_v,
+                                 std::vector<F> &uni,
+                                 std::vector<F> &bin) {
+    if (!beta_v.empty()) {
+        uni[0] *= beta_v[0];
+        uni[1] *= beta_v[0];
+    } else {
+        uni[0].clear();
+        uni[1].clear();
+    }
+    bin.assign(3, F_ZERO);
+    for (const binGate &gate : current.bin_gates)
+        bin[gate.l] += beta_g[gate.g] * beta_u[gate.u] * beta_v[gate.v] * gate.sc;
+}
+
+F transcript_final_value(const std::vector<F> &uni,
+                         const std::vector<F> &bin,
+                         const std::vector<F> &u,
+                         const std::vector<F> &v) {
+    return bin[0] * u[0] * v[0] + bin[1] * u[1] * v[1] +
+           bin[2] * u[1] * v[0] + uni[0] * u[0] + uni[1] * u[1];
+}
+
+bool gkr_scope_message(const std::string &label) {
+    return label.compare(0, sizeof("gkr/") - 1, "gkr/") == 0;
+}
+
+} // namespace
 
 
 
@@ -226,6 +395,31 @@ bool verifier::prove_with_session(NativeProofSession &session, int commit_thread
     bool result = false;
     try {
         result = prove(commit_thread);
+    } catch (...) {
+        session_ = previous;
+        session.rollback(checkpoint);
+        throw;
+    }
+    session_ = previous;
+    if (!result || !session.replay()) {
+        session.rollback(checkpoint);
+        return false;
+    }
+    return true;
+}
+
+bool verifier::prove_gkr_with_session(NativeProofSession &session, int commit_thread) {
+    (void)commit_thread;
+    if (!session.valid()) return false;
+    const std::size_t checkpoint = session.checkpoint();
+    NativeProofSession *previous = session_;
+    session_ = &session;
+    bool result = false;
+    try {
+        // verifyGKR is the native zkGPT GKR/MatMul prover-verifier loop.  It
+        // consumes the prover's layered values only while producing the
+        // transcript; the returned session is the public proof boundary.
+        result = verifyGKR();
     } catch (...) {
         session_ = previous;
         session.rollback(checkpoint);
@@ -764,6 +958,263 @@ bool verifier::verifyGKR()
 
     
     return true;
+}
+
+bool verify_gkr_transcript(const NativeProofSession &session,
+                           const layeredCircuit &circuit,
+                           const std::vector<F> &public_output,
+                           const std::vector<NativeGkrMatmulShape> &matmuls,
+                           std::string *reason) {
+    try {
+        if (!session.valid(reason) || !session.replay(reason)) return false;
+        if (circuit.size != circuit.circuit.size() || circuit.size < 2) {
+            if (reason != nullptr) *reason = "GKR circuit shape is invalid";
+            return false;
+        }
+        const layer &last = circuit.circuit[circuit.size - 1];
+        if (last.bit_length < 0 || public_output.size() != last.size) {
+            if (reason != nullptr) *reason = "public GKR output shape is invalid";
+            return false;
+        }
+
+        std::set<std::string> known;
+        auto mark_field_challenge = [&](const std::string &label) {
+            known.insert("challenge/" + label);
+        };
+        auto mark_quadratic_scope = [&](const std::string &label,
+                                        std::size_t rounds) {
+            for (std::size_t round = 0; round < rounds; ++round) {
+                known.insert(label + "/poly/" + std::to_string(round));
+                mark_field_challenge(label + "/r/" + std::to_string(round));
+            }
+            known.insert(label + "/claims");
+        };
+        auto mark_product_scope = [&](const std::string &label,
+                                      std::size_t rounds) {
+            known.insert(label + "/claim");
+            mark_quadratic_scope(label, rounds);
+        };
+
+        std::vector<std::vector<F>> r_u(circuit.size + 1);
+        std::vector<std::vector<F>> r_v(circuit.size + 1);
+        r_u[circuit.size].resize(last.bit_length);
+        for (int bit = 0; bit < last.bit_length; ++bit) {
+            const std::string label = "gkr/output/r_u/" + std::to_string(bit);
+            known.insert("challenge/" + label);
+            if (!transcript_challenge(session, label, r_u[circuit.size][bit], reason))
+                return false;
+        }
+        const F initial_claim = transcript_mle_eval(public_output, r_u[circuit.size]);
+        F previous_sum = initial_claim;
+        F alpha = F_ONE;
+        F beta = F_ZERO;
+        F final_claim_u1 = F_ZERO;
+        F final_claim_v1 = F_ZERO;
+        std::vector<F> final_claim_u0(circuit.size, F_ZERO);
+        std::vector<F> final_claim_v0(circuit.size, F_ZERO);
+        std::size_t next_matmul = matmuls.size();
+
+        for (int layer_id = static_cast<int>(circuit.size) - 1;
+             layer_id > 0; --layer_id) {
+            const layer &current = circuit.circuit[layer_id];
+            const std::string layer_prefix =
+                "gkr/layer/" + std::to_string(layer_id);
+            if (current.ty == layerType::FCONN) {
+                if (next_matmul == 0) {
+                    if (reason != nullptr) *reason = "missing public FCONN descriptor";
+                    return false;
+                }
+                const NativeGkrMatmulShape shape = matmuls[--next_matmul];
+                if (shape.rows == 0 || shape.inner == 0 || shape.cols == 0 ||
+                    shape.rows * shape.cols != current.size) {
+                    if (reason != nullptr) *reason = "public FCONN descriptor does not match circuit";
+                    return false;
+                }
+                const int n = ceilPow2BitLength(static_cast<u32>(shape.rows));
+                const int m = ceilPow2BitLength(static_cast<u32>(shape.inner));
+                const int k = ceilPow2BitLength(static_cast<u32>(shape.cols));
+                if (r_u[layer_id + 1].size() < static_cast<std::size_t>(m + k)) {
+                    if (reason != nullptr) *reason = "FCONN predecessor point is too short";
+                    return false;
+                }
+                r_u[layer_id].resize(static_cast<std::size_t>(m + n));
+                r_v[layer_id].resize(static_cast<std::size_t>(m + k));
+                for (int bit = m; bit < m + n; ++bit)
+                    r_u[layer_id][bit] = r_u[layer_id + 1][bit - m + k];
+                for (int bit = m; bit < m + k; ++bit)
+                    r_v[layer_id][bit] = r_u[layer_id + 1][bit - m];
+                for (int bit = 0; bit < m; ++bit) {
+                    const std::string label = layer_prefix + "/matmul/r_u/" +
+                                              std::to_string(bit);
+                    known.insert("challenge/" + label);
+                    if (!transcript_challenge(session, label, r_u[layer_id][bit], reason))
+                        return false;
+                    r_v[layer_id][bit] = r_u[layer_id][bit];
+                }
+                const std::string matmul = layer_prefix + "/matmul";
+                known.insert(matmul + "/claim");
+                mark_product_scope(matmul, static_cast<std::size_t>(m));
+                const NativeProofMessage *claim_message = find_transcript_message(
+                    session, NativeProofMessageKind::Field,
+                    matmul + "/claim", reason);
+                F matmul_claim;
+                if (claim_message == nullptr ||
+                    !decode_transcript_field(claim_message->payload, matmul_claim) ||
+                    matmul_claim != final_claim_u1) {
+                    if (reason != nullptr) *reason = "native FCONN claim mismatch";
+                    return false;
+                }
+                F terminal_left = F_ZERO, terminal_right = F_ZERO;
+                if (!verify_product_sumcheck_session(
+                        session, matmul, matmul_claim, static_cast<std::size_t>(m),
+                        &terminal_left, &terminal_right, reason))
+                    return false;
+                final_claim_u0[layer_id] = terminal_left;
+                final_claim_u1 = F_ZERO;
+                final_claim_v0[layer_id] = terminal_right;
+                final_claim_v1 = F_ZERO;
+                if (current.bit_length_u[1] >= 0) {
+                    const std::string label = layer_prefix + "/alpha";
+                    known.insert("challenge/" + label);
+                    if (!transcript_challenge(session, label, alpha, reason)) return false;
+                } else {
+                    alpha.clear();
+                }
+                if (current.bit_length_v[1] >= 0 || current.ty == layerType::FFT) {
+                    const std::string label = layer_prefix + "/beta";
+                    known.insert("challenge/" + label);
+                    if (!transcript_challenge(session, label, beta, reason)) return false;
+                } else {
+                    beta.clear();
+                }
+                previous_sum = alpha * final_claim_u1 + beta * final_claim_v1;
+                continue;
+            }
+
+            F relu_rou = F_ONE;
+            if (current.zero_start_id < current.size) {
+                const std::string label = layer_prefix + "/relu";
+                known.insert("challenge/" + label);
+                if (!transcript_challenge(session, label, relu_rou, reason))
+                    return false;
+            }
+
+            r_u[layer_id].resize(current.max_bl_u);
+            for (int bit = 0; bit < current.max_bl_u; ++bit) {
+                const std::string label = layer_prefix + "/phase1/r/" +
+                                          std::to_string(bit);
+                known.insert("challenge/" + label);
+                if (!transcript_challenge(session, label, r_u[layer_id][bit], reason))
+                    return false;
+            }
+            const std::string phase1 = layer_prefix + "/phase1";
+            mark_quadratic_scope(phase1, current.max_bl_u);
+            F phase1_sum = previous_sum;
+            std::vector<F> phase1_claims;
+            if (current.max_bl_u != 0) {
+                if (!verify_quadratic_sumcheck_session(
+                        session, phase1, previous_sum, current.max_bl_u,
+                        &phase1_sum, &phase1_claims, reason))
+                    return false;
+            } else if (!transcript_claims(session, phase1, 2, phase1_claims, reason)) {
+                return false;
+            }
+            if (phase1_claims.size() != 2) {
+                if (reason != nullptr) *reason = "GKR phase1 claim arity mismatch";
+                return false;
+            }
+            final_claim_u0[layer_id] = phase1_claims[0];
+            final_claim_u1 = phase1_claims[1];
+
+            std::vector<F> r0 = r_u[layer_id + 1];
+            std::vector<F> r1 = r_v[layer_id + 1];
+            if (r0.size() < static_cast<std::size_t>(current.bit_length))
+                r0.resize(current.bit_length, F_ZERO);
+            if (r1.size() < static_cast<std::size_t>(current.bit_length))
+                r1.resize(current.bit_length, F_ZERO);
+            std::vector<F> beta_g, beta_u, uni, bin;
+            transcript_beta_phase1(current, layer_id, r0, r1,
+                                   r_u[layer_id], alpha, beta, relu_rou,
+                                   beta_g, beta_u);
+            transcript_predicate_phase1(current, beta_g, beta_u, uni, bin);
+
+            F current_sum = phase1_sum;
+            if (current.need_phase2) {
+                r_v[layer_id].resize(current.max_bl_v);
+                for (int bit = 0; bit < current.max_bl_v; ++bit) {
+                    const std::string label = layer_prefix + "/phase2/r/" +
+                                              std::to_string(bit);
+                    known.insert("challenge/" + label);
+                    if (!transcript_challenge(session, label, r_v[layer_id][bit], reason))
+                        return false;
+                }
+                const std::string phase2 = layer_prefix + "/phase2";
+                mark_quadratic_scope(phase2, current.max_bl_v);
+                std::vector<F> phase2_claims;
+                if (current.max_bl_v == 0) {
+                    if (!transcript_claims(session, phase2, 2, phase2_claims, reason))
+                        return false;
+                } else if (!verify_quadratic_sumcheck_session(
+                               session, phase2, phase1_sum, current.max_bl_v,
+                               &current_sum, &phase2_claims, reason)) {
+                    return false;
+                }
+                if (phase2_claims.size() != 2) {
+                    if (reason != nullptr) *reason = "GKR phase2 claim arity mismatch";
+                    return false;
+                }
+                final_claim_v0[layer_id] = phase2_claims[0];
+                final_claim_v1 = phase2_claims[1];
+                std::vector<F> beta_v;
+                beta_v.resize(std::size_t(1) << current.max_bl_v);
+                initBetaTable(beta_v, current.max_bl_v,
+                              r_v[layer_id].begin(), F_ONE);
+                transcript_predicate_phase2(current, beta_g, beta_u, beta_v,
+                                            uni, bin);
+            } else {
+                final_claim_v0[layer_id] = F_ZERO;
+                final_claim_v1 = F_ZERO;
+            }
+
+            const F predicate_value = transcript_final_value(
+                uni, bin,
+                std::vector<F>{final_claim_u0[layer_id], final_claim_u1},
+                std::vector<F>{final_claim_v0[layer_id], final_claim_v1});
+            if (current_sum != predicate_value) {
+                if (reason != nullptr) *reason = "GKR predicate transition failed";
+                return false;
+            }
+
+            if (current.bit_length_u[1] >= 0) {
+                const std::string label = layer_prefix + "/alpha";
+                known.insert("challenge/" + label);
+                if (!transcript_challenge(session, label, alpha, reason)) return false;
+            } else {
+                alpha.clear();
+            }
+            if (current.bit_length_v[1] >= 0 || current.ty == layerType::FFT) {
+                const std::string label = layer_prefix + "/beta";
+                known.insert("challenge/" + label);
+                if (!transcript_challenge(session, label, beta, reason)) return false;
+            } else {
+                beta.clear();
+            }
+            previous_sum = alpha * final_claim_u1 + beta * final_claim_v1;
+        }
+
+        for (const NativeProofMessage &message : session.messages()) {
+            if (gkr_scope_message(message.label) &&
+                known.find(message.label) == known.end()) {
+                if (reason != nullptr)
+                    *reason = "unexpected native GKR transcript message: " + message.label;
+                return false;
+            }
+        }
+        return true;
+    } catch (const std::exception &error) {
+        if (reason != nullptr) *reason = error.what();
+        return false;
+    }
 }
 
 bool verifier::verifyLasso() 

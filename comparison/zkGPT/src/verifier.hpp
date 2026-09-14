@@ -24,6 +24,13 @@ public:
     // remains the original GKR/Lasso/Hyrax implementation.
     bool prove(int commit_thread=4);
     bool prove_with_session(NativeProofSession &session, int commit_thread=4);
+
+    // Baseline-local adapter entry point for a composed proof.  It runs only
+    // the native GKR/MatMul layer and leaves the session at the exact input
+    // claim boundary; callers may then append the native Lasso and terminal
+    // Hyrax openings in the same Fiat--Shamir session.  The legacy `prove`
+    // entry point remains unchanged for the upstream demo.
+    bool prove_gkr_with_session(NativeProofSession &session, int commit_thread=4);
     void range_prove(double range_prover_time_) { range_prover_time = range_prover_time_; };
 
     timer total_timer, total_slow_timer;
@@ -59,6 +66,23 @@ private:
 
     F eval_in;
 };
+
+struct NativeGkrMatmulShape {
+    std::size_t rows = 0;
+    std::size_t inner = 0;
+    std::size_t cols = 0;
+};
+
+// Independent GKR replay boundary used by the GAT adapter.  The circuit,
+// final public output, and public FCONN dimensions are supplied by the
+// verifier; all round polynomials, claims and Fiat--Shamir challenges are
+// read from NativeProofSession.  This path deliberately does not consult a
+// prover object or witness values.
+bool verify_gkr_transcript(const NativeProofSession &session,
+                           const layeredCircuit &circuit,
+                           const std::vector<F> &public_output,
+                           const std::vector<NativeGkrMatmulShape> &matmuls,
+                           std::string *reason = nullptr);
 
 
 #endif //ZKCNN_CONVVERIFIER_HPP

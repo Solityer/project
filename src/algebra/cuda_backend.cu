@@ -432,32 +432,28 @@ namespace gatzk::algebra
                     cudaSuccess;
 
                 source_capacity_ =
-                    zero_copy_target_
-                        ? element_count_
-                        : std::min<std::size_t>(
-                              element_count_,
-                              std::size_t{1} << 20);
+                    std::min<std::size_t>(
+                        element_count_,
+                        std::size_t{1} << 20);
 
-                if (!zero_copy_target_)
+                const auto source_bytes =
+                    source_capacity_ *
+                    sizeof(gpu::GpuFr);
+
+                status =
+                    cudaMalloc(
+                        reinterpret_cast<void **>(
+                            &device_source_),
+                        source_bytes);
+
+                if (status !=
+                    cudaSuccess)
                 {
-                    const auto source_bytes =
-                        source_capacity_ *
-                        sizeof(gpu::GpuFr);
+                    release_noexcept();
 
-                    status =
-                        cudaMalloc(
-                            reinterpret_cast<void **>(
-                                &device_source_),
-                            source_bytes);
-
-                    if (status != cudaSuccess)
-                    {
-                        release_noexcept();
-
-                        throw_scaled_accumulate_cuda_error(
-                            "session source allocation",
-                            status);
-                    }
+                    throw_scaled_accumulate_cuda_error(
+                        "session source allocation",
+                        status);
                 }
 
                 if (!zero_copy_target_)
@@ -544,7 +540,8 @@ namespace gatzk::algebra
                 const mcl::Fr *source,
                 const mcl::Fr &scale,
                 std::size_t target_offset,
-                std::size_t element_count) override
+                std::size_t element_count,
+                bool source_is_ephemeral) override
             {
                 if (finished_ ||
                     source == nullptr ||
@@ -578,11 +575,18 @@ namespace gatzk::algebra
                 while (processed <
                        element_count)
                 {
+                    const bool stage_source =
+                        source_is_ephemeral ||
+                        !zero_copy_target_;
+
                     const auto current_count =
-                        std::min(
-                            source_capacity_,
-                            element_count -
-                                processed);
+                        stage_source
+                            ? std::min(
+                                  source_capacity_,
+                                  element_count -
+                                      processed)
+                            : element_count -
+                                  processed;
 
                     const auto byte_count =
                         current_count *
@@ -595,13 +599,57 @@ namespace gatzk::algebra
                     cudaError_t status =
                         cudaSuccess;
 
-                    if (zero_copy_target_)
+                    if (!stage_source)
                     {
                         source_values =
                             reinterpret_cast<
                                 const gpu::GpuFr *>(
                                 source +
                                 processed);
+                    }
+                    else if (source_is_ephemeral)
+                    {
+                        if (ephemeral_source_in_flight_)
+                        {
+                            status =
+                                cudaStreamSynchronize(
+                                    stream_);
+
+                            if (status !=
+                                cudaSuccess)
+                            {
+                                throw_scaled_accumulate_cuda_error(
+                                    "ephemeral source reuse synchronization",
+                                    status);
+                            }
+
+                            record_cuda_stream_sync();
+
+                            ephemeral_source_in_flight_ =
+                                false;
+                        }
+
+                        status =
+                            cudaMemcpy(
+                                device_source_,
+                                source +
+                                    processed,
+                                byte_count,
+                                cudaMemcpyHostToDevice);
+
+                        if (status !=
+                            cudaSuccess)
+                        {
+                            throw_scaled_accumulate_cuda_error(
+                                "ephemeral session source upload",
+                                status);
+                        }
+
+                        record_cuda_h2d(
+                            byte_count);
+
+                        source_values =
+                            device_source_;
                     }
                     else
                     {
@@ -677,6 +725,12 @@ namespace gatzk::algebra
                     record_cuda_kernel_invocations(
                         1);
 
+                    if (source_is_ephemeral)
+                    {
+                        ephemeral_source_in_flight_ =
+                            true;
+                    }
+
                     processed +=
                         current_count;
                 }
@@ -726,8 +780,10 @@ namespace gatzk::algebra
                         "session synchronization",
                         status);
                 }
-
                 record_cuda_stream_sync();
+
+                ephemeral_source_in_flight_ =
+                    false;
 
                 finished_ = true;
             }
@@ -735,6 +791,16 @@ namespace gatzk::algebra
         private:
             void release_noexcept() noexcept
             {
+                if (stream_ != nullptr &&
+                    !finished_)
+                {
+                    (void)cudaStreamSynchronize(
+                        stream_);
+                }
+
+                ephemeral_source_in_flight_ =
+                    false;
+
                 if (device_source_ != nullptr)
                 {
                     (void)cudaFree(
@@ -762,6 +828,7 @@ namespace gatzk::algebra
 
             bool zero_copy_target_ = false;
             bool finished_ = false;
+            bool ephemeral_source_in_flight_ = false;
 
             gpu::GpuFr *device_target_ =
                 nullptr;
@@ -811,11 +878,9 @@ namespace gatzk::algebra
                     sizeof(gpu::GpuFr);
 
                 source_capacity_ =
-                    zero_copy_targets_
-                        ? element_count_
-                        : std::min<std::size_t>(
-                              element_count_,
-                              std::size_t{1} << 20);
+                    std::min<std::size_t>(
+                        element_count_,
+                        std::size_t{1} << 20);
 
                 stream_ =
                     scaled_accumulate_stream_pool()
@@ -826,22 +891,19 @@ namespace gatzk::algebra
 
                 try
                 {
-                    if (!zero_copy_targets_)
-                    {
-                        status =
-                            cudaMalloc(
-                                reinterpret_cast<void **>(
-                                    &device_source_),
-                                source_capacity_ *
-                                    sizeof(gpu::GpuFr));
+                    status =
+                        cudaMalloc(
+                            reinterpret_cast<void **>(
+                                &device_source_),
+                            source_capacity_ *
+                                sizeof(gpu::GpuFr));
 
-                        if (status !=
-                            cudaSuccess)
-                        {
-                            throw_scaled_accumulate_cuda_error(
-                                "paired session source allocation",
-                                status);
-                        }
+                    if (status !=
+                        cudaSuccess)
+                    {
+                        throw_scaled_accumulate_cuda_error(
+                            "paired session source allocation",
+                            status);
                     }
 
                     if (zero_copy_targets_)
@@ -979,7 +1041,8 @@ namespace gatzk::algebra
                 const mcl::Fr &first_scale,
                 const mcl::Fr &second_scale,
                 std::size_t target_offset,
-                std::size_t element_count) override
+                std::size_t element_count,
+                bool source_is_ephemeral) override
             {
                 if (finished_ ||
                     source == nullptr ||
@@ -1020,11 +1083,18 @@ namespace gatzk::algebra
                 while (processed <
                        element_count)
                 {
+                    const bool stage_source =
+                        source_is_ephemeral ||
+                        !zero_copy_targets_;
+
                     const auto current_count =
-                        std::min(
-                            source_capacity_,
-                            element_count -
-                                processed);
+                        stage_source
+                            ? std::min(
+                                  source_capacity_,
+                                  element_count -
+                                      processed)
+                            : element_count -
+                                  processed;
 
                     const auto byte_count =
                         current_count *
@@ -1037,13 +1107,57 @@ namespace gatzk::algebra
                     cudaError_t status =
                         cudaSuccess;
 
-                    if (zero_copy_targets_)
+                    if (!stage_source)
                     {
                         source_values =
                             reinterpret_cast<
                                 const gpu::GpuFr *>(
                                 source +
                                 processed);
+                    }
+                    else if (source_is_ephemeral)
+                    {
+                        if (ephemeral_source_in_flight_)
+                        {
+                            status =
+                                cudaStreamSynchronize(
+                                    stream_);
+
+                            if (status !=
+                                cudaSuccess)
+                            {
+                                throw_scaled_accumulate_cuda_error(
+                                    "paired ephemeral source reuse synchronization",
+                                    status);
+                            }
+
+                            record_cuda_stream_sync();
+
+                            ephemeral_source_in_flight_ =
+                                false;
+                        }
+
+                        status =
+                            cudaMemcpy(
+                                device_source_,
+                                source +
+                                    processed,
+                                byte_count,
+                                cudaMemcpyHostToDevice);
+
+                        if (status !=
+                            cudaSuccess)
+                        {
+                            throw_scaled_accumulate_cuda_error(
+                                "paired ephemeral session source upload",
+                                status);
+                        }
+
+                        record_cuda_h2d(
+                            byte_count);
+
+                        source_values =
+                            device_source_;
                     }
                     else
                     {
@@ -1114,6 +1228,12 @@ namespace gatzk::algebra
                     record_cuda_kernel_invocations(
                         1);
 
+                    if (source_is_ephemeral)
+                    {
+                        ephemeral_source_in_flight_ =
+                            true;
+                    }
+
                     processed +=
                         current_count;
                 }
@@ -1180,6 +1300,9 @@ namespace gatzk::algebra
 
                 record_cuda_stream_sync();
 
+                ephemeral_source_in_flight_ =
+                    false;
+
                 finished_ = true;
             }
 
@@ -1197,6 +1320,9 @@ namespace gatzk::algebra
                     (void)cudaStreamSynchronize(
                         stream_);
                 }
+
+                ephemeral_source_in_flight_ =
+                    false;
 
                 if (!zero_copy_targets_)
                 {
@@ -1255,6 +1381,7 @@ namespace gatzk::algebra
 
             bool zero_copy_targets_ = false;
             bool finished_ = false;
+            bool ephemeral_source_in_flight_ = false;
 
             cudaStream_t stream_ =
                 nullptr;

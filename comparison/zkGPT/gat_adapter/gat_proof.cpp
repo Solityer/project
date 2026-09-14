@@ -1,7 +1,9 @@
 #include "gat_proof.hpp"
 
 #include "hyrax_util.hpp"
+#include "native_lasso.hpp"
 #include "utils.hpp"
+#include "verifier.hpp"
 
 #include <algorithm>
 #include <array>
@@ -14,6 +16,10 @@
 #include <stdexcept>
 #include <set>
 #include <tuple>
+#include <cerrno>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 // hyrax.hpp declares the integer/pippenger overload but the official
 // hyrax.cpp also exports this Fr overload for the same Pedersen primitive.
@@ -28,6 +34,11 @@ namespace {
 using namespace mcl::bn;
 
 std::once_flag field_once;
+
+const std::size_t kArtifactMaxString = 1ULL << 26;
+const std::size_t kArtifactMaxMessages = 1ULL << 20;
+const std::uint64_t kArtifactMaxWireBytes = 1ULL << 30;
+const char kNativeArtifactDomain[] = "zkgpt-native-gat-fs-v1";
 
 void ensure_field() {
     std::call_once(field_once, []() { mcl::bn::initPairing(mcl::BN254); });
@@ -583,9 +594,17 @@ std::size_t trace_query_size(const GatTrace *trace) {
         range_queries = checked_add(range_queries, checked_mul(head.alignment_divisions.size(), 4, "alignment query count"), "alignment query count");
     }
     range_queries = checked_add(range_queries, checked_mul(trace->final_average_divisions.size(), 4, "average query count"), "average query count");
-    return checked_add(checked_add(checked_add(next_power_of_two(lrelu_queries), next_power_of_two(exp_queries), "padded query count"),
-                                  next_power_of_two(elu_queries), "padded query count"),
-                       next_power_of_two(range_queries), "padded query count");
+    const std::array<std::size_t, 4> blocks = {
+        next_power_of_two(lrelu_queries), next_power_of_two(exp_queries),
+        next_power_of_two(elu_queries), next_power_of_two(range_queries)};
+    std::size_t cursor = 0;
+    for (std::size_t block : blocks) {
+        const std::size_t remainder = cursor % block;
+        if (remainder != 0)
+            cursor = checked_add(cursor, block - remainder, "aligned query gap");
+        cursor = checked_add(cursor, block, "padded query count");
+    }
+    return cursor;
 }
 
 std::size_t canonical_attention_aux_size(const Graph &graph, std::size_t output_dim) {
@@ -673,10 +692,18 @@ QueryCounts canonical_query_counts(const Graph &graph, const Model &model) {
 
 std::size_t canonical_query_size(const Graph &graph, const Model &model) {
     const QueryCounts counts = canonical_query_counts(graph, model);
-    std::size_t result = next_power_of_two(counts.lrelu);
-    result = checked_add(result, next_power_of_two(counts.exp), "canonical padded query size");
-    result = checked_add(result, next_power_of_two(counts.elu), "canonical padded query size");
-    return checked_add(result, next_power_of_two(counts.range), "canonical padded query size");
+    const std::array<std::size_t, 4> blocks = {
+        next_power_of_two(counts.lrelu), next_power_of_two(counts.exp),
+        next_power_of_two(counts.elu), next_power_of_two(counts.range)};
+    std::size_t result = 0;
+    for (std::size_t block : blocks) {
+        const std::size_t remainder = result % block;
+        if (remainder != 0)
+            result = checked_add(result, block - remainder,
+                                 "canonical aligned query gap");
+        result = checked_add(result, block, "canonical padded query size");
+    }
+    return result;
 }
 
 InputLayout make_layout(std::size_t public_size, std::size_t model_size,
@@ -834,14 +861,24 @@ QueryCoordinates make_query_coordinates(const Graph &graph, const Model &model,
     QueryCoordinates result;
     result.counts = canonical_query_counts(graph, model);
     std::size_t cursor = layout.segments.at(3).offset;
+    const auto advance_block = [&cursor](std::size_t block,
+                                         const char *what) {
+        if (block == 0 || (block & (block - 1)) != 0)
+            throw std::invalid_argument("canonical query block is not power-of-two");
+        const std::size_t remainder = cursor % block;
+        if (remainder != 0)
+            cursor = checked_add(cursor, block - remainder,
+                                 "canonical aligned query gap");
+        cursor = checked_add(cursor, block, what);
+    };
     result.lrelu = cursor;
-    cursor = checked_add(cursor, next_power_of_two(result.counts.lrelu), "LReLU query block");
+    advance_block(next_power_of_two(result.counts.lrelu), "LReLU query block");
     result.exp = cursor;
-    cursor = checked_add(cursor, next_power_of_two(result.counts.exp), "ExpMap query block");
+    advance_block(next_power_of_two(result.counts.exp), "ExpMap query block");
     result.elu = cursor;
-    cursor = checked_add(cursor, next_power_of_two(result.counts.elu), "ELU query block");
+    advance_block(next_power_of_two(result.counts.elu), "ELU query block");
     result.range = cursor;
-    cursor = checked_add(cursor, next_power_of_two(result.counts.range), "range query block");
+    advance_block(next_power_of_two(result.counts.range), "range query block");
     result.end = cursor;
     const std::size_t expected_end = checked_add(layout.segments.at(3).offset,
                                                 layout.segments.at(3).logical_length,
@@ -1709,12 +1746,23 @@ bool validate_gat_circuit_plan_impl(const GatCircuitPlan &plan, std::string *rea
                 descriptor.padded_queries != next_power_of_two(descriptor.real_queries) ||
                 descriptor.table_domain == 0 || (descriptor.table_domain & (descriptor.table_domain - 1)) != 0 ||
                 descriptor.query_offset != query_cursor ||
+                ((descriptor.query_offset - query_segment.offset) %
+                     descriptor.padded_queries) != 0 ||
                 !require_span(descriptor.query_offset, descriptor.padded_queries) ||
                 descriptor.query_offset + descriptor.padded_queries > query_segment.offset + query_segment.logical_length ||
                 descriptor.incidence_rule.find("L_qry/") != 0 ||
                 descriptor.incidence_rule.find("canonical_operation_index_row_major") == std::string::npos ||
                 descriptor.challenge_policy != "LC_before_challenge" || descriptor.query_encoding.empty()) {
-                return fail("Lasso query block is not canonical or not contiguous");
+                std::ostringstream detail;
+                detail << "Lasso query block is not canonical or not contiguous"
+                       << " family=" << descriptor.family_id
+                       << " off=" << descriptor.query_offset
+                       << " cursor=" << query_cursor
+                       << " seg=" << query_segment.offset
+                       << " logical=" << query_segment.logical_length
+                       << " real=" << descriptor.real_queries
+                       << " padded=" << descriptor.padded_queries;
+                return fail(detail.str());
             }
             query_cursor = checked_add(query_cursor, descriptor.padded_queries, "validated Lasso query cursor");
         }
@@ -1744,6 +1792,7 @@ bool validate_gat_circuit_plan_impl(const GatCircuitPlan &plan, std::string *rea
 
 std::string commitment_encoding(const CommitmentWire &commitment) {
     std::string encoded;
+    append_string(encoded, "zkgpt-gat-commitment-wire-v2");
     append_string(encoded, commitment.scheme);
     append_string(encoded, commitment.basis_id);
     append_u64(encoded, commitment.logical_size);
@@ -1754,6 +1803,7 @@ std::string commitment_encoding(const CommitmentWire &commitment) {
 
 void append_registration_encoding(std::string &encoded,
                                   const ModelRegistration &registration) {
+    append_string(encoded, "zkgpt-gat-registration-context-v2");
     append_string(encoded, registration.dataset);
     append_string(encoded, registration.model_arch_id);
     append_string(encoded, registration.quant_cfg_id);
@@ -1789,30 +1839,397 @@ std::string section_encoding(const ProofSection &section) {
     for (const TranscriptMessage &message : section.messages) {
         append_string(encoded, message.label);
         append_string(encoded, message.payload);
+        append_u64(encoded, message.kind);
+        append_u64(encoded, message.sequence);
     }
     return encoded;
 }
 
 std::string artifact_transcript_digest(const GatProofArtifact &artifact) {
-    FiatShamirTranscript transcript("zkgpt-gat-fs-v1");
-    transcript.absorb("statement", artifact.statement_digest);
-    transcript.absorb("com_aux", commitment_encoding(artifact.com_aux));
-    transcript.absorb("com_L", commitment_encoding(artifact.com_L));
-    transcript.absorb("Pi_Lasso", section_encoding(artifact.Pi_Lasso));
-    transcript.absorb("Pi_MatMul", section_encoding(artifact.Pi_MatMul));
-    transcript.absorb("Pi_GKR", section_encoding(artifact.Pi_GKR));
-    transcript.absorb("Pi_combine", section_encoding(artifact.Pi_combine));
-    transcript.absorb("Pi_open", section_encoding(artifact.Pi_open));
-    (void)transcript.challenge("lasso");
-    (void)transcript.challenge("matmul");
-    (void)transcript.challenge("gkr");
-    (void)transcript.challenge("combine");
-    (void)transcript.challenge("open");
-    return transcript.digest();
+    // The native typed transcript is the authenticated proof object.  Keep
+    // the helper name for callers that already use it, but deliberately avoid
+    // rebuilding a digest from section summaries: summaries are collector
+    // metadata and cannot stand in for GKR/MatMul/Lasso/opening messages.
+    NativeProofSession session;
+    std::string reason;
+    if (!NativeProofSession::from_messages(artifact.native_domain,
+                                           artifact.native_statement,
+                                           artifact.native_messages, session,
+                                           &reason)) {
+        return std::string();
+    }
+    return session.digest();
+}
+
+// Build a genuine Hyrax/Pedersen vector commitment and retain its blinding
+// scalar only on the prover side.  The blind is an independent H*rho term;
+// putting rho into a padding coordinate would leave the commitment itself
+// unblinded and would not support a zero-knowledge opening.
+CommitmentWire commit_segment_with_mask(const std::vector<Int> &values,
+                                        const std::string &basis_label,
+                                        std::size_t padded_domain,
+                                        Fr *mask_out,
+                                        std::vector<Fr> *masked_values_out) {
+    ensure_field();
+    if (values.empty() || basis_label.empty() || padded_domain == 0 ||
+        (padded_domain & (padded_domain - 1)) != 0 ||
+        values.size() > padded_domain) {
+        throw std::invalid_argument("invalid masked Hyrax segment domain");
+    }
+    std::vector<Fr> scalars(padded_domain, Fr(0));
+    for (std::size_t i = 0; i < values.size(); ++i)
+        scalars[i] = Fr(values[i]);
+    const std::string basis_id = fixed_digest(hash_hex(basis_label));
+    const G1 H = hyrax::derive_pedersen_blinding_generator(basis_id);
+    Fr mask;
+    mask.setByCSPRNG();
+    std::vector<G1> generators(padded_domain);
+    for (std::size_t i = 0; i < padded_domain; ++i)
+        hashAndMapToG1(generators[i], basis_label + "/coordinate/" + std::to_string(i));
+    G1 point = perdersen_commit(generators.data(), scalars.data(),
+                                static_cast<int>(padded_domain));
+    point += H * mask;
+    if (mask_out != nullptr) *mask_out = mask;
+    if (masked_values_out != nullptr) *masked_values_out = std::move(scalars);
+    CommitmentWire result;
+    result.basis_id = basis_id;
+    result.logical_size = values.size();
+    result.padded_size = padded_domain;
+    result.point_hex = point_hex(point);
+    return result;
+}
+
+CommitmentWire commit_field_segment_with_mask(
+    const std::vector<Fr> &values, const std::string &basis_label,
+    std::size_t padded_domain, std::vector<Fr> *masked_values_out) {
+    ensure_field();
+    if (values.empty() || basis_label.empty() || padded_domain == 0 ||
+        (padded_domain & (padded_domain - 1)) != 0 ||
+        values.size() > padded_domain)
+        throw std::invalid_argument("invalid field segment commitment domain");
+    std::vector<Fr> scalars(padded_domain, Fr(0));
+    std::copy(values.begin(), values.end(), scalars.begin());
+    const std::string basis_id = fixed_digest(hash_hex(basis_label));
+    const G1 H = hyrax::derive_pedersen_blinding_generator(basis_id);
+    Fr mask;
+    mask.setByCSPRNG();
+    std::vector<G1> generators(padded_domain);
+    for (std::size_t index = 0; index < padded_domain; ++index)
+        hashAndMapToG1(generators[index], basis_label + "/coordinate/" +
+                                      std::to_string(index));
+    G1 point = perdersen_commit(generators.data(), scalars.data(),
+                                static_cast<int>(padded_domain));
+    point += H * mask;
+    if (masked_values_out != nullptr) *masked_values_out = scalars;
+    CommitmentWire result;
+    result.basis_id = basis_id;
+    result.logical_size = values.size();
+    result.padded_size = padded_domain;
+    result.point_hex = point_hex(point);
+    return result;
+}
+
+std::string registration_basis_label_public(const ModelRegistration &registration,
+                                            const InputLayout &layout) {
+    std::string encoded;
+    append_string(encoded, "zkgpt-gat-registration-material-v2");
+    append_string(encoded, registration.dataset);
+    append_string(encoded, registration.model_arch_id);
+    append_string(encoded, registration.quant_cfg_id);
+    append_string(encoded, registration.static_tables_id);
+    append_string(encoded, registration.field_id);
+    append_string(encoded, registration.field_modulus);
+    append_string(encoded, registration.manifest_digest);
+    append_string(encoded, registration.model_digest);
+    append_string(encoded, registration.bounds_digest);
+    append_string(encoded, registration.quant_digest);
+    append_layout_encoding(encoded, layout);
+    append_string(encoded, registration.opening_policy);
+    return "zkGPT/model/v2/" + hash_hex(encoded);
+}
+
+std::vector<Fr> adapter_mle_basis(const std::vector<Fr> &point) {
+    if (point.empty() || point.size() >= sizeof(std::size_t) * 8)
+        throw std::invalid_argument("adapter MLE point dimension is invalid");
+    std::vector<Fr> basis(std::size_t(1) << point.size());
+    basis[0] = Fr(1) - point[0];
+    basis[1] = point[0];
+    for (std::size_t bit = 1; bit < point.size(); ++bit) {
+        const std::size_t old_size = std::size_t(1) << bit;
+        for (std::size_t index = old_size; index-- > 0;) {
+            const Fr previous = basis[index];
+            basis[index] = previous * (Fr(1) - point[bit]);
+            basis[index + old_size] = previous * point[bit];
+        }
+    }
+    return basis;
+}
+
+void append_division_components(std::vector<Fr> &values,
+                                const DivisionWitness &division) {
+    // The canonical adapter layout reserves nine coordinates.  The signed
+    // dividend is derivable from sigma*a; keep denominator as the ninth
+    // public-policy-bound integer instead of duplicating that derived value.
+    values.push_back(Fr(division.sigma));
+    values.push_back(Fr(division.z));
+    values.push_back(Fr(division.a));
+    values.push_back(Fr(division.q));
+    values.push_back(Fr(division.r));
+    values.push_back(Fr(division.delta));
+    values.push_back(division.a_inverse);
+    values.push_back(division.d_inverse);
+    values.push_back(Fr(division.denominator));
+}
+
+void append_attention_aux_values(std::vector<Fr> &values,
+                                 const AttentionTrace &trace) {
+    const auto append_ints = [&values](const std::vector<Int> &source) {
+        for (Int value : source) values.push_back(Fr(value));
+    };
+    append_ints(trace.projection);
+    append_ints(trace.source_score);
+    append_ints(trace.destination_score);
+    append_ints(trace.raw_score);
+    append_ints(trace.leaky_score);
+    append_ints(trace.group_max);
+    append_ints(trace.delta);
+    append_ints(trace.exp);
+    append_ints(trace.group_sum);
+    values.insert(values.end(), trace.group_inverse.begin(), trace.group_inverse.end());
+    append_ints(trace.max_selector);
+    values.insert(values.end(), trace.alpha.begin(), trace.alpha.end());
+    append_ints(trace.integer_numerator);
+    values.insert(values.end(), trace.field_numerator.begin(), trace.field_numerator.end());
+    values.insert(values.end(), trace.field_aggregate.begin(), trace.field_aggregate.end());
+    append_ints(trace.recovered);
+    append_ints(trace.activated);
+    for (const DivisionWitness &division : trace.divisions)
+        append_division_components(values, division);
+}
+
+std::vector<Fr> flatten_aux_values(const ForwardResult &forward) {
+    std::vector<Fr> values;
+    values.reserve(trace_aux_size(&forward.trace));
+    for (Int value : forward.trace.input.values) values.push_back(Fr(value));
+    for (const HiddenLayerTrace &layer : forward.trace.hidden_layers) {
+        for (Int value : layer.concatenated.values) values.push_back(Fr(value));
+        for (const AttentionTrace &head : layer.heads)
+            append_attention_aux_values(values, head);
+    }
+    for (const OutputHeadTrace &head : forward.trace.output_heads) {
+        append_attention_aux_values(values, head.attention);
+        for (Int value : head.bias) values.push_back(Fr(value));
+        for (Int value : head.aggregate) values.push_back(Fr(value));
+        for (Int value : head.aligned) values.push_back(Fr(value));
+        for (Int value : head.logits) values.push_back(Fr(value));
+        for (const DivisionWitness &division : head.alignment_divisions)
+            append_division_components(values, division);
+    }
+    for (Int value : forward.trace.head_sum) values.push_back(Fr(value));
+    for (const DivisionWitness &division : forward.trace.final_average_divisions)
+        append_division_components(values, division);
+    for (Int value : forward.trace.logits.values) values.push_back(Fr(value));
+    return values;
+}
+
+Wide abs_wide_adapter(Int value) {
+    return value < 0 ? -static_cast<Wide>(value) : static_cast<Wide>(value);
+}
+
+Fr packed_table_value(Int x, Int y, Int bx, Int by) {
+    const Wide base = static_cast<Wide>(2) * static_cast<Wide>(by) + 1;
+    const Wide packed = (static_cast<Wide>(x) + bx) * base +
+                        (static_cast<Wide>(y) + by);
+    if (packed < 0 || packed > static_cast<Wide>(std::numeric_limits<Int>::max()))
+        throw std::overflow_error("packed lookup tuple exceeds adapter integer range");
+    return Fr(static_cast<Int>(packed));
+}
+
+void append_four_bits(std::vector<Fr> &values, Int input) {
+    Wide absolute = abs_wide_adapter(input);
+    for (unsigned bit = 0; bit < 4; ++bit) {
+        values.push_back(Fr(static_cast<Int>((absolute >> bit) & 1)));
+    }
+}
+
+void append_range_attention_queries(std::vector<Fr> &values,
+                                    const AttentionTrace &trace) {
+    for (Int value : trace.recovered) append_four_bits(values, value);
+    for (const DivisionWitness &division : trace.divisions)
+        append_four_bits(values, division.q);
+}
+
+struct LassoAdapterBundle {
+    std::vector<NativeLassoFamilyProver> families;
+    NativeLassoQueryProver query;
+    // The query vector itself remains private prover input.  Keep the raw
+    // coordinates here (the old name is retained for source compatibility),
+    // while the hiding Pedersen blinder is carried by query and never enters
+    // the artifact wire.
+    std::vector<Fr> masked_l;
+    CommitmentWire com_L;
+};
+
+std::string native_family_id(const std::string &family) {
+    if (family == "function/lrelu") return "function_lrelu";
+    if (family == "function/exp") return "function_exp";
+    if (family == "function/elu") return "function_elu";
+    if (family == "range/all") return "range_all";
+    throw std::invalid_argument("unknown canonical Lasso family: " + family);
+}
+
+const std::vector<TablePoint> &table_points_for(
+    const StaticTables &tables, const std::string &family) {
+    if (family == "function/lrelu") return tables.lrelu;
+    if (family == "function/exp") return tables.exp;
+    if (family == "function/elu") return tables.elu;
+    throw std::invalid_argument("function table requested for non-function family");
+}
+
+LassoAdapterBundle build_lasso_bundle(const GatCircuitPlan &plan,
+                                      const ForwardResult &forward,
+                                      const StaticTables &tables,
+                                      const std::string &basis_label) {
+    if (plan.input_layout.segments.size() != 4)
+        throw std::invalid_argument("Lasso bundle requires canonical four-segment layout");
+    const InputSegment &l_segment = plan.input_layout.segments.at(3);
+    std::map<std::string, std::vector<std::pair<Int, Int> > > function_queries;
+    std::map<std::string, std::vector<Fr> > range_queries;
+    const auto append_attention = [&](const AttentionTrace &trace, bool hidden) {
+        std::vector<std::pair<Int, Int> > &lrelu = function_queries["function/lrelu"];
+        std::vector<std::pair<Int, Int> > &exp = function_queries["function/exp"];
+        for (std::size_t index = 0; index < trace.raw_score.size(); ++index)
+            lrelu.push_back(std::make_pair(trace.raw_score[index], trace.leaky_score[index]));
+        for (std::size_t index = 0; index < trace.delta.size(); ++index)
+            exp.push_back(std::make_pair(trace.delta[index], trace.exp[index]));
+        if (hidden) {
+            std::vector<std::pair<Int, Int> > &elu = function_queries["function/elu"];
+            for (std::size_t index = 0; index < trace.recovered.size(); ++index)
+                elu.push_back(std::make_pair(trace.recovered[index], trace.activated[index]));
+        }
+        append_range_attention_queries(range_queries["range/all"], trace);
+    };
+    for (const HiddenLayerTrace &layer : forward.trace.hidden_layers)
+        for (const AttentionTrace &head : layer.heads) append_attention(head, true);
+    for (const OutputHeadTrace &head : forward.trace.output_heads) {
+        append_attention(head.attention, false);
+        for (const DivisionWitness &division : head.alignment_divisions)
+            append_four_bits(range_queries["range/all"], division.q);
+    }
+    for (const DivisionWitness &division : forward.trace.final_average_divisions)
+        append_four_bits(range_queries["range/all"], division.q);
+
+    std::vector<Fr> l_values(plan.input_layout.n_in, Fr(0));
+    LassoAdapterBundle result;
+    for (const LassoFamilyDescriptor &descriptor : plan.lasso) {
+        const std::string family_id = native_family_id(descriptor.family_id);
+        NativeLassoFamilyProver family;
+        family.family_id = family_id;
+        family.table_id = "table_" + family_id;
+        family.resource_id = "resource_" + family_id;
+        family.registration_id = "registration_" + family_id;
+        family.segment_offset = descriptor.query_offset - l_segment.offset;
+        family.logical_queries = descriptor.real_queries;
+        family.padded_queries = descriptor.padded_queries;
+        if (family.padded_queries == 0 ||
+            family.segment_offset % family.padded_queries != 0)
+            throw std::invalid_argument(
+                "Lasso family segment is not power-of-two aligned for masked opening");
+        if (family.segment_offset + family.padded_queries > l_segment.padded_length)
+            throw std::invalid_argument("Lasso family exceeds canonical L_qry domain");
+
+        std::vector<Fr> real_queries;
+        if (descriptor.family_id == "range/all") {
+            family.table = {Fr(0), Fr(1)};
+            family.padding_index = 0;
+            family.padding_value = Fr(0);
+            real_queries = range_queries[descriptor.family_id];
+        } else {
+            const std::vector<TablePoint> &points =
+                table_points_for(tables, descriptor.family_id);
+            Int bx = 0, by = 0;
+            for (const TablePoint &point : points) {
+                bx = std::max<Int>(bx, static_cast<Int>(abs_wide_adapter(point.x)));
+                by = std::max<Int>(by, static_cast<Int>(abs_wide_adapter(point.y)));
+            }
+            family.table.reserve(descriptor.table_domain);
+            for (const TablePoint &point : points)
+                family.table.push_back(packed_table_value(point.x, point.y, bx, by));
+            if (family.table.empty()) throw std::invalid_argument("empty static Lasso table");
+            while (family.table.size() < descriptor.table_domain)
+                family.table.push_back(family.table.front());
+            family.padding_index = 0;
+            family.padding_value = family.table[0];
+            const std::vector<std::pair<Int, Int> > &pairs =
+                function_queries[descriptor.family_id];
+            for (const std::pair<Int, Int> &pair : pairs)
+                real_queries.push_back(packed_table_value(pair.first, pair.second, bx, by));
+        }
+        if (real_queries.size() != descriptor.real_queries)
+            throw std::invalid_argument("canonical Lasso query count does not match plan");
+        for (std::size_t index = 0; index < real_queries.size(); ++index)
+            l_values[family.segment_offset + index] = real_queries[index];
+        while (real_queries.size() < family.padded_queries)
+            real_queries.push_back(family.padding_value);
+        family.queries = real_queries;
+        family.matrix.assign(family.padded_queries * family.table.size(), Fr(0));
+        for (std::size_t row = 0; row < family.padded_queries; ++row) {
+            std::size_t selected = family.table.size();
+            for (std::size_t column = 0; column < family.table.size(); ++column)
+                if (family.table[column] == family.queries[row]) {
+                    selected = column;
+                    break;
+                }
+            if (selected == family.table.size())
+                throw std::invalid_argument("Lasso query is absent from static table");
+            family.matrix[row + selected * family.padded_queries] = Fr(1);
+        }
+        family.matrix_generators.resize(family.matrix.size());
+        for (std::size_t index = 0; index < family.matrix_generators.size(); ++index)
+            hashAndMapToG1(family.matrix_generators[index],
+                           basis_label + "/lasso/" + family.family_id +
+                           "/matrix/" + std::to_string(index));
+        result.families.push_back(std::move(family));
+    }
+    std::sort(result.families.begin(), result.families.end(),
+              [](const NativeLassoFamilyProver &left,
+                 const NativeLassoFamilyProver &right) {
+                  return left.family_id < right.family_id;
+              });
+    result.query.G.clear();
+    hashAndMapToG1(result.query.G, basis_label + "/G");
+    result.query.generators.resize(plan.input_layout.n_in);
+    for (std::size_t index = 0; index < result.query.generators.size(); ++index)
+        hashAndMapToG1(result.query.generators[index],
+                       basis_label + "/coordinate/" + std::to_string(index));
+    // L_qry is a real hiding Pedersen MLE commitment.  The previous adapter
+    // generated a blind in a wire-only helper and then recomputed a clear
+    // commitment from the vector, which made the native masked Lasso API
+    // reject the query commitment (and silently lost the prover blinder).
+    // Construct it once through the native Hyrax primitive and retain the
+    // scalar only in the in-process query object.
+    const std::string query_basis_id = fixed_digest(hash_hex(basis_label));
+    const hyrax::PedersenMleCommitment query_commitment =
+        hyrax::pedersen_commit_mle(result.query.generators, l_values,
+                                   query_basis_id);
+    result.masked_l = l_values;
+    result.query.values = l_values;
+    result.query.commitment = query_commitment.commitment;
+    result.query.basis_id = query_commitment.basis_id;
+    result.query.blinding_generator = query_commitment.blinding_generator;
+    result.query.commitment_blinding = query_commitment.blinding;
+    result.query.has_commitment_blinding = true;
+    result.com_L.scheme = "hyrax-pedersen-bn254";
+    result.com_L.basis_id = query_commitment.basis_id;
+    result.com_L.logical_size = l_segment.logical_length;
+    result.com_L.padded_size = plan.input_layout.n_in;
+    result.com_L.point_hex = point_hex(query_commitment.commitment);
+    return result;
 }
 
 std::string context_encoding(const VerifierContext &context) {
     std::string encoded;
+    append_string(encoded, "zkgpt-gat-verifier-context-v2");
     append_string(encoded, context.relation_id);
     append_string(encoded, context.model_arch_id);
     append_string(encoded, context.privacy_extension_profile_id);
@@ -1822,6 +2239,7 @@ std::string context_encoding(const VerifierContext &context) {
     append_string(encoded, commitment_encoding(context.com_W));
     append_string(encoded, context.plan.circuit_id);
     append_string(encoded, context.plan.plan_digest);
+    append_string(encoded, "public-graph-v2");
     append_u64(encoded, context.graph.num_nodes);
     append_u64(encoded, context.graph.num_features);
     append_u64(encoded, context.graph.graph_count);
@@ -1831,9 +2249,11 @@ std::string context_encoding(const VerifierContext &context) {
     for (Int value : context.graph.edge_gid) append_int(encoded, value);
     for (std::size_t value : context.graph.node_ptr) append_u64(encoded, value);
     for (std::size_t value : context.graph.edge_ptr) append_u64(encoded, value);
+    append_string(encoded, "public-features-v2");
     append_u64(encoded, context.public_features.rows);
     append_u64(encoded, context.public_features.cols);
     for (Int value : context.public_features.values) append_int(encoded, value);
+    append_string(encoded, "public-logits-v2");
     append_u64(encoded, context.public_logits.rows);
     append_u64(encoded, context.public_logits.cols);
     for (Int value : context.public_logits.values) append_int(encoded, value);
@@ -1915,6 +2335,21 @@ bool read_exact(std::ifstream &in, char *buffer, std::size_t size) {
     return in.good() && static_cast<std::size_t>(in.gcount()) == size;
 }
 
+bool wire_size_within_limit(std::ifstream &in) {
+    const std::istream::pos_type origin = in.tellg();
+    if (origin == std::istream::pos_type(-1)) return false;
+    in.seekg(0, std::ios::end);
+    const std::istream::pos_type end = in.tellg();
+    in.seekg(origin);
+    if (end == std::istream::pos_type(-1) || end < origin) return false;
+    return static_cast<std::uint64_t>(end) <= kArtifactMaxWireBytes;
+}
+
+void write_u8(std::ofstream &out, std::uint8_t value) {
+    const char byte = static_cast<char>(value);
+    out.write(&byte, 1);
+}
+
 bool read_u32(std::ifstream &in, std::uint32_t &value) {
     char bytes[4];
     if (!read_exact(in, bytes, sizeof(bytes))) return false;
@@ -1931,11 +2366,47 @@ bool read_u64(std::ifstream &in, std::uint64_t &value) {
     return true;
 }
 
+bool read_u8(std::ifstream &in, std::uint8_t &value) {
+    char byte = 0;
+    if (!read_exact(in, &byte, 1)) return false;
+    value = static_cast<std::uint8_t>(static_cast<unsigned char>(byte));
+    return true;
+}
+
 bool read_string(std::ifstream &in, std::string &value) {
     std::uint64_t size = 0;
-    if (!read_u64(in, size) || size > (1ULL << 26)) return false;
+    if (!read_u64(in, size) || size > kArtifactMaxString) return false;
     value.assign(static_cast<std::size_t>(size), '\0');
     return read_exact(in, value.empty() ? nullptr : &value[0], value.size());
+}
+
+void write_native_statement(std::ofstream &out,
+                            const NativeProofStatement &statement) {
+    write_string(out, statement.verifier_context_digest);
+    write_string(out, statement.field_id);
+    write_string(out, statement.plan_digest);
+    write_string(out, statement.resources_digest);
+    write_string(out, statement.tables_digest);
+    write_string(out, statement.com_w_digest);
+    write_string(out, statement.aux_digest);
+    write_string(out, statement.l_digest);
+    write_string(out, statement.basis_digest);
+    write_u64(out, statement.l_dimension);
+    write_string(out, statement.statement_root_digest);
+}
+
+bool read_native_statement(std::ifstream &in, NativeProofStatement &statement) {
+    return read_string(in, statement.verifier_context_digest) &&
+           read_string(in, statement.field_id) &&
+           read_string(in, statement.plan_digest) &&
+           read_string(in, statement.resources_digest) &&
+           read_string(in, statement.tables_digest) &&
+           read_string(in, statement.com_w_digest) &&
+           read_string(in, statement.aux_digest) &&
+           read_string(in, statement.l_digest) &&
+           read_string(in, statement.basis_digest) &&
+           read_u64(in, statement.l_dimension) &&
+           read_string(in, statement.statement_root_digest);
 }
 
 void write_commitment(std::ofstream &out, const CommitmentWire &commitment) {
@@ -1965,17 +2436,25 @@ void write_section(std::ofstream &out, const ProofSection &section) {
     for (const TranscriptMessage &message : section.messages) {
         write_string(out, message.label);
         write_string(out, message.payload);
+        write_u8(out, message.kind);
+        write_u64(out, message.sequence);
     }
 }
 
 bool read_section(std::ifstream &in, ProofSection &section) {
     std::uint64_t count = 0;
-    if (!read_string(in, section.protocol) || !read_u64(in, count) || count > (1ULL << 20)) return false;
+    if (!read_string(in, section.protocol) || !read_u64(in, count) ||
+        count > kArtifactMaxMessages) return false;
     section.messages.clear();
     section.messages.reserve(static_cast<std::size_t>(count));
     for (std::uint64_t i = 0; i < count; ++i) {
         TranscriptMessage message;
-        if (!read_string(in, message.label) || !read_string(in, message.payload)) return false;
+        std::uint8_t kind = 0;
+        if (!read_string(in, message.label) || !read_string(in, message.payload) ||
+            !read_u8(in, kind) || !read_u64(in, message.sequence) ||
+            kind < static_cast<std::uint8_t>(NativeProofMessageKind::Data) ||
+            kind > static_cast<std::uint8_t>(NativeProofMessageKind::Challenge)) return false;
+        message.kind = kind;
         section.messages.push_back(std::move(message));
     }
     return true;
@@ -1989,6 +2468,32 @@ bool forbidden_payload(const std::string &value) {
     static const char *forbidden[] = {"WITNESS", "witness", "PRIVATE_TRACE", "private_trace", "raw_model", "raw_aux", "raw_lookup"};
     for (const char *needle : forbidden) if (value.find(needle) != std::string::npos) return true;
     return false;
+}
+
+bool is_lower_hex_digest(const std::string &value) {
+    if (value.size() != 64) return false;
+    for (char character : value) {
+        if (!((character >= '0' && character <= '9') ||
+              (character >= 'a' && character <= 'f'))) return false;
+    }
+    return true;
+}
+
+bool canonical_field_wire(const std::string &value) {
+    if (value.empty() || value.size() > 128) return false;
+    try {
+        ensure_field();
+        Field parsed;
+        parsed.setStr(value, 16);
+        return field_hex(parsed) == value;
+    } catch (...) {
+        return false;
+    }
+}
+
+bool valid_native_kind(std::uint8_t kind) {
+    return kind >= static_cast<std::uint8_t>(NativeProofMessageKind::Data) &&
+           kind <= static_cast<std::uint8_t>(NativeProofMessageKind::Challenge);
 }
 
 } // namespace
@@ -2009,8 +2514,19 @@ GatCircuitPlan build_gat_circuit_plan(const Graph &graph, const Model &model,
 }
 
 bool CommitmentWire::valid() const {
-    if (scheme != "hyrax-pedersen-bn254" || basis_id.empty() || point_hex.empty() || logical_size == 0 || padded_size == 0 || (padded_size & (padded_size - 1)) != 0 || logical_size > padded_size) return false;
-    return point_hex.size() >= 2;
+    if (scheme != "hyrax-pedersen-bn254" || !is_lower_hex_digest(basis_id) ||
+        point_hex.empty() || logical_size == 0 || padded_size == 0 ||
+        padded_size > (1ULL << 30) ||
+        (padded_size & (padded_size - 1)) != 0 || logical_size > padded_size)
+        return false;
+    try {
+        ensure_field();
+        G1 point;
+        point.deserializeHexStr(point_hex);
+        return point.serializeToHexStr() == point_hex;
+    } catch (...) {
+        return false;
+    }
 }
 
 CommitmentWire commit_private_segment(const std::vector<Int> &values,
@@ -2022,36 +2538,154 @@ CommitmentWire commit_private_segment(const std::vector<Int> &values,
 CommitmentWire commit_private_segment(const std::vector<Int> &values,
                                       const std::string &basis_label,
                                       std::size_t padded_domain) {
-    ensure_field();
-    if (basis_label.empty()) throw std::invalid_argument("Hyrax commitment basis label is empty");
-    if (values.empty()) throw std::invalid_argument("cannot commit an empty zkGPT segment");
-    if (padded_domain == 0 || (padded_domain & (padded_domain - 1)) != 0 || values.size() > padded_domain) {
-        throw std::invalid_argument("Hyrax commitment domain is not the canonical shared N_in");
-    }
-    const std::size_t padded = padded_domain;
-    std::vector<Fr> scalars(padded, Fr(0));
-    for (std::size_t i = 0; i < values.size(); ++i) scalars[i] = Fr(values[i]);
-    // A fresh blind is inserted in a dedicated padding coordinate whenever
-    // possible.  For an exactly full domain the last coordinate is blinded;
-    // the opening protocol must account for this coordinate in its native
-    // masking extension before a formal artifact can be emitted.
     Fr blind;
-    blind.setByCSPRNG();
-    scalars[padded - 1] += blind;
-    std::vector<G1> generators(padded);
-    for (std::size_t i = 0; i < padded; ++i) {
-        const std::string label = basis_label + "/coordinate/" + std::to_string(i);
-        hashAndMapToG1(generators[i], label);
-    }
-    // This is the official Hyrax Pedersen commitment primitive, not an
-    // adapter-side replacement.  No scalar or blind is retained in the wire.
-    const G1 point = perdersen_commit(generators.data(), scalars.data(), static_cast<int>(padded));
-    CommitmentWire result;
-    result.basis_id = hash_hex(basis_label);
-    result.logical_size = values.size();
-    result.padded_size = padded;
-    result.point_hex = point_hex(point);
+    return commit_segment_with_mask(values, basis_label, padded_domain, &blind,
+                                    nullptr);
+}
+
+ProverCommitment commit_private_segment_for_prover(
+    const std::vector<Int> &values, const std::string &basis_label,
+    std::size_t padded_domain) {
+    ProverCommitment result;
+    result.wire = commit_segment_with_mask(values, basis_label, padded_domain,
+                                           &result.blinder, nullptr);
     return result;
+}
+
+namespace {
+
+const char kComWSecretMagic[] = "zkgpt-gat-com-w-secret-v1";
+
+bool read_secret_file(const std::string &path, std::string &payload,
+                      std::string *reason) {
+    const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
+        set_reason(reason, "cannot open com_W prover secret");
+        return false;
+    }
+    struct stat metadata {};
+    if (::fstat(fd, &metadata) != 0 || !S_ISREG(metadata.st_mode) ||
+        (metadata.st_mode & (S_IRWXG | S_IRWXO)) != 0 || metadata.st_size < 0 ||
+        metadata.st_size > 4096) {
+        ::close(fd);
+        set_reason(reason, "com_W prover secret permissions or size are invalid");
+        return false;
+    }
+    payload.assign(static_cast<std::size_t>(metadata.st_size), '\0');
+    std::size_t offset = 0;
+    while (offset < payload.size()) {
+        const ssize_t got = ::read(fd, &payload[offset], payload.size() - offset);
+        if (got <= 0) {
+            ::close(fd);
+            set_reason(reason, "cannot read com_W prover secret");
+            return false;
+        }
+        offset += static_cast<std::size_t>(got);
+    }
+    ::close(fd);
+    return true;
+}
+
+bool parse_secret_payload(const ModelRegistration &registration,
+                          const std::string &payload, Fr &blinder,
+                          std::string *reason) {
+    std::istringstream in(payload);
+    std::string magic, version, registration_digest, basis_id;
+    std::string logical_size, padded_size, point, blinder_hex, trailing;
+    if (!(in >> magic >> version >> registration_digest >> basis_id >>
+          logical_size >> padded_size >> point >> blinder_hex) ||
+        (in >> trailing) || magic != kComWSecretMagic || version != "1" ||
+        registration_digest != registration.registration_digest ||
+        basis_id != registration.com_W.basis_id ||
+        logical_size != std::to_string(registration.com_W.logical_size) ||
+        padded_size != std::to_string(registration.com_W.padded_size) ||
+        point != registration.com_W.point_hex || !canonical_field_wire(blinder_hex)) {
+        set_reason(reason, "com_W prover secret identity mismatch");
+        return false;
+    }
+    try {
+        blinder.setStr(blinder_hex, 16);
+        if (field_hex(blinder) != blinder_hex) throw std::runtime_error("non-canonical field");
+    } catch (...) {
+        set_reason(reason, "com_W prover secret blinder is malformed");
+        return false;
+    }
+    return true;
+}
+
+} // namespace
+
+bool write_prover_commitment_secret(const ModelRegistration &registration,
+                                    const std::string &path,
+                                    std::string *reason) {
+    try {
+        ensure_field();
+        if (path.empty() || !registration_wire_valid(registration) ||
+            !registration.has_private_padding_mask) {
+            set_reason(reason, "com_W prover secret requires an in-process registered model");
+            return false;
+        }
+        if (field_hex(registration.com_W_padding_mask).empty()) {
+            set_reason(reason, "com_W prover secret blinder is unavailable");
+            return false;
+        }
+        std::ostringstream encoded;
+        encoded << kComWSecretMagic << " 1 " << registration.registration_digest
+                << ' ' << registration.com_W.basis_id << ' '
+                << registration.com_W.logical_size << ' '
+                << registration.com_W.padded_size << ' '
+                << registration.com_W.point_hex << ' '
+                << field_hex(registration.com_W_padding_mask) << '\n';
+        const std::string payload = encoded.str();
+        const int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL |
+                                             O_CLOEXEC, S_IRUSR | S_IWUSR);
+        if (fd < 0) {
+            set_reason(reason, errno == EEXIST
+                                  ? "com_W prover secret already exists"
+                                  : "cannot create com_W prover secret");
+            return false;
+        }
+        bool ok = true;
+        std::size_t offset = 0;
+        while (offset < payload.size()) {
+            const ssize_t written = ::write(fd, payload.data() + offset,
+                                            payload.size() - offset);
+            if (written <= 0) {
+                ok = false;
+                break;
+            }
+            offset += static_cast<std::size_t>(written);
+        }
+        if (::fchmod(fd, S_IRUSR | S_IWUSR) != 0) ok = false;
+        if (::close(fd) != 0) ok = false;
+        if (!ok) {
+            ::unlink(path.c_str());
+            set_reason(reason, "cannot write com_W prover secret");
+            return false;
+        }
+        return true;
+    } catch (const std::exception &error) {
+        set_reason(reason, error.what());
+        return false;
+    }
+}
+
+bool read_prover_commitment_secret(const ModelRegistration &registration,
+                                   const std::string &path, Fr &blinder,
+                                   std::string *reason) {
+    try {
+        ensure_field();
+        if (path.empty() || !registration_wire_valid(registration)) {
+            set_reason(reason, "com_W prover secret requires a valid registration wire");
+            return false;
+        }
+        std::string payload;
+        if (!read_secret_file(path, payload, reason)) return false;
+        return parse_secret_payload(registration, payload, blinder, reason);
+    } catch (const std::exception &error) {
+        set_reason(reason, error.what());
+        return false;
+    }
 }
 
 ModelRegistration register_model(const Model &model, const QuantConfig &quant,
@@ -2072,7 +2706,10 @@ ModelRegistration register_model(const Model &model, const QuantConfig &quant,
     ModelRegistration registration;
     populate_registration_metadata(registration, model, quant, layout, model_arch_id);
     const std::string basis_label = registration_basis_label(model, quant, layout, model_arch_id);
-    registration.com_W = commit_private_segment(flattened, basis_label, layout.n_in);
+    registration.com_W = commit_segment_with_mask(
+        flattened, basis_label, layout.n_in, &registration.com_W_padding_mask,
+        nullptr);
+    registration.has_private_padding_mask = true;
     if (registration.com_W.logical_size != layout.segments.at(1).logical_length ||
         registration.com_W.padded_size != layout.n_in) {
         throw std::invalid_argument("model commitment does not use the canonical W/N_in domain");
@@ -2097,7 +2734,7 @@ bool registration_matches_model(const Model &model, const QuantConfig &quant,
         if (!registration_metadata_matches(registration, expected)) return false;
         const std::string basis_label = registration_basis_label(model, quant, layout, registration.model_arch_id);
         if (registration.com_W.scheme != "hyrax-pedersen-bn254" ||
-            registration.com_W.basis_id != hash_hex(basis_label) ||
+            registration.com_W.basis_id != fixed_digest(hash_hex(basis_label)) ||
             registration.com_W.logical_size != layout.segments.at(1).logical_length ||
             registration.com_W.padded_size != layout.n_in) return false;
         const std::string expected_binding = hash_hex(registration_binding_encoding(registration));
@@ -2153,27 +2790,134 @@ bool GatProofArtifact::has_private_payload() const {
         if (forbidden_payload(section->protocol)) return true;
         for (const TranscriptMessage &message : section->messages) if (forbidden_payload(message.label) || forbidden_payload(message.payload)) return true;
     }
+    if (forbidden_payload(native_domain) ||
+        forbidden_payload(native_statement.field_id)) return true;
+    for (const NativeProofMessage &message : native_messages) {
+        if (forbidden_payload(message.label) || forbidden_payload(message.payload)) return true;
+    }
     return false;
 }
 
-bool GatProofArtifact::valid_wire(std::string *reason) const {
-    if (version != 1 || schema != "zkgpt-gat-proof-v1") { set_reason(reason, "unsupported proof wire version"); return false; }
-    if (relation_id != "R_GAT-zkGPT") { set_reason(reason, "proof relation id mismatch"); return false; }
-    if (privacy_profile != "masked_full") { set_reason(reason, "proof does not declare masked_full"); return false; }
-    if (statement_digest.empty() || transcript_digest.empty()) { set_reason(reason, "proof transcript or statement digest is missing"); return false; }
-    if (!com_aux.valid() || !com_L.valid()) { set_reason(reason, "dynamic Hyrax commitment wire is invalid"); return false; }
-    const ProofSection *sections[] = {&Pi_Lasso, &Pi_MatMul, &Pi_GKR, &Pi_combine, &Pi_open};
-    const char *names[] = {"Pi_Lasso", "Pi_MatMul", "Pi_GKR", "Pi_combine", "Pi_open"};
-    for (unsigned i = 0; i < 5; ++i) {
-        if (sections[i]->protocol != names[i] || sections[i]->messages.empty()) { set_reason(reason, std::string("missing ") + names[i] + " messages"); return false; }
-        if (sections[i]->messages.size() > (1ULL << 20)) { set_reason(reason, "proof section has too many messages"); return false; }
-        for (const TranscriptMessage &message : sections[i]->messages) {
-            if (message.label.empty() || message.label.size() > (1ULL << 20) || message.payload.size() > (1ULL << 26)) { set_reason(reason, "proof message exceeds wire limits"); return false; }
-        }
+bool GatProofArtifact::native_session(NativeProofSession &out,
+                                      std::string *reason) const {
+    if (native_domain != kNativeArtifactDomain) {
+        set_reason(reason, "unsupported native proof transcript domain");
+        return false;
     }
-    if (has_private_payload()) { set_reason(reason, "proof wire contains a private payload marker"); return false; }
-    if (artifact_transcript_digest(*this) != transcript_digest) { set_reason(reason, "Fiat-Shamir transcript digest mismatch"); return false; }
-    return true;
+    return NativeProofSession::from_messages(native_domain, native_statement,
+                                             native_messages, out, reason);
+}
+
+bool GatProofArtifact::valid_wire(std::string *reason) const {
+    try {
+        if (version != 2 || schema != "zkgpt-gat-proof-v2") {
+            set_reason(reason, "unsupported proof wire version");
+            return false;
+        }
+        if (relation_id != "R_GAT-zkGPT") {
+            set_reason(reason, "proof relation id mismatch");
+            return false;
+        }
+        const bool diagnostic_gkr = privacy_profile == "gkr_only_diagnostic";
+        if (privacy_profile != "masked_full" && !diagnostic_gkr) {
+            set_reason(reason, "proof does not declare a supported privacy profile");
+            return false;
+        }
+        if (!is_lower_hex_digest(statement_digest) ||
+            !canonical_field_wire(transcript_digest)) {
+            set_reason(reason, "proof statement or transcript digest is not canonical");
+            return false;
+        }
+        if (!com_aux.valid() || !com_L.valid()) {
+            set_reason(reason, "dynamic Hyrax commitment wire is invalid");
+            return false;
+        }
+        if (!native_statement.valid(reason) ||
+            native_statement.field_id != "bn254-fr-v1" ||
+            native_statement.verifier_context_digest != statement_digest ||
+            native_statement.statement_root_digest != statement_digest) {
+            set_reason(reason, "native statement is not bound to the public context digest");
+            return false;
+        }
+        if (native_statement.aux_digest !=
+                fixed_digest(hash_hex(commitment_encoding(com_aux))) ||
+            native_statement.l_digest !=
+                fixed_digest(hash_hex(commitment_encoding(com_L)))) {
+            set_reason(reason, "native statement commitment binding mismatch");
+            return false;
+        }
+
+        const ProofSection *sections[] = {
+            &Pi_Lasso, &Pi_MatMul, &Pi_GKR, &Pi_combine, &Pi_open};
+        const char *names[] = {
+            "Pi_Lasso", "Pi_MatMul", "Pi_GKR", "Pi_combine", "Pi_open"};
+        std::size_t section_message_count = 0;
+        for (unsigned i = 0; i < 5; ++i) {
+            if (sections[i]->protocol != names[i] ||
+                sections[i]->messages.empty()) {
+                set_reason(reason, std::string("missing ") + names[i] + " messages");
+                return false;
+            }
+            if (sections[i]->messages.size() > kArtifactMaxMessages ||
+                section_message_count > kArtifactMaxMessages -
+                                           sections[i]->messages.size()) {
+                set_reason(reason, "proof section message count exceeds wire limit");
+                return false;
+            }
+            section_message_count += sections[i]->messages.size();
+            for (const TranscriptMessage &message : sections[i]->messages) {
+                if (message.label.empty() || message.label.size() > kArtifactMaxString ||
+                    message.payload.size() > kArtifactMaxString ||
+                    !valid_native_kind(message.kind)) {
+                    set_reason(reason, "proof message exceeds canonical wire limits");
+                    return false;
+                }
+            }
+        }
+        if (native_messages.empty() || native_messages.size() > kArtifactMaxMessages ||
+            native_messages.size() != section_message_count) {
+            set_reason(reason, "native transcript and proof sections have different message counts");
+            return false;
+        }
+
+        // The five section summaries are a lossless projection of the one
+        // native typed transcript.  Every sequence number is therefore
+        // checked exactly once; this rejects duplicates, omissions and
+        // cross-section reordering before replaying Fiat--Shamir.
+        std::size_t global_sequence = 0;
+        for (const ProofSection *section : sections) {
+            for (const TranscriptMessage &summary : section->messages) {
+                if (summary.sequence != static_cast<std::uint64_t>(global_sequence)) {
+                    set_reason(reason, "proof section message sequence is not canonical");
+                    return false;
+                }
+                const NativeProofMessage &native = native_messages[global_sequence];
+                if (native.sequence != static_cast<std::uint64_t>(global_sequence) ||
+                    static_cast<std::uint8_t>(native.kind) != summary.kind ||
+                    native.label != summary.label || native.payload != summary.payload) {
+                    set_reason(reason, "proof section does not exactly map to native transcript");
+                    return false;
+                }
+                ++global_sequence;
+            }
+        }
+
+        if (has_private_payload()) {
+            set_reason(reason, "proof wire contains a private payload marker");
+            return false;
+        }
+        NativeProofSession session;
+        if (!native_session(session, reason)) return false;
+        if (session.statement_digest() != statement_digest ||
+            session.digest() != transcript_digest) {
+            set_reason(reason, "Fiat-Shamir transcript or statement binding mismatch");
+            return false;
+        }
+        return true;
+    } catch (const std::exception &error) {
+        set_reason(reason, error.what());
+        return false;
+    }
 }
 
 bool GatProofArtifact::write(const std::string &path, std::string *reason) const {
@@ -2194,6 +2938,15 @@ bool GatProofArtifact::write(const std::string &path, std::string *reason) const
     write_section(out, Pi_GKR);
     write_section(out, Pi_combine);
     write_section(out, Pi_open);
+    write_string(out, native_domain);
+    write_native_statement(out, native_statement);
+    write_u64(out, static_cast<std::uint64_t>(native_messages.size()));
+    for (const NativeProofMessage &message : native_messages) {
+        write_u8(out, static_cast<std::uint8_t>(message.kind));
+        write_u64(out, message.sequence);
+        write_string(out, message.label);
+        write_string(out, message.payload);
+    }
     write_string(out, transcript_digest);
     if (!out.good()) { set_reason(reason, "proof artifact write failed"); return false; }
     return true;
@@ -2203,14 +2956,61 @@ bool GatProofArtifact::read(const std::string &path, GatProofArtifact &out,
                             std::string *reason) {
     std::ifstream in(path.c_str(), std::ios::binary);
     if (!in) { set_reason(reason, "cannot open proof artifact"); return false; }
+    if (!wire_size_within_limit(in)) {
+        set_reason(reason, "proof artifact exceeds size limit");
+        return false;
+    }
+    in.seekg(0, std::ios::beg);
     char magic[8];
     if (!read_exact(in, magic, sizeof(magic)) || std::memcmp(magic, "ZKGPTGAT", sizeof(magic)) != 0) { set_reason(reason, "invalid proof artifact magic"); return false; }
+    GatProofArtifact parsed;
     std::uint32_t version = 0;
-    if (!read_u32(in, version) || !read_string(in, out.schema) || !read_string(in, out.relation_id) || !read_string(in, out.privacy_profile) || !read_string(in, out.statement_digest) || !read_commitment(in, out.com_aux) || !read_commitment(in, out.com_L) || !read_section(in, out.Pi_Lasso) || !read_section(in, out.Pi_MatMul) || !read_section(in, out.Pi_GKR) || !read_section(in, out.Pi_combine) || !read_section(in, out.Pi_open) || !read_string(in, out.transcript_digest)) { set_reason(reason, "truncated proof artifact"); return false; }
-    out.version = version;
+    if (!read_u32(in, version) || !read_string(in, parsed.schema) ||
+        !read_string(in, parsed.relation_id) ||
+        !read_string(in, parsed.privacy_profile) ||
+        !read_string(in, parsed.statement_digest) ||
+        !read_commitment(in, parsed.com_aux) ||
+        !read_commitment(in, parsed.com_L) ||
+        !read_section(in, parsed.Pi_Lasso) ||
+        !read_section(in, parsed.Pi_MatMul) ||
+        !read_section(in, parsed.Pi_GKR) ||
+        !read_section(in, parsed.Pi_combine) ||
+        !read_section(in, parsed.Pi_open) ||
+        !read_string(in, parsed.native_domain) ||
+        !read_native_statement(in, parsed.native_statement)) {
+        set_reason(reason, "truncated proof artifact");
+        return false;
+    }
+    parsed.version = version;
+    std::uint64_t native_count = 0;
+    if (!read_u64(in, native_count) || native_count == 0 ||
+        native_count > kArtifactMaxMessages) {
+        set_reason(reason, "invalid native proof message count");
+        return false;
+    }
+    parsed.native_messages.reserve(static_cast<std::size_t>(native_count));
+    for (std::uint64_t i = 0; i < native_count; ++i) {
+        NativeProofMessage message;
+        std::uint8_t kind = 0;
+        if (!read_u8(in, kind) || !valid_native_kind(kind) ||
+            !read_u64(in, message.sequence) ||
+            !read_string(in, message.label) ||
+            !read_string(in, message.payload)) {
+            set_reason(reason, "invalid native proof message");
+            return false;
+        }
+        message.kind = static_cast<NativeProofMessageKind>(kind);
+        parsed.native_messages.push_back(std::move(message));
+    }
+    if (!read_string(in, parsed.transcript_digest)) {
+        set_reason(reason, "truncated proof artifact transcript digest");
+        return false;
+    }
     char trailing = 0;
     if (in.read(&trailing, 1)) { set_reason(reason, "proof artifact has trailing bytes"); return false; }
-    return out.valid_wire(reason);
+    if (!parsed.valid_wire(reason)) return false;
+    out = std::move(parsed);
+    return true;
 }
 
 VerifierContext make_verifier_context(const Graph &graph,
@@ -2293,7 +3093,7 @@ VerifierContext make_verifier_context(const Graph &graph,
 }
 
 std::string verifier_context_digest(const VerifierContext &context) {
-    return hash_hex(context_encoding(context));
+    return fixed_digest(hash_hex(context_encoding(context)));
 }
 
 NativeProofStatement make_native_proof_statement(
@@ -2336,6 +3136,121 @@ NativeProofStatement make_native_proof_statement(
     std::string reason;
     if (!statement.valid(&reason)) throw std::invalid_argument(reason);
     return statement;
+}
+
+GkrOnlyArtifactResult prove_gkr_only_artifact(
+    prover &native_prover, const VerifierContext &context,
+    const CommitmentWire &com_aux, const CommitmentWire &com_L,
+    const G1 &G, const std::vector<G1> &generators,
+    const std::vector<Fr> &basis, std::size_t l_dimension,
+    const std::vector<F> &public_output,
+    const std::vector<NativeGkrMatmulShape> &matmuls) {
+    GkrOnlyArtifactResult result;
+    try {
+        if (public_output.empty() ||
+            public_output.size() != context.public_logits.values.size()) {
+            throw std::invalid_argument(
+                "GKR diagnostic output does not match the public Y shape");
+        }
+        for (std::size_t index = 0; index < public_output.size(); ++index) {
+            if (public_output[index] != Fr(context.public_logits.values[index])) {
+                throw std::invalid_argument(
+                    "GKR diagnostic output is not bound to public Y");
+            }
+        }
+        if (native_prover.C.size < 2 || native_prover.C.circuit.empty() ||
+            native_prover.C.circuit.back().size != public_output.size()) {
+            throw std::invalid_argument(
+                "GKR diagnostic circuit output does not match public Y");
+        }
+        if (!com_aux.valid() || !com_L.valid()) {
+            throw std::invalid_argument(
+                "GKR diagnostic commitment wire is invalid");
+        }
+
+        const NativeProofStatement statement = make_native_proof_statement(
+            context, com_aux, com_L, G, generators, basis, l_dimension);
+        NativeProofSession session(kNativeArtifactDomain, statement);
+
+        // These public-only messages occupy the non-GKR sections.  The
+        // statement already authenticates the same values; retaining the
+        // explicit messages gives the artifact collector a lossless section
+        // projection without ever serializing witness coordinates.
+        session.absorb("adapter/context", statement.verifier_context_digest);
+        session.absorb("adapter/com_aux", statement.aux_digest);
+
+        verifier native_verifier(&native_prover, native_prover.C);
+        if (!native_verifier.prove_gkr_with_session(session)) {
+            throw std::runtime_error("native GKR prover/verifier loop rejected the synthetic relation");
+        }
+
+        const auto public_output_digest = [&public_output]() {
+            std::string encoded;
+            append_string(encoded, "zkgpt-native-public-output-v1");
+            append_u64(encoded, static_cast<std::uint64_t>(public_output.size()));
+            for (const F &value : public_output) append_string(encoded, field_hex(value));
+            return fixed_digest(hash_hex(encoded));
+        }();
+        session.absorb("adapter/public_output", public_output_digest);
+        session.absorb("adapter/com_L", statement.l_digest);
+
+        std::string reason;
+        if (!verify_gkr_transcript(session, native_prover.C, public_output,
+                                   matmuls, &reason)) {
+            throw std::runtime_error(
+                "independent native GKR transcript replay rejected: " + reason);
+        }
+
+        GatProofArtifact artifact;
+        artifact.privacy_profile = "gkr_only_diagnostic";
+        artifact.statement_digest = statement.verifier_context_digest;
+        artifact.com_aux = com_aux;
+        artifact.com_L = com_L;
+        artifact.native_domain = kNativeArtifactDomain;
+        artifact.native_statement = statement;
+        artifact.native_messages = session.messages();
+        artifact.transcript_digest = session.digest();
+
+        const auto copy_message = [](const NativeProofMessage &message) {
+            TranscriptMessage summary;
+            summary.label = message.label;
+            summary.payload = message.payload;
+            summary.kind = static_cast<std::uint8_t>(message.kind);
+            summary.sequence = message.sequence;
+            return summary;
+        };
+        const std::vector<NativeProofMessage> &messages = session.messages();
+        if (messages.size() < 4) {
+            throw std::logic_error(
+                "native GKR session did not contain the adapter binding messages");
+        }
+        artifact.Pi_Lasso.messages.push_back(copy_message(messages[0]));
+        artifact.Pi_MatMul.messages.push_back(copy_message(messages[1]));
+        artifact.Pi_Lasso.protocol = "Pi_Lasso";
+        artifact.Pi_MatMul.protocol = "Pi_MatMul";
+        artifact.Pi_GKR.protocol = "Pi_GKR";
+        artifact.Pi_combine.protocol = "Pi_combine";
+        artifact.Pi_open.protocol = "Pi_open";
+        for (std::size_t index = 2; index + 2 < messages.size(); ++index)
+            artifact.Pi_GKR.messages.push_back(copy_message(messages[index]));
+        artifact.Pi_combine.messages.push_back(
+            copy_message(messages[messages.size() - 2]));
+        artifact.Pi_open.messages.push_back(
+            copy_message(messages[messages.size() - 1]));
+
+        if (!artifact.valid_wire(&reason)) {
+            throw std::runtime_error(
+                "GKR diagnostic artifact failed canonical wire validation: " + reason);
+        }
+        result.generated = true;
+        result.artifact = std::move(artifact);
+        result.diagnostic = "gkr_only_diagnostic: native GKR transcript generated; masked_full remains unsupported";
+        return result;
+    } catch (const std::exception &error) {
+        result.generated = false;
+        result.diagnostic = error.what();
+        return result;
+    }
 }
 
 const char *prove_status_name(ProveStatus status) {
@@ -2435,6 +3350,7 @@ bool verify_gat(const VerifierContext &context, const GatProofArtifact &artifact
         if (context.relation_id != "R_GAT-zkGPT" || context.quant_cfg_id != context.quant.quant_cfg_id || context.static_tables_id != context.tables.table_id ||
             context.model_arch_id != context.registration.model_arch_id) { set_reason(reason, "public verifier context identity mismatch"); return false; }
         if (context.privacy_extension_profile_id != "masked_full") { set_reason(reason, "unsupported_privacy_profile"); return false; }
+        if (artifact.privacy_profile != "masked_full") { set_reason(reason, "unsupported_privacy_profile"); return false; }
         if (!artifact.valid_wire(reason)) return false;
         VerifierContext canonical = context;
         const std::string expected_statement = hash_hex(context_encoding(canonical));
@@ -2462,6 +3378,677 @@ MaskingSession begin_masking_session(const std::string &profile_id,
     session.session_nonce = hash_hex(profile_id + "/" + statement_digest + "/" + field_hex(nonce));
     session.complete = false;
     return session;
+}
+
+namespace {
+
+bool core_power_of_two(std::size_t value) {
+    return value != 0 && (value & (value - 1)) == 0;
+}
+
+std::size_t core_log2(std::size_t value) {
+    std::size_t result = 0;
+    while (value > 1) {
+        value >>= 1;
+        ++result;
+    }
+    return result;
+}
+
+std::string core_vector_digest(const std::string &domain,
+                               const std::vector<Fr> &values) {
+    std::string encoded;
+    append_string(encoded, domain);
+    append_u64(encoded, static_cast<std::uint64_t>(values.size()));
+    for (const Fr &value : values) append_string(encoded, field_hex(value));
+    return fixed_digest(hash_hex(encoded));
+}
+
+std::string core_commitment_payload(const std::string &basis_id,
+                                    const CommitmentWire &com_W,
+                                    const CommitmentWire &com_aux,
+                                    const CommitmentWire &com_L,
+                                    std::size_t domain) {
+    std::string encoded;
+    append_string(encoded, "zkgpt-masked-core-commitments-v1");
+    append_string(encoded, basis_id);
+    append_u64(encoded, static_cast<std::uint64_t>(domain));
+    append_string(encoded, commitment_encoding(com_W));
+    append_string(encoded, commitment_encoding(com_aux));
+    append_string(encoded, commitment_encoding(com_L));
+    return hash_hex(encoded);
+}
+
+bool core_decode_field(const std::string &encoded, Fr &value) {
+    if (encoded.empty() || encoded.size() > 128) return false;
+    try {
+        value.setStr(encoded, 16);
+        return field_hex(value) == encoded;
+    } catch (...) {
+        return false;
+    }
+}
+
+const NativeProofMessage *core_find_message(
+    const NativeProofSession &session, NativeProofMessageKind kind,
+    const std::string &label, std::string *reason) {
+    const NativeProofMessage *found = nullptr;
+    for (const NativeProofMessage &message : session.messages()) {
+        if (message.kind != kind || message.label != label) continue;
+        if (found != nullptr) {
+            set_reason(reason, "duplicate masked core message: " + label);
+            return nullptr;
+        }
+        found = &message;
+    }
+    if (found == nullptr) set_reason(reason, "missing masked core message: " + label);
+    return found;
+}
+
+bool core_decode_token_payload(const std::string &payload,
+                               std::vector<std::string> &tokens) {
+    tokens.clear();
+    std::size_t offset = 0;
+    auto read_u64 = [&](std::uint64_t &value) {
+        if (payload.size() - offset < sizeof(std::uint64_t)) return false;
+        value = 0;
+        for (unsigned index = 0; index < 8; ++index)
+            value |= static_cast<std::uint64_t>(
+                         static_cast<unsigned char>(payload[offset++]))
+                     << (8 * index);
+        return true;
+    };
+    std::uint64_t count = 0;
+    if (!read_u64(count) || count > 64) return false;
+    tokens.reserve(static_cast<std::size_t>(count));
+    for (std::size_t index = 0; index < static_cast<std::size_t>(count);
+         ++index) {
+        std::uint64_t size = 0;
+        if (!read_u64(size) || size > (1ULL << 20) ||
+            size > payload.size() - offset)
+            return false;
+        tokens.push_back(payload.substr(offset, static_cast<std::size_t>(size)));
+        offset += static_cast<std::size_t>(size);
+    }
+    return offset == payload.size();
+}
+
+bool core_split_pipe(const std::string &payload,
+                     std::vector<std::string> &parts) {
+    parts.clear();
+    std::size_t begin = 0;
+    while (true) {
+        const std::size_t end = payload.find('|', begin);
+        parts.push_back(payload.substr(begin,
+                                      end == std::string::npos ? end : end - begin));
+        if (end == std::string::npos) break;
+        begin = end + 1;
+    }
+    return !parts.empty();
+}
+
+bool core_decode_point(const std::string &encoded, G1 &point) {
+    if (encoded.empty() || encoded.size() > 4096) return false;
+    try {
+        point.deserializeHexStr(encoded);
+        return point.serializeToHexStr() == encoded && point.isValid() &&
+               !point.isZero() && point.isValidOrder();
+    } catch (...) {
+        return false;
+    }
+}
+
+bool core_commitment_matches(const CommitmentWire &wire,
+                             const hyrax::PedersenMleCommitment &commitment,
+                             const std::string &basis_id, std::size_t domain) {
+    return wire.scheme == "hyrax-pedersen-bn254" &&
+           wire.basis_id == basis_id &&
+           wire.padded_size == domain && wire.logical_size != 0 &&
+           wire.logical_size <= domain &&
+           wire.point_hex == commitment.commitment.serializeToHexStr();
+}
+
+hyrax::PedersenMleCommitment core_existing_commitment(
+    const CommitmentWire &wire, const Fr &blinder, const std::string &basis_id,
+    const G1 &H, const std::vector<G1> &generators,
+    const std::vector<Fr> &values) {
+    if (values.empty() || values.size() != generators.size() ||
+        !core_power_of_two(values.size()) ||
+        H != hyrax::derive_pedersen_blinding_generator(basis_id))
+        throw std::invalid_argument("masked core W commitment dimensions are invalid");
+    if (wire.basis_id != basis_id ||
+        wire.padded_size != values.size())
+        throw std::invalid_argument("masked core W commitment identity mismatch");
+    G1 encoded;
+    encoded.deserializeHexStr(wire.point_hex);
+    hyrax::PedersenMleCommitment result;
+    result.commitment = encoded;
+    result.blinding_generator = H;
+    result.blinding = blinder;
+    result.basis_id = basis_id;
+    const G1 expected = perdersen_commit(
+        const_cast<G1 *>(generators.data()), const_cast<Fr *>(values.data()),
+        static_cast<int>(values.size())) + H * blinder;
+    if (expected != result.commitment)
+        throw std::invalid_argument("masked core W commitment does not bind witness");
+    return result;
+}
+
+CommitmentWire core_commitment_wire(
+    const hyrax::PedersenMleCommitment &commitment, std::size_t logical_size,
+    std::size_t domain) {
+    CommitmentWire wire;
+    wire.scheme = "hyrax-pedersen-bn254";
+    wire.basis_id = commitment.basis_id;
+    wire.logical_size = logical_size;
+    wire.padded_size = domain;
+    wire.point_hex = commitment.commitment.serializeToHexStr();
+    return wire;
+}
+
+std::vector<Fr> core_point_from_session(const NativeProofSession &session,
+                                        const std::string &label,
+                                        std::size_t dimension,
+                                        std::string *reason) {
+    std::vector<Fr> point;
+    point.reserve(dimension);
+    for (std::size_t index = 0; index < dimension; ++index) {
+        const NativeProofMessage *message = core_find_message(
+            session, NativeProofMessageKind::Challenge,
+            "challenge/" + label + "/" + std::to_string(index), reason);
+        if (message == nullptr) return {};
+        Fr value;
+        if (!core_decode_field(message->payload, value)) {
+            set_reason(reason, "masked core challenge is not canonical");
+            return {};
+        }
+        point.push_back(value);
+    }
+    return point;
+}
+
+bool core_message_in_scope(const std::string &label,
+                           const std::string &scope) {
+    const std::string prefix = scope + "/";
+    const std::string challenge = "challenge/" + prefix;
+    return label.compare(0, prefix.size(), prefix) == 0 ||
+           label.compare(0, challenge.size(), challenge) == 0;
+}
+
+void core_copy_sections(const NativeProofSession &session,
+                        GatProofArtifact &artifact) {
+    artifact.Pi_Lasso.protocol = "Pi_Lasso";
+    artifact.Pi_MatMul.protocol = "Pi_MatMul";
+    artifact.Pi_GKR.protocol = "Pi_GKR";
+    artifact.Pi_combine.protocol = "Pi_combine";
+    artifact.Pi_open.protocol = "Pi_open";
+    const auto copy = [](const NativeProofMessage &message) {
+        TranscriptMessage result;
+        result.label = message.label;
+        result.payload = message.payload;
+        result.kind = static_cast<std::uint8_t>(message.kind);
+        result.sequence = message.sequence;
+        return result;
+    };
+    for (const NativeProofMessage &message : session.messages()) {
+        ProofSection *section = nullptr;
+        if (message.label == "lasso/reserved" ||
+            message.label.compare(0, sizeof("lasso/") - 1, "lasso/") == 0 ||
+            message.label.compare(0, sizeof("challenge/lasso/") - 1,
+                                  "challenge/lasso/") == 0)
+            section = &artifact.Pi_Lasso;
+        else if (message.label.compare(0, sizeof("matmul/") - 1,
+                                       "matmul/") == 0 ||
+                 message.label.compare(0, sizeof("challenge/matmul/") - 1,
+                                       "challenge/matmul/") == 0)
+            section = &artifact.Pi_MatMul;
+        else if (message.label.compare(0, sizeof("gkr/") - 1, "gkr/") == 0 ||
+                 message.label.compare(0, sizeof("challenge/gkr/") - 1,
+                                       "challenge/gkr/") == 0)
+            section = &artifact.Pi_GKR;
+        else if (message.label.compare(0, sizeof("combine/") - 1,
+                                       "combine/") == 0 ||
+                 message.label.compare(0, sizeof("challenge/combine/") - 1,
+                                       "challenge/combine/") == 0)
+            section = &artifact.Pi_combine;
+        else if (message.label.compare(0, sizeof("Open_") - 1, "Open_") == 0 ||
+                 message.label.compare(0, sizeof("challenge/Open_") - 1,
+                                       "challenge/Open_") == 0)
+            section = &artifact.Pi_open;
+        if (section == nullptr)
+            throw std::invalid_argument("masked core transcript label is outside canonical sections: " + message.label);
+        section->messages.push_back(copy(message));
+    }
+}
+
+bool core_expected_label(const std::string &label) {
+    return label == "lasso/reserved" ||
+           label.compare(0, sizeof("lasso/") - 1, "lasso/") == 0 ||
+           label.compare(0, sizeof("challenge/lasso/") - 1,
+                         "challenge/lasso/") == 0 ||
+           core_message_in_scope(label, "matmul") ||
+           core_message_in_scope(label, "gkr") ||
+           core_message_in_scope(label, "combine") ||
+           core_message_in_scope(label, "Open_W") ||
+           core_message_in_scope(label, "Open_Aux") ||
+           core_message_in_scope(label, "Open_L");
+}
+
+bool core_find_index(const NativeProofSession &session, const std::string &label,
+                     NativeProofMessageKind kind, std::size_t &index,
+                     std::string *reason) {
+    bool found = false;
+    for (std::size_t cursor = 0; cursor < session.messages().size(); ++cursor) {
+        const NativeProofMessage &message = session.messages()[cursor];
+        if (message.label != label || message.kind != kind) continue;
+        if (found) {
+            set_reason(reason, "duplicate masked core message: " + label);
+            return false;
+        }
+        found = true;
+        index = cursor;
+    }
+    if (!found) set_reason(reason, "missing masked core message: " + label);
+    return found;
+}
+
+} // namespace
+
+static MaskedCoreResult prove_masked_core_impl(
+    const NativeProofStatement &statement, const CommitmentWire &com_W,
+    const Fr &com_W_blinder, const std::string &basis_id, const G1 &H,
+    const std::vector<G1> &generators, const MaskedCoreWitness &witness,
+    const std::string &statement_digest,
+    std::vector<NativeLassoFamilyProver> *lasso_families,
+    NativeLassoQueryProver *lasso_query) {
+    MaskedCoreResult result;
+    try {
+        ensure_field();
+        if (statement_digest.empty() || statement_digest !=
+                statement.verifier_context_digest ||
+            statement.statement_root_digest != statement_digest)
+            throw std::invalid_argument("masked core statement root is not authenticated");
+        if (basis_id.empty() || generators.empty() ||
+            !core_power_of_two(generators.size()) ||
+            generators.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()) ||
+            H != hyrax::derive_pedersen_blinding_generator(basis_id))
+            throw std::invalid_argument("masked core basis setup is invalid");
+        const std::size_t domain = generators.size();
+        if (statement.l_dimension != domain || !statement.valid())
+            throw std::invalid_argument("masked core statement domain is invalid");
+        const std::vector<Fr> dummy_basis(domain, Fr(0));
+        if (statement.basis_digest != NativeProofStatement::basis_digest_for(
+                H, generators, dummy_basis, domain))
+            throw std::invalid_argument("masked core statement basis mismatch");
+        const auto valid_segment = [domain](const std::vector<Fr> &values) {
+            return values.size() == domain;
+        };
+        if (!valid_segment(witness.w) || !valid_segment(witness.aux) ||
+            !valid_segment(witness.l_qry) || witness.public_output.empty() ||
+            witness.gkr_round_polys.empty() || witness.matmul_round_polys.empty() ||
+            witness.gkr_coefficients.size() != 5 ||
+            witness.gkr_terminal_values.size() != 4 ||
+            witness.matmul_terminal_values.size() != 2)
+            throw std::invalid_argument("masked core witness dimensions are invalid");
+        for (const std::vector<Fr> &poly : witness.gkr_round_polys)
+            if (poly.size() != 3) throw std::invalid_argument("masked core GKR polynomial arity is invalid");
+        for (const std::vector<Fr> &poly : witness.matmul_round_polys)
+            if (poly.size() != 3) throw std::invalid_argument("masked core MatMul polynomial arity is invalid");
+        if (com_W.basis_id != basis_id ||
+            com_W.padded_size != domain || !com_W.valid())
+            throw std::invalid_argument("masked core W commitment wire is invalid");
+
+        const hyrax::PedersenMleCommitment w_commit =
+            core_existing_commitment(com_W, com_W_blinder, basis_id, H,
+                                     generators, witness.w);
+        hyrax::PedersenMleCommitment aux_commit;
+        hyrax::PedersenMleCommitment l_commit;
+        if (witness.has_dynamic_commitments) {
+            aux_commit = core_existing_commitment(
+                witness.com_aux.wire, witness.com_aux.blinder, basis_id, H,
+                generators, witness.aux);
+            l_commit = core_existing_commitment(
+                witness.com_L.wire, witness.com_L.blinder, basis_id, H,
+                generators, witness.l_qry);
+        } else {
+            aux_commit = hyrax::pedersen_commit_mle(generators, witness.aux,
+                                                     basis_id);
+            l_commit = hyrax::pedersen_commit_mle(generators, witness.l_qry,
+                                                   basis_id);
+        }
+        if (aux_commit.blinding_generator != H || l_commit.blinding_generator != H)
+            throw std::logic_error("masked core Pedersen generator mismatch");
+        const std::size_t aux_logical = witness.has_dynamic_commitments
+            ? witness.com_aux.wire.logical_size : domain;
+        const std::size_t l_logical = witness.has_dynamic_commitments
+            ? witness.com_L.wire.logical_size : domain;
+        result.com_aux = core_commitment_wire(aux_commit, aux_logical, domain);
+        result.com_L = core_commitment_wire(l_commit, l_logical, domain);
+        if (!core_commitment_matches(result.com_aux, aux_commit, basis_id, domain) ||
+            !core_commitment_matches(result.com_L, l_commit, basis_id, domain))
+            throw std::logic_error("masked core dynamic commitment wire mismatch");
+        NativeProofStatement bound_statement = statement;
+        const std::string expected_aux_digest =
+            fixed_digest(hash_hex(commitment_encoding(result.com_aux)));
+        const std::string expected_l_digest =
+            fixed_digest(hash_hex(commitment_encoding(result.com_L)));
+        const std::string expected_w_digest =
+            fixed_digest(hash_hex(commitment_encoding(com_W)));
+        // A zero digest is an explicit prover-side construction placeholder,
+        // never a verifier wildcard: it is replaced before the statement is
+        // put on the authenticated artifact wire.  Formal callers should
+        // normally pre-bind all three values before invoking this bridge.
+        const std::string zero_digest(64, '0');
+        if (bound_statement.aux_digest == zero_digest)
+            bound_statement.aux_digest = expected_aux_digest;
+        if (bound_statement.l_digest == zero_digest)
+            bound_statement.l_digest = expected_l_digest;
+        if (bound_statement.com_w_digest == zero_digest)
+            bound_statement.com_w_digest = expected_w_digest;
+        if (bound_statement.aux_digest != expected_aux_digest ||
+            bound_statement.l_digest != expected_l_digest ||
+            bound_statement.com_w_digest != expected_w_digest)
+            throw std::invalid_argument("masked core statement commitment binding mismatch");
+
+        if ((lasso_families == nullptr) != (lasso_query == nullptr))
+            throw std::invalid_argument("masked core Lasso inputs are incomplete");
+        NativeProofSession session(kNativeArtifactDomain, bound_statement);
+        std::string reason;
+        if (lasso_families != nullptr) {
+            if (!native_lasso_prove_bundle(session, *lasso_families, *lasso_query,
+                                           nullptr, &reason))
+                throw std::runtime_error("masked native Lasso proof failed: " + reason);
+        } else {
+            session.absorb("lasso/reserved", "native_lasso_pending_v1");
+        }
+        const Fr matmul_initial = witness.matmul_round_polys.front()[0] +
+                                  witness.matmul_round_polys.front()[1];
+        session.absorb_field("matmul/claim", matmul_initial);
+        if (!native_masked_matmul_product_prove(
+                session, "matmul/core", witness.matmul_round_polys,
+                matmul_initial, witness.matmul_terminal_values, nullptr,
+                &reason))
+            throw std::runtime_error("masked MatMul core proof failed: " + reason);
+
+        session.absorb("gkr/public-output",
+                       core_vector_digest("zkgpt-masked-core-public-output-v1",
+                                          witness.public_output));
+        const std::size_t output_domain = next_power_of_two(witness.public_output.size());
+        const std::size_t output_rounds = core_log2(output_domain);
+        std::vector<Fr> output_point;
+        output_point.reserve(output_rounds);
+        for (std::size_t index = 0; index < output_rounds; ++index)
+            output_point.push_back(session.challenge(
+                "gkr/output/r/" + std::to_string(index)));
+        std::vector<Fr> output_values(output_domain, Fr(0));
+        std::copy(witness.public_output.begin(), witness.public_output.end(),
+                  output_values.begin());
+        const Fr gkr_initial = [&output_values, &output_point]() {
+            if (output_point.empty()) return output_values.at(0);
+            std::vector<Fr> folded = output_values;
+            std::size_t active = folded.size();
+            for (const Fr &coordinate : output_point) {
+                const std::size_t half = active / 2;
+                for (std::size_t index = 0; index < half; ++index)
+                    folded[index] = folded[2 * index] * (Fr(1) - coordinate) +
+                                    folded[2 * index + 1] * coordinate;
+                active = half;
+            }
+            return folded.at(0);
+        }();
+        if (!native_masked_gkr_quadratic_prove(
+                session, "gkr/core", witness.gkr_round_polys, gkr_initial,
+                witness.gkr_terminal_values, witness.gkr_coefficients, nullptr,
+                &reason))
+            throw std::runtime_error("masked GKR core proof failed: " + reason);
+
+        session.absorb("combine/public-input",
+                       core_vector_digest("zkgpt-masked-core-public-input-v1",
+                                          witness.public_input));
+        session.absorb("combine/public-output",
+                       core_vector_digest("zkgpt-masked-core-public-output-v1",
+                                          witness.public_output));
+        session.absorb("combine/commitments",
+                       core_commitment_payload(basis_id, com_W, result.com_aux,
+                                               result.com_L, domain));
+        session.absorb("combine/opening-domain", std::to_string(domain));
+        const std::size_t opening_rounds = core_log2(domain);
+        std::vector<Fr> opening_point;
+        opening_point.reserve(opening_rounds);
+        for (std::size_t index = 0; index < opening_rounds; ++index)
+            opening_point.push_back(session.challenge(
+                "combine/r_minus/" + std::to_string(index)));
+
+        hyrax::MaskedMleOpening ignored;
+        if (!hyrax::open_masked_mle_with_session(
+                w_commit, generators, opening_point, witness.w, session,
+                "Open_W", ignored, &reason) ||
+            !hyrax::open_masked_mle_with_session(
+                aux_commit, generators, opening_point, witness.aux, session,
+                "Open_Aux", ignored, &reason) ||
+            !hyrax::open_masked_mle_with_session(
+                l_commit, generators, opening_point, witness.l_qry, session,
+                "Open_L", ignored, &reason))
+            throw std::runtime_error("masked core Hyrax opening failed: " + reason);
+
+        GatProofArtifact artifact;
+        artifact.privacy_profile = "masked_full";
+        artifact.statement_digest = statement_digest;
+        artifact.com_aux = result.com_aux;
+        artifact.com_L = result.com_L;
+        artifact.native_domain = kNativeArtifactDomain;
+        artifact.native_statement = bound_statement;
+        artifact.native_messages = session.messages();
+        artifact.transcript_digest = session.digest();
+        core_copy_sections(session, artifact);
+        if (!artifact.valid_wire(&reason))
+            throw std::runtime_error("masked core artifact wire validation failed: " + reason);
+        result.generated = true;
+        result.artifact = std::move(artifact);
+        result.diagnostic = "masked_core_generated; native_lasso_pending";
+        return result;
+    } catch (const std::exception &error) {
+        result.generated = false;
+        result.diagnostic = error.what();
+        return result;
+    }
+}
+
+MaskedCoreResult prove_masked_core(
+    const NativeProofStatement &statement, const CommitmentWire &com_W,
+    const Fr &com_W_blinder, const std::string &basis_id, const G1 &H,
+    const std::vector<G1> &generators, const MaskedCoreWitness &witness,
+    const std::string &statement_digest) {
+    return prove_masked_core_impl(statement, com_W, com_W_blinder, basis_id, H,
+                                  generators, witness, statement_digest,
+                                  nullptr, nullptr);
+}
+
+MaskedCoreResult prove_masked_core_with_lasso(
+    const NativeProofStatement &statement, const CommitmentWire &com_W,
+    const Fr &com_W_blinder, const std::string &basis_id, const G1 &H,
+    const std::vector<G1> &generators, const MaskedCoreWitness &witness,
+    std::vector<NativeLassoFamilyProver> &families,
+    NativeLassoQueryProver &query, const std::string &statement_digest) {
+    return prove_masked_core_impl(statement, com_W, com_W_blinder, basis_id, H,
+                                  generators, witness, statement_digest,
+                                  &families, &query);
+}
+
+bool verify_masked_core(
+    const GatProofArtifact &artifact, const CommitmentWire &com_W,
+    const std::string &basis_id, const G1 &H,
+    const std::vector<G1> &generators,
+    const std::vector<Fr> &public_input,
+    const std::vector<Fr> &public_output,
+    const std::vector<Fr> &gkr_coefficients,
+    std::size_t gkr_rounds, const Fr &matmul_initial_claim,
+    std::size_t matmul_rounds, std::string *reason) {
+    try {
+        if (!artifact.valid_wire(reason) || artifact.privacy_profile != "masked_full")
+            return false;
+        NativeProofSession session;
+        if (!artifact.native_session(session, reason)) return false;
+        if (basis_id.empty() || generators.empty() ||
+            !core_power_of_two(generators.size()) ||
+            H != hyrax::derive_pedersen_blinding_generator(basis_id) ||
+            com_W.basis_id != basis_id ||
+            !com_W.valid() || com_W.padded_size != generators.size()) {
+            set_reason(reason, "masked core verifier basis or W commitment is invalid");
+            return false;
+        }
+        if (artifact.native_statement.com_w_digest !=
+            fixed_digest(hash_hex(commitment_encoding(com_W)))) {
+            set_reason(reason, "masked core verifier W statement binding mismatch");
+            return false;
+        }
+        if (session.messages().empty()) {
+            set_reason(reason, "masked core transcript has no Lasso or core prefix");
+            return false;
+        }
+        const NativeProofMessage &first = session.messages().front();
+        const bool reserved_lasso =
+            first.kind == NativeProofMessageKind::Data &&
+            first.label == "lasso/reserved" &&
+            first.payload == "native_lasso_pending_v1";
+        const bool native_lasso_prefix =
+            first.label.compare(0, sizeof("lasso/") - 1, "lasso/") == 0 ||
+            first.label.compare(0, sizeof("challenge/lasso/") - 1,
+                                "challenge/lasso/") == 0;
+        if (!reserved_lasso && !native_lasso_prefix) {
+            set_reason(reason, "masked core transcript does not start with canonical Lasso");
+            return false;
+        }
+        for (const NativeProofMessage &message : session.messages()) {
+            if (!core_expected_label(message.label)) {
+                set_reason(reason, "unexpected masked core transcript message: " + message.label);
+                return false;
+            }
+        }
+        const NativeProofMessage *matmul_claim = core_find_message(
+            session, NativeProofMessageKind::Field, "matmul/claim", reason);
+        Fr encoded_matmul;
+        if (matmul_claim == nullptr || !core_decode_field(matmul_claim->payload,
+                                                            encoded_matmul) ||
+            encoded_matmul != matmul_initial_claim) {
+            set_reason(reason, "masked core MatMul public claim mismatch");
+            return false;
+        }
+        if (!native_masked_matmul_product_verify(
+                session, "matmul/core", matmul_rounds,
+                matmul_initial_claim, nullptr, reason))
+            return false;
+
+        const NativeProofMessage *output_digest = core_find_message(
+            session, NativeProofMessageKind::Data, "gkr/public-output", reason);
+        if (output_digest == nullptr ||
+            output_digest->payload != core_vector_digest(
+                "zkgpt-masked-core-public-output-v1", public_output)) {
+            set_reason(reason, "masked core public output binding mismatch");
+            return false;
+        }
+        const std::size_t output_domain = next_power_of_two(public_output.size());
+        const std::size_t output_dimension = core_log2(output_domain);
+        const std::vector<Fr> output_point = core_point_from_session(
+            session, "gkr/output/r", output_dimension, reason);
+        if (output_point.size() != output_dimension) return false;
+        std::vector<Fr> output_values(output_domain, Fr(0));
+        std::copy(public_output.begin(), public_output.end(), output_values.begin());
+        std::vector<Fr> folded = output_values;
+        for (const Fr &coordinate : output_point) {
+            const std::size_t half = folded.size() / 2;
+            for (std::size_t index = 0; index < half; ++index)
+                folded[index] = folded[2 * index] * (Fr(1) - coordinate) +
+                                folded[2 * index + 1] * coordinate;
+            folded.resize(half);
+        }
+        if (!native_masked_gkr_quadratic_verify(
+                session, "gkr/core", gkr_rounds, folded.at(0),
+                gkr_coefficients, nullptr, reason))
+            return false;
+
+        const NativeProofMessage *public_input_message = core_find_message(
+            session, NativeProofMessageKind::Data, "combine/public-input", reason);
+        if (public_input_message == nullptr ||
+            public_input_message->payload != core_vector_digest(
+                "zkgpt-masked-core-public-input-v1", public_input)) {
+            set_reason(reason, "masked core public input binding mismatch");
+            return false;
+        }
+        const NativeProofMessage *public_output_combine = core_find_message(
+            session, NativeProofMessageKind::Data, "combine/public-output", reason);
+        if (public_output_combine == nullptr ||
+            public_output_combine->payload != core_vector_digest(
+                "zkgpt-masked-core-public-output-v1", public_output)) {
+            set_reason(reason, "masked core combine output binding mismatch");
+            return false;
+        }
+        const std::size_t domain = generators.size();
+        const NativeProofMessage *shape_message = core_find_message(
+            session, NativeProofMessageKind::Data, "combine/opening-domain", reason);
+        if (shape_message == nullptr || shape_message->payload != std::to_string(domain)) {
+            set_reason(reason, "masked core opening domain mismatch");
+            return false;
+        }
+        const CommitmentWire &com_aux = artifact.com_aux;
+        const CommitmentWire &com_L = artifact.com_L;
+        const NativeProofMessage *commitment_message = core_find_message(
+            session, NativeProofMessageKind::Data, "combine/commitments", reason);
+        if (commitment_message == nullptr || commitment_message->payload !=
+                core_commitment_payload(basis_id, com_W, com_aux, com_L, domain)) {
+            set_reason(reason, "masked core commitment combine binding mismatch");
+            return false;
+        }
+        const std::vector<Fr> point = core_point_from_session(
+            session, "combine/r_minus", core_log2(domain), reason);
+        if (point.size() != core_log2(domain)) return false;
+        std::size_t w_open = 0, aux_open = 0, l_open = 0;
+        if (!core_find_index(session, "Open_W/basis", NativeProofMessageKind::Data,
+                             w_open, reason) ||
+            !core_find_index(session, "Open_Aux/basis", NativeProofMessageKind::Data,
+                             aux_open, reason) ||
+            !core_find_index(session, "Open_L/basis", NativeProofMessageKind::Data,
+                             l_open, reason) ||
+            !(w_open < aux_open && aux_open < l_open)) {
+            set_reason(reason, "masked core terminal openings are not canonically ordered");
+            return false;
+        }
+        auto verify_opening = [&](const std::string &label,
+                                  const CommitmentWire &wire) {
+            const NativeProofMessage *claim = core_find_message(
+                session, NativeProofMessageKind::Data, label + "/claim", reason);
+            if (claim == nullptr) return false;
+            std::vector<std::string> parts;
+            if (!core_split_pipe(claim->payload, parts) || parts.size() != 2) {
+                set_reason(reason, "malformed masked core opening claim: " + label);
+                return false;
+            }
+            G1 commitment, mask_commitment;
+            if (!core_decode_point(wire.point_hex, commitment) ||
+                !core_decode_point(parts[0], mask_commitment)) {
+                set_reason(reason, "malformed masked core opening point: " + label);
+                return false;
+            }
+            Fr masked_evaluation;
+            if (!core_decode_field(parts[1], masked_evaluation)) {
+                set_reason(reason, "malformed masked core opening evaluation: " + label);
+                return false;
+            }
+            return hyrax::verify_masked_mle_opening_with_session(
+                commitment, mask_commitment, masked_evaluation, basis_id,
+                generators, point, session, label, reason, true, true);
+        };
+        // The verifier intentionally supplies only commitment points.  Each
+        // opening checks its own Schnorr response while all three calls use
+        // the one transcript-derived r^- above.
+        if (!verify_opening("Open_W", com_W) ||
+            !verify_opening("Open_Aux", com_aux) ||
+            !verify_opening("Open_L", com_L)) return false;
+        return true;
+    } catch (const std::exception &error) {
+        set_reason(reason, error.what());
+        return false;
+    }
 }
 
 NativePrimitiveEvidence exercise_official_primitives(const std::string &label) {

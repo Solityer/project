@@ -13,6 +13,7 @@ namespace {
 const char kMagic[] = "ZKGPTNS1";
 const std::size_t kMaxString = 1ULL << 26;
 const std::size_t kMaxMessages = 1ULL << 20;
+const std::uint64_t kMaxWireBytes = 1ULL << 30;
 
 void set_reason(std::string *reason, const std::string &value) {
     if (reason != nullptr) *reason = value;
@@ -66,6 +67,21 @@ bool read_string(std::istream &in, std::string &value) {
     return size == 0 || read_exact(in, &value[0], static_cast<std::size_t>(size));
 }
 
+bool valid_message_kind(std::uint8_t kind) {
+    return kind >= static_cast<std::uint8_t>(NativeProofMessageKind::Data) &&
+           kind <= static_cast<std::uint8_t>(NativeProofMessageKind::Challenge);
+}
+
+bool wire_size_within_limit(std::ifstream &in) {
+    const std::istream::pos_type origin = in.tellg();
+    if (origin == std::istream::pos_type(-1)) return false;
+    in.seekg(0, std::ios::end);
+    const std::istream::pos_type end = in.tellg();
+    in.seekg(origin);
+    if (end == std::istream::pos_type(-1) || end < origin) return false;
+    return static_cast<std::uint64_t>(end) <= kMaxWireBytes;
+}
+
 void append_statement_encoding(std::string &out,
                                const NativeProofStatement &statement) {
     append_string(out, "zkgpt-native-statement-v1");
@@ -107,6 +123,7 @@ void append_transcript_encoding(std::string &out,
     append_u64(out, static_cast<std::uint64_t>(messages.size()));
     for (const NativeProofMessage &message : messages) {
         append_u8(out, static_cast<std::uint8_t>(message.kind));
+        append_u64(out, message.sequence);
         append_string(out, message.label);
         append_string(out, message.payload);
     }
@@ -261,14 +278,17 @@ void NativeProofSession::absorb(const std::string &label,
         throw std::invalid_argument("native proof message exceeds wire limits");
     if (is_challenge_label(label))
         throw std::invalid_argument("native proof challenge label is reserved");
-    messages_.push_back(NativeProofMessage{NativeProofMessageKind::Data, label, payload});
+    messages_.push_back(NativeProofMessage{NativeProofMessageKind::Data, label,
+                                           payload,
+                                           static_cast<std::uint64_t>(messages_.size())});
 }
 
 void NativeProofSession::absorb_field(const std::string &label, const F &value) {
     if (label.empty() || label.size() > kMaxString || is_challenge_label(label))
         throw std::invalid_argument("native proof field message exceeds wire limits");
     messages_.push_back(NativeProofMessage{NativeProofMessageKind::Field, label,
-                                           field_encoding(value)});
+                                           field_encoding(value),
+                                           static_cast<std::uint64_t>(messages_.size())});
 }
 
 void NativeProofSession::absorb_fields(const std::string &label,
@@ -280,7 +300,8 @@ void NativeProofSession::absorb_fields(const std::string &label,
     append_u64(payload, static_cast<std::uint64_t>(values.size()));
     for (const F &value : values) append_string(payload, field_encoding(value));
     messages_.push_back(NativeProofMessage{NativeProofMessageKind::FieldVector, label,
-                                           std::move(payload)});
+                                           std::move(payload),
+                                           static_cast<std::uint64_t>(messages_.size())});
 }
 
 F NativeProofSession::derive(const std::string &label) const {
@@ -303,7 +324,8 @@ F NativeProofSession::challenge(const std::string &label) {
         challenge_label <= messages_.back().label)
         throw std::invalid_argument("native proof challenge order is not monotonic");
     messages_.push_back(NativeProofMessage{NativeProofMessageKind::Challenge,
-                                           challenge_label, field_encoding(result)});
+                                           challenge_label, field_encoding(result),
+                                           static_cast<std::uint64_t>(messages_.size())});
     return result;
 }
 
@@ -354,20 +376,30 @@ std::string NativeProofSession::digest() const {
 }
 
 bool NativeProofSession::valid(std::string *reason) const {
-    if (domain_.empty() || !statement_.valid(reason)) {
-        set_reason(reason, "native proof session identity is incomplete");
+    if (domain_.empty() || domain_.size() > kMaxString) {
+        set_reason(reason, "native proof session domain is invalid");
         return false;
     }
+    if (!statement_.valid(reason)) return false;
     if (messages_.size() > kMaxMessages) {
         set_reason(reason, "native proof session has too many messages");
         return false;
     }
     std::set<std::string> challenge_labels;
     std::string previous_challenge;
-    for (const NativeProofMessage &message : messages_) {
+    for (std::size_t index = 0; index < messages_.size(); ++index) {
+        const NativeProofMessage &message = messages_[index];
         if (message.label.empty() || message.label.size() > kMaxString ||
             message.payload.size() > kMaxString) {
             set_reason(reason, "native proof session message exceeds wire limits");
+            return false;
+        }
+        if (message.sequence != static_cast<std::uint64_t>(index)) {
+            set_reason(reason, "native proof session message sequence is not canonical");
+            return false;
+        }
+        if (!valid_message_kind(static_cast<std::uint8_t>(message.kind))) {
+            set_reason(reason, "unknown native proof message type");
             return false;
         }
         if (message.kind != NativeProofMessageKind::Challenge)
@@ -425,6 +457,8 @@ bool NativeProofSession::valid(std::string *reason) const {
             break;
         }
         default:
+            // valid_message_kind above makes this unreachable, but keeping a
+            // closed switch protects this code if the enum grows later.
             set_reason(reason, "unknown native proof message type");
             return false;
         }
@@ -457,6 +491,7 @@ bool NativeProofSession::write(const std::string &path, std::string *reason) con
     append_u64(encoded, static_cast<std::uint64_t>(messages_.size()));
     for (const NativeProofMessage &message : messages_) {
         append_u8(encoded, static_cast<std::uint8_t>(message.kind));
+        append_u64(encoded, message.sequence);
         append_string(encoded, message.label);
         append_string(encoded, message.payload);
     }
@@ -476,6 +511,11 @@ bool NativeProofSession::read(const std::string &path, NativeProofSession &out,
         set_reason(reason, "cannot open native proof session wire");
         return false;
     }
+    if (!wire_size_within_limit(in)) {
+        set_reason(reason, "native proof session wire exceeds size limit");
+        return false;
+    }
+    in.seekg(0, std::ios::beg);
     char magic[sizeof(kMagic) - 1];
     if (!read_exact(in, magic, sizeof(magic)) ||
         std::memcmp(magic, kMagic, sizeof(magic)) != 0) {
@@ -522,7 +562,8 @@ bool NativeProofSession::read(const std::string &path, NativeProofSession &out,
     for (std::uint64_t i = 0; i < count; ++i) {
         NativeProofMessage message;
         char kind = 0;
-        if (!in.read(&kind, 1) || !read_string(in, message.label) ||
+        if (!in.read(&kind, 1) || !read_u64(in, message.sequence) ||
+            !read_string(in, message.label) ||
             !read_string(in, message.payload)) {
             set_reason(reason, "truncated native proof session message");
             return false;
@@ -547,4 +588,24 @@ bool NativeProofSession::read(const std::string &path, NativeProofSession &out,
     }
     out = std::move(parsed);
     return true;
+}
+
+bool NativeProofSession::from_messages(
+    const std::string &domain, const NativeProofStatement &statement,
+    const std::vector<NativeProofMessage> &messages,
+    NativeProofSession &out, std::string *reason) {
+    try {
+        NativeProofSession parsed(domain, statement);
+        if (messages.size() > kMaxMessages) {
+            set_reason(reason, "native proof session message count exceeds wire limit");
+            return false;
+        }
+        parsed.messages_ = messages;
+        if (!parsed.valid(reason) || !parsed.replay(reason)) return false;
+        out = std::move(parsed);
+        return true;
+    } catch (const std::exception &error) {
+        set_reason(reason, error.what());
+        return false;
+    }
 }

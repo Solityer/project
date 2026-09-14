@@ -10,6 +10,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <memory>
+#include <limits>
 using namespace std;
 using namespace mcl::bn;
 
@@ -677,6 +678,131 @@ bool has_prefix(const std::string &value, const std::string &prefix) {
     return value.compare(0, prefix.size(), prefix) == 0;
 }
 
+bool power_of_two_size(std::size_t value) {
+    return value != 0 && (value & (value - 1)) == 0;
+}
+
+std::size_t log2_size(std::size_t value) {
+    std::size_t result = 0;
+    while (value > 1) {
+        value >>= 1;
+        ++result;
+    }
+    return result;
+}
+
+std::vector<Fr> mle_basis_from_point(const std::vector<Fr> &point) {
+    if (point.empty() || point.size() >= sizeof(std::size_t) * 8)
+        throw std::invalid_argument("masked Hyrax evaluation point is invalid");
+    const std::size_t size = std::size_t(1) << point.size();
+    std::vector<Fr> basis(size);
+    basis[0] = Fr(1) - point[0];
+    basis[1] = point[0];
+    for (std::size_t bit = 1; bit < point.size(); ++bit) {
+        const std::size_t old_size = std::size_t(1) << bit;
+        for (std::size_t index = old_size; index-- > 0;) {
+            const Fr previous = basis[index];
+            basis[index] = previous * (Fr(1) - point[bit]);
+            basis[index + old_size] = previous * point[bit];
+        }
+    }
+    return basis;
+}
+
+std::string masked_basis_payload(const G1 &commitment, const G1 &H,
+                                 const G1 &J, const std::string &basis_id,
+                                 const std::vector<G1> &generators,
+                                 const std::vector<Fr> &basis) {
+    std::ostringstream payload;
+    payload << point_encoding(commitment) << '|' << point_encoding(H) << '|'
+            << point_encoding(J) << '|' << basis_id << '|' << generators.size();
+    for (std::size_t index = 0; index < generators.size(); ++index)
+        payload << '|' << point_encoding(generators[index]) << '|'
+                << basis[index].getStr(16);
+    return payload.str();
+}
+
+std::string masked_claim_payload(const G1 &mask_commitment, const Fr &claim) {
+    return point_encoding(mask_commitment) + "|" + claim.getStr(16);
+}
+
+std::string masked_announce_payload(const G1 &announce_commitment,
+                                   const G1 &mask_announce,
+                                   const Fr &announce_eval) {
+    return point_encoding(announce_commitment) + "|" +
+           point_encoding(mask_announce) + "|" + announce_eval.getStr(16);
+}
+
+bool decode_field_vector_payload(const std::string &payload,
+                                std::vector<Fr> &values) {
+    values.clear();
+    if (payload.size() < sizeof(std::uint64_t)) return false;
+    std::size_t offset = 0;
+    auto read_u64 = [&](std::uint64_t &value) {
+        if (payload.size() - offset < sizeof(std::uint64_t)) return false;
+        value = 0;
+        for (unsigned index = 0; index < 8; ++index)
+            value |= static_cast<std::uint64_t>(
+                         static_cast<unsigned char>(payload[offset++]))
+                     << (8 * index);
+        return true;
+    };
+    std::uint64_t count = 0;
+    if (!read_u64(count) || count == 0 || count > (1ULL << 20)) return false;
+    values.reserve(static_cast<std::size_t>(count));
+    for (std::uint64_t index = 0; index < count; ++index) {
+        std::uint64_t length = 0;
+        if (!read_u64(length) || length == 0 || length > 128 ||
+            length > payload.size() - offset)
+            return false;
+        Fr value;
+        if (!decode_open_field(payload.substr(offset,
+                                             static_cast<std::size_t>(length)),
+                               value))
+            return false;
+        offset += static_cast<std::size_t>(length);
+        values.push_back(value);
+    }
+    return offset == payload.size();
+}
+
+const NativeProofMessage *consume_masked_message(
+    const NativeProofSession &session, std::size_t &position,
+    NativeProofMessageKind kind, const std::string &label,
+    std::string *reason) {
+    if (position >= session.messages().size() ||
+        session.messages()[position].kind != kind ||
+        session.messages()[position].label != label) {
+        set_open_reason(reason, "masked Hyrax grammar mismatch at " + label);
+        return nullptr;
+    }
+    return &session.messages()[position++];
+}
+
+bool reject_masked_trailing(const NativeProofSession &session,
+                            std::size_t position, const std::string &label,
+                            bool allow_trailing_unrelated,
+                            std::string *reason) {
+    if (!allow_trailing_unrelated && position != session.messages().size()) {
+        set_open_reason(reason, "masked Hyrax opening has a post-proof message");
+        return false;
+    }
+    if (allow_trailing_unrelated) {
+        const std::string prefix = label + "/";
+        const std::string challenge_prefix = "challenge/" + prefix;
+        for (std::size_t index = position; index < session.messages().size(); ++index) {
+            const std::string &message_label = session.messages()[index].label;
+            if (has_prefix(message_label, prefix) ||
+                has_prefix(message_label, challenge_prefix)) {
+                set_open_reason(reason,
+                                "masked Hyrax opening has a trailing scoped message");
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 } // namespace
 
 bool verify_opening_with_session(
@@ -885,6 +1011,330 @@ bool verify_opening_with_session(
             }
         }
         return true;
+    } catch (const std::exception &error) {
+        set_open_reason(reason, error.what());
+        return false;
+    }
+}
+
+G1 derive_pedersen_blinding_generator(const std::string &basis_id) {
+    if (basis_id.empty() || basis_id.size() > 128)
+        throw std::invalid_argument("Pedersen MLE basis identity is invalid");
+    G1 result;
+    hashAndMapToG1(result, "zkGPT/hyrax/pedersen/H/v1/" + basis_id);
+    if (!valid_point(result, true))
+        throw std::runtime_error("Pedersen MLE blinding generator is invalid");
+    return result;
+}
+
+G1 derive_pedersen_evaluation_generator(const std::string &basis_id,
+                                        const std::string &label) {
+    if (basis_id.empty() || basis_id.size() > 128 || label.empty() ||
+        label.size() > 256)
+        throw std::invalid_argument("Pedersen MLE evaluation identity is invalid");
+    G1 result;
+    hashAndMapToG1(result, "zkGPT/hyrax/pedersen/J/v1/" + basis_id + "/" +
+                             label);
+    if (!valid_point(result, true))
+        throw std::runtime_error("Pedersen MLE evaluation generator is invalid");
+    return result;
+}
+
+PedersenMleCommitment pedersen_commit_mle(
+    const std::vector<G1> &generators, const std::vector<Fr> &values,
+    const std::string &basis_id) {
+    if (generators.empty() || generators.size() != values.size() ||
+        !power_of_two_size(values.size()) || values.size() >
+            static_cast<std::size_t>(std::numeric_limits<int>::max()))
+        throw std::invalid_argument("Pedersen MLE commitment dimensions are invalid");
+    const G1 H = derive_pedersen_blinding_generator(basis_id);
+    for (const G1 &generator : generators)
+        if (!valid_point(generator, true))
+            throw std::invalid_argument("Pedersen MLE commitment basis is invalid");
+    Fr rho;
+    rho.setByCSPRNG();
+    PedersenMleCommitment result;
+    result.commitment = perdersen_commit(
+        const_cast<G1 *>(generators.data()), const_cast<Fr *>(values.data()),
+        static_cast<int>(values.size()));
+    result.commitment += H * rho;
+    result.blinding_generator = H;
+    result.blinding = rho;
+    result.basis_id = basis_id;
+    return result;
+}
+
+static bool open_masked_mle_impl(
+    const PedersenMleCommitment &commitment,
+    const std::vector<G1> &generators, const std::vector<Fr> &point,
+    const std::vector<Fr> &values, const Fr *forced_masked_evaluation,
+    NativeProofSession &session, const std::string &label,
+    MaskedMleOpening &opening, std::string *reason,
+    bool enforce_statement_basis) {
+    const std::size_t checkpoint = session.checkpoint();
+    try {
+        if (label.empty() || values.empty() || values.size() != generators.size() ||
+            !power_of_two_size(values.size()) || values.size() < 2 ||
+            point.empty() || point.size() >= sizeof(std::size_t) * 8 ||
+            (std::size_t(1) << point.size()) != values.size())
+            throw std::invalid_argument("masked Hyrax MLE dimensions are invalid");
+        if (commitment.basis_id.empty() || commitment.basis_id.size() > 128 ||
+            !valid_point(commitment.blinding_generator, true) ||
+            commitment.blinding_generator !=
+                derive_pedersen_blinding_generator(commitment.basis_id))
+            throw std::invalid_argument("masked Hyrax commitment blinding identity is invalid");
+        for (const G1 &generator : generators)
+            if (!valid_point(generator, true))
+                throw std::invalid_argument("masked Hyrax commitment basis is invalid");
+        const std::vector<Fr> basis = mle_basis_from_point(point);
+        if (basis.size() != values.size())
+            throw std::invalid_argument("masked Hyrax MLE basis size mismatch");
+        if (enforce_statement_basis &&
+            session.statement().basis_digest != NativeProofStatement::basis_digest_for(
+                commitment.blinding_generator, generators, basis, values.size()))
+            throw std::invalid_argument("masked Hyrax statement basis mismatch");
+
+        const G1 expected_commitment =
+            perdersen_commit(const_cast<G1 *>(generators.data()),
+                             const_cast<Fr *>(values.data()),
+                             static_cast<int>(values.size())) +
+            commitment.blinding_generator * commitment.blinding;
+        if (expected_commitment != commitment.commitment)
+            throw std::invalid_argument("masked Hyrax commitment does not bind the witness");
+
+        const G1 J = derive_pedersen_evaluation_generator(commitment.basis_id, label);
+        if (J == commitment.blinding_generator)
+            throw std::invalid_argument("masked Hyrax evaluation generator is not independent");
+        for (const G1 &generator : generators)
+            if (generator == commitment.blinding_generator || generator == J)
+                throw std::invalid_argument("masked Hyrax generators are not domain separated");
+        Fr raw_evaluation(0);
+        for (std::size_t index = 0; index < values.size(); ++index)
+            raw_evaluation += basis[index] * values[index];
+        Fr mu;
+        if (forced_masked_evaluation != nullptr) {
+            // The forced claim is still hidden: only its difference from the
+            // private raw evaluation is retained as the evaluation mask.
+            mu = *forced_masked_evaluation - raw_evaluation;
+        } else {
+            mu.setByCSPRNG();
+        }
+        opening.evaluation_mask_commitment = J * mu;
+        opening.masked_evaluation = raw_evaluation + mu;
+
+        std::vector<Fr> random_vector(values.size());
+        for (Fr &value : random_vector) value.setByCSPRNG();
+        Fr random_rho;
+        Fr random_mu;
+        random_rho.setByCSPRNG();
+        random_mu.setByCSPRNG();
+        const G1 announce_commitment =
+            perdersen_commit(const_cast<G1 *>(generators.data()),
+                             random_vector.data(),
+                             static_cast<int>(random_vector.size())) +
+            commitment.blinding_generator * random_rho;
+        const G1 announce_mask = J * random_mu;
+        Fr announce_eval = random_mu;
+        for (std::size_t index = 0; index < values.size(); ++index)
+            announce_eval += basis[index] * random_vector[index];
+
+        session.absorb(label + "/basis",
+                       masked_basis_payload(commitment.commitment,
+                                            commitment.blinding_generator, J,
+                                            commitment.basis_id, generators, basis));
+        session.absorb(label + "/claim",
+                       masked_claim_payload(opening.evaluation_mask_commitment,
+                                            opening.masked_evaluation));
+        session.absorb(label + "/announce",
+                       masked_announce_payload(announce_commitment, announce_mask,
+                                               announce_eval));
+        const Fr challenge = session.challenge(label + "/c");
+        std::vector<Fr> response(values.size() + 2);
+        for (std::size_t index = 0; index < values.size(); ++index)
+            response[index] = random_vector[index] + challenge * values[index];
+        response[values.size()] = random_rho + challenge * commitment.blinding;
+        response[values.size() + 1] = random_mu + challenge * mu;
+        session.absorb_fields(label + "/response", response);
+        return true;
+    } catch (const std::exception &error) {
+        session.rollback(checkpoint);
+        if (reason != nullptr) *reason = error.what();
+        return false;
+    }
+}
+
+bool open_masked_mle_with_session(
+    const PedersenMleCommitment &commitment,
+    const std::vector<G1> &generators, const std::vector<Fr> &point,
+    const std::vector<Fr> &values, NativeProofSession &session,
+    const std::string &label, MaskedMleOpening &opening, std::string *reason,
+    bool enforce_statement_basis) {
+    return open_masked_mle_impl(commitment, generators, point, values, nullptr,
+                                session, label, opening, reason,
+                                enforce_statement_basis);
+}
+
+bool open_masked_mle_with_claim(
+    const PedersenMleCommitment &commitment,
+    const std::vector<G1> &generators, const std::vector<Fr> &point,
+    const std::vector<Fr> &values, const Fr &masked_evaluation,
+    NativeProofSession &session, const std::string &label,
+    MaskedMleOpening &opening, std::string *reason,
+    bool enforce_statement_basis) {
+    return open_masked_mle_impl(commitment, generators, point, values,
+                                &masked_evaluation, session, label, opening,
+                                reason, enforce_statement_basis);
+}
+
+bool verify_masked_mle_opening_with_session(
+    const G1 &commitment, const G1 &evaluation_mask_commitment,
+    const Fr &masked_evaluation, const std::string &basis_id,
+    const std::vector<G1> &generators, const std::vector<Fr> &point,
+    const NativeProofSession &session, const std::string &label,
+    std::string *reason, bool enforce_statement_basis,
+    bool allow_trailing_unrelated) {
+    try {
+        if (label.empty() || basis_id.empty() || point.empty() ||
+            point.size() >= sizeof(std::size_t) * 8 || generators.empty() ||
+            generators.size() != (std::size_t(1) << point.size()) ||
+            !power_of_two_size(generators.size()) || generators.size() < 2)
+            throw std::invalid_argument("masked Hyrax verifier dimensions are invalid");
+        const std::vector<Fr> basis = mle_basis_from_point(point);
+        if (basis.size() != generators.size())
+            throw std::invalid_argument("masked Hyrax verifier basis size mismatch");
+        const G1 H = derive_pedersen_blinding_generator(basis_id);
+        const G1 J = derive_pedersen_evaluation_generator(basis_id, label);
+        if (!valid_point(commitment, false) || !valid_point(evaluation_mask_commitment, false) ||
+            !valid_point(H, true) || !valid_point(J, true) || H == J)
+            throw std::invalid_argument("masked Hyrax verifier point is invalid");
+        for (const G1 &generator : generators) {
+            if (!valid_point(generator, true) || generator == H || generator == J)
+                throw std::invalid_argument("masked Hyrax verifier basis is not domain separated");
+        }
+        if (enforce_statement_basis &&
+            session.statement().basis_digest != NativeProofStatement::basis_digest_for(
+                H, generators, basis, generators.size()))
+            throw std::invalid_argument("masked Hyrax verifier statement basis mismatch");
+        if (!session.replay(reason)) return false;
+
+        std::size_t position = session.messages().size();
+        for (std::size_t index = 0; index < session.messages().size(); ++index) {
+            if (session.messages()[index].label != label + "/basis") continue;
+            if (position != session.messages().size()) {
+                set_open_reason(reason, "duplicate masked Hyrax basis message");
+                return false;
+            }
+            position = index;
+        }
+        if (position == session.messages().size()) {
+            set_open_reason(reason, "missing masked Hyrax basis message");
+            return false;
+        }
+        std::size_t cursor = position;
+        const NativeProofMessage *basis_message = consume_masked_message(
+            session, cursor, NativeProofMessageKind::Data, label + "/basis", reason);
+        if (basis_message == nullptr) return false;
+        std::vector<std::string> basis_parts;
+        if (!split_open_payload(basis_message->payload, 5 + 2 * generators.size(),
+                                basis_parts)) {
+            set_open_reason(reason, "malformed masked Hyrax basis message");
+            return false;
+        }
+        G1 encoded_commitment, encoded_H, encoded_J;
+        if (!decode_open_point(basis_parts[0], encoded_commitment) ||
+            !decode_open_point(basis_parts[1], encoded_H) ||
+            !decode_open_point(basis_parts[2], encoded_J) ||
+            encoded_commitment != commitment || encoded_H != H || encoded_J != J ||
+            basis_parts[3] != basis_id || basis_parts[4] != std::to_string(generators.size())) {
+            set_open_reason(reason, "masked Hyrax basis identity mismatch");
+            return false;
+        }
+        for (std::size_t index = 0; index < generators.size(); ++index) {
+            G1 encoded_generator;
+            Fr encoded_basis;
+            if (!decode_open_point(basis_parts[5 + 2 * index], encoded_generator) ||
+                !decode_open_field(basis_parts[6 + 2 * index], encoded_basis) ||
+                encoded_generator != generators[index] || encoded_basis != basis[index]) {
+                set_open_reason(reason, "masked Hyrax basis coordinate mismatch");
+                return false;
+            }
+        }
+
+        const NativeProofMessage *claim_message = consume_masked_message(
+            session, cursor, NativeProofMessageKind::Data, label + "/claim", reason);
+        if (claim_message == nullptr) return false;
+        std::vector<std::string> claim_parts;
+        if (!split_open_payload(claim_message->payload, 2, claim_parts)) {
+            set_open_reason(reason, "malformed masked Hyrax claim message");
+            return false;
+        }
+        G1 encoded_mask_commitment;
+        Fr encoded_masked_evaluation;
+        if (!decode_open_point(claim_parts[0], encoded_mask_commitment) ||
+            !decode_open_field(claim_parts[1], encoded_masked_evaluation) ||
+            encoded_mask_commitment != evaluation_mask_commitment ||
+            encoded_masked_evaluation != masked_evaluation) {
+            set_open_reason(reason, "masked Hyrax public claim mismatch");
+            return false;
+        }
+
+        const NativeProofMessage *announce_message = consume_masked_message(
+            session, cursor, NativeProofMessageKind::Data, label + "/announce", reason);
+        if (announce_message == nullptr) return false;
+        std::vector<std::string> announce_parts;
+        if (!split_open_payload(announce_message->payload, 3, announce_parts)) {
+            set_open_reason(reason, "malformed masked Hyrax announcement");
+            return false;
+        }
+        G1 announce_commitment, announce_mask;
+        Fr announce_eval;
+        if (!decode_open_point(announce_parts[0], announce_commitment) ||
+            !decode_open_point(announce_parts[1], announce_mask) ||
+            !decode_open_field(announce_parts[2], announce_eval)) {
+            set_open_reason(reason, "malformed masked Hyrax announcement fields");
+            return false;
+        }
+        const NativeProofMessage *challenge_message = consume_masked_message(
+            session, cursor, NativeProofMessageKind::Challenge,
+            "challenge/" + label + "/c", reason);
+        if (challenge_message == nullptr) return false;
+        Fr challenge;
+        if (!decode_open_field(challenge_message->payload, challenge) || challenge.isZero()) {
+            set_open_reason(reason, "masked Hyrax challenge is invalid");
+            return false;
+        }
+        const NativeProofMessage *response_message = consume_masked_message(
+            session, cursor, NativeProofMessageKind::FieldVector, label + "/response", reason);
+        if (response_message == nullptr) return false;
+        std::vector<Fr> response;
+        if (!decode_field_vector_payload(response_message->payload, response) ||
+            response.size() != generators.size() + 2) {
+            set_open_reason(reason, "masked Hyrax response vector is invalid");
+            return false;
+        }
+        const Fr &response_rho = response[generators.size()];
+        const Fr &response_mu = response[generators.size() + 1];
+        G1 response_commitment = perdersen_commit(
+            const_cast<G1 *>(generators.data()), response.data(),
+            static_cast<int>(generators.size()));
+        response_commitment += H * response_rho;
+        if (response_commitment != announce_commitment + commitment * challenge) {
+            set_open_reason(reason, "masked Hyrax Pedersen relation failed");
+            return false;
+        }
+        if (J * response_mu != announce_mask + evaluation_mask_commitment * challenge) {
+            set_open_reason(reason, "masked Hyrax evaluation-mask relation failed");
+            return false;
+        }
+        Fr response_eval = response_mu;
+        for (std::size_t index = 0; index < generators.size(); ++index)
+            response_eval += basis[index] * response[index];
+        if (response_eval != announce_eval + masked_evaluation * challenge) {
+            set_open_reason(reason, "masked Hyrax MLE evaluation relation failed");
+            return false;
+        }
+        return reject_masked_trailing(session, cursor, label,
+                                      allow_trailing_unrelated, reason);
     } catch (const std::exception &error) {
         set_open_reason(reason, error.what());
         return false;

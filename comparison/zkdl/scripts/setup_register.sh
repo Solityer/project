@@ -25,6 +25,7 @@ fi
 python3 "$script_dir/prepare_form_resources.py" \
   --config "$config_path" \
   --ceremony-seed-file "$ZKDL_CEREMONY_SEED_FILE" \
-  --ceremony-transcript-file "$ZKDL_CEREMONY_TRANSCRIPT_FILE"
+  --ceremony-transcript-file "$ZKDL_CEREMONY_TRANSCRIPT_FILE" \
+  --full-dataset
 python3 "$script_dir/validate_resources.py" --config "$config_path"
 echo "setup-register: resources authenticated; native zkDL registration is ready"

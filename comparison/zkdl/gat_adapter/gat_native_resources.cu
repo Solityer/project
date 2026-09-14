@@ -32,6 +32,7 @@ constexpr std::uint32_t kFrameVersion = 1U;
 // byte bound is an operational allocation guard, not a domain truncation.
 constexpr std::uint64_t kMaxSrsFrameBytes = 1ULL << 32U;
 constexpr std::size_t kMaxJsonResourceBytes = 1U << 26U;
+constexpr std::uint64_t kMaxSrsFramePoints = kMaxSrsFrameBytes / kG1Size;
 constexpr const char* kUnavailable = "UNAVAILABLE";
 
 void set_error(std::string* error, const std::string& message) {
@@ -381,11 +382,18 @@ bool decode_frame(const std::vector<Byte>& bytes, PointFrame& frame,
         return false;
     }
     std::uint64_t expected = 0U;
-    if (frame.count > std::numeric_limits<std::uint64_t>::max() / frame.point_size) {
+    if (frame.count > kMaxSrsFramePoints ||
+        frame.count > std::numeric_limits<std::uint64_t>::max() / frame.point_size) {
         set_error(error, "BLOCKED: GATZKG1C frame payload overflows");
         return false;
     }
-    expected = static_cast<std::uint64_t>(offset) + frame.count * frame.point_size;
+    const std::uint64_t payload_bytes = frame.count * frame.point_size;
+    if (payload_bytes > std::numeric_limits<std::uint64_t>::max() -
+                           static_cast<std::uint64_t>(offset)) {
+        set_error(error, "BLOCKED: GATZKG1C frame payload offset overflows");
+        return false;
+    }
+    expected = static_cast<std::uint64_t>(offset) + payload_bytes;
     if (expected != bytes.size()) {
         set_error(error, "BLOCKED: GATZKG1C frame has truncated/trailing payload");
         return false;
@@ -669,7 +677,7 @@ bool parse_srs_chunk(const std::string& object, const std::string& family_id,
         !json_u64_field(object, "point_size", point_size) ||
         chunk.point_count == 0U || chunk.domain == 0U ||
         chunk.point_count != chunk.domain || point_size != kG1Size ||
-        !power_of_two(chunk.domain) ||
+        !power_of_two(chunk.domain) || chunk.domain > kMaxSrsFramePoints ||
         chunk.degree < (chunk.domain == 1U ? 0U : chunk.domain - 1U) ||
         chunk.point_offset > std::numeric_limits<std::uint64_t>::max() - chunk.point_count) {
         set_error(error, "BLOCKED: SRS chunk point_count/domain/degree/point_size is invalid");
@@ -1086,7 +1094,11 @@ bool load_authenticated_srs(const Config& config,
     resource->ceremony_transcript_digest = selected_chunk.ceremony_transcript_digest;
     const std::string selected_family_id = selected_chunk.family_id;
     const std::string selected_chunk_id = selected_chunk.chunk_id;
-    const std::uint64_t selected_chunk_index = selected_chunk.chunk_index;
+    // Keep the actual vector position, not the manifest's logical
+    // chunk_index.  Selection and common-frame reuse index `chunks` directly;
+    // chunk_index is only an authenticated per-family ordering field and is
+    // not required to be globally contiguous.
+    const std::uint64_t selected_chunk_vector_index = static_cast<std::uint64_t>(selected);
     const std::uint64_t selected_count = selected_chunk.point_count;
     const std::uint64_t selected_domain = selected_chunk.domain;
     const std::uint64_t selected_degree = selected_chunk.degree;
@@ -1094,7 +1106,7 @@ bool load_authenticated_srs(const Config& config,
     resource->chunks = std::move(chunks);
     resource->selected_family_id = selected_family_id;
     resource->selected_chunk_id = selected_chunk_id;
-    resource->selected_chunk_index = selected_chunk_index;
+    resource->selected_chunk_index = selected_chunk_vector_index;
     resource->count = selected_count;
     resource->domain = selected_domain;
     resource->degree = selected_degree;
@@ -1138,6 +1150,32 @@ bool select_authenticated_srs_chunk(AuthenticatedSrsResource* resource,
         return false;
     }
     const std::filesystem::path root = std::filesystem::path(resource->manifest_path).parent_path();
+    // The preparation tool may retain one family entry per relation family
+    // while authenticating all of them against the same common prefix frame.
+    // Reuse the already authenticated default material in that case instead
+    // of rereading and retaining another copy of a potentially multi-GB G
+    // frame.  The path and digest tuple is part of the authenticated chunk
+    // metadata; a partial/path-only match is never treated as shared.
+    if (resource->selected_chunk_index >= resource->chunks.size()) {
+        set_error(error, "BLOCKED: authenticated SRS default chunk index is out of range");
+        return false;
+    }
+    auto& common = resource->chunks[resource->selected_chunk_index];
+    auto& candidate = resource->chunks[selected];
+    const bool same_authenticated_frames =
+        selected != resource->selected_chunk_index && common.materialized &&
+        candidate.g_path == common.g_path && candidate.h_path == common.h_path &&
+        candidate.u_path == common.u_path && candidate.g_digest == common.g_digest &&
+        candidate.h_digest == common.h_digest && candidate.u_digest == common.u_digest;
+    if (same_authenticated_frames) {
+        if (common.domain < required_domain || common.generators.size() < required_domain ||
+            common.blinding_generator.empty() || common.u_generator.empty()) {
+            set_error(error, "BLOCKED: authenticated common SRS frame does not cover relation domain");
+            return false;
+        }
+        *chunk = &common;
+        return true;
+    }
     if (!materialize_srs_chunk(root, resource->chunks[selected], error)) return false;
     const auto& selected_chunk = resource->chunks[selected];
     if (selected_chunk.domain < required_domain ||

@@ -54,6 +54,10 @@ struct NativeProofMessage {
     NativeProofMessageKind kind = NativeProofMessageKind::Data;
     std::string label;
     std::string payload;
+    // The position is part of the authenticated wire.  Keeping it explicit
+    // prevents an artifact adapter from silently reordering typed messages
+    // while still preserving the native session's vector API.
+    std::uint64_t sequence = 0;
 };
 
 class NativeProofSession {
@@ -89,6 +93,16 @@ public:
     bool write(const std::string &path, std::string *reason = nullptr) const;
     static bool read(const std::string &path, NativeProofSession &out,
                      std::string *reason = nullptr);
+
+    // Rebuild a session from an authenticated artifact wire without giving
+    // callers access to the private message container.  This is deliberately
+    // strict: the statement/domain/messages must pass the same canonical
+    // validation and Fiat-Shamir replay checks as the file reader.
+    static bool from_messages(const std::string &domain,
+                              const NativeProofStatement &statement,
+                              const std::vector<NativeProofMessage> &messages,
+                              NativeProofSession &out,
+                              std::string *reason = nullptr);
 
     const std::string &domain() const { return domain_; }
     const NativeProofStatement &statement() const { return statement_; }

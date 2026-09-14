@@ -99,7 +99,17 @@ bool check_scope(const NativeProofSession &session, const std::string &label,
         bool okay = false;
         for (const std::string &expected : allowed)
             if (message.label == expected) okay = true;
-        if (!okay) {
+        // A composed GKR/Lasso/Hyrax session contains several independent
+        // protocol scopes.  Only reject an unexpected message that belongs
+        // to this scope; unrelated native messages are consumed by their
+        // own verifier below.  The old implementation rejected every
+        // composed session before checking a single Sumcheck.
+        const std::string scope_prefix = label + "/";
+        const std::string challenge_prefix = "challenge/" + scope_prefix;
+        const bool in_scope =
+            message.label.compare(0, scope_prefix.size(), scope_prefix) == 0 ||
+            message.label.compare(0, challenge_prefix.size(), challenge_prefix) == 0;
+        if (!okay && in_scope) {
             set_reason(reason, "unexpected native protocol message: " + message.label);
             return false;
         }

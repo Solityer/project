@@ -108,14 +108,20 @@ def config_identity_digest(path: Path) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def frame_path(root: Path, frame: dict[str, Any], label: str) -> Path:
+def frame_path(root: Path, frame: dict[str, Any], label: str,
+               digest_cache: dict[Path, str] | None = None) -> Path:
     raw = required_string(frame, "path", label)
     if Path(raw).is_absolute() or ".." in Path(raw).parts:
         fail(f"{label}.path escapes SRS directory")
     path = local(root, raw, f"{label}.path")
     regular(path, f"SRS {label} frame")
     declared = required_digest(frame, "sha256", label)
-    if digest(path) != declared:
+    actual = digest_cache.get(path) if digest_cache is not None else None
+    if actual is None:
+        actual = digest(path)
+        if digest_cache is not None:
+            digest_cache[path] = actual
+    if actual != declared:
         fail(f"SRS {label} frame digest mismatch")
     count = frame.get("count")
     if not isinstance(count, int) or count < 1:
@@ -162,6 +168,7 @@ def validate_srs(root: Path, values: dict[str, str]) -> tuple[Path, dict[str, An
         generator_id = required_string(manifest, "generator_id", "SRS manifest")
         transcript = required_digest(manifest, "ceremony_transcript_sha256", "SRS manifest")
         seed = required_digest(manifest, "ceremony_seed_sha256", "SRS manifest")
+        frame_digest_cache: dict[Path, str] = {}
         for family in families:
             if not isinstance(family, dict) or not isinstance(family.get("family_id"), str) or not family["family_id"]:
                 fail("v2 SRS family has no family_id")
@@ -186,6 +193,10 @@ def validate_srs(root: Path, values: dict[str, str]) -> tuple[Path, dict[str, An
                 if (family_id, index) in seen:
                     fail("v2 SRS duplicate family/chunk_index")
                 seen.add((family_id, index))
+                required_domain = chunk.get("required_domain", domain)
+                if (not isinstance(required_domain, int) or required_domain < 1 or
+                        required_domain & (required_domain - 1) or required_domain > domain):
+                    fail("v2 SRS required_domain is not covered by the authenticated chunk")
                 if chunk.get("point_offset") != 0 or chunk.get("point_count") != domain or chunk.get("degree") != max(0, domain - 1) or chunk.get("point_size") != 48:
                     fail("v2 SRS chunk domain/degree/point metadata mismatch")
                 frames: dict[str, Path] = {}
@@ -193,7 +204,7 @@ def validate_srs(root: Path, values: dict[str, str]) -> tuple[Path, dict[str, An
                     frame = chunk.get(label)
                     if not isinstance(frame, dict):
                         fail(f"v2 SRS chunk omits {label} frame")
-                    frames[label] = frame_path(srs, frame, f"{family_id}/{chunk['chunk_id']}/{label}")
+                    frames[label] = frame_path(srs, frame, f"{family_id}/{chunk['chunk_id']}/{label}", frame_digest_cache)
                     expected = domain if label == "G" else 1
                     if frame.get("count") != expected:
                         fail(f"v2 SRS {label} count does not match chunk domain")

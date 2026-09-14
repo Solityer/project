@@ -1,6 +1,8 @@
 #include "native_lasso.hpp"
 
 #include "hyrax.hpp"
+#include "native_range.hpp"
+#include "native_masked_sumcheck.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -32,6 +34,25 @@ bool valid_identifier(const std::string &value) {
     for (char c : value) {
         if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
               c == '-' || c == '_' || c == '.'))
+            return false;
+    }
+    return true;
+}
+
+bool valid_digest(const std::string &value) {
+    if (value.size() != 64) return false;
+    for (char c : value) {
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')))
+            return false;
+    }
+    return true;
+}
+
+bool valid_basis_identifier(const std::string &value) {
+    if (value.empty() || value.size() > 128) return false;
+    for (char c : value) {
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
+              (c >= 'A' && c <= 'F') || c == '-' || c == '_'))
             return false;
     }
     return true;
@@ -281,7 +302,10 @@ bool validate_prover_family(const NativeLassoFamilyProver &family,
 bool validate_query(const NativeLassoQueryProver &query, std::string *reason) {
     if (!valid_point(query.G) || !power_of_two(query.values.size()) ||
         query.values.size() < 2 || query.values.size() > (1ULL << 20) ||
-        query.generators.size() != query.values.size()) {
+        query.generators.size() != query.values.size() ||
+        !valid_point(query.commitment) ||
+        (!query.basis_id.empty() && !valid_basis_identifier(query.basis_id)) ||
+        (!query.statement_l_digest.empty() && !valid_digest(query.statement_l_digest))) {
         set_reason(reason, "native Lasso L_qry setup is invalid");
         return false;
     }
@@ -291,13 +315,22 @@ bool validate_query(const NativeLassoQueryProver &query, std::string *reason) {
             return false;
         }
     }
+    if (query.has_commitment_blinding &&
+        (!valid_point(query.blinding_generator) || query.basis_id.empty() ||
+         query.blinding_generator !=
+             hyrax::derive_pedersen_blinding_generator(query.basis_id))) {
+        set_reason(reason, "native Lasso L_qry blinding identity is invalid");
+        return false;
+    }
     return true;
 }
 
 bool validate_query_public(const NativeLassoQueryPublic &query,
                            std::size_t expected_size, std::string *reason) {
     if (!valid_point(query.G) || !power_of_two(expected_size) || expected_size < 2 ||
-        query.generators.size() != expected_size || !valid_point(query.commitment)) {
+        query.generators.size() != expected_size || !valid_point(query.commitment) ||
+        (!query.basis_id.empty() && !valid_basis_identifier(query.basis_id)) ||
+        (!query.statement_l_digest.empty() && !valid_digest(query.statement_l_digest))) {
         set_reason(reason, "native Lasso public L_qry setup is invalid");
         return false;
     }
@@ -335,6 +368,16 @@ std::string commitment_payload(const NativeLassoFamilyProver &family,
         native_lasso_generator_digest(G_for_digest, family.matrix_generators),
         native_lasso_table_digest(family)
     });
+}
+
+G1 commit_all_ones(const std::vector<G1> &generators) {
+    if (generators.empty() || generators.size() >
+        static_cast<std::size_t>(std::numeric_limits<int>::max()))
+        throw std::invalid_argument("native Lasso complement domain is invalid");
+    std::vector<G1> generator_copy = generators;
+    std::vector<F> ones(generators.size(), F_ONE);
+    return perdersen_commit(generator_copy.data(), ones.data(),
+                            static_cast<int>(generators.size()));
 }
 
 bool parse_size(const std::string &encoded, std::size_t &value) {
@@ -436,17 +479,58 @@ bool check_family_order(const std::vector<NativeLassoFamilyPublic> &families,
 bool check_statement_identity(const NativeProofSession &session,
                               const std::vector<NativeLassoFamilyPublic> &families,
                               const G1 &query_commitment, std::size_t query_size,
+                              const std::string &query_statement_l_digest,
                               std::string *reason) {
     if (!session.valid(reason)) return false;
-    if (session.statement().tables_digest != native_lasso_tables_digest(families)) {
+    std::string adapter_tables_digest;
+    std::string adapter_resources_digest;
+    bool has_adapter_tables_digest = false;
+    bool has_adapter_resources_digest = false;
+    for (const NativeLassoFamilyPublic &family : families) {
+        const bool has_tables = !family.statement_tables_digest.empty();
+        const bool has_resources = !family.statement_resources_digest.empty();
+        if (has_tables != has_resources) {
+            set_reason(reason, "native Lasso adapter statement identity is incomplete");
+            return false;
+        }
+        if (has_tables) {
+            if (!valid_digest(family.statement_tables_digest) ||
+                !valid_digest(family.statement_resources_digest)) {
+                set_reason(reason, "native Lasso adapter statement identity is non-canonical");
+                return false;
+            }
+            if (!has_adapter_tables_digest) {
+                adapter_tables_digest = family.statement_tables_digest;
+                adapter_resources_digest = family.statement_resources_digest;
+                has_adapter_tables_digest = true;
+                has_adapter_resources_digest = true;
+            } else if (adapter_tables_digest != family.statement_tables_digest ||
+                       adapter_resources_digest != family.statement_resources_digest) {
+                set_reason(reason, "native Lasso family statement identities disagree");
+                return false;
+            }
+        }
+    }
+    const std::string expected_tables = has_adapter_tables_digest
+                                            ? adapter_tables_digest
+                                            : native_lasso_tables_digest(families);
+    const std::string expected_resources = has_adapter_resources_digest
+                                               ? adapter_resources_digest
+                                               : native_lasso_resources_digest(families);
+    if (session.statement().tables_digest != expected_tables) {
         set_reason(reason, "native Lasso table registry is not statement-bound");
         return false;
     }
-    if (session.statement().resources_digest != native_lasso_resources_digest(families)) {
+    if (session.statement().resources_digest != expected_resources) {
         set_reason(reason, "native Lasso resource/registration identity is not statement-bound");
         return false;
     }
-    if (session.statement().l_digest != native_lasso_query_digest(query_commitment, query_size)) {
+    const std::string expected_l_digest = query_statement_l_digest.empty()
+                                              ? native_lasso_query_digest(query_commitment,
+                                                                          query_size)
+                                              : query_statement_l_digest;
+    if (!valid_digest(expected_l_digest) ||
+        session.statement().l_digest != expected_l_digest) {
         set_reason(reason, "native Lasso L_qry commitment is not statement-bound");
         return false;
     }
@@ -525,6 +609,10 @@ std::string native_lasso_generator_digest(const G1 &G,
     return hash_fixed(encoded);
 }
 
+// Legacy clear transcript kept in a private namespace for source-level
+// migration/debug comparison only.  The public native_lasso_* API below is
+// the masked implementation; no masked_full caller can resolve these names.
+namespace native_lasso_legacy_clear {
 bool native_lasso_prove_bundle(
     NativeProofSession &session,
     std::vector<NativeLassoFamilyProver> &families,
@@ -533,7 +621,13 @@ bool native_lasso_prove_bundle(
     std::string *reason) {
     const std::size_t checkpoint = session.checkpoint();
     try {
-        if (families.empty() || !validate_query(query, reason)) return false;
+        if (families.empty()) return false;
+        // The private legacy namespace retains the historical clear
+        // commitment construction.  The public masked path requires its
+        // caller-supplied Pedersen commitment and never reaches this block.
+        query.commitment = perdersen_commit(query.generators.data(), query.values.data(),
+                                            static_cast<int>(query.values.size()));
+        if (!validate_query(query, reason)) return false;
         std::vector<NativeLassoFamilyPublic> identities;
         identities.reserve(families.size());
         for (NativeLassoFamilyProver &family : families) {
@@ -541,10 +635,9 @@ bool native_lasso_prove_bundle(
             identities.push_back(public_identity(family));
         }
         if (!check_family_order(identities, reason)) return false;
-        query.commitment = perdersen_commit(query.generators.data(), query.values.data(),
-                                            static_cast<int>(query.values.size()));
         if (!check_statement_identity(session, identities, query.commitment,
-                                      query.values.size(), reason))
+                                      query.values.size(), query.statement_l_digest,
+                                      reason))
             return false;
         for (const NativeLassoFamilyPublic &family : identities) {
             if (family.segment_offset + family.padded_queries > query.values.size()) {
@@ -583,12 +676,6 @@ bool native_lasso_prove_bundle(
             // membership.  The product Sumcheck proves M(M-1)=0 at a
             // transcript-derived point and the Hyrax opening binds that
             // terminal value to the committed matrix.
-            const std::size_t matrix_rounds = log2_power(family.matrix.size());
-            std::vector<F> boolean_point;
-            boolean_point.reserve(matrix_rounds);
-            for (std::size_t round = 0; round < matrix_rounds; ++round)
-                boolean_point.push_back(session.challenge(
-                    prefix + "/b-boolean/r/" + std::to_string(round)));
             std::vector<F> matrix_minus_one = family.matrix;
             for (F &value : matrix_minus_one) value -= F(1);
             session.absorb_field(prefix + "/b-boolean/claim", F_ZERO);
@@ -599,7 +686,15 @@ bool native_lasso_prove_bundle(
                 return false;
             if (booleanity.terminal_right != booleanity.terminal_left - F(1))
                 throw std::runtime_error("native Lasso M_f boolean terminal mismatch");
-            std::vector<F> boolean_basis = mle_basis(boolean_point);
+            // The product Sumcheck challenges are the evaluation point at
+            // which its terminal values are defined.  A separate point
+            // derived before the Sumcheck would leave the Hyrax opening
+            // proving M at one point while the Sumcheck terminal claims M at
+            // another, causing the honest prover's terminal equation to
+            // fail.  Reuse the native Sumcheck point so the opening binds
+            // exactly the committed M_f evaluation checked by the product
+            // relation.
+            std::vector<F> boolean_basis = mle_basis(booleanity.challenges);
             try {
                 prove_dot_product_with_session(
                     local.family_commitments[family_index],
@@ -610,6 +705,26 @@ bool native_lasso_prove_bundle(
                     prefix + "/c-boolean-open", false);
             } catch (const std::exception &error) {
                 throw std::runtime_error(prefix + "/c-boolean-open: " + error.what());
+            }
+
+            // The second factor of M_f(M_f-1) is not public.  Bind its
+            // terminal to the deterministic commitment LC_f-Commit(1),
+            // rather than accepting only the scalar relation
+            // right=left-1.  This keeps the booleanity Sumcheck sound while
+            // retaining the native Hyrax opening path.
+            const G1 complement_commit =
+                local.family_commitments[family_index] -
+                commit_all_ones(family.matrix_generators);
+            try {
+                prove_dot_product_with_session(
+                    complement_commit, query.G * booleanity.terminal_right,
+                    boolean_basis.data(), family.matrix_generators.data(), query.G,
+                    matrix_minus_one.data(), booleanity.terminal_right,
+                    static_cast<int>(family.matrix.size()), session,
+                    prefix + "/c-boolean-complement-open", false);
+            } catch (const std::exception &error) {
+                throw std::runtime_error(prefix +
+                                         "/c-boolean-complement-open: " + error.what());
             }
 
             // A second independent Sumcheck enforces one selected table row
@@ -740,6 +855,584 @@ bool native_lasso_prove_bundle(
         return false;
     }
 }
+} // namespace native_lasso_legacy_clear
+
+namespace {
+
+struct MaskedFamilyState {
+    hyrax::PedersenMleCommitment commitment;
+    std::string basis_id;
+};
+
+std::string query_basis_id(const NativeLassoQueryProver &query) {
+    if (!query.basis_id.empty()) return query.basis_id;
+    return hash_fixed(encode_tokens({
+        "zkgpt-native-lasso-query-basis-v2",
+        query.G.serializeToHexStr(),
+        native_lasso_generator_digest(query.G, query.generators)}));
+}
+
+std::string query_basis_id(const NativeLassoQueryPublic &query) {
+    if (!query.basis_id.empty()) return query.basis_id;
+    return hash_fixed(encode_tokens({
+        "zkgpt-native-lasso-query-basis-v2",
+        query.G.serializeToHexStr(),
+        native_lasso_generator_digest(query.G, query.generators)}));
+}
+
+std::string family_basis_id(const NativeProofSession &session,
+                            const NativeLassoFamilyPublic &family) {
+    return hash_fixed(encode_tokens({
+        "zkgpt-native-lasso-matrix-basis-v2", session.statement_digest(),
+        family.family_id, family.table_id, family.resource_id,
+        family.registration_id,
+        native_lasso_generator_digest(session.statement().basis_digest.empty()
+                                           ? family.matrix_generators.front()
+                                           : family.matrix_generators.front(),
+                                       family.matrix_generators)}));
+}
+
+bool valid_basis_id(const std::string &value) {
+    if (value.empty() || value.size() > 128) return false;
+    for (char c : value)
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
+              (c >= 'A' && c <= 'F') || c == '-' || c == '_'))
+            return false;
+    return true;
+}
+
+hyrax::PedersenMleCommitment query_commitment_from(
+    const NativeLassoQueryProver &query) {
+    const std::string basis_id = query_basis_id(query);
+    hyrax::PedersenMleCommitment result;
+    result.commitment = query.commitment;
+    result.basis_id = basis_id;
+    result.blinding_generator = hyrax::derive_pedersen_blinding_generator(basis_id);
+    result.blinding = query.has_commitment_blinding ? query.commitment_blinding : F_ZERO;
+    if (query.has_commitment_blinding &&
+        valid_point(query.blinding_generator) &&
+        query.blinding_generator != result.blinding_generator)
+        throw std::invalid_argument("native Lasso query blinding identity mismatch");
+    return result;
+}
+
+hyrax::PedersenMleCommitment query_commitment_from(
+    const NativeLassoQueryPublic &query) {
+    const std::string basis_id = query_basis_id(query);
+    hyrax::PedersenMleCommitment result;
+    result.commitment = query.commitment;
+    result.basis_id = basis_id;
+    result.blinding_generator = hyrax::derive_pedersen_blinding_generator(basis_id);
+    result.blinding = F_ZERO;
+    return result;
+}
+
+std::vector<F> fold_linear(std::vector<F> values, const F &challenge) {
+    if (values.empty() || (values.size() & (values.size() - 1)) != 0)
+        throw std::invalid_argument("native masked Lasso linear domain is invalid");
+    const std::size_t half = values.size() / 2;
+    std::vector<F> result(half);
+    for (std::size_t index = 0; index < half; ++index)
+        result[index] = values[2 * index] +
+                        challenge * (values[2 * index + 1] - values[2 * index]);
+    return result;
+}
+
+void append_linear_round(NativeMaskedSumcheckProver &prover,
+                         const std::vector<F> &values,
+                         std::vector<F> &next, std::string *reason) {
+    if (values.size() < 2 || (values.size() & (values.size() - 1)) != 0)
+        throw std::invalid_argument("native masked Lasso linear round domain is invalid");
+    F p0 = F_ZERO, p1 = F_ZERO;
+    for (std::size_t index = 0; index < values.size() / 2; ++index) {
+        p0 += values[2 * index];
+        p1 += values[2 * index + 1];
+    }
+    F challenge;
+    if (!prover.append_round({p0, p1}, &challenge, reason))
+        throw std::runtime_error(reason != nullptr ? *reason :
+                                 "masked Lasso linear round failed");
+    next = fold_linear(values, challenge);
+}
+
+std::vector<F> fold_product(std::vector<F> left, std::vector<F> right,
+                             const F &challenge, std::vector<F> &next_right) {
+    if (left.empty() || left.size() != right.size() ||
+        (left.size() & (left.size() - 1)) != 0)
+        throw std::invalid_argument("native masked Lasso product domain is invalid");
+    const std::size_t half = left.size() / 2;
+    std::vector<F> next_left(half);
+    next_right.resize(half);
+    for (std::size_t index = 0; index < half; ++index) {
+        next_left[index] = left[2 * index] +
+                           challenge * (left[2 * index + 1] - left[2 * index]);
+        next_right[index] = right[2 * index] +
+                            challenge * (right[2 * index + 1] - right[2 * index]);
+    }
+    return next_left;
+}
+
+void append_product_round(NativeMaskedSumcheckProver &prover,
+                          const std::vector<F> &left,
+                          const std::vector<F> &right,
+                          std::vector<F> &next_left,
+                          std::vector<F> &next_right, std::string *reason) {
+    if (left.size() < 2 || left.size() != right.size() ||
+        (left.size() & (left.size() - 1)) != 0)
+        throw std::invalid_argument("native masked Lasso product round domain is invalid");
+    F p0 = F_ZERO, p1 = F_ZERO, p2 = F_ZERO;
+    for (std::size_t index = 0; index < left.size() / 2; ++index) {
+        const F l0 = left[2 * index], l1 = left[2 * index + 1];
+        const F r0 = right[2 * index], r1 = right[2 * index + 1];
+        p0 += l0 * r0;
+        p1 += l1 * r1;
+        p2 += (l0 + F(2) * (l1 - l0)) *
+              (r0 + F(2) * (r1 - r0));
+    }
+    F challenge;
+    if (!prover.append_round({p0, p1, p2}, &challenge, reason))
+        throw std::runtime_error(reason != nullptr ? *reason :
+                                 "masked Lasso product round failed");
+    next_left = fold_product(left, right, challenge, next_right);
+}
+
+F mle_eval(const std::vector<F> &values, const std::vector<F> &point) {
+    if (values.empty() || values.size() != (std::size_t(1) << point.size()))
+        throw std::invalid_argument("native masked Lasso MLE dimensions are invalid");
+    std::vector<F> current = values;
+    for (const F &challenge : point) current = fold_linear(current, challenge);
+    return current.front();
+}
+
+std::vector<F> row_mle(const std::vector<F> &matrix, std::size_t rows,
+                       std::size_t cols, const std::vector<F> &row_point) {
+    if (matrix.size() != rows * cols || rows != (std::size_t(1) << row_point.size()))
+        throw std::invalid_argument("native masked Lasso row MLE dimensions are invalid");
+    std::vector<F> result(cols, F_ZERO);
+    for (std::size_t col = 0; col < cols; ++col) {
+        std::vector<F> column(rows);
+        for (std::size_t row = 0; row < rows; ++row)
+            column[row] = matrix[row + col * rows];
+        result[col] = mle_eval(column, row_point);
+    }
+    return result;
+}
+
+// Lift a family-local row point into the canonical global L_qry MLE domain.
+// A family segment is a power-of-two aligned block; the low coordinates are
+// the row point and the remaining Boolean coordinates select that block.
+// Passing row_point directly to a full-domain opening would either fail the
+// Hyrax dimension check or prove an unrelated evaluation.
+std::vector<F> lift_segment_point(const std::vector<F> &row_point,
+                                  std::size_t segment_offset,
+                                  std::size_t rows,
+                                  std::size_t domain) {
+    if (!power_of_two(rows) || !power_of_two(domain) || rows > domain ||
+        segment_offset > domain - rows || segment_offset % rows != 0 ||
+        row_point.size() != log2_power(rows))
+        throw std::invalid_argument("native Lasso segment point is not canonical");
+    const std::size_t block = segment_offset / rows;
+    const std::size_t block_count = domain / rows;
+    if (block >= block_count) throw std::invalid_argument("native Lasso segment block is invalid");
+    std::vector<F> result = row_point;
+    result.reserve(log2_power(domain));
+    for (std::size_t bit = 0; bit < log2_power(block_count); ++bit)
+        result.push_back(((block >> bit) & 1U) != 0 ? F_ONE : F_ZERO);
+    return result;
+}
+
+bool split_pipe_fields(const std::string &payload, std::size_t expected,
+                       std::vector<std::string> &parts) {
+    parts.clear();
+    std::size_t begin = 0;
+    while (true) {
+        const std::size_t end = payload.find('|', begin);
+        parts.push_back(payload.substr(begin,
+                                       end == std::string::npos ? end : end - begin));
+        if (end == std::string::npos) break;
+        begin = end + 1;
+    }
+    return parts.size() == expected;
+}
+
+bool parse_masked_open_claim(const NativeProofSession &session,
+                             const std::string &label, G1 &mask_commitment,
+                             F &masked_evaluation, std::string *reason) {
+    const NativeProofMessage *found = nullptr;
+    for (const NativeProofMessage &message : session.messages()) {
+        if (message.label != label + "/claim") continue;
+        if (found != nullptr) {
+            set_reason(reason, "duplicate masked Hyrax claim: " + label);
+            return false;
+        }
+        found = &message;
+    }
+    std::vector<std::string> parts;
+    if (found == nullptr || found->kind != NativeProofMessageKind::Data ||
+        !split_pipe_fields(found->payload, 2, parts) ||
+        !decode_point(parts[0], mask_commitment) || !decode_field(parts[1], masked_evaluation)) {
+        set_reason(reason, "malformed masked Hyrax claim: " + label);
+        return false;
+    }
+    return true;
+}
+
+bool verify_masked_opening(
+    const NativeProofSession &session, const G1 &commitment,
+    const std::string &basis_id, const std::vector<G1> &generators,
+    const std::vector<F> &point, const std::string &label,
+    const F &expected_masked_evaluation, std::string *reason,
+    bool enforce_statement_basis = false, bool allow_trailing = true) {
+    G1 mask_commitment;
+    F masked_evaluation;
+    if (!parse_masked_open_claim(session, label, mask_commitment,
+                                 masked_evaluation, reason))
+        return false;
+    if (masked_evaluation != expected_masked_evaluation) {
+        set_reason(reason, "masked Hyrax claim is not bound to Sumcheck terminal");
+        return false;
+    }
+    return hyrax::verify_masked_mle_opening_with_session(
+        commitment, mask_commitment, masked_evaluation, basis_id, generators,
+        point, session, label, reason, enforce_statement_basis, allow_trailing);
+}
+
+std::string masked_family_payload(
+    const NativeLassoFamilyPublic &family, const G1 &commitment,
+    const G1 &digest_generator, const std::string &basis_id) {
+    return encode_tokens({
+        family.family_id, family.table_id, family.resource_id,
+        family.registration_id, std::to_string(family.padded_queries),
+        std::to_string(family.table.size()), std::to_string(family.segment_offset),
+        std::to_string(family.logical_queries), std::to_string(family.padding_index),
+        family.padding_value.getStr(16), commitment.serializeToHexStr(), basis_id,
+        hyrax::derive_pedersen_blinding_generator(basis_id).serializeToHexStr(),
+        native_lasso_generator_digest(digest_generator, family.matrix_generators),
+        native_lasso_table_digest(family)});
+}
+
+bool parse_masked_family_commitment(
+    const NativeProofMessage &message, const NativeLassoFamilyPublic &expected,
+    const G1 &digest_generator, G1 &commitment, std::string &basis_id,
+    std::string *reason) {
+    std::vector<std::string> fields;
+    if (message.kind != NativeProofMessageKind::Data ||
+        !decode_tokens(message.payload, 15, fields)) {
+        set_reason(reason, "malformed native Lasso LC_f commitment");
+        return false;
+    }
+    if (fields[0] != expected.family_id || fields[1] != expected.table_id ||
+        fields[2] != expected.resource_id || fields[3] != expected.registration_id ||
+        fields[9] != expected.padding_value.getStr(16) ||
+        fields[13] != native_lasso_generator_digest(digest_generator,
+                                                    expected.matrix_generators) ||
+        fields[14] != native_lasso_table_digest(expected) ||
+        !decode_point(fields[10], commitment) || !valid_basis_id(fields[11])) {
+        set_reason(reason, "native Lasso LC_f authenticated identity mismatch");
+        return false;
+    }
+    std::size_t rows = 0, cols = 0, offset = 0, logical = 0, padding = 0;
+    if (!parse_size(fields[4], rows) || !parse_size(fields[5], cols) ||
+        !parse_size(fields[6], offset) || !parse_size(fields[7], logical) ||
+        !parse_size(fields[8], padding) || rows != expected.padded_queries ||
+        cols != expected.table.size() || offset != expected.segment_offset ||
+        logical != expected.logical_queries || padding != expected.padding_index) {
+        set_reason(reason, "native Lasso LC_f shape mismatch");
+        return false;
+    }
+    if (fields[12] != hyrax::derive_pedersen_blinding_generator(fields[11]).serializeToHexStr()) {
+        set_reason(reason, "native Lasso LC_f blinding identity mismatch");
+        return false;
+    }
+    basis_id = fields[11];
+    return true;
+}
+
+bool consume_field_message(const NativeProofSession &session, std::size_t &position,
+                           const std::string &label, F &value,
+                           std::string *reason) {
+    const NativeProofMessage *message = consume(
+        session, position, NativeProofMessageKind::Field, label, reason);
+    if (message == nullptr || !decode_field(message->payload, value)) {
+        set_reason(reason, "malformed masked native Lasso field: " + label);
+        return false;
+    }
+    return true;
+}
+
+std::size_t relation_rounds(std::size_t size) {
+    if (size == 0 || (size & (size - 1)) != 0) throw std::invalid_argument("masked Lasso relation size is not a power of two");
+    return log2_power(size);
+}
+
+bool advance_masked_scope(const NativeProofSession &session,
+                          const std::string &label, std::size_t &position,
+                          std::string *reason) {
+    const std::string prefix = label + "/";
+    const std::string challenge_prefix = "challenge/" + prefix;
+    std::size_t first = session.messages().size();
+    std::size_t last = position;
+    for (std::size_t index = 0; index < session.messages().size(); ++index) {
+        const std::string &message_label = session.messages()[index].label;
+        if (message_label.compare(0, prefix.size(), prefix) != 0 &&
+            message_label.compare(0, challenge_prefix.size(), challenge_prefix) != 0)
+            continue;
+        if (first == session.messages().size()) first = index;
+        last = index;
+    }
+    if (first == session.messages().size() || first != position) {
+        set_reason(reason, "masked Lasso scope is not adjacent at " + label);
+        return false;
+    }
+    for (std::size_t index = first; index <= last; ++index) {
+        const std::string &message_label = session.messages()[index].label;
+        if (message_label.compare(0, prefix.size(), prefix) != 0 &&
+            message_label.compare(0, challenge_prefix.size(), challenge_prefix) != 0) {
+            set_reason(reason, "masked Lasso scope has an inserted message at " + label);
+            return false;
+        }
+    }
+    position = last + 1;
+    return true;
+}
+
+} // namespace
+
+bool native_lasso_prove_bundle(
+    NativeProofSession &session,
+    std::vector<NativeLassoFamilyProver> &families,
+    NativeLassoQueryProver &query,
+    NativeLassoBundleResult *result,
+    std::string *reason) {
+    const std::size_t checkpoint = session.checkpoint();
+    try {
+        if (families.empty() || !validate_query(query, reason)) return false;
+        std::vector<NativeLassoFamilyPublic> identities;
+        identities.reserve(families.size());
+        for (NativeLassoFamilyProver &family : families) {
+            if (!validate_prover_family(family, reason)) return false;
+            identities.push_back(public_identity(family));
+        }
+        if (!check_family_order(identities, reason)) return false;
+        if (!check_statement_identity(session, identities, query.commitment,
+                                      query.values.size(), query.statement_l_digest,
+                                      reason))
+            return false;
+        const hyrax::PedersenMleCommitment query_commitment =
+            query_commitment_from(query);
+        std::vector<MaskedFamilyState> states;
+        states.reserve(families.size());
+        for (const NativeLassoFamilyProver &family : families) {
+            if (family.segment_offset + family.padded_queries > query.values.size()) {
+                set_reason(reason, "native Lasso family exceeds L_qry segment");
+                return false;
+            }
+            MaskedFamilyState state;
+            state.basis_id = family_basis_id(session, family);
+            state.commitment = hyrax::pedersen_commit_mle(
+                family.matrix_generators, family.matrix, state.basis_id);
+            states.push_back(std::move(state));
+        }
+
+        NativeLassoBundleResult local;
+        local.family_commitments.reserve(states.size());
+        // Every LC_f is a hiding Pedersen commitment and is absorbed before
+        // any family query point or masked Sumcheck challenge is derived.
+        for (std::size_t index = 0; index < families.size(); ++index) {
+            local.family_commitments.push_back(states[index].commitment.commitment);
+            session.absorb(family_prefix(families[index]) + "/commitment",
+                           masked_family_payload(families[index],
+                                                 states[index].commitment.commitment,
+                                                 query.G, states[index].basis_id));
+        }
+
+        for (std::size_t family_index = 0; family_index < families.size(); ++family_index) {
+            NativeLassoFamilyProver &family = families[family_index];
+            const std::string prefix = family_prefix(family);
+            const std::size_t rows = family.padded_queries;
+            const std::size_t cols = family.table.size();
+            const std::size_t row_rounds = relation_rounds(rows);
+            std::vector<F> row_point;
+            row_point.reserve(row_rounds);
+            for (std::size_t round = 0; round < row_rounds; ++round)
+                row_point.push_back(session.challenge(
+                    prefix + "/a-query/r/" + std::to_string(round)));
+            local.family_query_points.push_back(row_point);
+
+            const std::size_t matrix_size = rows * cols;
+            std::vector<F> matrix_minus_one = family.matrix;
+            for (F &value : matrix_minus_one) value -= F_ONE;
+            NativeMaskedTerminalSpec boolean_spec;
+            boolean_spec.kind = NativeMaskedTerminalKind::Product2;
+            session.absorb_field(prefix + "/b-boolean/claim", F_ZERO);
+            NativeMaskedSumcheckProver boolean_prover(
+                session, prefix + "/b-boolean/sum", 2, F_ZERO, boolean_spec);
+            std::vector<F> boolean_left = family.matrix;
+            std::vector<F> boolean_right = matrix_minus_one;
+            for (std::size_t round = 0; round < relation_rounds(matrix_size); ++round) {
+                std::vector<F> next_left, next_right;
+                append_product_round(boolean_prover, boolean_left, boolean_right,
+                                     next_left, next_right, reason);
+                boolean_left.swap(next_left);
+                boolean_right.swap(next_right);
+            }
+            NativeMaskedSumcheckResult boolean_result;
+            if (!boolean_prover.finish({boolean_left.front(), boolean_right.front()},
+                                        &boolean_result, reason)) return false;
+            std::vector<F> boolean_point = boolean_result.challenges;
+            hyrax::MaskedMleOpening boolean_opening;
+            if (!hyrax::open_masked_mle_with_claim(
+                    states[family_index].commitment, family.matrix_generators,
+                    boolean_point, family.matrix,
+                    boolean_result.terminal_values[0], session,
+                    prefix + "/c-boolean-open", boolean_opening,
+                    reason, false))
+                return false;
+            // The complement uses the same LC_f blinding and is opened at the
+            // same fresh point with the second masked terminal claim.
+            hyrax::PedersenMleCommitment complement = states[family_index].commitment;
+            std::vector<F> ones(matrix_size, F_ONE);
+            std::vector<G1> complement_generators = family.matrix_generators;
+            complement.commitment -= perdersen_commit(
+                complement_generators.data(), ones.data(),
+                static_cast<int>(matrix_size));
+            if (!hyrax::open_masked_mle_with_claim(
+                    complement, family.matrix_generators, boolean_point,
+                    matrix_minus_one, boolean_result.terminal_values[1], session,
+                    prefix + "/c-boolean-complement-open", boolean_opening,
+                    reason, false))
+                return false;
+
+            std::vector<F> onehot_left = row_mle(family.matrix, rows, cols, row_point);
+            session.absorb_field(prefix + "/d-onehot/claim", F_ONE);
+            NativeMaskedTerminalSpec onehot_spec;
+            onehot_spec.kind = NativeMaskedTerminalKind::Scalar;
+            NativeMaskedSumcheckProver onehot_prover(
+                session, prefix + "/d-onehot/sum", 1, F_ONE, onehot_spec);
+            std::vector<F> onehot_current = onehot_left;
+            for (std::size_t round = 0; round < relation_rounds(cols); ++round) {
+                std::vector<F> next;
+                append_linear_round(onehot_prover, onehot_current, next, reason);
+                onehot_current.swap(next);
+            }
+            NativeMaskedSumcheckResult onehot_result;
+            if (!onehot_prover.finish({onehot_current.front()}, &onehot_result, reason))
+                return false;
+            std::vector<F> onehot_point = row_point;
+            onehot_point.insert(onehot_point.end(), onehot_result.challenges.begin(),
+                                onehot_result.challenges.end());
+            hyrax::MaskedMleOpening onehot_opening;
+            if (!hyrax::open_masked_mle_with_claim(
+                    states[family_index].commitment, family.matrix_generators,
+                    onehot_point, family.matrix, onehot_result.final_claim, session,
+                    prefix + "/e-onehot-open", onehot_opening,
+                    reason, false))
+                return false;
+
+            const std::vector<F> left = row_mle(family.matrix, rows, cols, row_point);
+            F ell = F_ZERO;
+            for (std::size_t col = 0; col < cols; ++col) ell += left[col] * family.table[col];
+            const F initial_mask = [&]() {
+                F value;
+                value.setByCSPRNG();
+                return value;
+            }();
+            const F masked_initial_claim = ell + initial_mask;
+            session.absorb_field(prefix + "/a-query/claim", masked_initial_claim);
+            NativeMaskedTerminalSpec lookup_spec;
+            lookup_spec.kind = NativeMaskedTerminalKind::Product2Public;
+            lookup_spec.public_vector = family.table;
+            NativeMaskedSumcheckProver lookup_prover(
+                session, prefix + "/f-lookup", 2, masked_initial_claim,
+                lookup_spec, &ell);
+            std::vector<F> lookup_left = left;
+            std::vector<F> lookup_right = family.table;
+            for (std::size_t round = 0; round < relation_rounds(cols); ++round) {
+                std::vector<F> next_left, next_right;
+                append_product_round(lookup_prover, lookup_left, lookup_right,
+                                     next_left, next_right, reason);
+                lookup_left.swap(next_left);
+                lookup_right.swap(next_right);
+            }
+            NativeMaskedSumcheckResult lookup_result;
+            if (!lookup_prover.finish({lookup_left.front()}, &lookup_result, reason))
+                return false;
+            std::vector<F> lookup_point = row_point;
+            lookup_point.insert(lookup_point.end(), lookup_result.challenges.begin(),
+                                lookup_result.challenges.end());
+            hyrax::MaskedMleOpening lookup_opening;
+            if (!hyrax::open_masked_mle_with_claim(
+                    states[family_index].commitment, family.matrix_generators,
+                    lookup_point, family.matrix, lookup_result.terminal_values[0],
+                    session, prefix + "/g-matrix-open", lookup_opening,
+                    reason, false))
+                return false;
+
+            const std::size_t query_domain = query.values.size();
+            std::vector<F> selector_basis(query_domain, F_ZERO);
+            const std::vector<F> row_basis = [&]() {
+                std::vector<F> basis(1ULL << row_point.size());
+                basis[0] = F_ONE - row_point[0];
+                basis[1] = row_point[0];
+                for (std::size_t bit = 1; bit < row_point.size(); ++bit) {
+                    const std::size_t old_size = 1ULL << bit;
+                    for (std::size_t index = old_size; index-- > 0;) {
+                        const F previous = basis[index];
+                        basis[index] = previous * (F_ONE - row_point[bit]);
+                        basis[index + old_size] = previous * row_point[bit];
+                    }
+                }
+                return basis;
+            }();
+            F query_eval = F_ZERO;
+            for (std::size_t row = 0; row < rows; ++row) {
+                selector_basis[family.segment_offset + row] = row_basis[row];
+                query_eval += row_basis[row] * family.queries[row];
+            }
+            if (query.values.size() != query_domain ||
+                query_commitment.commitment != query.commitment)
+                throw std::runtime_error("native Lasso query commitment changed during proof");
+            for (std::size_t row = 0; row < rows; ++row)
+                if (query.values[family.segment_offset + row] != family.queries[row])
+                    throw std::runtime_error("native Lasso query/input segment mismatch");
+            session.absorb_field(prefix + "/h-input/claim", lookup_result.final_claim);
+            hyrax::MaskedMleOpening input_opening;
+            const std::vector<F> query_point = lift_segment_point(
+                row_point, family.segment_offset, rows, query_domain);
+            if (!hyrax::open_masked_mle_with_claim(
+                    query_commitment, query.generators, query_point, query.values,
+                    lookup_result.final_claim, session, prefix + "/h-input-open",
+                    input_opening, reason, true))
+                return false;
+            (void)query_eval;
+        }
+
+        const std::size_t final_rounds = relation_rounds(query.values.size());
+        local.final_query_point.reserve(final_rounds);
+        for (std::size_t round = 0; round < final_rounds; ++round)
+            local.final_query_point.push_back(
+                session.challenge("lasso/i-final/r/" + std::to_string(round)));
+        F final_claim;
+        final_claim.setByCSPRNG();
+        session.absorb_field("lasso/i-final/claim", final_claim);
+        hyrax::MaskedMleOpening final_opening;
+        if (!hyrax::open_masked_mle_with_claim(
+                query_commitment, query.generators, local.final_query_point,
+                query.values, final_claim, session,
+                NativeLassoTerminalOpeningLabels::l_qry(), final_opening,
+                reason, true))
+            return false;
+        if (final_opening.masked_evaluation != final_claim)
+            throw std::runtime_error("native Lasso final opening claim mismatch");
+        local.final_l_evaluation = final_claim;
+        if (result != nullptr) *result = std::move(local);
+        return true;
+    } catch (const std::exception &error) {
+        session.rollback(checkpoint);
+        set_reason(reason, error.what());
+        return false;
+    }
+}
 
 bool native_lasso_verify_bundle(
     const NativeProofSession &session,
@@ -751,7 +1444,224 @@ bool native_lasso_verify_bundle(
         if (!check_family_order(families, reason) ||
             !validate_query_public(query, query.generators.size(), reason) ||
             !check_statement_identity(session, families, query.commitment,
-                                      query.generators.size(), reason))
+                                      query.generators.size(), query.statement_l_digest,
+                                      reason))
+            return false;
+        for (const NativeLassoFamilyPublic &family : families)
+            if (family.segment_offset + family.padded_queries > query.generators.size()) {
+                set_reason(reason, "native Lasso public family exceeds L_qry segment");
+                return false;
+            }
+        if (!session.replay(reason)) return false;
+        NativeLassoBundleResult local;
+        local.family_commitments.reserve(families.size());
+        const std::string first_commitment_label =
+            family_prefix(families.front()) + "/commitment";
+        const std::size_t first_commitment = find_message(
+            session, first_commitment_label, NativeProofMessageKind::Data, reason);
+        if (first_commitment == session.messages().size()) return false;
+        std::size_t position = first_commitment;
+        for (const NativeLassoFamilyPublic &family : families) {
+            const std::string expected = family_prefix(family) + "/commitment";
+            const NativeProofMessage *message = consume(
+                session, position, NativeProofMessageKind::Data, expected, reason);
+            if (message == nullptr) return false;
+            G1 commitment;
+            std::string basis_id;
+            if (!parse_masked_family_commitment(*message, family,
+                                                query.G, commitment, basis_id, reason))
+                return false;
+            local.family_commitments.push_back(commitment);
+        }
+        for (std::size_t family_index = 0; family_index < families.size(); ++family_index) {
+            const NativeLassoFamilyPublic &family = families[family_index];
+            const std::string prefix = family_prefix(family);
+            std::vector<F> row_point;
+            for (std::size_t round = 0; round < relation_rounds(family.padded_queries); ++round) {
+                F challenge;
+                const NativeProofMessage *message = consume(
+                    session, position, NativeProofMessageKind::Challenge,
+                    "challenge/" + prefix + "/a-query/r/" + std::to_string(round), reason);
+                if (message == nullptr || !decode_field(message->payload, challenge)) {
+                    set_reason(reason, "malformed native Lasso row challenge");
+                    return false;
+                }
+                row_point.push_back(challenge);
+            }
+            local.family_query_points.push_back(row_point);
+
+            F boolean_claim;
+            if (!consume_field_message(session, position, prefix + "/b-boolean/claim",
+                                       boolean_claim, reason) || !boolean_claim.isZero())
+                return false;
+            NativeMaskedSumcheckResult boolean_result;
+            if (!native_masked_sumcheck_verify(
+                    session, prefix + "/b-boolean/sum", 2,
+                    relation_rounds(family.padded_queries * family.table.size()),
+                    boolean_claim, NativeMaskedTerminalSpec{
+                        NativeMaskedTerminalKind::Product2, {}, {}},
+                    &boolean_result, reason))
+                return false;
+            if (!advance_masked_scope(session, prefix + "/b-boolean/sum",
+                                      position, reason))
+                return false;
+            const std::string matrix_basis_id = family_basis_id(session, family);
+            if (!verify_masked_opening(
+                    session, local.family_commitments[family_index], matrix_basis_id,
+                    family.matrix_generators, boolean_result.challenges,
+                    prefix + "/c-boolean-open", boolean_result.terminal_values[0],
+                    reason))
+                return false;
+            if (!advance_masked_scope(session, prefix + "/c-boolean-open",
+                                      position, reason))
+                return false;
+            hyrax::PedersenMleCommitment complement;
+            complement.commitment = local.family_commitments[family_index];
+            complement.basis_id = matrix_basis_id;
+            complement.blinding_generator =
+                hyrax::derive_pedersen_blinding_generator(matrix_basis_id);
+            std::vector<F> ones(family.padded_queries * family.table.size(), F_ONE);
+            std::vector<G1> complement_generators = family.matrix_generators;
+            complement.commitment -= perdersen_commit(
+                complement_generators.data(), ones.data(),
+                static_cast<int>(ones.size()));
+            if (!verify_masked_opening(
+                    session, complement.commitment, matrix_basis_id,
+                    family.matrix_generators, boolean_result.challenges,
+                    prefix + "/c-boolean-complement-open",
+                    boolean_result.terminal_values[1], reason))
+                return false;
+            if (!advance_masked_scope(session,
+                                      prefix + "/c-boolean-complement-open",
+                                      position, reason))
+                return false;
+
+            F onehot_claim;
+            if (!consume_field_message(session, position, prefix + "/d-onehot/claim",
+                                       onehot_claim, reason) || onehot_claim != F_ONE)
+                return false;
+            NativeMaskedTerminalSpec onehot_spec;
+            onehot_spec.kind = NativeMaskedTerminalKind::Scalar;
+            NativeMaskedSumcheckResult onehot_result;
+            if (!native_masked_sumcheck_verify(
+                    session, prefix + "/d-onehot/sum", 1,
+                    relation_rounds(family.table.size()), onehot_claim, onehot_spec,
+                    &onehot_result, reason))
+                return false;
+            if (!advance_masked_scope(session, prefix + "/d-onehot/sum",
+                                      position, reason))
+                return false;
+            std::vector<F> onehot_point = row_point;
+            onehot_point.insert(onehot_point.end(), onehot_result.challenges.begin(),
+                                onehot_result.challenges.end());
+            if (!verify_masked_opening(
+                    session, local.family_commitments[family_index], matrix_basis_id,
+                    family.matrix_generators, onehot_point,
+                    prefix + "/e-onehot-open", onehot_result.final_claim, reason))
+                return false;
+            if (!advance_masked_scope(session, prefix + "/e-onehot-open",
+                                      position, reason))
+                return false;
+
+            F lookup_claim;
+            if (!consume_field_message(session, position, prefix + "/a-query/claim",
+                                       lookup_claim, reason))
+                return false;
+            NativeMaskedTerminalSpec lookup_spec;
+            lookup_spec.kind = NativeMaskedTerminalKind::Product2Public;
+            lookup_spec.public_vector = family.table;
+            NativeMaskedSumcheckResult lookup_result;
+            if (!native_masked_sumcheck_verify(
+                    session, prefix + "/f-lookup", 2,
+                    relation_rounds(family.table.size()), lookup_claim, lookup_spec,
+                    &lookup_result, reason))
+                return false;
+            if (!advance_masked_scope(session, prefix + "/f-lookup", position,
+                                      reason))
+                return false;
+            std::vector<F> lookup_point = row_point;
+            lookup_point.insert(lookup_point.end(), lookup_result.challenges.begin(),
+                                lookup_result.challenges.end());
+            if (!verify_masked_opening(
+                    session, local.family_commitments[family_index], matrix_basis_id,
+                    family.matrix_generators, lookup_point,
+                    prefix + "/g-matrix-open", lookup_result.terminal_values[0], reason))
+                return false;
+            if (!advance_masked_scope(session, prefix + "/g-matrix-open",
+                                      position, reason))
+                return false;
+            F input_claim;
+            if (!consume_field_message(session, position, prefix + "/h-input/claim",
+                                       input_claim, reason) || input_claim != lookup_result.final_claim)
+                return false;
+            const std::string q_basis = query_basis_id(query);
+            const std::vector<F> query_point = lift_segment_point(
+                row_point, family.segment_offset, family.padded_queries,
+                query.generators.size());
+            if (!verify_masked_opening(
+                    session, query.commitment, q_basis, query.generators, query_point,
+                    prefix + "/h-input-open", input_claim, reason, true))
+                return false;
+            if (!advance_masked_scope(session, prefix + "/h-input-open", position,
+                                      reason))
+                return false;
+        }
+
+        local.final_query_point.reserve(relation_rounds(query.generators.size()));
+        for (std::size_t round = 0; round < relation_rounds(query.generators.size()); ++round) {
+            F challenge;
+            const NativeProofMessage *message = consume(
+                session, position, NativeProofMessageKind::Challenge,
+                "challenge/lasso/i-final/r/" + std::to_string(round), reason);
+            if (message == nullptr || !decode_field(message->payload, challenge)) {
+                set_reason(reason, "malformed native Lasso final query challenge");
+                return false;
+            }
+            local.final_query_point.push_back(challenge);
+        }
+        F final_claim;
+        if (!consume_field_message(session, position, "lasso/i-final/claim",
+                                   final_claim, reason))
+            return false;
+        if (!verify_masked_opening(
+                session, query.commitment, query_basis_id(query), query.generators,
+                local.final_query_point, NativeLassoTerminalOpeningLabels::l_qry(),
+                final_claim, reason, true, false))
+            return false;
+        if (!advance_masked_scope(session, NativeLassoTerminalOpeningLabels::l_qry(),
+                                  position, reason))
+            return false;
+        local.final_l_evaluation = final_claim;
+        for (std::size_t index = position; index < session.messages().size(); ++index) {
+            const std::string &label = session.messages()[index].label;
+            if (label.compare(0, sizeof("lasso/") - 1, "lasso/") == 0 ||
+                label.compare(0, sizeof("challenge/lasso/") - 1,
+                              "challenge/lasso/") == 0) {
+                set_reason(reason, "native Lasso proof has trailing or inserted messages");
+                return false;
+            }
+        }
+        if (result != nullptr) *result = std::move(local);
+        return true;
+    } catch (const std::exception &error) {
+        set_reason(reason, error.what());
+        return false;
+    }
+}
+
+namespace native_lasso_legacy_clear {
+bool native_lasso_verify_bundle(
+    const NativeProofSession &session,
+    const std::vector<NativeLassoFamilyPublic> &families,
+    const NativeLassoQueryPublic &query,
+    NativeLassoBundleResult *result,
+    std::string *reason) {
+    try {
+        if (!check_family_order(families, reason) ||
+            !validate_query_public(query, query.generators.size(), reason) ||
+            !check_statement_identity(session, families, query.commitment,
+                                      query.generators.size(), query.statement_l_digest,
+                                      reason))
             return false;
         for (const NativeLassoFamilyPublic &family : families) {
             if (family.segment_offset + family.padded_queries > query.generators.size()) {
@@ -804,6 +1714,172 @@ bool native_lasso_verify_bundle(
                 row_point.push_back(value);
             }
             local.family_query_points.push_back(row_point);
+            // The booleanity check is part of the native Lasso relation and
+            // must be consumed before the one-hot/table check.  The
+            // verifier cannot skip these messages: otherwise LC_f could be
+            // opened at a point unrelated to the committed one-hot matrix.
+            const NativeProofMessage *boolean_claim = consume(
+                session, position, NativeProofMessageKind::Field,
+                prefix + "/b-boolean/claim", reason);
+            F boolean_initial;
+            if (boolean_claim == nullptr || !decode_field(boolean_claim->payload,
+                                                          boolean_initial) ||
+                !boolean_initial.isZero()) {
+                set_reason(reason, "native Lasso boolean claim is malformed");
+                return false;
+            }
+            const std::string boolean_label = prefix + "/b-boolean/sum";
+            if (position >= session.messages().size() ||
+                session.messages()[position].label != boolean_label + "/poly/0") {
+                set_reason(reason, "native Lasso booleanity Sumcheck is not adjacent");
+                return false;
+            }
+            F boolean_eval, boolean_minus_one_eval;
+            if (!native_range_verify_product(session, boolean_label, boolean_initial,
+                                             &boolean_eval, &boolean_minus_one_eval,
+                                             reason))
+                return false;
+            const std::size_t boolean_terminal = find_message(
+                session, boolean_label + "/terminal",
+                NativeProofMessageKind::FieldVector, reason);
+            if (boolean_terminal == session.messages().size() || boolean_terminal < position) {
+                set_reason(reason, "native Lasso booleanity terminal is missing");
+                return false;
+            }
+            position = boolean_terminal + 1;
+            if (boolean_minus_one_eval != boolean_eval - F(1)) {
+                set_reason(reason, "native Lasso boolean terminal relation failed");
+                return false;
+            }
+            const std::size_t matrix_rounds =
+                log2_power(family.padded_queries * family.table.size());
+            std::vector<F> boolean_point;
+            if (!collect_challenges(session, boolean_label, matrix_rounds,
+                                    boolean_point, reason))
+                return false;
+            std::vector<F> boolean_basis = mle_basis(boolean_point);
+            const std::string boolean_open_label = prefix + "/c-boolean-open";
+            if (find_message(session, boolean_open_label + "/basis",
+                             NativeProofMessageKind::Data, reason) != position) {
+                set_reason(reason, "native Lasso boolean opening is not adjacent");
+                return false;
+            }
+            if (!hyrax::verify_opening_with_session(
+                    local.family_commitments[family_index], boolean_eval, query.G,
+                    family.matrix_generators, boolean_basis, session,
+                    boolean_open_label, reason, false, true))
+                return false;
+            const std::size_t boolean_open_terminal = find_message(
+                session, boolean_open_label + "/terminal",
+                NativeProofMessageKind::Data, reason);
+            if (boolean_open_terminal == session.messages().size() ||
+                boolean_open_terminal < position) {
+                set_reason(reason, "native Lasso boolean opening terminal is missing");
+                return false;
+            }
+            position = boolean_open_terminal + 1;
+
+            const G1 complement_commit =
+                local.family_commitments[family_index] -
+                commit_all_ones(family.matrix_generators);
+            const std::string complement_open_label =
+                prefix + "/c-boolean-complement-open";
+            if (find_message(session, complement_open_label + "/basis",
+                             NativeProofMessageKind::Data, reason) != position) {
+                set_reason(reason, "native Lasso boolean complement opening is not adjacent");
+                return false;
+            }
+            if (!hyrax::verify_opening_with_session(
+                    complement_commit, boolean_minus_one_eval, query.G,
+                    family.matrix_generators, boolean_basis, session,
+                    complement_open_label, reason, false, true))
+                return false;
+            const std::size_t complement_open_terminal = find_message(
+                session, complement_open_label + "/terminal",
+                NativeProofMessageKind::Data, reason);
+            if (complement_open_terminal == session.messages().size() ||
+                complement_open_terminal < position) {
+                set_reason(reason, "native Lasso boolean complement terminal is missing");
+                return false;
+            }
+            position = complement_open_terminal + 1;
+
+            // The one-hot check projects M_f onto a transcript-derived row
+            // point, then runs a degree-one Sumcheck over table columns.
+            std::vector<F> onehot_point;
+            for (std::size_t round = 0; round < row_rounds; ++round) {
+                F value;
+                const NativeProofMessage *challenge = consume(
+                    session, position, NativeProofMessageKind::Challenge,
+                    "challenge/" + prefix + "/d-onehot/r/" + std::to_string(round),
+                    reason);
+                if (challenge == nullptr || !decode_field(challenge->payload, value)) {
+                    set_reason(reason, "native Lasso one-hot challenge is malformed");
+                    return false;
+                }
+                onehot_point.push_back(value);
+            }
+            const NativeProofMessage *onehot_claim = consume(
+                session, position, NativeProofMessageKind::Field,
+                prefix + "/d-onehot/claim", reason);
+            F onehot_initial;
+            if (onehot_claim == nullptr || !decode_field(onehot_claim->payload,
+                                                         onehot_initial) ||
+                onehot_initial != F_ONE) {
+                set_reason(reason, "native Lasso one-hot claim is malformed");
+                return false;
+            }
+            const std::string onehot_label = prefix + "/d-onehot/sum";
+            if (position >= session.messages().size() ||
+                session.messages()[position].label != onehot_label + "/poly/0") {
+                set_reason(reason, "native Lasso one-hot Sumcheck is not adjacent");
+                return false;
+            }
+            F onehot_eval;
+            if (!native_range_verify_deg1(session, onehot_label, onehot_initial,
+                                          &onehot_eval, reason))
+                return false;
+            const std::size_t onehot_terminal = find_message(
+                session, onehot_label + "/terminal", NativeProofMessageKind::Field,
+                reason);
+            if (onehot_terminal == session.messages().size() || onehot_terminal < position) {
+                set_reason(reason, "native Lasso one-hot terminal is missing");
+                return false;
+            }
+            position = onehot_terminal + 1;
+            const std::size_t col_rounds = log2_power(family.table.size());
+            std::vector<F> onehot_columns;
+            if (!collect_challenges(session, onehot_label, col_rounds,
+                                    onehot_columns, reason))
+                return false;
+            std::vector<F> onehot_matrix_point;
+            onehot_matrix_point.reserve(onehot_point.size() + onehot_columns.size());
+            onehot_matrix_point.insert(onehot_matrix_point.end(), onehot_point.begin(),
+                                       onehot_point.end());
+            onehot_matrix_point.insert(onehot_matrix_point.end(), onehot_columns.begin(),
+                                       onehot_columns.end());
+            std::vector<F> onehot_basis = mle_basis(onehot_matrix_point);
+            const std::string onehot_open_label = prefix + "/e-onehot-open";
+            if (find_message(session, onehot_open_label + "/basis",
+                             NativeProofMessageKind::Data, reason) != position) {
+                set_reason(reason, "native Lasso one-hot opening is not adjacent");
+                return false;
+            }
+            if (!hyrax::verify_opening_with_session(
+                    local.family_commitments[family_index], onehot_eval, query.G,
+                    family.matrix_generators, onehot_basis, session,
+                    onehot_open_label, reason, false, true))
+                return false;
+            const std::size_t onehot_open_terminal = find_message(
+                session, onehot_open_label + "/terminal",
+                NativeProofMessageKind::Data, reason);
+            if (onehot_open_terminal == session.messages().size() ||
+                onehot_open_terminal < position) {
+                set_reason(reason, "native Lasso one-hot opening terminal is missing");
+                return false;
+            }
+            position = onehot_open_terminal + 1;
+
             const NativeProofMessage *query_claim = consume(
                 session, position, NativeProofMessageKind::Field,
                 prefix + "/a-query/claim", reason);
@@ -812,7 +1888,7 @@ bool native_lasso_verify_bundle(
                 set_reason(reason, "native Lasso query claim is malformed");
                 return false;
             }
-            const std::string lookup_label = prefix + "/b-lookup";
+            const std::string lookup_label = prefix + "/f-lookup";
             const std::string first_lookup_poly = lookup_label + "/poly/0";
             if (position >= session.messages().size() ||
                 session.messages()[position].label != first_lookup_poly) {
@@ -831,7 +1907,6 @@ bool native_lasso_verify_bundle(
                 return false;
             }
             position = lookup_terminal + 1;
-            const std::size_t col_rounds = log2_power(family.table.size());
             std::vector<F> y_point;
             if (!collect_challenges(session, lookup_label, col_rounds, y_point, reason))
                 return false;
@@ -848,7 +1923,7 @@ bool native_lasso_verify_bundle(
             matrix_point.insert(matrix_point.end(), row_point.begin(), row_point.end());
             matrix_point.insert(matrix_point.end(), y_point.begin(), y_point.end());
             const std::vector<F> matrix_basis = mle_basis(matrix_point);
-            const std::string matrix_label = prefix + "/c-matrix-open";
+            const std::string matrix_label = prefix + "/g-matrix-open";
             const std::size_t matrix_basis_index = find_message(
                 session, matrix_label + "/basis", NativeProofMessageKind::Data, reason);
             if (matrix_basis_index != position) {
@@ -870,7 +1945,7 @@ bool native_lasso_verify_bundle(
 
             const NativeProofMessage *input_claim = consume(
                 session, position, NativeProofMessageKind::FieldVector,
-                prefix + "/d-input/claim", reason);
+                prefix + "/h-input/claim", reason);
             std::vector<F> input_values;
             if (!decode_vector(input_claim, 2, input_values) || input_values[0] != ell ||
                 input_values[1] != input_values[0]) {
@@ -881,7 +1956,7 @@ bool native_lasso_verify_bundle(
             const std::vector<F> row_basis = mle_basis(row_point);
             for (std::size_t row = 0; row < family.padded_queries; ++row)
                 selector_basis[family.segment_offset + row] = row_basis[row];
-            const std::string input_label = prefix + "/d-input-open";
+            const std::string input_label = prefix + "/h-input-open";
             const std::size_t input_basis_index = find_message(
                 session, input_label + "/basis", NativeProofMessageKind::Data, reason);
             if (input_basis_index != position) {
@@ -906,7 +1981,7 @@ bool native_lasso_verify_bundle(
             F value;
             const NativeProofMessage *challenge = consume(
                 session, position, NativeProofMessageKind::Challenge,
-                "challenge/lasso/e-final/r/" + std::to_string(round), reason);
+                "challenge/lasso/i-final/r/" + std::to_string(round), reason);
             if (challenge == nullptr || !decode_field(challenge->payload, value)) {
                 set_reason(reason, "native Lasso final query challenge is malformed");
                 return false;
@@ -916,7 +1991,7 @@ bool native_lasso_verify_bundle(
         const std::vector<F> final_basis = mle_basis(local.final_query_point);
         const NativeProofMessage *final_claim = consume(
             session, position, NativeProofMessageKind::Field,
-            "lasso/e-final/claim", reason);
+            "lasso/i-final/claim", reason);
         F final_eval;
         if (final_claim == nullptr || !decode_field(final_claim->payload, final_eval)) {
             set_reason(reason, "native Lasso final L_qry claim is malformed");
@@ -953,3 +2028,4 @@ bool native_lasso_verify_bundle(
         return false;
     }
 }
+} // namespace native_lasso_legacy_clear
