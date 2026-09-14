@@ -29,6 +29,7 @@ from common import (
     launch_native,
     load_json,
     local_path,
+    require_prover_secret,
     require_result_shape,
     run_directory,
     verifier_binary,
@@ -74,6 +75,45 @@ def require_manifest(root: Path, name: str, expected_schema: str) -> Mapping[str
     return payload
 
 
+def ensure_registration(root: Path, dataset: str, backend: str,
+                        run_relative: str,
+                        run_path: Path) -> Tuple[str, str]:
+    """Create one registration/secret pair automatically, never copy secrets."""
+
+    registration_relative = f"{run_relative}/model_registration.json"
+    secret_relative = f"{run_relative}/com_W.prover.secret"
+    registration_path = run_path / "model_registration.json"
+    secret_path = run_path / "com_W.prover.secret"
+    registration_exists = registration_path.exists()
+    secret_exists = secret_path.exists()
+    if registration_exists != secret_exists:
+        raise ChainError(
+            f"incomplete model registration pair for {dataset}/{backend}; "
+            "both registration and prover secret are required"
+        )
+    if not registration_exists:
+        command = [
+            sys.executable,
+            str(root / "scripts" / "register_model.py"),
+            "--dataset", dataset,
+            "--backend", backend,
+        ]
+        registered = subprocess.run(
+            command, cwd=str(root), text=True, capture_output=True, check=False,
+        )
+        atomic_write_text(run_path / "runner-registration.stdout.log", registered.stdout)
+        atomic_write_text(run_path / "runner-registration.stderr.log", registered.stderr)
+        if registered.returncode != 0:
+            raise ChainError(
+                f"automatic model registration failed ({registered.returncode}); "
+                f"see {run_relative}/runner-registration.stderr.log"
+            )
+    if not registration_path.is_file():
+        raise ChainError(f"automatic registration did not produce {registration_path}")
+    require_prover_secret(secret_path)
+    return registration_relative, secret_relative
+
+
 def run_cell(root: Path, dataset: str, backend: str) -> None:
     config_path, config = config_with_auth(root, dataset)
     if config.get("privacy_policy") != "model_and_trace_hidden" or config.get("privacy_profile", "masked_full") not in ("masked_full", ""):
@@ -84,9 +124,15 @@ def run_cell(root: Path, dataset: str, backend: str) -> None:
     verifier_binary(root, backend)
     run_relative, run_path = run_directory(root, dataset, backend, config)
     config_relative = relative_path(root, config_path, "dataset config")
+    registration_relative, secret_relative = ensure_registration(
+        root, dataset, backend, run_relative, run_path)
 
     prover_start = time.perf_counter()
-    completed = launch_native(root, dataset, backend, config_relative, operation="prove")
+    completed = launch_native(
+        root, dataset, backend, config_relative, operation="prove",
+        registration_path_value=registration_relative,
+        com_w_secret_path_value=secret_relative,
+    )
     prover_wall_ms = (time.perf_counter() - prover_start) * 1000.0
     atomic_write_text(run_path / "prover.stdout.log", completed.stdout)
     atomic_write_text(run_path / "prover.stderr.log", completed.stderr)
@@ -125,7 +171,7 @@ def run_cell(root: Path, dataset: str, backend: str) -> None:
         raise ChainError(f"independent verifier rejected the cell ({verified.returncode}); see {run_relative}/verifier_report.json")
     report_path = run_path / "verifier_report.json"
     report = load_json(report_path, "independent verifier report")
-    if not isinstance(report, dict) or report.get("schema") != "zkgpt-gat-independent-verifier-v1":
+    if not isinstance(report, dict) or report.get("schema") != "zkgpt-gat-independent-verifier-v2":
         raise ChainError(f"unsupported independent verifier report schema: {report_path}")
     if report.get("status") != "VERIFY_OK" or report.get("independent") is not True:
         raise ChainError(f"independent verifier did not return VERIFY_OK for {dataset}/{backend}")

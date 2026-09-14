@@ -38,6 +38,11 @@ def require_false(value: Mapping[str, Any], key: str, where: str) -> None:
         raise ChainError(f"{where} requires {key}=false")
 
 
+def require_true(value: Mapping[str, Any], key: str, where: str) -> None:
+    if value.get(key) is not True:
+        raise ChainError(f"{where} requires {key}=true")
+
+
 def validate_cell(root: Path, cell: Mapping[str, Any]) -> None:
     dataset = require_text(cell, "dataset", "collected cell")
     backend = require_text(cell, "backend", "collected cell")
@@ -58,7 +63,7 @@ def validate_cell(root: Path, cell: Mapping[str, Any]) -> None:
         raise ChainError(f"collected artifact size mismatch: {artifact}")
     for key in ("statement_digest", "proof_digest", "circuit_id", "plan_digest", "full_dataset_identity", "checkpoint_identity", "cache_identity", "com_W_point"):
         require_text(cell, key, f"{dataset}/{backend}")
-    require_false(cell, "no_fallback", f"{dataset}/{backend}")
+    require_true(cell, "no_fallback", f"{dataset}/{backend}")
     if cell.get("witness_isolated") is not True:
         raise ChainError(f"{dataset}/{backend} does not declare witness isolation")
     timing = cell.get("timing_ms")
@@ -93,7 +98,7 @@ def validate_cell(root: Path, cell: Mapping[str, Any]) -> None:
     report_rel = require_text(cell, "verifier_report_path", f"{dataset}/{backend}")
     report_path = local_path(root, report_rel, "verifier report")
     report = load_json(report_path, "independent verifier report")
-    if not isinstance(report, dict) or report.get("schema") != "zkgpt-gat-independent-verifier-v1" or report.get("status") != "VERIFY_OK" or report.get("independent") is not True:
+    if not isinstance(report, dict) or report.get("schema") != "zkgpt-gat-independent-verifier-v2" or report.get("status") != "VERIFY_OK" or report.get("independent") is not True or report.get("masked_full") is not True:
         raise ChainError(f"independent verifier is not a matching VERIFY_OK report: {report_path}")
     if report.get("dataset") != dataset or report.get("backend") != backend or report.get("statement_digest") != cell.get("statement_digest"):
         raise ChainError(f"independent verifier identity mismatch: {report_path}")
@@ -105,7 +110,7 @@ def validate_cell(root: Path, cell: Mapping[str, Any]) -> None:
     execution = load_json(execution_path, "execution timing")
     if not isinstance(execution, dict) or execution.get("schema") != "zkgpt-gat-execution-v1" or execution.get("status") != "VERIFY_OK":
         raise ChainError(f"execution record is not VERIFY_OK: {execution_path}")
-    require_false(execution, "no_fallback", str(execution_path))
+    require_true(execution, "no_fallback", str(execution_path))
 
 
 def main(argv: Sequence[str]) -> int:

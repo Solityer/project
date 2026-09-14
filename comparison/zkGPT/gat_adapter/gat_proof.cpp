@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <limits>
@@ -38,7 +39,15 @@ std::once_flag field_once;
 const std::size_t kArtifactMaxString = 1ULL << 26;
 const std::size_t kArtifactMaxMessages = 1ULL << 20;
 const std::uint64_t kArtifactMaxWireBytes = 1ULL << 30;
+// A verifier context contains public graph/features and the complete
+// canonical circuit plan.  Keep a finite wire/memory budget while allowing
+// the largest supported public instances to be serialized.
+const std::uint64_t kContextMaxWireBytes = 2ULL << 30;
+const std::uint64_t kContextMaxElements = 1ULL << 30;
+const std::uint64_t kContextMaxLayers = 1ULL << 20;
+const std::uint64_t kContextMaxDescriptors = 1ULL << 20;
 const char kNativeArtifactDomain[] = "zkgpt-native-gat-fs-v1";
+const char kVerifierContextMagic[] = "ZKGPTVC2";
 
 // Defined with the transcript bridge below; the production prover uses the
 // same lossless section projection after all protocol scopes have completed.
@@ -1298,6 +1307,15 @@ void finish_relation_layer(GatCircuitPlan &plan,
 std::string plan_encoding(const GatCircuitPlan &plan) {
     std::string encoded;
     append_string(encoded, plan.registry.registry_id);
+    append_u64(encoded, static_cast<std::uint64_t>(plan.registry.descriptors.size()));
+    for (const RelationDescriptor &descriptor : plan.registry.descriptors) {
+        append_string(encoded, descriptor.id);
+        append_string(encoded, descriptor.primitive);
+        append_string(encoded, descriptor.segment);
+        append_string(encoded, descriptor.relation);
+        append_string(encoded, descriptor.public_claim);
+        append_string(encoded, descriptor.witness);
+    }
     append_string(encoded, plan.input_layout.selector);
     append_string(encoded, plan.opening_policy);
     append_u64(encoded, static_cast<std::uint64_t>(plan.public_output_coordinates));
@@ -1312,6 +1330,7 @@ std::string plan_encoding(const GatCircuitPlan &plan) {
         append_u64(encoded, segment.logical_length);
         append_u64(encoded, segment.padded_length);
     }
+    append_u64(encoded, static_cast<std::uint64_t>(plan.matmuls.size()));
     for (const MatMulDescriptor &descriptor : plan.matmuls) {
         append_string(encoded, descriptor.relation_id);
         append_string(encoded, descriptor.family_id);
@@ -1327,7 +1346,9 @@ std::string plan_encoding(const GatCircuitPlan &plan) {
         append_u64(encoded, descriptor.output_offset);
         append_string(encoded, descriptor.coordinate_rule);
         append_string(encoded, descriptor.scale_rule);
+        append_string(encoded, descriptor.native_path);
     }
+    append_u64(encoded, static_cast<std::uint64_t>(plan.sparse_gkr.size()));
     for (const SparseGkrDescriptor &descriptor : plan.sparse_gkr) {
         append_string(encoded, descriptor.relation_id);
         append_string(encoded, descriptor.family_id);
@@ -1339,8 +1360,10 @@ std::string plan_encoding(const GatCircuitPlan &plan) {
         append_u64(encoded, descriptor.output_offset);
         append_string(encoded, descriptor.coordinate_rule);
         append_string(encoded, descriptor.group_rule);
+        append_u64(encoded, static_cast<std::uint64_t>(descriptor.constraints.size()));
         for (const std::string &constraint : descriptor.constraints) append_string(encoded, constraint);
     }
+    append_u64(encoded, static_cast<std::uint64_t>(plan.lasso.size()));
     for (const LassoFamilyDescriptor &descriptor : plan.lasso) {
         append_string(encoded, descriptor.relation_id);
         append_string(encoded, descriptor.family_id);
@@ -1354,6 +1377,7 @@ std::string plan_encoding(const GatCircuitPlan &plan) {
         append_string(encoded, descriptor.challenge_policy);
         append_string(encoded, descriptor.query_encoding);
     }
+    append_u64(encoded, static_cast<std::uint64_t>(plan.checkpoints.size()));
     for (const CheckpointDescriptor &checkpoint : plan.checkpoints) {
         append_string(encoded, checkpoint.id);
         append_string(encoded, checkpoint.relation_id);
@@ -1362,6 +1386,10 @@ std::string plan_encoding(const GatCircuitPlan &plan) {
         append_u64(encoded, checkpoint.coordinate_offset);
         append_string(encoded, checkpoint.coordinate_rule);
     }
+    append_u64(encoded, static_cast<std::uint64_t>(plan.native_api.size()));
+    for (const std::string &api : plan.native_api) append_string(encoded, api);
+    append_u64(encoded, static_cast<std::uint64_t>(plan.circuit.circuit.size()));
+    append_u64(encoded, static_cast<std::uint64_t>(plan.circuit.size));
     for (const layer &current : plan.circuit.circuit) {
         append_u32(encoded, static_cast<std::uint32_t>(current.ty));
         append_u64(encoded, current.size);
@@ -2888,35 +2916,67 @@ std::string context_encoding(const VerifierContext &context) {
     append_string(encoded, context.static_tables_id);
     append_registration_encoding(encoded, context.registration);
     append_string(encoded, commitment_encoding(context.com_W));
-    append_string(encoded, context.plan.circuit_id);
-    append_string(encoded, context.plan.plan_digest);
+    // The digest must bind the complete public plan, not merely the plan
+    // digest string supplied by a caller.  plan_encoding itself includes the
+    // registry, all descriptors and every layered gate.
+    append_string(encoded, plan_encoding(context.plan));
     append_string(encoded, "public-graph-v2");
     append_u64(encoded, context.graph.num_nodes);
     append_u64(encoded, context.graph.num_features);
     append_u64(encoded, context.graph.graph_count);
     append_u64(encoded, context.graph.num_classes);
+    append_u64(encoded, static_cast<std::uint64_t>(context.graph.src.size()));
     for (Int value : context.graph.src) append_int(encoded, value);
+    append_u64(encoded, static_cast<std::uint64_t>(context.graph.dst.size()));
     for (Int value : context.graph.dst) append_int(encoded, value);
+    append_u64(encoded, static_cast<std::uint64_t>(context.graph.edge_gid.size()));
     for (Int value : context.graph.edge_gid) append_int(encoded, value);
+    append_u64(encoded, static_cast<std::uint64_t>(context.graph.node_ptr.size()));
     for (std::size_t value : context.graph.node_ptr) append_u64(encoded, value);
+    append_u64(encoded, static_cast<std::uint64_t>(context.graph.edge_ptr.size()));
     for (std::size_t value : context.graph.edge_ptr) append_u64(encoded, value);
     append_string(encoded, "public-features-v2");
     append_u64(encoded, context.public_features.rows);
     append_u64(encoded, context.public_features.cols);
+    append_u64(encoded, static_cast<std::uint64_t>(context.public_features.values.size()));
     for (Int value : context.public_features.values) append_int(encoded, value);
     append_string(encoded, "public-logits-v2");
     append_u64(encoded, context.public_logits.rows);
     append_u64(encoded, context.public_logits.cols);
+    append_u64(encoded, static_cast<std::uint64_t>(context.public_logits.values.size()));
     for (Int value : context.public_logits.values) append_int(encoded, value);
     append_string(encoded, context.tables.table_id);
     append_string(encoded, context.tables.generator_id);
     append_string(encoded, context.tables.digest);
+    append_string(encoded, context.tables.quant_cfg_id);
+    append_string(encoded, context.tables.rounding);
+    append_string(encoded, context.tables.rescale);
+    append_string(encoded, context.tables.output_average);
+    append_string(encoded, context.tables.row_order);
+    append_string(encoded, context.tables.exp_approx_id);
+    append_string(encoded, context.tables.elu_approx_id);
+    append_int(encoded, context.tables.lrelu_slope_num);
+    append_int(encoded, context.tables.lrelu_slope_den);
+    append_int(encoded, context.tables.s_delta);
+    append_int(encoded, context.tables.s_exp);
+    append_int(encoded, context.tables.s_elu_in);
+    append_int(encoded, context.tables.s_elu_out);
     append_int(encoded, context.tables.lrelu_min);
     append_int(encoded, context.tables.lrelu_max);
     append_int(encoded, context.tables.exp_min);
     append_int(encoded, context.tables.exp_max);
     append_int(encoded, context.tables.elu_min);
     append_int(encoded, context.tables.elu_max);
+    const auto append_table = [&encoded](const std::vector<TablePoint> &table) {
+        append_u64(encoded, static_cast<std::uint64_t>(table.size()));
+        for (const TablePoint &point : table) {
+            append_int(encoded, point.x);
+            append_int(encoded, point.y);
+        }
+    };
+    append_table(context.tables.lrelu);
+    append_table(context.tables.exp);
+    append_table(context.tables.elu);
     append_string(encoded, context.quant.quant_cfg_id);
     append_string(encoded, context.quant.schema);
     append_int(encoded, context.quant.s_input);
@@ -2947,6 +3007,7 @@ std::string context_encoding(const VerifierContext &context) {
     append_string(encoded, context.quant.rounding);
     append_string(encoded, context.quant.rescale);
     append_string(encoded, context.quant.output_average);
+    append_int(encoded, context.quant.range_bits);
     append_string(encoded, context.quant.static_tables_id);
     append_string(encoded, context.quant.static_table_generator_id);
     append_string(encoded, context.quant.static_row_order);
@@ -3109,6 +3170,871 @@ bool read_section(std::ifstream &in, ProofSection &section) {
         section.messages.push_back(std::move(message));
     }
     return true;
+}
+
+void set_reason(std::string *reason, const std::string &value);
+bool is_lower_hex_digest(const std::string &value);
+
+void append_u8_wire(std::string &out, std::uint8_t value) {
+    out.push_back(static_cast<char>(value));
+}
+
+void append_i8_wire(std::string &out, std::int8_t value) {
+    append_u8_wire(out, static_cast<std::uint8_t>(value));
+}
+
+void append_bool_wire(std::string &out, bool value) {
+    append_u8_wire(out, value ? 1 : 0);
+}
+
+class ContextReader {
+public:
+    ContextReader(const std::string &wire, std::size_t begin, std::size_t end)
+        : wire_(wire), position_(begin), end_(end) {}
+
+    bool ok() const { return error_.empty(); }
+    const std::string &error() const { return error_; }
+    bool at_end() const { return ok() && position_ == end_; }
+    std::size_t remaining() const {
+        return position_ <= end_ ? end_ - position_ : 0;
+    }
+
+    bool read_u8(std::uint8_t &value) {
+        if (!take(1)) return false;
+        value = static_cast<std::uint8_t>(static_cast<unsigned char>(wire_[position_++]));
+        return true;
+    }
+
+    bool read_u32(std::uint32_t &value) {
+        if (!take(4)) return false;
+        value = 0;
+        for (unsigned i = 0; i < 4; ++i)
+            value |= static_cast<std::uint32_t>(static_cast<unsigned char>(wire_[position_++])) << (i * 8);
+        return true;
+    }
+
+    bool read_u64(std::uint64_t &value) {
+        if (!take(8)) return false;
+        value = 0;
+        for (unsigned i = 0; i < 8; ++i)
+            value |= static_cast<std::uint64_t>(static_cast<unsigned char>(wire_[position_++])) << (i * 8);
+        return true;
+    }
+
+    bool read_bool(bool &value) {
+        std::uint8_t raw = 0;
+        if (!read_u8(raw) || raw > 1) {
+            fail("non-canonical boolean");
+            return false;
+        }
+        value = raw != 0;
+        return true;
+    }
+
+    bool read_i8(std::int8_t &value) {
+        std::uint8_t raw = 0;
+        if (!read_u8(raw)) return false;
+        value = raw <= 127 ? static_cast<std::int8_t>(raw)
+                           : static_cast<std::int8_t>(static_cast<int>(raw) - 256);
+        return true;
+    }
+
+    bool read_size(std::size_t &value, const char *what) {
+        std::uint64_t raw = 0;
+        if (!read_u64(raw) || raw > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max())) {
+            fail(std::string("invalid size for ") + what);
+            return false;
+        }
+        value = static_cast<std::size_t>(raw);
+        return true;
+    }
+
+    bool read_count(std::size_t &value, const char *what,
+                    std::uint64_t limit = kContextMaxElements) {
+        if (!read_size(value, what) || static_cast<std::uint64_t>(value) > limit) {
+            fail(std::string("oversized count for ") + what);
+            return false;
+        }
+        // Every encoded element consumes at least one byte.  This rejects a
+        // huge count before any allocation even when the remaining wire is
+        // truncated.
+        if (static_cast<std::uint64_t>(value) > remaining()) {
+            fail(std::string("count exceeds remaining wire for ") + what);
+            return false;
+        }
+        return true;
+    }
+
+    bool read_int(Int &value) {
+        std::uint8_t sign = 0;
+        std::uint64_t magnitude = 0;
+        if (!read_u8(sign) || !read_u64(magnitude) || sign > 1) {
+            fail("invalid signed integer wire");
+            return false;
+        }
+        const std::uint64_t max_positive = static_cast<std::uint64_t>(std::numeric_limits<Int>::max());
+        if (magnitude > max_positive + (sign == 1 ? 1ULL : 0ULL) ||
+            (sign == 1 && magnitude == 0)) {
+            fail("signed integer is outside int64 canonical range");
+            return false;
+        }
+        if (sign == 0) value = static_cast<Int>(magnitude);
+        else if (magnitude == max_positive + 1ULL) value = std::numeric_limits<Int>::min();
+        else value = -static_cast<Int>(magnitude);
+        return true;
+    }
+
+    bool read_string(std::string &value, const char *what,
+                     std::uint64_t limit = kArtifactMaxString) {
+        std::uint64_t raw = 0;
+        if (!read_u64(raw) || raw > limit || raw > remaining()) {
+            fail(std::string("invalid or oversized string for ") + what);
+            return false;
+        }
+        value.assign(wire_.data() + position_, static_cast<std::size_t>(raw));
+        position_ += static_cast<std::size_t>(raw);
+        if (value.find('\0') != std::string::npos) {
+            fail(std::string("NUL in canonical string ") + what);
+            return false;
+        }
+        return true;
+    }
+
+private:
+    bool take(std::size_t size) {
+        if (size > end_ - std::min(position_, end_)) {
+            fail("truncated verifier context");
+            return false;
+        }
+        return true;
+    }
+
+    void fail(const std::string &message) {
+        if (error_.empty()) error_ = message;
+    }
+
+    const std::string &wire_;
+    std::size_t position_ = 0;
+    std::size_t end_ = 0;
+    std::string error_;
+};
+
+void append_context_commitment(std::string &out, const CommitmentWire &commitment) {
+    append_string(out, commitment.scheme);
+    append_string(out, commitment.basis_id);
+    append_u64(out, static_cast<std::uint64_t>(commitment.logical_size));
+    append_u64(out, static_cast<std::uint64_t>(commitment.padded_size));
+    append_string(out, commitment.point_hex);
+}
+
+bool read_context_commitment(ContextReader &reader, CommitmentWire &commitment) {
+    std::size_t logical = 0, padded = 0;
+    return reader.read_string(commitment.scheme, "commitment scheme") &&
+           reader.read_string(commitment.basis_id, "commitment basis") &&
+           reader.read_size(logical, "commitment logical size") &&
+           reader.read_size(padded, "commitment padded size") &&
+           reader.read_string(commitment.point_hex, "commitment point") &&
+           (commitment.logical_size = logical, commitment.padded_size = padded, true);
+}
+
+void append_context_segment(std::string &out, const InputSegment &segment) {
+    append_string(out, segment.name);
+    append_u64(out, static_cast<std::uint64_t>(segment.offset));
+    append_u64(out, static_cast<std::uint64_t>(segment.logical_length));
+    append_u64(out, static_cast<std::uint64_t>(segment.padded_length));
+}
+
+bool read_context_segment(ContextReader &reader, InputSegment &segment) {
+    return reader.read_string(segment.name, "input segment name") &&
+           reader.read_size(segment.offset, "input segment offset") &&
+           reader.read_size(segment.logical_length, "input segment logical length") &&
+           reader.read_size(segment.padded_length, "input segment padded length");
+}
+
+void append_context_int_vector(std::string &out, const std::vector<Int> &values) {
+    append_u64(out, static_cast<std::uint64_t>(values.size()));
+    for (Int value : values) append_int(out, value);
+}
+
+bool read_context_int_vector(ContextReader &reader, std::vector<Int> &values,
+                             const char *what) {
+    std::size_t count = 0;
+    if (!reader.read_count(count, what)) return false;
+    values.resize(count);
+    for (Int &value : values) if (!reader.read_int(value)) return false;
+    return true;
+}
+
+void append_context_quant(std::string &out, const QuantConfig &quant) {
+    append_string(out, quant.schema);
+    append_string(out, quant.quant_cfg_id);
+    append_int(out, quant.s_input);
+    append_int(out, quant.s_delta);
+    append_int(out, quant.s_exp);
+    for (Int value : quant.s_h) append_int(out, value);
+    for (std::size_t layer = 0; layer < quant.s_w_hidden.size(); ++layer) {
+        append_context_int_vector(out, quant.s_w_hidden[layer]);
+        append_context_int_vector(out, quant.s_hprime_hidden[layer]);
+        append_context_int_vector(out, quant.s_a_src_hidden[layer]);
+        append_context_int_vector(out, quant.s_a_dst_hidden[layer]);
+    }
+    for (Int value : quant.s_agg_pre) append_int(out, value);
+    for (Int value : quant.s_agg) append_int(out, value);
+    for (Int value : quant.s_cat) append_int(out, value);
+    append_int(out, quant.s_out_pre);
+    append_int(out, quant.s_out_head);
+    append_int(out, quant.s_out);
+    for (Int value : quant.s_w_output) append_int(out, value);
+    for (Int value : quant.s_yprime_output) append_int(out, value);
+    for (Int value : quant.s_a_src_output) append_int(out, value);
+    for (Int value : quant.s_a_dst_output) append_int(out, value);
+    for (Int value : quant.s_b_output) append_int(out, value);
+    append_string(out, quant.rounding);
+    append_string(out, quant.rescale);
+    append_string(out, quant.output_average);
+    append_int(out, quant.range_bits);
+    append_string(out, quant.static_tables_id);
+    append_string(out, quant.static_table_generator_id);
+    append_string(out, quant.static_row_order);
+    append_string(out, quant.exp_approx_id);
+    append_string(out, quant.elu_approx_id);
+    append_int(out, quant.static_lrelu_min);
+    append_int(out, quant.static_lrelu_max);
+    append_int(out, quant.static_exp_min);
+    append_int(out, quant.static_exp_max);
+    append_int(out, quant.static_elu_min);
+    append_int(out, quant.static_elu_max);
+    append_int(out, quant.lrelu_slope_num);
+    append_int(out, quant.lrelu_slope_den);
+}
+
+bool read_context_quant(ContextReader &reader, QuantConfig &quant) {
+    if (!reader.read_string(quant.schema, "quant schema") ||
+        !reader.read_string(quant.quant_cfg_id, "quant id") ||
+        !reader.read_int(quant.s_input) || !reader.read_int(quant.s_delta) ||
+        !reader.read_int(quant.s_exp)) return false;
+    for (Int &value : quant.s_h) if (!reader.read_int(value)) return false;
+    for (std::size_t layer = 0; layer < quant.s_w_hidden.size(); ++layer) {
+        if (!read_context_int_vector(reader, quant.s_w_hidden[layer], "hidden weight scales") ||
+            !read_context_int_vector(reader, quant.s_hprime_hidden[layer], "hidden projection scales") ||
+            !read_context_int_vector(reader, quant.s_a_src_hidden[layer], "hidden source scales") ||
+            !read_context_int_vector(reader, quant.s_a_dst_hidden[layer], "hidden destination scales")) return false;
+    }
+    for (Int &value : quant.s_agg_pre) if (!reader.read_int(value)) return false;
+    for (Int &value : quant.s_agg) if (!reader.read_int(value)) return false;
+    for (Int &value : quant.s_cat) if (!reader.read_int(value)) return false;
+    if (!reader.read_int(quant.s_out_pre) || !reader.read_int(quant.s_out_head) ||
+        !reader.read_int(quant.s_out)) return false;
+    for (Int &value : quant.s_w_output) if (!reader.read_int(value)) return false;
+    for (Int &value : quant.s_yprime_output) if (!reader.read_int(value)) return false;
+    for (Int &value : quant.s_a_src_output) if (!reader.read_int(value)) return false;
+    for (Int &value : quant.s_a_dst_output) if (!reader.read_int(value)) return false;
+    for (Int &value : quant.s_b_output) if (!reader.read_int(value)) return false;
+    return reader.read_string(quant.rounding, "rounding policy") &&
+           reader.read_string(quant.rescale, "rescale policy") &&
+           reader.read_string(quant.output_average, "output average policy") &&
+           reader.read_int(quant.range_bits) &&
+           reader.read_string(quant.static_tables_id, "static tables id") &&
+           reader.read_string(quant.static_table_generator_id, "static table generator") &&
+           reader.read_string(quant.static_row_order, "static table row order") &&
+           reader.read_string(quant.exp_approx_id, "exp approximation id") &&
+           reader.read_string(quant.elu_approx_id, "elu approximation id") &&
+           reader.read_int(quant.static_lrelu_min) &&
+           reader.read_int(quant.static_lrelu_max) &&
+           reader.read_int(quant.static_exp_min) &&
+           reader.read_int(quant.static_exp_max) &&
+           reader.read_int(quant.static_elu_min) &&
+           reader.read_int(quant.static_elu_max) &&
+           reader.read_int(quant.lrelu_slope_num) &&
+           reader.read_int(quant.lrelu_slope_den);
+}
+
+void append_context_tables(std::string &out, const StaticTables &tables) {
+    append_string(out, tables.table_id);
+    append_string(out, tables.generator_id);
+    append_string(out, tables.digest);
+    append_string(out, tables.quant_cfg_id);
+    append_string(out, tables.rounding);
+    append_string(out, tables.rescale);
+    append_string(out, tables.output_average);
+    append_string(out, tables.row_order);
+    append_string(out, tables.exp_approx_id);
+    append_string(out, tables.elu_approx_id);
+    append_int(out, tables.lrelu_slope_num);
+    append_int(out, tables.lrelu_slope_den);
+    append_int(out, tables.s_delta);
+    append_int(out, tables.s_exp);
+    append_int(out, tables.s_elu_in);
+    append_int(out, tables.s_elu_out);
+    append_int(out, tables.lrelu_min);
+    append_int(out, tables.lrelu_max);
+    append_int(out, tables.exp_min);
+    append_int(out, tables.exp_max);
+    append_int(out, tables.elu_min);
+    append_int(out, tables.elu_max);
+    const auto append_table = [&out](const std::vector<TablePoint> &table) {
+        append_u64(out, static_cast<std::uint64_t>(table.size()));
+        for (const TablePoint &point : table) {
+            append_int(out, point.x);
+            append_int(out, point.y);
+        }
+    };
+    append_table(tables.lrelu);
+    append_table(tables.exp);
+    append_table(tables.elu);
+}
+
+bool read_context_tables(ContextReader &reader, StaticTables &tables) {
+    if (!reader.read_string(tables.table_id, "table id") ||
+        !reader.read_string(tables.generator_id, "table generator") ||
+        !reader.read_string(tables.digest, "table digest") ||
+        !reader.read_string(tables.quant_cfg_id, "table quant id") ||
+        !reader.read_string(tables.rounding, "table rounding") ||
+        !reader.read_string(tables.rescale, "table rescale") ||
+        !reader.read_string(tables.output_average, "table output average") ||
+        !reader.read_string(tables.row_order, "table row order") ||
+        !reader.read_string(tables.exp_approx_id, "table exp approximation") ||
+        !reader.read_string(tables.elu_approx_id, "table elu approximation") ||
+        !reader.read_int(tables.lrelu_slope_num) ||
+        !reader.read_int(tables.lrelu_slope_den) ||
+        !reader.read_int(tables.s_delta) || !reader.read_int(tables.s_exp) ||
+        !reader.read_int(tables.s_elu_in) || !reader.read_int(tables.s_elu_out) ||
+        !reader.read_int(tables.lrelu_min) || !reader.read_int(tables.lrelu_max) ||
+        !reader.read_int(tables.exp_min) || !reader.read_int(tables.exp_max) ||
+        !reader.read_int(tables.elu_min) || !reader.read_int(tables.elu_max)) return false;
+    const auto read_table = [&reader](std::vector<TablePoint> &table,
+                                      const char *what) -> bool {
+        std::size_t count = 0;
+        if (!reader.read_count(count, what)) return false;
+        table.resize(count);
+        for (TablePoint &point : table)
+            if (!reader.read_int(point.x) || !reader.read_int(point.y)) return false;
+        return true;
+    };
+    return read_table(tables.lrelu, "LeakyReLU table") &&
+           read_table(tables.exp, "Exp table") &&
+           read_table(tables.elu, "ELU table");
+}
+
+void append_context_registration(std::string &out,
+                                 const ModelRegistration &registration) {
+    append_context_commitment(out, registration.com_W);
+    append_string(out, registration.dataset);
+    append_string(out, registration.model_arch_id);
+    append_string(out, registration.quant_cfg_id);
+    append_string(out, registration.static_tables_id);
+    append_string(out, registration.field_id);
+    append_string(out, registration.field_modulus);
+    append_string(out, registration.manifest_digest);
+    append_string(out, registration.model_digest);
+    append_string(out, registration.bounds_digest);
+    append_string(out, registration.quant_digest);
+    append_string(out, registration.layout_digest);
+    append_string(out, registration.selector);
+    append_u64(out, static_cast<std::uint64_t>(registration.n_raw));
+    append_u64(out, static_cast<std::uint64_t>(registration.n_in));
+    append_u64(out, static_cast<std::uint64_t>(registration.input_segments.size()));
+    for (const InputSegment &segment : registration.input_segments)
+        append_context_segment(out, segment);
+    append_string(out, registration.opening_policy);
+    append_string(out, registration.binding_digest);
+    append_string(out, registration.registration_digest);
+    append_string(out, registration.status);
+}
+
+bool read_context_registration(ContextReader &reader,
+                               ModelRegistration &registration) {
+    if (!read_context_commitment(reader, registration.com_W) ||
+        !reader.read_string(registration.dataset, "registration dataset") ||
+        !reader.read_string(registration.model_arch_id, "registration architecture") ||
+        !reader.read_string(registration.quant_cfg_id, "registration quant id") ||
+        !reader.read_string(registration.static_tables_id, "registration table id") ||
+        !reader.read_string(registration.field_id, "registration field id") ||
+        !reader.read_string(registration.field_modulus, "registration field modulus") ||
+        !reader.read_string(registration.manifest_digest, "registration manifest digest") ||
+        !reader.read_string(registration.model_digest, "registration model digest") ||
+        !reader.read_string(registration.bounds_digest, "registration bounds digest") ||
+        !reader.read_string(registration.quant_digest, "registration quant digest") ||
+        !reader.read_string(registration.layout_digest, "registration layout digest") ||
+        !reader.read_string(registration.selector, "registration selector") ||
+        !reader.read_size(registration.n_raw, "registration raw layout size") ||
+        !reader.read_size(registration.n_in, "registration padded layout size")) return false;
+    std::size_t count = 0;
+    if (!reader.read_count(count, "registration input segments", 8)) return false;
+    registration.input_segments.resize(count);
+    for (InputSegment &segment : registration.input_segments)
+        if (!read_context_segment(reader, segment)) return false;
+    if (!reader.read_string(registration.opening_policy, "registration opening policy") ||
+        !reader.read_string(registration.binding_digest, "registration binding digest") ||
+        !reader.read_string(registration.registration_digest, "registration digest") ||
+        !reader.read_string(registration.status, "registration status")) return false;
+    registration.com_W_padding_mask = Fr(0);
+    registration.has_private_padding_mask = false;
+    return true;
+}
+
+void append_context_plan(std::string &out, const GatCircuitPlan &plan) {
+    append_string(out, plan.registry.registry_id);
+    append_u64(out, static_cast<std::uint64_t>(plan.registry.descriptors.size()));
+    for (const RelationDescriptor &descriptor : plan.registry.descriptors) {
+        append_string(out, descriptor.id);
+        append_string(out, descriptor.primitive);
+        append_string(out, descriptor.segment);
+        append_string(out, descriptor.relation);
+        append_string(out, descriptor.public_claim);
+        append_string(out, descriptor.witness);
+    }
+    append_string(out, plan.input_layout.selector);
+    append_u64(out, static_cast<std::uint64_t>(plan.input_layout.n_raw));
+    append_u64(out, static_cast<std::uint64_t>(plan.input_layout.n_in));
+    append_u64(out, static_cast<std::uint64_t>(plan.input_layout.segments.size()));
+    for (const InputSegment &segment : plan.input_layout.segments)
+        append_context_segment(out, segment);
+    append_u64(out, static_cast<std::uint64_t>(plan.matmuls.size()));
+    for (const MatMulDescriptor &descriptor : plan.matmuls) {
+        append_string(out, descriptor.relation_id);
+        append_string(out, descriptor.family_id);
+        append_string(out, descriptor.lhs);
+        append_string(out, descriptor.rhs);
+        append_string(out, descriptor.output);
+        append_u64(out, descriptor.rows);
+        append_u64(out, descriptor.inner);
+        append_u64(out, descriptor.cols);
+        append_u64(out, descriptor.output_coordinates);
+        append_u64(out, descriptor.lhs_offset);
+        append_u64(out, descriptor.rhs_offset);
+        append_u64(out, descriptor.output_offset);
+        append_string(out, descriptor.coordinate_rule);
+        append_string(out, descriptor.scale_rule);
+        append_string(out, descriptor.native_path);
+    }
+    append_u64(out, static_cast<std::uint64_t>(plan.sparse_gkr.size()));
+    for (const SparseGkrDescriptor &descriptor : plan.sparse_gkr) {
+        append_string(out, descriptor.relation_id);
+        append_string(out, descriptor.family_id);
+        append_u64(out, descriptor.edge_count);
+        append_u64(out, descriptor.value_width);
+        append_u64(out, descriptor.input_offset);
+        append_u64(out, descriptor.source_offset);
+        append_u64(out, descriptor.destination_offset);
+        append_u64(out, descriptor.output_offset);
+        append_string(out, descriptor.coordinate_rule);
+        append_string(out, descriptor.group_rule);
+        append_u64(out, static_cast<std::uint64_t>(descriptor.constraints.size()));
+        for (const std::string &constraint : descriptor.constraints)
+            append_string(out, constraint);
+    }
+    append_u64(out, static_cast<std::uint64_t>(plan.lasso.size()));
+    for (const LassoFamilyDescriptor &descriptor : plan.lasso) {
+        append_string(out, descriptor.relation_id);
+        append_string(out, descriptor.family_id);
+        append_string(out, descriptor.table_id);
+        append_u64(out, descriptor.real_queries);
+        append_u64(out, descriptor.padded_queries);
+        append_u64(out, descriptor.table_domain);
+        append_int(out, descriptor.padding_value);
+        append_u64(out, descriptor.query_offset);
+        append_string(out, descriptor.incidence_rule);
+        append_string(out, descriptor.challenge_policy);
+        append_string(out, descriptor.query_encoding);
+    }
+    append_u64(out, static_cast<std::uint64_t>(plan.checkpoints.size()));
+    for (const CheckpointDescriptor &checkpoint : plan.checkpoints) {
+        append_string(out, checkpoint.id);
+        append_string(out, checkpoint.relation_id);
+        append_string(out, checkpoint.segment);
+        append_u64(out, checkpoint.coordinates);
+        append_u64(out, checkpoint.coordinate_offset);
+        append_string(out, checkpoint.coordinate_rule);
+    }
+    append_u64(out, static_cast<std::uint64_t>(plan.native_api.size()));
+    for (const std::string &api : plan.native_api) append_string(out, api);
+    append_string(out, plan.circuit_id);
+    append_string(out, plan.plan_digest);
+    append_string(out, plan.opening_policy);
+    append_u64(out, static_cast<std::uint64_t>(plan.terminal_openings.size()));
+    for (const std::string &opening : plan.terminal_openings) append_string(out, opening);
+    append_u64(out, plan.public_output_coordinates);
+    append_u64(out, plan.residual_coordinates);
+    append_bool_wire(out, plan.official_layered);
+    append_bool_wire(out, plan.has_placeholder);
+    append_u8_wire(out, plan.circuit.size);
+    append_u64(out, static_cast<std::uint64_t>(plan.circuit.circuit.size()));
+    for (const layer &current : plan.circuit.circuit) {
+        append_u32(out, static_cast<std::uint32_t>(current.ty));
+        append_u32(out, current.size);
+        for (unsigned i = 0; i < 2; ++i) append_u32(out, current.size_u[i]);
+        for (unsigned i = 0; i < 2; ++i) append_u32(out, current.size_v[i]);
+        for (unsigned i = 0; i < 2; ++i) append_i8_wire(out, current.bit_length_u[i]);
+        for (unsigned i = 0; i < 2; ++i) append_i8_wire(out, current.bit_length_v[i]);
+        append_i8_wire(out, current.bit_length);
+        append_i8_wire(out, current.max_bl_u);
+        append_i8_wire(out, current.max_bl_v);
+        append_bool_wire(out, current.need_phase2);
+        append_u32(out, current.zero_start_id);
+        append_i8_wire(out, current.fft_bit_length);
+        append_u64(out, static_cast<std::uint64_t>(current.uni_interval.size()));
+        for (const auto &interval : current.uni_interval) {
+            append_u32(out, static_cast<std::uint32_t>(interval.first));
+            append_u32(out, static_cast<std::uint32_t>(interval.second));
+        }
+        append_u64(out, static_cast<std::uint64_t>(current.bin_interval.size()));
+        for (const auto &interval : current.bin_interval) {
+            append_u32(out, static_cast<std::uint32_t>(interval.first));
+            append_u32(out, static_cast<std::uint32_t>(interval.second));
+        }
+        append_u64(out, static_cast<std::uint64_t>(current.ori_id_u.size()));
+        for (u32 value : current.ori_id_u) append_u32(out, value);
+        append_u64(out, static_cast<std::uint64_t>(current.ori_id_v.size()));
+        for (u32 value : current.ori_id_v) append_u32(out, value);
+        append_u64(out, static_cast<std::uint64_t>(current.uni_gates.size()));
+        for (const uniGate &gate : current.uni_gates) {
+            append_u32(out, gate.g);
+            append_u32(out, gate.u);
+            append_u8_wire(out, gate.lu);
+            append_int(out, gate.sc);
+        }
+        append_u64(out, static_cast<std::uint64_t>(current.bin_gates.size()));
+        for (const binGate &gate : current.bin_gates) {
+            append_u32(out, gate.g);
+            append_u32(out, gate.u);
+            append_u32(out, gate.v);
+            append_u8_wire(out, gate.l);
+            append_int(out, gate.sc);
+        }
+    }
+}
+
+bool read_context_plan(ContextReader &reader, GatCircuitPlan &plan) {
+    if (!reader.read_string(plan.registry.registry_id, "registry id")) return false;
+    std::size_t count = 0;
+    if (!reader.read_count(count, "registry descriptors", kContextMaxDescriptors)) return false;
+    plan.registry.descriptors.resize(count);
+    for (RelationDescriptor &descriptor : plan.registry.descriptors) {
+        if (!reader.read_string(descriptor.id, "relation id") ||
+            !reader.read_string(descriptor.primitive, "relation primitive") ||
+            !reader.read_string(descriptor.segment, "relation segment") ||
+            !reader.read_string(descriptor.relation, "relation description") ||
+            !reader.read_string(descriptor.public_claim, "relation public claim") ||
+            !reader.read_string(descriptor.witness, "relation witness")) return false;
+    }
+    if (!reader.read_string(plan.input_layout.selector, "layout selector") ||
+        !reader.read_size(plan.input_layout.n_raw, "layout raw size") ||
+        !reader.read_size(plan.input_layout.n_in, "layout padded size") ||
+        !reader.read_count(count, "layout segments", 8)) return false;
+    plan.input_layout.segments.resize(count);
+    for (InputSegment &segment : plan.input_layout.segments)
+        if (!read_context_segment(reader, segment)) return false;
+    if (!reader.read_count(count, "MatMul descriptors", kContextMaxDescriptors)) return false;
+    plan.matmuls.resize(count);
+    for (MatMulDescriptor &descriptor : plan.matmuls) {
+        if (!reader.read_string(descriptor.relation_id, "MatMul relation") ||
+            !reader.read_string(descriptor.family_id, "MatMul family") ||
+            !reader.read_string(descriptor.lhs, "MatMul lhs") ||
+            !reader.read_string(descriptor.rhs, "MatMul rhs") ||
+            !reader.read_string(descriptor.output, "MatMul output") ||
+            !reader.read_size(descriptor.rows, "MatMul rows") ||
+            !reader.read_size(descriptor.inner, "MatMul inner") ||
+            !reader.read_size(descriptor.cols, "MatMul cols") ||
+            !reader.read_size(descriptor.output_coordinates, "MatMul output coordinates") ||
+            !reader.read_size(descriptor.lhs_offset, "MatMul lhs offset") ||
+            !reader.read_size(descriptor.rhs_offset, "MatMul rhs offset") ||
+            !reader.read_size(descriptor.output_offset, "MatMul output offset") ||
+            !reader.read_string(descriptor.coordinate_rule, "MatMul coordinate rule") ||
+            !reader.read_string(descriptor.scale_rule, "MatMul scale rule") ||
+            !reader.read_string(descriptor.native_path, "MatMul native path")) return false;
+    }
+    if (!reader.read_count(count, "sparse GKR descriptors", kContextMaxDescriptors)) return false;
+    plan.sparse_gkr.resize(count);
+    for (SparseGkrDescriptor &descriptor : plan.sparse_gkr) {
+        if (!reader.read_string(descriptor.relation_id, "sparse relation") ||
+            !reader.read_string(descriptor.family_id, "sparse family") ||
+            !reader.read_size(descriptor.edge_count, "sparse edge count") ||
+            !reader.read_size(descriptor.value_width, "sparse value width") ||
+            !reader.read_size(descriptor.input_offset, "sparse input offset") ||
+            !reader.read_size(descriptor.source_offset, "sparse source offset") ||
+            !reader.read_size(descriptor.destination_offset, "sparse destination offset") ||
+            !reader.read_size(descriptor.output_offset, "sparse output offset") ||
+            !reader.read_string(descriptor.coordinate_rule, "sparse coordinate rule") ||
+            !reader.read_string(descriptor.group_rule, "sparse group rule") ||
+            !reader.read_count(count, "sparse constraints", kContextMaxDescriptors)) return false;
+        descriptor.constraints.resize(count);
+        for (std::string &constraint : descriptor.constraints)
+            if (!reader.read_string(constraint, "sparse constraint")) return false;
+    }
+    if (!reader.read_count(count, "Lasso descriptors", kContextMaxDescriptors)) return false;
+    plan.lasso.resize(count);
+    for (LassoFamilyDescriptor &descriptor : plan.lasso) {
+        if (!reader.read_string(descriptor.relation_id, "Lasso relation") ||
+            !reader.read_string(descriptor.family_id, "Lasso family") ||
+            !reader.read_string(descriptor.table_id, "Lasso table") ||
+            !reader.read_size(descriptor.real_queries, "Lasso real query count") ||
+            !reader.read_size(descriptor.padded_queries, "Lasso padded query count") ||
+            !reader.read_size(descriptor.table_domain, "Lasso table domain") ||
+            !reader.read_int(descriptor.padding_value) ||
+            !reader.read_size(descriptor.query_offset, "Lasso query offset") ||
+            !reader.read_string(descriptor.incidence_rule, "Lasso incidence rule") ||
+            !reader.read_string(descriptor.challenge_policy, "Lasso challenge policy") ||
+            !reader.read_string(descriptor.query_encoding, "Lasso query encoding")) return false;
+    }
+    if (!reader.read_count(count, "checkpoint descriptors", kContextMaxDescriptors)) return false;
+    plan.checkpoints.resize(count);
+    for (CheckpointDescriptor &checkpoint : plan.checkpoints) {
+        if (!reader.read_string(checkpoint.id, "checkpoint id") ||
+            !reader.read_string(checkpoint.relation_id, "checkpoint relation") ||
+            !reader.read_string(checkpoint.segment, "checkpoint segment") ||
+            !reader.read_size(checkpoint.coordinates, "checkpoint coordinates") ||
+            !reader.read_size(checkpoint.coordinate_offset, "checkpoint offset") ||
+            !reader.read_string(checkpoint.coordinate_rule, "checkpoint coordinate rule")) return false;
+    }
+    if (!reader.read_count(count, "native API entries", kContextMaxDescriptors)) return false;
+    plan.native_api.resize(count);
+    for (std::string &api : plan.native_api)
+        if (!reader.read_string(api, "native API entry")) return false;
+    if (!reader.read_string(plan.circuit_id, "circuit id") ||
+        !reader.read_string(plan.plan_digest, "plan digest") ||
+        !reader.read_string(plan.opening_policy, "plan opening policy") ||
+        !reader.read_count(count, "terminal openings", 16)) return false;
+    plan.terminal_openings.resize(count);
+    for (std::string &opening : plan.terminal_openings)
+        if (!reader.read_string(opening, "terminal opening")) return false;
+    if (!reader.read_size(plan.public_output_coordinates, "public output coordinates") ||
+        !reader.read_size(plan.residual_coordinates, "residual coordinates") ||
+        !reader.read_bool(plan.official_layered) || !reader.read_bool(plan.has_placeholder)) return false;
+    std::uint8_t circuit_size = 0;
+    if (!reader.read_u8(circuit_size) ||
+        !reader.read_count(count, "layered circuit layers", kContextMaxLayers)) return false;
+    plan.circuit.size = circuit_size;
+    plan.circuit.circuit.resize(count);
+    for (layer &current : plan.circuit.circuit) {
+        std::uint32_t type = 0, size = 0;
+        if (!reader.read_u32(type) || type > static_cast<std::uint32_t>(layerType::PLACE_HOLDER) ||
+            !reader.read_u32(size)) return false;
+        current.ty = static_cast<layerType>(type);
+        current.size = size;
+        for (unsigned i = 0; i < 2; ++i) if (!reader.read_u32(current.size_u[i])) return false;
+        for (unsigned i = 0; i < 2; ++i) if (!reader.read_u32(current.size_v[i])) return false;
+        for (unsigned i = 0; i < 2; ++i) if (!reader.read_i8(current.bit_length_u[i])) return false;
+        for (unsigned i = 0; i < 2; ++i) if (!reader.read_i8(current.bit_length_v[i])) return false;
+        if (!reader.read_i8(current.bit_length) || !reader.read_i8(current.max_bl_u) ||
+            !reader.read_i8(current.max_bl_v) || !reader.read_bool(current.need_phase2) ||
+            !reader.read_u32(current.zero_start_id) || !reader.read_i8(current.fft_bit_length)) return false;
+        if (!reader.read_count(count, "unary interval entries", kContextMaxElements)) return false;
+        current.uni_interval.resize(count);
+        for (auto &interval : current.uni_interval) {
+            std::uint32_t first = 0, second = 0;
+            if (!reader.read_u32(first) || !reader.read_u32(second)) return false;
+            interval = {static_cast<int>(first), static_cast<int>(second)};
+        }
+        if (!reader.read_count(count, "binary interval entries", kContextMaxElements)) return false;
+        current.bin_interval.resize(count);
+        for (auto &interval : current.bin_interval) {
+            std::uint32_t first = 0, second = 0;
+            if (!reader.read_u32(first) || !reader.read_u32(second)) return false;
+            interval = {static_cast<int>(first), static_cast<int>(second)};
+        }
+        if (!reader.read_count(count, "unary original ids", kContextMaxElements)) return false;
+        current.ori_id_u.resize(count);
+        for (u32 &value : current.ori_id_u) if (!reader.read_u32(value)) return false;
+        if (!reader.read_count(count, "binary original ids", kContextMaxElements)) return false;
+        current.ori_id_v.resize(count);
+        for (u32 &value : current.ori_id_v) if (!reader.read_u32(value)) return false;
+        if (!reader.read_count(count, "unary gates", kContextMaxElements)) return false;
+        current.uni_gates.clear();
+        current.uni_gates.reserve(count);
+        for (std::size_t i = 0; i < count; ++i) {
+            u32 g = 0, u = 0;
+            std::uint8_t lu = 0;
+            Int sc = 0;
+            if (!reader.read_u32(g) || !reader.read_u32(u) || !reader.read_u8(lu) ||
+                !reader.read_int(sc)) return false;
+            current.uni_gates.emplace_back(g, u, lu, sc);
+        }
+        if (!reader.read_count(count, "binary gates", kContextMaxElements)) return false;
+        current.bin_gates.clear();
+        current.bin_gates.reserve(count);
+        for (std::size_t i = 0; i < count; ++i) {
+            u32 g = 0, u = 0, v = 0;
+            std::uint8_t l = 0;
+            Int sc = 0;
+            if (!reader.read_u32(g) || !reader.read_u32(u) || !reader.read_u32(v) ||
+                !reader.read_u8(l) || !reader.read_int(sc)) return false;
+            current.bin_gates.emplace_back(g, u, v, sc, l);
+        }
+    }
+    return true;
+}
+
+void append_context_graph(std::string &out, const Graph &graph) {
+    append_u64(out, graph.num_nodes);
+    append_u64(out, graph.num_features);
+    append_u64(out, graph.graph_count);
+    append_u64(out, graph.num_classes);
+    append_context_int_vector(out, graph.src);
+    append_context_int_vector(out, graph.dst);
+    append_context_int_vector(out, graph.edge_gid);
+    append_u64(out, static_cast<std::uint64_t>(graph.node_ptr.size()));
+    for (std::size_t value : graph.node_ptr) append_u64(out, static_cast<std::uint64_t>(value));
+    append_u64(out, static_cast<std::uint64_t>(graph.edge_ptr.size()));
+    for (std::size_t value : graph.edge_ptr) append_u64(out, static_cast<std::uint64_t>(value));
+}
+
+bool read_context_graph(ContextReader &reader, Graph &graph) {
+    if (!reader.read_size(graph.num_nodes, "graph node count") ||
+        !reader.read_size(graph.num_features, "graph feature count") ||
+        !reader.read_size(graph.graph_count, "graph count") ||
+        !reader.read_size(graph.num_classes, "graph class count") ||
+        !read_context_int_vector(reader, graph.src, "graph source edges") ||
+        !read_context_int_vector(reader, graph.dst, "graph destination edges") ||
+        !read_context_int_vector(reader, graph.edge_gid, "graph edge graph ids")) return false;
+    std::size_t count = 0;
+    if (!reader.read_count(count, "graph node pointers")) return false;
+    graph.node_ptr.resize(count);
+    for (std::size_t &value : graph.node_ptr)
+        if (!reader.read_size(value, "graph node pointer")) return false;
+    if (!reader.read_count(count, "graph edge pointers")) return false;
+    graph.edge_ptr.resize(count);
+    for (std::size_t &value : graph.edge_ptr)
+        if (!reader.read_size(value, "graph edge pointer")) return false;
+    return true;
+}
+
+void append_context_tensor(std::string &out, const Tensor2D &tensor) {
+    append_u64(out, static_cast<std::uint64_t>(tensor.rows));
+    append_u64(out, static_cast<std::uint64_t>(tensor.cols));
+    append_context_int_vector(out, tensor.values);
+}
+
+bool read_context_tensor(ContextReader &reader, Tensor2D &tensor,
+                         const char *what) {
+    if (!reader.read_size(tensor.rows, what) || !reader.read_size(tensor.cols, what)) return false;
+    std::size_t count = 0;
+    if (!reader.read_count(count, what)) return false;
+    tensor.values.resize(count);
+    for (Int &value : tensor.values) if (!reader.read_int(value)) return false;
+    return true;
+}
+
+bool static_tables_equal(const StaticTables &left, const StaticTables &right) {
+    const auto equal_rows = [](const std::vector<TablePoint> &a,
+                               const std::vector<TablePoint> &b) {
+        if (a.size() != b.size()) return false;
+        for (std::size_t i = 0; i < a.size(); ++i)
+            if (a[i].x != b[i].x || a[i].y != b[i].y) return false;
+        return true;
+    };
+    return left.table_id == right.table_id && left.generator_id == right.generator_id &&
+           left.digest == right.digest && left.quant_cfg_id == right.quant_cfg_id &&
+           left.rounding == right.rounding && left.rescale == right.rescale &&
+           left.output_average == right.output_average && left.row_order == right.row_order &&
+           left.exp_approx_id == right.exp_approx_id && left.elu_approx_id == right.elu_approx_id &&
+           left.lrelu_slope_num == right.lrelu_slope_num && left.lrelu_slope_den == right.lrelu_slope_den &&
+           left.s_delta == right.s_delta && left.s_exp == right.s_exp &&
+           left.s_elu_in == right.s_elu_in && left.s_elu_out == right.s_elu_out &&
+           left.lrelu_min == right.lrelu_min && left.lrelu_max == right.lrelu_max &&
+           left.exp_min == right.exp_min && left.exp_max == right.exp_max &&
+           left.elu_min == right.elu_min && left.elu_max == right.elu_max &&
+           equal_rows(left.lrelu, right.lrelu) && equal_rows(left.exp, right.exp) &&
+           equal_rows(left.elu, right.elu);
+}
+
+bool registry_equal(const RelationRegistry &left, const RelationRegistry &right) {
+    if (left.registry_id != right.registry_id ||
+        left.descriptors.size() != right.descriptors.size()) return false;
+    for (std::size_t i = 0; i < left.descriptors.size(); ++i) {
+        const RelationDescriptor &a = left.descriptors[i];
+        const RelationDescriptor &b = right.descriptors[i];
+        if (a.id != b.id || a.primitive != b.primitive || a.segment != b.segment ||
+            a.relation != b.relation || a.public_claim != b.public_claim ||
+            a.witness != b.witness) return false;
+    }
+    return true;
+}
+
+bool context_layer_metadata_valid(const GatCircuitPlan &plan, std::string *reason) {
+    const auto fail = [reason](const std::string &message) {
+        if (reason != nullptr) *reason = message;
+        return false;
+    };
+    if (plan.circuit.circuit.size() != plan.circuit.size) return fail("layered circuit size field mismatch");
+    for (std::size_t i = 0; i < plan.circuit.circuit.size(); ++i) {
+        const layer &current = plan.circuit.circuit[i];
+        if (current.zero_start_id != current.size) return fail("layer zero_start_id is not canonical");
+        if (current.max_bl_u != std::max(current.bit_length_u[0], current.bit_length_u[1]))
+            return fail("layer max_bl_u is not derived canonically");
+        const i8 expected_max_v = current.need_phase2
+            ? std::max(current.bit_length_v[0], current.bit_length_v[1]) : 0;
+        if (current.max_bl_v != expected_max_v) return fail("layer max_bl_v is not derived canonically");
+        if (i == 0) {
+            if (!current.ori_id_u.empty() || !current.ori_id_v.empty() ||
+                !current.uni_gates.empty() || !current.bin_gates.empty())
+                return fail("input layer contains derived/gate state");
+            continue;
+        }
+        if (current.size_u[0] != current.ori_id_u.size() ||
+            current.size_v[0] != current.ori_id_v.size())
+            return fail("layer subset sizes do not match initSubset maps");
+        if (current.bit_length_u[0] != bit_length(current.size_u[0]) ||
+            current.bit_length_v[0] != bit_length(current.size_v[0]))
+            return fail("layer subset bit lengths are not canonical");
+        for (const uniGate &gate : current.uni_gates)
+            if (gate.lu == 0 && gate.u >= current.ori_id_u.size())
+                return fail("unary gate subset coordinate exceeds initSubset map");
+        for (const binGate &gate : current.bin_gates) {
+            if (gate.getLayerIdU(static_cast<u8>(i)) == 0 && gate.u >= current.ori_id_u.size())
+                return fail("binary lhs subset coordinate exceeds initSubset map");
+            if (gate.getLayerIdV(static_cast<u8>(i)) == 0 && gate.v >= current.ori_id_v.size())
+                return fail("binary rhs subset coordinate exceeds initSubset map");
+        }
+    }
+    return true;
+}
+
+bool validate_verifier_context_object(const VerifierContext &context,
+                                      std::string *reason) {
+    const auto fail = [reason](const std::string &message) {
+        if (reason != nullptr) *reason = message;
+        return false;
+    };
+    try {
+        context.graph.validate();
+        context.quant.validate();
+        const StaticTables canonical_tables = StaticTables::build(context.quant);
+        if (!static_tables_equal(context.tables, canonical_tables) ||
+            !context.tables.authenticate()) return fail("static tables do not match independently regenerated canonical tables");
+        if (!registry_equal(context.plan.registry, RelationRegistry::canonical()))
+            return fail("relation registry is not the canonical zkGPT registry");
+        if (!validate_gat_circuit_plan(context.plan, reason)) return false;
+        if (!context_layer_metadata_valid(context.plan, reason)) return false;
+        if (context.public_features.rows != context.graph.num_nodes ||
+            context.public_features.cols != context.graph.num_features ||
+            context.public_features.cols == 0 ||
+            context.public_features.values.size() != checked_mul(
+                context.public_features.rows, context.public_features.cols,
+                "verifier context feature tensor")) return fail("public feature shape is invalid");
+        if (context.public_logits.rows != context.graph.num_nodes ||
+            context.public_logits.cols != context.graph.num_classes ||
+            context.public_logits.cols == 0 ||
+            context.public_logits.values.size() != checked_mul(
+                context.public_logits.rows, context.public_logits.cols,
+                "verifier context logits tensor")) return fail("public logits shape is invalid");
+        if (!registration_wire_valid(context.registration)) return fail("model registration wire is invalid");
+        if (context.com_W.scheme != context.registration.com_W.scheme ||
+            context.com_W.basis_id != context.registration.com_W.basis_id ||
+            context.com_W.logical_size != context.registration.com_W.logical_size ||
+            context.com_W.padded_size != context.registration.com_W.padded_size ||
+            context.com_W.point_hex != context.registration.com_W.point_hex)
+            return fail("context com_W is inconsistent with model registration");
+        if (context.relation_id != "R_GAT-zkGPT" || context.model_arch_id != context.registration.model_arch_id ||
+            context.quant_cfg_id != context.quant.quant_cfg_id ||
+            context.static_tables_id != context.tables.table_id ||
+            context.privacy_extension_profile_id != "masked_full" ||
+            context.tables.quant_cfg_id != context.quant.quant_cfg_id)
+            return fail("verifier context identity is not canonical");
+        return true;
+    } catch (const std::exception &error) {
+        return fail(error.what());
+    }
 }
 
 void set_reason(std::string *reason, const std::string &value) {
@@ -3896,6 +4822,195 @@ VerifierContext make_verifier_context(const Graph &graph,
 
 std::string verifier_context_digest(const VerifierContext &context) {
     return fixed_digest(hash_hex(context_encoding(context)));
+}
+
+namespace {
+
+std::string serialize_verifier_context_payload(const VerifierContext &context) {
+    std::string payload;
+    append_string(payload, "zkgpt-gat-verifier-context-v2");
+    append_string(payload, context.relation_id);
+    append_string(payload, context.model_arch_id);
+    append_string(payload, context.privacy_extension_profile_id);
+    append_string(payload, context.quant_cfg_id);
+    append_string(payload, context.static_tables_id);
+    append_context_graph(payload, context.graph);
+    append_context_tensor(payload, context.public_features);
+    append_context_tensor(payload, context.public_logits);
+    append_context_quant(payload, context.quant);
+    append_context_tables(payload, context.tables);
+    // This is the public registration wire only.  The in-memory producer may
+    // carry com_W_padding_mask, but it is intentionally not serialized.
+    append_context_registration(payload, context.registration);
+    append_context_commitment(payload, context.com_W);
+    append_context_plan(payload, context.plan);
+    const std::string digest = verifier_context_digest(context);
+    append_string(payload, digest);
+    // The native statement uses the same authenticated context root.  Keep a
+    // separate field so a reader can reject a malformed root independently of
+    // the human-facing context digest field.
+    append_string(payload, digest);
+    return payload;
+}
+
+bool read_context_file(const std::string &path, std::string &wire,
+                       std::string *reason) {
+    struct stat info {};
+    if (::lstat(path.c_str(), &info) != 0 || S_ISLNK(info.st_mode) ||
+        !S_ISREG(info.st_mode) || info.st_nlink != 1) {
+        set_reason(reason, "verifier context must be a regular non-aliased file");
+        return false;
+    }
+    if (info.st_size < 0 || static_cast<std::uint64_t>(info.st_size) > kContextMaxWireBytes) {
+        set_reason(reason, "verifier context exceeds the wire-size limit");
+        return false;
+    }
+    std::ifstream input(path.c_str(), std::ios::binary);
+    if (!input) {
+        set_reason(reason, "cannot open verifier context");
+        return false;
+    }
+    wire.assign(static_cast<std::size_t>(info.st_size), '\0');
+    if (!wire.empty()) input.read(&wire[0], static_cast<std::streamsize>(wire.size()));
+    if (!input.good() && !input.eof()) {
+        set_reason(reason, "cannot read verifier context");
+        return false;
+    }
+    if (static_cast<std::size_t>(input.gcount()) != wire.size()) {
+        set_reason(reason, "verifier context read was truncated");
+        return false;
+    }
+    return true;
+}
+
+bool read_header_u32(const std::string &wire, std::size_t offset,
+                     std::uint32_t &value) {
+    if (offset > wire.size() || wire.size() - offset < 4) return false;
+    value = 0;
+    for (unsigned i = 0; i < 4; ++i)
+        value |= static_cast<std::uint32_t>(static_cast<unsigned char>(wire[offset + i])) << (i * 8);
+    return true;
+}
+
+bool read_header_u64(const std::string &wire, std::size_t offset,
+                     std::uint64_t &value) {
+    if (offset > wire.size() || wire.size() - offset < 8) return false;
+    value = 0;
+    for (unsigned i = 0; i < 8; ++i)
+        value |= static_cast<std::uint64_t>(static_cast<unsigned char>(wire[offset + i])) << (i * 8);
+    return true;
+}
+
+} // namespace
+
+bool write_verifier_context(const VerifierContext &context,
+                            const std::string &path,
+                            std::string *reason) {
+    try {
+        if (!validate_verifier_context_object(context, reason)) return false;
+        std::string payload = serialize_verifier_context_payload(context);
+        if (payload.size() > kContextMaxWireBytes) {
+            set_reason(reason, "serialized verifier context exceeds the wire-size limit");
+            return false;
+        }
+        struct stat existing {};
+        if (::lstat(path.c_str(), &existing) == 0 && S_ISLNK(existing.st_mode)) {
+            set_reason(reason, "refusing to overwrite a verifier-context symlink");
+            return false;
+        }
+        const std::string temporary = path + ".partial";
+        std::ofstream output(temporary.c_str(), std::ios::binary | std::ios::trunc);
+        if (!output) {
+            set_reason(reason, "cannot open temporary verifier context");
+            return false;
+        }
+        output.write(kVerifierContextMagic, 8);
+        write_u32(output, 2);
+        write_u64(output, static_cast<std::uint64_t>(payload.size()));
+        if (!payload.empty()) output.write(payload.data(), static_cast<std::streamsize>(payload.size()));
+        output.flush();
+        if (!output.good()) {
+            output.close();
+            std::remove(temporary.c_str());
+            set_reason(reason, "verifier context write failed");
+            return false;
+        }
+        output.close();
+        if (std::rename(temporary.c_str(), path.c_str()) != 0) {
+            std::remove(temporary.c_str());
+            set_reason(reason, "cannot finalize verifier context");
+            return false;
+        }
+        return true;
+    } catch (const std::exception &error) {
+        set_reason(reason, error.what());
+        return false;
+    }
+}
+
+bool read_verifier_context(const std::string &path,
+                           VerifierContext &context,
+                           std::string *reason) {
+    try {
+        std::string wire;
+        if (!read_context_file(path, wire, reason)) return false;
+        constexpr std::size_t header_size = 8 + 4 + 8;
+        if (wire.size() < header_size || std::memcmp(wire.data(), kVerifierContextMagic, 8) != 0) {
+            set_reason(reason, "invalid verifier context magic");
+            return false;
+        }
+        std::uint32_t version = 0;
+        std::uint64_t payload_size = 0;
+        if (!read_header_u32(wire, 8, version) || !read_header_u64(wire, 12, payload_size) ||
+            version != 2 || payload_size != wire.size() - header_size ||
+            payload_size > kContextMaxWireBytes) {
+            set_reason(reason, "unsupported, oversized, or non-canonical verifier context header");
+            return false;
+        }
+        ContextReader reader(wire, header_size, wire.size());
+        VerifierContext parsed;
+        std::string schema;
+        if (!reader.read_string(schema, "context schema") || schema != "zkgpt-gat-verifier-context-v2" ||
+            !reader.read_string(parsed.relation_id, "context relation") ||
+            !reader.read_string(parsed.model_arch_id, "context model architecture") ||
+            !reader.read_string(parsed.privacy_extension_profile_id, "context privacy profile") ||
+            !reader.read_string(parsed.quant_cfg_id, "context quant id") ||
+            !reader.read_string(parsed.static_tables_id, "context table id") ||
+            !read_context_graph(reader, parsed.graph) ||
+            !read_context_tensor(reader, parsed.public_features, "public feature tensor") ||
+            !read_context_tensor(reader, parsed.public_logits, "public logits tensor") ||
+            !read_context_quant(reader, parsed.quant) ||
+            !read_context_tables(reader, parsed.tables) ||
+            !read_context_registration(reader, parsed.registration) ||
+            !read_context_commitment(reader, parsed.com_W) ||
+            !read_context_plan(reader, parsed.plan)) {
+            set_reason(reason, reader.error().empty() ? "malformed verifier context" : reader.error());
+            return false;
+        }
+        std::string stored_digest;
+        std::string stored_root;
+        if (!reader.read_string(stored_digest, "context digest") ||
+            !reader.read_string(stored_root, "context structured root") || !reader.at_end()) {
+            set_reason(reason, reader.error().empty() ? "verifier context has trailing or unknown bytes" : reader.error());
+            return false;
+        }
+        std::string validation_reason;
+        if (!validate_verifier_context_object(parsed, &validation_reason)) {
+            set_reason(reason, validation_reason);
+            return false;
+        }
+        const std::string expected_digest = verifier_context_digest(parsed);
+        if (!is_lower_hex_digest(stored_digest) || !is_lower_hex_digest(stored_root) ||
+            stored_digest != expected_digest || stored_root != expected_digest) {
+            set_reason(reason, "verifier context digest or structured root does not match canonical content");
+            return false;
+        }
+        context = std::move(parsed);
+        return true;
+    } catch (const std::exception &error) {
+        set_reason(reason, error.what());
+        return false;
+    }
 }
 
 NativeProofStatement make_native_proof_statement(

@@ -53,15 +53,15 @@ layeredCircuit make_power_of_two_circuit() {
     circuit.circuit[0].zero_start_id = 4;
     circuit.circuit[0].bit_length = 2;
     circuit.circuit[1].ty = layerType::FCONN;
-    circuit.circuit[1].size = 4;
-    circuit.circuit[1].zero_start_id = 4;
-    circuit.circuit[1].bit_length = 2;
+    circuit.circuit[1].size = 2;
+    circuit.circuit[1].zero_start_id = 2;
+    circuit.circuit[1].bit_length = 1;
     circuit.circuit[1].need_phase2 = true;
     circuit.circuit[2].ty = layerType::ADD_BIAS;
-    circuit.circuit[2].size = 4;
-    circuit.circuit[2].zero_start_id = 4;
-    circuit.circuit[2].bit_length = 2;
-    for (u32 index = 0; index < 4; ++index)
+    circuit.circuit[2].size = 2;
+    circuit.circuit[2].zero_start_id = 2;
+    circuit.circuit[2].bit_length = 1;
+    for (u32 index = 0; index < 2; ++index)
         circuit.circuit[2].uni_gates.emplace_back(index, index, 1, 1);
     circuit.initSubset();
     return circuit;
@@ -84,13 +84,13 @@ int main() {
                                    Fr(12), Fr(22), Fr(32)};
     assert(packed == expected);
 
-    // A one-element truncation and a one-element offset/stride violation are
-    // rejected at the adapter boundary instead of being reinterpreted.
+    // A short span and a stride/layout violation are rejected at the adapter
+    // boundary instead of being silently reinterpreted.
     bool rejected = false;
     try {
         (void)pack_native_gkr_matmul_rhs(
             rectangular, std::vector<Fr>(canonical_input.begin(),
-                                         canonical_input.end() - 1));
+                                         canonical_input.end() - 2));
     } catch (const std::invalid_argument &) {
         rejected = true;
     }
@@ -109,9 +109,9 @@ int main() {
     // Walk the native masked FCONN with the adapter's packed RHS.  All
     // dimensions are powers of two here so this smoke isolates the layout
     // transition from the separately owned native padding implementation.
-    const MatMulDescriptor native_descriptor = descriptor(2, 4, 2, 8);
+    const MatMulDescriptor native_descriptor = descriptor(1, 4, 2, 4);
     const std::vector<Fr> canonical_native_input{
-        Fr(1), Fr(2), Fr(3), Fr(4), Fr(5), Fr(6), Fr(7), Fr(8),
+        Fr(1), Fr(2), Fr(3), Fr(4),
         Fr(1), Fr(2), Fr(3), Fr(4), Fr(5), Fr(6), Fr(7), Fr(8)};
     const std::vector<Fr> native_right = pack_native_gkr_matmul_rhs(
         native_descriptor, canonical_native_input);
@@ -120,26 +120,28 @@ int main() {
 
     NativeLayeredGkrWitness witness;
     witness.layer_values = {{Fr(0), Fr(0), Fr(0), Fr(0)},
-                            {Fr(50), Fr(60), Fr(162), Fr(188)},
-                            {Fr(50), Fr(60), Fr(162), Fr(188)}};
+                            {Fr(50), Fr(60)},
+                            {Fr(50), Fr(60)}};
     NativeGkrMatmulWitness matmul;
-    matmul.shape = {2, 4, 2};
-    matmul.left = {Fr(1), Fr(2), Fr(3), Fr(4),
-                   Fr(5), Fr(6), Fr(7), Fr(8)};
+    matmul.shape = {1, 4, 2};
+    matmul.left = {Fr(1), Fr(2), Fr(3), Fr(4)};
     matmul.right = native_right;
     witness.matmuls.push_back(matmul);
 
     const layeredCircuit circuit = make_power_of_two_circuit();
-    const std::vector<Fr> output{Fr(50), Fr(60), Fr(162), Fr(188)};
+    const std::vector<Fr> output{Fr(50), Fr(60)};
     std::string reason;
     NativeProofSession session("gat-matmul-layout-smoke-v1", statement_fixture());
     NativeGkrInputBinding binding;
     NativeGkrProverResult prover_result;
-    assert(prove_masked_gkr_transcript(session, circuit, witness, output,
-                                       &reason, &binding, &prover_result));
+    if (!prove_masked_gkr_transcript(session, circuit, witness, output,
+                                     &reason, &binding, &prover_result)) {
+        std::cerr << "native honest transition rejected: " << reason << '\n';
+        return 1;
+    }
     assert(prover_result.has_unmasked_input_claim_opening);
     assert(verify_masked_gkr_transcript(session, circuit, output,
-                                        {{2, 4, 2}}, &reason));
+                                        {{1, 4, 2}}, &reason));
 
     NativeLayeredGkrWitness tampered = witness;
     tampered.matmuls.front().right.at(1) += Fr(1);

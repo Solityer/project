@@ -53,7 +53,7 @@ def check_capabilities(root: Path, backend: str, executable: Path) -> Dict[str, 
         payload = json.loads(completed.stdout)
     except ValueError as exc:
         raise ChainError(f"{backend} verifier capabilities are not JSON") from exc
-    if not isinstance(payload, dict) or payload.get("schema") != "zkgpt-gat-verifier-capabilities-v1":
+    if not isinstance(payload, dict) or payload.get("schema") != "zkgpt-gat-verifier-capabilities-v2":
         raise ChainError(f"{backend} verifier capabilities schema is unsupported")
     if payload.get("independent") is not True or payload.get("reads_witness") is not False or payload.get("reads_checkpoint") is not False:
         raise ChainError(f"{backend} verifier does not declare the isolated public-only boundary")

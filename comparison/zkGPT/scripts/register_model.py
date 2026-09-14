@@ -17,6 +17,7 @@ from common import (
     config_with_auth,
     launch_native,
     load_json,
+    require_prover_secret,
     run_directory,
     verify_checkpoint,
 )
@@ -34,15 +35,27 @@ def main(argv: List[str]) -> int:
             raise ChainError("model registration requires the baseline-local Hyrax setup declaration")
         verify_checkpoint(root, args.dataset)
         run_relative, run_path = run_directory(root, args.dataset, args.backend, config)
+        registration_relative = f"{run_relative}/model_registration.json"
+        secret_relative = f"{run_relative}/com_W.prover.secret"
+        registration_path = run_path / "model_registration.json"
+        secret_path = run_path / "com_W.prover.secret"
+        if registration_path.exists() or secret_path.exists():
+            raise ChainError(
+                f"refusing to overwrite existing registration/secret in {run_relative}; "
+                "remove the incomplete run explicitly before re-registering"
+            )
         config_relative = str(config_path.relative_to(root))
-        completed = launch_native(root, args.dataset, args.backend, config_relative, operation="register")
+        completed = launch_native(
+            root, args.dataset, args.backend, config_relative, operation="register",
+            registration_path_value=registration_relative,
+            com_w_secret_path_value=secret_relative,
+        )
         atomic_write_text(run_path / "registration.stdout.log", completed.stdout)
         atomic_write_text(run_path / "registration.stderr.log", completed.stderr)
         if completed.returncode != 0:
             raise ChainError(
                 f"native registration failed ({completed.returncode}); see {run_relative}/registration.stderr.log"
             )
-        registration_path = run_path / "model_registration.json"
         registration = load_json(registration_path, "model registration")
         if not isinstance(registration, dict) or registration.get("schema") != "zkgpt-gat-model-registration-v1":
             raise ChainError(f"native registration has an unsupported schema: {registration_path}")
@@ -88,6 +101,10 @@ def main(argv: List[str]) -> int:
                 raise ChainError(f"native registration segment {index} numbers are invalid: {registration_path}") from exc
         if logical_size != int(segments[1].get("logical_length", -1)) or logical_size > n_in:
             raise ChainError(f"native registration W logical size does not match layout: {registration_path}")
+        require_prover_secret(secret_path)
+        raw_registration = registration_path.read_text(encoding="utf-8")
+        if "blinder" in raw_registration or "padding_mask" in raw_registration:
+            raise ChainError(f"public model registration contains prover-only secret material: {registration_path}")
         print(f"REGISTERED dataset={args.dataset} backend={args.backend} path={run_relative}/model_registration.json")
         return 0
     except (ChainError, OSError, ValueError) as exc:

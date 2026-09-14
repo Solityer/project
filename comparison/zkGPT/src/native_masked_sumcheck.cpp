@@ -946,9 +946,13 @@ bool verify_initial_scope(const NativeProofSession &session,
     } else {
         ScalarCommitment masked, mask;
         if (!verify_opening_block(session, basis, cursor,
-                                  label + "/initial/masked", masked, reason) ||
-            !equal_commitment(masked, spec.masked_initial_commitment) ||
-            !verify_opening_block(session, basis, cursor,
+                                  label + "/initial/masked", masked, reason))
+            return false;
+        if (!equal_commitment(masked, spec.masked_initial_commitment)) {
+            set_reason(reason, "masked Sumcheck initial masked commitment mismatch");
+            return false;
+        }
+        if (!verify_opening_block(session, basis, cursor,
                                   label + "/initial/mask", mask, reason) ||
             !verify_linear_block(session, basis, cursor,
                                  label + "/initial/masked-bind", {masked},
@@ -1277,9 +1281,9 @@ bool verify_terminal_relation(const NativeProofSession &session,
                 return false;
             }
     }
-    if (!spec.fixed_commitments.empty()) {
-        if (spec.fixed_commitments.size() != fixed_commitments.size()) {
-            set_reason(reason, "masked fixed commitment arity mismatch");
+        if (!spec.fixed_commitments.empty()) {
+            if (spec.fixed_commitments.size() != fixed_commitments.size()) {
+                set_reason(reason, "masked fixed commitment arity mismatch");
             return false;
         }
         for (std::size_t i = 0; i < fixed_commitments.size(); ++i)
@@ -1292,6 +1296,33 @@ bool verify_terminal_relation(const NativeProofSession &session,
         result->terminal_commitments = terminal_commitments;
         result->fixed_commitments = fixed_commitments;
     }
+
+    // The terminal field vector is public transcript data.  Bind every
+    // decoded value to the corresponding Pedersen commitment before any
+    // terminal relation is checked.  A commitment opening alone proves only
+    // knowledge of some scalar; this affine hidden-linear relation is what
+    // makes it the exact public scalar carried by /terminal/values.
+    for (std::size_t i = 0; i < arity; ++i)
+        if (!verify_linear_block(session, basis, cursor,
+                                 label + "/terminal/value/public-bind/" +
+                                     std::to_string(i),
+                                 {terminal_commitments[i]}, {F_ONE},
+                                 terminal_values[i], reason))
+            return false;
+    // Fixed-side terminals are public relation operands as well.  They must
+    // be externally supplied commitments and bound to the verifier's fixed
+    // values; a plaintext check of spec.fixed_values is insufficient.
+    if (fixed_arity != 0 && spec.fixed_values.size() != fixed_arity) {
+        set_reason(reason, "masked fixed terminal public-value arity mismatch");
+        return false;
+    }
+    for (std::size_t i = 0; i < fixed_arity; ++i)
+        if (!verify_linear_block(session, basis, cursor,
+                                 label + "/terminal/fixed/public-bind/" +
+                                     std::to_string(i),
+                                 {fixed_commitments[i]}, {F_ONE},
+                                 spec.fixed_values[i], reason))
+            return false;
 
     if (result == nullptr || result->unmasked_terminal_commitments.size() != arity ||
         result->unmasked_fixed_commitments.size() != fixed_arity) {

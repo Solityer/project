@@ -1244,13 +1244,24 @@ bool build_sumcheck_verify_spec(
     const NativeProofSession &session, const std::string &label,
     NativeMaskedTerminalKind kind, const F &initial_value,
     const zkgpt::native_pedersen::PedersenBasis &basis,
-    NativeMaskedTerminalSpec &spec, std::string *reason) {
+    NativeMaskedTerminalSpec &spec, std::string *reason,
+    bool public_initial_claim) {
     spec = NativeMaskedTerminalSpec{};
     spec.kind = kind;
     spec.has_external_binding = true;
+    spec.public_initial_claim = public_initial_claim;
     if (!opening_commitment_at(session, basis, label + "/initial/opening",
                                spec.initial_commitment, reason))
         return false;
+    if (!public_initial_claim) {
+        // A private initial claim is a two-sided external binding: the
+        // unmasked evaluation commitment and the masked incoming claim must
+        // both be named by the transcript before any round is verified.
+        if (!opening_commitment_at(session, basis, label + "/initial/masked",
+                                   spec.masked_initial_commitment, reason))
+            return false;
+        spec.has_masked_initial_binding = true;
+    }
     const zkgpt::native_pedersen::ScalarCommitment expected_initial{
         basis.domain, zkgpt::native_pedersen::commit(basis, initial_value, F_ZERO).point};
     if (kind == NativeMaskedTerminalKind::Scalar ||
@@ -1381,6 +1392,10 @@ bool native_lasso_prove_bundle(
             NativeMaskedTerminalSpec boolean_spec;
             boolean_spec.kind = NativeMaskedTerminalKind::Product2;
             boolean_spec.has_external_binding = true;
+            // The Boolean relation starts from the public zero claim.  This
+            // is the one legitimate zero-mask scope in this family; its
+            // private matrix evaluations are still masked at the terminal.
+            boolean_spec.public_initial_claim = true;
             boolean_spec.initial_opening = public_scalar_opening(scalar_basis, F_ZERO);
             boolean_spec.initial_commitment = boolean_spec.initial_opening.commitment;
             session.absorb_field(prefix + "/b-boolean/claim", F_ZERO);
@@ -1442,6 +1457,9 @@ bool native_lasso_prove_bundle(
             NativeMaskedTerminalSpec onehot_spec;
             onehot_spec.kind = NativeMaskedTerminalKind::Scalar;
             onehot_spec.has_external_binding = true;
+            // One-hot normalization is anchored at the public unit claim;
+            // the matrix evaluation opened below remains private/masked.
+            onehot_spec.public_initial_claim = true;
             onehot_spec.initial_opening = public_scalar_opening(scalar_basis, F_ONE);
             onehot_spec.initial_commitment = onehot_spec.initial_opening.commitment;
             NativeMaskedSumcheckProver onehot_prover(
@@ -1510,13 +1528,31 @@ bool native_lasso_prove_bundle(
             lookup_initial_opening.commitment = zkgpt::native_pedersen::commit(
                 scalar_basis, lookup_initial_opening.value,
                 lookup_initial_opening.blinding);
+            // Lasso's lookup claim is private: bind both the actual weighted
+            // MLE evaluation (ell) and its masked incoming claim.  Build the
+            // latter from the former plus a real Pedersen mask opening so the
+            // external binding is not an arbitrary scalar re-commit.
+            const zkgpt::native_pedersen::ScalarOpening lookup_initial_mask =
+                zkgpt::native_pedersen::commit_fresh(scalar_basis, initial_mask);
+            zkgpt::native_pedersen::ScalarOpening lookup_masked_initial_opening;
+            lookup_masked_initial_opening.value =
+                lookup_initial_opening.value + lookup_initial_mask.value;
+            lookup_masked_initial_opening.blinding =
+                lookup_initial_opening.blinding + lookup_initial_mask.blinding;
+            lookup_masked_initial_opening.commitment = zkgpt::native_pedersen::commit(
+                scalar_basis, lookup_masked_initial_opening.value,
+                lookup_masked_initial_opening.blinding);
             session.absorb_field(prefix + "/a-query/claim", masked_initial_claim);
             NativeMaskedTerminalSpec lookup_spec;
             lookup_spec.kind = NativeMaskedTerminalKind::Product2Public;
             lookup_spec.public_vector = family.table;
             lookup_spec.has_external_binding = true;
+            lookup_spec.has_masked_initial_binding = true;
             lookup_spec.initial_opening = lookup_initial_opening;
             lookup_spec.initial_commitment = lookup_initial_opening.commitment;
+            lookup_spec.masked_initial_opening = lookup_masked_initial_opening;
+            lookup_spec.masked_initial_commitment =
+                lookup_masked_initial_opening.commitment;
             NativeMaskedSumcheckProver lookup_prover(
                 session, prefix + "/f-lookup", 2, masked_initial_claim,
                 lookup_spec, &ell);
@@ -1709,8 +1745,8 @@ bool native_lasso_verify_bundle(
             NativeMaskedTerminalSpec boolean_spec;
             if (!build_sumcheck_verify_spec(
                     session, prefix + "/b-boolean/sum",
-                    NativeMaskedTerminalKind::Product2, F_ZERO, scalar_basis,
-                    boolean_spec, reason))
+            NativeMaskedTerminalKind::Product2, F_ZERO, scalar_basis,
+                    boolean_spec, reason, true))
                 return false;
             NativeMaskedSumcheckResult boolean_result;
             std::string sumcheck_reason;
@@ -1769,7 +1805,7 @@ bool native_lasso_verify_bundle(
             if (!build_sumcheck_verify_spec(
                     session, prefix + "/d-onehot/sum",
                     NativeMaskedTerminalKind::Scalar, F_ONE, scalar_basis,
-                    onehot_spec, reason))
+                    onehot_spec, reason, true))
                 return false;
             NativeMaskedSumcheckResult onehot_result;
             sumcheck_reason.clear();
@@ -1806,7 +1842,7 @@ bool native_lasso_verify_bundle(
             if (!build_sumcheck_verify_spec(
                     session, prefix + "/f-lookup",
                     NativeMaskedTerminalKind::Product2Public, F_ZERO, scalar_basis,
-                    lookup_spec, reason))
+                    lookup_spec, reason, false))
                 return false;
             lookup_spec.public_vector = family.table;
             NativeMaskedSumcheckResult lookup_result;

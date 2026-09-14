@@ -23,6 +23,15 @@ static NativeProofStatement statement_fixture() {
         "0000000000000000000000000000000000000000000000000000000000000121"};
 }
 
+static bool mutate_initial_mode(std::vector<NativeProofMessage> &messages) {
+    for (NativeProofMessage &message : messages) {
+        if (message.label != "matmul/masked/initial/mode") continue;
+        message.payload = "with-mask-v2";
+        return true;
+    }
+    return false;
+}
+
 int main() {
     initPairing(mcl::BN254);
     std::string reason;
@@ -70,6 +79,20 @@ int main() {
         std::cerr << "masked public-claim tamper was accepted\n";
         return 4;
     }
+    std::vector<NativeProofMessage> mode_tampered_messages = first.messages();
+    if (!mutate_initial_mode(mode_tampered_messages)) {
+        std::cerr << "masked mode tamper fixture was not found\n";
+        return 5;
+    }
+    NativeProofSession mode_tampered;
+    if (NativeProofSession::from_messages(
+            first.domain(), first.statement(), mode_tampered_messages,
+            mode_tampered, &reason) &&
+        native_masked_sumcheck_verify(mode_tampered, "matmul/masked", 2, 1,
+                                      Fr(2), verify_spec, nullptr, &reason)) {
+        std::cerr << "masked mode swap was accepted\n";
+        return 5;
+    }
 
     NativeProofSession second("native-masked-smoke-v2", statement_fixture());
     const auto second_basis = zkgpt::native_pedersen::derive_basis(
@@ -87,12 +110,12 @@ int main() {
             second, "matmul/masked", 2, {{Fr(1), Fr(1), Fr(1)}}, Fr(2),
             {Fr(1), Fr(1)}, second_spec, &second_proved, &reason)) {
         std::cerr << "second masked proof failed: " << reason << '\n';
-        return 5;
+        return 6;
     }
     if (proved.initial_commitment.point.serializeToHexStr() ==
         second_proved.initial_commitment.point.serializeToHexStr()) {
         std::cerr << "per-proof mask commitment was reused\n";
-        return 6;
+        return 7;
     }
     std::cout << "native_masked_sumcheck_smoke: PASS\n";
     return 0;

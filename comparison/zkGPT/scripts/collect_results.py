@@ -96,7 +96,7 @@ def collect_cell(root: Path, dataset: str, backend: str) -> Dict[str, Any]:
 
     report_path = run_path / "verifier_report.json"
     report = load_json(report_path, "independent verifier report")
-    if not isinstance(report, dict) or report.get("schema") != "zkgpt-gat-independent-verifier-v1":
+    if not isinstance(report, dict) or report.get("schema") != "zkgpt-gat-independent-verifier-v2":
         raise ChainError(f"unsupported independent verifier report schema: {report_path}")
     if report.get("status") != "VERIFY_OK" or report.get("independent") is not True:
         raise ChainError(f"independent verifier is not VERIFY_OK: {report_path}")

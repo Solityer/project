@@ -1424,7 +1424,7 @@ namespace gatzk::protocol
                             blinder_count,
                             shift_,
                             reinterpret_cast<mcl::Fr *>(
-                                device_leaf_table_[slot]),
+                                device_leaf_slots_[slot]),
                             target_size_,
                             true,
                             host_leaf_requires_default_wait_[slot]);
@@ -1480,7 +1480,7 @@ namespace gatzk::protocol
                             coefficient_count,
                             shift_,
                             reinterpret_cast<mcl::Fr *>(
-                                device_leaf_table_[slot]),
+                                device_leaf_slots_[slot]),
                             target_size_,
                             true,
                             host_leaf_requires_default_wait_[slot]);

@@ -74,6 +74,18 @@ def require_regular(path: Path, description: str) -> Path:
     return path
 
 
+def require_prover_secret(path: Path) -> Path:
+    """Require the baseline-local com_W blinder store to be owner-only."""
+
+    require_regular(path, "prover commitment secret")
+    metadata = path.stat()
+    if stat.S_IMODE(metadata.st_mode) != 0o600:
+        raise ChainError(f"prover commitment secret must have mode 0600: {path}")
+    if hasattr(os, "geteuid") and metadata.st_uid != os.geteuid():
+        raise ChainError(f"prover commitment secret is not owned by the current user: {path}")
+    return path
+
+
 def require_directory(path: Path, description: str) -> Path:
     _reject_path_alias(path, description)
     if not path.is_dir():
@@ -331,6 +343,8 @@ def launch_native(
     backend: str,
     config_path_value: Optional[str] = None,
     operation: str = "prove",
+    registration_path_value: Optional[str] = None,
+    com_w_secret_path_value: Optional[str] = None,
 ) -> subprocess.CompletedProcess[str]:
     """Launch one explicit native backend; never retry with another backend."""
 
@@ -341,6 +355,10 @@ def launch_native(
             "--baseline-root", str(root)]
     if config_path_value:
         args.extend(["--config", config_path_value])
+    if registration_path_value:
+        args.extend(["--registration", registration_path_value])
+    if com_w_secret_path_value:
+        args.extend(["--com-w-secret", com_w_secret_path_value])
     if operation == "register":
         args.append("--register-only")
     environment = os.environ.copy()

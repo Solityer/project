@@ -76,6 +76,53 @@ bool mutate_input_binding_payload(std::vector<NativeProofMessage> &messages) {
     return false;
 }
 
+bool mutate_mode_to_zero(std::vector<NativeProofMessage> &messages) {
+    for (NativeProofMessage &message : messages) {
+        if (message.kind != NativeProofMessageKind::Data ||
+            message.label.find("/initial/mode") == std::string::npos)
+            continue;
+        message.payload = "zero-mask-v2";
+        return true;
+    }
+    return false;
+}
+
+bool drop_masked_initial_opening(std::vector<NativeProofMessage> &messages) {
+    for (std::size_t index = 0; index < messages.size(); ++index) {
+        const std::string marker = "/initial/masked/meta";
+        if (messages[index].label.size() < marker.size() ||
+            messages[index].label.compare(messages[index].label.size() - marker.size(),
+                                          marker.size(), marker) != 0)
+            continue;
+        if (index + 4 > messages.size()) return false;
+        messages.erase(messages.begin() + static_cast<std::ptrdiff_t>(index),
+                       messages.begin() + static_cast<std::ptrdiff_t>(index + 4));
+        for (std::size_t sequence = 0; sequence < messages.size(); ++sequence)
+            messages[sequence].sequence = sequence;
+        return true;
+    }
+    return false;
+}
+
+bool replace_intermediate_claim(std::vector<NativeProofMessage> &messages) {
+    std::string replacement;
+    for (const NativeProofMessage &message : messages) {
+        if (message.label.find("/initial/opening/meta") != std::string::npos) {
+            replacement = message.payload;
+            break;
+        }
+    }
+    if (replacement.empty()) return false;
+    for (NativeProofMessage &message : messages) {
+        if (message.label.find("/next-claim/unmasked/output/meta") ==
+            std::string::npos)
+            continue;
+        message.payload = replacement;
+        return true;
+    }
+    return false;
+}
+
 } // namespace
 
 int main() {
@@ -117,6 +164,13 @@ int main() {
            verified_binding.unmasked_claim_commitment.point);
     assert(produced_binding.mask_commitment.point ==
            verified_binding.mask_commitment.point);
+    bool saw_private_scope = false;
+    for (const NativeProofMessage &message : session.messages()) {
+        if (message.label.find("/initial/mode") == std::string::npos) continue;
+        saw_private_scope = true;
+        assert(message.payload == "with-mask-v2");
+    }
+    assert(saw_private_scope);
 
     const std::string wire = "/tmp/zkgpt-native-masked-layered-gkr.smoke";
     assert(session.write(wire, &reason));
@@ -133,6 +187,24 @@ int main() {
                                              tampered_messages, tampered, &reason));
     assert(!verify_masked_gkr_transcript(tampered, circuit, output,
                                          descriptors, &reason));
+
+    auto rejects_tampered_artifact = [&](std::vector<NativeProofMessage> messages) {
+        NativeProofSession candidate;
+        if (!NativeProofSession::from_messages(session.domain(), session.statement(),
+                                               messages, candidate, &reason))
+            return true;
+        return !verify_masked_gkr_transcript(candidate, circuit, output,
+                                             descriptors, &reason);
+    };
+    std::vector<NativeProofMessage> mode_tampered = session.messages();
+    assert(mutate_mode_to_zero(mode_tampered));
+    assert(rejects_tampered_artifact(std::move(mode_tampered)));
+    std::vector<NativeProofMessage> dropped_mask = session.messages();
+    assert(drop_masked_initial_opening(dropped_mask));
+    assert(rejects_tampered_artifact(std::move(dropped_mask)));
+    std::vector<NativeProofMessage> replaced_claim = session.messages();
+    assert(replace_intermediate_claim(replaced_claim));
+    assert(rejects_tampered_artifact(std::move(replaced_claim)));
 
     NativeProofSession wrong_output("masked-layered-gkr-smoke-v1", statement_fixture());
     assert(prove_masked_gkr_transcript(wrong_output, circuit, witness, output, &reason));

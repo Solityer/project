@@ -359,6 +359,19 @@ VerifierContext make_verifier_context(const Graph &graph,
 // CLI cannot accidentally invent a second statement encoding.
 std::string verifier_context_digest(const VerifierContext &context);
 
+// Strict baseline-local public verifier context wire.  The wire contains the
+// complete public statement (graph/features/Y, quantization/static tables,
+// model-registration commitment identity, and the full canonical circuit
+// plan), but never model tensors, checkpoints, witness values, or prover
+// opening randomness.  Both functions reject non-canonical/truncated/
+// trailing/oversized data and recompute the statement digest on read.
+bool write_verifier_context(const VerifierContext &context,
+                            const std::string &path,
+                            std::string *reason = nullptr);
+bool read_verifier_context(const std::string &path,
+                           VerifierContext &context,
+                           std::string *reason = nullptr);
+
 // Construct the native session statement from the same authenticated
 // VerifierContext/resource identities and the canonical Hyrax basis setup.
 // All digest fields are fixed-width lowercase values.  This factory is a

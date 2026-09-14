@@ -27,6 +27,8 @@ struct Options {
     std::string backend;
     std::string baseline_root = ".";
     std::string config;
+    std::string registration;
+    std::string com_w_secret;
     bool help = false;
     bool register_only = false;
 };
@@ -164,6 +166,183 @@ void write_text(const std::string &path, const std::string &content) {
         std::remove(temporary.c_str());
         throw std::runtime_error("cannot finalize output file: " + path);
     }
+}
+
+std::string read_regular_text(const std::string &path, const char *description,
+                              std::size_t limit = 4U * 1024U * 1024U) {
+    struct stat info {};
+    if (::lstat(path.c_str(), &info) != 0 || S_ISLNK(info.st_mode) ||
+        !S_ISREG(info.st_mode) || info.st_nlink != 1) {
+        throw std::runtime_error(std::string("invalid ") + description + ": " + path);
+    }
+    if (info.st_size < 0 || static_cast<std::uint64_t>(info.st_size) > limit) {
+        throw std::runtime_error(std::string(description) + " exceeds the input limit: " + path);
+    }
+    std::ifstream in(path.c_str(), std::ios::binary);
+    if (!in) throw std::runtime_error(std::string("cannot open ") + description + ": " + path);
+    std::ostringstream out;
+    out << in.rdbuf();
+    if (!in.good() && !in.eof()) throw std::runtime_error(std::string("cannot read ") + description + ": " + path);
+    return out.str();
+}
+
+// The native producer emits a deliberately small canonical JSON object.  The
+// prover uses this parser only to recover public registration metadata; the
+// private blinder is always read through read_prover_commitment_secret().
+bool json_string_field(const std::string &json, const std::string &key,
+                       std::string &value) {
+    const std::string needle = "\"" + key + "\"";
+    std::size_t cursor = 0;
+    while ((cursor = json.find(needle, cursor)) != std::string::npos) {
+        std::size_t colon = cursor + needle.size();
+        while (colon < json.size() && (json[colon] == ' ' || json[colon] == '\n' ||
+                                       json[colon] == '\r' || json[colon] == '\t')) ++colon;
+        if (colon >= json.size() || json[colon] != ':') {
+            cursor += needle.size();
+            continue;
+        }
+        ++colon;
+        while (colon < json.size() && (json[colon] == ' ' || json[colon] == '\n' ||
+                                       json[colon] == '\r' || json[colon] == '\t')) ++colon;
+        if (colon >= json.size() || json[colon] != '"') return false;
+        ++colon;
+        std::ostringstream decoded;
+        bool escaped = false;
+        for (; colon < json.size(); ++colon) {
+            const char ch = json[colon];
+            if (escaped) {
+                switch (ch) {
+                    case '"': decoded << '"'; break;
+                    case '\\': decoded << '\\'; break;
+                    case '/': decoded << '/'; break;
+                    case 'n': decoded << '\n'; break;
+                    case 'r': decoded << '\r'; break;
+                    case 't': decoded << '\t'; break;
+                    default: return false;
+                }
+                escaped = false;
+            } else if (ch == '\\') {
+                escaped = true;
+            } else if (ch == '"') {
+                value = decoded.str();
+                return true;
+            } else {
+                decoded << ch;
+            }
+        }
+        return false;
+    }
+    return false;
+}
+
+bool json_size_field(const std::string &json, const std::string &key,
+                     std::size_t &value, std::size_t search_from = 0) {
+    const std::string needle = "\"" + key + "\"";
+    const std::size_t cursor = json.find(needle, search_from);
+    if (cursor == std::string::npos) return false;
+    std::size_t colon = cursor + needle.size();
+    while (colon < json.size() && (json[colon] == ' ' || json[colon] == '\n' ||
+                                   json[colon] == '\r' || json[colon] == '\t')) ++colon;
+    if (colon >= json.size() || json[colon] != ':') return false;
+    ++colon;
+    while (colon < json.size() && (json[colon] == ' ' || json[colon] == '\n' ||
+                                   json[colon] == '\r' || json[colon] == '\t')) ++colon;
+    if (colon >= json.size() || json[colon] < '0' || json[colon] > '9') return false;
+    const std::size_t begin = colon;
+    while (colon < json.size() && json[colon] >= '0' && json[colon] <= '9') ++colon;
+    if (colon < json.size() && json[colon] != ',' && json[colon] != '}' &&
+        json[colon] != ' ' && json[colon] != '\n' && json[colon] != '\r' &&
+        json[colon] != '\t') return false;
+    try {
+        const unsigned long long parsed = std::stoull(json.substr(begin, colon - begin));
+        if (parsed > static_cast<unsigned long long>(std::numeric_limits<std::size_t>::max())) return false;
+        value = static_cast<std::size_t>(parsed);
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+ModelRegistration read_registration(const std::string &path,
+                                    const std::string &dataset) {
+    const std::string json = read_regular_text(path, "model registration");
+    ModelRegistration registration;
+    std::string schema;
+    std::string commitment_scheme;
+    if (!json_string_field(json, "schema", schema) ||
+        schema != "zkgpt-gat-model-registration-v1" ||
+        !json_string_field(json, "dataset", registration.dataset) ||
+        !json_string_field(json, "status", registration.status) ||
+        !json_string_field(json, "model_arch_id", registration.model_arch_id) ||
+        !json_string_field(json, "quant_cfg_id", registration.quant_cfg_id) ||
+        !json_string_field(json, "static_tables_id", registration.static_tables_id) ||
+        !json_string_field(json, "field_id", registration.field_id) ||
+        !json_string_field(json, "field_modulus", registration.field_modulus) ||
+        !json_string_field(json, "manifest_digest", registration.manifest_digest) ||
+        !json_string_field(json, "model_digest", registration.model_digest) ||
+        !json_string_field(json, "bounds_digest", registration.bounds_digest) ||
+        !json_string_field(json, "quant_digest", registration.quant_digest) ||
+        !json_string_field(json, "layout_digest", registration.layout_digest) ||
+        !json_string_field(json, "selector", registration.selector) ||
+        !json_string_field(json, "opening_policy", registration.opening_policy) ||
+        !json_string_field(json, "binding_digest", registration.binding_digest) ||
+        !json_string_field(json, "registration_digest", registration.registration_digest) ||
+        !json_string_field(json, "commitment_scheme", commitment_scheme) ||
+        !json_string_field(json, "basis_id", registration.com_W.basis_id) ||
+        !json_string_field(json, "point_hex", registration.com_W.point_hex)) {
+        throw std::runtime_error("model registration artifact is incomplete");
+    }
+    registration.com_W.scheme = commitment_scheme;
+    if (registration.dataset != dataset) {
+        throw std::runtime_error("model registration dataset mismatch");
+    }
+    if (!json_size_field(json, "n_raw", registration.n_raw) ||
+        !json_size_field(json, "n_in", registration.n_in) ||
+        !json_size_field(json, "logical_size", registration.com_W.logical_size) ||
+        !json_size_field(json, "padded_size", registration.com_W.padded_size)) {
+        throw std::runtime_error("model registration numeric fields are incomplete");
+    }
+    const std::string segment_marker = "\"input_segments\"";
+    std::size_t cursor = json.find(segment_marker);
+    cursor = cursor == std::string::npos ? cursor : json.find('[', cursor + segment_marker.size());
+    if (cursor == std::string::npos) throw std::runtime_error("model registration input segments are missing");
+    const char *const names[] = {"X_pub", "W", "Aux", "L_qry"};
+    for (const char *name : names) {
+        InputSegment segment;
+        const std::size_t name_key = json.find("\"name\"", cursor);
+        if (name_key == std::string::npos ||
+            !json_string_field(json.substr(name_key), "name", segment.name) || segment.name != name ||
+            !json_size_field(json, "offset", segment.offset, cursor) ||
+            !json_size_field(json, "logical_length", segment.logical_length, cursor) ||
+            !json_size_field(json, "padded_length", segment.padded_length, cursor)) {
+            throw std::runtime_error("model registration input segment is malformed");
+        }
+        registration.input_segments.push_back(segment);
+        const std::size_t object_end = json.find('}', cursor);
+        if (object_end == std::string::npos) throw std::runtime_error("model registration input segment is truncated");
+        cursor = object_end + 1;
+    }
+    registration.has_private_padding_mask = false;
+    if (registration.status != "registered_long_lived_com_W" ||
+        registration.input_segments.size() != 4 || !registration.com_W.valid()) {
+        throw std::runtime_error("model registration wire failed canonical validation");
+    }
+    return registration;
+}
+
+void require_owner_secret_file(const std::string &path) {
+    struct stat info {};
+    if (::lstat(path.c_str(), &info) != 0 || S_ISLNK(info.st_mode) ||
+        !S_ISREG(info.st_mode) || info.st_nlink != 1 ||
+        (info.st_mode & 07777) != (S_IRUSR | S_IWUSR) ||
+        info.st_uid != ::geteuid()) {
+        throw std::runtime_error("com_W prover secret must be an owner-only 0600 regular file");
+    }
+}
+
+bool path_exists(const std::string &path) {
+    struct stat info {};
+    return ::lstat(path.c_str(), &info) == 0;
 }
 
 std::string rel_display(const std::string &root, const std::string &path) {
@@ -335,34 +514,13 @@ void write_public_statement(const std::string &path, const Record &record,
     write_text(path, out.str());
 }
 
-void write_verifier_context(const std::string &path, const Record &record,
-                            const Graph &graph, const Tensor2D &features,
-                            const QuantConfig &quant, const StaticTables &tables,
-                            const GatCircuitPlan &plan) {
-    std::ostringstream out;
-    out << "{\n";
-    json_string(out, "schema", "zkgpt-gat-verifier-context-v1");
-    json_string(out, "relation_id", "R_GAT-zkGPT");
-    json_string(out, "dataset", record.dataset);
-    json_string(out, "backend", record.backend);
-    json_string(out, "privacy_extension_profile_id", "masked_full");
-    json_string(out, "quant_cfg_id", quant.quant_cfg_id);
-    json_string(out, "static_tables_id", tables.table_id);
-    json_string(out, "static_tables_digest", tables.digest);
-    json_string(out, "statement_digest", record.statement_digest);
-    json_string(out, "public_statement_path", record.statement_path);
-    json_string(out, "public_logits_path", record.public_logits_path);
-    json_string(out, "registration_path", record.registration_path);
-    json_string(out, "circuit_id", plan.circuit_id);
-    json_string(out, "plan_digest", plan.plan_digest);
-    out << "  \"num_nodes\": " << graph.num_nodes << ",\n";
-    out << "  \"num_edges\": " << graph.edges() << ",\n";
-    out << "  \"graph_count\": " << graph.graph_count << ",\n";
-    out << "  \"public_features_rows\": " << features.rows << ",\n";
-    out << "  \"public_features_cols\": " << features.cols << ",\n";
-    json_string(out, "com_W_point", record.com_w_point, false);
-    out << "}\n";
-    write_text(path, out.str());
+void write_verifier_context(const std::string &path,
+                            const VerifierContext &context) {
+    std::string reason;
+    if (!zkgpt::gat::write_verifier_context(context, path, &reason)) {
+        throw std::runtime_error("cannot write verifier context v2: " +
+                                 (reason.empty() ? std::string("unknown error") : reason));
+    }
 }
 
 std::vector<Int> quantized_first_projection(const Model &model, const QuantConfig &quant) {
@@ -399,6 +557,10 @@ Options parse_options(int argc, char **argv) {
             options.baseline_root = argv[++i];
         } else if (arg == "--config" && i + 1 < argc) {
             options.config = argv[++i];
+        } else if (arg == "--registration" && i + 1 < argc) {
+            options.registration = argv[++i];
+        } else if (arg == "--com-w-secret" && i + 1 < argc) {
+            options.com_w_secret = argv[++i];
         } else if (arg == "--register-only") {
             options.register_only = true;
         } else {
@@ -418,10 +580,11 @@ Options parse_options(int argc, char **argv) {
 
 void print_help() {
     std::cout << "Usage: gat_cli --dataset <cora|citeseer|pubmed|ppi|ogbn_arxiv> "
-                 "--backend <cpu|gpu> [--baseline-root <zkGPT-root>] [--config <baseline-relative.cfg>]\n"
+                 "--backend <cpu|gpu> [--baseline-root <zkGPT-root>] [--config <baseline-relative.cfg>] "
+                 "[--registration <baseline-relative.json>] [--com-w-secret <baseline-relative.secret>]\n"
                  "       gat_cli ... --register-only\n"
                  "The normal command emits one baseline-local run record and exits nonzero on FAILED or UNSUPPORTED.\n"
-                 "--register-only authenticates and writes only the long-lived model registration; it does not load graph data.\n";
+                 "--register-only writes the long-lived public model registration and its prover-only 0600 secret.\n";
 }
 
 } // namespace
@@ -438,7 +601,7 @@ int main(int argc, char **argv) {
         record.backend = options.backend;
         record.native_backend = options.backend == "gpu" ? "cuda_relation_bridge" : "cpu_native_zkgpt";
         const std::string root = without_trailing_slash(options.baseline_root);
-        const std::string fallback_run_rel = "baseline-local/runs/" + options.dataset + "_" + options.backend;
+        const std::string fallback_run_rel = "baseline-local/runs/" + options.dataset + "_secure/" + options.backend;
         std::string run_rel = fallback_run_rel;
         std::string run_dir = local_path(root, run_rel, "run directory");
         make_directory(run_dir);
@@ -460,6 +623,19 @@ int main(int argc, char **argv) {
             make_directory(run_dir);
         }
         record.run_dir = run_rel;
+        const std::string registration_rel = options.registration.empty()
+            ? run_rel + "/model_registration.json" : options.registration;
+        const std::string com_w_secret_rel = options.com_w_secret.empty()
+            ? run_rel + "/com_W.prover.secret" : options.com_w_secret;
+        const std::string registration_file = local_path(
+            root, registration_rel, "model registration");
+        const std::string com_w_secret_file = local_path(
+            root, com_w_secret_rel, "com_W prover secret");
+        if (registration_file != run_dir + "/model_registration.json" ||
+            com_w_secret_file != run_dir + "/com_W.prover.secret") {
+            throw std::runtime_error(
+                "registration and com_W secret must remain in the formal run directory");
+        }
         const std::string cache_rel = config.get("cache_root");
         const std::string bundle_rel = config.get("checkpoint_bundle");
         if (cache_rel.empty() || bundle_rel.empty()) throw std::runtime_error("config is missing baseline-local cache/checkpoint paths");
@@ -470,6 +646,10 @@ int main(int argc, char **argv) {
         if (quant.quant_cfg_id != config.get("quant_cfg_id")) throw std::runtime_error("quantization config identity mismatch");
 
         if (options.register_only) {
+            if (path_exists(registration_file) || path_exists(com_w_secret_file)) {
+                throw std::runtime_error(
+                    "refusing to overwrite an existing model registration or com_W prover secret");
+            }
             const auto registration_begin = Clock::now();
             const Graph graph = load_graph(cache_dir);
             const Tensor2D features = load_features(cache_dir, config, graph);
@@ -485,7 +665,14 @@ int main(int argc, char **argv) {
             record.registration_layout_digest = registration.layout_digest;
             record.registration_path = run_rel + "/model_registration.json";
             record.checkpoint_identity = "baseline-local/checkpoints/" + options.dataset + "_gat/integrity.sha256";
-            write_registration(run_dir + "/model_registration.json", registration, root, options.dataset);
+            write_registration(registration_file, registration, root, options.dataset);
+            std::string secret_reason;
+            if (!write_prover_commitment_secret(registration, com_w_secret_file,
+                                                &secret_reason)) {
+                throw std::runtime_error("cannot persist com_W prover secret: " +
+                                         secret_reason);
+            }
+            require_owner_secret_file(com_w_secret_file);
             std::cout << "REGISTERED dataset=" << options.dataset
                       << " backend=" << options.backend
                       << " registration=" << record.registration_path << '\n';
@@ -531,14 +718,24 @@ int main(int argc, char **argv) {
         record.witness_ms = elapsed_ms(witness_begin, Clock::now());
 
         const auto registration_begin = Clock::now();
-        const ModelRegistration registration = register_model(model, quant, plan.input_layout, model.manifest.model_arch_id);
+        ModelRegistration registration = read_registration(registration_file,
+                                                           options.dataset);
+        require_owner_secret_file(com_w_secret_file);
+        Fr com_w_blinder;
+        std::string secret_reason;
+        if (!read_prover_commitment_secret(registration, com_w_secret_file,
+                                           com_w_blinder, &secret_reason)) {
+            throw std::runtime_error("cannot load com_W prover secret: " +
+                                     secret_reason);
+        }
+        registration.com_W_padding_mask = com_w_blinder;
+        registration.has_private_padding_mask = true;
         record.registration_ms = elapsed_ms(registration_begin, Clock::now());
         record.com_w_point = registration.com_W.point_hex;
         record.registration_digest = registration.registration_digest;
         record.registration_binding_digest = registration.binding_digest;
         record.registration_layout_digest = registration.layout_digest;
         record.registration_path = run_rel + "/model_registration.json";
-        write_registration(run_dir + "/model_registration.json", registration, root, options.dataset);
 
         const VerifierContext context = make_verifier_context(
             graph, features, quant, tables, forward.logits, registration,
@@ -548,10 +745,10 @@ int main(int argc, char **argv) {
         record.plan_digest = plan.plan_digest;
         record.statement_path = run_rel + "/public_statement.json";
         record.public_logits_path = run_rel + "/public_logits.txt";
-        record.verifier_context_path = run_rel + "/verifier_context.json";
+        record.verifier_context_path = run_rel + "/verifier_context.bin";
         write_logits(run_dir + "/public_logits.txt", forward.logits);
         write_public_statement(run_dir + "/public_statement.json", record, graph, features, quant, tables, plan);
-        write_verifier_context(run_dir + "/verifier_context.json", record, graph, features, quant, tables, plan);
+        write_verifier_context(run_dir + "/verifier_context.bin", context);
 
         const auto prove_begin = Clock::now();
         const ProveResult proved = prove_gat(plan, graph, features, model, quant, forward,
