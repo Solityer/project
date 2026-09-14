@@ -2,9 +2,11 @@
 #define ZKGPT_NATIVE_MASKED_SUMCHECK_HPP
 
 #include "proof_session.hpp"
+#include "native_pedersen_relation.hpp"
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <set>
 #include <string>
 #include <vector>
@@ -50,12 +52,86 @@ struct NativeMaskedTerminalSpec {
     // this vector; it is used solely to check the unmasked predicate before
     // masking the terminal relation.
     std::vector<F> unmasked_fixed_values;
+
+    // Optional separation between the public/unmasked initial claim and the
+    // masked claim consumed by the streaming API.  When absent, the masked
+    // claim equals the public claim.  These values are never serialized.
+    bool has_masked_initial_claim = false;
+    F masked_initial_claim = F_ZERO;
+
+    // Claims relation: final masked claim = c0*t0 + c1*t1 + offset.
+    std::vector<F> terminal_linear_coefficients;
+    F terminal_linear_offset = F_ZERO;
+
+    // External binding is mandatory for the sound masked path.  Prover
+    // callers fill terminal_openings and initial_opening; verifier callers
+    // fill the matching commitment vectors.  The ScalarOpening objects are
+    // prover-only and are never serialized by this module.
+    bool has_external_binding = false;
+    // Only the first scope whose claim is explicitly public may use the
+    // zero-mask initial mode.  Every composed/private scope must set this to
+    // false and provide both sides of its incoming masked/unmasked binding.
+    bool public_initial_claim = false;
+    zkgpt::native_pedersen::ScalarOpening initial_opening;
+    zkgpt::native_pedersen::ScalarCommitment initial_commitment;
+    bool has_masked_initial_binding = false;
+    zkgpt::native_pedersen::ScalarOpening masked_initial_opening;
+    zkgpt::native_pedersen::ScalarCommitment masked_initial_commitment;
+    std::vector<zkgpt::native_pedersen::ScalarOpening> terminal_openings;
+    std::vector<zkgpt::native_pedersen::ScalarCommitment> terminal_commitments;
+    std::vector<zkgpt::native_pedersen::ScalarOpening> fixed_openings;
+    std::vector<zkgpt::native_pedersen::ScalarCommitment> fixed_commitments;
+    // Prover-only openings for the unmasked terminal operands.  Their
+    // commitments are bound to the masked terminal values by the terminal
+    // mask relation; no opening value is serialized.
+    std::vector<zkgpt::native_pedersen::ScalarOpening> unmasked_terminal_openings;
+    std::vector<zkgpt::native_pedersen::ScalarOpening> unmasked_fixed_openings;
+};
+
+struct NativeMaskedRoundBinding {
+    std::vector<zkgpt::native_pedersen::ScalarCommitment> p_coefficients;
+    std::vector<zkgpt::native_pedersen::ScalarCommitment> h_coefficients;
+    std::vector<zkgpt::native_pedersen::ScalarCommitment> q_coefficients;
+    zkgpt::native_pedersen::ScalarCommitment p_claim;
+    zkgpt::native_pedersen::ScalarCommitment h_claim;
+    zkgpt::native_pedersen::ScalarCommitment q_claim;
+    zkgpt::native_pedersen::ScalarCommitment h_evaluation;
 };
 
 struct NativeMaskedSumcheckResult {
     F final_claim = F_ZERO;
     std::vector<F> terminal_values;
     std::vector<F> challenges;
+    zkgpt::native_pedersen::PedersenBasis basis;
+    zkgpt::native_pedersen::ScalarCommitment initial_commitment;
+    std::vector<NativeMaskedRoundBinding> rounds;
+    std::vector<zkgpt::native_pedersen::ScalarCommitment> terminal_commitments;
+    std::vector<zkgpt::native_pedersen::ScalarCommitment> fixed_commitments;
+    std::vector<zkgpt::native_pedersen::ScalarCommitment> unmasked_terminal_commitments;
+    std::vector<zkgpt::native_pedersen::ScalarCommitment> unmasked_fixed_commitments;
+    zkgpt::native_pedersen::ScalarCommitment claim_commitment;
+    zkgpt::native_pedersen::ScalarCommitment unmasked_claim_commitment;
+    zkgpt::native_pedersen::ScalarCommitment claim_mask_commitment;
+    // Prover-only opening witnesses retained for compositional callers.
+    std::vector<zkgpt::native_pedersen::ScalarOpening> terminal_openings;
+    std::vector<zkgpt::native_pedersen::ScalarOpening> fixed_openings;
+    std::vector<zkgpt::native_pedersen::ScalarOpening> unmasked_terminal_openings;
+    std::vector<zkgpt::native_pedersen::ScalarOpening> unmasked_fixed_openings;
+    zkgpt::native_pedersen::ScalarOpening claim_opening;
+    zkgpt::native_pedersen::ScalarOpening unmasked_claim_opening;
+    zkgpt::native_pedersen::ScalarOpening claim_mask_opening;
+    bool has_claim_opening = false;
+    bool has_unmasked_claim_opening = false;
+    bool has_claim_mask_opening = false;
+    // End cursor of this authenticated scope in the session transcript.  It
+    // is populated only by the independent verifier and is not proof data.
+    std::size_t transcript_end = 0;
+    // Intermediate/anchor commitments used by the terminal relation.  They
+    // are public proof operands only; no opening values or blinders cross the
+    // session boundary.
+    std::vector<zkgpt::native_pedersen::ScalarCommitment> operand_commitments;
+    bool external_binding_required = true;
+    bool external_binding_verified = false;
 };
 
 // Streaming prover form for native GKR/MatMul code, whose next unmasked
@@ -69,6 +145,11 @@ public:
         std::size_t degree, const F &initial_claim,
         const NativeMaskedTerminalSpec &terminal_spec,
         const F *unmasked_initial_claim = nullptr);
+    ~NativeMaskedSumcheckProver();
+    NativeMaskedSumcheckProver(const NativeMaskedSumcheckProver &) = delete;
+    NativeMaskedSumcheckProver &operator=(const NativeMaskedSumcheckProver &) = delete;
+
+    struct Impl;
 
     bool append_round(const std::vector<F> &unmasked_poly, F *challenge = nullptr,
                       std::string *reason = nullptr);
@@ -81,22 +162,11 @@ public:
     bool finish(const std::vector<F> &unmasked_terminal,
                 NativeMaskedSumcheckResult *result = nullptr,
                 std::string *reason = nullptr);
-    std::size_t rounds() const { return rounds_; }
-    const NativeMaskedSumcheckResult &result() const { return result_; }
+    std::size_t rounds() const;
+    const NativeMaskedSumcheckResult &result() const;
 
 private:
-    NativeProofSession *session_;
-    std::string label_;
-    std::size_t degree_;
-    NativeMaskedTerminalSpec terminal_spec_;
-    std::size_t checkpoint_;
-    std::size_t rounds_ = 0;
-    F masked_running_ = F_ZERO;
-    F unmasked_running_ = F_ZERO;
-    F mask_target_ = F_ZERO;
-    bool finished_ = false;
-    std::set<std::string> commitments_;
-    NativeMaskedSumcheckResult result_;
+    std::unique_ptr<Impl> impl_;
 };
 
 // A composable, session-bound masked Sumcheck.  The prover input is private
@@ -128,6 +198,17 @@ bool native_masked_sumcheck_verify(
     std::size_t degree, std::size_t rounds, const F &initial_claim,
     const NativeMaskedTerminalSpec &terminal_spec,
     NativeMaskedSumcheckResult *result = nullptr,
+    std::string *reason = nullptr);
+
+// Decode the commitment carried by an opening block at an already checked
+// transcript cursor.  This is an artifact-boundary helper for compositional
+// verifiers which need to bind a newly produced output opening before calling
+// native_pedersen verification; it never exposes the opening value/blinding.
+bool native_masked_opening_commitment_at(
+    const NativeProofSession &session,
+    const zkgpt::native_pedersen::PedersenBasis &basis,
+    std::size_t cursor, const std::string &label,
+    zkgpt::native_pedersen::ScalarCommitment &commitment,
     std::string *reason = nullptr);
 
 // Convenience entry points used by the native protocol adapters.  They make

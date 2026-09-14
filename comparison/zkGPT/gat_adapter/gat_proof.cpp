@@ -48,6 +48,11 @@ bool core_split_pipe(const std::string &payload,
                      std::vector<std::string> &parts);
 bool core_decode_field(const std::string &encoded, Fr &value);
 bool core_decode_point(const std::string &encoded, G1 &point);
+bool core_power_of_two(std::size_t value);
+std::size_t core_log2(std::size_t value);
+const NativeProofMessage *core_find_message(
+    const NativeProofSession &session, NativeProofMessageKind kind,
+    const std::string &label, std::string *reason);
 
 void ensure_field() {
     std::call_once(field_once, []() { mcl::bn::initPairing(mcl::BN254); });
@@ -3144,6 +3149,52 @@ bool valid_native_kind(std::uint8_t kind) {
 
 } // namespace
 
+std::vector<Fr> pack_native_gkr_matmul_rhs(
+    const MatMulDescriptor &descriptor,
+    const std::vector<Fr> &canonical_input_layer) {
+    // The plan and model registry deliberately remain canonical row-major.
+    // Only the private witness object handed to native FCONN crosses this
+    // representation boundary.  Keep every size/offset calculation checked
+    // so a malformed descriptor cannot be silently reinterpreted as a
+    // different MLE layout.
+    if (descriptor.rows == 0 || descriptor.inner == 0 || descriptor.cols == 0)
+        throw std::invalid_argument("native GKR MatMul RHS has an empty shape");
+    const std::size_t rhs_size = checked_mul(
+        descriptor.inner, descriptor.cols, "native GKR MatMul RHS size");
+    const std::size_t output_size = checked_mul(
+        descriptor.rows, descriptor.cols, "native GKR MatMul output size");
+    if (descriptor.output_coordinates != output_size)
+        throw std::invalid_argument(
+            "native GKR MatMul RHS descriptor output shape is inconsistent");
+    if (descriptor.coordinate_rule.find("row_major_exact") == std::string::npos)
+        throw std::invalid_argument(
+            "native GKR MatMul RHS requires canonical row-major coordinates");
+    if (descriptor.rhs_offset > canonical_input_layer.size() ||
+        rhs_size > canonical_input_layer.size() - descriptor.rhs_offset)
+        throw std::invalid_argument(
+            "native GKR MatMul RHS span exceeds canonical input layer");
+
+    std::vector<Fr> packed(rhs_size, Fr(0));
+    for (std::size_t col = 0; col < descriptor.cols; ++col) {
+        const std::size_t native_column_base = checked_mul(
+            col, descriptor.inner, "native GKR MatMul RHS column base");
+        for (std::size_t term = 0; term < descriptor.inner; ++term) {
+            const std::size_t canonical_relative = checked_add(
+                checked_mul(term, descriptor.cols,
+                            "canonical MatMul RHS row-major stride"),
+                col, "canonical MatMul RHS row-major coordinate");
+            const std::size_t native_index = checked_add(
+                native_column_base, term,
+                "native MatMul RHS column-major coordinate");
+            const std::size_t canonical_index = checked_add(
+                descriptor.rhs_offset, canonical_relative,
+                "canonical MatMul RHS input coordinate");
+            packed.at(native_index) = canonical_input_layer.at(canonical_index);
+        }
+    }
+    return packed;
+}
+
 bool validate_gat_circuit_plan(const GatCircuitPlan &plan, std::string *reason) {
     return validate_gat_circuit_plan_impl(plan, reason);
 }
@@ -3618,24 +3669,38 @@ bool GatProofArtifact::valid_wire(std::string *reason) const {
         }
 
         // The five section summaries are a lossless projection of the one
-        // native typed transcript.  Every sequence number is therefore
-        // checked exactly once; this rejects duplicates, omissions and
-        // cross-section reordering before replaying Fiat--Shamir.
-        std::size_t global_sequence = 0;
+        // native typed transcript.  Official FCONN/MatMul messages are
+        // emitted while the descending GKR walk is in progress, so their
+        // native sequence numbers can be interleaved with ordinary GKR
+        // messages.  Validate the projection as a sequence-indexed bijection
+        // instead of assuming that protocol sections are contiguous.
+        std::vector<const TranscriptMessage *> by_sequence(native_messages.size(), nullptr);
         for (const ProofSection *section : sections) {
+            std::uint64_t previous = 0;
+            bool have_previous = false;
             for (const TranscriptMessage &summary : section->messages) {
-                if (summary.sequence != static_cast<std::uint64_t>(global_sequence)) {
+                if (summary.sequence >= native_messages.size() ||
+                    (have_previous && summary.sequence <= previous)) {
                     set_reason(reason, "proof section message sequence is not canonical");
                     return false;
                 }
-                const NativeProofMessage &native = native_messages[global_sequence];
-                if (native.sequence != static_cast<std::uint64_t>(global_sequence) ||
-                    static_cast<std::uint8_t>(native.kind) != summary.kind ||
-                    native.label != summary.label || native.payload != summary.payload) {
-                    set_reason(reason, "proof section does not exactly map to native transcript");
+                if (by_sequence[static_cast<std::size_t>(summary.sequence)] != nullptr) {
+                    set_reason(reason, "proof section maps one native message more than once");
                     return false;
                 }
-                ++global_sequence;
+                by_sequence[static_cast<std::size_t>(summary.sequence)] = &summary;
+                previous = summary.sequence;
+                have_previous = true;
+            }
+        }
+        for (std::size_t index = 0; index < native_messages.size(); ++index) {
+            const TranscriptMessage *summary = by_sequence[index];
+            const NativeProofMessage &native = native_messages[index];
+            if (summary == nullptr || native.sequence != static_cast<std::uint64_t>(index) ||
+                static_cast<std::uint8_t>(native.kind) != summary->kind ||
+                native.label != summary->label || native.payload != summary->payload) {
+                set_reason(reason, "proof sections do not exactly map to native transcript");
+                return false;
             }
         }
 
@@ -4102,6 +4167,13 @@ ProveResult prove_gat(const GatCircuitPlan &plan, const Graph &graph,
         if (!native_lasso_prove_bundle(session, lasso.families, lasso.query,
                                        &lasso_result, &reason))
             throw std::runtime_error("native masked Lasso proof failed: " + reason);
+        if (!lasso_result.has_final_l_commitment ||
+            !lasso_result.final_l_commitment.valid(
+                zkgpt::native_pedersen::derive_basis(
+                    "zkgpt/masked-sumcheck/v2/" + session.statement_digest()),
+                &reason) || lasso_result.final_query_point.empty())
+            throw std::runtime_error(
+                "native masked Lasso did not return an authenticated final L_qry binding");
 
         NativeLayeredGkrWitness gkr_witness;
         gkr_witness.layer_values = circuit_witness.values;
@@ -4109,99 +4181,90 @@ ProveResult prove_gat(const GatCircuitPlan &plan, const Graph &graph,
         for (const MatMulDescriptor &descriptor : plan.matmuls) {
             NativeGkrMatmulWitness matmul;
             matmul.shape = {descriptor.rows, descriptor.inner, descriptor.cols};
-            matmul.left.assign(circuit_witness.input_layer.begin() + descriptor.lhs_offset,
-                               circuit_witness.input_layer.begin() + descriptor.lhs_offset +
-                                   descriptor.rows * descriptor.inner);
-            matmul.right.assign(circuit_witness.input_layer.begin() + descriptor.rhs_offset,
-                                circuit_witness.input_layer.begin() + descriptor.rhs_offset +
-                                    descriptor.inner * descriptor.cols);
+            const std::size_t lhs_size = checked_mul(
+                descriptor.rows, descriptor.inner,
+                "native GKR MatMul LHS size");
+            const std::size_t rhs_size = checked_mul(
+                descriptor.inner, descriptor.cols,
+                "native GKR MatMul RHS size");
+            if (descriptor.output_coordinates != checked_mul(
+                    descriptor.rows, descriptor.cols,
+                    "native GKR MatMul output size"))
+                throw std::invalid_argument(
+                    "native GKR MatMul descriptor output shape is inconsistent");
+            if (descriptor.lhs_offset > circuit_witness.input_layer.size() ||
+                lhs_size > circuit_witness.input_layer.size() -
+                                descriptor.lhs_offset)
+                throw std::invalid_argument(
+                    "native GKR MatMul LHS span exceeds canonical input layer");
+            if (descriptor.rhs_offset > circuit_witness.input_layer.size() ||
+                rhs_size > circuit_witness.input_layer.size() -
+                                descriptor.rhs_offset)
+                throw std::invalid_argument(
+                    "native GKR MatMul RHS span exceeds canonical input layer");
+            matmul.left.assign(
+                circuit_witness.input_layer.begin() + descriptor.lhs_offset,
+                circuit_witness.input_layer.begin() +
+                    checked_add(descriptor.lhs_offset, lhs_size,
+                                "native GKR MatMul LHS end"));
+            // Canonical model/input flattening is row-major [term,col].  The
+            // native MLE product folds the RHS as [col,term], so make this
+            // conversion explicit at the adapter boundary.
+            matmul.right = pack_native_gkr_matmul_rhs(
+                descriptor, circuit_witness.input_layer);
+            if (matmul.right.size() != rhs_size)
+                throw std::runtime_error(
+                    "native GKR MatMul RHS pack returned the wrong size");
             gkr_witness.matmuls.push_back(std::move(matmul));
         }
+        NativeGkrInputBinding gkr_binding;
+        NativeGkrProverResult gkr_result;
         if (!prove_masked_gkr_transcript(
                 session, plan.circuit, gkr_witness,
-                circuit_witness.public_output, &reason))
+                circuit_witness.public_output, &reason, &gkr_binding,
+                &gkr_result))
             throw std::runtime_error("native masked GKR proof failed: " + reason);
 
-        auto find_message = [&](NativeProofMessageKind kind,
-                                const std::string &label) -> const NativeProofMessage * {
-            const NativeProofMessage *found = nullptr;
-            for (const NativeProofMessage &message : session.messages()) {
-                if (message.kind != kind || message.label != label) continue;
-                if (found != nullptr)
-                    throw std::runtime_error("duplicate native message: " + label);
-                found = &message;
-            }
-            if (found == nullptr)
-                throw std::runtime_error("missing native message: " + label);
-            return found;
-        };
-        auto decode_field_payload = [](const std::string &payload) {
-            Fr value;
-            value.setStr(payload, 16);
-            if (field_hex(value) != payload)
-                throw std::invalid_argument("non-canonical field payload");
-            return value;
-        };
-        auto decode_vector_payload = [&](const std::string &payload) {
-            std::vector<Fr> values;
-            std::size_t offset = 0;
-            auto read_u64 = [&](std::uint64_t &value) {
-                if (payload.size() - offset < sizeof(std::uint64_t)) return false;
-                value = 0;
-                for (unsigned index = 0; index < 8; ++index)
-                    value |= static_cast<std::uint64_t>(
-                                 static_cast<unsigned char>(payload[offset++]))
-                             << (8 * index);
-                return true;
-            };
-            std::uint64_t count = 0;
-            if (!read_u64(count) || count > (1ULL << 20))
-                throw std::invalid_argument("malformed native field vector");
-            values.reserve(static_cast<std::size_t>(count));
-            for (std::size_t index = 0; index < static_cast<std::size_t>(count);
-                 ++index) {
-                std::uint64_t size = 0;
-                if (!read_u64(size) || size == 0 || size > 128 ||
-                    size > payload.size() - offset)
-                    throw std::invalid_argument("malformed native field vector item");
-                const std::string encoded = payload.substr(offset,
-                                                            static_cast<std::size_t>(size));
-                offset += static_cast<std::size_t>(size);
-                values.push_back(decode_field_payload(encoded));
-            }
-            if (offset != payload.size())
-                throw std::invalid_argument("native field vector has trailing bytes");
-            return values;
-        };
-        const std::vector<Fr> gkr_point = decode_vector_payload(
-            find_message(NativeProofMessageKind::FieldVector,
-                         "gkr/input/point")->payload);
-        const Fr gkr_claim = decode_field_payload(
-            find_message(NativeProofMessageKind::Field, "gkr/input/claim")
-                ->payload);
-        if (gkr_point.size() < 2 ||
-            gkr_point.size() != static_cast<std::size_t>(
-                bit_length(circuit_witness.input_layer.size())))
-            throw std::invalid_argument("native GKR input point has the wrong dimension");
-        const std::size_t r_dimension = gkr_point.size() - 2;
-        std::vector<Fr> r_minus(gkr_point.begin(), gkr_point.begin() + r_dimension);
-        const Fr selector_s1 = gkr_point[r_dimension];
-        const Fr selector_s2 = gkr_point[r_dimension + 1];
-        if (r_minus.empty())
-            throw std::invalid_argument("input combine point is empty");
+        const zkgpt::native_pedersen::PedersenBasis scalar_basis =
+            zkgpt::native_pedersen::derive_basis(
+                "zkgpt/masked-sumcheck/v2/" + session.statement_digest());
+        if (gkr_binding.point.size() != core_log2(domain) + 2 ||
+            !gkr_binding.claim_commitment.valid(scalar_basis, &reason) ||
+            !gkr_binding.unmasked_claim_commitment.valid(scalar_basis, &reason) ||
+            !gkr_binding.mask_commitment.valid(scalar_basis, &reason) ||
+            !gkr_result.has_unmasked_input_claim_opening ||
+            !gkr_result.unmasked_input_claim_opening.valid(scalar_basis, &reason) ||
+            gkr_result.unmasked_input_claim_opening.commitment.point !=
+                gkr_binding.unmasked_claim_commitment.point)
+            throw std::runtime_error("native masked GKR input binding is malformed");
+
+        const std::size_t r_dimension = core_log2(domain);
+        const std::vector<Fr> r_minus(gkr_binding.point.begin(),
+                                      gkr_binding.point.begin() + r_dimension);
+        // Native MLE folding numbers the first coordinate as the low bit.
+        // The canonical contiguous segments are X,W,Aux,L, so expose the
+        // two high coordinates in canonical selector order.
+        const Fr selector_s1 = gkr_binding.point[r_dimension + 1];
+        const Fr selector_s2 = gkr_binding.point[r_dimension];
         session.absorb_fields("combine/r_minus", r_minus);
         session.absorb_fields("combine/selectors", {selector_s1, selector_s2});
-        session.absorb_field("combine/gkr-claim", gkr_claim);
-        session.absorb_field("combine/lasso-final-claim",
-                             lasso_result.final_l_evaluation);
         const std::vector<Fr> x_values = public_feature_segment(
             plan, graph, public_features);
         const Fr x_eval = adapter_mle_eval(x_values, r_minus);
         session.absorb_field("combine/public-X", x_eval);
+        session.absorb("combine/structured-root", statement.structured_root());
         session.absorb("combine/commitments",
                        basis_id + "|" + commitment_encoding(registration.com_W) +
                            "|" + commitment_encoding(com_aux) + "|" +
                            commitment_encoding(lasso.com_L));
+        session.absorb("combine/gkr-input-commitment",
+                       scalar_basis.domain + "|" +
+                           point_hex(gkr_binding.unmasked_claim_commitment.point));
+        session.absorb_field("combine/lasso-final-claim",
+                             lasso_result.final_l_evaluation);
+        session.absorb("combine/lasso-final-commitment",
+                       scalar_basis.domain + "|" +
+                           point_hex(lasso_result.final_l_commitment.point));
 
         const Fr c_x = (Fr(1) - selector_s1) * (Fr(1) - selector_s2);
         const Fr c_w = (Fr(1) - selector_s1) * selector_s2;
@@ -4211,36 +4274,17 @@ ProveResult prove_gat(const GatCircuitPlan &plan, const Graph &graph,
                                                   circuit_witness.input_layer, 1);
         std::vector<Fr> l_values = input_segment(plan,
                                                   circuit_witness.input_layer, 3);
-        const std::vector<Fr> aux_point = r_minus;
-        const Fr raw_w = adapter_mle_eval(w_values, aux_point);
-        const Fr raw_aux = adapter_mle_eval(aux_values, aux_point);
-        const Fr raw_l = adapter_mle_eval(l_values, aux_point);
-        const Fr raw_gkr = adapter_mle_eval(circuit_witness.input_layer,
-                                            gkr_point);
-        const Fr input_mask = gkr_claim - raw_gkr;
-        Fr mu_w, mu_aux, mu_l;
-        bool solved = false;
-        for (unsigned attempt = 0; attempt < 16 && !solved; ++attempt) {
-            mu_w.setByCSPRNG();
-            mu_aux.setByCSPRNG();
-            mu_l.setByCSPRNG();
-            if (!c_l.isZero())
-                mu_l = (input_mask - c_w * mu_w - c_aux * mu_aux) / c_l;
-            else if (!c_aux.isZero())
-                mu_aux = (input_mask - c_w * mu_w - c_l * mu_l) / c_aux;
-            else if (!c_w.isZero())
-                mu_w = (input_mask - c_aux * mu_aux - c_l * mu_l) / c_w;
-            else {
-                mu_w = Fr(0);
-                mu_aux = Fr(0);
-                mu_l = Fr(0);
-            }
-            solved = !mu_w.isZero() && !mu_aux.isZero() && !mu_l.isZero();
-        }
-        if (!solved)
-            throw std::runtime_error("input combine selector cannot provision fresh masks");
-        const std::string shared_mask_identity =
-            statement.basis_digest + "/gat-input-combine/v1";
+        zkgpt::native_pedersen::ScalarOpening w_raw_opening;
+        zkgpt::native_pedersen::ScalarOpening aux_raw_opening;
+        zkgpt::native_pedersen::ScalarOpening l_raw_opening;
+        if (!hyrax::make_mle_evaluation_opening(
+                scalar_basis, r_minus, w_values, w_raw_opening, &reason) ||
+            !hyrax::make_mle_evaluation_opening(
+                scalar_basis, r_minus, aux_values, aux_raw_opening, &reason) ||
+            !hyrax::make_mle_evaluation_opening(
+                scalar_basis, r_minus, l_values, l_raw_opening, &reason))
+            throw std::runtime_error("canonical GAT scalar evaluation failed: " + reason);
+
         hyrax::PedersenMleCommitment w_commitment;
         w_commitment.commitment.deserializeHexStr(registration.com_W.point_hex);
         w_commitment.blinding_generator = H;
@@ -4251,20 +4295,34 @@ ProveResult prove_gat(const GatCircuitPlan &plan, const Graph &graph,
         l_commitment.blinding_generator = lasso.query.blinding_generator;
         l_commitment.blinding = lasso.query.commitment_blinding;
         l_commitment.basis_id = lasso.query.basis_id;
-        hyrax::MaskedMleOpening ignored_opening;
-        if (!hyrax::open_masked_mle_with_claim(
-                w_commitment,
-                generators, r_minus, w_values, raw_w + mu_w, session, "Open_W",
-                ignored_opening, &reason, true, shared_mask_identity) ||
-            !hyrax::open_masked_mle_with_claim(
-                aux_commitment, generators, r_minus, aux_values, raw_aux + mu_aux,
-                session, "Open_Aux", ignored_opening, &reason, true,
-                shared_mask_identity) ||
-            !hyrax::open_masked_mle_with_claim(
-                l_commitment,
-                generators, r_minus, l_values, raw_l + mu_l, session, "Open_L",
-                ignored_opening, &reason, true, shared_mask_identity))
+        hyrax::MaskedMleOpening w_opening;
+        hyrax::MaskedMleOpening aux_opening;
+        hyrax::MaskedMleOpening l_opening;
+        if (!hyrax::open_masked_mle_with_session(
+                w_commitment, generators, r_minus, w_values, session,
+                "Open_GAT_W", w_opening, &reason, true, "", &scalar_basis,
+                nullptr, &w_raw_opening) ||
+            !hyrax::open_masked_mle_with_session(
+                aux_commitment, generators, r_minus, aux_values, session,
+                "Open_GAT_Aux", aux_opening, &reason, true, "", &scalar_basis,
+                nullptr, &aux_raw_opening) ||
+            !hyrax::open_masked_mle_with_session(
+                l_commitment, generators, r_minus, l_values, session,
+                "Open_GAT_L", l_opening, &reason, true, "", &scalar_basis,
+                nullptr, &l_raw_opening))
             throw std::runtime_error("masked input terminal openings failed: " + reason);
+        if (!w_opening.has_scalar_binding || !aux_opening.has_scalar_binding ||
+            !l_opening.has_scalar_binding)
+            throw std::runtime_error("masked input opening omitted scalar binding");
+        if (!zkgpt::native_pedersen::prove_hidden_linear(
+                session, scalar_basis, "combine/input-linear",
+                {gkr_result.unmasked_input_claim_opening,
+                 w_opening.raw_evaluation_opening,
+                 aux_opening.raw_evaluation_opening,
+                 l_opening.raw_evaluation_opening},
+                {F_ONE, -c_w, -c_aux, -c_l}, c_x * x_eval, nullptr,
+                &reason))
+            throw std::runtime_error("masked GAT input linear relation failed: " + reason);
 
         GatProofArtifact artifact;
         artifact.privacy_profile = "masked_full";
@@ -4335,14 +4393,455 @@ bool verify_gat(const VerifierContext &context, const GatProofArtifact &artifact
         if (artifact.privacy_profile != "masked_full") { set_reason(reason, "unsupported_privacy_profile"); return false; }
         if (!artifact.valid_wire(reason)) return false;
         VerifierContext canonical = context;
-        const std::string expected_statement = hash_hex(context_encoding(canonical));
+        const std::string expected_statement = verifier_context_digest(canonical);
         if (artifact.statement_digest != expected_statement) { set_reason(reason, "proof statement digest does not match independent public context"); return false; }
-        // The official verifier's GKR/Lasso methods are private and its
-        // interactive randomness is not a serializable Fiat-Shamir transcript.
-        // Refuse acceptance until the native masked extension is connected;
-        // accepting the wire here would turn a digest check into a fake proof.
-        set_reason(reason, "unsupported_privacy_profile: native masked_full verifier transcript is unavailable");
-        return false;
+
+        const InputLayout verifier_layout = registration_layout(context.registration);
+        const std::string basis_label = registration_basis_label_public(
+            context.registration, verifier_layout);
+        const std::string basis_id = fixed_digest(hash_hex(basis_label));
+        const std::size_t domain = context.plan.input_layout.n_in;
+        if (domain == 0 || !core_power_of_two(domain) ||
+            context.registration.com_W.basis_id != basis_id ||
+            artifact.com_aux.basis_id != basis_id ||
+            artifact.com_L.basis_id != basis_id ||
+            artifact.com_aux.padded_size != domain ||
+            artifact.com_L.padded_size != domain) {
+            set_reason(reason, "masked GAT verifier basis or commitment domain mismatch");
+            return false;
+        }
+
+        std::vector<G1> generators(domain);
+        for (std::size_t index = 0; index < domain; ++index)
+            hashAndMapToG1(generators[index],
+                           basis_label + "/coordinate/" + std::to_string(index));
+        const G1 H = hyrax::derive_pedersen_blinding_generator(basis_id);
+        const std::vector<Fr> zero_basis(domain, Fr(0));
+        NativeProofStatement expected_native_statement =
+            make_native_proof_statement(context, artifact.com_aux, artifact.com_L,
+                                        H, generators, zero_basis, domain);
+        const std::vector<NativeLassoFamilyPublic> expected_lasso_families =
+            build_lasso_public_families(context.plan, context.tables, basis_label);
+        expected_native_statement.tables_digest =
+            native_lasso_tables_digest(expected_lasso_families);
+        expected_native_statement.resources_digest =
+            native_lasso_resources_digest(expected_lasso_families);
+        expected_native_statement.l_digest =
+            fixed_digest(hash_hex(commitment_encoding(artifact.com_L)));
+        const NativeProofStatement &actual_native_statement =
+            artifact.native_statement;
+        if (actual_native_statement.verifier_context_digest !=
+                expected_native_statement.verifier_context_digest ||
+            actual_native_statement.field_id != expected_native_statement.field_id ||
+            actual_native_statement.plan_digest != expected_native_statement.plan_digest ||
+            actual_native_statement.resources_digest != expected_native_statement.resources_digest ||
+            actual_native_statement.tables_digest != expected_native_statement.tables_digest ||
+            actual_native_statement.com_w_digest != expected_native_statement.com_w_digest ||
+            actual_native_statement.aux_digest != expected_native_statement.aux_digest ||
+            actual_native_statement.l_digest != expected_native_statement.l_digest ||
+            actual_native_statement.basis_digest != expected_native_statement.basis_digest ||
+            actual_native_statement.l_dimension != expected_native_statement.l_dimension ||
+            actual_native_statement.statement_root_digest !=
+                expected_native_statement.statement_root_digest) {
+            set_reason(reason, "native proof statement structured fields do not match public context");
+            return false;
+        }
+
+        NativeProofSession session;
+        if (!artifact.native_session(session, reason)) return false;
+
+        // Formal masked_full artifacts have one strict native grammar.  In
+        // particular, do not let an unknown/clear adapter message sit between
+        // two valid native scopes and be ignored by a component verifier.
+        const auto has_prefix = [](const std::string &value,
+                                   const std::string &prefix) {
+            return value.compare(0, prefix.size(), prefix) == 0;
+        };
+        const auto is_lasso_label = [&has_prefix](const std::string &label) {
+            return has_prefix(label, "lasso/") ||
+                   has_prefix(label, "challenge/lasso/");
+        };
+        const auto is_gkr_label = [&has_prefix](const std::string &label) {
+            return has_prefix(label, "gkr/") ||
+                   has_prefix(label, "challenge/gkr/");
+        };
+        const auto is_combine_label = [&has_prefix](const std::string &label) {
+            return has_prefix(label, "combine/") ||
+                   has_prefix(label, "challenge/combine/");
+        };
+        const auto is_open_label = [&has_prefix](const std::string &label) {
+            return has_prefix(label, "Open_W/") ||
+                   has_prefix(label, "Open_Aux/") ||
+                   has_prefix(label, "Open_L/") ||
+                   has_prefix(label, "Open_GAT_W/") ||
+                   has_prefix(label, "Open_GAT_Aux/") ||
+                   has_prefix(label, "Open_GAT_L/") ||
+                   has_prefix(label, "challenge/Open_W/") ||
+                   has_prefix(label, "challenge/Open_Aux/") ||
+                   has_prefix(label, "challenge/Open_L/") ||
+                   has_prefix(label, "challenge/Open_GAT_W/") ||
+                   has_prefix(label, "challenge/Open_GAT_Aux/") ||
+                   has_prefix(label, "challenge/Open_GAT_L/");
+        };
+        for (const NativeProofMessage &message : session.messages()) {
+            if (!is_lasso_label(message.label) && !is_gkr_label(message.label) &&
+                !is_combine_label(message.label) && !is_open_label(message.label)) {
+                set_reason(reason, "masked GAT transcript has an unknown message label: " +
+                                     message.label);
+                return false;
+            }
+        }
+
+        const std::vector<NativeLassoFamilyPublic> &lasso_families =
+            expected_lasso_families;
+        const NativeLassoQueryPublic lasso_query = build_lasso_public_query(
+            context.plan, artifact.com_L, basis_label);
+        NativeLassoBundleResult lasso_result;
+        if (!native_lasso_verify_bundle(session, lasso_families, lasso_query,
+                                        &lasso_result, reason))
+            return false;
+
+        std::vector<F> public_output;
+        public_output.reserve(context.public_logits.values.size() +
+                              context.plan.residual_coordinates);
+        for (Int value : context.public_logits.values)
+            public_output.push_back(Fr(value));
+        public_output.insert(public_output.end(),
+                             context.plan.residual_coordinates, Fr(0));
+        if (context.plan.public_output_coordinates !=
+                context.public_logits.values.size() ||
+            public_output.size() != context.plan.public_output_coordinates +
+                                      context.plan.residual_coordinates ||
+            context.plan.circuit.circuit.empty() ||
+            context.plan.circuit.circuit.back().size != public_output.size()) {
+            set_reason(reason, "masked GAT public output/residual shape is invalid");
+            return false;
+        }
+
+        std::vector<NativeGkrMatmulShape> matmuls;
+        matmuls.reserve(context.plan.matmuls.size());
+        for (const MatMulDescriptor &descriptor : context.plan.matmuls)
+            matmuls.push_back({descriptor.rows, descriptor.inner, descriptor.cols});
+
+        std::size_t gkr_start = session.messages().size();
+        for (std::size_t index = 0; index < session.messages().size(); ++index) {
+            const NativeProofMessage &message = session.messages()[index];
+            if (message.label == "gkr/public-output") {
+                if (message.kind != NativeProofMessageKind::FieldVector ||
+                    gkr_start != session.messages().size()) {
+                    set_reason(reason, "masked GAT GKR public-output boundary is malformed");
+                    return false;
+                }
+                gkr_start = index;
+            }
+            if (is_gkr_label(message.label) && index < gkr_start) {
+                set_reason(reason, "masked GAT transcript has GKR messages before public output");
+                return false;
+            }
+        }
+        if (gkr_start == session.messages().size()) {
+            set_reason(reason, "masked GAT GKR public-output message is missing");
+            return false;
+        }
+        for (std::size_t index = 0; index < gkr_start; ++index)
+            if (!is_lasso_label(session.messages()[index].label)) {
+                set_reason(reason, "masked GAT transcript has a non-Lasso prefix before GKR");
+                return false;
+            }
+
+        std::size_t gkr_end = session.messages().size();
+        NativeGkrInputBinding verified_gkr_binding;
+        if (!verify_masked_gkr_transcript(session, context.plan.circuit,
+                                          public_output, matmuls, gkr_start,
+                                          &gkr_end, reason,
+                                          &verified_gkr_binding))
+            return false;
+
+        const zkgpt::native_pedersen::PedersenBasis scalar_basis =
+            zkgpt::native_pedersen::derive_basis(
+                "zkgpt/masked-sumcheck/v2/" + session.statement_digest());
+        if (verified_gkr_binding.point.size() != core_log2(domain) + 2 ||
+            !verified_gkr_binding.claim_commitment.valid(scalar_basis, reason) ||
+            !verified_gkr_binding.unmasked_claim_commitment.valid(scalar_basis,
+                                                                  reason) ||
+            !verified_gkr_binding.mask_commitment.valid(scalar_basis, reason) ||
+            !lasso_result.has_final_l_commitment ||
+            !lasso_result.final_l_commitment.valid(scalar_basis, reason) ||
+            lasso_result.final_query_point.empty()) {
+            set_reason(reason, "masked GAT v2 authenticated input/final binding is malformed");
+            return false;
+        }
+
+        auto decode_field_vector = [](const std::string &payload,
+                                      std::vector<Fr> &values) {
+            values.clear();
+            std::size_t offset = 0;
+            auto read_u64 = [&](std::uint64_t &value) {
+                if (payload.size() - offset < sizeof(std::uint64_t)) return false;
+                value = 0;
+                for (unsigned index = 0; index < 8; ++index)
+                    value |= static_cast<std::uint64_t>(
+                                 static_cast<unsigned char>(payload[offset++]))
+                             << (8 * index);
+                return true;
+            };
+            std::uint64_t count = 0;
+            if (!read_u64(count) || count > (1ULL << 20)) return false;
+            values.reserve(static_cast<std::size_t>(count));
+            for (std::size_t index = 0; index < static_cast<std::size_t>(count);
+                 ++index) {
+                std::uint64_t size = 0;
+                if (!read_u64(size) || size == 0 || size > 128 ||
+                    size > payload.size() - offset)
+                    return false;
+                const std::string encoded = payload.substr(
+                    offset, static_cast<std::size_t>(size));
+                offset += static_cast<std::size_t>(size);
+                Fr value;
+                if (!core_decode_field(encoded, value)) return false;
+                values.push_back(value);
+            }
+            return offset == payload.size();
+        };
+        auto consume_message = [&](std::size_t &cursor,
+                                   NativeProofMessageKind kind,
+                                   const std::string &label)
+            -> const NativeProofMessage * {
+            if (cursor >= session.messages().size()) {
+                set_reason(reason, "masked GAT transcript ended before " + label);
+                return nullptr;
+            }
+            const NativeProofMessage &message = session.messages()[cursor];
+            if (message.kind != kind || message.label != label) {
+                set_reason(reason, "masked GAT transcript expected " + label);
+                return nullptr;
+            }
+            ++cursor;
+            return &message;
+        };
+        auto decode_message_field = [&](const NativeProofMessage *message,
+                                        Fr &value, const std::string &label) {
+            if (message == nullptr || !core_decode_field(message->payload, value)) {
+                set_reason(reason, "masked GAT field message is malformed: " + label);
+                return false;
+            }
+            return true;
+        };
+
+        if (gkr_end >= session.messages().size() ||
+            !is_combine_label(session.messages()[gkr_end].label)) {
+            set_reason(reason, "masked GAT GKR scope is not followed by combine");
+            return false;
+        }
+        const std::size_t r_dimension = core_log2(domain);
+        const std::vector<Fr> r_minus(verified_gkr_binding.point.begin(),
+                                      verified_gkr_binding.point.begin() + r_dimension);
+        const Fr selector_s1 = verified_gkr_binding.point[r_dimension + 1];
+        const Fr selector_s2 = verified_gkr_binding.point[r_dimension];
+        const Fr c_x = (Fr(1) - selector_s1) * (Fr(1) - selector_s2);
+        const Fr c_w = (Fr(1) - selector_s1) * selector_s2;
+        const Fr c_aux = selector_s1 * (Fr(1) - selector_s2);
+        const Fr c_l = selector_s1 * selector_s2;
+
+        std::size_t cursor = gkr_end;
+        const NativeProofMessage *combine_point_message = consume_message(
+            cursor, NativeProofMessageKind::FieldVector, "combine/r_minus");
+        const NativeProofMessage *combine_selectors_message = consume_message(
+            cursor, NativeProofMessageKind::FieldVector, "combine/selectors");
+        const NativeProofMessage *combine_x_message = consume_message(
+            cursor, NativeProofMessageKind::Field, "combine/public-X");
+        const NativeProofMessage *combine_structured_root_message = consume_message(
+            cursor, NativeProofMessageKind::Data, "combine/structured-root");
+        const NativeProofMessage *combine_commitments_message = consume_message(
+            cursor, NativeProofMessageKind::Data, "combine/commitments");
+        const NativeProofMessage *combine_gkr_message = consume_message(
+            cursor, NativeProofMessageKind::Data, "combine/gkr-input-commitment");
+        const NativeProofMessage *combine_lasso_message = consume_message(
+            cursor, NativeProofMessageKind::Field, "combine/lasso-final-claim");
+        const NativeProofMessage *combine_lasso_commitment_message = consume_message(
+            cursor, NativeProofMessageKind::Data, "combine/lasso-final-commitment");
+        if (combine_point_message == nullptr || combine_selectors_message == nullptr ||
+            combine_x_message == nullptr || combine_structured_root_message == nullptr ||
+            combine_commitments_message == nullptr ||
+            combine_gkr_message == nullptr || combine_lasso_message == nullptr ||
+            combine_lasso_commitment_message == nullptr)
+            return false;
+        std::vector<Fr> encoded_r_minus, encoded_selectors;
+        if (!decode_field_vector(combine_point_message->payload, encoded_r_minus) ||
+            !decode_field_vector(combine_selectors_message->payload, encoded_selectors) ||
+            encoded_r_minus != r_minus || encoded_selectors.size() != 2 ||
+            encoded_selectors[0] != selector_s1 || encoded_selectors[1] != selector_s2) {
+            set_reason(reason, "masked GAT combine point/selector binding failed");
+            return false;
+        }
+        Fr encoded_x, encoded_lasso_claim;
+        if (!decode_message_field(combine_x_message, encoded_x,
+                                  "combine/public-X") ||
+            !decode_message_field(combine_lasso_message, encoded_lasso_claim,
+                                  "combine/lasso-final-claim") ||
+            encoded_lasso_claim != lasso_result.final_l_evaluation) {
+            set_reason(reason, "masked GAT combine public claim binding failed");
+            return false;
+        }
+        const std::vector<Fr> x_values = public_feature_segment(
+            context.plan, context.graph, context.public_features);
+        const Fr x_eval = adapter_mle_eval(x_values, r_minus);
+        if (encoded_x != x_eval) {
+            set_reason(reason, "masked GAT public X terminal evaluation mismatch");
+            return false;
+        }
+        if (combine_structured_root_message->payload !=
+                actual_native_statement.structured_root()) {
+            set_reason(reason, "masked GAT structured statement root binding failed");
+            return false;
+        }
+        const std::string expected_commitments =
+            basis_id + "|" + commitment_encoding(context.registration.com_W) +
+            "|" + commitment_encoding(artifact.com_aux) + "|" +
+            commitment_encoding(artifact.com_L);
+        if (combine_commitments_message->payload != expected_commitments) {
+            set_reason(reason, "masked GAT combine commitment binding failed");
+            return false;
+        }
+        auto parse_scalar_commitment = [&](const NativeProofMessage *message,
+                                           const std::string &label,
+                                           zkgpt::native_pedersen::ScalarCommitment &out) {
+            std::vector<std::string> parts;
+            G1 point;
+            if (message == nullptr || !core_split_pipe(message->payload, parts) ||
+                parts.size() != 2 || parts[0] != scalar_basis.domain ||
+                !core_decode_point(parts[1], point)) {
+                set_reason(reason, "masked GAT scalar commitment is malformed: " + label);
+                return false;
+            }
+            out = {scalar_basis.domain, point};
+            return out.valid(scalar_basis, reason);
+        };
+        zkgpt::native_pedersen::ScalarCommitment encoded_gkr_commitment;
+        if (!parse_scalar_commitment(combine_gkr_message,
+                                     "combine/gkr-input-commitment",
+                                     encoded_gkr_commitment) ||
+            encoded_gkr_commitment.point !=
+                verified_gkr_binding.unmasked_claim_commitment.point) {
+            set_reason(reason, "masked GAT GKR input commitment binding failed");
+            return false;
+        }
+        zkgpt::native_pedersen::ScalarCommitment encoded_lasso_commitment;
+        if (!parse_scalar_commitment(combine_lasso_commitment_message,
+                                     "combine/lasso-final-commitment",
+                                     encoded_lasso_commitment) ||
+            encoded_lasso_commitment.point != lasso_result.final_l_commitment.point) {
+            set_reason(reason, "masked GAT Lasso final commitment binding failed");
+            return false;
+        }
+
+        auto verify_terminal_opening =
+            [&](const std::string &label, const CommitmentWire &wire,
+                zkgpt::native_pedersen::ScalarCommitment &raw_commitment,
+                zkgpt::native_pedersen::ScalarCommitment &masked_commitment) {
+                const std::size_t start = cursor;
+                const NativeProofMessage *basis_message = consume_message(
+                    cursor, NativeProofMessageKind::Data, label + "/basis");
+                const NativeProofMessage *claim_message = consume_message(
+                    cursor, NativeProofMessageKind::Data, label + "/claim");
+                const NativeProofMessage *announce_message = consume_message(
+                    cursor, NativeProofMessageKind::Data, label + "/announce");
+                const NativeProofMessage *challenge_message = consume_message(
+                    cursor, NativeProofMessageKind::Challenge,
+                    "challenge/" + label + "/c");
+                const NativeProofMessage *response_message = consume_message(
+                    cursor, NativeProofMessageKind::FieldVector, label + "/response");
+                if (basis_message == nullptr || claim_message == nullptr ||
+                    announce_message == nullptr || challenge_message == nullptr ||
+                    response_message == nullptr)
+                    return false;
+                std::vector<std::string> parts;
+                G1 evaluation_mask;
+                Fr masked_evaluation;
+                if (!core_split_pipe(claim_message->payload, parts) || parts.size() != 5 ||
+                    !core_decode_point(parts[0], evaluation_mask) ||
+                    !core_decode_field(parts[1], masked_evaluation) ||
+                    parts[2] != scalar_basis.domain) {
+                    set_reason(reason, "masked GAT scalar opening claim is malformed: " + label);
+                    return false;
+                }
+                if (!core_decode_point(parts[3], raw_commitment.point) ||
+                    !core_decode_point(parts[4], masked_commitment.point)) {
+                    set_reason(reason, "masked GAT scalar opening point is malformed: " + label);
+                    return false;
+                }
+                raw_commitment.domain = scalar_basis.domain;
+                masked_commitment.domain = scalar_basis.domain;
+                G1 commitment_point;
+                if (!core_decode_point(wire.point_hex, commitment_point)) {
+                    set_reason(reason, "masked GAT commitment point is malformed: " + label);
+                    return false;
+                }
+                if (!hyrax::verify_masked_mle_opening_with_session(
+                        commitment_point, evaluation_mask, masked_evaluation,
+                        basis_id, generators, r_minus, session, label, reason,
+                        true, true, "", &scalar_basis, &raw_commitment,
+                        &masked_commitment))
+                    return false;
+                const std::string prefix = label + "/";
+                const std::string challenge_prefix = "challenge/" + prefix;
+                for (std::size_t index = cursor; index < session.messages().size();
+                     ++index) {
+                    if (session.messages()[index].label.compare(0, prefix.size(),
+                                                                  prefix) == 0 ||
+                        session.messages()[index].label.compare(
+                            0, challenge_prefix.size(), challenge_prefix) == 0) {
+                        set_reason(reason, "masked GAT opening has trailing protocol messages: " + label);
+                        return false;
+                    }
+                }
+                (void)start;
+                return true;
+            };
+        zkgpt::native_pedersen::ScalarCommitment raw_w, masked_w;
+        zkgpt::native_pedersen::ScalarCommitment raw_aux, masked_aux;
+        zkgpt::native_pedersen::ScalarCommitment raw_l, masked_l;
+        if (!verify_terminal_opening("Open_GAT_W", context.registration.com_W,
+                                     raw_w, masked_w) ||
+            !verify_terminal_opening("Open_GAT_Aux", artifact.com_aux,
+                                     raw_aux, masked_aux) ||
+            !verify_terminal_opening("Open_GAT_L", artifact.com_L,
+                                     raw_l, masked_l))
+            return false;
+
+        const std::size_t relation_start = cursor;
+        if (relation_start >= session.messages().size() ||
+            session.messages()[relation_start].label !=
+                "combine/input-linear/meta") {
+            set_reason(reason, "masked GAT linear relation is not adjacent to openings");
+            return false;
+        }
+        if (!zkgpt::native_pedersen::verify_hidden_linear(
+                session, scalar_basis, "combine/input-linear",
+                {verified_gkr_binding.unmasked_claim_commitment, raw_w, raw_aux, raw_l},
+                {F_ONE, -c_w, -c_aux, -c_l}, c_x * x_eval, reason))
+            return false;
+        const std::array<std::string, 6> relation_labels = {
+            "combine/input-linear/meta", "combine/input-linear/coefficients",
+            "combine/input-linear/public", "combine/input-linear/T",
+            "challenge/combine/input-linear/challenge",
+            "combine/input-linear/response"};
+        if (relation_start + relation_labels.size() > session.messages().size()) {
+            set_reason(reason, "masked GAT linear relation is truncated");
+            return false;
+        }
+        for (std::size_t index = 0; index < relation_labels.size(); ++index) {
+            if (session.messages()[relation_start + index].label != relation_labels[index]) {
+                set_reason(reason, "masked GAT linear relation has trailing or inserted messages");
+                return false;
+            }
+        }
+        cursor = relation_start + relation_labels.size();
+        if (cursor != session.messages().size()) {
+            set_reason(reason, "masked GAT transcript has trailing or unconsumed messages");
+            return false;
+        }
+        return true;
     } catch (const std::exception &error) {
         set_reason(reason, error.what());
         return false;
@@ -4582,7 +5081,13 @@ void core_copy_sections(const NativeProofSession &session,
         else if (message.label.compare(0, sizeof("matmul/") - 1,
                                        "matmul/") == 0 ||
                  message.label.compare(0, sizeof("challenge/matmul/") - 1,
-                                       "challenge/matmul/") == 0)
+                                       "challenge/matmul/") == 0 ||
+                 message.label.compare(0, sizeof("gkr/layer/") - 1,
+                                       "gkr/layer/") == 0 &&
+                     message.label.find("/matmul") != std::string::npos ||
+                 message.label.compare(0, sizeof("challenge/gkr/layer/") - 1,
+                                       "challenge/gkr/layer/") == 0 &&
+                     message.label.find("/matmul") != std::string::npos)
             section = &artifact.Pi_MatMul;
         else if (message.label.compare(0, sizeof("gkr/") - 1, "gkr/") == 0 ||
                  message.label.compare(0, sizeof("challenge/gkr/") - 1,

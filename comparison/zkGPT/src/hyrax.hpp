@@ -11,6 +11,7 @@
 #include "typedef.hpp"
 #include "timer.hpp"
 #include "hyrax_util.hpp"
+#include "native_pedersen_relation.hpp"
 using namespace std;
 using namespace mcl::bn;
 class NativeProofSession;
@@ -76,6 +77,13 @@ bool verify_opening_with_session(
 struct MaskedMleOpening {
     G1 evaluation_mask_commitment;
     Fr masked_evaluation;
+    // Prover-local scalar bindings.  The values/blindings never cross the
+    // transcript boundary; only their commitments and the joint Schnorr
+    // equations are serialized by the opening implementation.
+    bool has_scalar_binding = false;
+    zkgpt::native_pedersen::PedersenBasis scalar_basis;
+    zkgpt::native_pedersen::ScalarOpening raw_evaluation_opening;
+    zkgpt::native_pedersen::ScalarOpening masked_evaluation_opening;
 };
 
 struct PedersenMleCommitment {
@@ -95,6 +103,16 @@ G1 derive_pedersen_evaluation_generator(const std::string &basis_id,
 // the same J can be checked across W/Aux/L and the GKR input claim.
 G1 derive_shared_pedersen_evaluation_generator(const std::string &identity);
 
+// Computes the private scalar opening for the MLE evaluation at point.  The
+// returned commitment uses the caller's native scalar Pedersen basis and is
+// intended to be supplied back to open_masked_mle_* as a forced raw opening;
+// no value or blinding is serialized by this helper.
+bool make_mle_evaluation_opening(
+    const zkgpt::native_pedersen::PedersenBasis &scalar_basis,
+    const std::vector<Fr> &point, const std::vector<Fr> &values,
+    zkgpt::native_pedersen::ScalarOpening &opening,
+    std::string *reason = nullptr);
+
 PedersenMleCommitment pedersen_commit_mle(
     const std::vector<G1> &generators, const std::vector<Fr> &values,
     const std::string &basis_id);
@@ -105,7 +123,10 @@ bool open_masked_mle_with_session(
     const std::vector<Fr> &values, NativeProofSession &session,
     const std::string &label, MaskedMleOpening &opening,
     std::string *reason = nullptr, bool enforce_statement_basis = true,
-    const std::string &mask_identity = "");
+    const std::string &mask_identity = "",
+    const zkgpt::native_pedersen::PedersenBasis *scalar_basis = nullptr,
+    const zkgpt::native_pedersen::ScalarOpening *forced_masked_opening = nullptr,
+    const zkgpt::native_pedersen::ScalarOpening *forced_raw_opening = nullptr);
 
 // Same opening protocol, with a caller-supplied hidden evaluation claim.
 // This is used when a masked Sumcheck terminal and a Pedersen MLE opening
@@ -119,7 +140,10 @@ bool open_masked_mle_with_claim(
     NativeProofSession &session, const std::string &label,
     MaskedMleOpening &opening, std::string *reason = nullptr,
     bool enforce_statement_basis = true,
-    const std::string &mask_identity = "");
+    const std::string &mask_identity = "",
+    const zkgpt::native_pedersen::PedersenBasis *scalar_basis = nullptr,
+    const zkgpt::native_pedersen::ScalarOpening *forced_masked_opening = nullptr,
+    const zkgpt::native_pedersen::ScalarOpening *forced_raw_opening = nullptr);
 
 bool verify_masked_mle_opening_with_session(
     const G1 &commitment, const G1 &evaluation_mask_commitment,
@@ -128,7 +152,10 @@ bool verify_masked_mle_opening_with_session(
     const NativeProofSession &session, const std::string &label,
     std::string *reason = nullptr, bool enforce_statement_basis = true,
     bool allow_trailing_unrelated = false,
-    const std::string &mask_identity = "");
+    const std::string &mask_identity = "",
+    const zkgpt::native_pedersen::PedersenBasis *scalar_basis = nullptr,
+    const zkgpt::native_pedersen::ScalarCommitment *expected_raw_evaluation_commitment = nullptr,
+    const zkgpt::native_pedersen::ScalarCommitment *expected_masked_evaluation_commitment = nullptr);
 }
 
 

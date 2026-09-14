@@ -27,15 +27,24 @@ int main() {
     initPairing(mcl::BN254);
     std::string reason;
 
+    NativeProofSession first("native-masked-smoke-v2", statement_fixture());
+    const auto first_basis = zkgpt::native_pedersen::derive_basis(
+        "zkgpt/masked-sumcheck/v2/" + first.statement_digest());
+    const auto first_initial =
+        zkgpt::native_pedersen::commit_fresh(first_basis, Fr(2));
     NativeMaskedTerminalSpec product_spec;
     product_spec.kind = NativeMaskedTerminalKind::Product2;
-    NativeProofSession first("native-masked-smoke-v1", statement_fixture());
+    product_spec.has_external_binding = true;
+    product_spec.public_initial_claim = true;
+    product_spec.initial_opening = first_initial;
+    product_spec.initial_commitment = first_initial.commitment;
+    product_spec.unmasked_terminal_openings = {
+        zkgpt::native_pedersen::commit_fresh(first_basis, Fr(1)),
+        zkgpt::native_pedersen::commit_fresh(first_basis, Fr(1))};
     NativeMaskedSumcheckResult proved;
-    if (!native_masked_matmul_product_prove(
-            first, "matmul/masked", {{Fr(1), Fr(1), Fr(1)}}, Fr(2),
-            {Fr(1), Fr(1)}, &proved, &reason) ||
-        !native_masked_matmul_product_verify(
-            first, "matmul/masked", 1, Fr(2), nullptr, &reason)) {
+    if (!native_masked_sumcheck_prove(
+            first, "matmul/masked", 2, {{Fr(1), Fr(1), Fr(1)}}, Fr(2),
+            {Fr(1), Fr(1)}, product_spec, &proved, &reason)) {
         std::cerr << "masked product honest path failed: " << reason << '\n';
         return 1;
     }
@@ -45,54 +54,43 @@ int main() {
         std::cerr << "masked terminal exposed the witness values\n";
         return 2;
     }
-    if (native_masked_matmul_product_verify(
-            first, "matmul/masked", 1, Fr(3), nullptr, &reason)) {
-        std::cerr << "masked public-claim tamper was accepted\n";
+    NativeMaskedTerminalSpec verify_spec = product_spec;
+    verify_spec.initial_opening = {};
+    verify_spec.terminal_commitments = proved.terminal_commitments;
+    if (!native_masked_sumcheck_verify(
+            first, "matmul/masked", 2, 1, Fr(2), verify_spec, nullptr,
+            &reason)) {
+        std::cerr << "masked product independent verify failed: " << reason
+                  << '\n';
         return 3;
     }
-
-    NativeMaskedTerminalSpec gkr_spec;
-    gkr_spec.kind = NativeMaskedTerminalKind::GkrPredicate;
-    gkr_spec.gkr_coefficients = {Fr(0), Fr(1), Fr(0), Fr(0), Fr(0)};
-    NativeProofSession gkr("native-masked-gkr-smoke-v1", statement_fixture());
-    NativeMaskedSumcheckProver gkr_prover(
-        gkr, "gkr/phase1/masked", 2, Fr(12), gkr_spec);
-    Fr gkr_challenge;
-    if (!gkr_prover.append_round({Fr(4), Fr(8), Fr(99)}, &gkr_challenge,
-                                 &reason)) {
-        std::cerr << "masked GKR round failed: " << reason << '\n';
-        return 4;
-    }
-    const Fr gkr_unmasked_final =
-        Fr(4) * ((gkr_challenge - Fr(1)) * (gkr_challenge - Fr(2)) / Fr(2)) +
-        Fr(8) * ((gkr_challenge - Fr(0)) * (gkr_challenge - Fr(2)) / Fr(-1)) +
-        Fr(99) * ((gkr_challenge - Fr(0)) * (gkr_challenge - Fr(1)) / Fr(2));
-    if (!gkr_prover.finish({Fr(2), Fr(3), Fr(5),
-                             gkr_unmasked_final / Fr(3)}, nullptr, &reason) ||
-        !native_masked_gkr_quadratic_verify(
-            gkr, "gkr/phase1/masked", 1, Fr(12),
-            gkr_spec.gkr_coefficients, nullptr, &reason)) {
-        std::cerr << "masked GKR honest path failed: " << reason << '\n';
+    if (native_masked_sumcheck_verify(
+            first, "matmul/masked", 2, 1, Fr(3), verify_spec, nullptr,
+            &reason)) {
+        std::cerr << "masked public-claim tamper was accepted\n";
         return 4;
     }
 
-    NativeProofSession second("native-masked-smoke-v1", statement_fixture());
-    if (!native_masked_matmul_product_prove(
-            second, "matmul/masked", {{Fr(1), Fr(1), Fr(1)}}, Fr(2),
-            {Fr(1), Fr(1)}, nullptr, &reason)) {
+    NativeProofSession second("native-masked-smoke-v2", statement_fixture());
+    const auto second_basis = zkgpt::native_pedersen::derive_basis(
+        "zkgpt/masked-sumcheck/v2/" + second.statement_digest());
+    const auto second_initial =
+        zkgpt::native_pedersen::commit_fresh(second_basis, Fr(2));
+    NativeMaskedTerminalSpec second_spec = product_spec;
+    second_spec.initial_opening = second_initial;
+    second_spec.initial_commitment = second_initial.commitment;
+    second_spec.unmasked_terminal_openings = {
+        zkgpt::native_pedersen::commit_fresh(second_basis, Fr(1)),
+        zkgpt::native_pedersen::commit_fresh(second_basis, Fr(1))};
+    NativeMaskedSumcheckResult second_proved;
+    if (!native_masked_sumcheck_prove(
+            second, "matmul/masked", 2, {{Fr(1), Fr(1), Fr(1)}}, Fr(2),
+            {Fr(1), Fr(1)}, second_spec, &second_proved, &reason)) {
         std::cerr << "second masked proof failed: " << reason << '\n';
         return 5;
     }
-    std::string first_commitment;
-    std::string second_commitment;
-    for (const NativeProofMessage &message : first.messages())
-        if (message.label == "matmul/masked/mask/0/commitment")
-            first_commitment = message.payload;
-    for (const NativeProofMessage &message : second.messages())
-        if (message.label == "matmul/masked/mask/0/commitment")
-            second_commitment = message.payload;
-    if (first_commitment.empty() || second_commitment.empty() ||
-        first_commitment == second_commitment) {
+    if (proved.initial_commitment.point.serializeToHexStr() ==
+        second_proved.initial_commitment.point.serializeToHexStr()) {
         std::cerr << "per-proof mask commitment was reused\n";
         return 6;
     }

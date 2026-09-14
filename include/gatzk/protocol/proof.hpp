@@ -25,6 +25,11 @@ namespace gatzk::protocol
 
     struct ProtocolCompilerArtifact;
 
+    namespace detail
+    {
+        struct ValidatedVerifierExecutionState;
+    }
+
     inline constexpr const char *kFormalTimingSchema =
         "exclusive_commit_prove_protocol_verify";
 
@@ -363,6 +368,13 @@ namespace gatzk::protocol
         // Out-of-band trust anchor supplied by the run configuration.  The
         // registry file's own digest is never accepted as its sole root.
         std::string trusted_registry_digest;
+
+        // Execution-only immutable projection created only after the complete
+        // registry validation succeeds.  It is never serialized and contains
+        // no proving key, witness, raw checkpoint material, or private tensor.
+        std::shared_ptr<
+            const detail::ValidatedVerifierExecutionState>
+            validated_execution_state;
     };
 
     // Self-contained, canonical verifier registration artifact.  This is the

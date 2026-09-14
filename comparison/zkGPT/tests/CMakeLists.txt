@@ -1,6 +1,7 @@
 add_executable(gat_adapter_smoke gat_adapter_smoke.cpp)
 target_link_libraries(gat_adapter_smoke PRIVATE gat_adapter)
 add_test(NAME gat_adapter_smoke COMMAND gat_adapter_smoke)
+add_test(NAME gat_adapter_formal_smoke COMMAND gat_adapter_smoke --formal)
 
 add_executable(gat_proof_plan_smoke gat_proof_plan_smoke.cpp)
 target_link_libraries(gat_proof_plan_smoke PRIVATE gat_adapter)
@@ -30,9 +31,17 @@ add_executable(native_masked_sumcheck_smoke native_masked_sumcheck_smoke.cpp)
 target_link_libraries(native_masked_sumcheck_smoke PRIVATE gat_adapter)
 add_test(NAME native_masked_sumcheck_smoke COMMAND native_masked_sumcheck_smoke)
 
+add_executable(native_pedersen_relation_smoke native_pedersen_relation_smoke.cpp)
+target_link_libraries(native_pedersen_relation_smoke PRIVATE gat_adapter)
+add_test(NAME native_pedersen_relation_smoke COMMAND native_pedersen_relation_smoke)
+
 add_executable(native_masked_layered_gkr_smoke native_masked_layered_gkr_smoke.cpp)
 target_link_libraries(native_masked_layered_gkr_smoke PRIVATE gat_adapter)
 add_test(NAME native_masked_layered_gkr_smoke COMMAND native_masked_layered_gkr_smoke)
+
+add_executable(gat_matmul_layout_smoke gat_matmul_layout_smoke.cpp)
+target_link_libraries(gat_matmul_layout_smoke PRIVATE gat_adapter)
+add_test(NAME gat_matmul_layout_smoke COMMAND gat_matmul_layout_smoke)
 
 add_executable(masked_core_smoke masked_core_smoke.cpp)
 target_link_libraries(masked_core_smoke PRIVATE gat_adapter)

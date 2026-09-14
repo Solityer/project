@@ -927,6 +927,29 @@ hyrax::PedersenMleCommitment query_commitment_from(
     return result;
 }
 
+zkgpt::native_pedersen::PedersenBasis lasso_scalar_basis(
+    const NativeProofSession &session) {
+    return zkgpt::native_pedersen::derive_basis(
+        "zkgpt/masked-sumcheck/v2/" + session.statement_digest());
+}
+
+zkgpt::native_pedersen::ScalarOpening public_scalar_opening(
+    const zkgpt::native_pedersen::PedersenBasis &basis, const F &value) {
+    zkgpt::native_pedersen::ScalarOpening result;
+    result.commitment = zkgpt::native_pedersen::commit(basis, value, F_ZERO);
+    result.value = value;
+    result.blinding = F_ZERO;
+    return result;
+}
+
+bool make_eval_opening(
+    const zkgpt::native_pedersen::PedersenBasis &basis,
+    const std::vector<F> &point, const std::vector<F> &values,
+    zkgpt::native_pedersen::ScalarOpening &opening, std::string *reason) {
+    return hyrax::make_mle_evaluation_opening(basis, point, values, opening,
+                                              reason);
+}
+
 std::vector<F> fold_linear(std::vector<F> values, const F &challenge) {
     if (values.empty() || (values.size() & (values.size() - 1)) != 0)
         throw std::invalid_argument("native masked Lasso linear domain is invalid");
@@ -940,7 +963,8 @@ std::vector<F> fold_linear(std::vector<F> values, const F &challenge) {
 
 void append_linear_round(NativeMaskedSumcheckProver &prover,
                          const std::vector<F> &values,
-                         std::vector<F> &next, std::string *reason) {
+                         std::vector<F> &next, std::string *reason,
+                         F *challenge_out = nullptr) {
     if (values.size() < 2 || (values.size() & (values.size() - 1)) != 0)
         throw std::invalid_argument("native masked Lasso linear round domain is invalid");
     F p0 = F_ZERO, p1 = F_ZERO;
@@ -953,6 +977,7 @@ void append_linear_round(NativeMaskedSumcheckProver &prover,
         throw std::runtime_error(reason != nullptr ? *reason :
                                  "masked Lasso linear round failed");
     next = fold_linear(values, challenge);
+    if (challenge_out != nullptr) *challenge_out = challenge;
 }
 
 std::vector<F> fold_product(std::vector<F> left, std::vector<F> right,
@@ -976,7 +1001,8 @@ void append_product_round(NativeMaskedSumcheckProver &prover,
                           const std::vector<F> &left,
                           const std::vector<F> &right,
                           std::vector<F> &next_left,
-                          std::vector<F> &next_right, std::string *reason) {
+                          std::vector<F> &next_right, std::string *reason,
+                          F *challenge_out = nullptr) {
     if (left.size() < 2 || left.size() != right.size() ||
         (left.size() & (left.size() - 1)) != 0)
         throw std::invalid_argument("native masked Lasso product round domain is invalid");
@@ -994,6 +1020,7 @@ void append_product_round(NativeMaskedSumcheckProver &prover,
         throw std::runtime_error(reason != nullptr ? *reason :
                                  "masked Lasso product round failed");
     next_left = fold_product(left, right, challenge, next_right);
+    if (challenge_out != nullptr) *challenge_out = challenge;
 }
 
 F mle_eval(const std::vector<F> &values, const std::vector<F> &point) {
@@ -1057,7 +1084,10 @@ bool split_pipe_fields(const std::string &payload, std::size_t expected,
 
 bool parse_masked_open_claim(const NativeProofSession &session,
                              const std::string &label, G1 &mask_commitment,
-                             F &masked_evaluation, std::string *reason) {
+                             F &masked_evaluation, std::string *reason,
+                             const zkgpt::native_pedersen::PedersenBasis *scalar_basis = nullptr,
+                             zkgpt::native_pedersen::ScalarCommitment *raw_commitment = nullptr,
+                             zkgpt::native_pedersen::ScalarCommitment *masked_commitment = nullptr) {
     const NativeProofMessage *found = nullptr;
     for (const NativeProofMessage &message : session.messages()) {
         if (message.label != label + "/claim") continue;
@@ -1068,11 +1098,25 @@ bool parse_masked_open_claim(const NativeProofSession &session,
         found = &message;
     }
     std::vector<std::string> parts;
+    const std::size_t expected = scalar_basis == nullptr ? 2 : 5;
     if (found == nullptr || found->kind != NativeProofMessageKind::Data ||
-        !split_pipe_fields(found->payload, 2, parts) ||
+        !split_pipe_fields(found->payload, expected, parts) ||
         !decode_point(parts[0], mask_commitment) || !decode_field(parts[1], masked_evaluation)) {
         set_reason(reason, "malformed masked Hyrax claim: " + label);
         return false;
+    }
+    if (scalar_basis != nullptr) {
+        if (parts[2] != scalar_basis->domain || raw_commitment == nullptr ||
+            masked_commitment == nullptr || !decode_point(parts[3], raw_commitment->point) ||
+            !decode_point(parts[4], masked_commitment->point)) {
+            set_reason(reason, "malformed masked Hyrax scalar claim: " + label);
+            return false;
+        }
+        raw_commitment->domain = scalar_basis->domain;
+        masked_commitment->domain = scalar_basis->domain;
+        if (!raw_commitment->valid(*scalar_basis, reason) ||
+            !masked_commitment->valid(*scalar_basis, reason))
+            return false;
     }
     return true;
 }
@@ -1082,19 +1126,42 @@ bool verify_masked_opening(
     const std::string &basis_id, const std::vector<G1> &generators,
     const std::vector<F> &point, const std::string &label,
     const F &expected_masked_evaluation, std::string *reason,
-    bool enforce_statement_basis = false, bool allow_trailing = true) {
+    bool enforce_statement_basis = false, bool allow_trailing = true,
+    const zkgpt::native_pedersen::PedersenBasis *scalar_basis = nullptr,
+    const zkgpt::native_pedersen::ScalarCommitment *expected_raw_commitment = nullptr,
+    const zkgpt::native_pedersen::ScalarCommitment *expected_masked_commitment = nullptr) {
     G1 mask_commitment;
     F masked_evaluation;
+    zkgpt::native_pedersen::ScalarCommitment encoded_raw;
+    zkgpt::native_pedersen::ScalarCommitment encoded_masked;
     if (!parse_masked_open_claim(session, label, mask_commitment,
-                                 masked_evaluation, reason))
+                                 masked_evaluation, reason, scalar_basis,
+                                 scalar_basis == nullptr ? nullptr : &encoded_raw,
+                                 scalar_basis == nullptr ? nullptr : &encoded_masked))
         return false;
     if (masked_evaluation != expected_masked_evaluation) {
         set_reason(reason, "masked Hyrax claim is not bound to Sumcheck terminal");
         return false;
     }
+    if (scalar_basis != nullptr) {
+        if (expected_raw_commitment != nullptr &&
+            encoded_raw.point != expected_raw_commitment->point) {
+            set_reason(reason, "masked Hyrax raw claim is not externally bound");
+            return false;
+        }
+        if (expected_masked_commitment != nullptr &&
+            encoded_masked.point != expected_masked_commitment->point) {
+            set_reason(reason, "masked Hyrax masked claim is not externally bound");
+            return false;
+        }
+        if (expected_raw_commitment == nullptr) expected_raw_commitment = &encoded_raw;
+        if (expected_masked_commitment == nullptr)
+            expected_masked_commitment = &encoded_masked;
+    }
     return hyrax::verify_masked_mle_opening_with_session(
         commitment, mask_commitment, masked_evaluation, basis_id, generators,
-        point, session, label, reason, enforce_statement_basis, allow_trailing);
+        point, session, label, reason, enforce_statement_basis, allow_trailing,
+        "", scalar_basis, expected_raw_commitment, expected_masked_commitment);
 }
 
 std::string masked_family_payload(
@@ -1157,6 +1224,53 @@ bool consume_field_message(const NativeProofSession &session, std::size_t &posit
         set_reason(reason, "malformed masked native Lasso field: " + label);
         return false;
     }
+    return true;
+}
+
+bool opening_commitment_at(const NativeProofSession &session,
+                           const zkgpt::native_pedersen::PedersenBasis &basis,
+                           const std::string &label,
+                           zkgpt::native_pedersen::ScalarCommitment &commitment,
+                           std::string *reason) {
+    // Keep one canonical parser for native Pedersen opening metadata.  The
+    // masked Sumcheck verifier and this Lasso verifier consume the same
+    // opening wire; duplicating its length/point parser here caused the two
+    // native v2 paths to disagree on otherwise valid BN254 encodings.
+    return native_masked_opening_commitment_at(session, basis, 0, label,
+                                               commitment, reason);
+}
+
+bool build_sumcheck_verify_spec(
+    const NativeProofSession &session, const std::string &label,
+    NativeMaskedTerminalKind kind, const F &initial_value,
+    const zkgpt::native_pedersen::PedersenBasis &basis,
+    NativeMaskedTerminalSpec &spec, std::string *reason) {
+    spec = NativeMaskedTerminalSpec{};
+    spec.kind = kind;
+    spec.has_external_binding = true;
+    if (!opening_commitment_at(session, basis, label + "/initial/opening",
+                               spec.initial_commitment, reason))
+        return false;
+    const zkgpt::native_pedersen::ScalarCommitment expected_initial{
+        basis.domain, zkgpt::native_pedersen::commit(basis, initial_value, F_ZERO).point};
+    if (kind == NativeMaskedTerminalKind::Scalar ||
+        kind == NativeMaskedTerminalKind::Product2) {
+        // These initial claims are public relation constants in Lasso.  Keep
+        // the verifier fail-closed if their authenticated scalar commitment
+        // is not the canonical public affine binding.
+        if (spec.initial_commitment.point != expected_initial.point) {
+            set_reason(reason, "Lasso Sumcheck initial public binding mismatch");
+            return false;
+        }
+    }
+    const std::size_t arity = kind == NativeMaskedTerminalKind::Product2 ? 2 : 1;
+    spec.terminal_commitments.resize(arity);
+    for (std::size_t index = 0; index < arity; ++index)
+        if (!opening_commitment_at(
+                session, basis,
+                label + "/terminal/value/" + std::to_string(index),
+                spec.terminal_commitments[index], reason))
+            return false;
     return true;
 }
 
@@ -1235,6 +1349,8 @@ bool native_lasso_prove_bundle(
         }
 
         NativeLassoBundleResult local;
+        const zkgpt::native_pedersen::PedersenBasis scalar_basis =
+            lasso_scalar_basis(session);
         local.family_commitments.reserve(states.size());
         // Every LC_f is a hiding Pedersen commitment and is absorbed before
         // any family query point or masked Sumcheck challenge is derived.
@@ -1264,29 +1380,46 @@ bool native_lasso_prove_bundle(
             for (F &value : matrix_minus_one) value -= F_ONE;
             NativeMaskedTerminalSpec boolean_spec;
             boolean_spec.kind = NativeMaskedTerminalKind::Product2;
+            boolean_spec.has_external_binding = true;
+            boolean_spec.initial_opening = public_scalar_opening(scalar_basis, F_ZERO);
+            boolean_spec.initial_commitment = boolean_spec.initial_opening.commitment;
             session.absorb_field(prefix + "/b-boolean/claim", F_ZERO);
             NativeMaskedSumcheckProver boolean_prover(
                 session, prefix + "/b-boolean/sum", 2, F_ZERO, boolean_spec);
             std::vector<F> boolean_left = family.matrix;
             std::vector<F> boolean_right = matrix_minus_one;
+            std::vector<F> boolean_point;
+            boolean_point.reserve(relation_rounds(matrix_size));
             for (std::size_t round = 0; round < relation_rounds(matrix_size); ++round) {
                 std::vector<F> next_left, next_right;
+                F challenge;
                 append_product_round(boolean_prover, boolean_left, boolean_right,
-                                     next_left, next_right, reason);
+                                     next_left, next_right, reason, &challenge);
+                boolean_point.push_back(challenge);
                 boolean_left.swap(next_left);
                 boolean_right.swap(next_right);
             }
+            zkgpt::native_pedersen::ScalarOpening boolean_raw_opening;
+            zkgpt::native_pedersen::ScalarOpening complement_raw_opening;
+            if (!make_eval_opening(scalar_basis, boolean_point, family.matrix,
+                                   boolean_raw_opening, reason) ||
+                !make_eval_opening(scalar_basis, boolean_point, matrix_minus_one,
+                                   complement_raw_opening, reason))
+                return false;
+            boolean_spec.unmasked_terminal_openings = {
+                boolean_raw_opening, complement_raw_opening};
+            if (!boolean_prover.set_terminal_spec(boolean_spec, reason)) return false;
             NativeMaskedSumcheckResult boolean_result;
             if (!boolean_prover.finish({boolean_left.front(), boolean_right.front()},
                                         &boolean_result, reason)) return false;
-            std::vector<F> boolean_point = boolean_result.challenges;
             hyrax::MaskedMleOpening boolean_opening;
             if (!hyrax::open_masked_mle_with_claim(
                     states[family_index].commitment, family.matrix_generators,
                     boolean_point, family.matrix,
                     boolean_result.terminal_values[0], session,
                     prefix + "/c-boolean-open", boolean_opening,
-                    reason, false))
+                    reason, false, "", &scalar_basis,
+                    &boolean_result.terminal_openings[0], &boolean_raw_opening))
                 return false;
             // The complement uses the same LC_f blinding and is opened at the
             // same fresh point with the second masked terminal claim.
@@ -1300,33 +1433,49 @@ bool native_lasso_prove_bundle(
                     complement, family.matrix_generators, boolean_point,
                     matrix_minus_one, boolean_result.terminal_values[1], session,
                     prefix + "/c-boolean-complement-open", boolean_opening,
-                    reason, false))
+                    reason, false, "", &scalar_basis,
+                    &boolean_result.terminal_openings[1], &complement_raw_opening))
                 return false;
 
             std::vector<F> onehot_left = row_mle(family.matrix, rows, cols, row_point);
             session.absorb_field(prefix + "/d-onehot/claim", F_ONE);
             NativeMaskedTerminalSpec onehot_spec;
             onehot_spec.kind = NativeMaskedTerminalKind::Scalar;
+            onehot_spec.has_external_binding = true;
+            onehot_spec.initial_opening = public_scalar_opening(scalar_basis, F_ONE);
+            onehot_spec.initial_commitment = onehot_spec.initial_opening.commitment;
             NativeMaskedSumcheckProver onehot_prover(
                 session, prefix + "/d-onehot/sum", 1, F_ONE, onehot_spec);
             std::vector<F> onehot_current = onehot_left;
+            std::vector<F> onehot_challenges;
+            onehot_challenges.reserve(relation_rounds(cols));
             for (std::size_t round = 0; round < relation_rounds(cols); ++round) {
                 std::vector<F> next;
-                append_linear_round(onehot_prover, onehot_current, next, reason);
+                F challenge;
+                append_linear_round(onehot_prover, onehot_current, next, reason,
+                                    &challenge);
+                onehot_challenges.push_back(challenge);
                 onehot_current.swap(next);
             }
+            std::vector<F> onehot_point = row_point;
+            onehot_point.insert(onehot_point.end(), onehot_challenges.begin(),
+                                onehot_challenges.end());
+            zkgpt::native_pedersen::ScalarOpening onehot_raw_opening;
+            if (!make_eval_opening(scalar_basis, onehot_point, family.matrix,
+                                   onehot_raw_opening, reason))
+                return false;
+            onehot_spec.unmasked_terminal_openings = {onehot_raw_opening};
+            if (!onehot_prover.set_terminal_spec(onehot_spec, reason)) return false;
             NativeMaskedSumcheckResult onehot_result;
             if (!onehot_prover.finish({onehot_current.front()}, &onehot_result, reason))
                 return false;
-            std::vector<F> onehot_point = row_point;
-            onehot_point.insert(onehot_point.end(), onehot_result.challenges.begin(),
-                                onehot_result.challenges.end());
             hyrax::MaskedMleOpening onehot_opening;
             if (!hyrax::open_masked_mle_with_claim(
                     states[family_index].commitment, family.matrix_generators,
                     onehot_point, family.matrix, onehot_result.final_claim, session,
                     prefix + "/e-onehot-open", onehot_opening,
-                    reason, false))
+                    reason, false, "", &scalar_basis,
+                    &onehot_result.terminal_openings[0], &onehot_raw_opening))
                 return false;
 
             const std::vector<F> left = row_mle(family.matrix, rows, cols, row_point);
@@ -1338,34 +1487,76 @@ bool native_lasso_prove_bundle(
                 return value;
             }();
             const F masked_initial_claim = ell + initial_mask;
+            const std::vector<F> lookup_initial_point = [&]() {
+                std::vector<F> point = row_point;
+                const F half = F(1) / F(2);
+                for (std::size_t bit = 0; bit < log2_power(cols); ++bit)
+                    point.push_back(half);
+                return point;
+            }();
+            std::vector<F> weighted_matrix(matrix_size, F_ZERO);
+            for (std::size_t col = 0; col < cols; ++col)
+                for (std::size_t row = 0; row < rows; ++row)
+                    weighted_matrix[row + col * rows] =
+                        family.matrix[row + col * rows] * family.table[col];
+            zkgpt::native_pedersen::ScalarOpening weighted_opening;
+            if (!make_eval_opening(scalar_basis, lookup_initial_point,
+                                   weighted_matrix, weighted_opening, reason))
+                return false;
+            const F lookup_scale = F(cols);
+            zkgpt::native_pedersen::ScalarOpening lookup_initial_opening;
+            lookup_initial_opening.value = weighted_opening.value * lookup_scale;
+            lookup_initial_opening.blinding = weighted_opening.blinding * lookup_scale;
+            lookup_initial_opening.commitment = zkgpt::native_pedersen::commit(
+                scalar_basis, lookup_initial_opening.value,
+                lookup_initial_opening.blinding);
             session.absorb_field(prefix + "/a-query/claim", masked_initial_claim);
             NativeMaskedTerminalSpec lookup_spec;
             lookup_spec.kind = NativeMaskedTerminalKind::Product2Public;
             lookup_spec.public_vector = family.table;
+            lookup_spec.has_external_binding = true;
+            lookup_spec.initial_opening = lookup_initial_opening;
+            lookup_spec.initial_commitment = lookup_initial_opening.commitment;
             NativeMaskedSumcheckProver lookup_prover(
                 session, prefix + "/f-lookup", 2, masked_initial_claim,
                 lookup_spec, &ell);
             std::vector<F> lookup_left = left;
             std::vector<F> lookup_right = family.table;
+            std::vector<F> lookup_challenges;
+            lookup_challenges.reserve(relation_rounds(cols));
             for (std::size_t round = 0; round < relation_rounds(cols); ++round) {
                 std::vector<F> next_left, next_right;
+                F challenge;
                 append_product_round(lookup_prover, lookup_left, lookup_right,
-                                     next_left, next_right, reason);
+                                     next_left, next_right, reason, &challenge);
+                lookup_challenges.push_back(challenge);
                 lookup_left.swap(next_left);
                 lookup_right.swap(next_right);
             }
+            std::vector<F> lookup_point = row_point;
+            lookup_point.insert(lookup_point.end(), lookup_challenges.begin(),
+                                lookup_challenges.end());
+            zkgpt::native_pedersen::ScalarOpening lookup_raw_opening;
+            if (!make_eval_opening(scalar_basis, lookup_point, family.matrix,
+                                   lookup_raw_opening, reason))
+                return false;
+            lookup_spec.unmasked_terminal_openings = {lookup_raw_opening};
+            // The v2 streaming prover checks the unmasked Product2Public
+            // terminal before it installs its derived public evaluation.
+            // Freeze the same table MLE value that was folded by the round
+            // prover so both checks use the authenticated public factor.
+            lookup_spec.public_evaluation = lookup_right.front();
+            if (!lookup_prover.set_terminal_spec(lookup_spec, reason)) return false;
             NativeMaskedSumcheckResult lookup_result;
             if (!lookup_prover.finish({lookup_left.front()}, &lookup_result, reason))
                 return false;
-            std::vector<F> lookup_point = row_point;
-            lookup_point.insert(lookup_point.end(), lookup_result.challenges.begin(),
-                                lookup_result.challenges.end());
             hyrax::MaskedMleOpening lookup_opening;
             if (!hyrax::open_masked_mle_with_claim(
                     states[family_index].commitment, family.matrix_generators,
                     lookup_point, family.matrix, lookup_result.terminal_values[0],
                     session, prefix + "/g-matrix-open", lookup_opening,
-                    reason, false))
+                    reason, false, "", &scalar_basis,
+                    &lookup_result.terminal_openings[0], &lookup_raw_opening))
                 return false;
 
             const std::size_t query_domain = query.values.size();
@@ -1395,6 +1586,9 @@ bool native_lasso_prove_bundle(
             for (std::size_t row = 0; row < rows; ++row)
                 if (query.values[family.segment_offset + row] != family.queries[row])
                     throw std::runtime_error("native Lasso query/input segment mismatch");
+            if (lookup_initial_opening.value != query_eval)
+                throw std::runtime_error(
+                    "native Lasso lookup/query claim mismatch");
             session.absorb_field(prefix + "/h-input/claim", lookup_result.final_claim);
             hyrax::MaskedMleOpening input_opening;
             const std::vector<F> query_point = lift_segment_point(
@@ -1402,7 +1596,8 @@ bool native_lasso_prove_bundle(
             if (!hyrax::open_masked_mle_with_claim(
                     query_commitment, query.generators, query_point, query.values,
                     lookup_result.final_claim, session, prefix + "/h-input-open",
-                    input_opening, reason, true))
+                    input_opening, reason, true, "", &scalar_basis,
+                    &lookup_result.claim_opening, &lookup_initial_opening))
                 return false;
             (void)query_eval;
         }
@@ -1415,16 +1610,22 @@ bool native_lasso_prove_bundle(
         F final_claim;
         final_claim.setByCSPRNG();
         session.absorb_field("lasso/i-final/claim", final_claim);
+        zkgpt::native_pedersen::ScalarOpening final_raw_opening;
+        if (!make_eval_opening(scalar_basis, local.final_query_point,
+                               query.values, final_raw_opening, reason))
+            return false;
         hyrax::MaskedMleOpening final_opening;
         if (!hyrax::open_masked_mle_with_claim(
                 query_commitment, query.generators, local.final_query_point,
                 query.values, final_claim, session,
                 NativeLassoTerminalOpeningLabels::l_qry(), final_opening,
-                reason, true))
+                reason, true, "", &scalar_basis, nullptr, &final_raw_opening))
             return false;
         if (final_opening.masked_evaluation != final_claim)
             throw std::runtime_error("native Lasso final opening claim mismatch");
         local.final_l_evaluation = final_claim;
+        local.final_l_commitment = final_opening.masked_evaluation_opening.commitment;
+        local.has_final_l_commitment = true;
         if (result != nullptr) *result = std::move(local);
         return true;
     } catch (const std::exception &error) {
@@ -1453,6 +1654,8 @@ bool native_lasso_verify_bundle(
                 return false;
             }
         if (!session.replay(reason)) return false;
+        const zkgpt::native_pedersen::PedersenBasis scalar_basis =
+            lasso_scalar_basis(session);
         NativeLassoBundleResult local;
         local.family_commitments.reserve(families.size());
         const std::string first_commitment_label =
@@ -1503,14 +1706,22 @@ bool native_lasso_verify_bundle(
             if (!consume_field_message(session, position, prefix + "/b-boolean/claim",
                                        boolean_claim, reason) || !boolean_claim.isZero())
                 return false;
+            NativeMaskedTerminalSpec boolean_spec;
+            if (!build_sumcheck_verify_spec(
+                    session, prefix + "/b-boolean/sum",
+                    NativeMaskedTerminalKind::Product2, F_ZERO, scalar_basis,
+                    boolean_spec, reason))
+                return false;
             NativeMaskedSumcheckResult boolean_result;
+            std::string sumcheck_reason;
             if (!native_masked_sumcheck_verify(
                     session, prefix + "/b-boolean/sum", 2,
                     relation_rounds(family.padded_queries * family.table.size()),
-                    boolean_claim, NativeMaskedTerminalSpec{
-                        NativeMaskedTerminalKind::Product2, {}, {}},
-                    &boolean_result, reason))
+                    boolean_claim, boolean_spec,
+                    &boolean_result, &sumcheck_reason)) {
+                set_reason(reason, prefix + "/b-boolean/sum: " + sumcheck_reason);
                 return false;
+            }
             if (!advance_masked_scope(session, prefix + "/b-boolean/sum",
                                       position, reason))
                 return false;
@@ -1519,7 +1730,9 @@ bool native_lasso_verify_bundle(
                     session, local.family_commitments[family_index], matrix_basis_id,
                     family.matrix_generators, boolean_result.challenges,
                     prefix + "/c-boolean-open", boolean_result.terminal_values[0],
-                    reason))
+                    reason, false, true, &scalar_basis,
+                    &boolean_result.unmasked_terminal_commitments[0],
+                    &boolean_result.terminal_commitments[0]))
                 return false;
             if (!advance_masked_scope(session, prefix + "/c-boolean-open",
                                       position, reason))
@@ -1538,7 +1751,10 @@ bool native_lasso_verify_bundle(
                     session, complement.commitment, matrix_basis_id,
                     family.matrix_generators, boolean_result.challenges,
                     prefix + "/c-boolean-complement-open",
-                    boolean_result.terminal_values[1], reason))
+                    boolean_result.terminal_values[1], reason, false, true,
+                    &scalar_basis,
+                    &boolean_result.unmasked_terminal_commitments[1],
+                    &boolean_result.terminal_commitments[1]))
                 return false;
             if (!advance_masked_scope(session,
                                       prefix + "/c-boolean-complement-open",
@@ -1550,13 +1766,20 @@ bool native_lasso_verify_bundle(
                                        onehot_claim, reason) || onehot_claim != F_ONE)
                 return false;
             NativeMaskedTerminalSpec onehot_spec;
-            onehot_spec.kind = NativeMaskedTerminalKind::Scalar;
+            if (!build_sumcheck_verify_spec(
+                    session, prefix + "/d-onehot/sum",
+                    NativeMaskedTerminalKind::Scalar, F_ONE, scalar_basis,
+                    onehot_spec, reason))
+                return false;
             NativeMaskedSumcheckResult onehot_result;
+            sumcheck_reason.clear();
             if (!native_masked_sumcheck_verify(
                     session, prefix + "/d-onehot/sum", 1,
                     relation_rounds(family.table.size()), onehot_claim, onehot_spec,
-                    &onehot_result, reason))
+                    &onehot_result, &sumcheck_reason)) {
+                set_reason(reason, prefix + "/d-onehot/sum: " + sumcheck_reason);
                 return false;
+            }
             if (!advance_masked_scope(session, prefix + "/d-onehot/sum",
                                       position, reason))
                 return false;
@@ -1566,7 +1789,10 @@ bool native_lasso_verify_bundle(
             if (!verify_masked_opening(
                     session, local.family_commitments[family_index], matrix_basis_id,
                     family.matrix_generators, onehot_point,
-                    prefix + "/e-onehot-open", onehot_result.final_claim, reason))
+                    prefix + "/e-onehot-open", onehot_result.final_claim, reason,
+                    false, true, &scalar_basis,
+                    &onehot_result.unmasked_terminal_commitments[0],
+                    &onehot_result.terminal_commitments[0]))
                 return false;
             if (!advance_masked_scope(session, prefix + "/e-onehot-open",
                                       position, reason))
@@ -1577,14 +1803,21 @@ bool native_lasso_verify_bundle(
                                        lookup_claim, reason))
                 return false;
             NativeMaskedTerminalSpec lookup_spec;
-            lookup_spec.kind = NativeMaskedTerminalKind::Product2Public;
+            if (!build_sumcheck_verify_spec(
+                    session, prefix + "/f-lookup",
+                    NativeMaskedTerminalKind::Product2Public, F_ZERO, scalar_basis,
+                    lookup_spec, reason))
+                return false;
             lookup_spec.public_vector = family.table;
             NativeMaskedSumcheckResult lookup_result;
+            sumcheck_reason.clear();
             if (!native_masked_sumcheck_verify(
                     session, prefix + "/f-lookup", 2,
                     relation_rounds(family.table.size()), lookup_claim, lookup_spec,
-                    &lookup_result, reason))
+                    &lookup_result, &sumcheck_reason)) {
+                set_reason(reason, prefix + "/f-lookup: " + sumcheck_reason);
                 return false;
+            }
             if (!advance_masked_scope(session, prefix + "/f-lookup", position,
                                       reason))
                 return false;
@@ -1594,7 +1827,10 @@ bool native_lasso_verify_bundle(
             if (!verify_masked_opening(
                     session, local.family_commitments[family_index], matrix_basis_id,
                     family.matrix_generators, lookup_point,
-                    prefix + "/g-matrix-open", lookup_result.terminal_values[0], reason))
+                    prefix + "/g-matrix-open", lookup_result.terminal_values[0], reason,
+                    false, true, &scalar_basis,
+                    &lookup_result.unmasked_terminal_commitments[0],
+                    &lookup_result.terminal_commitments[0]))
                 return false;
             if (!advance_masked_scope(session, prefix + "/g-matrix-open",
                                       position, reason))
@@ -1609,7 +1845,10 @@ bool native_lasso_verify_bundle(
                 query.generators.size());
             if (!verify_masked_opening(
                     session, query.commitment, q_basis, query.generators, query_point,
-                    prefix + "/h-input-open", input_claim, reason, true))
+                    prefix + "/h-input-open", input_claim, reason, true, true,
+                    &scalar_basis,
+                    &lookup_result.initial_commitment,
+                    &lookup_result.claim_commitment))
                 return false;
             if (!advance_masked_scope(session, prefix + "/h-input-open", position,
                                       reason))
@@ -1632,15 +1871,29 @@ bool native_lasso_verify_bundle(
         if (!consume_field_message(session, position, "lasso/i-final/claim",
                                    final_claim, reason))
             return false;
+        G1 final_mask_commitment;
+        F encoded_final_claim;
+        zkgpt::native_pedersen::ScalarCommitment final_raw_commitment;
+        zkgpt::native_pedersen::ScalarCommitment final_masked_commitment;
+        if (!parse_masked_open_claim(
+                session, NativeLassoTerminalOpeningLabels::l_qry(),
+                final_mask_commitment, encoded_final_claim, reason, &scalar_basis,
+                &final_raw_commitment, &final_masked_commitment) ||
+            encoded_final_claim != final_claim) {
+            set_reason(reason, "native Lasso final scalar claim binding is malformed");
+            return false;
+        }
         if (!verify_masked_opening(
                 session, query.commitment, query_basis_id(query), query.generators,
                 local.final_query_point, NativeLassoTerminalOpeningLabels::l_qry(),
-                final_claim, reason, true, false))
+                final_claim, reason, true, false, &scalar_basis))
             return false;
         if (!advance_masked_scope(session, NativeLassoTerminalOpeningLabels::l_qry(),
                                   position, reason))
             return false;
         local.final_l_evaluation = final_claim;
+        local.final_l_commitment = final_masked_commitment;
+        local.has_final_l_commitment = true;
         for (std::size_t index = position; index < session.messages().size(); ++index) {
             const std::string &label = session.messages()[index].label;
             if (label.compare(0, sizeof("lasso/") - 1, "lasso/") == 0 ||

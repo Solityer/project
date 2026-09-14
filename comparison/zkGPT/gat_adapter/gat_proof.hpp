@@ -53,6 +53,15 @@ struct MatMulDescriptor {
     std::string native_path = "prover::FCONN / dedicated matrix Sumcheck";
 };
 
+// The canonical GAT/model input keeps matrix weights in row-major order
+// [term,col].  Native FCONN MLE folding consumes the RHS with the inner
+// coordinate as the low bit, i.e. column-major [col,term].  This adapter
+// boundary performs that representation change explicitly; it does not alter
+// the canonical input, plan encoding, model commitment, or registration.
+std::vector<Fr> pack_native_gkr_matmul_rhs(
+    const MatMulDescriptor &descriptor,
+    const std::vector<Fr> &canonical_input_layer);
+
 struct SparseGkrDescriptor {
     std::string relation_id;
     std::string family_id;

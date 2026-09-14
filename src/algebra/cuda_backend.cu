@@ -396,6 +396,291 @@ namespace gatzk::algebra
             return pool;
         }
 
+        class EphemeralScaledAccumulateSourceStaging
+        {
+        public:
+            EphemeralScaledAccumulateSourceStaging() =
+                default;
+
+            EphemeralScaledAccumulateSourceStaging(
+                const EphemeralScaledAccumulateSourceStaging &) =
+                delete;
+
+            EphemeralScaledAccumulateSourceStaging &
+            operator=(
+                const EphemeralScaledAccumulateSourceStaging &) =
+                delete;
+
+            ~EphemeralScaledAccumulateSourceStaging()
+            {
+                release_noexcept();
+            }
+
+            const gpu::GpuFr *enqueue(
+                gpu::GpuFr *device_source,
+                const mcl::Fr *source,
+                std::size_t element_count,
+                cudaStream_t stream)
+            {
+                if (device_source == nullptr ||
+                    source == nullptr ||
+                    element_count == 0 ||
+                    stream == nullptr)
+                {
+                    throw std::runtime_error(
+                        "CUDA ephemeral scaled-accumulate staging received invalid input");
+                }
+
+                static_assert(
+                    sizeof(mcl::Fr) ==
+                        sizeof(gpu::GpuFr),
+                    "CUDA ephemeral scaled-accumulate staging requires matching field widths");
+
+                if (element_count >
+                    std::numeric_limits<
+                        std::size_t>::max() /
+                        sizeof(gpu::GpuFr))
+                {
+                    throw std::runtime_error(
+                        "CUDA ephemeral scaled-accumulate staging byte-size overflow");
+                }
+
+                const auto byte_count =
+                    element_count *
+                    sizeof(gpu::GpuFr);
+
+                auto &slot =
+                    slots_[next_slot_ %
+                           slots_.size()];
+
+                ++next_slot_;
+
+                if (slot.copy_done ==
+                    nullptr)
+                {
+                    const auto status =
+                        cudaEventCreateWithFlags(
+                            &slot.copy_done,
+                            cudaEventDisableTiming);
+
+                    if (status !=
+                        cudaSuccess)
+                    {
+                        throw_scaled_accumulate_cuda_error(
+                            "ephemeral staging event creation",
+                            status);
+                    }
+                }
+
+                if (slot.copy_in_flight)
+                {
+                    const auto status =
+                        cudaEventSynchronize(
+                            slot.copy_done);
+
+                    if (status !=
+                        cudaSuccess)
+                    {
+                        throw_scaled_accumulate_cuda_error(
+                            "ephemeral staging slot reuse",
+                            status);
+                    }
+
+                    slot.copy_in_flight =
+                        false;
+                }
+
+                if (slot.capacity_bytes <
+                    byte_count)
+                {
+                    if (slot.host_bytes !=
+                        nullptr)
+                    {
+                        const auto status =
+                            cudaFreeHost(
+                                slot.host_bytes);
+
+                        if (status !=
+                            cudaSuccess)
+                        {
+                            throw_scaled_accumulate_cuda_error(
+                                "ephemeral staging host release",
+                                status);
+                        }
+
+                        slot.host_bytes =
+                            nullptr;
+
+                        slot.capacity_bytes =
+                            0;
+                    }
+
+                    auto status =
+                        cudaMallocHost(
+                            &slot.host_bytes,
+                            byte_count);
+
+                    if (status ==
+                        cudaErrorMemoryAllocation)
+                    {
+                        (void)cudaGetLastError();
+
+                        status =
+                            cudaMemcpyAsync(
+                                device_source,
+                                source,
+                                byte_count,
+                                cudaMemcpyHostToDevice,
+                                stream);
+
+                        if (status !=
+                            cudaSuccess)
+                        {
+                            throw_scaled_accumulate_cuda_error(
+                                "ephemeral fallback source upload",
+                                status);
+                        }
+
+                        record_cuda_h2d(
+                            byte_count);
+
+                        status =
+                            cudaStreamSynchronize(
+                                stream);
+
+                        if (status !=
+                            cudaSuccess)
+                        {
+                            throw_scaled_accumulate_cuda_error(
+                                "ephemeral fallback source completion",
+                                status);
+                        }
+
+                        record_cuda_stream_sync();
+
+                        return device_source;
+                    }
+
+                    if (status !=
+                        cudaSuccess)
+                    {
+                        throw_scaled_accumulate_cuda_error(
+                            "ephemeral staging host allocation",
+                            status);
+                    }
+
+                    slot.capacity_bytes =
+                        byte_count;
+                }
+
+                std::memcpy(
+                    slot.host_bytes,
+                    source,
+                    byte_count);
+
+                auto status =
+                    cudaMemcpyAsync(
+                        device_source,
+                        slot.host_bytes,
+                        byte_count,
+                        cudaMemcpyHostToDevice,
+                        stream);
+
+                if (status !=
+                    cudaSuccess)
+                {
+                    throw_scaled_accumulate_cuda_error(
+                        "ephemeral staged source upload",
+                        status);
+                }
+
+                record_cuda_h2d(
+                    byte_count);
+
+                status =
+                    cudaEventRecord(
+                        slot.copy_done,
+                        stream);
+
+                if (status !=
+                    cudaSuccess)
+                {
+                    throw_scaled_accumulate_cuda_error(
+                        "ephemeral staging copy event",
+                        status);
+                }
+
+                slot.copy_in_flight =
+                    true;
+
+                return device_source;
+            }
+
+        private:
+            struct Slot
+            {
+                void *host_bytes =
+                    nullptr;
+
+                std::size_t capacity_bytes =
+                    0;
+
+                cudaEvent_t copy_done =
+                    nullptr;
+
+                bool copy_in_flight =
+                    false;
+            };
+
+            void release_noexcept() noexcept
+            {
+                for (auto &slot :
+                     slots_)
+                {
+                    if (slot.copy_done !=
+                            nullptr &&
+                        slot.copy_in_flight)
+                    {
+                        (void)cudaEventSynchronize(
+                            slot.copy_done);
+
+                        slot.copy_in_flight =
+                            false;
+                    }
+
+                    if (slot.copy_done !=
+                        nullptr)
+                    {
+                        (void)cudaEventDestroy(
+                            slot.copy_done);
+
+                        slot.copy_done =
+                            nullptr;
+                    }
+
+                    if (slot.host_bytes !=
+                        nullptr)
+                    {
+                        (void)cudaFreeHost(
+                            slot.host_bytes);
+
+                        slot.host_bytes =
+                            nullptr;
+                    }
+
+                    slot.capacity_bytes =
+                        0;
+                }
+
+                next_slot_ = 0;
+            }
+
+            std::array<Slot, 2>
+                slots_{};
+
+            std::size_t next_slot_ = 0;
+        };
+
         class CudaScaledAccumulateSessionImpl final
             : public CudaScaledAccumulateSession
         {
@@ -609,47 +894,14 @@ namespace gatzk::algebra
                     }
                     else if (source_is_ephemeral)
                     {
-                        if (ephemeral_source_in_flight_)
-                        {
-                            status =
-                                cudaStreamSynchronize(
-                                    stream_);
-
-                            if (status !=
-                                cudaSuccess)
-                            {
-                                throw_scaled_accumulate_cuda_error(
-                                    "ephemeral source reuse synchronization",
-                                    status);
-                            }
-
-                            record_cuda_stream_sync();
-
-                            ephemeral_source_in_flight_ =
-                                false;
-                        }
-
-                        status =
-                            cudaMemcpy(
-                                device_source_,
-                                source +
-                                    processed,
-                                byte_count,
-                                cudaMemcpyHostToDevice);
-
-                        if (status !=
-                            cudaSuccess)
-                        {
-                            throw_scaled_accumulate_cuda_error(
-                                "ephemeral session source upload",
-                                status);
-                        }
-
-                        record_cuda_h2d(
-                            byte_count);
-
                         source_values =
-                            device_source_;
+                            ephemeral_source_staging_
+                                .enqueue(
+                                    device_source_,
+                                    source +
+                                        processed,
+                                    current_count,
+                                    stream_);
                     }
                     else
                     {
@@ -725,12 +977,6 @@ namespace gatzk::algebra
                     record_cuda_kernel_invocations(
                         1);
 
-                    if (source_is_ephemeral)
-                    {
-                        ephemeral_source_in_flight_ =
-                            true;
-                    }
-
                     processed +=
                         current_count;
                 }
@@ -782,9 +1028,6 @@ namespace gatzk::algebra
                 }
                 record_cuda_stream_sync();
 
-                ephemeral_source_in_flight_ =
-                    false;
-
                 finished_ = true;
             }
 
@@ -797,9 +1040,6 @@ namespace gatzk::algebra
                     (void)cudaStreamSynchronize(
                         stream_);
                 }
-
-                ephemeral_source_in_flight_ =
-                    false;
 
                 if (device_source_ != nullptr)
                 {
@@ -828,13 +1068,15 @@ namespace gatzk::algebra
 
             bool zero_copy_target_ = false;
             bool finished_ = false;
-            bool ephemeral_source_in_flight_ = false;
 
             gpu::GpuFr *device_target_ =
                 nullptr;
 
             gpu::GpuFr *device_source_ =
                 nullptr;
+
+            EphemeralScaledAccumulateSourceStaging
+                ephemeral_source_staging_;
 
             cudaStream_t stream_ =
                 nullptr;
@@ -1117,47 +1359,14 @@ namespace gatzk::algebra
                     }
                     else if (source_is_ephemeral)
                     {
-                        if (ephemeral_source_in_flight_)
-                        {
-                            status =
-                                cudaStreamSynchronize(
-                                    stream_);
-
-                            if (status !=
-                                cudaSuccess)
-                            {
-                                throw_scaled_accumulate_cuda_error(
-                                    "paired ephemeral source reuse synchronization",
-                                    status);
-                            }
-
-                            record_cuda_stream_sync();
-
-                            ephemeral_source_in_flight_ =
-                                false;
-                        }
-
-                        status =
-                            cudaMemcpy(
-                                device_source_,
-                                source +
-                                    processed,
-                                byte_count,
-                                cudaMemcpyHostToDevice);
-
-                        if (status !=
-                            cudaSuccess)
-                        {
-                            throw_scaled_accumulate_cuda_error(
-                                "paired ephemeral session source upload",
-                                status);
-                        }
-
-                        record_cuda_h2d(
-                            byte_count);
-
                         source_values =
-                            device_source_;
+                            ephemeral_source_staging_
+                                .enqueue(
+                                    device_source_,
+                                    source +
+                                        processed,
+                                    current_count,
+                                    stream_);
                     }
                     else
                     {
@@ -1228,12 +1437,6 @@ namespace gatzk::algebra
                     record_cuda_kernel_invocations(
                         1);
 
-                    if (source_is_ephemeral)
-                    {
-                        ephemeral_source_in_flight_ =
-                            true;
-                    }
-
                     processed +=
                         current_count;
                 }
@@ -1300,9 +1503,6 @@ namespace gatzk::algebra
 
                 record_cuda_stream_sync();
 
-                ephemeral_source_in_flight_ =
-                    false;
-
                 finished_ = true;
             }
 
@@ -1320,9 +1520,6 @@ namespace gatzk::algebra
                     (void)cudaStreamSynchronize(
                         stream_);
                 }
-
-                ephemeral_source_in_flight_ =
-                    false;
 
                 if (!zero_copy_targets_)
                 {
@@ -1381,7 +1578,9 @@ namespace gatzk::algebra
 
             bool zero_copy_targets_ = false;
             bool finished_ = false;
-            bool ephemeral_source_in_flight_ = false;
+
+            EphemeralScaledAccumulateSourceStaging
+                ephemeral_source_staging_;
 
             cudaStream_t stream_ =
                 nullptr;

@@ -19,6 +19,16 @@
 
 namespace gatzk::protocol
 {
+    namespace detail
+    {
+        struct ValidatedVerifierExecutionState
+        {
+            ProtocolContext execution_context;
+            std::string authenticated_registry_digest;
+            std::string trusted_registry_digest;
+        };
+    }
+
     namespace
     {
         using algebra::FieldElement;
@@ -107,8 +117,7 @@ namespace gatzk::protocol
                         "canonical static-table serialization size overflow");
                 const auto next_size = size_ + bytes.size();
                 if (SHA256_Update(
-                        &context_, bytes.data(), bytes.size())
-                    != 1)
+                        &context_, bytes.data(), bytes.size()) != 1)
                     throw std::runtime_error(
                         "failed to update canonical static-table SHA-256");
                 size_ = next_size;
@@ -156,8 +165,7 @@ namespace gatzk::protocol
             std::string_view label)
         {
             if constexpr (
-                std::numeric_limits<std::size_t>::digits
-                > std::numeric_limits<std::uint64_t>::digits)
+                std::numeric_limits<std::size_t>::digits > std::numeric_limits<std::uint64_t>::digits)
             {
                 if (value > std::numeric_limits<std::uint64_t>::max())
                     throw std::runtime_error(
@@ -291,7 +299,8 @@ namespace gatzk::protocol
                 sink, plan_canonical_static_table_shape(context));
             sink_length_prefixed(
                 sink,
-                [&](auto &nested) { encode_static_tables(nested, context.tables); });
+                [&](auto &nested)
+                { encode_static_tables(nested, context.tables); });
         }
 
         template <typename Sink, typename Context>
@@ -308,7 +317,8 @@ namespace gatzk::protocol
                 sink, plan_canonical_static_table_shape(context));
             sink_length_prefixed(
                 sink,
-                [&](auto &nested) { encode_static_tables(nested, context.tables); });
+                [&](auto &nested)
+                { encode_static_tables(nested, context.tables); });
             // The compiler ledger has a stable, already-authenticated canonical
             // byte representation.  Keep it as one nested value; the large
             // StaticTables payload above is the streamed part of this path.
@@ -355,10 +365,9 @@ namespace gatzk::protocol
 
         bool lower_hex_256(const std::string &value)
         {
-            return value.size() == 64
-                && std::all_of(
-                    value.begin(), value.end(), [](unsigned char ch)
-                    { return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'); });
+            return value.size() == 64 && std::all_of(
+                                             value.begin(), value.end(), [](unsigned char ch)
+                                             { return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'); });
         }
 
         void append_registry_entry(
@@ -600,7 +609,8 @@ namespace gatzk::protocol
                 const auto it = std::find_if(
                     context.compiler_artifact->integer_bound_ledger.begin(),
                     context.compiler_artifact->integer_bound_ledger.end(),
-                    [&](const auto &entry) { return entry.id == id; });
+                    [&](const auto &entry)
+                    { return entry.id == id; });
                 if (it == context.compiler_artifact->integer_bound_ledger.end())
                     throw std::runtime_error(
                         "model registry is missing IntegerBoundLedger entry: " + id);
@@ -645,16 +655,13 @@ namespace gatzk::protocol
                          ++column)
                         add(hidden_weight_column_label(layer, head, column),
                             "in", scale, layer, head,
-                            "hidden:l" + std::to_string(layer) + ":h"
-                                + std::to_string(head) + ".model.W");
+                            "hidden:l" + std::to_string(layer) + ":h" + std::to_string(head) + ".model.W");
                     add(hidden_src_label(layer, head),
                         "d", scales.s_a_src_hidden.at(layer).at(head), layer, head,
-                        "hidden:l" + std::to_string(layer) + ":h"
-                            + std::to_string(head) + ".model.a_src");
+                        "hidden:l" + std::to_string(layer) + ":h" + std::to_string(head) + ".model.a_src");
                     add(hidden_dst_label(layer, head),
                         "d", scales.s_a_dst_hidden.at(layer).at(head), layer, head,
-                        "hidden:l" + std::to_string(layer) + ":h"
-                            + std::to_string(head) + ".model.a_dst");
+                        "hidden:l" + std::to_string(layer) + ":h" + std::to_string(head) + ".model.a_dst");
                 }
             }
             for (std::size_t head = 0; head < context.model.output_layer.heads.size(); ++head)
@@ -695,12 +702,12 @@ namespace gatzk::protocol
             {
                 if (label == "V_T_exp_x")
                     return {0, static_cast<std::int64_t>(
-                                  table_shape.exp_input_bound)};
+                                   table_shape.exp_input_bound)};
                 if (label == "V_T_exp_y")
                     return {1, static_cast<std::int64_t>(scales.s_exp)};
                 if (label == "V_T_range")
                     return {0, static_cast<std::int64_t>(
-                                  table_shape.range_table_size - 1U)};
+                                   table_shape.range_table_size - 1U)};
                 return {range_min, range_max};
             };
             const std::array<std::pair<const char *, std::uint64_t>, 8> spec = {{
@@ -740,8 +747,7 @@ namespace gatzk::protocol
         {
             if (!source.zero_domain_blinder.empty())
                 throw std::runtime_error(
-                    "public polynomial unexpectedly contains private blinding material: "
-                    + name);
+                    "public polynomial unexpectedly contains private blinding material: " + name);
             if (source.basis == algebra::PolynomialBasis::Evaluation)
             {
                 if (source.domain == nullptr)
@@ -764,19 +770,11 @@ namespace gatzk::protocol
             const data::GraphDataset &dataset,
             const data::LocalGraph &local)
         {
-            if (dataset.num_nodes == 0
-                || dataset.num_features == 0
-                || local.num_nodes != dataset.num_nodes
-                || local.num_features != dataset.num_features
-                || local.graph_count != dataset.graph_count
-                || local.absolute_ids.size() != dataset.num_nodes
-                || local.features.size() != dataset.num_nodes
-                || local.public_input.N_total != dataset.num_nodes)
+            if (dataset.num_nodes == 0 || dataset.num_features == 0 || local.num_nodes != dataset.num_nodes || local.num_features != dataset.num_features || local.graph_count != dataset.graph_count || local.absolute_ids.size() != dataset.num_nodes || local.features.size() != dataset.num_nodes || local.public_input.N_total != dataset.num_nodes)
                 return false;
             for (std::size_t row = 0; row < dataset.num_nodes; ++row)
             {
-                if (local.absolute_ids[row] != row
-                    || local.features[row].size() != dataset.num_features)
+                if (local.absolute_ids[row] != row || local.features[row].size() != dataset.num_features)
                     return false;
             }
             return true;
@@ -788,8 +786,7 @@ namespace gatzk::protocol
             if (context.verifier_shape_only)
                 throw std::runtime_error(
                     "verifier shape-only context cannot produce a registry");
-            if (context.compiler_artifact == nullptr
-                || context.validated_compiler_artifact_identity != context.compiler_artifact.get())
+            if (context.compiler_artifact == nullptr || context.validated_compiler_artifact_identity != context.compiler_artifact.get())
                 throw std::runtime_error("verifier registry requires an authenticated compiler artifact");
             AuthenticatedVerifierRegistry registry;
             registry.registry_id = context.config.model_param_id;
@@ -807,8 +804,7 @@ namespace gatzk::protocol
             registry.srs_generator_id = context.kzg.manifest.generator_id;
             registry.srs_encoding = context.kzg.manifest.encoding;
             registry.srs_spec_id =
-                context.kzg.manifest.srs_type + ":"
-                + context.kzg.manifest.kzg_assumption_profile_id;
+                context.kzg.manifest.srs_type + ":" + context.kzg.manifest.kzg_assumption_profile_id;
             registry.srs_protocol_compiler_artifact_hash =
                 context.kzg.manifest.protocol_compiler_artifact_hash;
             registry.model_layout_digest =
@@ -830,9 +826,7 @@ namespace gatzk::protocol
                 context.compiler_artifact->integer_bound_ledger;
             const auto security_budget = evaluate_security_budget(
                 context, *context.compiler_artifact);
-            if (!security_budget.passed
-                || !lower_hex_256(security_budget.ledger_digest)
-                || security_budget.exact_budget.empty())
+            if (!security_budget.passed || !lower_hex_256(security_budget.ledger_digest) || security_budget.exact_budget.empty())
                 throw std::runtime_error(
                     "verifier registry requires a valid SecurityBudgetLedger");
             registry.security_budget_ledger_digest =
@@ -965,9 +959,7 @@ namespace gatzk::protocol
             target->reserve(source.size());
             for (const auto &[name, commitment] : source)
             {
-                if (commitment.name != name
-                    || (reject_opening_material
-                        && commitment.opening_polynomial != nullptr))
+                if (commitment.name != name || (reject_opening_material && commitment.opening_polynomial != nullptr))
                     throw std::runtime_error("prover material cannot enter VerifierContext");
                 target->emplace(name, VerifierPointCommitment{name, commitment.point});
             }
@@ -998,19 +990,16 @@ namespace gatzk::protocol
                          column < layer_shape.shape.head_dim;
                          ++column)
                     {
-                        specs.push_back({
-                            hidden_weight_column_label(layer, head, column),
-                            "in",
-                            weight_scale});
+                        specs.push_back({hidden_weight_column_label(layer, head, column),
+                                         "in",
+                                         weight_scale});
                     }
-                    specs.push_back({
-                        hidden_src_label(layer, head),
-                        "d",
-                        context.config.quantization.s_a_src_hidden.at(layer).at(head)});
-                    specs.push_back({
-                        hidden_dst_label(layer, head),
-                        "d",
-                        context.config.quantization.s_a_dst_hidden.at(layer).at(head)});
+                    specs.push_back({hidden_src_label(layer, head),
+                                     "d",
+                                     context.config.quantization.s_a_src_hidden.at(layer).at(head)});
+                    specs.push_back({hidden_dst_label(layer, head),
+                                     "d",
+                                     context.config.quantization.s_a_dst_hidden.at(layer).at(head)});
                 }
             }
             for (std::size_t head = 0; head < context.model.output_layer.heads.size(); ++head)
@@ -1019,23 +1008,19 @@ namespace gatzk::protocol
                      column < context.model.output_layer.output_dim;
                      ++column)
                 {
-                    specs.push_back({
-                        output_weight_column_label(head, column),
-                        "cat",
-                        context.config.quantization.s_w_output.at(head)});
+                    specs.push_back({output_weight_column_label(head, column),
+                                     "cat",
+                                     context.config.quantization.s_w_output.at(head)});
                 }
-                specs.push_back({
-                    output_src_label(head),
-                    "C",
-                    context.config.quantization.s_a_src_output.at(head)});
-                specs.push_back({
-                    output_dst_label(head),
-                    "C",
-                    context.config.quantization.s_a_dst_output.at(head)});
-                specs.push_back({
-                    output_bias_label(head),
-                    "C",
-                    context.config.quantization.s_b_output.at(head)});
+                specs.push_back({output_src_label(head),
+                                 "C",
+                                 context.config.quantization.s_a_src_output.at(head)});
+                specs.push_back({output_dst_label(head),
+                                 "C",
+                                 context.config.quantization.s_a_dst_output.at(head)});
+                specs.push_back({output_bias_label(head),
+                                 "C",
+                                 context.config.quantization.s_b_output.at(head)});
             }
             return specs;
         }
@@ -1049,10 +1034,7 @@ namespace gatzk::protocol
                     "verifier registry requires a non-empty ExpMap table");
             const auto exp_input_bound = context.tables.exp.back().first.value();
             const auto exp_output_bound = context.tables.exp.front().second.value();
-            if (exp_input_bound
-                    > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())
-                || exp_output_bound
-                    > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()))
+            if (exp_input_bound > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) || exp_output_bound > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()))
                 throw std::runtime_error(
                     "verifier registry ExpMap range exceeds signed metadata capacity");
             if (context.config.range_bits == 0 || context.config.range_bits >= 63)
@@ -1094,35 +1076,23 @@ namespace gatzk::protocol
                 const auto &entry = entries[index];
                 const auto &spec = specs[index];
                 const auto declared_min = spec.has_declared_range
-                    ? spec.range_min
-                    : expected_min;
+                                              ? spec.range_min
+                                              : expected_min;
                 const auto declared_max = spec.has_declared_range
-                    ? spec.range_max
-                    : expected_max;
-                if (entry.label != spec.label || entry.domain != spec.domain
-                    || entry.degree_bound != context.srs.degree_bound
-                    || entry.scale != spec.scale
-                    || entry.range_min != declared_min
-                    || entry.range_max != declared_max
-                    || entry.label.empty()
-                    || !all_labels->insert(entry.label).second)
+                                              ? spec.range_max
+                                              : expected_max;
+                if (entry.label != spec.label || entry.domain != spec.domain || entry.degree_bound != context.srs.degree_bound || entry.scale != spec.scale || entry.range_min != declared_min || entry.range_max != declared_max || entry.label.empty() || !all_labels->insert(entry.label).second)
                     return false;
                 const auto &certificate = entry.bound_certificate;
                 if (require_bound_certificate)
                 {
-                    if (!certificate.present
-                        || certificate.label != entry.label
-                        || certificate.domain != entry.domain
-                        || certificate.degree_bound != entry.degree_bound
-                        || certificate.scale != entry.scale)
+                    if (!certificate.present || certificate.label != entry.label || certificate.domain != entry.domain || certificate.degree_bound != entry.degree_bound || certificate.scale != entry.scale)
                         return false;
                 }
                 else if (certificate.present)
                     return false;
                 const auto commitment = context.static_commitments.find(entry.label);
-                if (commitment == context.static_commitments.end()
-                    || commitment->second.name != entry.label
-                    || commitment->second.point != entry.point)
+                if (commitment == context.static_commitments.end() || commitment->second.name != entry.label || commitment->second.point != entry.point)
                     return false;
             }
             return true;
@@ -1130,18 +1100,14 @@ namespace gatzk::protocol
 
         bool validate_integer_bound_ledger(const VerifierContext &context)
         {
-            if (context.compiler_artifact == nullptr
-                || context.registry.integer_bound_ledger.empty()
-                || context.registry.integer_bound_ledger
-                       != context.compiler_artifact->integer_bound_ledger)
+            if (context.compiler_artifact == nullptr || context.registry.integer_bound_ledger.empty() || context.registry.integer_bound_ledger != context.compiler_artifact->integer_bound_ledger)
                 return false;
             try
             {
                 // Shape-only validation is not sufficient.  Rebuild every
                 // recurrence from public input/topology, authenticated tables,
                 // the registered scale chain and point-only model certificates.
-                return rebuild_integer_bound_ledger(context)
-                    == context.registry.integer_bound_ledger;
+                return rebuild_integer_bound_ledger(context) == context.registry.integer_bound_ledger;
             }
             catch (const std::exception &)
             {
@@ -1270,48 +1236,33 @@ namespace gatzk::protocol
                     {"C", &context.domains.c},
                     {"N", &context.domains.n},
                 }};
-            if (context.srs.domain_sizes.size() != required.size()
-                || context.srs.domain_generators.size() != required.size())
+            if (context.srs.domain_sizes.size() != required.size() || context.srs.domain_generators.size() != required.size())
                 return false;
             for (const auto &[name, domain_ptr] : required)
             {
-                if (*domain_ptr == nullptr || (*domain_ptr)->name != name
-                    || (*domain_ptr)->size == 0
-                    || !context.srs.domain_sizes.contains(std::string(name))
-                    || context.srs.domain_sizes.at(std::string(name)) != (*domain_ptr)->size)
+                if (*domain_ptr == nullptr || (*domain_ptr)->name != name || (*domain_ptr)->size == 0 || !context.srs.domain_sizes.contains(std::string(name)) || context.srs.domain_sizes.at(std::string(name)) != (*domain_ptr)->size)
                     return false;
             }
-            if (context.model.hidden_layers.size() + 1 != context.model.L
-                || context.domains.hidden_layers.size()
-                       != context.model.hidden_layers.size()
-                || !context.domains.output_head.has_value())
+            if (context.model.hidden_layers.size() + 1 != context.model.L || context.domains.hidden_layers.size() != context.model.hidden_layers.size() || !context.domains.output_head.has_value())
                 return false;
             const auto same_domain = [](const auto &actual, const auto &expected)
             {
-                return actual != nullptr && expected != nullptr
-                    && actual->name == expected->name
-                    && actual->size == expected->size
-                    && actual->omega == expected->omega
-                    && actual->inv_size == expected->inv_size;
+                return actual != nullptr && expected != nullptr && actual->name == expected->name && actual->size == expected->size && actual->omega == expected->omega && actual->inv_size == expected->inv_size;
             };
             for (std::size_t layer = 0;
                  layer < context.model.hidden_layers.size(); ++layer)
             {
                 const auto &shape = context.model.hidden_layers.at(layer);
                 const auto &head_domains = context.domains.hidden_layers.at(layer);
-                if (shape.layer_index != layer
-                    || head_domains.size() != shape.heads.size()
-                    || shape.heads.size() != shape.shape.head_count)
+                if (shape.layer_index != layer || head_domains.size() != shape.heads.size() || shape.heads.size() != shape.shape.head_count)
                     return false;
                 for (const auto &head : head_domains)
                 {
-                    if (!same_domain(head.in, context.domains.in)
-                        || !same_domain(head.d, context.domains.d))
+                    if (!same_domain(head.in, context.domains.in) || !same_domain(head.d, context.domains.d))
                         return false;
                 }
             }
-            if (!same_domain(context.domains.output_head->in, context.domains.cat)
-                || !same_domain(context.domains.output_head->d, context.domains.c))
+            if (!same_domain(context.domains.output_head->in, context.domains.cat) || !same_domain(context.domains.output_head->d, context.domains.c))
                 return false;
             const auto allowed_names = std::unordered_set<std::string>{
                 "FH", "edge", "in", "d", "cat", "C", "N"};
@@ -1331,27 +1282,9 @@ namespace gatzk::protocol
             for (std::size_t index = 0; profile_matches && index < model.hidden_profile.size(); ++index)
             {
                 profile_matches =
-                    model.hidden_profile.at(index).head_count
-                        == config.hidden_profile.at(index).head_count
-                    && model.hidden_profile.at(index).head_dim
-                           == config.hidden_profile.at(index).head_dim;
+                    model.hidden_profile.at(index).head_count == config.hidden_profile.at(index).head_count && model.hidden_profile.at(index).head_dim == config.hidden_profile.at(index).head_dim;
             }
-            if (model.L < 2
-                || model.L != config.layer_count
-                || model.input_preprocess_id.empty()
-                || model.input_preprocess_id != config.input_preprocess_id
-                || model.L != model.hidden_layers.size() + 1
-                || model.hidden_layers.size() != config.hidden_profile.size()
-                || !profile_matches
-                || model.d_in_profile != config.d_in_profile
-                || model.d_in_profile.size() != model.hidden_layers.size()
-                || model.K_out != config.K_out
-                || model.K_out != model.output_layer.head_count
-                || model.output_layer.heads.size() != model.K_out
-                || model.C != config.num_classes
-                || model.C != model.output_layer.output_dim
-                || context.local.num_features != model.d_in_profile.front()
-                || context.local.num_classes != model.C)
+            if (model.L < 2 || model.L != config.layer_count || model.input_preprocess_id.empty() || model.input_preprocess_id != config.input_preprocess_id || model.L != model.hidden_layers.size() + 1 || model.hidden_layers.size() != config.hidden_profile.size() || !profile_matches || model.d_in_profile != config.d_in_profile || model.d_in_profile.size() != model.hidden_layers.size() || model.K_out != config.K_out || model.K_out != model.output_layer.head_count || model.output_layer.heads.size() != model.K_out || model.C != config.num_classes || model.C != model.output_layer.output_dim || context.local.num_features != model.d_in_profile.front() || context.local.num_classes != model.C)
                 return false;
             std::size_t expected_input = 0;
             for (std::size_t layer_index = 0;
@@ -1359,70 +1292,18 @@ namespace gatzk::protocol
             {
                 const auto &layer = model.hidden_layers.at(layer_index);
                 const auto &profile = model.hidden_profile.at(layer_index);
-                if (layer.layer_index != layer_index
-                    || layer.input_dim != model.d_in_profile.at(layer_index)
-                    || layer.input_dim != (layer_index == 0
-                                               ? context.local.num_features
-                                               : expected_input)
-                    || layer.shape.head_count != profile.head_count
-                    || layer.shape.head_dim != profile.head_dim
-                    || layer.shape.head_count == 0
-                    || layer.shape.head_dim == 0
-                    || layer.heads.size() != layer.shape.head_count)
+                if (layer.layer_index != layer_index || layer.input_dim != model.d_in_profile.at(layer_index) || layer.input_dim != (layer_index == 0 ? context.local.num_features : expected_input) || layer.shape.head_count != profile.head_count || layer.shape.head_dim != profile.head_dim || layer.shape.head_count == 0 || layer.shape.head_dim == 0 || layer.heads.size() != layer.shape.head_count)
                     return false;
                 expected_input = layer.shape.head_count * layer.shape.head_dim;
             }
-            return model.output_layer.input_dim == expected_input
-                && model.output_layer.head_count == model.K_out
-                && model.output_layer.output_dim == model.C;
+            return model.output_layer.input_dim == expected_input && model.output_layer.head_count == model.K_out && model.output_layer.output_dim == model.C;
         }
 
         bool validate_dataset_and_normalized_input(const VerifierContext &context)
         {
             const auto &dataset = context.dataset;
             const auto &local = context.local;
-            if (dataset.name.empty() || local.name.empty()
-                || local.name != dataset.name + "_normalized"
-                || dataset.input_preprocess_id.empty()
-                || local.input_preprocess_id != dataset.input_preprocess_id
-                || context.config.input_preprocess_id != dataset.input_preprocess_id
-                || context.config.input_preprocess_id
-                       != util::canonical_input_preprocess_id(context.config.dataset)
-                || dataset.num_nodes == 0
-                || dataset.num_features == 0
-                || dataset.num_classes == 0
-                || dataset.graph_count == 0
-                || dataset.node_ptr.size() != dataset.graph_count + 1
-                || dataset.edge_ptr.size() != dataset.graph_count + 1
-                || dataset.node_ptr.front() != 0
-                || dataset.node_ptr.back() != dataset.num_nodes
-                || dataset.edge_ptr.front() != 0
-                || dataset.edge_ptr.back() != dataset.edges.size()
-                || local.num_nodes == 0
-                || local.num_nodes > dataset.num_nodes
-                || local.num_features != dataset.num_features
-                || local.num_classes != dataset.num_classes
-                || local.graph_count == 0
-                || local.graph_count > dataset.graph_count
-                || local.graph_count
-                       != std::min(
-                           std::max<std::size_t>(1, context.config.batch_graphs),
-                           dataset.graph_count)
-                || local.absolute_ids.size() != local.num_nodes
-                || local.features.size() != local.num_nodes
-                || local.node_ptr.size() != local.graph_count + 1
-                || local.edge_ptr.size() != local.graph_count + 1
-                || local.node_ptr.front() != 0
-                || local.node_ptr.back() != local.num_nodes
-                || local.edge_ptr.front() != 0
-                || local.edge_ptr.back() != local.edges.size()
-                || local.public_input.N_total != dataset.num_nodes
-                || local.public_input.N != local.num_nodes
-                || local.public_input.E != local.edges.size()
-                || local.public_input.G_batch != local.graph_count
-                || local.public_input.I != local.absolute_ids
-                || local.public_input.src.size() != local.edges.size()
-                || local.public_input.dst.size() != local.edges.size())
+            if (dataset.name.empty() || local.name.empty() || local.name != dataset.name + "_normalized" || dataset.input_preprocess_id.empty() || local.input_preprocess_id != dataset.input_preprocess_id || context.config.input_preprocess_id != dataset.input_preprocess_id || context.config.input_preprocess_id != util::canonical_input_preprocess_id(context.config.dataset) || dataset.num_nodes == 0 || dataset.num_features == 0 || dataset.num_classes == 0 || dataset.graph_count == 0 || dataset.node_ptr.size() != dataset.graph_count + 1 || dataset.edge_ptr.size() != dataset.graph_count + 1 || dataset.node_ptr.front() != 0 || dataset.node_ptr.back() != dataset.num_nodes || dataset.edge_ptr.front() != 0 || dataset.edge_ptr.back() != dataset.edges.size() || local.num_nodes == 0 || local.num_nodes > dataset.num_nodes || local.num_features != dataset.num_features || local.num_classes != dataset.num_classes || local.graph_count == 0 || local.graph_count > dataset.graph_count || local.graph_count != std::min(std::max<std::size_t>(1, context.config.batch_graphs), dataset.graph_count) || local.absolute_ids.size() != local.num_nodes || local.features.size() != local.num_nodes || local.node_ptr.size() != local.graph_count + 1 || local.edge_ptr.size() != local.graph_count + 1 || local.node_ptr.front() != 0 || local.node_ptr.back() != local.num_nodes || local.edge_ptr.front() != 0 || local.edge_ptr.back() != local.edges.size() || local.public_input.N_total != dataset.num_nodes || local.public_input.N != local.num_nodes || local.public_input.E != local.edges.size() || local.public_input.G_batch != local.graph_count || local.public_input.I != local.absolute_ids || local.public_input.src.size() != local.edges.size() || local.public_input.dst.size() != local.edges.size())
                 return false;
             for (std::size_t index = 1; index < dataset.node_ptr.size(); ++index)
                 if (dataset.node_ptr[index - 1] >= dataset.node_ptr[index])
@@ -1440,11 +1321,7 @@ namespace gatzk::protocol
                     return false;
             for (const auto &edge : dataset.edges)
             {
-                if (edge.graph_id >= dataset.graph_count
-                    || edge.src < dataset.node_ptr.at(edge.graph_id)
-                    || edge.src >= dataset.node_ptr.at(edge.graph_id + 1)
-                    || edge.dst < dataset.node_ptr.at(edge.graph_id)
-                    || edge.dst >= dataset.node_ptr.at(edge.graph_id + 1))
+                if (edge.graph_id >= dataset.graph_count || edge.src < dataset.node_ptr.at(edge.graph_id) || edge.src >= dataset.node_ptr.at(edge.graph_id + 1) || edge.dst < dataset.node_ptr.at(edge.graph_id) || edge.dst >= dataset.node_ptr.at(edge.graph_id + 1))
                     return false;
             }
             for (std::size_t graph = 0; graph < local.graph_count; ++graph)
@@ -1456,8 +1333,7 @@ namespace gatzk::protocol
                 if (local_end - local_begin != dataset_end - dataset_begin)
                     return false;
                 for (std::size_t index = 0; index < local_end - local_begin; ++index)
-                    if (local.absolute_ids.at(local_begin + index)
-                        != dataset_begin + index)
+                    if (local.absolute_ids.at(local_begin + index) != dataset_begin + index)
                         return false;
                 const auto edge_begin = local.edge_ptr.at(graph);
                 const auto edge_end = local.edge_ptr.at(graph + 1);
@@ -1466,13 +1342,7 @@ namespace gatzk::protocol
                      ++edge_index)
                 {
                     const auto &edge = local.edges.at(edge_index);
-                    if (edge.graph_id != graph
-                        || edge.src < local_begin
-                        || edge.src >= local_end
-                        || edge.dst < local_begin
-                        || edge.dst >= local_end
-                        || local.public_input.src.at(edge_index) != edge.src
-                        || local.public_input.dst.at(edge_index) != edge.dst)
+                    if (edge.graph_id != graph || edge.src < local_begin || edge.src >= local_end || edge.dst < local_begin || edge.dst >= local_end || local.public_input.src.at(edge_index) != edge.src || local.public_input.dst.at(edge_index) != edge.dst)
                         return false;
                 }
             }
@@ -1519,35 +1389,9 @@ namespace gatzk::protocol
                 const auto same_edge = [](const data::Edge &lhs,
                                           const data::Edge &rhs)
                 {
-                    return lhs.src == rhs.src && lhs.dst == rhs.dst
-                        && lhs.graph_id == rhs.graph_id
-                        && lhs.stable_index == rhs.stable_index;
+                    return lhs.src == rhs.src && lhs.dst == rhs.dst && lhs.graph_id == rhs.graph_id && lhs.stable_index == rhs.stable_index;
                 };
-                if (normalized.name != local.name
-                    || normalized.num_nodes != local.num_nodes
-                    || normalized.num_features != local.num_features
-                    || normalized.num_classes != local.num_classes
-                    || normalized.graph_count != local.graph_count
-                    || normalized.absolute_ids != local.absolute_ids
-                    || normalized.node_ptr != local.node_ptr
-                    || normalized.edge_ptr != local.edge_ptr
-                    || normalized.public_input.N_total
-                           != local.public_input.N_total
-                    || normalized.public_input.N != local.public_input.N
-                    || normalized.public_input.E != local.public_input.E
-                    || normalized.public_input.G_batch
-                           != local.public_input.G_batch
-                    || normalized.public_input.I != local.public_input.I
-                    || normalized.public_input.src != local.public_input.src
-                    || normalized.public_input.dst != local.public_input.dst
-                    || normalized.public_input.node_ptr
-                           != local.public_input.node_ptr
-                    || normalized.public_input.edge_ptr
-                           != local.public_input.edge_ptr
-                    || normalized.edges.size() != local.edges.size()
-                    || !std::equal(
-                        normalized.edges.begin(), normalized.edges.end(),
-                        local.edges.begin(), same_edge))
+                if (normalized.name != local.name || normalized.num_nodes != local.num_nodes || normalized.num_features != local.num_features || normalized.num_classes != local.num_classes || normalized.graph_count != local.graph_count || normalized.absolute_ids != local.absolute_ids || normalized.node_ptr != local.node_ptr || normalized.edge_ptr != local.edge_ptr || normalized.public_input.N_total != local.public_input.N_total || normalized.public_input.N != local.public_input.N || normalized.public_input.E != local.public_input.E || normalized.public_input.G_batch != local.public_input.G_batch || normalized.public_input.I != local.public_input.I || normalized.public_input.src != local.public_input.src || normalized.public_input.dst != local.public_input.dst || normalized.public_input.node_ptr != local.public_input.node_ptr || normalized.public_input.edge_ptr != local.public_input.edge_ptr || normalized.edges.size() != local.edges.size() || !std::equal(normalized.edges.begin(), normalized.edges.end(), local.edges.begin(), same_edge))
                     return false;
             }
             catch (const std::exception &)
@@ -1560,45 +1404,9 @@ namespace gatzk::protocol
         bool validate_srs_metadata(const VerifierContext &context)
         {
             const auto &srs = context.srs;
-            if (srs.manifest_format != "zkgat_srs_manifest"
-                || srs.curve_id != "bls12_381"
-                || srs.field_modulus_id != "bls12_381_fr"
-                || srs.srs_type != "trusted_srs"
-                || srs.generator_id != "zkgat_srs_setup_tool"
-                || srs.encoding != "canonical_mcl_bls12_381_fixed"
-                || srs.root_derivation_id != "bls12_381_fr_generator_5"
-                || srs.row_order != "ascending_powers_from_one"
-                || srs.security_level != "120-bit"
-                || srs.kzg_assumption_profile_id != "shifted_kzg_divisibility"
-                || srs.degree_bound == 0
-                || srs.kzg_assumption_degree_bound != srs.degree_bound
-                || srs.kzg_assumption_security_bits != 128
-                || srs.domain_sizes.size() != 7
-                || srs.domain_sizes.size() != srs.domain_generators.size()
-                || srs.max_instance_envelope.empty()
-                || srs.max_instance_envelope_id.empty()
-                || srs.max_instance_envelope_id != srs.max_instance_envelope_hash
-                || !lower_hex_256(srs.manifest_hash)
-                || !lower_hex_256(srs.ceremony_transcript_hash)
-                || !lower_hex_256(srs.protocol_compiler_artifact_hash)
-                || !lower_hex_256(srs.protocol_schema_id)
-                || !lower_hex_256(srs.max_instance_envelope_id)
-                || !lower_hex_256(srs.proof_schema_template_hash)
-                || !lower_hex_256(srs.observation_ledger_hash)
-                || !lower_hex_256(srs.random_identity_ledger_hash)
-                || !lower_hex_256(srs.security_budget_ledger_hash)
-                || !lower_hex_256(srs.vk_hash)
-                || !lower_hex_256(srs.vanishing_g2_hash)
-                || !lower_hex_256(srs.srs_audit_report_hash)
-                || !lower_hex_256(srs.srs_consistency_hash)
-                || srs.srs_audit_report_hash != srs.srs_consistency_hash
-                || !lower_hex_256(srs.kzg_assumption_domain_catalog_hash)
-                || !lower_hex_256(srs.domain_generator_catalog_hash))
+            if (srs.manifest_format != "zkgat_srs_manifest" || srs.curve_id != "bls12_381" || srs.field_modulus_id != "bls12_381_fr" || srs.srs_type != "trusted_srs" || srs.generator_id != "zkgat_srs_setup_tool" || srs.encoding != "canonical_mcl_bls12_381_fixed" || srs.root_derivation_id != "bls12_381_fr_generator_5" || srs.row_order != "ascending_powers_from_one" || srs.security_level != "120-bit" || srs.kzg_assumption_profile_id != "shifted_kzg_divisibility" || srs.degree_bound == 0 || srs.kzg_assumption_degree_bound != srs.degree_bound || srs.kzg_assumption_security_bits != 128 || srs.domain_sizes.size() != 7 || srs.domain_sizes.size() != srs.domain_generators.size() || srs.max_instance_envelope.empty() || srs.max_instance_envelope_id.empty() || srs.max_instance_envelope_id != srs.max_instance_envelope_hash || !lower_hex_256(srs.manifest_hash) || !lower_hex_256(srs.ceremony_transcript_hash) || !lower_hex_256(srs.protocol_compiler_artifact_hash) || !lower_hex_256(srs.protocol_schema_id) || !lower_hex_256(srs.max_instance_envelope_id) || !lower_hex_256(srs.proof_schema_template_hash) || !lower_hex_256(srs.observation_ledger_hash) || !lower_hex_256(srs.random_identity_ledger_hash) || !lower_hex_256(srs.security_budget_ledger_hash) || !lower_hex_256(srs.vk_hash) || !lower_hex_256(srs.vanishing_g2_hash) || !lower_hex_256(srs.srs_audit_report_hash) || !lower_hex_256(srs.srs_consistency_hash) || srs.srs_audit_report_hash != srs.srs_consistency_hash || !lower_hex_256(srs.kzg_assumption_domain_catalog_hash) || !lower_hex_256(srs.domain_generator_catalog_hash))
                 return false;
-            if (srs.kzg_assumption_domain_catalog_hash
-                    != srs_domain_catalog_hash(srs)
-                || srs.domain_generator_catalog_hash
-                       != srs_generator_catalog_hash(srs))
+            if (srs.kzg_assumption_domain_catalog_hash != srs_domain_catalog_hash(srs) || srs.domain_generator_catalog_hash != srs_generator_catalog_hash(srs))
                 return false;
 
             const std::array<std::pair<std::string, std::shared_ptr<algebra::RootOfUnityDomain>>, 7>
@@ -1613,28 +1421,17 @@ namespace gatzk::protocol
                 }};
             for (const auto &[name, domain] : required_domains)
             {
-                if (domain == nullptr || domain->name != name || domain->size == 0
-                    || !srs.domain_sizes.contains(name)
-                    || srs.domain_sizes.at(name) != domain->size
-                    || !srs.domain_generators.contains(name)
-                    || srs.domain_generators.at(name) != canonical_field_hex(domain->omega))
+                if (domain == nullptr || domain->name != name || domain->size == 0 || !srs.domain_sizes.contains(name) || srs.domain_sizes.at(name) != domain->size || !srs.domain_generators.contains(name) || srs.domain_generators.at(name) != canonical_field_hex(domain->omega))
                     return false;
             }
             if (context.kzg_vk.domain_zero_g2.size() != srs.domain_sizes.size())
                 return false;
             for (const auto &[name, size] : srs.domain_sizes)
             {
-                if (size == 0 || size > srs.degree_bound
-                    || !context.kzg_vk.domain_zero_g2.contains(name)
-                    || context.kzg_vk.domain_zero_g2.at(name).value.isZero())
+                if (size == 0 || size > srs.degree_bound || !context.kzg_vk.domain_zero_g2.contains(name) || context.kzg_vk.domain_zero_g2.at(name).value.isZero())
                     return false;
             }
-            if (context.kzg_vk.g2_one.value.isZero()
-                || context.kzg_vk.g2_tau.value.isZero()
-                || context.kzg_vk.g1_generator.value.isZero()
-                || srs.vanishing_g2_hash
-                       != vanishing_g2_catalog_hash(srs, context.kzg_vk)
-                || srs.vk_hash != sha256_hex(verifier_key_bytes(context.kzg_vk)))
+            if (context.kzg_vk.g2_one.value.isZero() || context.kzg_vk.g2_tau.value.isZero() || context.kzg_vk.g1_generator.value.isZero() || srs.vanishing_g2_hash != vanishing_g2_catalog_hash(srs, context.kzg_vk) || srs.vk_hash != sha256_hex(verifier_key_bytes(context.kzg_vk)))
                 return false;
             return true;
         }
@@ -1735,17 +1532,13 @@ namespace gatzk::protocol
             add_expected("P_T_exp_y", "edge");
             add_expected("P_T_range", "edge");
 
-            if (context.public_polynomial_descriptors.size() != expected.size()
-                || context.public_commitments.size() != expected.size())
+            if (context.public_polynomial_descriptors.size() != expected.size() || context.public_commitments.size() != expected.size())
                 return false;
             for (const auto &[name, expected_descriptor] : expected)
             {
                 const auto descriptor = context.public_polynomial_descriptors.find(name);
                 const auto commitment = context.public_commitments.find(name);
-                if (descriptor == context.public_polynomial_descriptors.end()
-                    || descriptor->second != expected_descriptor
-                    || commitment == context.public_commitments.end()
-                    || commitment->second.name != name)
+                if (descriptor == context.public_polynomial_descriptors.end() || descriptor->second != expected_descriptor || commitment == context.public_commitments.end() || commitment->second.name != name)
                     return false;
             }
             for (const auto &[name, _] : context.public_polynomial_descriptors)
@@ -1774,18 +1567,7 @@ namespace gatzk::protocol
             // enforce the privacy/protocol policy at the loader boundary so a
             // self-consistent artifact cannot downgrade model privacy or
             // switch away from the formal proof mode.
-            if (context.config.srs_type != "trusted_srs"
-                || context.config.privacy_policy != "model_and_trace_hidden"
-                || context.config.input_privacy
-                       != "public_graph_public_features"
-                || context.config.output_mode != "public_logits"
-                || context.config.opening_mode
-                       != "point_grouped_batch_opening"
-                || context.config.binding_mode != "zk_subproof_for_crpc"
-                || context.config.proof_task
-                       != "node_classification_full_gat"
-                || context.config.security_profile_id
-                       != "zkgat_secure_profile")
+            if (context.config.srs_type != "trusted_srs" || context.config.privacy_policy != "model_and_trace_hidden" || context.config.input_privacy != "public_graph_public_features" || context.config.output_mode != "public_logits" || context.config.opening_mode != "point_grouped_batch_opening" || context.config.binding_mode != "zk_subproof_for_crpc" || context.config.proof_task != "node_classification_full_gat" || context.config.security_profile_id != "zkgat_secure_profile")
                 return false;
             try
             {
@@ -1794,31 +1576,16 @@ namespace gatzk::protocol
                         context.config.quant_cfg_id,
                         context.config.hidden_profile,
                         context.config.K_out);
-                if (context.config.quantization.canonical_serialization()
-                    != canonical_scales.canonical_serialization())
+                if (context.config.quantization.canonical_serialization() != canonical_scales.canonical_serialization())
                     return false;
             }
             catch (const std::exception &)
             {
                 return false;
             }
-            if (!validate_srs_metadata(context)
-                || !validate_public_polynomial_descriptors(context)
-                || !validate_point_map(context.public_commitments)
-                || !validate_point_map(context.static_commitments)
-                || !validate_model_shape(context)
-                || !validate_domain_shape(context)
-                || !validate_dataset_and_normalized_input(context))
+            if (!validate_srs_metadata(context) || !validate_public_polynomial_descriptors(context) || !validate_point_map(context.public_commitments) || !validate_point_map(context.static_commitments) || !validate_model_shape(context) || !validate_domain_shape(context) || !validate_dataset_and_normalized_input(context))
                 return false;
-            if (!context.dataset.features_fp.empty()
-                || !context.dataset.labels.empty()
-                || !context.dataset.labels_multi.empty()
-                || !context.local.features_fp.empty()
-                || !context.local.labels.empty()
-                || !context.local.labels_multi.empty()
-                || context.local.features.empty()
-                || context.local.features.size() != context.local.num_nodes
-                || context.local.absolute_ids.size() != context.local.num_nodes)
+            if (!context.dataset.features_fp.empty() || !context.dataset.labels.empty() || !context.dataset.labels_multi.empty() || !context.local.features_fp.empty() || !context.local.labels.empty() || !context.local.labels_multi.empty() || context.local.features.empty() || context.local.features.size() != context.local.num_nodes || context.local.absolute_ids.size() != context.local.num_nodes)
                 return false;
             if (!has_complete_public_feature_source(
                     context.dataset, context.local))
@@ -1826,134 +1593,20 @@ namespace gatzk::protocol
             for (const auto &row : context.local.features)
                 if (row.size() != context.local.num_features)
                     return false;
-            if (context.dataset.name.empty()
-                || context.local.name.empty()
-                || context.config.dataset != context.dataset.name
-                || context.config.input_preprocess_id.empty()
-                || context.config.input_preprocess_id
-                       != util::canonical_input_preprocess_id(context.config.dataset)
-                || context.dataset.input_preprocess_id
-                       != context.config.input_preprocess_id
-                || context.local.input_preprocess_id
-                       != context.config.input_preprocess_id
-                || context.dataset.task_type != context.config.task_type
-                || context.dataset.report_unit != context.config.report_unit
-                || context.local.task_type != context.config.task_type
-                || context.local.report_unit != context.config.report_unit
-                || context.local.batching_rule != context.config.batching_rule
-                || context.local.subgraph_rule != context.config.subgraph_rule
-                || context.local.self_loop_rule != context.config.self_loop_rule
-                || context.local.edge_sort_rule != context.config.edge_sort_rule
-                || context.local.chunking_rule != context.config.chunking_rule)
+            if (context.dataset.name.empty() || context.local.name.empty() || context.config.dataset != context.dataset.name || context.config.input_preprocess_id.empty() || context.config.input_preprocess_id != util::canonical_input_preprocess_id(context.config.dataset) || context.dataset.input_preprocess_id != context.config.input_preprocess_id || context.local.input_preprocess_id != context.config.input_preprocess_id || context.dataset.task_type != context.config.task_type || context.dataset.report_unit != context.config.report_unit || context.local.task_type != context.config.task_type || context.local.report_unit != context.config.report_unit || context.local.batching_rule != context.config.batching_rule || context.local.subgraph_rule != context.config.subgraph_rule || context.local.self_loop_rule != context.config.self_loop_rule || context.local.edge_sort_rule != context.config.edge_sort_rule || context.local.chunking_rule != context.config.chunking_rule)
                 return false;
-            if (context.local.public_input.N_total != context.dataset.num_nodes
-                || context.local.public_input.N != context.local.num_nodes
-                || context.local.public_input.E != context.local.edges.size()
-                || context.local.public_input.I.size()
-                       != context.local.public_input.N
-                || context.local.public_input.src.size()
-                       != context.local.public_input.E
-                || context.local.public_input.dst.size()
-                       != context.local.public_input.E
-                || context.local.public_input.node_ptr.size()
-                       != context.local.graph_count + 1
-                || context.local.public_input.edge_ptr.size()
-                       != context.local.graph_count + 1)
+            if (context.local.public_input.N_total != context.dataset.num_nodes || context.local.public_input.N != context.local.num_nodes || context.local.public_input.E != context.local.edges.size() || context.local.public_input.I.size() != context.local.public_input.N || context.local.public_input.src.size() != context.local.public_input.E || context.local.public_input.dst.size() != context.local.public_input.E || context.local.public_input.node_ptr.size() != context.local.graph_count + 1 || context.local.public_input.edge_ptr.size() != context.local.graph_count + 1)
                 return false;
             for (const auto &edge : context.local.edges)
-                if (edge.src >= context.local.num_nodes
-                    || edge.dst >= context.local.num_nodes)
+                if (edge.src >= context.local.num_nodes || edge.dst >= context.local.num_nodes)
                     return false;
-            if (context.compiler_artifact == nullptr
-                || sha256_hex(context.compiler_artifact->protocol_canonical_bytes)
-                       != context.srs.protocol_schema_id
-                || sha256_hex(protocol_proof_schema_template_canonical_bytes())
-                       != context.srs.proof_schema_template_hash
-                || sha256_hex(protocol_observation_ledger_template_canonical_bytes())
-                       != context.srs.observation_ledger_hash
-                || sha256_hex(protocol_random_identity_ledger_template_canonical_bytes())
-                       != context.srs.random_identity_ledger_hash
-                || sha256_hex(protocol_security_budget_ledger_template_canonical_bytes())
-                       != context.srs.security_budget_ledger_hash)
+            if (context.compiler_artifact == nullptr || sha256_hex(context.compiler_artifact->protocol_canonical_bytes) != context.srs.protocol_schema_id || sha256_hex(protocol_proof_schema_template_canonical_bytes()) != context.srs.proof_schema_template_hash || sha256_hex(protocol_observation_ledger_template_canonical_bytes()) != context.srs.observation_ledger_hash || sha256_hex(protocol_random_identity_ledger_template_canonical_bytes()) != context.srs.random_identity_ledger_hash || sha256_hex(protocol_security_budget_ledger_template_canonical_bytes()) != context.srs.security_budget_ledger_hash)
                 return false;
-            if (!lower_hex_256(context.trusted_registry_digest)
-                || context.trusted_registry_digest
-                       != context.authenticated_registry_digest)
+            if (!lower_hex_256(context.trusted_registry_digest) || context.trusted_registry_digest != context.authenticated_registry_digest)
                 return false;
-            if (context.srs.srs_type != "trusted_srs"
-                || context.kzg_vk.srs_id != context.srs.srs_id
-                || context.kzg_vk.srs_type != context.srs.srs_type
-                || context.kzg_vk.degree_bound != context.srs.degree_bound
-                || context.kzg_vk.manifest_hash != context.srs.manifest_hash)
+            if (context.srs.srs_type != "trusted_srs" || context.kzg_vk.srs_id != context.srs.srs_id || context.kzg_vk.srs_type != context.srs.srs_type || context.kzg_vk.degree_bound != context.srs.degree_bound || context.kzg_vk.manifest_hash != context.srs.manifest_hash)
                 return false;
-            if (context.registry.format != "zkgat_verifier_registry"
-                || context.registry.registry_id.empty()
-                || context.registry.registry_id != context.config.model_param_id
-                || context.registry.model_arch_id != context.config.model_arch_id
-                || context.registry.model_param_id != context.config.model_param_id
-                || context.registry.input_preprocess_id.empty()
-                || context.registry.input_preprocess_id
-                       != context.config.input_preprocess_id
-                || context.registry.quant_cfg_id != context.config.quant_cfg_id
-                || context.registry.static_table_id != context.config.static_table_id
-                || context.registry.srs_id != context.srs.srs_id
-                || context.registry.protocol_schema_id != context.srs.protocol_schema_id
-                || context.compiler_artifact == nullptr
-                || !lower_hex_256(context.registry.instance_schema_hash)
-                || context.registry.srs_manifest_hash != context.srs.manifest_hash
-                || context.registry.srs_degree_bound != context.srs.degree_bound
-                || context.registry.srs_g1_generator != context.kzg_vk.g1_generator
-                || context.registry.srs_generator_id != context.srs.generator_id
-                || context.registry.srs_encoding != context.srs.encoding
-                || context.registry.srs_spec_id
-                       != context.srs.srs_type + ":"
-                              + context.srs.kzg_assumption_profile_id
-                || !lower_hex_256(
-                       context.registry.srs_protocol_compiler_artifact_hash)
-                || context.registry.srs_protocol_compiler_artifact_hash
-                       != context.srs.protocol_compiler_artifact_hash
-                || !lower_hex_256(context.registry.compiler_artifact_digest)
-                || context.registry.compiler_artifact_digest
-                       != sha256_hex(protocol_instance_canonical_bytes(
-                           *context.compiler_artifact))
-                || !lower_hex_256(context.registry.model_layout_digest)
-                || context.registry.model_layout_digest
-                       != sha256_hex(model_layout_serialization(context.model))
-                || !lower_hex_256(context.registry.quant_chain_digest)
-                || context.registry.quant_chain_digest
-                       != sha256_hex(context.config.quantization.canonical_serialization())
-                || !lower_hex_256(context.registry.static_table_digest)
-                || context.registry.static_table_digest
-                       != detail::canonical_static_table_digest(context.tables)
-                || context.registry.static_table_generator_id
-                       != kStaticTableGeneratorId
-                || !lower_hex_256(context.registry.static_table_spec_hash)
-                || context.registry.static_table_spec_hash
-                       != detail::canonical_static_table_spec_hash(context)
-                || !lower_hex_256(context.registry.range_and_scale_certificate)
-                || context.registry.range_and_scale_certificate
-                       != detail::canonical_range_and_scale_certificate(context)
-                || context.registry.integer_bound_ledger_digest.empty()
-                || !lower_hex_256(context.registry.integer_bound_ledger_digest)
-                || context.compiler_artifact->integer_bound_ledger.empty()
-                || context.registry.integer_bound_ledger
-                       != context.compiler_artifact->integer_bound_ledger
-                || context.registry.integer_bound_ledger_digest
-                       != sha256_hex(integer_bound_ledger_canonical_bytes(
-                           context.compiler_artifact->integer_bound_ledger))
-                || !lower_hex_256(context.registry.public_input_digest)
-                || context.registry.public_input_digest
-                       != sha256_hex(public_input_serialization(context.local))
-                || !lower_hex_256(context.registry.topology_digest)
-                || context.registry.topology_digest
-                       != sha256_hex(topology_serialization(context.local))
-                || !lower_hex_256(context.registry.security_budget_ledger_digest)
-                || context.registry.security_budget_exact.empty()
-                || sha256_hex(context.compiler_artifact->instance_canonical_bytes)
-                       != context.registry.instance_schema_hash
-                || context.compiler_artifact->instance_canonical_bytes
-                       != protocol_instance_canonical_bytes(
-                           *context.compiler_artifact))
+            if (context.registry.format != "zkgat_verifier_registry" || context.registry.registry_id.empty() || context.registry.registry_id != context.config.model_param_id || context.registry.model_arch_id != context.config.model_arch_id || context.registry.model_param_id != context.config.model_param_id || context.registry.input_preprocess_id.empty() || context.registry.input_preprocess_id != context.config.input_preprocess_id || context.registry.quant_cfg_id != context.config.quant_cfg_id || context.registry.static_table_id != context.config.static_table_id || context.registry.srs_id != context.srs.srs_id || context.registry.protocol_schema_id != context.srs.protocol_schema_id || context.compiler_artifact == nullptr || !lower_hex_256(context.registry.instance_schema_hash) || context.registry.srs_manifest_hash != context.srs.manifest_hash || context.registry.srs_degree_bound != context.srs.degree_bound || context.registry.srs_g1_generator != context.kzg_vk.g1_generator || context.registry.srs_generator_id != context.srs.generator_id || context.registry.srs_encoding != context.srs.encoding || context.registry.srs_spec_id != context.srs.srs_type + ":" + context.srs.kzg_assumption_profile_id || !lower_hex_256(context.registry.srs_protocol_compiler_artifact_hash) || context.registry.srs_protocol_compiler_artifact_hash != context.srs.protocol_compiler_artifact_hash || !lower_hex_256(context.registry.compiler_artifact_digest) || context.registry.compiler_artifact_digest != sha256_hex(protocol_instance_canonical_bytes(*context.compiler_artifact)) || !lower_hex_256(context.registry.model_layout_digest) || context.registry.model_layout_digest != sha256_hex(model_layout_serialization(context.model)) || !lower_hex_256(context.registry.quant_chain_digest) || context.registry.quant_chain_digest != sha256_hex(context.config.quantization.canonical_serialization()) || !lower_hex_256(context.registry.static_table_digest) || context.registry.static_table_digest != detail::canonical_static_table_digest(context.tables) || context.registry.static_table_generator_id != kStaticTableGeneratorId || !lower_hex_256(context.registry.static_table_spec_hash) || context.registry.static_table_spec_hash != detail::canonical_static_table_spec_hash(context) || !lower_hex_256(context.registry.range_and_scale_certificate) || context.registry.range_and_scale_certificate != detail::canonical_range_and_scale_certificate(context) || context.registry.integer_bound_ledger_digest.empty() || !lower_hex_256(context.registry.integer_bound_ledger_digest) || context.compiler_artifact->integer_bound_ledger.empty() || context.registry.integer_bound_ledger != context.compiler_artifact->integer_bound_ledger || context.registry.integer_bound_ledger_digest != sha256_hex(integer_bound_ledger_canonical_bytes(context.compiler_artifact->integer_bound_ledger)) || !lower_hex_256(context.registry.public_input_digest) || context.registry.public_input_digest != sha256_hex(public_input_serialization(context.local)) || !lower_hex_256(context.registry.topology_digest) || context.registry.topology_digest != sha256_hex(topology_serialization(context.local)) || !lower_hex_256(context.registry.security_budget_ledger_digest) || context.registry.security_budget_exact.empty() || sha256_hex(context.compiler_artifact->instance_canonical_bytes) != context.registry.instance_schema_hash || context.compiler_artifact->instance_canonical_bytes != protocol_instance_canonical_bytes(*context.compiler_artifact))
                 return false;
             try
             {
@@ -1963,31 +1616,21 @@ namespace gatzk::protocol
                 if (!validate_protocol_compiler_artifact(
                         execution_context,
                         *context.compiler_artifact,
-                        &artifact_reason)
-                    || !validate_integer_bound_ledger(context)
-                    || !validate_static_tables(execution_context, nullptr))
+                        &artifact_reason) ||
+                    !validate_integer_bound_ledger(context) || !validate_static_tables(execution_context, nullptr))
                     return false;
                 const auto budget = evaluate_security_budget(
                     execution_context, *context.compiler_artifact);
-                if (!budget.passed
-                    || budget.ledger_digest
-                           != context.registry.security_budget_ledger_digest
-                    || budget.exact_budget != context.registry.security_budget_exact)
+                if (!budget.passed || budget.ledger_digest != context.registry.security_budget_ledger_digest || budget.exact_budget != context.registry.security_budget_exact)
                     return false;
             }
             catch (const std::exception &)
             {
                 return false;
             }
-            if (!lower_hex_256(context.authenticated_registry_digest)
-                || !lower_hex_256(context.trusted_registry_digest)
-                || context.authenticated_registry_digest
-                       != context.trusted_registry_digest)
+            if (!lower_hex_256(context.authenticated_registry_digest) || !lower_hex_256(context.trusted_registry_digest) || context.authenticated_registry_digest != context.trusted_registry_digest)
                 return false;
-            if (context.static_commitments.empty()
-                || context.static_commitments.size()
-                       != context.registry.model_entries.size()
-                           + context.registry.static_entries.size())
+            if (context.static_commitments.empty() || context.static_commitments.size() != context.registry.model_entries.size() + context.registry.static_entries.size())
                 return false;
             std::unordered_set<std::string> labels;
             if (!validate_registry_entries(
@@ -1995,8 +1638,8 @@ namespace gatzk::protocol
                     context.registry.model_entries,
                     verifier_model_entry_specs(context),
                     &labels,
-                    true)
-                || !validate_registry_entries(
+                    true) ||
+                !validate_registry_entries(
                     context,
                     context.registry.static_entries,
                     verifier_static_entry_specs(context),
@@ -2005,8 +1648,7 @@ namespace gatzk::protocol
                 return false;
             for (const auto &[name, commitment] : context.static_commitments)
             {
-                if (name.empty() || commitment.name != name
-                    || !labels.contains(name))
+                if (name.empty() || commitment.name != name || !labels.contains(name))
                     return false;
             }
             return true;
@@ -2077,19 +1719,18 @@ namespace gatzk::protocol
         if (context.config.range_bits == 0 || context.config.range_bits >= 63)
             throw std::runtime_error(
                 "IntegerBoundLedger verifier range_bits must be in [1,62]");
-        if (context.compiler_artifact == nullptr
-            || context.registry.model_entries.empty())
+        if (context.compiler_artifact == nullptr || context.registry.model_entries.empty())
             throw std::runtime_error(
                 "IntegerBoundLedger verifier requires authenticated model certificates");
         const auto decimal_less_equal = [](std::string_view lhs,
-                                            std::string_view rhs)
+                                           std::string_view rhs)
         {
             const auto trim = [](std::string_view value)
             {
                 const auto first = value.find_first_not_of('0');
                 return first == std::string_view::npos
-                    ? std::string_view("0")
-                    : value.substr(first);
+                           ? std::string_view("0")
+                           : value.substr(first);
             };
             lhs = trim(lhs);
             rhs = trim(rhs);
@@ -2173,8 +1814,7 @@ namespace gatzk::protocol
         {
             if (rhs > std::numeric_limits<std::uint64_t>::max() - lhs)
                 throw std::runtime_error(
-                    "IntegerBoundLedger verifier addition overflow: "
-                    + std::string(label));
+                    "IntegerBoundLedger verifier addition overflow: " + std::string(label));
             return lhs + rhs;
         };
         const auto checked_mul = [](std::uint64_t lhs,
@@ -2182,11 +1822,9 @@ namespace gatzk::protocol
                                     std::string_view label)
             -> std::uint64_t
         {
-            if (lhs != 0
-                && rhs > std::numeric_limits<std::uint64_t>::max() / lhs)
+            if (lhs != 0 && rhs > std::numeric_limits<std::uint64_t>::max() / lhs)
                 throw std::runtime_error(
-                    "IntegerBoundLedger verifier multiplication overflow: "
-                    + std::string(label));
+                    "IntegerBoundLedger verifier multiplication overflow: " + std::string(label));
             return lhs * rhs;
         };
         const auto minimum_limbs = [&](std::uint64_t bound) -> std::size_t
@@ -2207,20 +1845,16 @@ namespace gatzk::protocol
                                                  std::size_t limbs,
                                                  std::string_view label)
         {
-            if (limbs == 0
-                || limbs > std::numeric_limits<std::size_t>::max()
-                    / context.config.range_bits)
+            if (limbs == 0 || limbs > std::numeric_limits<std::size_t>::max() / context.config.range_bits)
                 throw std::runtime_error(
-                    "IntegerBoundLedger verifier limb width overflow: "
-                    + std::string(label));
+                    "IntegerBoundLedger verifier limb width overflow: " + std::string(label));
             const auto total_bits = limbs * context.config.range_bits;
             const auto representation_max = total_bits >= 64
-                ? std::numeric_limits<std::uint64_t>::max()
-                : ((std::uint64_t{1} << total_bits) - 1U);
+                                                ? std::numeric_limits<std::uint64_t>::max()
+                                                : ((std::uint64_t{1} << total_bits) - 1U);
             if (bound > representation_max)
                 throw std::runtime_error(
-                    "IntegerBoundLedger verifier limb capacity failure: "
-                    + std::string(label));
+                    "IntegerBoundLedger verifier limb capacity failure: " + std::string(label));
         };
         std::vector<IntegerBoundLedgerEntry> rebuilt;
         rebuilt.reserve(context.registry.integer_bound_ledger.size());
@@ -2231,12 +1865,11 @@ namespace gatzk::protocol
         {
             const auto limbs = minimum_limbs(bound);
             add_limb_capacity_check(bound, limbs, id);
-            rebuilt.push_back({
-                .id = std::move(id),
-                .stage = std::move(stage),
-                .source = std::move(source),
-                .absolute_bound = bound,
-                .limb_count = limbs});
+            rebuilt.push_back({.id = std::move(id),
+                               .stage = std::move(stage),
+                               .source = std::move(source),
+                               .absolute_bound = bound,
+                               .limb_count = limbs});
         };
         const auto table_component_bound = [&](const auto &table, bool first)
             -> std::uint64_t
@@ -2259,21 +1892,15 @@ namespace gatzk::protocol
             const auto it = std::find_if(
                 context.registry.model_entries.begin(),
                 context.registry.model_entries.end(),
-                [&](const auto &entry) { return entry.label == label; });
+                [&](const auto &entry)
+                { return entry.label == label; });
             if (it == context.registry.model_entries.end())
                 throw std::runtime_error(
-                    "IntegerBoundLedger verifier missing model certificate: "
-                    + label);
+                    "IntegerBoundLedger verifier missing model certificate: " + label);
             const auto &certificate = it->bound_certificate;
-            if (!certificate.present || certificate.label != label
-                || certificate.layer_index != layer
-                || certificate.local_head_index != head
-                || certificate.domain != domain
-                || certificate.degree_bound != context.srs.degree_bound
-                || certificate.scale != scale)
+            if (!certificate.present || certificate.label != label || certificate.layer_index != layer || certificate.local_head_index != head || certificate.domain != domain || certificate.degree_bound != context.srs.degree_bound || certificate.scale != scale)
                 throw std::runtime_error(
-                    "IntegerBoundLedger verifier model certificate metadata mismatch: "
-                    + label);
+                    "IntegerBoundLedger verifier model certificate metadata mismatch: " + label);
             return certificate.absolute_bound;
         };
 
@@ -2334,8 +1961,7 @@ namespace gatzk::protocol
         {
             if (required > registered)
                 throw std::runtime_error(
-                    "IntegerBoundLedger verifier " + std::string(name)
-                    + " input bound exceeds registered table interval");
+                    "IntegerBoundLedger verifier " + std::string(name) + " input bound exceeds registered table interval");
         };
         const auto add_division_bounds = [&](const std::string &prefix,
                                              std::uint64_t numerator,
@@ -2366,8 +1992,7 @@ namespace gatzk::protocol
             for (std::size_t head_index = 0;
                  head_index < layer.heads.size(); ++head_index)
             {
-                const auto prefix = "hidden:l" + std::to_string(layer_index)
-                    + ":h" + std::to_string(head_index);
+                const auto prefix = "hidden:l" + std::to_string(layer_index) + ":h" + std::to_string(head_index);
                 std::uint64_t w_bound = 0;
                 for (std::size_t column = 0;
                      column < layer.shape.head_dim; ++column)
@@ -2378,17 +2003,20 @@ namespace gatzk::protocol
                                 layer_index, head_index, column),
                             "in", layer_index, head_index,
                             context.config.quantization.s_w_hidden
-                                .at(layer_index).at(head_index)));
+                                .at(layer_index)
+                                .at(head_index)));
                 const auto a_src_bound = model_certificate(
                     hidden_src_label(layer_index, head_index), "d",
                     layer_index, head_index,
                     context.config.quantization.s_a_src_hidden
-                        .at(layer_index).at(head_index));
+                        .at(layer_index)
+                        .at(head_index));
                 const auto a_dst_bound = model_certificate(
                     hidden_dst_label(layer_index, head_index), "d",
                     layer_index, head_index,
                     context.config.quantization.s_a_dst_hidden
-                        .at(layer_index).at(head_index));
+                        .at(layer_index)
+                        .at(head_index));
                 add(prefix + ".model.W", "model",
                     "max_abs(round(W_fp*S_W_hidden))", w_bound);
                 add(prefix + ".model.a_src", "model",
@@ -2421,7 +2049,8 @@ namespace gatzk::protocol
                     numerator, prefix + ".H_num_scaled");
                 const auto scaled_denominator = checked_mul(
                     context.config.quantization.s_h_prime
-                        .at(layer_index).at(head_index),
+                        .at(layer_index)
+                        .at(head_index),
                     sum, prefix + ".Sum_scaled");
                 const auto elu_input_numerator = checked_mul(
                     context.config.quantization.s_agg_pre.at(layer_index),
@@ -2436,7 +2065,8 @@ namespace gatzk::protocol
                     canonical_signed_round_div_bound(
                         elu_input_numerator,
                         context.config.quantization.s_h_prime
-                            .at(layer_index).at(head_index),
+                            .at(layer_index)
+                            .at(head_index),
                         prefix + ".ELU_input"));
                 require_table_cover(score, lrelu_input_bound, "LReLU");
                 require_table_cover(delta, exp_input_bound, "ExpMap");
@@ -2656,9 +2286,11 @@ namespace gatzk::protocol
             append_u64(&bytes, entry.limb_count);
         }
         append_u64(&bytes, model_entries.size());
-        for (const auto &entry : model_entries) append_registry_entry(&bytes, entry);
+        for (const auto &entry : model_entries)
+            append_registry_entry(&bytes, entry);
         append_u64(&bytes, static_entries.size());
-        for (const auto &entry : static_entries) append_registry_entry(&bytes, entry);
+        for (const auto &entry : static_entries)
+            append_registry_entry(&bytes, entry);
         return bytes;
     }
 
@@ -2673,9 +2305,7 @@ namespace gatzk::protocol
         if (prover_context.verifier_shape_only)
             throw std::runtime_error(
                 "candidate verifier registration requires a proving context");
-        if (prover_context.compiler_artifact == nullptr
-            || prover_context.validated_compiler_artifact_identity
-                   != prover_context.compiler_artifact.get())
+        if (prover_context.compiler_artifact == nullptr || prover_context.validated_compiler_artifact_identity != prover_context.compiler_artifact.get())
             throw std::runtime_error(
                 "candidate verifier registration requires an authenticated compiler artifact");
         if (!has_complete_public_feature_source(
@@ -2731,8 +2361,7 @@ namespace gatzk::protocol
         std::ifstream input(registry_path, std::ios::binary);
         if (!input)
             throw std::runtime_error(
-                "missing authenticated verifier registration artifact; run candidate registration and review its digest: "
-                + registry_path);
+                "missing authenticated verifier registration artifact; run candidate registration and review its digest: " + registry_path);
         const auto file_size = std::filesystem::file_size(registry_path);
         if (file_size > (2ULL << 30))
             throw std::runtime_error(
@@ -2770,9 +2399,30 @@ namespace gatzk::protocol
         out.registry = artifact.registry;
         out.authenticated_registry_digest = trusted_registry_digest;
         out.trusted_registry_digest = trusted_registry_digest;
+
         if (!validate_registry_shape(out))
             throw std::runtime_error(
                 "authenticated verifier registration failed independent context validation");
+
+        auto execution_context =
+            detail::make_verifier_execution_context(
+                out);
+
+        out.validated_execution_state =
+            std::make_shared<
+                const detail::
+                    ValidatedVerifierExecutionState>(
+                detail::
+                    ValidatedVerifierExecutionState{
+                        .execution_context =
+                            std::move(
+                                execution_context),
+                        .authenticated_registry_digest =
+                            out.authenticated_registry_digest,
+                        .trusted_registry_digest =
+                            out.trusted_registry_digest,
+                    });
+
         return out;
     }
 
@@ -2799,7 +2449,8 @@ namespace gatzk::protocol
         const auto artifact = make_verifier_registration_artifact(prover_context);
         const auto body = serialize_verifier_registration_artifact(artifact);
         const auto parent = std::filesystem::path(registry_path).parent_path();
-        if (!parent.empty()) std::filesystem::create_directories(parent);
+        if (!parent.empty())
+            std::filesystem::create_directories(parent);
         std::ofstream output(registry_path, std::ios::binary | std::ios::trunc);
         if (!output)
             throw std::runtime_error("failed to create verifier registry: " + registry_path);
@@ -2815,19 +2466,62 @@ namespace gatzk::protocol
     {
         if (!prover_context.config.verifier_registry_path.empty())
             return prover_context.config.verifier_registry_path;
-        return "artifacts/verifier_registry/"
-            + prover_context.dataset.name + "/verifier_registry.txt";
+        return "artifacts/verifier_registry/" + prover_context.dataset.name + "/verifier_registry.txt";
     }
 
     std::string canonical_verifier_registry_path(
         const VerifierContext &verifier_context)
     {
-        return "artifacts/verifier_registry/"
-            + verifier_context.dataset.name + "/verifier_registry.txt";
+        return "artifacts/verifier_registry/" + verifier_context.dataset.name + "/verifier_registry.txt";
     }
 
     namespace detail
     {
+        const ProtocolContext *
+        validated_verifier_execution_context(
+            const VerifierContext &verifier_context)
+        {
+            const auto &state =
+                verifier_context
+                    .validated_execution_state;
+
+            if (state == nullptr)
+            {
+                return nullptr;
+            }
+
+            if (state
+                        ->authenticated_registry_digest !=
+                    verifier_context
+                        .authenticated_registry_digest ||
+                state
+                        ->trusted_registry_digest !=
+                    verifier_context
+                        .trusted_registry_digest)
+            {
+                return nullptr;
+            }
+
+            const auto &execution_context =
+                state->execution_context;
+
+            if (!execution_context
+                     .verifier_shape_only ||
+                execution_context
+                        .compiler_artifact ==
+                    nullptr ||
+                execution_context
+                        .validated_compiler_artifact_identity !=
+                    execution_context
+                        .compiler_artifact
+                        .get())
+            {
+                return nullptr;
+            }
+
+            return &execution_context;
+        }
+
         ProtocolContext make_verifier_execution_context(
             const VerifierContext &verifier_context)
         {

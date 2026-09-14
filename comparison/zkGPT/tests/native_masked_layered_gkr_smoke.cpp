@@ -63,13 +63,14 @@ NativeLayeredGkrWitness make_witness() {
     return witness;
 }
 
-bool mutate_terminal_label(std::vector<NativeProofMessage> &messages) {
+bool mutate_input_binding_payload(std::vector<NativeProofMessage> &messages) {
     for (auto message_it = messages.rbegin(); message_it != messages.rend(); ++message_it) {
         NativeProofMessage &message = *message_it;
-        if (message.kind != NativeProofMessageKind::FieldVector ||
-            message.label.find("/terminal") == std::string::npos)
+        if (message.kind != NativeProofMessageKind::Field ||
+            message.label != "gkr/input/bind/response")
             continue;
-        message.label.back() = 'x';
+        if (message.payload.empty()) return false;
+        message.payload.back() = message.payload.back() == '0' ? '1' : '0';
         return true;
     }
     return false;
@@ -84,24 +85,49 @@ int main() {
     const std::vector<Fr> output{Fr(11), Fr(27)};
     const std::vector<NativeGkrMatmulShape> descriptors{{1, 2, 2}};
     std::string reason;
+    NativeGkrInputBinding produced_binding;
+    NativeGkrInputBinding verified_binding;
+    NativeGkrProverResult prover_result;
 
     NativeProofSession session("masked-layered-gkr-smoke-v1", statement_fixture());
-    if (!prove_masked_gkr_transcript(session, circuit, witness, output, &reason)) {
+    const std::size_t messages_before_prover_result = session.messages().size();
+    if (!prove_masked_gkr_transcript(session, circuit, witness, output, &reason,
+                                     &produced_binding, &prover_result)) {
         std::cerr << "prove failed: " << reason << '\n';
         return 1;
     }
-    assert(verify_masked_gkr_transcript(session, circuit, output, descriptors, &reason));
+    assert(session.messages().size() > messages_before_prover_result);
+    assert(prover_result.has_unmasked_input_claim_opening);
+    const auto basis = zkgpt::native_pedersen::derive_basis(
+        "zkgpt/masked-sumcheck/v2/" + session.statement_digest());
+    assert(prover_result.unmasked_input_claim_opening.valid(basis, &reason));
+    assert(prover_result.unmasked_input_claim_opening.commitment.point ==
+           produced_binding.unmasked_claim_commitment.point);
+    assert(prover_result.input_binding.unmasked_claim_commitment.point ==
+           produced_binding.unmasked_claim_commitment.point);
+    if (!verify_masked_gkr_transcript(session, circuit, output, descriptors,
+                                      &reason, &verified_binding)) {
+        std::cerr << "verify failed: " << reason << '\n';
+        return 1;
+    }
+    assert(produced_binding.point == verified_binding.point);
+    assert(produced_binding.claim_commitment.point ==
+           verified_binding.claim_commitment.point);
+    assert(produced_binding.unmasked_claim_commitment.point ==
+           verified_binding.unmasked_claim_commitment.point);
+    assert(produced_binding.mask_commitment.point ==
+           verified_binding.mask_commitment.point);
 
     const std::string wire = "/tmp/zkgpt-native-masked-layered-gkr.smoke";
     assert(session.write(wire, &reason));
     NativeProofSession serialized;
     assert(NativeProofSession::read(wire, serialized, &reason));
     assert(verify_masked_gkr_transcript(serialized, circuit, output,
-                                        descriptors, &reason));
+                                        descriptors, &reason, nullptr));
     std::remove(wire.c_str());
 
     std::vector<NativeProofMessage> tampered_messages = session.messages();
-    assert(mutate_terminal_label(tampered_messages));
+    assert(mutate_input_binding_payload(tampered_messages));
     NativeProofSession tampered;
     assert(NativeProofSession::from_messages(session.domain(), session.statement(),
                                              tampered_messages, tampered, &reason));
@@ -117,10 +143,10 @@ int main() {
     assert(prove_masked_gkr_transcript(fresh, circuit, witness, output, &reason));
     std::string first_commitment, second_commitment;
     for (const NativeProofMessage &message : session.messages())
-        if (message.label.find("/mask/0/commitment") != std::string::npos)
+        if (message.label == "gkr/layer/2/phase1/round/0/h/0/meta")
             first_commitment = message.payload;
     for (const NativeProofMessage &message : fresh.messages())
-        if (message.label.find("/mask/0/commitment") != std::string::npos)
+        if (message.label == "gkr/layer/2/phase1/round/0/h/0/meta")
             second_commitment = message.payload;
     assert(!first_commitment.empty() && first_commitment != second_commitment);
 

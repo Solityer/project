@@ -199,7 +199,7 @@ namespace gatzk::crypto
 
             constexpr std::size_t
                 kMinimumItemsPerWorker =
-                    std::size_t{1} << 17;
+                    std::size_t{1} << 15;
 
             const auto hardware_workers =
                 std::max<std::size_t>(
@@ -366,6 +366,135 @@ namespace gatzk::crypto
                                 bls12_381::scalar_t>(
                                 input[index]
                                     .native());
+                    }
+                });
+        }
+
+        void copy_mcl_canonical_scalar_batch_to_icicle(
+            bls12_381::scalar_t *output,
+            const algebra::FieldElement *const *inputs,
+            const std::size_t *counts,
+            std::size_t max_count,
+            std::size_t batch_size)
+        {
+            if (batch_size == 0)
+            {
+                return;
+            }
+
+            if (output == nullptr ||
+                inputs == nullptr ||
+                counts == nullptr ||
+                max_count == 0)
+            {
+                throw std::runtime_error(
+                    "CUDA G1 MSM canonical scalar batch staging received invalid input");
+            }
+
+            if (max_count >
+                std::numeric_limits<
+                    std::size_t>::max() /
+                    batch_size)
+            {
+                throw std::runtime_error(
+                    "CUDA G1 MSM canonical scalar batch size overflow");
+            }
+
+            for (std::size_t batch = 0;
+                 batch < batch_size;
+                 ++batch)
+            {
+                if (counts[batch] >
+                    max_count)
+                {
+                    throw std::runtime_error(
+                        "CUDA G1 MSM canonical scalar batch count exceeds max count");
+                }
+
+                if (counts[batch] != 0 &&
+                    inputs[batch] ==
+                        nullptr)
+                {
+                    throw std::runtime_error(
+                        "CUDA G1 MSM canonical scalar batch contains a null input");
+                }
+            }
+
+            const auto total_scalar_count =
+                max_count *
+                batch_size;
+
+            std::fill(
+                output,
+                output +
+                    total_scalar_count,
+                bls12_381::
+                    scalar_t{});
+
+            parallel_conversion_ranges(
+                total_scalar_count,
+                [&](std::size_t begin,
+                    std::size_t end)
+                {
+                    std::size_t position =
+                        begin;
+
+                    while (position <
+                           end)
+                    {
+                        const auto batch =
+                            position /
+                            max_count;
+
+                        const auto offset =
+                            position -
+                            batch *
+                                max_count;
+
+                        const auto batch_end =
+                            std::min(
+                                end,
+                                (batch + 1) *
+                                    max_count);
+
+                        const auto local_end =
+                            batch_end -
+                            batch *
+                                max_count;
+
+                        const auto convert_end =
+                            std::min(
+                                local_end,
+                                counts[batch]);
+
+                        if (offset <
+                            convert_end)
+                        {
+                            const auto *input =
+                                inputs[batch];
+
+                            auto *batch_output =
+                                output +
+                                batch *
+                                    max_count;
+
+                            for (std::size_t index =
+                                     offset;
+                                 index <
+                                 convert_end;
+                                 ++index)
+                            {
+                                batch_output[index] =
+                                    to_icicle_field<
+                                        bls12_381::
+                                            scalar_t>(
+                                        input[index]
+                                            .native());
+                            }
+                        }
+
+                        position =
+                            batch_end;
                     }
                 });
         }
@@ -1714,19 +1843,19 @@ namespace gatzk::crypto
                         total_scalar_count);
             }
 
-            for (std::size_t batch = 0;
-                 batch < batch_size;
-                 ++batch)
+            if (resident_scalar_batch)
             {
-                if (counts[batch] >
-                    max_count)
+                for (std::size_t batch = 0;
+                     batch < batch_size;
+                     ++batch)
                 {
-                    throw std::runtime_error(
-                        "CUDA resident MSM batch request exceeds max count");
-                }
+                    if (counts[batch] >
+                        max_count)
+                    {
+                        throw std::runtime_error(
+                            "CUDA resident MSM batch request exceeds max count");
+                    }
 
-                if (resident_scalar_batch)
-                {
                     validate_resident_montgomery_scalars(
                         device_montgomery_scalar_vectors[batch],
                         device_montgomery_scalar_capacities[batch],
@@ -1789,30 +1918,16 @@ namespace gatzk::crypto
                                 status);
                         }
                     }
-
-                    continue;
                 }
-
-                auto *batch_scalars =
-                    batched_scalars +
-                    batch *
-                        max_count;
-
-                copy_mcl_canonical_scalars_to_icicle(
-                    batch_scalars,
-                    scalar_vectors[batch],
-                    counts[batch]);
-
-                std::fill(
-                    batched_scalars +
-                        batch *
-                            max_count +
-                        counts[batch],
-                    batched_scalars +
-                        (batch + 1) *
-                            max_count,
-                    bls12_381::
-                        scalar_t{});
+            }
+            else
+            {
+                copy_mcl_canonical_scalar_batch_to_icicle(
+                    batched_scalars,
+                    scalar_vectors,
+                    counts,
+                    max_count,
+                    batch_size);
             }
 
             if (resident_scalar_batch)

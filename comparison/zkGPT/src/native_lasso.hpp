@@ -2,6 +2,7 @@
 #define ZKGPT_NATIVE_LASSO_HPP
 
 #include "hyrax_rp.hpp"
+#include "native_pedersen_relation.hpp"
 
 #include <cstddef>
 #include <string>
@@ -63,6 +64,11 @@ struct NativeLassoBundleResult {
     std::vector<G1> family_commitments;
     std::vector<F> final_query_point;
     F final_l_evaluation = F_ZERO;
+    // Authenticated scalar claim for the final L_qry opening.  The opening
+    // witness stays prover-local; this commitment is safe to hand to the
+    // GAT combiner together with final_query_point.
+    zkgpt::native_pedersen::ScalarCommitment final_l_commitment;
+    bool has_final_l_commitment = false;
 };
 
 // These labels are the only terminal-opening interface exposed by this

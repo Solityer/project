@@ -6792,24 +6792,10 @@ namespace gatzk::protocol
                         "is missing evaluation plan");
                 }
 
-                // Route every transform size admitted by the exact CUDA
-                // coset policy through the device-resident quotient executor.
-                // On GB10/UVA this intentionally includes smaller formal
-                // workloads that were previously forced back to CPU.
-                if (!algebra::
-                        should_use_cuda_coset_transform(
-                            target_size_))
-                {
-                    return false;
-                }
-
-                // The executor finalizes through the same exact paired NTT
-                // boundary as its direct leaves.  Reject an unsupported
-                // target before building/materializing the CUDA program so
-                // the canonical CPU quotient path owns large targets.
                 const bool leaf_exact_ntt_supported =
                     cuda_t_edge_leaf_exact_ntt_supported(
                         target_size_);
+
                 if (!leaf_exact_ntt_supported)
                 {
                     return false;
@@ -6837,15 +6823,17 @@ namespace gatzk::protocol
                         leaf_exact_ntt_supported,
                         admission_shape))
                 {
-                    throw std::runtime_error(
-                        "CUDA t_edge large route was selected but admission "
-                        "was rejected: target_size=" +
+                    progress_note(
+                        "prove:quotient:t_edge:"
+                        "cuda_executor:admission_rejected:"
+                        "target_size=" +
                         std::to_string(target_size_) +
-                        " domain=" +
+                        ":domain=" +
                         (domain_ == nullptr
                              ? std::string("unknown")
-                             : domain_->name) +
-                        " route=cuda_t_edge_executor");
+                             : domain_->name));
+
+                    return false;
                 }
 
                 return true;
@@ -6921,7 +6909,7 @@ namespace gatzk::protocol
                 executor->prepare_program(
                     program);
 
-                const bool large_cuda_route_selected =
+                const bool strict_cuda_leaf_route =
                     algebra::
                         should_use_cuda_coset_transform(
                             target_size_);
@@ -7545,10 +7533,10 @@ namespace gatzk::protocol
                             reset_cuda_t_edge_transient_leaf_state();
                             return;
                         }
-                        if (large_cuda_route_selected)
+                        if (strict_cuda_leaf_route)
                         {
                             throw std::runtime_error(
-                                "CUDA t_edge large route was selected but "
+                                "CUDA t_edge strict leaf route was selected but "
                                 "linear leaf execution failed: target_size=" +
                                 std::to_string(target_size_) +
                                 " domain=" +
@@ -7575,10 +7563,10 @@ namespace gatzk::protocol
                         if (leaf_exact_ntt_supported &&
                             direct_source_exists)
                         {
-                            if (large_cuda_route_selected)
+                            if (strict_cuda_leaf_route)
                             {
                                 throw std::runtime_error(
-                                    "CUDA t_edge large route was selected but "
+                                    "CUDA t_edge strict leaf route was selected but "
                                     "direct leaf execution failed: target_size=" +
                                     std::to_string(target_size_) +
                                     " domain=" +

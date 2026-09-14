@@ -72,6 +72,10 @@ namespace gatzk::protocol
     // data and a VK copy, and never points back to a proving context.
     namespace detail
     {
+        const ProtocolContext *
+        validated_verifier_execution_context(
+            const VerifierContext &verifier_context);
+
         ProtocolContext make_verifier_execution_context(
             const VerifierContext &verifier_context);
     }

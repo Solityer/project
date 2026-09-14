@@ -145,66 +145,213 @@ namespace gatzk::protocol
             const std::shared_ptr<algebra::RootOfUnityDomain> &domain,
             std::size_t valid_count,
             const FieldElement &point,
-            ValueFn &&value_fn)
+            ValueFn &&value_fn,
+            algebra::DomainEvaluationWeightCache
+                *weight_cache = nullptr)
         {
             if (domain == nullptr)
             {
-                throw std::runtime_error("lazy verifier public polynomial requires a domain");
+                throw std::runtime_error(
+                    "lazy verifier public polynomial requires a domain");
             }
+
+            if (valid_count >
+                domain->size)
+            {
+                throw std::runtime_error(
+                    "verifier public polynomial exceeds its domain");
+            }
+
             if (valid_count == 0)
             {
                 return FieldElement::zero();
             }
-            if (const auto shift = domain->rotation_shift(FieldElement::one(), point); shift.has_value())
+
+            if (const auto shift =
+                    domain->rotation_shift(
+                        FieldElement::one(),
+                        point);
+                shift.has_value())
             {
-                return *shift < valid_count ? value_fn(*shift) : FieldElement::zero();
+                return *shift < valid_count
+                           ? value_fn(*shift)
+                           : FieldElement::zero();
             }
-            const auto zero_eval = domain->zero_polynomial_eval(point);
-            FieldElement sum = FieldElement::zero();
-            const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
-            if (valid_count >= (1ULL << 20) && cpu_count > 1)
+
+            if (weight_cache !=
+                nullptr)
             {
-                const auto task_count = std::min<std::size_t>(cpu_count, (valid_count + (1ULL << 20) - 1) / (1ULL << 20));
-                const auto chunk_size = (valid_count + task_count - 1) / task_count;
-                std::vector<std::future<FieldElement>> futures;
-                futures.reserve(task_count);
-                for (std::size_t task = 0; task < task_count; ++task)
+                const auto &entry =
+                    weight_cache->get(
+                        domain,
+                        point);
+
+                if (entry.direct_index
+                        .has_value())
                 {
-                    const auto begin = task * chunk_size;
-                    const auto end = std::min(valid_count, begin + chunk_size);
+                    return *entry.direct_index <
+                                   valid_count
+                               ? value_fn(
+                                     *entry.direct_index)
+                               : FieldElement::zero();
+                }
+
+                if (entry.native_weights
+                        .size() !=
+                    domain->size)
+                {
+                    throw std::runtime_error(
+                        "verifier public polynomial weight-cache shape mismatch");
+                }
+
+                mcl::Fr sum;
+                sum.clear();
+
+                for (std::size_t index = 0;
+                     index < valid_count;
+                     ++index)
+                {
+                    const auto value =
+                        value_fn(index);
+
+                    mcl::Fr product;
+
+                    mcl::Fr::mul(
+                        product,
+                        value.native(),
+                        entry.native_weights[index]);
+
+                    mcl::Fr::add(
+                        sum,
+                        sum,
+                        product);
+                }
+
+                return FieldElement::
+                    from_native(sum);
+            }
+
+            const auto zero_eval =
+                domain->zero_polynomial_eval(
+                    point);
+
+            FieldElement sum =
+                FieldElement::zero();
+
+            const auto cpu_count =
+                std::max<std::size_t>(
+                    1,
+                    std::thread::
+                        hardware_concurrency());
+
+            if (valid_count >=
+                    (1ULL << 20) &&
+                cpu_count > 1)
+            {
+                const auto task_count =
+                    std::min<std::size_t>(
+                        cpu_count,
+                        (valid_count +
+                         (1ULL << 20) -
+                         1) /
+                            (1ULL << 20));
+
+                const auto chunk_size =
+                    (valid_count +
+                     task_count -
+                     1) /
+                    task_count;
+
+                std::vector<
+                    std::future<FieldElement>>
+                    futures;
+
+                futures.reserve(
+                    task_count);
+
+                for (std::size_t task = 0;
+                     task < task_count;
+                     ++task)
+                {
+                    const auto begin =
+                        task *
+                        chunk_size;
+
+                    const auto end =
+                        std::min(
+                            valid_count,
+                            begin +
+                                chunk_size);
+
                     if (begin >= end)
                     {
                         break;
                     }
-                    futures.push_back(std::async(
-                        std::launch::async,
-                        [&, begin, end]()
-                        {
-                            FieldElement partial = FieldElement::zero();
-                            auto omega_power = domain->omega.pow(static_cast<std::uint64_t>(begin));
-                            for (std::size_t index = begin; index < end; ++index)
+
+                    futures.push_back(
+                        std::async(
+                            std::launch::async,
+                            [&, begin, end]()
                             {
-                                partial += value_fn(index) * omega_power / (point - omega_power);
-                                omega_power *= domain->omega;
-                            }
-                            return partial;
-                        }));
+                                FieldElement partial =
+                                    FieldElement::zero();
+
+                                auto omega_power =
+                                    domain->omega.pow(
+                                        static_cast<
+                                            std::uint64_t>(
+                                            begin));
+
+                                for (std::size_t index =
+                                         begin;
+                                     index < end;
+                                     ++index)
+                                {
+                                    partial +=
+                                        value_fn(
+                                            index) *
+                                        omega_power /
+                                        (point -
+                                         omega_power);
+
+                                    omega_power *=
+                                        domain->omega;
+                                }
+
+                                return partial;
+                            }));
                 }
-                for (auto &future : futures)
+
+                for (auto &future :
+                     futures)
                 {
-                    sum += future.get();
+                    sum +=
+                        future.get();
                 }
             }
             else
             {
-                FieldElement omega_power = FieldElement::one();
-                for (std::size_t index = 0; index < valid_count; ++index)
+                FieldElement omega_power =
+                    FieldElement::one();
+
+                for (std::size_t index = 0;
+                     index < valid_count;
+                     ++index)
                 {
-                    sum += value_fn(index) * omega_power / (point - omega_power);
-                    omega_power *= domain->omega;
+                    sum +=
+                        value_fn(index) *
+                        omega_power /
+                        (point -
+                         omega_power);
+
+                    omega_power *=
+                        domain->omega;
                 }
             }
-            return zero_eval * domain->inv_size * sum;
+
+            return zero_eval *
+                   domain->inv_size *
+                   sum;
         }
 
         FieldElement evaluate_lazy_fh_public_poly(
@@ -300,7 +447,8 @@ namespace gatzk::protocol
             const VerifierPublicPolynomialDescriptor &descriptor,
             const FieldElement &point,
             const std::vector<FieldElement> &aggregation_src_multiplicity,
-            const std::vector<FieldElement> &aggregation_dst_multiplicity)
+            const std::vector<FieldElement> &aggregation_dst_multiplicity,
+            algebra::DomainEvaluationWeightCache &weight_cache)
         {
             if (descriptor.basis != algebra::PolynomialBasis::Evaluation)
                 throw std::runtime_error(
@@ -325,56 +473,163 @@ namespace gatzk::protocol
             const auto edge_count = context.local.edges.size();
             const auto node_count = context.local.num_nodes;
             const auto class_count = context.local.num_classes;
-            const auto selector = [&](std::size_t valid_count)
+            const auto evaluate_on_domain =
+                [&](std::size_t valid_count,
+                    auto &&value_fn)
             {
-                if (valid_count > domain->size)
-                    throw std::runtime_error("public selector exceeds its domain: " + descriptor.name);
                 return evaluate_truncated_domain_polynomial(
-                    domain, valid_count, point,
+                    domain,
+                    valid_count,
+                    point,
+                    std::forward<
+                        decltype(value_fn)>(
+                        value_fn),
+                    &weight_cache);
+            };
+
+            const auto selector =
+                [&](std::size_t valid_count)
+            {
+                if (valid_count >
+                    domain->size)
+                {
+                    throw std::runtime_error(
+                        "public selector exceeds its domain: " +
+                        descriptor.name);
+                }
+
+                return evaluate_on_domain(
+                    valid_count,
                     [](std::size_t)
-                    { return FieldElement::one(); });
+                    {
+                        return FieldElement::one();
+                    });
             };
-            const auto edge_value = [&](auto &&value_fn, std::size_t valid_count)
+
+            const auto edge_value =
+                [&](auto &&value_fn,
+                    std::size_t valid_count)
             {
-                if (valid_count > edge_size || domain->name != "edge")
-                    throw std::runtime_error("public edge polynomial descriptor mismatch: " + descriptor.name);
-                return evaluate_truncated_domain_polynomial(
-                    domain, valid_count, point, std::forward<decltype(value_fn)>(value_fn));
+                if (valid_count >
+                        edge_size ||
+                    domain->name !=
+                        "edge")
+                {
+                    throw std::runtime_error(
+                        "public edge polynomial descriptor mismatch: " +
+                        descriptor.name);
+                }
+
+                return evaluate_on_domain(
+                    valid_count,
+                    std::forward<
+                        decltype(value_fn)>(
+                        value_fn));
             };
-            const auto node_value = [&](auto &&value_fn, std::size_t valid_count)
+
+            const auto node_value =
+                [&](auto &&value_fn,
+                    std::size_t valid_count)
             {
-                if (valid_count > n_size || domain->name != "N")
-                    throw std::runtime_error("public node polynomial descriptor mismatch: " + descriptor.name);
-                return evaluate_truncated_domain_polynomial(
-                    domain, valid_count, point, std::forward<decltype(value_fn)>(value_fn));
+                if (valid_count >
+                        n_size ||
+                    domain->name !=
+                        "N")
+                {
+                    throw std::runtime_error(
+                        "public node polynomial descriptor mismatch: " +
+                        descriptor.name);
+                }
+
+                return evaluate_on_domain(
+                    valid_count,
+                    std::forward<
+                        decltype(value_fn)>(
+                        value_fn));
             };
-            const auto cat_value = [&](auto &&value_fn, std::size_t valid_count)
+
+            const auto cat_value =
+                [&](auto &&value_fn,
+                    std::size_t valid_count)
             {
-                if (valid_count > cat_size || domain->name != "cat")
-                    throw std::runtime_error("public category polynomial descriptor mismatch: " + descriptor.name);
-                return evaluate_truncated_domain_polynomial(
-                    domain, valid_count, point, std::forward<decltype(value_fn)>(value_fn));
+                if (valid_count >
+                        cat_size ||
+                    domain->name !=
+                        "cat")
+                {
+                    throw std::runtime_error(
+                        "public category polynomial descriptor mismatch: " +
+                        descriptor.name);
+                }
+
+                return evaluate_on_domain(
+                    valid_count,
+                    std::forward<
+                        decltype(value_fn)>(
+                        value_fn));
             };
-            const auto in_value = [&](auto &&value_fn, std::size_t valid_count)
+
+            const auto in_value =
+                [&](auto &&value_fn,
+                    std::size_t valid_count)
             {
-                if (valid_count > in_size || domain->name != "in")
-                    throw std::runtime_error("public input polynomial descriptor mismatch: " + descriptor.name);
-                return evaluate_truncated_domain_polynomial(
-                    domain, valid_count, point, std::forward<decltype(value_fn)>(value_fn));
+                if (valid_count >
+                        in_size ||
+                    domain->name !=
+                        "in")
+                {
+                    throw std::runtime_error(
+                        "public input polynomial descriptor mismatch: " +
+                        descriptor.name);
+                }
+
+                return evaluate_on_domain(
+                    valid_count,
+                    std::forward<
+                        decltype(value_fn)>(
+                        value_fn));
             };
-            const auto d_value = [&](auto &&value_fn, std::size_t valid_count)
+
+            const auto d_value =
+                [&](auto &&value_fn,
+                    std::size_t valid_count)
             {
-                if (valid_count > d_size || domain->name != "d")
-                    throw std::runtime_error("public head polynomial descriptor mismatch: " + descriptor.name);
-                return evaluate_truncated_domain_polynomial(
-                    domain, valid_count, point, std::forward<decltype(value_fn)>(value_fn));
+                if (valid_count >
+                        d_size ||
+                    domain->name !=
+                        "d")
+                {
+                    throw std::runtime_error(
+                        "public head polynomial descriptor mismatch: " +
+                        descriptor.name);
+                }
+
+                return evaluate_on_domain(
+                    valid_count,
+                    std::forward<
+                        decltype(value_fn)>(
+                        value_fn));
             };
-            const auto c_value = [&](auto &&value_fn, std::size_t valid_count)
+
+            const auto c_value =
+                [&](auto &&value_fn,
+                    std::size_t valid_count)
             {
-                if (valid_count > c_size || domain->name != "C")
-                    throw std::runtime_error("public class polynomial descriptor mismatch: " + descriptor.name);
-                return evaluate_truncated_domain_polynomial(
-                    domain, valid_count, point, std::forward<decltype(value_fn)>(value_fn));
+                if (valid_count >
+                        c_size ||
+                    domain->name !=
+                        "C")
+                {
+                    throw std::runtime_error(
+                        "public class polynomial descriptor mismatch: " +
+                        descriptor.name);
+                }
+
+                return evaluate_on_domain(
+                    valid_count,
+                    std::forward<
+                        decltype(value_fn)>(
+                        value_fn));
             };
 
             if (descriptor.name == "P_I")
@@ -829,8 +1084,14 @@ namespace gatzk::protocol
                     }
                     else
                     {
-                        value = internal::evaluate_deterministic_public_polynomial(
-                            context_, it->second, point, aggregation_multiplicity_);
+                        value =
+                            internal::
+                                evaluate_deterministic_public_polynomial(
+                                    context_,
+                                    it->second,
+                                    point,
+                                    aggregation_multiplicity_,
+                                    domain_weight_cache_);
                     }
                 }
                 else if (const auto it = opened_values_.find(name); it != opened_values_.end())
@@ -901,7 +1162,23 @@ namespace gatzk::protocol
                     return;
                 }
 
-                const auto weights = domain->barycentric_weights_native(point);
+                const auto &weight_entry =
+                    domain_weight_cache_.get(
+                        domain,
+                        point);
+
+                if (weight_entry.direct_index
+                        .has_value() ||
+                    weight_entry.native_weights
+                            .size() !=
+                        domain->size)
+                {
+                    throw std::runtime_error(
+                        "verifier FH public weight-cache shape mismatch");
+                }
+
+                const auto &weights =
+                    weight_entry.native_weights;
 
                 std::vector<mcl::Fr> column_fields(feature_count);
                 for (std::size_t column = 0; column < feature_count; ++column)
@@ -2293,14 +2570,16 @@ namespace gatzk::protocol
             const ProtocolContext &context,
             const VerifierPublicPolynomialDescriptor &descriptor,
             const algebra::FieldElement &point,
-            const AggregationMultiplicityCache &multiplicity)
+            const AggregationMultiplicityCache &multiplicity,
+            algebra::DomainEvaluationWeightCache &weight_cache)
         {
             return evaluate_deterministic_public_polynomial_impl(
                 context,
                 descriptor,
                 point,
                 multiplicity.src,
-                multiplicity.dst);
+                multiplicity.dst,
+                weight_cache);
         }
     } // namespace internal
 
@@ -3083,140 +3362,376 @@ namespace gatzk::protocol
                 metrics->verify_point_group_registry_ms += elapsed_ms(
                     point_group_registry_start, Clock::now());
             }
+            const auto append_point_group_failure_note =
+                [&](const std::string &note)
+            {
+                if (metrics == nullptr ||
+                    note.empty())
+                {
+                    return;
+                }
+
+                if (!metrics->notes.empty())
+                {
+                    metrics->notes +=
+                        "; ";
+                }
+
+                metrics->notes +=
+                    note;
+            };
+
             try
             {
-                require_opening_layout(proof.opening_groups, point_groups);
+                require_opening_layout(
+                    proof.opening_groups,
+                    point_groups);
             }
             catch (const std::exception &)
             {
+                append_point_group_failure_note(
+                    "point_group_failure=layout");
+
                 return false;
             }
             catch (...)
             {
+                append_point_group_failure_note(
+                    "point_group_failure=layout_unknown");
+
                 return false;
             }
 
-            std::vector<std::uint8_t> group_results(point_groups.size(), 0);
-            std::vector<double> group_elapsed_ms(point_groups.size(), 0.0);
-            const auto verify_group_indices = [&](const std::vector<std::size_t> &indices)
+            std::vector<std::uint8_t>
+                group_results(
+                    point_groups.size(),
+                    0);
+
+            std::vector<std::uint8_t>
+                group_failure_kind(
+                    point_groups.size(),
+                    0);
+
+            std::vector<double>
+                group_elapsed_ms(
+                    point_groups.size(),
+                    0.0);
+
+            const auto verify_group_indices =
+                [&](const std::vector<
+                    std::size_t> &indices)
             {
                 if (indices.empty())
-                    return 0.0;
-                const auto phase_start = Clock::now();
-                const auto hardware_workers = std::max<unsigned>(
-                    1, std::thread::hardware_concurrency());
-                const auto worker_count = std::min<std::size_t>(
-                    indices.size(), std::min<std::size_t>(
-                                        16, hardware_workers));
-                std::atomic<std::size_t> next{0};
-                std::vector<std::future<void>> futures;
-                futures.reserve(worker_count);
-                for (std::size_t worker = 0; worker < worker_count; ++worker)
                 {
-                    futures.push_back(std::async(
-                        std::launch::async,
-                        [&]
-                        {
-                            while (true)
-                            {
-                                const auto position = next.fetch_add(1);
-                                if (position >= indices.size())
-                                    break;
-                                const auto group_index = indices[position];
-                                const auto &group = point_groups[group_index];
-                                std::vector<Commitment> commitments;
-                                std::vector<FieldElement> values;
-                                commitments.reserve(group.claims.size());
-                                values.reserve(group.claims.size());
-                                for (const auto &claim : group.claims)
-                                {
-                                    commitments.push_back(claim.commitment);
-                                    values.push_back(claim.value);
-                                }
-                                const auto local_start = Clock::now();
-                                group_results[group_index] =
-                                    crypto::KZG::verify_point_group(
-                                        commitments,
-                                        group.point,
-                                        values,
-                                        derive_point_group_challenge(
-                                            proof.public_metadata, group),
-                                        proof.opening_groups[group_index].witness,
-                                        context.kzg.vk)
-                                        ? 1
-                                        : 0;
-                                group_elapsed_ms[group_index] = elapsed_ms(
-                                    local_start, Clock::now());
-                            }
-                        }));
+                    return 0.0;
                 }
-                for (auto &future : futures)
+
+                const auto phase_start =
+                    Clock::now();
+
+                const auto hardware_workers =
+                    std::max<unsigned>(
+                        1,
+                        std::thread::
+                            hardware_concurrency());
+
+                const auto worker_count =
+                    std::min<std::size_t>(
+                        indices.size(),
+                        std::min<std::size_t>(
+                            16,
+                            hardware_workers));
+
+                std::atomic<std::size_t>
+                    next{0};
+
+                std::vector<
+                    std::future<void>>
+                    futures;
+
+                futures.reserve(
+                    worker_count);
+
+                for (std::size_t worker = 0;
+                     worker < worker_count;
+                     ++worker)
+                {
+                    futures.push_back(
+                        std::async(
+                            std::launch::async,
+                            [&]
+                            {
+                                while (true)
+                                {
+                                    const auto position =
+                                        next.fetch_add(
+                                            1);
+
+                                    if (position >=
+                                        indices.size())
+                                    {
+                                        break;
+                                    }
+
+                                    const auto group_index =
+                                        indices[position];
+
+                                    const auto &group =
+                                        point_groups[group_index];
+
+                                    std::vector<
+                                        Commitment>
+                                        commitments;
+
+                                    std::vector<
+                                        FieldElement>
+                                        values;
+
+                                    commitments.reserve(
+                                        group.claims
+                                            .size());
+
+                                    values.reserve(
+                                        group.claims
+                                            .size());
+
+                                    for (const auto &claim :
+                                         group.claims)
+                                    {
+                                        commitments.push_back(
+                                            claim.commitment);
+
+                                        values.push_back(
+                                            claim.value);
+                                    }
+
+                                    const auto local_start =
+                                        Clock::now();
+
+                                    try
+                                    {
+                                        const auto rho =
+                                            derive_point_group_challenge(
+                                                proof.public_metadata,
+                                                group);
+
+                                        const bool accepted =
+                                            crypto::KZG::
+                                                verify_point_group(
+                                                    commitments,
+                                                    group.point,
+                                                    values,
+                                                    rho,
+                                                    proof
+                                                        .opening_groups[group_index]
+                                                        .witness,
+                                                    context
+                                                        .kzg
+                                                        .vk);
+
+                                        group_results[group_index] =
+                                            accepted
+                                                ? 1
+                                                : 0;
+
+                                        if (!accepted)
+                                        {
+                                            group_failure_kind[group_index] =
+                                                1;
+                                        }
+                                    }
+                                    catch (...)
+                                    {
+                                        group_results[group_index] =
+                                            0;
+
+                                        group_failure_kind[group_index] =
+                                            2;
+                                    }
+
+                                    group_elapsed_ms[group_index] =
+                                        elapsed_ms(
+                                            local_start,
+                                            Clock::now());
+                                }
+                            }));
+                }
+
+                for (auto &future :
+                     futures)
+                {
                     future.get();
-                return elapsed_ms(phase_start, Clock::now());
+                }
+
+                return elapsed_ms(
+                    phase_start,
+                    Clock::now());
             };
 
-            std::vector<std::size_t> domain_group_indices;
-            std::vector<std::size_t> external_group_indices;
-            for (std::size_t i = 0; i < point_groups.size(); ++i)
+            std::vector<std::size_t>
+                domain_group_indices;
+
+            std::vector<std::size_t>
+                external_group_indices;
+
+            for (std::size_t i = 0;
+                 i < point_groups.size();
+                 ++i)
             {
-                (point_groups[i].owner_block == "W_ext"
+                (point_groups[i]
+                             .owner_block ==
+                         "W_ext"
                      ? external_group_indices
                      : domain_group_indices)
                     .push_back(i);
             }
-            double domain_opening_wall_ms = 0.0;
-            double external_opening_wall_ms = 0.0;
+
+            double domain_opening_wall_ms =
+                0.0;
+
+            double external_opening_wall_ms =
+                0.0;
+
             try
             {
-                std::vector<std::size_t> all_group_indices;
-                all_group_indices.reserve(point_groups.size());
-                for (std::size_t i = 0; i < point_groups.size(); ++i)
-                    all_group_indices.push_back(i);
-                const auto point_group_wall_ms = verify_group_indices(
-                    all_group_indices);
-                double domain_group_cpu_ms = 0.0;
-                double external_group_cpu_ms = 0.0;
-                for (const auto group_index : domain_group_indices)
-                    domain_group_cpu_ms += group_elapsed_ms[group_index];
-                for (const auto group_index : external_group_indices)
-                    external_group_cpu_ms += group_elapsed_ms[group_index];
+                std::vector<std::size_t>
+                    all_group_indices;
+
+                all_group_indices.reserve(
+                    point_groups.size());
+
+                for (std::size_t i = 0;
+                     i < point_groups.size();
+                     ++i)
+                {
+                    all_group_indices.push_back(
+                        i);
+                }
+
+                const auto point_group_wall_ms =
+                    verify_group_indices(
+                        all_group_indices);
+
+                double domain_group_cpu_ms =
+                    0.0;
+
+                double external_group_cpu_ms =
+                    0.0;
+
+                for (const auto group_index :
+                     domain_group_indices)
+                {
+                    domain_group_cpu_ms +=
+                        group_elapsed_ms[group_index];
+                }
+
+                for (const auto group_index :
+                     external_group_indices)
+                {
+                    external_group_cpu_ms +=
+                        group_elapsed_ms[group_index];
+                }
+
                 const auto group_cpu_ms =
-                    domain_group_cpu_ms + external_group_cpu_ms;
+                    domain_group_cpu_ms +
+                    external_group_cpu_ms;
+
                 if (group_cpu_ms > 0.0)
                 {
-                    domain_opening_wall_ms = point_group_wall_ms * domain_group_cpu_ms / group_cpu_ms;
+                    domain_opening_wall_ms =
+                        point_group_wall_ms *
+                        domain_group_cpu_ms /
+                        group_cpu_ms;
+
                     external_opening_wall_ms =
-                        point_group_wall_ms - domain_opening_wall_ms;
+                        point_group_wall_ms -
+                        domain_opening_wall_ms;
                 }
                 else
                 {
-                    domain_opening_wall_ms = point_group_wall_ms;
+                    domain_opening_wall_ms =
+                        point_group_wall_ms;
                 }
             }
             catch (const std::exception &)
             {
+                append_point_group_failure_note(
+                    "point_group_failure=scheduler_exception");
+
                 return false;
             }
             catch (...)
             {
+                append_point_group_failure_note(
+                    "point_group_failure=scheduler_unknown");
+
                 return false;
             }
-            const auto failed_group = std::find(
-                group_results.begin(), group_results.end(), 0);
-            if (failed_group != group_results.end())
-            {
-                return false;
-            }
-            std::unordered_map<std::string, double>
-                domain_opening_elapsed_by_name;
-            for (const auto group_index : domain_group_indices)
-            {
-                domain_opening_elapsed_by_name[point_groups[group_index].owner_block.substr(9)] += group_elapsed_ms[group_index];
-            }
+
             if (metrics != nullptr)
             {
-                metrics->verify_domain_opening_ms += domain_opening_wall_ms;
-                metrics->verify_external_opening_ms += external_opening_wall_ms;
+                metrics
+                    ->verify_domain_opening_ms +=
+                    domain_opening_wall_ms;
+
+                metrics
+                    ->verify_external_opening_ms +=
+                    external_opening_wall_ms;
+            }
+
+            const auto failed_group =
+                std::find(
+                    group_results.begin(),
+                    group_results.end(),
+                    0);
+
+            if (failed_group !=
+                group_results.end())
+            {
+                const auto group_index =
+                    static_cast<std::size_t>(
+                        std::distance(
+                            group_results.begin(),
+                            failed_group));
+
+                const auto &group =
+                    point_groups[group_index];
+
+                const auto failure_kind =
+                    group_failure_kind[group_index] ==
+                            2
+                        ? "exception"
+                        : "kzg_equation";
+
+                append_point_group_failure_note(
+                    "point_group_failure:index=" +
+                    std::to_string(
+                        group_index) +
+                    ",owner=" +
+                    group.owner_block +
+                    ",group_id=" +
+                    group.group_id +
+                    ",claims=" +
+                    std::to_string(
+                        group.claims.size()) +
+                    ",reason=" +
+                    failure_kind);
+
+                return false;
+            }
+
+            std::unordered_map<
+                std::string,
+                double>
+                domain_opening_elapsed_by_name;
+
+            for (const auto group_index :
+                 domain_group_indices)
+            {
+                domain_opening_elapsed_by_name[point_groups[group_index]
+                                                   .owner_block
+                                                   .substr(9)] +=
+                    group_elapsed_ms[group_index];
             }
             for (std::size_t spec_index = 0;
                  spec_index < bundle_specs.size(); ++spec_index)
@@ -3287,21 +3802,53 @@ namespace gatzk::protocol
         const VerifierContext &context,
         const Proof &proof)
     {
-        if (proof_contains_prover_material(proof) || context.compiler_artifact == nullptr || !validate_verifier_context(context))
-            return std::numeric_limits<std::size_t>::max();
+        if (proof_contains_prover_material(
+                proof))
+        {
+            return std::numeric_limits<
+                std::size_t>::max();
+        }
+
         try
         {
+            if (const auto *execution_context =
+                    detail::
+                        validated_verifier_execution_context(
+                            context);
+                execution_context != nullptr)
+            {
+                return private_plain_value_count_internal(
+                    *execution_context,
+                    proof);
+            }
+
+            if (context.compiler_artifact ==
+                    nullptr ||
+                !validate_verifier_context(
+                    context))
+            {
+                return std::numeric_limits<
+                    std::size_t>::max();
+            }
+
             auto execution_context =
-                detail::make_verifier_execution_context(context);
-            return private_plain_value_count_internal(execution_context, proof);
+                detail::
+                    make_verifier_execution_context(
+                        context);
+
+            return private_plain_value_count_internal(
+                execution_context,
+                proof);
         }
         catch (const std::exception &)
         {
-            return std::numeric_limits<std::size_t>::max();
+            return std::numeric_limits<
+                std::size_t>::max();
         }
         catch (...)
         {
-            return std::numeric_limits<std::size_t>::max();
+            return std::numeric_limits<
+                std::size_t>::max();
         }
     }
 
@@ -3310,13 +3857,39 @@ namespace gatzk::protocol
         const Proof &proof,
         RunMetrics *metrics)
     {
-        // Only an authenticated registry context can enter formal verification.
-        if (context.compiler_artifact == nullptr || !validate_verifier_context(context) || proof_contains_prover_material(proof))
+        if (proof_contains_prover_material(
+                proof))
+        {
             return false;
+        }
+
         try
         {
+            if (const auto *execution_context =
+                    detail::
+                        validated_verifier_execution_context(
+                            context);
+                execution_context != nullptr)
+            {
+                return verify_with_execution_context(
+                    *execution_context,
+                    proof,
+                    metrics);
+            }
+
+            if (context.compiler_artifact ==
+                    nullptr ||
+                !validate_verifier_context(
+                    context))
+            {
+                return false;
+            }
+
             auto execution_context =
-                detail::make_verifier_execution_context(context);
+                detail::
+                    make_verifier_execution_context(
+                        context);
+
             return verify_with_execution_context(
                 execution_context,
                 proof,

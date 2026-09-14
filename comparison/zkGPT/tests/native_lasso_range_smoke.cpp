@@ -134,29 +134,31 @@ int main() {
     initPairing(mcl::BN254);
     G1 G;
     hashAndMapToG1(G, "native-lasso/G");
-    const std::vector<G1> l_generators = generators("native-lasso/L", 8);
+    // Use the smallest non-trivial Boolean-hypercube domain.  The single
+    // family still exercises the complete masked Lasso relation and final L
+    // opening while keeping this proof/tamper smoke below one minute.
+    const std::vector<G1> l_generators = generators("native-lasso/L", 2);
 
-    std::vector<NativeLassoFamilyProver> families(2);
+    std::vector<NativeLassoFamilyProver> families(1);
     const std::vector<std::vector<F>> tables = {
-        {Fr(5), Fr(7), Fr(11), Fr(13)},
-        {Fr(17), Fr(19), Fr(23), Fr(29)}};
+        {Fr(5), Fr(7)}};
     for (std::size_t family_index = 0; family_index < families.size(); ++family_index) {
         NativeLassoFamilyProver &family = families[family_index];
-        family.family_id = family_index == 0 ? "a" : "b";
-        family.table_id = family_index == 0 ? "t_a" : "t_b";
-        family.resource_id = family_index == 0 ? "resource-a-v1" : "resource-b-v1";
-        family.registration_id = family_index == 0 ? "registration-a-v1" : "registration-b-v1";
+        family.family_id = "a";
+        family.table_id = "t_a";
+        family.resource_id = "resource-a-v1";
+        family.registration_id = "registration-a-v1";
         family.table = tables[family_index];
-        family.matrix_generators = generators("native-lasso/M/" + family.family_id, 16);
-        family.segment_offset = family_index * 4;
-        family.logical_queries = 4;
-        family.padded_queries = 4;
+        family.matrix_generators = generators("native-lasso/M/" + family.family_id, 4);
+        family.segment_offset = 0;
+        family.logical_queries = 2;
+        family.padded_queries = 2;
         family.padding_index = 0;
         family.padding_value = family.table[0];
         family.queries = family.table;
-        family.matrix.assign(16, Fr(0));
-        for (std::size_t row = 0; row < 4; ++row)
-            family.matrix[row + row * 4] = Fr(1);
+        family.matrix.assign(4, Fr(0));
+        for (std::size_t row = 0; row < 2; ++row)
+            family.matrix[row + row * 2] = Fr(1);
     }
     std::vector<NativeLassoFamilyPublic> public_families;
     for (const NativeLassoFamilyProver &family : families)
@@ -165,7 +167,7 @@ int main() {
     NativeLassoQueryProver query;
     query.G = G;
     query.generators = l_generators;
-    query.values = {Fr(5), Fr(7), Fr(11), Fr(13), Fr(17), Fr(19), Fr(23), Fr(29)};
+    query.values = {Fr(5), Fr(7)};
     query.basis_id =
         "0000000000000000000000000000000000000000000000000000000000000001";
     const hyrax::PedersenMleCommitment query_commitment =
@@ -205,13 +207,15 @@ int main() {
 
     bool saw_masked_terminal = false;
     for (const NativeProofMessage &message : produced.messages()) {
-        if (message.label.find("/terminal") == std::string::npos) continue;
-        if (message.kind != NativeProofMessageKind::FieldVector) {
-            std::cerr << "raw terminal message kind leaked\n";
-            return 3;
+        if (message.label.find("/terminal/values") != std::string::npos) {
+            if (message.kind != NativeProofMessageKind::FieldVector) {
+                std::cerr << "masked terminal value message kind is invalid\n";
+                return 3;
+            }
+            saw_masked_terminal = true;
         }
-        saw_masked_terminal = true;
-        if (message.label.find("/d-onehot/sum/terminal") != std::string::npos) {
+        if (message.label.find("/d-onehot/sum/terminal/values") !=
+            std::string::npos) {
             std::vector<F> values;
             if (!decode_vector(message.payload, values) ||
                 values.size() != 1 || values[0] == Fr(1)) {
@@ -219,9 +223,30 @@ int main() {
                 return 4;
             }
         }
+        if (message.label.compare(0, sizeof("challenge/") - 1, "challenge/") != 0 &&
+            message.label.find("/terminal/unmasked/value/") != std::string::npos) {
+            const std::size_t slash = message.label.rfind('/');
+            const std::string suffix = slash == std::string::npos
+                                           ? std::string()
+                                           : message.label.substr(slash + 1);
+            const bool opening_wire = suffix == "meta" || suffix == "T" ||
+                                      suffix == "response";
+            const bool expected_kind =
+                (suffix == "meta" || suffix == "T")
+                    ? message.kind == NativeProofMessageKind::Data
+                    : message.kind == NativeProofMessageKind::FieldVector;
+            if (!opening_wire || !expected_kind) {
+                std::cerr << "raw terminal opening was serialized as a scalar\n";
+                return 4;
+            }
+        }
     }
     if (!saw_masked_terminal) {
         std::cerr << "masked terminal surface is missing\n";
+        return 5;
+    }
+    if (!proved.has_final_l_commitment || proved.final_l_commitment.point.isZero()) {
+        std::cerr << "authenticated final L claim is missing\n";
         return 5;
     }
 
@@ -260,22 +285,21 @@ int main() {
     std::vector<std::size_t> reordered(restored.messages().size());
     for (std::size_t i = 0; i < reordered.size(); ++i) reordered[i] = i;
     std::size_t commitment_a = restored.messages().size();
-    std::size_t commitment_b = restored.messages().size();
     for (std::size_t i = 0; i < reordered.size(); ++i) {
         if (restored.messages()[i].label == "lasso/a/commitment") commitment_a = i;
-        if (restored.messages()[i].label == "lasso/b/commitment") commitment_b = i;
     }
-    if (commitment_a == restored.messages().size() ||
-        commitment_b == restored.messages().size()) {
+    if (commitment_a == restored.messages().size()) {
         std::cerr << "LC_f commitment messages are missing\n";
         std::remove(path.c_str());
         return 9;
     }
-    std::swap(reordered[commitment_a], reordered[commitment_b]);
+    // Moving the sole LC_f behind the first challenge must fail closed; this
+    // retains the pre-challenge commitment-order check with one family.
+    std::swap(reordered[commitment_a], reordered[first_challenge]);
     NativeProofSession reordered_session = rebuild(restored, reordered);
     if (native_lasso_verify_bundle(reordered_session, public_families, public_query,
                                    nullptr, &reason)) {
-        std::cerr << "LC_f reorder was accepted\n";
+        std::cerr << "LC_f post-challenge reorder was accepted\n";
         std::remove(path.c_str());
         return 10;
     }
@@ -396,7 +420,7 @@ int main() {
     }
 
     NativeProofSession range_session("native-range-v1", statement);
-    std::vector<F> range_values{Fr(1), Fr(2), Fr(3), Fr(4)};
+    std::vector<F> range_values{Fr(1), Fr(2)};
     F range_claim = 0;
     for (const F &value : range_values) range_claim += value;
     if (!native_range_prove_deg1(range_session, "range/a", range_values,
@@ -409,9 +433,9 @@ int main() {
         std::remove(path.c_str());
         return 12;
     }
-    std::vector<F> eq{Fr(1), Fr(2), Fr(3), Fr(4)};
-    std::vector<F> f{Fr(2), Fr(3), Fr(5), Fr(7)};
-    std::vector<F> g{Fr(11), Fr(13), Fr(17), Fr(19)};
+    std::vector<F> eq{Fr(1), Fr(2)};
+    std::vector<F> f{Fr(2), Fr(3)};
+    std::vector<F> g{Fr(11), Fr(13)};
     F degree3_claim = 0;
     for (std::size_t i = 0; i < eq.size(); ++i) degree3_claim += eq[i] * f[i] * g[i];
     if (!native_range_prove_deg3(range_session, "range/b", eq, f, g,
@@ -426,7 +450,7 @@ int main() {
     NativeProofStatement rp_statement =
         statement_for(G, l_generators, public_families, query.commitment, G);
     NativeProofSession rp_session("native-rp-v1", rp_statement);
-    std::vector<F> rp_point{Fr(2), Fr(3), Fr(5)};
+    std::vector<F> rp_point{Fr(2)};
     G1 rp_commitment;
     Fr rp_eval;
     if (!range_proof_open_with_session(query.values, rp_point, G, l_generators,

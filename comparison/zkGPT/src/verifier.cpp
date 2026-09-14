@@ -1512,6 +1512,41 @@ void masked_set_reason(std::string *reason, const std::string &message) {
     if (reason != nullptr) *reason = message;
 }
 
+using zkgpt::native_pedersen::PedersenBasis;
+using zkgpt::native_pedersen::ScalarCommitment;
+using zkgpt::native_pedersen::ScalarOpening;
+
+PedersenBasis masked_basis(const NativeProofSession &session) {
+    return zkgpt::native_pedersen::derive_basis(
+        "zkgpt/masked-sumcheck/v2/" + session.statement_digest());
+}
+
+bool masked_emit_opening(NativeProofSession &session, const PedersenBasis &basis,
+                         const std::string &label, const ScalarOpening &opening,
+                         std::string *reason) {
+    return zkgpt::native_pedersen::prove_opening(session, basis, label, opening,
+                                                  nullptr, reason);
+}
+
+bool masked_make_linear_claim(NativeProofSession &session, const PedersenBasis &basis,
+                             const std::string &label,
+                             const std::vector<ScalarOpening> &inputs,
+                             const std::vector<F> &coefficients,
+                             const F &value, ScalarOpening &output,
+                             std::string *reason) {
+    output = zkgpt::native_pedersen::commit_fresh(basis, value);
+    if (!masked_emit_opening(session, basis, label + "/output", output, reason))
+        return false;
+    std::vector<ScalarOpening> operands{output};
+    std::vector<F> relation_coefficients{F_ONE};
+    operands.insert(operands.end(), inputs.begin(), inputs.end());
+    for (const F &coefficient : coefficients)
+        relation_coefficients.push_back(-coefficient);
+    return zkgpt::native_pedersen::prove_hidden_linear(
+        session, basis, label + "/relation", operands, relation_coefficients,
+        F_ZERO, nullptr, reason);
+}
+
 bool masked_expect_message(const NativeProofSession &session, std::size_t &cursor,
                            NativeProofMessageKind kind, const std::string &label,
                            const NativeProofMessage **message,
@@ -1540,6 +1575,130 @@ bool masked_expect_challenge(const NativeProofSession &session, std::size_t &cur
         masked_set_reason(reason, "malformed masked GKR challenge: " + label);
         return false;
     }
+    return true;
+}
+
+bool masked_lookup_challenge(const NativeProofSession &session,
+                             const std::string &label, F &value,
+                             std::string *reason) {
+    std::size_t found = 0;
+    bool seen = false;
+    for (std::size_t index = 0; index < session.messages().size(); ++index) {
+        const NativeProofMessage &message = session.messages()[index];
+        if (message.label != "challenge/" + label) continue;
+        if (seen) {
+            masked_set_reason(reason, "masked GKR challenge label is duplicated");
+            return false;
+        }
+        seen = true;
+        found = index;
+    }
+    if (!seen || found >= session.messages().size() ||
+        session.messages()[found].kind != NativeProofMessageKind::Challenge ||
+        !decode_transcript_field(session.messages()[found].payload, value)) {
+        masked_set_reason(reason, "masked GKR challenge is missing or malformed");
+        return false;
+    }
+    return true;
+}
+
+bool masked_consume_opening(
+    const NativeProofSession &session, const PedersenBasis &basis,
+    const std::string &label, std::size_t &cursor,
+    const ScalarCommitment *expected, ScalarCommitment *actual,
+    std::string *reason) {
+    const auto &messages = session.messages();
+    if (cursor + 4 > messages.size() ||
+        messages[cursor].label != label + "/meta" ||
+        messages[cursor].kind != NativeProofMessageKind::Data) {
+        masked_set_reason(reason, "masked GKR cursor expected opening " + label);
+        return false;
+    }
+    ScalarCommitment commitment;
+    if (!native_masked_opening_commitment_at(session, basis, cursor, label,
+                                             commitment, reason))
+        return false;
+    if (expected != nullptr &&
+        (commitment.domain != expected->domain ||
+         commitment.point != expected->point)) {
+        masked_set_reason(reason, "masked GKR opening commitment mismatch");
+        return false;
+    }
+    if (!zkgpt::native_pedersen::verify_opening(session, basis, label,
+                                                commitment, reason))
+        return false;
+    if (actual != nullptr) *actual = commitment;
+    cursor += 4;
+    return true;
+}
+
+bool masked_consume_linear(
+    const NativeProofSession &session, const PedersenBasis &basis,
+    const std::string &label, std::size_t &cursor,
+    const std::vector<ScalarCommitment> &operands,
+    const std::vector<F> &coefficients, const F &public_value,
+    std::string *reason) {
+    const auto &messages = session.messages();
+    if (cursor + 6 > messages.size() ||
+        messages[cursor].label != label + "/meta" ||
+        messages[cursor].kind != NativeProofMessageKind::Data) {
+        masked_set_reason(reason, "masked GKR cursor expected linear relation " + label);
+        return false;
+    }
+    if (!zkgpt::native_pedersen::verify_hidden_linear(
+            session, basis, label, operands, coefficients, public_value, reason))
+        return false;
+    cursor += 6;
+    return true;
+}
+
+bool masked_consume_linear_claim(
+    const NativeProofSession &session, const PedersenBasis &basis,
+    const std::string &label, std::size_t &cursor,
+    const std::vector<ScalarCommitment> &inputs,
+    const std::vector<F> &coefficients, const F &public_value,
+    ScalarCommitment &output, std::string *reason) {
+    if (!masked_consume_opening(session, basis, label + "/output", cursor,
+                                nullptr, &output, reason))
+        return false;
+    std::vector<ScalarCommitment> operands{output};
+    std::vector<F> relation_coefficients{F_ONE};
+    operands.insert(operands.end(), inputs.begin(), inputs.end());
+    for (const F &coefficient : coefficients)
+        relation_coefficients.push_back(-coefficient);
+    return masked_consume_linear(session, basis, label + "/relation", cursor,
+                                 operands, relation_coefficients, public_value,
+                                 reason);
+}
+
+bool masked_consume_scope(
+    const NativeProofSession &session, const std::string &label,
+    std::size_t degree, std::size_t rounds, const F &masked_initial,
+    const ScalarCommitment &unmasked_initial,
+    const ScalarCommitment &masked_initial_commitment,
+    const NativeMaskedTerminalSpec &spec, std::size_t &cursor,
+    NativeMaskedSumcheckResult &result, std::string *reason) {
+    if (cursor >= session.messages().size() ||
+        session.messages()[cursor].label != label + "/initial/mode") {
+        masked_set_reason(reason, "masked GKR cursor expected Sumcheck " + label);
+        return false;
+    }
+    NativeMaskedTerminalSpec effective = spec;
+    effective.has_external_binding = true;
+    effective.public_initial_claim = false;
+    effective.initial_commitment = unmasked_initial;
+    effective.has_masked_initial_binding = true;
+    effective.masked_initial_commitment = masked_initial_commitment;
+    if (!native_masked_sumcheck_verify(session, label, degree, rounds,
+                                       masked_initial, effective, &result,
+                                       reason))
+        return false;
+    if (result.transcript_end <= cursor ||
+        result.transcript_end > session.messages().size()) {
+        masked_set_reason(reason, "masked GKR Sumcheck cursor did not advance canonically");
+        return false;
+    }
+    cursor = result.transcript_end;
     return true;
 }
 
@@ -1682,6 +1841,8 @@ bool masked_product_prove(NativeProofSession &session, const std::string &label,
                           const std::vector<F> &right,
                           std::size_t inner_bits,
                           const F &masked_initial, const F &unmasked_initial,
+                          const ScalarOpening &initial_opening,
+                          const ScalarOpening &masked_initial_opening,
                           NativeMaskedSumcheckResult &result,
                           std::string *reason) {
     if (left.size() != (std::size_t(1) << inner_bits) ||
@@ -1691,6 +1852,13 @@ bool masked_product_prove(NativeProofSession &session, const std::string &label,
     }
     NativeMaskedTerminalSpec spec;
     spec.kind = NativeMaskedTerminalKind::Product2;
+    spec.has_external_binding = true;
+    spec.public_initial_claim = false;
+    spec.initial_opening = initial_opening;
+    spec.initial_commitment = initial_opening.commitment;
+    spec.has_masked_initial_binding = true;
+    spec.masked_initial_opening = masked_initial_opening;
+    spec.masked_initial_commitment = masked_initial_opening.commitment;
     NativeMaskedSumcheckProver sumcheck(
         session, label, 2, masked_initial, spec, &unmasked_initial);
     std::vector<F> f = left;
@@ -1730,6 +1898,10 @@ bool masked_product_prove(NativeProofSession &session, const std::string &label,
         previous_random = challenge;
     }
     (void)previous_random;
+    spec.unmasked_terminal_openings = {
+        zkgpt::native_pedersen::commit_fresh(sumcheck.result().basis, f[0]),
+        zkgpt::native_pedersen::commit_fresh(sumcheck.result().basis, g[0])};
+    if (!sumcheck.set_terminal_spec(spec, reason)) return false;
     return sumcheck.finish({f[0], g[0]}, &result, reason);
 }
 
@@ -1790,9 +1962,13 @@ bool masked_validate_circuit(const layeredCircuit &circuit,
 bool prove_masked_gkr_transcript(
     NativeProofSession &session, const layeredCircuit &circuit,
     const NativeLayeredGkrWitness &witness,
-    const std::vector<F> &public_output, std::string *reason) {
+    const std::vector<F> &public_output, std::string *reason,
+    NativeGkrInputBinding *input_binding,
+    NativeGkrProverResult *prover_result) {
     const std::size_t checkpoint = session.checkpoint();
     try {
+        if (prover_result != nullptr)
+            prover_result->has_unmasked_input_claim_opening = false;
         if (!session.valid(reason) || !masked_validate_circuit(circuit, public_output, reason))
             return false;
         if (witness.layer_values.size() != circuit.circuit.size()) {
@@ -1827,7 +2003,27 @@ bool prove_masked_gkr_transcript(
         F previous_unmasked = transcript_mle_eval(public_output,
                                                    r_u[circuit.size]);
         F previous_masked = previous_unmasked;
+        const PedersenBasis basis = masked_basis(session);
+        const ScalarOpening public_base{
+            zkgpt::native_pedersen::commit(basis, F_ZERO, F_ZERO),
+            F_ZERO, F_ZERO};
+        const ScalarOpening public_claim{
+            zkgpt::native_pedersen::commit(basis, previous_unmasked, F_ZERO),
+            previous_unmasked, F_ZERO};
+        if (!masked_emit_opening(session, basis, "gkr/output/public-base",
+                                 public_base, reason) ||
+            !masked_emit_opening(session, basis, "gkr/output/public-claim",
+                                 public_claim, reason) ||
+            !zkgpt::native_pedersen::prove_public_affine(
+                session, basis, "gkr/output/public-affine", public_base,
+                public_claim, F_ZERO, previous_unmasked, nullptr, reason))
+            throw std::runtime_error(reason != nullptr && !reason->empty()
+                                         ? *reason : "public output binding failed");
+        ScalarOpening previous_unmasked_opening = public_claim;
+        ScalarOpening previous_masked_opening = public_claim;
         F previous_u1_unmasked = F_ZERO, previous_u1_masked = F_ZERO;
+        ScalarOpening previous_u1_unmasked_opening;
+        ScalarOpening previous_u1_masked_opening;
         bool have_previous_u1 = false;
         F alpha = F_ONE, beta = F_ZERO;
 
@@ -1895,7 +2091,14 @@ bool prove_masked_gkr_transcript(
                 NativeMaskedSumcheckResult product_result;
                 if (!masked_product_prove(session, prefix + "/matmul", left_mle,
                                            right_mle, m, initial_masked,
-                                           initial_unmasked, product_result, reason))
+                                           initial_unmasked,
+                                           have_previous_u1
+                                               ? previous_u1_unmasked_opening
+                                               : previous_unmasked_opening,
+                                           have_previous_u1
+                                               ? previous_u1_masked_opening
+                                               : previous_masked_opening,
+                                           product_result, reason))
                     throw std::runtime_error(*reason);
                 if (product_result.terminal_values.size() != 2)
                     throw std::runtime_error("masked GKR FCONN terminal arity mismatch");
@@ -1910,6 +2113,22 @@ bool prove_masked_gkr_transcript(
                 else beta.clear();
                 previous_unmasked = F_ZERO;
                 previous_masked = F_ZERO;
+                ScalarOpening zero_unmasked_opening;
+                ScalarOpening zero_masked_opening;
+                if (!masked_make_linear_claim(
+                        session, basis, prefix + "/next-claim/zero-unmasked",
+                        {product_result.unmasked_claim_opening}, {F_ZERO},
+                        F_ZERO, zero_unmasked_opening, reason) ||
+                    !masked_make_linear_claim(
+                        session, basis, prefix + "/next-claim/zero-masked",
+                        {product_result.claim_opening}, {F_ZERO}, F_ZERO,
+                        zero_masked_opening, reason))
+                    throw std::runtime_error(*reason);
+                previous_unmasked_opening = zero_unmasked_opening;
+                previous_masked_opening = zero_masked_opening;
+                previous_u1_unmasked_opening = ScalarOpening{};
+                previous_u1_masked_opening = ScalarOpening{};
+                have_previous_u1 = false;
                 continue;
             }
 
@@ -1917,6 +2136,13 @@ bool prove_masked_gkr_transcript(
                 throw std::runtime_error("masked GKR ordinary phase1 has zero rounds");
             NativeMaskedTerminalSpec phase1_placeholder;
             phase1_placeholder.kind = NativeMaskedTerminalKind::Claims;
+            phase1_placeholder.has_external_binding = true;
+            phase1_placeholder.public_initial_claim = false;
+            phase1_placeholder.initial_opening = previous_unmasked_opening;
+            phase1_placeholder.initial_commitment = previous_unmasked_opening.commitment;
+            phase1_placeholder.has_masked_initial_binding = true;
+            phase1_placeholder.masked_initial_opening = previous_masked_opening;
+            phase1_placeholder.masked_initial_commitment = previous_masked_opening.commitment;
             NativeMaskedSumcheckProver phase1(
                 session, prefix + "/phase1", 2, previous_masked,
                 phase1_placeholder, &previous_unmasked);
@@ -1950,14 +2176,34 @@ bool prove_masked_gkr_transcript(
             std::vector<F> masked_u;
             std::vector<F> masked_v{F_ZERO, F_ZERO};
             F phase2_unmasked = phase1_unmasked;
+            NativeMaskedSumcheckResult phase2_result;
             if (current.need_phase2) {
                 if (current.max_bl_v == 0)
                     throw std::runtime_error("masked GKR ordinary phase2 has zero rounds");
-                if (!phase1.finish({claim_u0, claim_u1}, &phase1_result, reason))
+                NativeMaskedTerminalSpec phase1_spec;
+                phase1_spec.kind = NativeMaskedTerminalKind::Claims;
+                phase1_spec.terminal_linear_coefficients = {F_ONE, F_ONE};
+                phase1_spec.terminal_linear_offset = F_ZERO;
+                phase1_spec.unmasked_terminal_openings = {
+                    zkgpt::native_pedersen::commit_fresh(
+                        phase1.result().basis, claim_u0),
+                    zkgpt::native_pedersen::commit_fresh(
+                        phase1.result().basis, claim_u1)};
+                if (!phase1.set_terminal_spec(phase1_spec, reason) ||
+                    !phase1.finish({claim_u0, claim_u1}, &phase1_result, reason))
                     throw std::runtime_error(*reason);
                 masked_u = phase1_result.terminal_values;
                 NativeMaskedTerminalSpec phase2_placeholder;
                 phase2_placeholder.kind = NativeMaskedTerminalKind::Claims;
+                phase2_placeholder.has_external_binding = true;
+                phase2_placeholder.public_initial_claim = false;
+                phase2_placeholder.initial_opening = phase1_result.unmasked_claim_opening;
+                phase2_placeholder.initial_commitment =
+                    phase1_result.unmasked_claim_commitment;
+                phase2_placeholder.has_masked_initial_binding = true;
+                phase2_placeholder.masked_initial_opening = phase1_result.claim_opening;
+                phase2_placeholder.masked_initial_commitment =
+                    phase1_result.claim_commitment;
                 NativeMaskedSumcheckProver phase2(
                     session, prefix + "/phase2", 2, phase1_result.final_claim,
                     phase2_placeholder, &phase1_unmasked);
@@ -1989,7 +2235,14 @@ bool prove_masked_gkr_transcript(
                 phase2_spec.gkr_coefficients = {bin[0], bin[1], bin[2], uni[0], uni[1]};
                 phase2_spec.fixed_values = masked_u;
                 phase2_spec.unmasked_fixed_values = {claim_u0, claim_u1};
-                NativeMaskedSumcheckResult phase2_result;
+                phase2_spec.fixed_openings = phase1_result.terminal_openings;
+                phase2_spec.unmasked_fixed_openings =
+                    phase1_result.unmasked_terminal_openings;
+                phase2_spec.unmasked_terminal_openings = {
+                    zkgpt::native_pedersen::commit_fresh(
+                        phase2.result().basis, claim_v0),
+                    zkgpt::native_pedersen::commit_fresh(
+                        phase2.result().basis, claim_v1)};
                 if (!phase2.set_terminal_spec(phase2_spec, reason) ||
                     !phase2.finish({claim_v0, claim_v1}, &phase2_result, reason))
                     throw std::runtime_error(*reason);
@@ -2000,6 +2253,18 @@ bool prove_masked_gkr_transcript(
                 phase1_spec.gkr_coefficients = coefficients;
                 phase1_spec.fixed_values = {F_ZERO, F_ZERO};
                 phase1_spec.unmasked_fixed_values = {F_ZERO, F_ZERO};
+                const ScalarOpening zero_opening{
+                    {basis.domain,
+                     zkgpt::native_pedersen::commit(basis, F_ZERO, F_ZERO).point},
+                    F_ZERO, F_ZERO};
+                phase1_spec.fixed_openings = {
+                    zero_opening, zero_opening};
+                phase1_spec.unmasked_fixed_openings = {zero_opening, zero_opening};
+                phase1_spec.unmasked_terminal_openings = {
+                    zkgpt::native_pedersen::commit_fresh(
+                        phase1.result().basis, claim_u0),
+                    zkgpt::native_pedersen::commit_fresh(
+                        phase1.result().basis, claim_u1)};
                 if (!phase1.set_terminal_spec(phase1_spec, reason) ||
                     !phase1.finish({claim_u0, claim_u1}, &phase1_result, reason))
                     throw std::runtime_error(*reason);
@@ -2010,6 +2275,9 @@ bool prove_masked_gkr_transcript(
                 throw std::runtime_error("masked GKR terminal claim arity mismatch");
             previous_u1_unmasked = claim_u1;
             previous_u1_masked = masked_u[1];
+            previous_u1_unmasked_opening =
+                phase1_result.unmasked_terminal_openings[1];
+            previous_u1_masked_opening = phase1_result.terminal_openings[1];
             have_previous_u1 = true;
             if (current.bit_length_u[1] >= 0)
                 alpha = session.challenge(prefix + "/alpha");
@@ -2021,6 +2289,27 @@ bool prove_masked_gkr_transcript(
                                                             phase2_unmasked : F_ZERO);
             previous_masked = alpha * masked_u[1] + beta *
                               (current.need_phase2 ? masked_v[1] : F_ZERO);
+            const ScalarOpening phase2_unmasked_opening = current.need_phase2
+                ? phase2_result.unmasked_terminal_openings[1]
+                : phase1_result.unmasked_fixed_openings[1];
+            const ScalarOpening phase2_masked_opening = current.need_phase2
+                ? phase2_result.terminal_openings[1]
+                : phase1_result.fixed_openings[1];
+            ScalarOpening next_unmasked_opening;
+            ScalarOpening next_masked_opening;
+            if (!masked_make_linear_claim(
+                    session, basis, prefix + "/next-claim/unmasked",
+                    {previous_u1_unmasked_opening, phase2_unmasked_opening},
+                    {alpha, beta}, previous_unmasked, next_unmasked_opening,
+                    reason) ||
+                !masked_make_linear_claim(
+                    session, basis, prefix + "/next-claim/masked",
+                    {previous_u1_masked_opening, phase2_masked_opening},
+                    {alpha, beta}, previous_masked, next_masked_opening,
+                    reason))
+                throw std::runtime_error(*reason);
+            previous_unmasked_opening = next_unmasked_opening;
+            previous_masked_opening = next_masked_opening;
         }
         if (next_matmul != 0)
             throw std::runtime_error("masked GKR FCONN descriptor was not consumed");
@@ -2039,16 +2328,36 @@ bool prove_masked_gkr_transcript(
         // layers).  Keep the authenticated masked terminal emitted by that
         // walk; the adapter's selector/combine relation binds it to the
         // canonical four-segment input MLE below.
-        const std::string shared_mask_identity =
-            session.statement().basis_digest + "/gat-input-combine/v1";
-        const G1 shared_J = hyrax::derive_shared_pedersen_evaluation_generator(
-            shared_mask_identity);
-        const F input_mask = previous_masked - input_unmasked;
+        (void)input_unmasked;
         session.absorb_fields("gkr/input/point", r_u[1]);
-        session.absorb_field("gkr/input/claim", previous_masked);
-        const G1 input_mask_commitment = shared_J * input_mask;
-        session.absorb("gkr/input/mask",
-                       input_mask_commitment.serializeToHexStr());
+        const ScalarOpening input_mask = zkgpt::native_pedersen::commit_fresh(
+            basis, previous_masked - previous_unmasked_opening.value);
+        if (!masked_emit_opening(session, basis, "gkr/input/claim",
+                                 previous_masked_opening, reason) ||
+            !masked_emit_opening(session, basis, "gkr/input/mask", input_mask,
+                                 reason) ||
+            !zkgpt::native_pedersen::prove_hidden_linear(
+                session, basis, "gkr/input/bind",
+                {previous_masked_opening, previous_unmasked_opening, input_mask},
+                {F_ONE, -F_ONE, -F_ONE}, F_ZERO, nullptr, reason))
+            throw std::runtime_error(reason != nullptr && !reason->empty()
+                                         ? *reason
+                                         : "masked GKR input binding failed");
+        NativeGkrInputBinding final_binding;
+        final_binding.point = r_u[1];
+        final_binding.claim_commitment = previous_masked_opening.commitment;
+        final_binding.unmasked_claim_commitment =
+            previous_unmasked_opening.commitment;
+        final_binding.mask_commitment = input_mask.commitment;
+        if (input_binding != nullptr) *input_binding = final_binding;
+        if (prover_result != nullptr) {
+            prover_result->input_binding = final_binding;
+            // This is the exact opening that was threaded through every
+            // authenticated next-claim transition; do not re-commit here.
+            prover_result->unmasked_input_claim_opening =
+                previous_unmasked_opening;
+            prover_result->has_unmasked_input_claim_opening = true;
+        }
         if (!session.valid(reason) || !session.replay(reason))
             throw std::runtime_error(reason != nullptr ? *reason :
                                      "masked GKR transcript replay failed");
@@ -2064,7 +2373,8 @@ bool verify_masked_gkr_transcript(
     const NativeProofSession &session, const layeredCircuit &circuit,
     const std::vector<F> &public_output,
     const std::vector<NativeGkrMatmulShape> &matmuls,
-    std::size_t start, std::size_t *end, std::string *reason) {
+    std::size_t start, std::size_t *end, std::string *reason,
+    NativeGkrInputBinding *input_binding) {
     try {
         if (!session.valid(reason) || !session.replay(reason) ||
             !masked_validate_circuit(circuit, public_output, reason))
@@ -2089,6 +2399,25 @@ bool verify_masked_gkr_transcript(
                                          r_u[circuit.size][bit], reason))
                 return false;
         F previous_masked = transcript_mle_eval(public_output, r_u[circuit.size]);
+        const PedersenBasis basis = masked_basis(session);
+        const ScalarCommitment public_base{
+            basis.domain, zkgpt::native_pedersen::commit(basis, F_ZERO, F_ZERO).point};
+        const ScalarCommitment public_claim{
+            basis.domain,
+            zkgpt::native_pedersen::commit(basis, previous_masked, F_ZERO).point};
+        if (!masked_consume_opening(session, basis, "gkr/output/public-base",
+                                    cursor, &public_base, nullptr, reason) ||
+            !masked_consume_opening(session, basis, "gkr/output/public-claim",
+                                    cursor, &public_claim, nullptr, reason) ||
+            !masked_consume_linear(
+                session, basis, "gkr/output/public-affine", cursor,
+                {public_claim, public_base}, {F_ONE, F_ZERO},
+                previous_masked, reason))
+            return false;
+    ScalarCommitment previous_unmasked_commitment = public_claim;
+    ScalarCommitment previous_masked_commitment = public_claim;
+        ScalarCommitment previous_u1_unmasked_commitment;
+        ScalarCommitment previous_u1_masked_commitment;
         F previous_u1_masked = F_ZERO;
         bool have_previous_u1 = false;
         F alpha = F_ONE, beta = F_ZERO;
@@ -2142,11 +2471,18 @@ bool verify_masked_gkr_transcript(
                 }
                 const F initial = have_previous_u1 ? previous_u1_masked : previous_masked;
                 const std::string matmul_label = prefix + "/matmul";
-                if (!masked_advance_scope(session, matmul_label, m, cursor, reason))
-                    return false;
                 NativeMaskedSumcheckResult product_result;
-                if (!native_masked_matmul_product_verify(
-                        session, matmul_label, m, initial, &product_result, reason) ||
+                NativeMaskedTerminalSpec product_spec;
+                product_spec.kind = NativeMaskedTerminalKind::Product2;
+                const ScalarCommitment &product_initial =
+                    have_previous_u1 ? previous_u1_unmasked_commitment
+                                     : previous_unmasked_commitment;
+                if (!masked_consume_scope(session, matmul_label, 2, m, initial,
+                                          product_initial,
+                                          have_previous_u1 ? previous_u1_masked_commitment
+                                                           : previous_masked_commitment,
+                                          product_spec, cursor,
+                                          product_result, reason) ||
                     product_result.terminal_values.size() != 2) {
                     masked_set_reason(reason, "masked FCONN Sumcheck failed at " +
                                       matmul_label + ": " +
@@ -2167,19 +2503,58 @@ bool verify_masked_gkr_transcript(
                 if (current.bit_length_v[1] < 0 && current.ty != layerType::FFT)
                     beta.clear();
                 previous_masked = F_ZERO;
+                ScalarCommitment zero_unmasked_commitment;
+                ScalarCommitment zero_masked_commitment;
+                if (!masked_consume_linear_claim(
+                        session, basis, prefix + "/next-claim/zero-unmasked",
+                        cursor, {product_result.unmasked_claim_commitment},
+                        {F_ZERO}, F_ZERO, zero_unmasked_commitment, reason) ||
+                    !masked_consume_linear_claim(
+                        session, basis, prefix + "/next-claim/zero-masked",
+                        cursor, {product_result.claim_commitment}, {F_ZERO},
+                        F_ZERO, zero_masked_commitment, reason))
+                    return false;
+                previous_unmasked_commitment = zero_unmasked_commitment;
+                previous_masked_commitment = zero_masked_commitment;
+                previous_u1_unmasked_commitment = ScalarCommitment{};
+                have_previous_u1 = false;
                 continue;
             }
             if (current.max_bl_u == 0) return false;
             const std::string phase1_label = prefix + "/phase1";
-            if (!masked_advance_scope(session, phase1_label, current.max_bl_u,
-                                      cursor, reason))
-                return false;
             NativeMaskedSumcheckResult phase1_result;
-            NativeMaskedTerminalSpec claims_spec;
-            claims_spec.kind = NativeMaskedTerminalKind::Claims;
-            if (!native_masked_sumcheck_verify(
-                    session, phase1_label, 2, current.max_bl_u,
-                    previous_masked, claims_spec, &phase1_result, reason) ||
+            NativeMaskedTerminalSpec phase1_spec;
+            if (current.need_phase2) {
+                phase1_spec.kind = NativeMaskedTerminalKind::Claims;
+                phase1_spec.terminal_linear_coefficients = {F_ONE, F_ONE};
+            } else {
+                phase1_spec.kind = NativeMaskedTerminalKind::GkrPredicateFixedV;
+                phase1_spec.fixed_values = {F_ZERO, F_ZERO};
+                r_u[layer_id].resize(current.max_bl_u);
+                for (int bit = 0; bit < current.max_bl_u; ++bit)
+                    if (!masked_lookup_challenge(
+                            session, phase1_label + "/r/" + std::to_string(bit),
+                            r_u[layer_id][bit], reason))
+                        return false;
+                std::vector<F> r0_for_spec = r_u[layer_id + 1];
+                std::vector<F> r1_for_spec = r_v[layer_id + 1];
+                if (r0_for_spec.size() < static_cast<std::size_t>(current.bit_length))
+                    r0_for_spec.resize(current.bit_length, F_ZERO);
+                if (r1_for_spec.size() < static_cast<std::size_t>(current.bit_length))
+                    r1_for_spec.resize(current.bit_length, F_ZERO);
+                phase1_spec.gkr_coefficients = masked_gkr_coefficients(
+                    current, r0_for_spec, r1_for_spec, r_u[layer_id], alpha,
+                    beta, relu_rou);
+                const ScalarCommitment zero_commitment{
+                    basis.domain,
+                    zkgpt::native_pedersen::commit(basis, F_ZERO, F_ZERO).point};
+                phase1_spec.fixed_commitments = {zero_commitment, zero_commitment};
+            }
+            if (!masked_consume_scope(
+                    session, phase1_label, 2, current.max_bl_u, previous_masked,
+                    previous_unmasked_commitment, previous_masked_commitment,
+                    phase1_spec, cursor,
+                    phase1_result, reason) ||
                 phase1_result.terminal_values.size() != 2) {
                 masked_set_reason(reason, "masked phase1 Sumcheck failed at " +
                                   phase1_label + ": " +
@@ -2196,17 +2571,16 @@ bool verify_masked_gkr_transcript(
             std::vector<F> coefficients = masked_gkr_coefficients(
                 current, r0, r1, r_u[layer_id], alpha, beta, relu_rou);
             std::vector<F> masked_v{F_ZERO, F_ZERO};
+            NativeMaskedSumcheckResult phase2_result;
             if (current.need_phase2) {
                 if (current.max_bl_v == 0) return false;
                 r_v[layer_id].resize(current.max_bl_v);
                 const std::string phase2_label = prefix + "/phase2";
-                const std::size_t phase2_start = cursor;
-                if (!masked_advance_scope(session, phase2_label, current.max_bl_v,
-                                          cursor, reason))
-                    return false;
-                if (!masked_scope_challenges(session, phase2_label, current.max_bl_v,
-                                             phase2_start, r_v[layer_id], reason))
-                    return false;
+                for (int bit = 0; bit < current.max_bl_v; ++bit)
+                    if (!masked_lookup_challenge(
+                            session, phase2_label + "/r/" + std::to_string(bit),
+                            r_v[layer_id][bit], reason))
+                        return false;
                 std::vector<F> beta_v(std::size_t(1) << current.max_bl_v);
                 initBetaTable(beta_v, current.max_bl_v,
                               r_v[layer_id].begin(), F_ONE);
@@ -2221,11 +2595,13 @@ bool verify_masked_gkr_transcript(
                 fixed_u_spec.kind = NativeMaskedTerminalKind::GkrPredicateFixedU;
                 fixed_u_spec.gkr_coefficients = {bin[0], bin[1], bin[2], uni[0], uni[1]};
                 fixed_u_spec.fixed_values = phase1_result.terminal_values;
-                NativeMaskedSumcheckResult phase2_result;
-                if (!native_masked_sumcheck_verify(
+                if (!masked_consume_scope(
                         session, phase2_label, 2, current.max_bl_v,
-                        phase1_result.final_claim, fixed_u_spec, &phase2_result,
-                        reason) || phase2_result.terminal_values.size() != 2)
+                        phase1_result.final_claim,
+                        phase1_result.unmasked_claim_commitment,
+                        phase1_result.claim_commitment,
+                        fixed_u_spec, cursor, phase2_result, reason) ||
+                    phase2_result.terminal_values.size() != 2)
                 {
                     masked_set_reason(reason, "masked phase2 Sumcheck failed at " +
                                       phase2_label + ": " +
@@ -2234,14 +2610,13 @@ bool verify_masked_gkr_transcript(
                 }
                 masked_v = phase2_result.terminal_values;
             } else {
-                if ((masked_fixed_v_predicate(
-                        coefficients, phase1_result.terminal_values,
-                        {F_ZERO, F_ZERO}) - phase1_result.final_claim).isZero() == false) {
-                    masked_set_reason(reason, "masked GKR phase1 predicate transition failed");
-                    return false;
-                }
+                // The fixed-V relation is checked inside the authenticated
+                // terminal scope; no raw terminal claim is trusted here.
             }
             previous_u1_masked = phase1_result.terminal_values[1];
+            previous_u1_unmasked_commitment =
+                phase1_result.unmasked_terminal_commitments[1];
+            previous_u1_masked_commitment = phase1_result.terminal_commitments[1];
             have_previous_u1 = true;
             if (current.bit_length_u[1] >= 0 &&
                 !masked_expect_challenge(session, cursor, prefix + "/alpha",
@@ -2256,6 +2631,27 @@ bool verify_masked_gkr_transcript(
                 beta.clear();
             previous_masked = alpha * previous_u1_masked +
                               beta * (current.need_phase2 ? masked_v[1] : F_ZERO);
+            const ScalarCommitment phase2_unmasked_commitment = current.need_phase2
+                ? phase2_result.unmasked_terminal_commitments[1]
+                : phase1_result.unmasked_fixed_commitments[1];
+            const ScalarCommitment phase2_masked_commitment = current.need_phase2
+                ? phase2_result.terminal_commitments[1]
+                : phase1_result.fixed_commitments[1];
+            ScalarCommitment next_unmasked_commitment;
+            ScalarCommitment next_masked_commitment;
+            if (!masked_consume_linear_claim(
+                    session, basis, prefix + "/next-claim/unmasked", cursor,
+                    {previous_u1_unmasked_commitment,
+                     phase2_unmasked_commitment},
+                    {alpha, beta}, F_ZERO, next_unmasked_commitment, reason) ||
+                !masked_consume_linear_claim(
+                        session, basis, prefix + "/next-claim/masked", cursor,
+                        {previous_u1_masked_commitment,
+                         phase2_masked_commitment},
+                        {alpha, beta}, F_ZERO, next_masked_commitment, reason))
+                return false;
+            previous_unmasked_commitment = next_unmasked_commitment;
+            previous_masked_commitment = next_masked_commitment;
         }
         if (next_matmul != 0) {
             masked_set_reason(reason, "masked GKR transcript has unconsumed FCONN descriptors");
@@ -2273,34 +2669,23 @@ bool verify_masked_gkr_transcript(
             masked_set_reason(reason, "masked GKR final input point binding failed");
             return false;
         }
-        const NativeProofMessage *input_claim_message = nullptr;
-        if (!masked_expect_message(session, cursor, NativeProofMessageKind::Field,
-                                   "gkr/input/claim", &input_claim_message,
-                                   reason))
+        ScalarCommitment input_claim_commitment;
+        ScalarCommitment input_mask_commitment;
+        if (!masked_consume_opening(session, basis, "gkr/input/claim", cursor,
+                                    nullptr, &input_claim_commitment, reason) ||
+            !masked_consume_opening(session, basis, "gkr/input/mask", cursor,
+                                    nullptr, &input_mask_commitment, reason) ||
+            !masked_consume_linear(
+                session, basis, "gkr/input/bind", cursor,
+                {input_claim_commitment, previous_unmasked_commitment,
+                 input_mask_commitment},
+                {F_ONE, -F_ONE, -F_ONE}, F_ZERO, reason))
             return false;
-        F encoded_input_claim;
-        if (!decode_transcript_field(input_claim_message->payload,
-                                     encoded_input_claim) ||
-            encoded_input_claim != previous_masked) {
-            masked_set_reason(reason, "masked GKR final input claim binding failed");
-            return false;
-        }
-        const NativeProofMessage *input_mask_message = nullptr;
-        if (!masked_expect_message(session, cursor, NativeProofMessageKind::Data,
-                                   "gkr/input/mask", &input_mask_message,
-                                   reason))
-            return false;
-        try {
-            G1 input_mask;
-            input_mask.deserializeHexStr(input_mask_message->payload);
-            if (input_mask.serializeToHexStr() != input_mask_message->payload ||
-                !input_mask.isValid() || input_mask.isZero()) {
-                masked_set_reason(reason, "masked GKR input mask commitment is invalid");
-                return false;
-            }
-        } catch (...) {
-            masked_set_reason(reason, "masked GKR input mask commitment is malformed");
-            return false;
+        if (input_binding != nullptr) {
+            input_binding->point = r_u[1];
+            input_binding->claim_commitment = input_claim_commitment;
+            input_binding->unmasked_claim_commitment = previous_unmasked_commitment;
+            input_binding->mask_commitment = input_mask_commitment;
         }
         // The adapter consumes the mask commitment together with the three
         // terminal opening mask commitments in input-combine.  Any remaining
@@ -2326,10 +2711,11 @@ bool verify_masked_gkr_transcript(
 bool verify_masked_gkr_transcript(
     const NativeProofSession &session, const layeredCircuit &circuit,
     const std::vector<F> &public_output,
-    const std::vector<NativeGkrMatmulShape> &matmuls, std::string *reason) {
+    const std::vector<NativeGkrMatmulShape> &matmuls, std::string *reason,
+    NativeGkrInputBinding *input_binding) {
     std::size_t end = 0;
     if (!verify_masked_gkr_transcript(session, circuit, public_output, matmuls,
-                                      0, &end, reason))
+                                      0, &end, reason, input_binding))
         return false;
     if (end != session.messages().size()) {
         masked_set_reason(reason, "masked GKR transcript has an unexpected suffix");

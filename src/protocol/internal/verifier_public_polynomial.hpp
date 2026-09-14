@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <vector>
 
+#include "gatzk/algebra/domain_evaluation.hpp"
 #include "gatzk/protocol/proof.hpp"
 
 namespace gatzk::protocol::internal
@@ -25,6 +26,7 @@ namespace gatzk::protocol::internal
         const ProtocolContext &context,
         const VerifierPublicPolynomialDescriptor &descriptor,
         const algebra::FieldElement &point,
-        const AggregationMultiplicityCache &multiplicity);
+        const AggregationMultiplicityCache &multiplicity,
+        algebra::DomainEvaluationWeightCache &weight_cache);
 
 } // namespace gatzk::protocol::internal

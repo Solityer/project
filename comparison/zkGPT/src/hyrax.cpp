@@ -722,15 +722,36 @@ std::string masked_basis_payload(const G1 &commitment, const G1 &H,
     return payload.str();
 }
 
-std::string masked_claim_payload(const G1 &mask_commitment, const Fr &claim) {
-    return point_encoding(mask_commitment) + "|" + claim.getStr(16);
+std::string masked_claim_payload(
+    const G1 &mask_commitment, const Fr &claim,
+    const zkgpt::native_pedersen::ScalarOpening *raw_opening = nullptr,
+    const zkgpt::native_pedersen::ScalarOpening *masked_opening = nullptr) {
+    std::string payload = point_encoding(mask_commitment) + "|" + claim.getStr(16);
+    if (raw_opening != nullptr || masked_opening != nullptr) {
+        if (raw_opening == nullptr || masked_opening == nullptr)
+            throw std::invalid_argument("incomplete masked scalar binding");
+        payload += "|" + raw_opening->commitment.domain + "|" +
+                   point_encoding(raw_opening->commitment.point) + "|" +
+                   point_encoding(masked_opening->commitment.point);
+    }
+    return payload;
 }
 
 std::string masked_announce_payload(const G1 &announce_commitment,
                                    const G1 &mask_announce,
-                                   const Fr &announce_eval) {
-    return point_encoding(announce_commitment) + "|" +
-           point_encoding(mask_announce) + "|" + announce_eval.getStr(16);
+                                   const Fr &announce_eval,
+                                   const G1 *raw_announce = nullptr,
+                                   const G1 *masked_announce = nullptr) {
+    std::string payload = point_encoding(announce_commitment) + "|" +
+                          point_encoding(mask_announce) + "|" +
+                          announce_eval.getStr(16);
+    if (raw_announce != nullptr || masked_announce != nullptr) {
+        if (raw_announce == nullptr || masked_announce == nullptr)
+            throw std::invalid_argument("incomplete masked scalar announcement");
+        payload += "|" + point_encoding(*raw_announce) + "|" +
+                   point_encoding(*masked_announce);
+    }
+    return payload;
 }
 
 bool decode_field_vector_payload(const std::string &payload,
@@ -1050,6 +1071,28 @@ G1 derive_shared_pedersen_evaluation_generator(const std::string &identity) {
     return result;
 }
 
+bool make_mle_evaluation_opening(
+    const zkgpt::native_pedersen::PedersenBasis &scalar_basis,
+    const std::vector<Fr> &point, const std::vector<Fr> &values,
+    zkgpt::native_pedersen::ScalarOpening &opening, std::string *reason) {
+    try {
+        if (!scalar_basis.valid(reason) || values.empty() ||
+            !power_of_two_size(values.size()) || point.empty() ||
+            point.size() >= sizeof(std::size_t) * 8 ||
+            values.size() != (std::size_t(1) << point.size()))
+            throw std::invalid_argument("MLE scalar evaluation dimensions are invalid");
+        const std::vector<Fr> basis = mle_basis_from_point(point);
+        Fr evaluation = Fr(0);
+        for (std::size_t index = 0; index < values.size(); ++index)
+            evaluation += basis[index] * values[index];
+        opening = zkgpt::native_pedersen::commit_fresh(scalar_basis, evaluation);
+        return true;
+    } catch (const std::exception &error) {
+        if (reason != nullptr) *reason = error.what();
+        return false;
+    }
+}
+
 PedersenMleCommitment pedersen_commit_mle(
     const std::vector<G1> &generators, const std::vector<Fr> &values,
     const std::string &basis_id) {
@@ -1080,7 +1123,10 @@ static bool open_masked_mle_impl(
     const std::vector<Fr> &values, const Fr *forced_masked_evaluation,
     NativeProofSession &session, const std::string &label,
     MaskedMleOpening &opening, std::string *reason,
-    bool enforce_statement_basis, const std::string &mask_identity) {
+    bool enforce_statement_basis, const std::string &mask_identity,
+    const zkgpt::native_pedersen::PedersenBasis *scalar_basis,
+    const zkgpt::native_pedersen::ScalarOpening *forced_masked_opening,
+    const zkgpt::native_pedersen::ScalarOpening *forced_raw_opening) {
     const std::size_t checkpoint = session.checkpoint();
     try {
         if (label.empty() || values.empty() || values.size() != generators.size() ||
@@ -1103,6 +1149,7 @@ static bool open_masked_mle_impl(
             session.statement().basis_digest != NativeProofStatement::basis_digest_for(
                 commitment.blinding_generator, generators, basis, values.size()))
             throw std::invalid_argument("masked Hyrax statement basis mismatch");
+        opening = MaskedMleOpening{};
 
         const G1 expected_commitment =
             perdersen_commit(const_cast<G1 *>(generators.data()),
@@ -1133,6 +1180,39 @@ static bool open_masked_mle_impl(
         }
         opening.evaluation_mask_commitment = J * mu;
         opening.masked_evaluation = raw_evaluation + mu;
+        if (scalar_basis == nullptr && forced_masked_opening != nullptr)
+            throw std::invalid_argument("masked scalar opening requires a scalar basis");
+        if (scalar_basis == nullptr && forced_raw_opening != nullptr)
+            throw std::invalid_argument("raw scalar opening requires a scalar basis");
+        if (scalar_basis != nullptr) {
+            if (!scalar_basis->valid())
+                throw std::invalid_argument("masked scalar binding basis is invalid");
+            opening.has_scalar_binding = true;
+            opening.scalar_basis = *scalar_basis;
+            if (forced_raw_opening != nullptr) {
+                if (!forced_raw_opening->valid(*scalar_basis) ||
+                    forced_raw_opening->value != raw_evaluation)
+                    throw std::invalid_argument(
+                        label + ": forced raw scalar opening does not match the MLE evaluation");
+                opening.raw_evaluation_opening = *forced_raw_opening;
+            } else {
+                opening.raw_evaluation_opening =
+                    zkgpt::native_pedersen::commit_fresh(*scalar_basis, raw_evaluation);
+            }
+            if (forced_masked_opening != nullptr) {
+                if (!forced_masked_opening->valid(*scalar_basis) ||
+                    forced_masked_opening->value != opening.masked_evaluation)
+                    throw std::invalid_argument(
+                        "forced masked scalar opening does not match the claim");
+                opening.masked_evaluation_opening = *forced_masked_opening;
+            } else {
+                opening.masked_evaluation_opening =
+                    zkgpt::native_pedersen::commit_fresh(
+                        *scalar_basis, opening.masked_evaluation);
+            }
+        } else {
+            opening.has_scalar_binding = false;
+        }
 
         std::vector<Fr> random_vector(values.size());
         for (Fr &value : random_vector) value.setByCSPRNG();
@@ -1149,6 +1229,21 @@ static bool open_masked_mle_impl(
         Fr announce_eval = random_mu;
         for (std::size_t index = 0; index < values.size(); ++index)
             announce_eval += basis[index] * random_vector[index];
+        G1 raw_announce;
+        G1 masked_announce;
+        Fr random_raw_blinding;
+        Fr random_masked_blinding;
+        if (opening.has_scalar_binding) {
+            Fr random_raw_eval = F_ZERO;
+            for (std::size_t index = 0; index < values.size(); ++index)
+                random_raw_eval += basis[index] * random_vector[index];
+            random_raw_blinding.setByCSPRNG();
+            random_masked_blinding.setByCSPRNG();
+            const auto &sb = opening.scalar_basis;
+            raw_announce = sb.G * random_raw_eval + sb.H * random_raw_blinding;
+            masked_announce = sb.G * (random_raw_eval + random_mu) +
+                              sb.H * random_masked_blinding;
+        }
 
         session.absorb(label + "/basis",
                        masked_basis_payload(commitment.commitment,
@@ -1156,16 +1251,35 @@ static bool open_masked_mle_impl(
                                             commitment.basis_id, generators, basis));
         session.absorb(label + "/claim",
                        masked_claim_payload(opening.evaluation_mask_commitment,
-                                            opening.masked_evaluation));
+                                            opening.masked_evaluation,
+                                            opening.has_scalar_binding
+                                                ? &opening.raw_evaluation_opening
+                                                : nullptr,
+                                            opening.has_scalar_binding
+                                                ? &opening.masked_evaluation_opening
+                                                : nullptr));
         session.absorb(label + "/announce",
                        masked_announce_payload(announce_commitment, announce_mask,
-                                               announce_eval));
+                                               announce_eval,
+                                               opening.has_scalar_binding
+                                                   ? &raw_announce : nullptr,
+                                               opening.has_scalar_binding
+                                                   ? &masked_announce : nullptr));
         const Fr challenge = session.challenge(label + "/c");
-        std::vector<Fr> response(values.size() + 2);
+        std::vector<Fr> response(values.size() +
+                                 (opening.has_scalar_binding ? 4 : 2));
         for (std::size_t index = 0; index < values.size(); ++index)
             response[index] = random_vector[index] + challenge * values[index];
         response[values.size()] = random_rho + challenge * commitment.blinding;
         response[values.size() + 1] = random_mu + challenge * mu;
+        if (opening.has_scalar_binding) {
+            response[values.size() + 2] =
+                random_raw_blinding + challenge *
+                    opening.raw_evaluation_opening.blinding;
+            response[values.size() + 3] =
+                random_masked_blinding + challenge *
+                    opening.masked_evaluation_opening.blinding;
+        }
         session.absorb_fields(label + "/response", response);
         return true;
     } catch (const std::exception &error) {
@@ -1180,10 +1294,15 @@ bool open_masked_mle_with_session(
     const std::vector<G1> &generators, const std::vector<Fr> &point,
     const std::vector<Fr> &values, NativeProofSession &session,
     const std::string &label, MaskedMleOpening &opening, std::string *reason,
-    bool enforce_statement_basis, const std::string &mask_identity) {
+    bool enforce_statement_basis, const std::string &mask_identity,
+    const zkgpt::native_pedersen::PedersenBasis *scalar_basis,
+    const zkgpt::native_pedersen::ScalarOpening *forced_masked_opening,
+    const zkgpt::native_pedersen::ScalarOpening *forced_raw_opening) {
     return open_masked_mle_impl(commitment, generators, point, values, nullptr,
                                 session, label, opening, reason,
-                                enforce_statement_basis, mask_identity);
+                                enforce_statement_basis, mask_identity,
+                                scalar_basis, forced_masked_opening,
+                                forced_raw_opening);
 }
 
 bool open_masked_mle_with_claim(
@@ -1192,10 +1311,15 @@ bool open_masked_mle_with_claim(
     const std::vector<Fr> &values, const Fr &masked_evaluation,
     NativeProofSession &session, const std::string &label,
     MaskedMleOpening &opening, std::string *reason,
-    bool enforce_statement_basis, const std::string &mask_identity) {
+    bool enforce_statement_basis, const std::string &mask_identity,
+    const zkgpt::native_pedersen::PedersenBasis *scalar_basis,
+    const zkgpt::native_pedersen::ScalarOpening *forced_masked_opening,
+    const zkgpt::native_pedersen::ScalarOpening *forced_raw_opening) {
     return open_masked_mle_impl(commitment, generators, point, values,
                                 &masked_evaluation, session, label, opening,
-                                reason, enforce_statement_basis, mask_identity);
+                                reason, enforce_statement_basis, mask_identity,
+                                scalar_basis, forced_masked_opening,
+                                forced_raw_opening);
 }
 
 bool verify_masked_mle_opening_with_session(
@@ -1204,8 +1328,20 @@ bool verify_masked_mle_opening_with_session(
     const std::vector<G1> &generators, const std::vector<Fr> &point,
     const NativeProofSession &session, const std::string &label,
     std::string *reason, bool enforce_statement_basis,
-    bool allow_trailing_unrelated, const std::string &mask_identity) {
+    bool allow_trailing_unrelated, const std::string &mask_identity,
+    const zkgpt::native_pedersen::PedersenBasis *scalar_basis,
+    const zkgpt::native_pedersen::ScalarCommitment *expected_raw_evaluation_commitment,
+    const zkgpt::native_pedersen::ScalarCommitment *expected_masked_evaluation_commitment) {
     try {
+        const bool scalar_binding = scalar_basis != nullptr;
+        if (scalar_binding != (expected_raw_evaluation_commitment != nullptr &&
+                              expected_masked_evaluation_commitment != nullptr))
+            throw std::invalid_argument("masked scalar binding arguments are incomplete");
+        if (scalar_binding &&
+            (!scalar_basis->valid(reason) ||
+             !expected_raw_evaluation_commitment->valid(*scalar_basis, reason) ||
+             !expected_masked_evaluation_commitment->valid(*scalar_basis, reason)))
+            throw std::invalid_argument("masked scalar binding commitment is invalid");
         if (label.empty() || basis_id.empty() || point.empty() ||
             point.size() >= sizeof(std::size_t) * 8 || generators.empty() ||
             generators.size() != (std::size_t(1) << point.size()) ||
@@ -1278,7 +1414,8 @@ bool verify_masked_mle_opening_with_session(
             session, cursor, NativeProofMessageKind::Data, label + "/claim", reason);
         if (claim_message == nullptr) return false;
         std::vector<std::string> claim_parts;
-        if (!split_open_payload(claim_message->payload, 2, claim_parts)) {
+        if (!split_open_payload(claim_message->payload,
+                                scalar_binding ? 5 : 2, claim_parts)) {
             set_open_reason(reason, "malformed masked Hyrax claim message");
             return false;
         }
@@ -1291,12 +1428,23 @@ bool verify_masked_mle_opening_with_session(
             set_open_reason(reason, "masked Hyrax public claim mismatch");
             return false;
         }
+        G1 encoded_raw_commitment, encoded_masked_commitment;
+        if (scalar_binding &&
+            (claim_parts[2] != scalar_basis->domain ||
+             !decode_open_point(claim_parts[3], encoded_raw_commitment) ||
+             !decode_open_point(claim_parts[4], encoded_masked_commitment) ||
+             encoded_raw_commitment != expected_raw_evaluation_commitment->point ||
+             encoded_masked_commitment != expected_masked_evaluation_commitment->point)) {
+            set_open_reason(reason, "masked Hyrax scalar claim binding mismatch");
+            return false;
+        }
 
         const NativeProofMessage *announce_message = consume_masked_message(
             session, cursor, NativeProofMessageKind::Data, label + "/announce", reason);
         if (announce_message == nullptr) return false;
         std::vector<std::string> announce_parts;
-        if (!split_open_payload(announce_message->payload, 3, announce_parts)) {
+        if (!split_open_payload(announce_message->payload,
+                                scalar_binding ? 5 : 3, announce_parts)) {
             set_open_reason(reason, "malformed masked Hyrax announcement");
             return false;
         }
@@ -1306,6 +1454,13 @@ bool verify_masked_mle_opening_with_session(
             !decode_open_point(announce_parts[1], announce_mask) ||
             !decode_open_field(announce_parts[2], announce_eval)) {
             set_open_reason(reason, "malformed masked Hyrax announcement fields");
+            return false;
+        }
+        G1 raw_announce, masked_announce;
+        if (scalar_binding &&
+            (!decode_open_point(announce_parts[3], raw_announce) ||
+             !decode_open_point(announce_parts[4], masked_announce))) {
+            set_open_reason(reason, "malformed masked Hyrax scalar announcement");
             return false;
         }
         const NativeProofMessage *challenge_message = consume_masked_message(
@@ -1322,7 +1477,7 @@ bool verify_masked_mle_opening_with_session(
         if (response_message == nullptr) return false;
         std::vector<Fr> response;
         if (!decode_field_vector_payload(response_message->payload, response) ||
-            response.size() != generators.size() + 2) {
+            response.size() != generators.size() + (scalar_binding ? 4 : 2)) {
             set_open_reason(reason, "masked Hyrax response vector is invalid");
             return false;
         }
@@ -1346,6 +1501,34 @@ bool verify_masked_mle_opening_with_session(
         if (response_eval != announce_eval + masked_evaluation * challenge) {
             set_open_reason(reason, "masked Hyrax MLE evaluation relation failed");
             return false;
+        }
+        if (scalar_binding) {
+            const auto &sb = *scalar_basis;
+            const Fr &response_raw_blinding = response[generators.size() + 2];
+            const Fr &response_masked_blinding = response[generators.size() + 3];
+            Fr scalar_response_eval = Fr(0);
+            for (std::size_t index = 0; index < generators.size(); ++index)
+                scalar_response_eval += basis[index] * response[index];
+            if (sb.G * scalar_response_eval + sb.H * response_raw_blinding !=
+                    raw_announce + expected_raw_evaluation_commitment->point * challenge) {
+                set_open_reason(reason, "masked Hyrax raw evaluation relation failed");
+                return false;
+            }
+            if (sb.G * (scalar_response_eval + response_mu) +
+                    sb.H * response_masked_blinding !=
+                    masked_announce +
+                        expected_masked_evaluation_commitment->point * challenge) {
+                set_open_reason(reason, "masked Hyrax masked evaluation relation failed");
+                return false;
+            }
+            if (sb.G * response_mu +
+                    sb.H * (response_masked_blinding - response_raw_blinding) !=
+                    (masked_announce - raw_announce) +
+                        (expected_masked_evaluation_commitment->point -
+                         expected_raw_evaluation_commitment->point) * challenge) {
+                set_open_reason(reason, "masked Hyrax scalar mask relation failed");
+                return false;
+            }
         }
         return reject_masked_trailing(session, cursor, label,
                                       allow_trailing_unrelated, reason);

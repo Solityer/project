@@ -1,9 +1,13 @@
 #include "gat_proof.hpp"
 
 #include <cassert>
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <functional>
 #include <iostream>
+#include <limits>
 
 using namespace zkgpt::gat;
 using namespace mcl::bn;
@@ -90,7 +94,7 @@ Graph make_graph() {
 
 } // namespace
 
-int main() {
+int main(int argc, char **argv) {
     const DivisionResult tie = signed_round_div(-5, 2);
     assert(tie.value == -3 && tie.witness.valid(RoundingMode::NEAREST_TIES_AWAY));
     const DivisionResult exact = signed_round_div(4, 2);
@@ -280,6 +284,144 @@ int main() {
         context_rejected = true;
     }
     assert(context_rejected);
+
+    if (argc > 1 && std::string(argv[1]) == "--formal") {
+        Graph formal_graph;
+        formal_graph.num_nodes = 1;
+        formal_graph.num_features = 2;
+        formal_graph.graph_count = 1;
+        formal_graph.num_classes = 2;
+        formal_graph.node_ptr = {0, 1};
+        formal_graph.src = {0};
+        formal_graph.dst = {0};
+        formal_graph.edge_gid = {0};
+        formal_graph.edge_ptr = {0, 1};
+        formal_graph.validate();
+        Tensor2D formal_features(1, 2);
+        formal_features.values = {16, 0};
+        const ForwardResult formal_probe = run_forward(
+            formal_graph, formal_features, model, quant);
+        QuantConfig formal_quant = quant;
+        formal_quant.range_bits = 1;
+        Int lrelu_bound = 2;
+        Int exp_bound = 2;
+        Int elu_bound = 2;
+        const auto absorb_attention = [&](const AttentionTrace &trace) {
+            for (Int value : trace.raw_score)
+                lrelu_bound = std::max<Int>(lrelu_bound, std::abs(value) + 1);
+            for (Int value : trace.delta)
+                exp_bound = std::max<Int>(exp_bound, value + 1);
+            for (Int value : trace.recovered)
+                elu_bound = std::max<Int>(elu_bound, std::abs(value) + 1);
+            for (const DivisionWitness &division : trace.divisions)
+                formal_quant.range_bits = std::max<Int>(
+                    formal_quant.range_bits,
+                    static_cast<Int>(std::numeric_limits<std::uint32_t>::digits -
+                                     __builtin_clz(static_cast<std::uint32_t>(
+                                         std::max<Int>(1, std::abs(division.q))))));
+        };
+        for (const HiddenLayerTrace &layer : formal_probe.trace.hidden_layers)
+            for (const AttentionTrace &trace : layer.heads) absorb_attention(trace);
+        for (const OutputHeadTrace &head : formal_probe.trace.output_heads)
+        {
+            absorb_attention(head.attention);
+            for (const DivisionWitness &division : head.alignment_divisions)
+                formal_quant.range_bits = std::max<Int>(
+                    formal_quant.range_bits,
+                    static_cast<Int>(std::numeric_limits<std::uint32_t>::digits -
+                                     __builtin_clz(static_cast<std::uint32_t>(
+                                         std::max<Int>(1, std::abs(division.q))))));
+        }
+        for (const DivisionWitness &division : formal_probe.trace.final_average_divisions)
+            formal_quant.range_bits = std::max<Int>(
+                formal_quant.range_bits,
+                static_cast<Int>(std::numeric_limits<std::uint32_t>::digits -
+                                 __builtin_clz(static_cast<std::uint32_t>(
+                                     std::max<Int>(1, std::abs(division.q))))));
+        formal_quant.range_bits = std::min<Int>(formal_quant.range_bits, 12);
+        formal_quant.static_lrelu_min = -lrelu_bound;
+        formal_quant.static_lrelu_max = lrelu_bound;
+        formal_quant.static_exp_min = 0;
+        formal_quant.static_exp_max = exp_bound;
+        formal_quant.static_elu_min = -elu_bound;
+        formal_quant.static_elu_max = elu_bound;
+        formal_quant.validate();
+        const ForwardResult formal_forward = run_forward(
+            formal_graph, formal_features, model, formal_quant);
+        assert(formal_forward.trace.relation_ok);
+        const GatCircuitPlan formal_plan = build_gat_circuit_plan(
+            formal_graph, model, formal_quant, formal_forward);
+        const ModelRegistration formal_registration = register_model(
+            model, formal_quant, formal_plan.input_layout,
+            model.manifest.model_arch_id);
+        const VerifierContext formal_context = make_verifier_context(
+            formal_graph, formal_features, formal_quant, formal_forward.trace.tables,
+            formal_forward.logits, formal_registration, formal_plan,
+            "masked_full");
+        const ProveResult formal = prove_gat(
+            formal_plan, formal_graph, formal_features, model, formal_quant,
+            formal_forward, formal_registration, "masked_full");
+        if (formal.status != ProveStatus::GENERATED || !formal.has_artifact) {
+            std::cerr << "masked_full formal smoke rejected: "
+                      << formal.diagnostic << "\n";
+            return 1;
+        }
+        assert(!formal.artifact.has_private_payload());
+        const std::string formal_path = "/tmp/zkgpt-masked-full-formal-smoke.artifact";
+        std::string formal_reason;
+        assert(formal.artifact.write(formal_path, &formal_reason));
+        GatProofArtifact parsed_formal;
+        assert(GatProofArtifact::read(formal_path, parsed_formal, &formal_reason));
+        assert(verify_gat(formal_context, parsed_formal, &formal_reason));
+
+        VerifierContext y_tampered = formal_context;
+        y_tampered.public_logits.values.at(0) += 1;
+        assert(!verify_gat(y_tampered, parsed_formal, &formal_reason));
+        VerifierContext registration_tampered = formal_context;
+        registration_tampered.registration.registration_digest[0] =
+            registration_tampered.registration.registration_digest[0] == '0' ? '1' : '0';
+        assert(!verify_gat(registration_tampered, parsed_formal, &formal_reason));
+        VerifierContext table_tampered = formal_context;
+        table_tampered.tables.table_id += "-tampered";
+        assert(!verify_gat(table_tampered, parsed_formal, &formal_reason));
+        VerifierContext resource_tampered = formal_context;
+        resource_tampered.tables.digest[0] =
+            resource_tampered.tables.digest[0] == '0' ? '1' : '0';
+        assert(!verify_gat(resource_tampered, parsed_formal, &formal_reason));
+
+        GatProofArtifact aux_tampered = parsed_formal;
+        aux_tampered.com_aux.point_hex[0] =
+            aux_tampered.com_aux.point_hex[0] == '0' ? '1' : '0';
+        assert(!verify_gat(formal_context, aux_tampered, &formal_reason));
+        GatProofArtifact l_tampered = parsed_formal;
+        l_tampered.com_L.point_hex[0] =
+            l_tampered.com_L.point_hex[0] == '0' ? '1' : '0';
+        assert(!verify_gat(formal_context, l_tampered, &formal_reason));
+        GatProofArtifact linear_tampered = parsed_formal;
+        bool linear_message_found = false;
+        for (NativeProofMessage &message : linear_tampered.native_messages) {
+            if (message.label == "combine/input-linear/response") {
+                message.payload = "1";
+                linear_message_found = true;
+                break;
+            }
+        }
+        assert(linear_message_found);
+        assert(!verify_gat(formal_context, linear_tampered, &formal_reason));
+        GatProofArtifact transcript_tampered = parsed_formal;
+        assert(!transcript_tampered.native_messages.empty());
+        transcript_tampered.native_messages.front().payload += "tampered";
+        assert(!verify_gat(formal_context, transcript_tampered, &formal_reason));
+
+        const ProveResult fresh = prove_gat(
+            formal_plan, formal_graph, formal_features, model, formal_quant,
+            formal_forward, formal_registration, "masked_full");
+        assert(fresh.status == ProveStatus::GENERATED && fresh.has_artifact);
+        assert(fresh.artifact.transcript_digest != formal.artifact.transcript_digest);
+        std::remove(formal_path.c_str());
+        std::cout << "gat_adapter_formal_smoke: PASS masked_full serialize/verify/tamper/freshness\n";
+        return 0;
+    }
 
     const CommitmentWire com_aux = commit_private_segment(
         std::vector<Int>{1, 2}, "synthetic/aux", proof_plan.input_layout.n_in);

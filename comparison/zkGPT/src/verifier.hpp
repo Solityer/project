@@ -95,6 +95,26 @@ struct NativeLayeredGkrWitness {
     std::vector<NativeGkrMatmulWitness> matmuls;
 };
 
+// Authenticated boundary returned by the masked layered walk.  The point is
+// public transcript data; both commitments are Pedersen commitments whose
+// openings stay prover-side.  The combine adapter can consume these fields
+// without receiving a witness or a raw terminal claim.
+struct NativeGkrInputBinding {
+    std::vector<F> point;
+    zkgpt::native_pedersen::ScalarCommitment claim_commitment;
+    zkgpt::native_pedersen::ScalarCommitment unmasked_claim_commitment;
+    zkgpt::native_pedersen::ScalarCommitment mask_commitment;
+};
+
+// Prover-only result for the combine adapter.  The opening is deliberately
+// not part of NativeGkrInputBinding and is never appended to a
+// NativeProofSession; it remains an in-memory witness owned by the caller.
+struct NativeGkrProverResult {
+    NativeGkrInputBinding input_binding;
+    zkgpt::native_pedersen::ScalarOpening unmasked_input_claim_opening;
+    bool has_unmasked_input_claim_opening = false;
+};
+
 // Official masked layered-circuit prover.  It performs the native GKR walk
 // directly with streaming masked Sumcheck (ordinary phase1/phase2 and
 // dedicated FCONN product Sumcheck); it does not call the clear prover loop
@@ -102,7 +122,9 @@ struct NativeLayeredGkrWitness {
 bool prove_masked_gkr_transcript(
     NativeProofSession &session, const layeredCircuit &circuit,
     const NativeLayeredGkrWitness &witness,
-    const std::vector<F> &public_output, std::string *reason = nullptr);
+    const std::vector<F> &public_output, std::string *reason = nullptr,
+    NativeGkrInputBinding *input_binding = nullptr,
+    NativeGkrProverResult *prover_result = nullptr);
 
 // Independent GKR replay boundary used by the GAT adapter.  The circuit,
 // final public output, and public FCONN dimensions are supplied by the
@@ -123,7 +145,8 @@ bool verify_masked_gkr_transcript(
     const NativeProofSession &session, const layeredCircuit &circuit,
     const std::vector<F> &public_output,
     const std::vector<NativeGkrMatmulShape> &matmuls,
-    std::string *reason = nullptr);
+    std::string *reason = nullptr,
+    NativeGkrInputBinding *input_binding = nullptr);
 
 // Scoped replay boundary for composed artifacts.  `start` points at the
 // canonical gkr/public-output message after a preceding Lasso prefix;
@@ -134,7 +157,8 @@ bool verify_masked_gkr_transcript(
     const NativeProofSession &session, const layeredCircuit &circuit,
     const std::vector<F> &public_output,
     const std::vector<NativeGkrMatmulShape> &matmuls,
-    std::size_t start, std::size_t *end, std::string *reason);
+    std::size_t start, std::size_t *end, std::string *reason,
+    NativeGkrInputBinding *input_binding = nullptr);
 
 
 #endif //ZKCNN_CONVVERIFIER_HPP
