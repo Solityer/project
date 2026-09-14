@@ -8,6 +8,7 @@
 #include "prover.hpp"
 #include "hyrax.hpp"
 #include "proof_session.hpp"
+#include "native_masked_sumcheck.hpp"
 using namespace hyrax;
 using std::unique_ptr;
 class verifier 
@@ -73,6 +74,36 @@ struct NativeGkrMatmulShape {
     std::size_t cols = 0;
 };
 
+// Prover-only witness for one native FCONN matrix relation.  The vectors are
+// canonical row-major matrices with exactly rows*inner and inner*cols
+// entries.  They are consumed while producing the transcript and are never
+// part of the independent verifier input.
+struct NativeGkrMatmulWitness {
+    NativeGkrMatmulShape shape;
+    std::vector<F> left;
+    std::vector<F> right;
+};
+
+struct NativeLayeredGkrWitness {
+    // One exact value vector per circuit layer, including the public input
+    // layer and the public output layer.  Only the prover API accepts this
+    // object; the verifier API below receives no witness values.
+    std::vector<std::vector<F>> layer_values;
+    // Descriptors are ordered by ascending circuit layer, matching the
+    // native FCONN registry.  The descending GKR walk consumes them in
+    // reverse order and rejects leftovers.
+    std::vector<NativeGkrMatmulWitness> matmuls;
+};
+
+// Official masked layered-circuit prover.  It performs the native GKR walk
+// directly with streaming masked Sumcheck (ordinary phase1/phase2 and
+// dedicated FCONN product Sumcheck); it does not call the clear prover loop
+// and does not serialize raw round polynomials or witness terminal values.
+bool prove_masked_gkr_transcript(
+    NativeProofSession &session, const layeredCircuit &circuit,
+    const NativeLayeredGkrWitness &witness,
+    const std::vector<F> &public_output, std::string *reason = nullptr);
+
 // Independent GKR replay boundary used by the GAT adapter.  The circuit,
 // final public output, and public FCONN dimensions are supplied by the
 // verifier; all round polynomials, claims and Fiat--Shamir challenges are
@@ -83,6 +114,27 @@ bool verify_gkr_transcript(const NativeProofSession &session,
                            const std::vector<F> &public_output,
                            const std::vector<NativeGkrMatmulShape> &matmuls,
                            std::string *reason = nullptr);
+
+// Independent verifier for prove_masked_gkr_transcript.  The input surface
+// intentionally contains only the layered circuit, public output and public
+// FCONN descriptors; it never receives a prover, layer values or matrix
+// witness.
+bool verify_masked_gkr_transcript(
+    const NativeProofSession &session, const layeredCircuit &circuit,
+    const std::vector<F> &public_output,
+    const std::vector<NativeGkrMatmulShape> &matmuls,
+    std::string *reason = nullptr);
+
+// Scoped replay boundary for composed artifacts.  `start` points at the
+// canonical gkr/public-output message after a preceding Lasso prefix;
+// `end` receives the first message after the complete GKR input-claim scope.
+// Non-GKR suffixes (combine/openings) remain in the same Fiat--Shamir session
+// and are intentionally left for the adapter verifier.
+bool verify_masked_gkr_transcript(
+    const NativeProofSession &session, const layeredCircuit &circuit,
+    const std::vector<F> &public_output,
+    const std::vector<NativeGkrMatmulShape> &matmuls,
+    std::size_t start, std::size_t *end, std::string *reason);
 
 
 #endif //ZKCNN_CONVVERIFIER_HPP

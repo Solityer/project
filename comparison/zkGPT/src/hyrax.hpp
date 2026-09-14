@@ -89,6 +89,12 @@ G1 derive_pedersen_blinding_generator(const std::string &basis_id);
 G1 derive_pedersen_evaluation_generator(const std::string &basis_id,
                                         const std::string &label);
 
+// A transcript-global evaluation-mask generator used when several
+// independently committed MLEs must expose claims under one linear masking
+// relation.  The identity is domain separated from every commitment basis so
+// the same J can be checked across W/Aux/L and the GKR input claim.
+G1 derive_shared_pedersen_evaluation_generator(const std::string &identity);
+
 PedersenMleCommitment pedersen_commit_mle(
     const std::vector<G1> &generators, const std::vector<Fr> &values,
     const std::string &basis_id);
@@ -98,7 +104,8 @@ bool open_masked_mle_with_session(
     const std::vector<G1> &generators, const std::vector<Fr> &point,
     const std::vector<Fr> &values, NativeProofSession &session,
     const std::string &label, MaskedMleOpening &opening,
-    std::string *reason = nullptr, bool enforce_statement_basis = true);
+    std::string *reason = nullptr, bool enforce_statement_basis = true,
+    const std::string &mask_identity = "");
 
 // Same opening protocol, with a caller-supplied hidden evaluation claim.
 // This is used when a masked Sumcheck terminal and a Pedersen MLE opening
@@ -111,7 +118,8 @@ bool open_masked_mle_with_claim(
     const std::vector<Fr> &values, const Fr &masked_evaluation,
     NativeProofSession &session, const std::string &label,
     MaskedMleOpening &opening, std::string *reason = nullptr,
-    bool enforce_statement_basis = true);
+    bool enforce_statement_basis = true,
+    const std::string &mask_identity = "");
 
 bool verify_masked_mle_opening_with_session(
     const G1 &commitment, const G1 &evaluation_mask_commitment,
@@ -119,7 +127,8 @@ bool verify_masked_mle_opening_with_session(
     const std::vector<G1> &generators, const std::vector<Fr> &point,
     const NativeProofSession &session, const std::string &label,
     std::string *reason = nullptr, bool enforce_statement_basis = true,
-    bool allow_trailing_unrelated = false);
+    bool allow_trailing_unrelated = false,
+    const std::string &mask_identity = "");
 }
 
 

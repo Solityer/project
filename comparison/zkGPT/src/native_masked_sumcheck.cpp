@@ -259,6 +259,14 @@ bool terminal_arity(const NativeMaskedTerminalSpec &spec, std::size_t &arity,
         }
         arity = 4;
         return true;
+    case NativeMaskedTerminalKind::GkrPredicateFixedU:
+    case NativeMaskedTerminalKind::GkrPredicateFixedV:
+        if (spec.gkr_coefficients.size() != 5 || spec.fixed_values.size() != 2) {
+            set_reason(reason, "masked fixed-side GKR predicate needs five coefficients and two fixed values");
+            return false;
+        }
+        arity = 2;
+        return true;
     case NativeMaskedTerminalKind::Product2Public:
         if (spec.public_vector.empty() ||
             (spec.public_vector.size() & (spec.public_vector.size() - 1)) != 0) {
@@ -287,6 +295,28 @@ F gkr_predicate(const std::vector<F> &coefficients,
     const F &v1 = values[3];
     return bin0 * u0 * v0 + bin1 * u1 * v1 + bin2 * u1 * v0 +
            uni0 * u0 + uni1 * u1;
+}
+
+F gkr_predicate_fixed_u(const std::vector<F> &coefficients,
+                        const std::vector<F> &fixed_u,
+                        const std::vector<F> &v) {
+    if (coefficients.size() != 5 || fixed_u.size() != 2 || v.size() != 2)
+        throw std::invalid_argument("masked fixed-U GKR predicate dimensions are invalid");
+    return coefficients[0] * fixed_u[0] * v[0] +
+           coefficients[1] * fixed_u[1] * v[1] +
+           coefficients[2] * fixed_u[1] * v[0] +
+           coefficients[3] * fixed_u[0] + coefficients[4] * fixed_u[1];
+}
+
+F gkr_predicate_fixed_v(const std::vector<F> &coefficients,
+                        const std::vector<F> &u,
+                        const std::vector<F> &fixed_v) {
+    if (coefficients.size() != 5 || u.size() != 2 || fixed_v.size() != 2)
+        throw std::invalid_argument("masked fixed-V GKR predicate dimensions are invalid");
+    return coefficients[0] * u[0] * fixed_v[0] +
+           coefficients[1] * u[1] * fixed_v[1] +
+           coefficients[2] * u[1] * fixed_v[0] +
+           coefficients[3] * u[0] + coefficients[4] * u[1];
 }
 
 // Produce a fresh terminal vector on the public GKR predicate surface.  The
@@ -407,6 +437,11 @@ bool validate_terminal_spec(const NativeMaskedTerminalSpec &spec,
         set_reason(reason, "masked GKR predicate requires degree two");
         return false;
     }
+    if ((spec.kind == NativeMaskedTerminalKind::GkrPredicateFixedU ||
+         spec.kind == NativeMaskedTerminalKind::GkrPredicateFixedV) && degree != 2) {
+        set_reason(reason, "masked fixed-side GKR predicate requires degree two");
+        return false;
+    }
     if (spec.kind == NativeMaskedTerminalKind::Product2Public && degree != 2) {
         set_reason(reason, "masked public product relation requires degree two");
         return false;
@@ -514,6 +549,24 @@ bool verify_terminal(const NativeMaskedTerminalSpec &spec, const F &running,
             return false;
         }
         return true;
+    case NativeMaskedTerminalKind::GkrPredicateFixedU: {
+        const std::vector<F> &fixed = spec.unmasked_fixed_values.size() == 2
+            ? spec.unmasked_fixed_values : spec.fixed_values;
+        if (gkr_predicate_fixed_u(spec.gkr_coefficients, fixed, terminal) != running) {
+            set_reason(reason, "masked fixed-U GKR terminal predicate relation failed");
+            return false;
+        }
+        return true;
+    }
+    case NativeMaskedTerminalKind::GkrPredicateFixedV: {
+        const std::vector<F> &fixed = spec.unmasked_fixed_values.size() == 2
+            ? spec.unmasked_fixed_values : spec.fixed_values;
+        if (gkr_predicate_fixed_v(spec.gkr_coefficients, terminal, fixed) != running) {
+            set_reason(reason, "masked fixed-V GKR terminal predicate relation failed");
+            return false;
+        }
+        return true;
+    }
     case NativeMaskedTerminalKind::Product2Public:
         // The public factor is evaluated by the verifier at the same
         // transcript-derived point and is not a witness terminal.
@@ -570,6 +623,84 @@ bool sample_masked_terminal(const NativeMaskedTerminalSpec &spec, const F &runni
             return false;
         }
         return true;
+    case NativeMaskedTerminalKind::GkrPredicateFixedU: {
+        if (spec.fixed_values.size() != 2) {
+            set_reason(reason, "masked fixed-U GKR terminal values are missing");
+            return false;
+        }
+        const F &u0 = spec.fixed_values[0];
+        const F &u1 = spec.fixed_values[1];
+        const F v1_coefficient = spec.gkr_coefficients[1] * u1;
+        if (!v1_coefficient.isZero()) {
+            const F v0 = random_field();
+            const F base = spec.gkr_coefficients[0] * u0 * v0 +
+                           spec.gkr_coefficients[2] * u1 * v0 +
+                           spec.gkr_coefficients[3] * u0 +
+                           spec.gkr_coefficients[4] * u1;
+            const F v1 = (running - base) / v1_coefficient;
+            terminal = {v0, v1};
+            return gkr_predicate_fixed_u(spec.gkr_coefficients,
+                                         spec.fixed_values, terminal) == running;
+        }
+        const F v0_coefficient = spec.gkr_coefficients[0] * u0 +
+                                 spec.gkr_coefficients[2] * u1;
+        if (!v0_coefficient.isZero()) {
+            const F v1 = random_field();
+            const F base = spec.gkr_coefficients[1] * u1 * v1 +
+                           spec.gkr_coefficients[3] * u0 +
+                           spec.gkr_coefficients[4] * u1;
+            const F v0 = (running - base) / v0_coefficient;
+            terminal = {v0, v1};
+            return gkr_predicate_fixed_u(spec.gkr_coefficients,
+                                         spec.fixed_values, terminal) == running;
+        }
+        if ((spec.gkr_coefficients[3] * u0 +
+             spec.gkr_coefficients[4] * u1 - running).isZero()) {
+            terminal = {random_field(), random_field()};
+            return true;
+        }
+        set_reason(reason, "masked fixed-U GKR terminal relation has no sampled point");
+        return false;
+    }
+    case NativeMaskedTerminalKind::GkrPredicateFixedV: {
+        if (spec.fixed_values.size() != 2) {
+            set_reason(reason, "masked fixed-V GKR terminal values are missing");
+            return false;
+        }
+        const F &v0 = spec.fixed_values[0];
+        const F &v1 = spec.fixed_values[1];
+        const F u0_coefficient = spec.gkr_coefficients[0] * v0 +
+                                 spec.gkr_coefficients[3];
+        if (!u0_coefficient.isZero()) {
+            const F u1 = random_field();
+            const F base = spec.gkr_coefficients[1] * u1 * v1 +
+                           spec.gkr_coefficients[2] * u1 * v0 +
+                           spec.gkr_coefficients[4] * u1;
+            const F u0 = (running - base) / u0_coefficient;
+            terminal = {u0, u1};
+            return gkr_predicate_fixed_v(spec.gkr_coefficients,
+                                         terminal, spec.fixed_values) == running;
+        }
+        const F u1_coefficient = spec.gkr_coefficients[1] * v1 +
+                                 spec.gkr_coefficients[2] * v0 +
+                                 spec.gkr_coefficients[4];
+        if (!u1_coefficient.isZero()) {
+            const F u0 = random_field();
+            const F base = spec.gkr_coefficients[0] * u0 * v0 +
+                           spec.gkr_coefficients[3] * u0;
+            const F u1 = (running - base) / u1_coefficient;
+            terminal = {u0, u1};
+            return gkr_predicate_fixed_v(spec.gkr_coefficients,
+                                         terminal, spec.fixed_values) == running;
+        }
+        if (running.isZero() && spec.gkr_coefficients[0].isZero() &&
+            spec.gkr_coefficients[3].isZero()) {
+            terminal = {random_field(), random_field()};
+            return true;
+        }
+        set_reason(reason, "masked fixed-V GKR terminal relation has no sampled point");
+        return false;
+    }
     }
     set_reason(reason, "unknown masked terminal relation");
     return false;
@@ -587,7 +718,7 @@ bool native_masked_sumcheck_prove(
     try {
         if (!valid_scope_label(label))
             throw std::invalid_argument("masked Sumcheck scope label is invalid");
-        if (round_polys.empty() || round_polys.size() > (1ULL << 20))
+        if (round_polys.size() > (1ULL << 20))
             throw std::invalid_argument("masked Sumcheck round count is invalid");
         NativeMaskedTerminalSpec effective_spec = terminal_spec;
         std::size_t arity = 0;
@@ -640,10 +771,12 @@ bool native_masked_sumcheck_prove(
         if (!verify_terminal(effective_spec, unmasked_running, terminal_values, reason))
             throw std::runtime_error(reason != nullptr ? *reason :
                                      "unmasked terminal relation failed");
-        if (!sample_masked_terminal(effective_spec, running, local.terminal_values, reason))
+        NativeMaskedTerminalSpec masked_spec = effective_spec;
+        masked_spec.unmasked_fixed_values.clear();
+        if (!sample_masked_terminal(masked_spec, running, local.terminal_values, reason))
             throw std::runtime_error(reason != nullptr ? *reason :
                                      "masked terminal sampling failed");
-        if (!verify_terminal(effective_spec, running, local.terminal_values, reason))
+        if (!verify_terminal(masked_spec, running, local.terminal_values, reason))
             throw std::runtime_error(reason != nullptr ? *reason :
                                      "masked terminal relation failed");
         session.absorb_fields(label + "/terminal", local.terminal_values);
@@ -663,7 +796,7 @@ bool native_masked_sumcheck_verify(
     const NativeMaskedTerminalSpec &terminal_spec,
     NativeMaskedSumcheckResult *result, std::string *reason) {
     try {
-        if (!valid_scope_label(label) || rounds == 0 || rounds > (1ULL << 20)) {
+        if (!valid_scope_label(label) || rounds > (1ULL << 20)) {
             set_reason(reason, "masked Sumcheck verifier dimensions are invalid");
             return false;
         }
@@ -784,6 +917,68 @@ bool native_masked_gkr_quadratic_verify(
                                          initial_claim, spec, result, reason);
 }
 
+bool native_masked_gkr_fixed_u_quadratic_prove(
+    NativeProofSession &session, const std::string &label,
+    const std::vector<std::vector<F>> &round_polys, const F &initial_claim,
+    const std::vector<F> &terminal_values,
+    const std::vector<F> &gkr_coefficients,
+    const std::vector<F> &masked_u, const std::vector<F> &unmasked_u,
+    NativeMaskedSumcheckResult *result, std::string *reason) {
+    NativeMaskedTerminalSpec spec;
+    spec.kind = NativeMaskedTerminalKind::GkrPredicateFixedU;
+    spec.gkr_coefficients = gkr_coefficients;
+    spec.fixed_values = masked_u;
+    spec.unmasked_fixed_values = unmasked_u;
+    return native_masked_sumcheck_prove(session, label, 2, round_polys,
+                                        initial_claim, terminal_values, spec,
+                                        result, reason);
+}
+
+bool native_masked_gkr_fixed_u_quadratic_verify(
+    const NativeProofSession &session, const std::string &label,
+    std::size_t rounds, const F &initial_claim,
+    const std::vector<F> &gkr_coefficients,
+    const std::vector<F> &masked_u, NativeMaskedSumcheckResult *result,
+    std::string *reason) {
+    NativeMaskedTerminalSpec spec;
+    spec.kind = NativeMaskedTerminalKind::GkrPredicateFixedU;
+    spec.gkr_coefficients = gkr_coefficients;
+    spec.fixed_values = masked_u;
+    return native_masked_sumcheck_verify(session, label, 2, rounds,
+                                         initial_claim, spec, result, reason);
+}
+
+bool native_masked_gkr_fixed_v_quadratic_prove(
+    NativeProofSession &session, const std::string &label,
+    const std::vector<std::vector<F>> &round_polys, const F &initial_claim,
+    const std::vector<F> &terminal_values,
+    const std::vector<F> &gkr_coefficients,
+    const std::vector<F> &masked_v, const std::vector<F> &unmasked_v,
+    NativeMaskedSumcheckResult *result, std::string *reason) {
+    NativeMaskedTerminalSpec spec;
+    spec.kind = NativeMaskedTerminalKind::GkrPredicateFixedV;
+    spec.gkr_coefficients = gkr_coefficients;
+    spec.fixed_values = masked_v;
+    spec.unmasked_fixed_values = unmasked_v;
+    return native_masked_sumcheck_prove(session, label, 2, round_polys,
+                                        initial_claim, terminal_values, spec,
+                                        result, reason);
+}
+
+bool native_masked_gkr_fixed_v_quadratic_verify(
+    const NativeProofSession &session, const std::string &label,
+    std::size_t rounds, const F &initial_claim,
+    const std::vector<F> &gkr_coefficients,
+    const std::vector<F> &masked_v, NativeMaskedSumcheckResult *result,
+    std::string *reason) {
+    NativeMaskedTerminalSpec spec;
+    spec.kind = NativeMaskedTerminalKind::GkrPredicateFixedV;
+    spec.gkr_coefficients = gkr_coefficients;
+    spec.fixed_values = masked_v;
+    return native_masked_sumcheck_verify(session, label, 2, rounds,
+                                         initial_claim, spec, result, reason);
+}
+
 bool native_masked_matmul_product_prove(
     NativeProofSession &session, const std::string &label,
     const std::vector<std::vector<F>> &round_polys, const F &initial_claim,
@@ -875,6 +1070,18 @@ bool NativeMaskedSumcheckProver::append_round(
     }
 }
 
+bool NativeMaskedSumcheckProver::set_terminal_spec(
+    const NativeMaskedTerminalSpec &terminal_spec, std::string *reason) {
+    if (finished_) {
+        set_reason(reason, "masked streaming Sumcheck is already finished");
+        return false;
+    }
+    std::size_t arity = 0;
+    if (!validate_terminal_spec(terminal_spec, degree_, arity, reason)) return false;
+    terminal_spec_ = terminal_spec;
+    return true;
+}
+
 bool NativeMaskedSumcheckProver::finish(
     const std::vector<F> &unmasked_terminal, NativeMaskedSumcheckResult *result,
     std::string *reason) {
@@ -883,8 +1090,6 @@ bool NativeMaskedSumcheckProver::finish(
         return false;
     }
     try {
-        if (rounds_ == 0)
-            throw std::invalid_argument("masked streaming Sumcheck has no rounds");
         std::size_t arity = 0;
         if (!terminal_arity(terminal_spec_, arity, reason))
             throw std::invalid_argument(reason != nullptr ? *reason :
@@ -899,11 +1104,13 @@ bool NativeMaskedSumcheckProver::finish(
                              reason))
             throw std::runtime_error(reason != nullptr ? *reason :
                                      "unmasked terminal relation failed");
-        if (!sample_masked_terminal(effective_spec, masked_running_,
-                                    result_.terminal_values, reason))
+        NativeMaskedTerminalSpec masked_spec = effective_spec;
+        masked_spec.unmasked_fixed_values.clear();
+        if (!sample_masked_terminal(masked_spec, masked_running_,
+                                     result_.terminal_values, reason))
             throw std::runtime_error(reason != nullptr ? *reason :
                                      "masked terminal sampling failed");
-        if (!verify_terminal(effective_spec, masked_running_,
+        if (!verify_terminal(masked_spec, masked_running_,
                              result_.terminal_values, reason))
             throw std::runtime_error(reason != nullptr ? *reason :
                                      "masked terminal relation failed");

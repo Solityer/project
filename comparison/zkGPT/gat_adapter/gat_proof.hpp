@@ -105,6 +105,12 @@ struct GatCircuitPlan {
     std::string plan_digest;
     std::string opening_policy = "same_r_three_terminal_openings_v1";
     std::vector<std::string> terminal_openings;
+    // The final official layer exposes the complete public Y prefix followed
+    // by one public zero coordinate for every arithmetic residual.  Keeping
+    // these counts in the plan makes the output statement unambiguous and
+    // prevents an adapter caller from silently truncating the residual tail.
+    std::size_t public_output_coordinates = 0;
+    std::size_t residual_coordinates = 0;
     bool official_layered = false;
     bool has_placeholder = false;
 };
@@ -124,6 +130,33 @@ GatCircuitPlan build_gat_circuit_plan(const Graph &graph, const Model &model,
 // claim that the native masked transcript is available.
 bool validate_gat_circuit_plan(const GatCircuitPlan &plan,
                                std::string *reason = nullptr);
+
+// Prover-side values for the canonical layered relation.  `input_layer` is
+// the padded X_pub || W || Aux || L_qry vector consumed by the official
+// circuit; `values` follows layeredCircuit's native val[layer] convention.
+// The canonical copy is retained only for bounded adapter-local relation
+// checks and is never serialized into a proof artifact.
+struct GatCircuitWitness {
+    std::vector<Fr> input_layer;
+    std::vector<Fr> canonical_input_layer;
+    std::vector<std::vector<Fr>> values;
+    std::vector<Fr> public_output;
+    std::vector<Fr> residuals;
+    bool relation_ok = false;
+};
+
+GatCircuitWitness build_gat_circuit_witness(
+    const GatCircuitPlan &plan, const Graph &graph,
+    const Tensor2D &public_features, const Model &model,
+    const QuantConfig &quant, const ForwardResult &forward);
+
+// Evaluate every native uni/bin gate using the official input/previous-layer
+// routing rules and check the public Y prefix plus the zero residual tail.
+// This is a fast prover-side correctness gate; it does not claim to replace
+// the native GKR/Lasso/Hyrax proof verifier.
+bool evaluate_gat_circuit_witness(const GatCircuitPlan &plan,
+                                  const GatCircuitWitness &witness,
+                                  std::string *reason = nullptr);
 
 struct CommitmentWire {
     std::string scheme = "hyrax-pedersen-bn254";

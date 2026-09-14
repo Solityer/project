@@ -22,6 +22,12 @@ enum class NativeMaskedTerminalKind : std::uint8_t {
     // Degree-two relation whose second terminal factor is a verifier-known
     // public MLE evaluation.  Only the masked private terminal is emitted.
     Product2Public = 6,
+    // Degree-two GKR predicate with one side fixed by the preceding
+    // Sumcheck terminal.  The fixed side is carried only as a masked
+    // transcript value; the prover may additionally supply the unmasked
+    // value through unmasked_fixed_values for its local consistency check.
+    GkrPredicateFixedU = 7,
+    GkrPredicateFixedV = 8,
 };
 
 struct NativeMaskedTerminalSpec {
@@ -37,6 +43,13 @@ struct NativeMaskedTerminalSpec {
     std::vector<F> public_vector;
     // Filled internally from public_vector and the transcript challenges.
     F public_evaluation = F_ZERO;
+    // Masked fixed-side terminal values.  These are public transcript values
+    // consumed by the independent verifier, never witness evaluations.
+    std::vector<F> fixed_values;
+    // Prover-only unmasked fixed-side values.  The native wire never carries
+    // this vector; it is used solely to check the unmasked predicate before
+    // masking the terminal relation.
+    std::vector<F> unmasked_fixed_values;
 };
 
 struct NativeMaskedSumcheckResult {
@@ -59,6 +72,12 @@ public:
 
     bool append_round(const std::vector<F> &unmasked_poly, F *challenge = nullptr,
                       std::string *reason = nullptr);
+    // The GKR predicate coefficients depend on the phase challenges that are
+    // generated while rounds are streamed.  The prover therefore starts with
+    // a placeholder terminal spec and freezes the relation immediately
+    // before finish(); no terminal relation is serialized before that point.
+    bool set_terminal_spec(const NativeMaskedTerminalSpec &terminal_spec,
+                           std::string *reason = nullptr);
     bool finish(const std::vector<F> &unmasked_terminal,
                 NativeMaskedSumcheckResult *result = nullptr,
                 std::string *reason = nullptr);
@@ -127,6 +146,42 @@ bool native_masked_gkr_quadratic_verify(
     const NativeProofSession &session, const std::string &label,
     std::size_t rounds, const F &initial_claim,
     const std::vector<F> &gkr_coefficients,
+    NativeMaskedSumcheckResult *result = nullptr,
+    std::string *reason = nullptr);
+
+bool native_masked_gkr_fixed_u_quadratic_prove(
+    NativeProofSession &session, const std::string &label,
+    const std::vector<std::vector<F>> &round_polys, const F &initial_claim,
+    const std::vector<F> &terminal_values,
+    const std::vector<F> &gkr_coefficients,
+    const std::vector<F> &masked_u,
+    const std::vector<F> &unmasked_u,
+    NativeMaskedSumcheckResult *result = nullptr,
+    std::string *reason = nullptr);
+
+bool native_masked_gkr_fixed_u_quadratic_verify(
+    const NativeProofSession &session, const std::string &label,
+    std::size_t rounds, const F &initial_claim,
+    const std::vector<F> &gkr_coefficients,
+    const std::vector<F> &masked_u,
+    NativeMaskedSumcheckResult *result = nullptr,
+    std::string *reason = nullptr);
+
+bool native_masked_gkr_fixed_v_quadratic_prove(
+    NativeProofSession &session, const std::string &label,
+    const std::vector<std::vector<F>> &round_polys, const F &initial_claim,
+    const std::vector<F> &terminal_values,
+    const std::vector<F> &gkr_coefficients,
+    const std::vector<F> &masked_v,
+    const std::vector<F> &unmasked_v,
+    NativeMaskedSumcheckResult *result = nullptr,
+    std::string *reason = nullptr);
+
+bool native_masked_gkr_fixed_v_quadratic_verify(
+    const NativeProofSession &session, const std::string &label,
+    std::size_t rounds, const F &initial_claim,
+    const std::vector<F> &gkr_coefficients,
+    const std::vector<F> &masked_v,
     NativeMaskedSumcheckResult *result = nullptr,
     std::string *reason = nullptr);
 

@@ -1040,6 +1040,16 @@ G1 derive_pedersen_evaluation_generator(const std::string &basis_id,
     return result;
 }
 
+G1 derive_shared_pedersen_evaluation_generator(const std::string &identity) {
+    if (identity.empty() || identity.size() > 512)
+        throw std::invalid_argument("shared Pedersen evaluation identity is invalid");
+    G1 result;
+    hashAndMapToG1(result, "zkGPT/hyrax/pedersen/shared-J/v1/" + identity);
+    if (!valid_point(result, true))
+        throw std::runtime_error("shared Pedersen evaluation generator is invalid");
+    return result;
+}
+
 PedersenMleCommitment pedersen_commit_mle(
     const std::vector<G1> &generators, const std::vector<Fr> &values,
     const std::string &basis_id) {
@@ -1070,7 +1080,7 @@ static bool open_masked_mle_impl(
     const std::vector<Fr> &values, const Fr *forced_masked_evaluation,
     NativeProofSession &session, const std::string &label,
     MaskedMleOpening &opening, std::string *reason,
-    bool enforce_statement_basis) {
+    bool enforce_statement_basis, const std::string &mask_identity) {
     const std::size_t checkpoint = session.checkpoint();
     try {
         if (label.empty() || values.empty() || values.size() != generators.size() ||
@@ -1102,7 +1112,9 @@ static bool open_masked_mle_impl(
         if (expected_commitment != commitment.commitment)
             throw std::invalid_argument("masked Hyrax commitment does not bind the witness");
 
-        const G1 J = derive_pedersen_evaluation_generator(commitment.basis_id, label);
+        const G1 J = mask_identity.empty()
+            ? derive_pedersen_evaluation_generator(commitment.basis_id, label)
+            : derive_shared_pedersen_evaluation_generator(mask_identity);
         if (J == commitment.blinding_generator)
             throw std::invalid_argument("masked Hyrax evaluation generator is not independent");
         for (const G1 &generator : generators)
@@ -1168,10 +1180,10 @@ bool open_masked_mle_with_session(
     const std::vector<G1> &generators, const std::vector<Fr> &point,
     const std::vector<Fr> &values, NativeProofSession &session,
     const std::string &label, MaskedMleOpening &opening, std::string *reason,
-    bool enforce_statement_basis) {
+    bool enforce_statement_basis, const std::string &mask_identity) {
     return open_masked_mle_impl(commitment, generators, point, values, nullptr,
                                 session, label, opening, reason,
-                                enforce_statement_basis);
+                                enforce_statement_basis, mask_identity);
 }
 
 bool open_masked_mle_with_claim(
@@ -1180,10 +1192,10 @@ bool open_masked_mle_with_claim(
     const std::vector<Fr> &values, const Fr &masked_evaluation,
     NativeProofSession &session, const std::string &label,
     MaskedMleOpening &opening, std::string *reason,
-    bool enforce_statement_basis) {
+    bool enforce_statement_basis, const std::string &mask_identity) {
     return open_masked_mle_impl(commitment, generators, point, values,
                                 &masked_evaluation, session, label, opening,
-                                reason, enforce_statement_basis);
+                                reason, enforce_statement_basis, mask_identity);
 }
 
 bool verify_masked_mle_opening_with_session(
@@ -1192,7 +1204,7 @@ bool verify_masked_mle_opening_with_session(
     const std::vector<G1> &generators, const std::vector<Fr> &point,
     const NativeProofSession &session, const std::string &label,
     std::string *reason, bool enforce_statement_basis,
-    bool allow_trailing_unrelated) {
+    bool allow_trailing_unrelated, const std::string &mask_identity) {
     try {
         if (label.empty() || basis_id.empty() || point.empty() ||
             point.size() >= sizeof(std::size_t) * 8 || generators.empty() ||
@@ -1203,7 +1215,9 @@ bool verify_masked_mle_opening_with_session(
         if (basis.size() != generators.size())
             throw std::invalid_argument("masked Hyrax verifier basis size mismatch");
         const G1 H = derive_pedersen_blinding_generator(basis_id);
-        const G1 J = derive_pedersen_evaluation_generator(basis_id, label);
+        const G1 J = mask_identity.empty()
+            ? derive_pedersen_evaluation_generator(basis_id, label)
+            : derive_shared_pedersen_evaluation_generator(mask_identity);
         if (!valid_point(commitment, false) || !valid_point(evaluation_mask_commitment, false) ||
             !valid_point(H, true) || !valid_point(J, true) || H == J)
             throw std::invalid_argument("masked Hyrax verifier point is invalid");

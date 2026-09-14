@@ -10,6 +10,8 @@
 #include <sstream>
 #include <memory>
 #include <stdexcept>
+#include <algorithm>
+#include <limits>
 
 using namespace std;
 using namespace mcl::bn;
@@ -1501,5 +1503,837 @@ bool verifier::openCommit()
     }
     prover_time+=tim.first;
     verifier_time+=tim.second;
+    return true;
+}
+
+namespace {
+
+void masked_set_reason(std::string *reason, const std::string &message) {
+    if (reason != nullptr) *reason = message;
+}
+
+bool masked_expect_message(const NativeProofSession &session, std::size_t &cursor,
+                           NativeProofMessageKind kind, const std::string &label,
+                           const NativeProofMessage **message,
+                           std::string *reason) {
+    if (cursor >= session.messages().size()) {
+        masked_set_reason(reason, "masked GKR cursor reached transcript end at " + label);
+        return false;
+    }
+    const NativeProofMessage &candidate = session.messages()[cursor];
+    if (candidate.kind != kind || candidate.label != label) {
+        masked_set_reason(reason, "masked GKR cursor expected " + label);
+        return false;
+    }
+    if (message != nullptr) *message = &candidate;
+    ++cursor;
+    return true;
+}
+
+bool masked_expect_challenge(const NativeProofSession &session, std::size_t &cursor,
+                             const std::string &label, F &value,
+                             std::string *reason) {
+    const NativeProofMessage *message = nullptr;
+    if (!masked_expect_message(session, cursor, NativeProofMessageKind::Challenge,
+                               "challenge/" + label, &message, reason) ||
+        !decode_transcript_field(message->payload, value)) {
+        masked_set_reason(reason, "malformed masked GKR challenge: " + label);
+        return false;
+    }
+    return true;
+}
+
+bool masked_advance_scope(const NativeProofSession &session, const std::string &label,
+                          std::size_t rounds, std::size_t &cursor,
+                          std::string *reason) {
+    for (std::size_t round = 0; round < rounds; ++round) {
+        const std::string base = label + "/mask/" + std::to_string(round);
+        if (!masked_expect_message(session, cursor, NativeProofMessageKind::Data,
+                                   base + "/commitment", nullptr, reason) ||
+            !masked_expect_message(session, cursor, NativeProofMessageKind::Challenge,
+                                   "challenge/" + base + "/knowledge", nullptr, reason) ||
+            !masked_expect_message(session, cursor, NativeProofMessageKind::FieldVector,
+                                   base + "/response", nullptr, reason) ||
+            !masked_expect_message(session, cursor, NativeProofMessageKind::FieldVector,
+                                   label + "/poly/" + std::to_string(round), nullptr,
+                                   reason) ||
+            !masked_expect_message(session, cursor, NativeProofMessageKind::Challenge,
+                                   "challenge/" + label + "/r/" +
+                                       std::to_string(round), nullptr, reason))
+            return false;
+    }
+    return masked_expect_message(session, cursor, NativeProofMessageKind::FieldVector,
+                                 label + "/terminal", nullptr, reason);
+}
+
+bool masked_scope_challenges(const NativeProofSession &session,
+                             const std::string &label, std::size_t rounds,
+                             std::size_t start, std::vector<F> &challenges,
+                             std::string *reason) {
+    challenges.clear();
+    std::size_t cursor = start;
+    for (std::size_t round = 0; round < rounds; ++round) {
+        const NativeProofMessage *ignored = nullptr;
+        const std::string base = label + "/mask/" + std::to_string(round);
+        if (!masked_expect_message(session, cursor, NativeProofMessageKind::Data,
+                                   base + "/commitment", &ignored, reason) ||
+            !masked_expect_message(session, cursor, NativeProofMessageKind::Challenge,
+                                   "challenge/" + base + "/knowledge", &ignored, reason) ||
+            !masked_expect_message(session, cursor, NativeProofMessageKind::FieldVector,
+                                   base + "/response", &ignored, reason) ||
+            !masked_expect_message(session, cursor, NativeProofMessageKind::FieldVector,
+                                   label + "/poly/" + std::to_string(round), &ignored,
+                                   reason))
+            return false;
+        F challenge;
+        if (!masked_expect_challenge(session, cursor,
+                                     label + "/r/" + std::to_string(round),
+                                     challenge, reason))
+            return false;
+        challenges.push_back(challenge);
+    }
+    return true;
+}
+
+bool masked_decode_public_output(const NativeProofMessage *message,
+                                 const std::vector<F> &expected,
+                                 std::string *reason) {
+    std::vector<F> decoded;
+    if (message == nullptr ||
+        message->kind != NativeProofMessageKind::FieldVector ||
+        !decode_transcript_fields(message->payload, decoded) || decoded != expected) {
+        masked_set_reason(reason, "masked GKR public output binding failed");
+        return false;
+    }
+    return true;
+}
+
+bool masked_power_domain(std::size_t bits, std::size_t &domain,
+                         std::string *reason) {
+    if (bits >= sizeof(std::size_t) * 8) {
+        masked_set_reason(reason, "masked GKR MLE dimension is too large");
+        return false;
+    }
+    domain = std::size_t(1) << bits;
+    return true;
+}
+
+std::vector<F> masked_fold_outer(const std::vector<F> &values,
+                                 std::size_t inner_bits, std::size_t outer_bits,
+                                 const std::vector<F> &point) {
+    const std::size_t total_bits = inner_bits + outer_bits;
+    const std::size_t full_domain = std::size_t(1) << total_bits;
+    if (values.size() != full_domain || point.size() != total_bits)
+        throw std::invalid_argument("masked FCONN witness MLE dimensions are invalid");
+    std::vector<F> current = values;
+    std::size_t active = full_domain;
+    for (std::size_t round = 0; round < outer_bits; ++round) {
+        const F &challenge = point[total_bits - 1 - round];
+        const std::size_t half = active >> 1;
+        std::vector<F> next(half);
+        for (std::size_t index = 0; index < half; ++index)
+            next[index] = current[index] * (F_ONE - challenge) +
+                          current[index + half] * challenge;
+        current.swap(next);
+        active = half;
+    }
+    return current;
+}
+
+bool masked_matmul_witness_vectors(const NativeGkrMatmulWitness &witness,
+                                   std::size_t &rows_domain,
+                                   std::size_t &inner_domain,
+                                   std::size_t &cols_domain,
+                                   std::vector<F> &left,
+                                   std::vector<F> &right,
+                                   std::string *reason) {
+    const auto &shape = witness.shape;
+    if (shape.rows == 0 || shape.inner == 0 || shape.cols == 0 ||
+        shape.rows > std::numeric_limits<std::uint32_t>::max() ||
+        shape.inner > std::numeric_limits<std::uint32_t>::max() ||
+        shape.cols > std::numeric_limits<std::uint32_t>::max()) {
+        masked_set_reason(reason, "masked FCONN descriptor dimensions are invalid");
+        return false;
+    }
+    const std::size_t row_bits = ceilPow2BitLength(
+        static_cast<std::uint32_t>(shape.rows));
+    const std::size_t inner_bits = ceilPow2BitLength(
+        static_cast<std::uint32_t>(shape.inner));
+    const std::size_t col_bits = ceilPow2BitLength(
+        static_cast<std::uint32_t>(shape.cols));
+    if (!masked_power_domain(row_bits, rows_domain, reason) ||
+        !masked_power_domain(inner_bits, inner_domain, reason) ||
+        !masked_power_domain(col_bits, cols_domain, reason))
+        return false;
+    if (witness.left.size() != shape.rows * shape.inner ||
+        witness.right.size() != shape.inner * shape.cols) {
+        masked_set_reason(reason, "masked FCONN witness matrix dimensions are invalid");
+        return false;
+    }
+    left.assign(rows_domain * inner_domain, F_ZERO);
+    right.assign(inner_domain * cols_domain, F_ZERO);
+    std::copy(witness.left.begin(), witness.left.end(), left.begin());
+    std::copy(witness.right.begin(), witness.right.end(), right.begin());
+    return true;
+}
+
+bool masked_product_prove(NativeProofSession &session, const std::string &label,
+                          const std::vector<F> &left,
+                          const std::vector<F> &right,
+                          std::size_t inner_bits,
+                          const F &masked_initial, const F &unmasked_initial,
+                          NativeMaskedSumcheckResult &result,
+                          std::string *reason) {
+    if (left.size() != (std::size_t(1) << inner_bits) ||
+        right.size() != (std::size_t(1) << inner_bits)) {
+        masked_set_reason(reason, "masked FCONN product domain is invalid");
+        return false;
+    }
+    NativeMaskedTerminalSpec spec;
+    spec.kind = NativeMaskedTerminalKind::Product2;
+    NativeMaskedSumcheckProver sumcheck(
+        session, label, 2, masked_initial, spec, &unmasked_initial);
+    std::vector<F> f = left;
+    std::vector<F> g = right;
+    F previous_random = F_ZERO;
+    std::size_t active = f.size();
+    for (std::size_t round = 0; round < inner_bits; ++round) {
+        const std::size_t half = active >> 1;
+        F A = F_ZERO, B = F_ZERO, C = F_ZERO;
+        for (std::size_t index = 0; index < half; ++index) {
+            const F zf = F(2) * f[index * 2 + 1] - f[index * 2];
+            const F zg = F(2) * g[index * 2 + 1] - g[index * 2];
+            C += zf * zg;
+        }
+        for (std::size_t index = 0; index < active; ++index) {
+            if (index & 1) B += f[index] * g[index];
+            else A += f[index] * g[index];
+        }
+        const F a = (C + A) / F(2) - B;
+        const F b = F(2) * B - C / F(2) - F(3) * A / F(2);
+        const F c = A;
+        F challenge;
+        if (!sumcheck.append_round({c, a + b + c,
+                                    F(4) * a + F(2) * b + c},
+                                   &challenge, reason))
+            return false;
+        std::vector<F> next_f(half), next_g(half);
+        for (std::size_t index = 0; index < half; ++index) {
+            next_f[index] = f[index * 2] * (F_ONE - challenge) +
+                            f[index * 2 + 1] * challenge;
+            next_g[index] = g[index * 2] * (F_ONE - challenge) +
+                            g[index * 2 + 1] * challenge;
+        }
+        f.swap(next_f);
+        g.swap(next_g);
+        active = half;
+        previous_random = challenge;
+    }
+    (void)previous_random;
+    return sumcheck.finish({f[0], g[0]}, &result, reason);
+}
+
+std::vector<F> masked_gkr_coefficients(const layer &current,
+                                        const std::vector<F> &r0,
+                                        const std::vector<F> &r1,
+                                        const std::vector<F> &ru,
+                                        const F &alpha, const F &beta,
+                                        const F &relu_rou) {
+    std::vector<F> beta_g, beta_u, uni, bin;
+    transcript_beta_phase1(current, 0, r0, r1, ru, alpha, beta, relu_rou,
+                           beta_g, beta_u);
+    transcript_predicate_phase1(current, beta_g, beta_u, uni, bin);
+    return {bin[0], bin[1], bin[2], uni[0], uni[1]};
+}
+
+F masked_fixed_u_predicate(const std::vector<F> &coefficients,
+                           const std::vector<F> &u,
+                           const std::vector<F> &v) {
+    return coefficients[0] * u[0] * v[0] +
+           coefficients[1] * u[1] * v[1] +
+           coefficients[2] * u[1] * v[0] +
+           coefficients[3] * u[0] + coefficients[4] * u[1];
+}
+
+F masked_fixed_v_predicate(const std::vector<F> &coefficients,
+                           const std::vector<F> &u,
+                           const std::vector<F> &v) {
+    return masked_fixed_u_predicate(coefficients, u, v);
+}
+
+bool masked_validate_circuit(const layeredCircuit &circuit,
+                             const std::vector<F> &public_output,
+                             std::string *reason) {
+    if (circuit.size != circuit.circuit.size() || circuit.size < 2) {
+        masked_set_reason(reason, "masked GKR circuit shape is invalid");
+        return false;
+    }
+    const layer &last = circuit.circuit.back();
+    if (last.size == 0 || last.bit_length < 0 || public_output.size() != last.size) {
+        masked_set_reason(reason, "masked GKR public output shape is invalid");
+        return false;
+    }
+    for (const layer &current : circuit.circuit) {
+        if (current.size == 0 || current.bit_length < 0 || current.bit_length >= 63 ||
+            (current.ty != layerType::FCONN && current.max_bl_u < 0) ||
+            (current.need_phase2 && current.ty != layerType::FCONN &&
+             current.max_bl_v < 0)) {
+            masked_set_reason(reason, "masked GKR layer dimensions are invalid");
+            return false;
+        }
+    }
+    return true;
+}
+
+} // namespace
+
+bool prove_masked_gkr_transcript(
+    NativeProofSession &session, const layeredCircuit &circuit,
+    const NativeLayeredGkrWitness &witness,
+    const std::vector<F> &public_output, std::string *reason) {
+    const std::size_t checkpoint = session.checkpoint();
+    try {
+        if (!session.valid(reason) || !masked_validate_circuit(circuit, public_output, reason))
+            return false;
+        if (witness.layer_values.size() != circuit.circuit.size()) {
+            masked_set_reason(reason, "masked GKR layer witness count mismatch");
+            return false;
+        }
+        for (std::size_t index = 0; index < circuit.circuit.size(); ++index)
+            if (witness.layer_values[index].size() != circuit.circuit[index].size) {
+                masked_set_reason(reason, "masked GKR layer witness shape mismatch");
+                return false;
+            }
+        if (witness.layer_values.back() != public_output) {
+            masked_set_reason(reason, "masked GKR public output does not match layer witness");
+            return false;
+        }
+        std::size_t fconn_count = 0;
+        for (std::size_t index = 1; index < circuit.circuit.size(); ++index)
+            if (circuit.circuit[index].ty == layerType::FCONN) ++fconn_count;
+        if (fconn_count != witness.matmuls.size()) {
+            masked_set_reason(reason, "masked GKR FCONN descriptor count mismatch");
+            return false;
+        }
+
+        session.absorb_fields("gkr/public-output", public_output);
+        std::vector<std::vector<F>> r_u(circuit.size + 1);
+        std::vector<std::vector<F>> r_v(circuit.size + 1);
+        const layer &last = circuit.circuit.back();
+        r_u[circuit.size].resize(last.bit_length);
+        for (int bit = 0; bit < last.bit_length; ++bit)
+            r_u[circuit.size][bit] = session.challenge(
+                "gkr/output/r/" + std::to_string(bit));
+        F previous_unmasked = transcript_mle_eval(public_output,
+                                                   r_u[circuit.size]);
+        F previous_masked = previous_unmasked;
+        F previous_u1_unmasked = F_ZERO, previous_u1_masked = F_ZERO;
+        bool have_previous_u1 = false;
+        F alpha = F_ONE, beta = F_ZERO;
+
+        prover native_prover;
+        native_prover.C = circuit;
+        native_prover.val = witness.layer_values;
+        native_prover.init();
+        native_prover.sumcheckInitAll(r_u[circuit.size].begin());
+
+        std::size_t next_matmul = witness.matmuls.size();
+        for (int layer_id = static_cast<int>(circuit.size) - 1;
+             layer_id > 0; --layer_id) {
+            const layer &current = circuit.circuit[layer_id];
+            native_prover.sumcheckInit(alpha, beta);
+            F relu_rou = F_ONE;
+            const std::string prefix = "gkr/layer/" + std::to_string(layer_id);
+            session.absorb(prefix + "/begin", "masked-layer-v1");
+            if (current.zero_start_id < current.size)
+                relu_rou = session.challenge("gkr/layer/" +
+                                             std::to_string(layer_id) + "/relu");
+
+            if (current.ty == layerType::FCONN) {
+                if (next_matmul == 0) {
+                    masked_set_reason(reason, "masked GKR FCONN descriptor underflow");
+                    throw std::runtime_error(*reason);
+                }
+                const NativeGkrMatmulWitness &matmul = witness.matmuls[--next_matmul];
+                if (matmul.shape.rows * matmul.shape.cols != current.size) {
+                    masked_set_reason(reason, "masked GKR FCONN output shape mismatch");
+                    throw std::runtime_error(*reason);
+                }
+                std::size_t rows_domain = 0, inner_domain = 0, cols_domain = 0;
+                std::vector<F> left, right;
+                if (!masked_matmul_witness_vectors(matmul, rows_domain, inner_domain,
+                                                   cols_domain, left, right, reason))
+                    throw std::runtime_error(*reason);
+                const std::size_t n = ceilPow2BitLength(
+                    static_cast<std::uint32_t>(matmul.shape.rows));
+                const std::size_t m = ceilPow2BitLength(
+                    static_cast<std::uint32_t>(matmul.shape.inner));
+                const std::size_t k = ceilPow2BitLength(
+                    static_cast<std::uint32_t>(matmul.shape.cols));
+                if (r_u[layer_id + 1].size() < n + k)
+                    throw std::runtime_error("masked GKR FCONN predecessor point is too short");
+                r_u[layer_id].assign(m + n, F_ZERO);
+                r_v[layer_id].assign(m + k, F_ZERO);
+                for (std::size_t bit = m; bit < m + n; ++bit)
+                    r_u[layer_id][bit] = r_u[layer_id + 1][bit - m + k];
+                for (std::size_t bit = m; bit < m + k; ++bit)
+                    r_v[layer_id][bit] = r_u[layer_id + 1][bit - m];
+                for (std::size_t bit = 0; bit < m; ++bit) {
+                    const std::string label = prefix + "/matmul_point/r_u/" +
+                                              std::to_string(bit);
+                    r_u[layer_id][bit] = session.challenge(label);
+                    r_v[layer_id][bit] = r_u[layer_id][bit];
+                }
+                const std::vector<F> left_mle = masked_fold_outer(
+                    left, m, n, r_u[layer_id]);
+                const std::vector<F> right_mle = masked_fold_outer(
+                    right, m, k, r_v[layer_id]);
+                const F initial_unmasked = have_previous_u1
+                    ? previous_u1_unmasked : previous_unmasked;
+                const F initial_masked = have_previous_u1
+                    ? previous_u1_masked : previous_masked;
+                NativeMaskedSumcheckResult product_result;
+                if (!masked_product_prove(session, prefix + "/matmul", left_mle,
+                                           right_mle, m, initial_masked,
+                                           initial_unmasked, product_result, reason))
+                    throw std::runtime_error(*reason);
+                if (product_result.terminal_values.size() != 2)
+                    throw std::runtime_error("masked GKR FCONN terminal arity mismatch");
+                previous_u1_unmasked = F_ZERO;
+                previous_u1_masked = F_ZERO;
+                have_previous_u1 = true;
+                if (current.bit_length_u[1] >= 0)
+                    alpha = session.challenge(prefix + "/alpha");
+                else alpha.clear();
+                if (current.bit_length_v[1] >= 0 || current.ty == layerType::FFT)
+                    beta = session.challenge(prefix + "/beta");
+                else beta.clear();
+                previous_unmasked = F_ZERO;
+                previous_masked = F_ZERO;
+                continue;
+            }
+
+            if (current.max_bl_u == 0)
+                throw std::runtime_error("masked GKR ordinary phase1 has zero rounds");
+            NativeMaskedTerminalSpec phase1_placeholder;
+            phase1_placeholder.kind = NativeMaskedTerminalKind::Claims;
+            NativeMaskedSumcheckProver phase1(
+                session, prefix + "/phase1", 2, previous_masked,
+                phase1_placeholder, &previous_unmasked);
+            native_prover.sumcheckInitPhase1(relu_rou);
+            F previous_random = F_ZERO;
+            F phase1_unmasked = previous_unmasked;
+            for (int bit = 0; bit < current.max_bl_u; ++bit) {
+                const quadratic_poly poly = native_prover.sumcheckUpdate1(previous_random);
+                if (phase1_unmasked != poly.eval(F_ZERO) + poly.eval(F_ONE))
+                    throw std::runtime_error("masked GKR local phase1 claim mismatch");
+                F challenge;
+                if (!phase1.append_round({poly.eval(F_ZERO), poly.eval(F_ONE),
+                                          poly.eval(F(2))}, &challenge, reason))
+                    throw std::runtime_error("masked GKR phase1 append: " +
+                                             (reason != nullptr ? *reason : std::string()));
+                previous_random = challenge;
+                phase1_unmasked = poly.eval(challenge);
+            }
+            F claim_u0 = F_ZERO, claim_u1 = F_ZERO;
+            native_prover.sumcheckFinalize1(previous_random, claim_u0, claim_u1);
+            r_u[layer_id] = phase1.result().challenges;
+            std::vector<F> r0 = r_u[layer_id + 1];
+            std::vector<F> r1 = r_v[layer_id + 1];
+            if (r0.size() < static_cast<std::size_t>(current.bit_length))
+                r0.resize(current.bit_length, F_ZERO);
+            if (r1.size() < static_cast<std::size_t>(current.bit_length))
+                r1.resize(current.bit_length, F_ZERO);
+            std::vector<F> coefficients = masked_gkr_coefficients(
+                current, r0, r1, r_u[layer_id], alpha, beta, relu_rou);
+            NativeMaskedSumcheckResult phase1_result;
+            std::vector<F> masked_u;
+            std::vector<F> masked_v{F_ZERO, F_ZERO};
+            F phase2_unmasked = phase1_unmasked;
+            if (current.need_phase2) {
+                if (current.max_bl_v == 0)
+                    throw std::runtime_error("masked GKR ordinary phase2 has zero rounds");
+                if (!phase1.finish({claim_u0, claim_u1}, &phase1_result, reason))
+                    throw std::runtime_error(*reason);
+                masked_u = phase1_result.terminal_values;
+                NativeMaskedTerminalSpec phase2_placeholder;
+                phase2_placeholder.kind = NativeMaskedTerminalKind::Claims;
+                NativeMaskedSumcheckProver phase2(
+                    session, prefix + "/phase2", 2, phase1_result.final_claim,
+                    phase2_placeholder, &phase1_unmasked);
+                native_prover.sumcheckInitPhase2();
+                previous_random = F_ZERO;
+                for (int bit = 0; bit < current.max_bl_v; ++bit) {
+                    const quadratic_poly poly = native_prover.sumcheckUpdate2(previous_random);
+                    F challenge;
+                    if (!phase2.append_round({poly.eval(F_ZERO), poly.eval(F_ONE),
+                                              poly.eval(F(2))}, &challenge, reason))
+                        throw std::runtime_error(*reason);
+                    previous_random = challenge;
+                    phase2_unmasked = poly.eval(challenge);
+                }
+                F claim_v0 = F_ZERO, claim_v1 = F_ZERO;
+                native_prover.sumcheckFinalize2(previous_random, claim_v0, claim_v1);
+                r_v[layer_id] = phase2.result().challenges;
+                std::vector<F> beta_v(std::size_t(1) << current.max_bl_v);
+                initBetaTable(beta_v, current.max_bl_v, r_v[layer_id].begin(), F_ONE);
+                std::vector<F> beta_g, beta_u, uni, bin;
+                transcript_beta_phase1(current, layer_id, r0, r1,
+                                       r_u[layer_id], alpha, beta, relu_rou,
+                                       beta_g, beta_u);
+                transcript_predicate_phase1(current, beta_g, beta_u, uni, bin);
+                transcript_predicate_phase2(current, beta_g, beta_u, beta_v,
+                                            uni, bin);
+                NativeMaskedTerminalSpec phase2_spec;
+                phase2_spec.kind = NativeMaskedTerminalKind::GkrPredicateFixedU;
+                phase2_spec.gkr_coefficients = {bin[0], bin[1], bin[2], uni[0], uni[1]};
+                phase2_spec.fixed_values = masked_u;
+                phase2_spec.unmasked_fixed_values = {claim_u0, claim_u1};
+                NativeMaskedSumcheckResult phase2_result;
+                if (!phase2.set_terminal_spec(phase2_spec, reason) ||
+                    !phase2.finish({claim_v0, claim_v1}, &phase2_result, reason))
+                    throw std::runtime_error(*reason);
+                masked_v = phase2_result.terminal_values;
+            } else {
+                NativeMaskedTerminalSpec phase1_spec;
+                phase1_spec.kind = NativeMaskedTerminalKind::GkrPredicateFixedV;
+                phase1_spec.gkr_coefficients = coefficients;
+                phase1_spec.fixed_values = {F_ZERO, F_ZERO};
+                phase1_spec.unmasked_fixed_values = {F_ZERO, F_ZERO};
+                if (!phase1.set_terminal_spec(phase1_spec, reason) ||
+                    !phase1.finish({claim_u0, claim_u1}, &phase1_result, reason))
+                    throw std::runtime_error(*reason);
+                masked_u = phase1_result.terminal_values;
+                phase1_result.final_claim = phase1_result.final_claim;
+            }
+            if (masked_u.size() != 2 || masked_v.size() != 2)
+                throw std::runtime_error("masked GKR terminal claim arity mismatch");
+            previous_u1_unmasked = claim_u1;
+            previous_u1_masked = masked_u[1];
+            have_previous_u1 = true;
+            if (current.bit_length_u[1] >= 0)
+                alpha = session.challenge(prefix + "/alpha");
+            else alpha.clear();
+            if (current.bit_length_v[1] >= 0 || current.ty == layerType::FFT)
+                beta = session.challenge(prefix + "/beta");
+            else beta.clear();
+            previous_unmasked = alpha * claim_u1 + beta * (current.need_phase2 ?
+                                                            phase2_unmasked : F_ZERO);
+            previous_masked = alpha * masked_u[1] + beta *
+                              (current.need_phase2 ? masked_v[1] : F_ZERO);
+        }
+        if (next_matmul != 0)
+            throw std::runtime_error("masked GKR FCONN descriptor was not consumed");
+        // The descending GKR walk ends at the canonical input MLE point.  It
+        // is part of the same masked session so the adapter can later bind
+        // this claim to the four input segments and the Lasso query claim.
+        if (r_u[1].empty() ||
+            r_u[1].size() >= sizeof(std::size_t) * 8 ||
+            (std::size_t(1) << r_u[1].size()) != witness.layer_values.front().size())
+            throw std::runtime_error("masked GKR final input point is invalid");
+        const F input_unmasked = transcript_mle_eval(
+            witness.layer_values.front(), r_u[1]);
+        // The native layered walk may end with a linear combination of
+        // several input-routed layer claims (not a single literal MLE of the
+        // flattened input when the circuit contains independent FCONN
+        // layers).  Keep the authenticated masked terminal emitted by that
+        // walk; the adapter's selector/combine relation binds it to the
+        // canonical four-segment input MLE below.
+        const std::string shared_mask_identity =
+            session.statement().basis_digest + "/gat-input-combine/v1";
+        const G1 shared_J = hyrax::derive_shared_pedersen_evaluation_generator(
+            shared_mask_identity);
+        const F input_mask = previous_masked - input_unmasked;
+        session.absorb_fields("gkr/input/point", r_u[1]);
+        session.absorb_field("gkr/input/claim", previous_masked);
+        const G1 input_mask_commitment = shared_J * input_mask;
+        session.absorb("gkr/input/mask",
+                       input_mask_commitment.serializeToHexStr());
+        if (!session.valid(reason) || !session.replay(reason))
+            throw std::runtime_error(reason != nullptr ? *reason :
+                                     "masked GKR transcript replay failed");
+        return true;
+    } catch (const std::exception &error) {
+        session.rollback(checkpoint);
+        masked_set_reason(reason, error.what());
+        return false;
+    }
+}
+
+bool verify_masked_gkr_transcript(
+    const NativeProofSession &session, const layeredCircuit &circuit,
+    const std::vector<F> &public_output,
+    const std::vector<NativeGkrMatmulShape> &matmuls,
+    std::size_t start, std::size_t *end, std::string *reason) {
+    try {
+        if (!session.valid(reason) || !session.replay(reason) ||
+            !masked_validate_circuit(circuit, public_output, reason))
+            return false;
+        if (start >= session.messages().size()) {
+            masked_set_reason(reason, "masked GKR scope start is outside the session");
+            return false;
+        }
+        std::size_t cursor = start;
+        const NativeProofMessage *output_message = nullptr;
+        if (!masked_expect_message(session, cursor, NativeProofMessageKind::FieldVector,
+                                   "gkr/public-output", &output_message, reason) ||
+            !masked_decode_public_output(output_message, public_output, reason))
+            return false;
+        std::vector<std::vector<F>> r_u(circuit.size + 1);
+        std::vector<std::vector<F>> r_v(circuit.size + 1);
+        const layer &last = circuit.circuit.back();
+        r_u[circuit.size].resize(last.bit_length);
+        for (int bit = 0; bit < last.bit_length; ++bit)
+            if (!masked_expect_challenge(session, cursor,
+                                         "gkr/output/r/" + std::to_string(bit),
+                                         r_u[circuit.size][bit], reason))
+                return false;
+        F previous_masked = transcript_mle_eval(public_output, r_u[circuit.size]);
+        F previous_u1_masked = F_ZERO;
+        bool have_previous_u1 = false;
+        F alpha = F_ONE, beta = F_ZERO;
+        std::size_t next_matmul = matmuls.size();
+        for (int layer_id = static_cast<int>(circuit.size) - 1;
+             layer_id > 0; --layer_id) {
+            const layer &current = circuit.circuit[layer_id];
+            const std::string prefix = "gkr/layer/" + std::to_string(layer_id);
+            const NativeProofMessage *layer_begin = nullptr;
+            if (!masked_expect_message(session, cursor, NativeProofMessageKind::Data,
+                                       prefix + "/begin", &layer_begin, reason) ||
+                layer_begin->payload != "masked-layer-v1") {
+                masked_set_reason(reason, "masked GKR layer boundary is malformed");
+                return false;
+            }
+            F relu_rou = F_ONE;
+            if (current.zero_start_id < current.size &&
+                !masked_expect_challenge(session, cursor, prefix + "/relu",
+                                          relu_rou, reason))
+                return false;
+            if (current.ty == layerType::FCONN) {
+                if (next_matmul == 0) {
+                    masked_set_reason(reason, "masked GKR FCONN descriptor underflow");
+                    return false;
+                }
+                const NativeGkrMatmulShape &shape = matmuls[--next_matmul];
+                if (shape.rows == 0 || shape.inner == 0 || shape.cols == 0 ||
+                    shape.rows * shape.cols != current.size)
+                    return false;
+                const std::size_t n = ceilPow2BitLength(
+                    static_cast<std::uint32_t>(shape.rows));
+                const std::size_t m = ceilPow2BitLength(
+                    static_cast<std::uint32_t>(shape.inner));
+                const std::size_t k = ceilPow2BitLength(
+                    static_cast<std::uint32_t>(shape.cols));
+                if (r_u[layer_id + 1].size() < n + k)
+                    return false;
+                r_u[layer_id].assign(m + n, F_ZERO);
+                r_v[layer_id].assign(m + k, F_ZERO);
+                for (std::size_t bit = m; bit < m + n; ++bit)
+                    r_u[layer_id][bit] = r_u[layer_id + 1][bit - m + k];
+                for (std::size_t bit = m; bit < m + k; ++bit)
+                    r_v[layer_id][bit] = r_u[layer_id + 1][bit - m];
+                for (std::size_t bit = 0; bit < m; ++bit) {
+                    if (!masked_expect_challenge(session, cursor,
+                                                 prefix + "/matmul_point/r_u/" +
+                                                     std::to_string(bit),
+                                                 r_u[layer_id][bit], reason))
+                        return false;
+                    r_v[layer_id][bit] = r_u[layer_id][bit];
+                }
+                const F initial = have_previous_u1 ? previous_u1_masked : previous_masked;
+                const std::string matmul_label = prefix + "/matmul";
+                if (!masked_advance_scope(session, matmul_label, m, cursor, reason))
+                    return false;
+                NativeMaskedSumcheckResult product_result;
+                if (!native_masked_matmul_product_verify(
+                        session, matmul_label, m, initial, &product_result, reason) ||
+                    product_result.terminal_values.size() != 2) {
+                    masked_set_reason(reason, "masked FCONN Sumcheck failed at " +
+                                      matmul_label + ": " +
+                                      (reason != nullptr ? *reason : std::string()));
+                    return false;
+                }
+                previous_u1_masked = F_ZERO;
+                have_previous_u1 = true;
+                if (current.bit_length_u[1] >= 0 &&
+                    !masked_expect_challenge(session, cursor, prefix + "/alpha",
+                                              alpha, reason))
+                    return false;
+                if (current.bit_length_u[1] < 0) alpha.clear();
+                if ((current.bit_length_v[1] >= 0 || current.ty == layerType::FFT) &&
+                    !masked_expect_challenge(session, cursor, prefix + "/beta",
+                                              beta, reason))
+                    return false;
+                if (current.bit_length_v[1] < 0 && current.ty != layerType::FFT)
+                    beta.clear();
+                previous_masked = F_ZERO;
+                continue;
+            }
+            if (current.max_bl_u == 0) return false;
+            const std::string phase1_label = prefix + "/phase1";
+            if (!masked_advance_scope(session, phase1_label, current.max_bl_u,
+                                      cursor, reason))
+                return false;
+            NativeMaskedSumcheckResult phase1_result;
+            NativeMaskedTerminalSpec claims_spec;
+            claims_spec.kind = NativeMaskedTerminalKind::Claims;
+            if (!native_masked_sumcheck_verify(
+                    session, phase1_label, 2, current.max_bl_u,
+                    previous_masked, claims_spec, &phase1_result, reason) ||
+                phase1_result.terminal_values.size() != 2) {
+                masked_set_reason(reason, "masked phase1 Sumcheck failed at " +
+                                  phase1_label + ": " +
+                                  (reason != nullptr ? *reason : std::string()));
+                return false;
+            }
+            r_u[layer_id] = phase1_result.challenges;
+            std::vector<F> r0 = r_u[layer_id + 1];
+            std::vector<F> r1 = r_v[layer_id + 1];
+            if (r0.size() < static_cast<std::size_t>(current.bit_length))
+                r0.resize(current.bit_length, F_ZERO);
+            if (r1.size() < static_cast<std::size_t>(current.bit_length))
+                r1.resize(current.bit_length, F_ZERO);
+            std::vector<F> coefficients = masked_gkr_coefficients(
+                current, r0, r1, r_u[layer_id], alpha, beta, relu_rou);
+            std::vector<F> masked_v{F_ZERO, F_ZERO};
+            if (current.need_phase2) {
+                if (current.max_bl_v == 0) return false;
+                r_v[layer_id].resize(current.max_bl_v);
+                const std::string phase2_label = prefix + "/phase2";
+                const std::size_t phase2_start = cursor;
+                if (!masked_advance_scope(session, phase2_label, current.max_bl_v,
+                                          cursor, reason))
+                    return false;
+                if (!masked_scope_challenges(session, phase2_label, current.max_bl_v,
+                                             phase2_start, r_v[layer_id], reason))
+                    return false;
+                std::vector<F> beta_v(std::size_t(1) << current.max_bl_v);
+                initBetaTable(beta_v, current.max_bl_v,
+                              r_v[layer_id].begin(), F_ONE);
+                std::vector<F> beta_g, beta_u, uni, bin;
+                transcript_beta_phase1(current, layer_id, r0, r1,
+                                       r_u[layer_id], alpha, beta, relu_rou,
+                                       beta_g, beta_u);
+                transcript_predicate_phase1(current, beta_g, beta_u, uni, bin);
+                transcript_predicate_phase2(current, beta_g, beta_u, beta_v,
+                                            uni, bin);
+                NativeMaskedTerminalSpec fixed_u_spec;
+                fixed_u_spec.kind = NativeMaskedTerminalKind::GkrPredicateFixedU;
+                fixed_u_spec.gkr_coefficients = {bin[0], bin[1], bin[2], uni[0], uni[1]};
+                fixed_u_spec.fixed_values = phase1_result.terminal_values;
+                NativeMaskedSumcheckResult phase2_result;
+                if (!native_masked_sumcheck_verify(
+                        session, phase2_label, 2, current.max_bl_v,
+                        phase1_result.final_claim, fixed_u_spec, &phase2_result,
+                        reason) || phase2_result.terminal_values.size() != 2)
+                {
+                    masked_set_reason(reason, "masked phase2 Sumcheck failed at " +
+                                      phase2_label + ": " +
+                                      (reason != nullptr ? *reason : std::string()));
+                    return false;
+                }
+                masked_v = phase2_result.terminal_values;
+            } else {
+                if ((masked_fixed_v_predicate(
+                        coefficients, phase1_result.terminal_values,
+                        {F_ZERO, F_ZERO}) - phase1_result.final_claim).isZero() == false) {
+                    masked_set_reason(reason, "masked GKR phase1 predicate transition failed");
+                    return false;
+                }
+            }
+            previous_u1_masked = phase1_result.terminal_values[1];
+            have_previous_u1 = true;
+            if (current.bit_length_u[1] >= 0 &&
+                !masked_expect_challenge(session, cursor, prefix + "/alpha",
+                                          alpha, reason))
+                return false;
+            if (current.bit_length_u[1] < 0) alpha.clear();
+            if ((current.bit_length_v[1] >= 0 || current.ty == layerType::FFT) &&
+                !masked_expect_challenge(session, cursor, prefix + "/beta",
+                                          beta, reason))
+                return false;
+            if (current.bit_length_v[1] < 0 && current.ty != layerType::FFT)
+                beta.clear();
+            previous_masked = alpha * previous_u1_masked +
+                              beta * (current.need_phase2 ? masked_v[1] : F_ZERO);
+        }
+        if (next_matmul != 0) {
+            masked_set_reason(reason, "masked GKR transcript has unconsumed FCONN descriptors");
+            return false;
+        }
+        std::vector<F> encoded_input_point;
+        const NativeProofMessage *input_point_message = nullptr;
+        if (!masked_expect_message(session, cursor,
+                                   NativeProofMessageKind::FieldVector,
+                                   "gkr/input/point", &input_point_message,
+                                   reason) ||
+            !decode_transcript_fields(input_point_message->payload,
+                                      encoded_input_point) ||
+            encoded_input_point != r_u[1]) {
+            masked_set_reason(reason, "masked GKR final input point binding failed");
+            return false;
+        }
+        const NativeProofMessage *input_claim_message = nullptr;
+        if (!masked_expect_message(session, cursor, NativeProofMessageKind::Field,
+                                   "gkr/input/claim", &input_claim_message,
+                                   reason))
+            return false;
+        F encoded_input_claim;
+        if (!decode_transcript_field(input_claim_message->payload,
+                                     encoded_input_claim) ||
+            encoded_input_claim != previous_masked) {
+            masked_set_reason(reason, "masked GKR final input claim binding failed");
+            return false;
+        }
+        const NativeProofMessage *input_mask_message = nullptr;
+        if (!masked_expect_message(session, cursor, NativeProofMessageKind::Data,
+                                   "gkr/input/mask", &input_mask_message,
+                                   reason))
+            return false;
+        try {
+            G1 input_mask;
+            input_mask.deserializeHexStr(input_mask_message->payload);
+            if (input_mask.serializeToHexStr() != input_mask_message->payload ||
+                !input_mask.isValid() || input_mask.isZero()) {
+                masked_set_reason(reason, "masked GKR input mask commitment is invalid");
+                return false;
+            }
+        } catch (...) {
+            masked_set_reason(reason, "masked GKR input mask commitment is malformed");
+            return false;
+        }
+        // The adapter consumes the mask commitment together with the three
+        // terminal opening mask commitments in input-combine.  Any remaining
+        // GKR-labelled message here would be an inserted or trailing proof
+        // object; unrelated combine/opening suffixes are allowed.
+        for (std::size_t index = cursor; index < session.messages().size(); ++index) {
+            const std::string &label = session.messages()[index].label;
+            if (label.compare(0, sizeof("gkr/") - 1, "gkr/") == 0 ||
+                label.compare(0, sizeof("challenge/gkr/") - 1,
+                              "challenge/gkr/") == 0) {
+                masked_set_reason(reason, "masked GKR transcript has trailing GKR messages");
+                return false;
+            }
+        }
+        if (end != nullptr) *end = cursor;
+        return true;
+    } catch (const std::exception &error) {
+        masked_set_reason(reason, error.what());
+        return false;
+    }
+}
+
+bool verify_masked_gkr_transcript(
+    const NativeProofSession &session, const layeredCircuit &circuit,
+    const std::vector<F> &public_output,
+    const std::vector<NativeGkrMatmulShape> &matmuls, std::string *reason) {
+    std::size_t end = 0;
+    if (!verify_masked_gkr_transcript(session, circuit, public_output, matmuls,
+                                      0, &end, reason))
+        return false;
+    if (end != session.messages().size()) {
+        masked_set_reason(reason, "masked GKR transcript has an unexpected suffix");
+        return false;
+    }
     return true;
 }

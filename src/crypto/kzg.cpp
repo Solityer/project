@@ -4267,7 +4267,8 @@ namespace gatzk::crypto
                     second_scale,
                     label,
                     worker_cap,
-                    target_offset);
+                    target_offset,
+                    source_is_ephemeral);
 
                 return;
             }
@@ -4280,7 +4281,8 @@ namespace gatzk::crypto
                     first_scale,
                     label,
                     worker_cap,
-                    target_offset);
+                    target_offset,
+                    source_is_ephemeral);
 
                 return;
             }

@@ -30,6 +30,10 @@ add_executable(native_masked_sumcheck_smoke native_masked_sumcheck_smoke.cpp)
 target_link_libraries(native_masked_sumcheck_smoke PRIVATE gat_adapter)
 add_test(NAME native_masked_sumcheck_smoke COMMAND native_masked_sumcheck_smoke)
 
+add_executable(native_masked_layered_gkr_smoke native_masked_layered_gkr_smoke.cpp)
+target_link_libraries(native_masked_layered_gkr_smoke PRIVATE gat_adapter)
+add_test(NAME native_masked_layered_gkr_smoke COMMAND native_masked_layered_gkr_smoke)
+
 add_executable(masked_core_smoke masked_core_smoke.cpp)
 target_link_libraries(masked_core_smoke PRIVATE gat_adapter)
 add_test(NAME masked_core_smoke COMMAND masked_core_smoke)

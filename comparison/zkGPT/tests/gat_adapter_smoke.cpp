@@ -155,6 +155,50 @@ int main() {
     assert(plan.registry.find("projection.hidden") != nullptr);
 
     const GatCircuitPlan proof_plan = build_gat_circuit_plan(graph, model, quant, result);
+    GatCircuitWitness circuit_witness = build_gat_circuit_witness(
+        proof_plan, graph, features, model, quant, result);
+    std::string circuit_reason;
+    assert(circuit_witness.relation_ok);
+    assert(circuit_witness.public_output.size() ==
+           proof_plan.public_output_coordinates + proof_plan.residual_coordinates);
+    assert(evaluate_gat_circuit_witness(proof_plan, circuit_witness,
+                                        &circuit_reason));
+    const auto expect_circuit_reject = [&](const char *label,
+                                           const std::function<void(GatCircuitWitness &)> &mutate) {
+        GatCircuitWitness tampered = circuit_witness;
+        mutate(tampered);
+        if (evaluate_gat_circuit_witness(proof_plan, tampered, &circuit_reason)) {
+            std::cerr << "circuit tamper unexpectedly accepted: " << label << "\n";
+            return false;
+        }
+        return true;
+    };
+    assert(expect_circuit_reject("W", [&](GatCircuitWitness &tampered) {
+        tampered.input_layer.at(proof_plan.input_layout.segments.at(1).offset) += Field(1);
+    }));
+    assert(expect_circuit_reject("Aux", [&](GatCircuitWitness &tampered) {
+        tampered.input_layer.at(proof_plan.input_layout.segments.at(2).offset + 1) += Field(1);
+    }));
+    assert(expect_circuit_reject("L_qry", [&](GatCircuitWitness &tampered) {
+        tampered.input_layer.at(proof_plan.input_layout.segments.at(3).offset) += Field(1);
+    }));
+    std::size_t first_rounding_offset = 0;
+    for (const CheckpointDescriptor &checkpoint : proof_plan.checkpoints) {
+        if (checkpoint.id == "rounding/hidden/hidden/layer0/head0") {
+            first_rounding_offset = checkpoint.coordinate_offset;
+            break;
+        }
+    }
+    assert(first_rounding_offset != 0);
+    assert(expect_circuit_reject("rounding witness", [&](GatCircuitWitness &tampered) {
+        tampered.input_layer.at(first_rounding_offset + 3) += Field(1);
+    }));
+    assert(expect_circuit_reject("Y", [](GatCircuitWitness &tampered) {
+        tampered.public_output.at(0) += Field(1);
+    }));
+    assert(expect_circuit_reject("rounding/attention", [&](GatCircuitWitness &tampered) {
+        tampered.input_layer.at(proof_plan.input_layout.segments.at(2).offset + 20) += Field(1);
+    }));
     const ModelRegistration registration = register_model(model, quant, proof_plan.input_layout,
                                                           model.manifest.model_arch_id);
     assert(registration.status == "registered_long_lived_com_W");

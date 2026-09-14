@@ -1460,6 +1460,15 @@ bool native_lasso_verify_bundle(
         const std::size_t first_commitment = find_message(
             session, first_commitment_label, NativeProofMessageKind::Data, reason);
         if (first_commitment == session.messages().size()) return false;
+        for (std::size_t index = 0; index < first_commitment; ++index) {
+            const std::string &label = session.messages()[index].label;
+            if (label.compare(0, sizeof("lasso/") - 1, "lasso/") == 0 ||
+                label.compare(0, sizeof("challenge/lasso/") - 1,
+                              "challenge/lasso/") == 0) {
+                set_reason(reason, "native Lasso scope has a hidden prefix message");
+                return false;
+            }
+        }
         std::size_t position = first_commitment;
         for (const NativeLassoFamilyPublic &family : families) {
             const std::string expected = family_prefix(family) + "/commitment";
@@ -2017,9 +2026,14 @@ bool native_lasso_verify_bundle(
             return false;
         }
         position = final_terminal + 1;
-        if (position != session.messages().size()) {
-            set_reason(reason, "native Lasso proof has trailing or inserted messages");
-            return false;
+        for (std::size_t index = position; index < session.messages().size(); ++index) {
+            const std::string &label = session.messages()[index].label;
+            if (label.compare(0, sizeof("lasso/") - 1, "lasso/") == 0 ||
+                label.compare(0, sizeof("challenge/lasso/") - 1,
+                              "challenge/lasso/") == 0) {
+                set_reason(reason, "native Lasso proof has trailing or inserted messages");
+                return false;
+            }
         }
         if (result != nullptr) *result = std::move(local);
         return true;
