@@ -19,11 +19,36 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 DATASETS: Tuple[str, ...] = ("cora", "citeseer", "pubmed", "ppi", "ogbn_arxiv")
 BACKENDS: Tuple[str, ...] = ("cpu", "gpu")
+# The current zkGPT adapter has a complete strict masked_full CPU path only.
+# The CUDA bridge is component evidence and is intentionally not a formal
+# backend until it can emit and independently verify the full artifact.
+FORMAL_BACKENDS: Tuple[str, ...] = ("cpu",)
 RESULT_SCHEMA = "zkgpt-gat-result-v1"
 
 
 class ChainError(RuntimeError):
     """A fail-closed formal-chain error."""
+
+
+def formal_backend_capability(backend: str) -> Dict[str, Any]:
+    """Return the explicit formal capability gate for one backend."""
+
+    if backend == "cpu":
+        return {
+            "supported": True,
+            "status": "FORMAL_CPU_MASKED_FULL",
+            "reason": "",
+        }
+    if backend == "gpu":
+        return {
+            "supported": False,
+            "status": "UNSUPPORTED_FORMAL_MASKED_FULL_GPU",
+            "reason": (
+                "formal masked_full GPU path is unsupported; no CUDA evidence "
+                "or CPU proof fallback is permitted"
+            ),
+        }
+    raise ChainError(f"unknown backend: {backend}")
 
 
 def baseline_root() -> Path:
@@ -372,13 +397,17 @@ def require_result_shape(value: Any, path: Path) -> Dict[str, Any]:
     if not isinstance(value, dict):
         raise ChainError(f"result is not a JSON object: {path}")
     for key in ("schema", "dataset", "backend", "status", "verification_status",
-                "proof_scope", "privacy_policy", "privacy_profile", "output_mode"):
+                "proof_scope", "privacy_policy", "privacy_profile", "output_mode",
+                "capability_status", "formal_backend_supported"):
         if key not in value:
             raise ChainError(f"result missing {key}: {path}")
     if value["schema"] != RESULT_SCHEMA:
         raise ChainError(f"unsupported result schema in {path}")
     if value["proof_scope"] != "full_gat" or value["privacy_policy"] != "model_and_trace_hidden" or value["privacy_profile"] != "masked_full" or value["output_mode"] != "public_logits":
         raise ChainError(f"result does not declare strict proof/privacy scope: {path}")
+    capability = formal_backend_capability(value["backend"])
+    if value["capability_status"] != capability["status"] or value["formal_backend_supported"] is not capability["supported"]:
+        raise ChainError(f"result capability does not match backend gate: {path}")
     return value
 
 

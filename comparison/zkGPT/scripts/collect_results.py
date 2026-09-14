@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Collect the complete ten-cell zkGPT GAT matrix after independent checks."""
+"""Collect the selected formal zkGPT GAT backend cells after independent checks."""
 
 from __future__ import annotations
 
+import argparse
 import math
 import sys
 from pathlib import Path
@@ -16,6 +17,8 @@ from common import (
     atomic_write_json,
     baseline_root,
     config_with_auth,
+    FORMAL_BACKENDS,
+    formal_backend_capability,
     load_json,
     local_path,
     require_directory,
@@ -24,6 +27,15 @@ from common import (
     verify_cache,
     verify_checkpoint,
 )
+
+
+def selection(raw: str, allowed: Sequence[str], label: str) -> Sequence[str]:
+    if raw == "all":
+        return tuple(allowed)
+    values = tuple(item.strip() for item in raw.split(",") if item.strip())
+    if not values or len(set(values)) != len(values) or any(item not in allowed for item in values):
+        raise ChainError(f"{label} must be all or a comma-separated list of supported values")
+    return values
 
 
 def require_bool(value: Mapping[str, Any], key: str, expected: bool, path: Path) -> None:
@@ -53,6 +65,9 @@ def require_timing(result: Mapping[str, Any], path: Path) -> Dict[str, float]:
 
 
 def collect_cell(root: Path, dataset: str, backend: str) -> Dict[str, Any]:
+    capability = formal_backend_capability(backend)
+    if not capability["supported"] or backend not in FORMAL_BACKENDS:
+        raise ChainError(capability["reason"])
     config_path, config = config_with_auth(root, dataset)
     verify_cache(root, dataset)
     verify_checkpoint(root, dataset)
@@ -70,16 +85,9 @@ def collect_cell(root: Path, dataset: str, backend: str) -> Dict[str, Any]:
         require_bool(result, key, True, result_path)
     require_bool(result, "verifier_reads_witness", False, result_path)
     require_bool(result, "cpu_fallback", False, result_path)
-    if backend == "gpu":
-        for key in ("gpu_compiled", "gpu_device_available", "gpu_kernel_executed"):
-            require_bool(result, key, True, result_path)
-        invocations = result.get("gpu_kernel_invocations")
-        if isinstance(invocations, bool) or not isinstance(invocations, int) or invocations <= 0:
-            raise ChainError(f"{result_path} requires positive gpu_kernel_invocations")
-    else:
-        require_bool(result, "gpu_kernel_executed", False, result_path)
-        if result.get("gpu_kernel_invocations") != 0:
-            raise ChainError(f"CPU result reports GPU kernel invocations: {result_path}")
+    require_bool(result, "gpu_kernel_executed", False, result_path)
+    if result.get("gpu_kernel_invocations") != 0:
+        raise ChainError(f"CPU result reports GPU kernel invocations: {result_path}")
     timing = require_timing(result, result_path)
     identity_keys = ("statement_digest", "proof_digest", "circuit_id", "plan_digest",
                      "full_dataset_identity", "checkpoint_identity", "cache_identity", "com_W_point")
@@ -143,12 +151,22 @@ def collect_cell(root: Path, dataset: str, backend: str) -> Dict[str, Any]:
 
 
 def main(argv: Sequence[str]) -> int:
-    del argv
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--backends", default="cpu",
+        help="formal backends to collect (default: cpu; gpu is unsupported)",
+    )
+    args = parser.parse_args(list(argv))
     root = baseline_root()
+    try:
+        backends = selection(args.backends, BACKENDS, "backends")
+    except ChainError as exc:
+        print(f"COLLECT_FAILED: {exc}", file=sys.stderr)
+        return 2
     cells: List[Dict[str, Any]] = []
     try:
         for dataset in DATASETS:
-            for backend in BACKENDS:
+            for backend in backends:
                 cells.append(collect_cell(root, dataset, backend))
     except (ChainError, OSError, ValueError) as exc:
         print(f"COLLECT_FAILED: {exc}", file=sys.stderr)
@@ -157,7 +175,7 @@ def main(argv: Sequence[str]) -> int:
         "schema": "zkgpt-gat-collected-results-v1",
         "status": "COLLECTED",
         "baseline": "zkGPT",
-        "matrix": {"datasets": list(DATASETS), "backends": list(BACKENDS), "cell_count": len(cells)},
+        "matrix": {"datasets": list(DATASETS), "backends": list(backends), "cell_count": len(cells)},
         "cells": cells,
         "resource_manifest": "results/resource_manifest.json",
         "preflight": "results/formal_preflight.json",

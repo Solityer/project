@@ -21,8 +21,6 @@ from typing import Any, NoReturn
 
 SCHEMA_VERSION = 1
 MANIFEST_REL = Path("resources/resource_manifest.json")
-EXPECTED_CANONICAL_FILE_COUNT = 67
-EXPECTED_CANONICAL_BYTES = 214_502_255
 CHECKPOINT_DATASETS = {
     "cora_gat": "cora",
     "citeseer_gat": "citeseer",
@@ -30,6 +28,7 @@ CHECKPOINT_DATASETS = {
     "ppi_gat": "ppi",
     "ogbn_arxiv_gat": "ogbn_arxiv",
 }
+REQUIRED_GENERATED_DATASETS = frozenset(CHECKPOINT_DATASETS.values())
 REQUIRED_TOP_LEVEL = {
     "schema_version",
     "baseline",
@@ -79,11 +78,6 @@ def regular_files(root: Path) -> list[Path]:
             result.append(path)
     if not result:
         fail("canonical resource directory is empty")
-    if len(result) != EXPECTED_CANONICAL_FILE_COUNT:
-        fail(f"canonical resource count changed: expected {EXPECTED_CANONICAL_FILE_COUNT}, got {len(result)}")
-    total_bytes = sum(path.stat().st_size for path in result)
-    if total_bytes != EXPECTED_CANONICAL_BYTES:
-        fail(f"canonical resource bytes changed: expected {EXPECTED_CANONICAL_BYTES}, got {total_bytes}")
     return result
 
 
@@ -115,13 +109,13 @@ def source_for(local_rel: Path, source_root: Path) -> tuple[Path, str, str]:
         role = "canonical_secure_config"
     elif parts[:3] == ("resources", "canonical", "tables") and len(parts) == 5:
         dataset = parts[3]
-        if dataset not in {"cora", "citeseer", "pubmed", "ppi"}:
+        if dataset not in REQUIRED_GENERATED_DATASETS:
             fail(f"unrecognized generated table dataset: {dataset}")
         source = source_root / "comparison" / "ezkl" / "scripts" / "generate_gat_resources.py"
         role = "baseline_local_exact_static_tables"
     elif parts[:3] == ("resources", "canonical", "ledgers") and len(parts) == 5:
         dataset = parts[3]
-        if dataset not in {"cora", "citeseer", "pubmed", "ppi"}:
+        if dataset not in REQUIRED_GENERATED_DATASETS:
             fail(f"unrecognized generated ledger dataset: {dataset}")
         source = source_root / "comparison" / "ezkl" / "scripts" / "generate_gat_resources.py"
         role = "baseline_local_integer_bound_ledger"
@@ -200,8 +194,8 @@ def validate_manifest(root: Path, manifest: dict[str, Any], verify_source: bool)
     if not isinstance(manifest["source_snapshot"], dict):
         fail("source_snapshot must be an object")
     files = manifest["files"]
-    if not isinstance(files, list) or len(files) != EXPECTED_CANONICAL_FILE_COUNT:
-        fail(f"files must contain exactly {EXPECTED_CANONICAL_FILE_COUNT} canonical entries")
+    if not isinstance(files, list) or not files:
+        fail("files must contain at least one canonical entry")
     seen: set[str] = set()
     for entry in files:
         if not isinstance(entry, dict) or set(entry) != REQUIRED_FILE_KEYS:
@@ -246,19 +240,56 @@ def validate_manifest(root: Path, manifest: dict[str, Any], verify_source: bool)
             if digest(source) != entry["source_sha256"]:
                 fail(f"source SHA-256 mismatch for {path_text}: {source}")
     expected = {p.relative_to(root).as_posix() for p in regular_files(root)}
-    if sum(entry["size"] for entry in files) != EXPECTED_CANONICAL_BYTES:
-        fail(f"manifest byte total is not {EXPECTED_CANONICAL_BYTES}")
     if seen != expected:
         missing = sorted(expected - seen)
         extra = sorted(seen - expected)
         fail(f"manifest file set mismatch; missing={missing}, extra={extra}")
 
 
+def require_complete_resource_set(root: Path, manifest: dict[str, Any]) -> None:
+    """Require all five datasets to have authenticated exact resources.
+
+    The ordinary manifest check intentionally permits a staged package while
+    the operator is preparing large exact tables.  Formal execution calls
+    this stricter gate so an absent table/ledger can never become a runtime
+    fallback or an implicitly trusted sidecar.
+    """
+
+    paths = {
+        entry["path"]
+        for entry in manifest.get("files", [])
+        if isinstance(entry, dict) and isinstance(entry.get("path"), str)
+    }
+    missing = []
+    for dataset in sorted(REQUIRED_GENERATED_DATASETS):
+        for relative in (
+            f"resources/canonical/tables/{dataset}/gat_static_tables.json",
+            f"resources/canonical/ledgers/{dataset}/gat_integer_ledger.json",
+        ):
+            if relative not in paths:
+                missing.append(relative)
+    if missing:
+        fail(
+            "PREPARE/BLOCKED: authenticated exact table/ledger resources are missing; "
+            "run scripts/prepare_gat_resources.py first: "
+            + ", ".join(missing)
+        )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--write-manifest", action="store_true")
     parser.add_argument("--verify-source", action="store_true")
-    parser.add_argument("--source-root", type=Path, default=Path("/home/pzh/project"))
+    parser.add_argument(
+        "--require-complete",
+        action="store_true",
+        help="require authenticated exact resources for all five datasets",
+    )
+    parser.add_argument(
+        "--source-root",
+        type=Path,
+        default=Path(__file__).resolve().parents[3],
+    )
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     manifest_path = root / MANIFEST_REL
@@ -273,6 +304,8 @@ def main() -> int:
     except (OSError, json.JSONDecodeError) as exc:
         fail(f"cannot parse manifest: {exc}")
     validate_manifest(root, manifest, args.verify_source)
+    if args.require_complete:
+        require_complete_resource_set(root, manifest)
     print(f"resource manifest valid: {len(manifest['files'])} files")
     return 0
 

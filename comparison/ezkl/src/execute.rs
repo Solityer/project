@@ -1762,6 +1762,19 @@ fn assert_native_gat_identity(
                             .into(),
                     );
                 }
+                if !op.spec.private_params_redacted
+                    || op
+                        .spec
+                        .model
+                        .flattened_params()
+                        .iter()
+                        .any(|value| *value != 0)
+                {
+                    return Err(
+                        "compiled circuit retains private GAT parameter values; refusing formal use"
+                            .into(),
+                    );
+                }
             }
         }
     }
@@ -1801,6 +1814,19 @@ fn assert_native_gat_public_identity(
                 {
                     return Err(
                         "compiled GatOp public identity disagrees with the formal statement".into(),
+                    );
+                }
+                if !op.spec.private_params_redacted
+                    || op
+                        .spec
+                        .model
+                        .flattened_params()
+                        .iter()
+                        .any(|value| *value != 0)
+                {
+                    return Err(
+                        "compiled circuit retains private GAT parameter values; refusing formal verification"
+                            .into(),
                     );
                 }
             }

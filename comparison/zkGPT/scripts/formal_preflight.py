@@ -15,6 +15,7 @@ from common import (
     ChainError,
     atomic_write_json,
     baseline_root,
+    formal_backend_capability,
     build_binary,
     load_json,
     require_regular,
@@ -74,6 +75,14 @@ def main(argv: Sequence[str]) -> int:
     backend_report: Dict[str, Any] = {}
     for backend in selected:
         entry: Dict[str, Any] = {"prover": None, "verifier": None, "capabilities": None, "ready": False}
+        capability = formal_backend_capability(backend)
+        entry["capability_status"] = capability["status"]
+        entry["formal_backend_supported"] = capability["supported"]
+        if not capability["supported"]:
+            entry["blocker"] = capability["reason"]
+            blockers.append(capability["reason"])
+            backend_report[backend] = entry
+            continue
         try:
             prover = build_binary(root, backend)
             entry["prover"] = str(prover.relative_to(root))

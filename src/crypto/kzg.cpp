@@ -6576,6 +6576,193 @@ namespace gatzk::crypto
                 points.data(), powers.data(), powers.size());
         }
 
+        G1Point reference_g1_multi_scalar_mul(
+            const G1Point *points,
+            const FieldElement *scalars,
+            std::size_t count)
+        {
+            if (count != 0 &&
+                (points == nullptr || scalars == nullptr))
+            {
+                throw std::runtime_error(
+                    "reference G1 MSM received null input");
+            }
+
+            auto out = g1_zero();
+
+            for (std::size_t index = 0;
+                 index < count;
+                 ++index)
+            {
+                if (scalars[index].is_zero())
+                {
+                    continue;
+                }
+
+                out = g1_add(
+                    out,
+                    g1_mul(
+                        points[index],
+                        scalars[index]));
+            }
+
+            return out;
+        }
+
+        G1Point reference_folded_commitment_points(
+            const std::vector<Commitment> &commitments,
+            const std::vector<FieldElement> &powers)
+        {
+            if (commitments.size() != powers.size())
+            {
+                throw std::runtime_error(
+                    "reference folded commitment power count mismatch");
+            }
+
+            auto out = g1_zero();
+
+            for (std::size_t index = 0;
+                 index < commitments.size();
+                 ++index)
+            {
+                if (powers[index].is_zero())
+                {
+                    continue;
+                }
+
+                out = g1_add(
+                    out,
+                    g1_mul(
+                        commitments[index].point,
+                        powers[index]));
+            }
+
+            return out;
+        }
+
+        G1Point reference_folded_opening_plan_commitment(
+            const FoldedOpeningPlan &plan,
+            const KZGProverKey &pk)
+        {
+            auto out = g1_zero();
+
+            if (!plan.coefficient_fold.empty())
+            {
+                if (pk.powers_g1 == nullptr ||
+                    plan.coefficient_fold.size() >
+                        pk.powers_g1->size() ||
+                    plan.coefficient_fold.size() >
+                        pk.degree_bound + 1)
+                {
+                    throw std::runtime_error(
+                        "reference folded coefficient commitment "
+                        "exceeds SRS degree bound");
+                }
+
+                out = g1_add(
+                    out,
+                    reference_g1_multi_scalar_mul(
+                        pk.powers_g1->data(),
+                        plan.coefficient_fold.data(),
+                        plan.coefficient_fold.size()));
+            }
+
+            for (const auto &group :
+                 plan.evaluation_groups)
+            {
+                if (group.domain == nullptr ||
+                    group.folded_values.size() !=
+                        group.domain->size)
+                {
+                    throw std::runtime_error(
+                        "reference folded evaluation group "
+                        "has invalid domain shape");
+                }
+
+                auto descriptor =
+                    algebra::Polynomial::from_evaluations(
+                        "kzg_fold_reference_" +
+                            group.domain->name,
+                        group.folded_values,
+                        group.domain);
+
+                const auto *lagrange_srs =
+                    evaluation_srs_points(
+                        descriptor,
+                        pk);
+
+                if (lagrange_srs == nullptr ||
+                    group.folded_values.size() >
+                        lagrange_srs->size())
+                {
+                    throw std::runtime_error(
+                        "reference folded evaluation commitment "
+                        "exceeds Lagrange SRS");
+                }
+
+                out = g1_add(
+                    out,
+                    reference_g1_multi_scalar_mul(
+                        lagrange_srs->data(),
+                        group.folded_values.data(),
+                        group.folded_values.size()));
+
+                auto folded_blinder =
+                    group.folded_zero_domain_blinder;
+
+                if (folded_blinder.empty())
+                {
+                    for (const auto &term :
+                         group.terms)
+                    {
+                        if (term.zero_domain_blinder ==
+                                nullptr ||
+                            term.zero_domain_blinder
+                                ->empty() ||
+                            term.scale.is_zero())
+                        {
+                            continue;
+                        }
+
+                        accumulate_scaled_coefficients(
+                            &folded_blinder,
+                            *term.zero_domain_blinder,
+                            term.scale,
+                            1);
+                    }
+
+                    trim_zero_coefficients(
+                        &folded_blinder);
+                }
+
+                if (!folded_blinder.empty())
+                {
+                    out = g1_add(
+                        out,
+                        commit_zero_domain_multiple_point(
+                            group.domain->size,
+                            folded_blinder,
+                            pk,
+                            "kzg_fold_reference_" +
+                                group.domain->name));
+                }
+            }
+
+            return out;
+        }
+
+        bool folded_opening_diagnostic_enabled(
+            std::size_t claim_count)
+        {
+            const auto *requested =
+                std::getenv(
+                    "GATZK_KZG_FOLD_DIAGNOSTIC_CLAIMS");
+
+            return requested != nullptr &&
+                   std::string(requested) ==
+                       std::to_string(claim_count);
+        }
+
         bool verify_pairing_equation(
             const G1Point &numerator,
             const G1Point &witness,
@@ -8639,6 +8826,36 @@ namespace gatzk::crypto
                       nullptr,
                       profile);
 
+        std::optional<G1Point>
+            diagnostic_folded_commitment;
+
+        if (folded_opening_diagnostic_enabled(
+                commitments.size()))
+        {
+            const auto reference_folded_commitment =
+                reference_folded_commitment_points(
+                    commitments,
+                    powers);
+
+            const auto reference_material_commitment =
+                reference_folded_opening_plan_commitment(
+                    folded_plan,
+                    key.pk);
+
+            if (!(reference_folded_commitment ==
+                  reference_material_commitment))
+            {
+                throw std::runtime_error(
+                    "KZG fold diagnostic: "
+                    "commitment_material_mismatch; claims=" +
+                    std::to_string(
+                        commitments.size()));
+            }
+
+            diagnostic_folded_commitment =
+                reference_folded_commitment;
+        }
+
         if (profile != nullptr)
         {
             profile->precompute_ms +=
@@ -8684,6 +8901,50 @@ namespace gatzk::crypto
                         folded_plan.coefficient_scaled_claim_sums.at(0)));
             }
         }();
+
+        if (diagnostic_folded_commitment.has_value())
+        {
+            FieldElement folded_value =
+                FieldElement::zero();
+
+            for (std::size_t index = 0;
+                 index < claimed_values.size();
+                 ++index)
+            {
+                folded_value +=
+                    claimed_values[index] *
+                    powers[index];
+            }
+
+            const auto numerator =
+                g1_sub(
+                    *diagnostic_folded_commitment,
+                    g1_mul(
+                        key.vk.g1_generator,
+                        folded_value));
+
+            if (!verify_pairing_equation(
+                    numerator,
+                    witness,
+                    point,
+                    key.vk))
+            {
+                throw std::runtime_error(
+                    "KZG fold diagnostic: "
+                    "witness_mismatch_after_"
+                    "commitment_material_match; claims=" +
+                    std::to_string(
+                        commitments.size()));
+            }
+
+            throw std::runtime_error(
+                "KZG fold diagnostic: "
+                "commitment_material_and_witness_match; "
+                "inspect proof transport/registry/challenge replay; "
+                "claims=" +
+                std::to_string(
+                    commitments.size()));
+        }
 
         if (profile != nullptr)
         {

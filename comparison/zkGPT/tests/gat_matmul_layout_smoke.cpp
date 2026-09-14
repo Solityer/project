@@ -80,8 +80,8 @@ int main() {
         Fr(99), Fr(11), Fr(12), Fr(21), Fr(22), Fr(31), Fr(32), Fr(77)};
     const std::vector<Fr> packed = pack_native_gkr_matmul_rhs(
         rectangular, canonical_input);
-    const std::vector<Fr> expected{Fr(11), Fr(21), Fr(31),
-                                   Fr(12), Fr(22), Fr(32)};
+    const std::vector<Fr> expected{Fr(11), Fr(21), Fr(31), Fr(0),
+                                   Fr(12), Fr(22), Fr(32), Fr(0)};
     assert(packed == expected);
 
     // A short span and a stride/layout violation are rejected at the adapter
@@ -106,30 +106,44 @@ int main() {
     }
     assert(rejected);
 
-    // Walk the native masked FCONN with the adapter's packed RHS.  All
-    // dimensions are powers of two here so this smoke isolates the layout
-    // transition from the separately owned native padding implementation.
-    const MatMulDescriptor native_descriptor = descriptor(1, 4, 2, 4);
+    // Walk the native masked FCONN with an asymmetric, non-power-of-two
+    // inner dimension.  The zero at the end of every RHS column is padding,
+    // not the first coordinate of the next column.
+    const MatMulDescriptor native_descriptor = descriptor(2, 3, 2, 6);
     const std::vector<Fr> canonical_native_input{
-        Fr(1), Fr(2), Fr(3), Fr(4),
-        Fr(1), Fr(2), Fr(3), Fr(4), Fr(5), Fr(6), Fr(7), Fr(8)};
+        Fr(1), Fr(2), Fr(3), Fr(4), Fr(5), Fr(6),
+        Fr(10), Fr(40), Fr(20), Fr(50), Fr(30), Fr(60)};
     const std::vector<Fr> native_right = pack_native_gkr_matmul_rhs(
         native_descriptor, canonical_native_input);
-    assert((native_right == std::vector<Fr>{Fr(1), Fr(3), Fr(5), Fr(7),
-                                            Fr(2), Fr(4), Fr(6), Fr(8)}));
+    assert((native_right == std::vector<Fr>{Fr(10), Fr(20), Fr(30), Fr(0),
+                                            Fr(40), Fr(50), Fr(60), Fr(0)}));
 
     NativeLayeredGkrWitness witness;
-    witness.layer_values = {{Fr(0), Fr(0), Fr(0), Fr(0)},
-                            {Fr(50), Fr(60)},
-                            {Fr(50), Fr(60)}};
+    witness.layer_values = {{Fr(0), Fr(0), Fr(0), Fr(0), Fr(0), Fr(0),
+                             Fr(0), Fr(0)},
+                            {Fr(140), Fr(320), Fr(320), Fr(770)},
+                            {Fr(140), Fr(320), Fr(320), Fr(770)}};
     NativeGkrMatmulWitness matmul;
-    matmul.shape = {1, 4, 2};
-    matmul.left = {Fr(1), Fr(2), Fr(3), Fr(4)};
+    matmul.shape = {2, 3, 2};
+    matmul.left = {Fr(1), Fr(2), Fr(3), Fr(4), Fr(5), Fr(6)};
     matmul.right = native_right;
     witness.matmuls.push_back(matmul);
 
-    const layeredCircuit circuit = make_power_of_two_circuit();
-    const std::vector<Fr> output{Fr(50), Fr(60)};
+    layeredCircuit circuit = make_power_of_two_circuit();
+    circuit.circuit[0].size = 8;
+    circuit.circuit[0].zero_start_id = 8;
+    circuit.circuit[0].bit_length = 3;
+    circuit.circuit[1].size = 4;
+    circuit.circuit[1].zero_start_id = 4;
+    circuit.circuit[1].bit_length = 2;
+    circuit.circuit[2].size = 4;
+    circuit.circuit[2].zero_start_id = 4;
+    circuit.circuit[2].bit_length = 2;
+    circuit.circuit[2].uni_gates.clear();
+    for (u32 index = 0; index < 4; ++index)
+        circuit.circuit[2].uni_gates.emplace_back(index, index, 1, 1);
+    circuit.initSubset();
+    const std::vector<Fr> output{Fr(140), Fr(320), Fr(320), Fr(770)};
     std::string reason;
     NativeProofSession session("gat-matmul-layout-smoke-v1", statement_fixture());
     NativeGkrInputBinding binding;
@@ -141,7 +155,7 @@ int main() {
     }
     assert(prover_result.has_unmasked_input_claim_opening);
     assert(verify_masked_gkr_transcript(session, circuit, output,
-                                        {{1, 4, 2}}, &reason));
+                                        {{2, 3, 2}}, &reason));
 
     NativeLayeredGkrWitness tampered = witness;
     tampered.matmuls.front().right.at(1) += Fr(1);

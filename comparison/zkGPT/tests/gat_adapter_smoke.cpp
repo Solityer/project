@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <fstream>
 #include <functional>
 #include <iostream>
 #include <limits>
@@ -272,7 +273,57 @@ int main(int argc, char **argv) {
     const VerifierContext context = make_verifier_context(
         graph, features, quant, result.trace.tables, result.logits, registration,
         proof_plan, "masked_full");
-    assert(!verifier_context_digest(context).empty());
+    if (verifier_context_digest(context).empty()) return 1;
+    const std::string context_wire_path = "/tmp/zkgpt-verifier-context-v2-smoke.bin";
+    std::string context_wire_reason;
+    if (!write_verifier_context(context, context_wire_path, &context_wire_reason)) {
+        std::cerr << "context write failed: " << context_wire_reason << "\n";
+        return 1;
+    }
+    VerifierContext context_roundtrip;
+    if (!read_verifier_context(context_wire_path, context_roundtrip,
+                               &context_wire_reason)) {
+        std::cerr << "context read failed: " << context_wire_reason << "\n";
+        return 1;
+    }
+    if (verifier_context_digest(context_roundtrip) !=
+            verifier_context_digest(context) ||
+        context_roundtrip.graph.src != context.graph.src ||
+        context_roundtrip.graph.dst != context.graph.dst ||
+        context_roundtrip.public_features.values != context.public_features.values ||
+        context_roundtrip.public_logits.values != context.public_logits.values ||
+        context_roundtrip.quant.range_bits != context.quant.range_bits ||
+        context_roundtrip.tables.digest != context.tables.digest ||
+        context_roundtrip.registration.registration_digest !=
+            context.registration.registration_digest ||
+        context_roundtrip.plan.plan_digest != context.plan.plan_digest ||
+        context_roundtrip.plan.circuit.circuit.back().bin_gates.size() !=
+            context.plan.circuit.circuit.back().bin_gates.size()) {
+        std::cerr << "context roundtrip mismatch\n";
+        return 1;
+    }
+    GatCircuitPlan plan_gate_tampered = context_roundtrip.plan;
+    bool gate_tampered = false;
+    if (!plan_gate_tampered.circuit.circuit.back().uni_gates.empty()) {
+        plan_gate_tampered.circuit.circuit.back().uni_gates.front().sc += 1;
+        gate_tampered = true;
+    } else if (!plan_gate_tampered.circuit.circuit.back().bin_gates.empty()) {
+        plan_gate_tampered.circuit.circuit.back().bin_gates.front().sc += 1;
+        gate_tampered = true;
+    }
+    if (!gate_tampered) return 1;
+    if (validate_gat_circuit_plan(plan_gate_tampered, &context_wire_reason))
+        return 1;
+    {
+        std::ofstream trailing(context_wire_path, std::ios::binary | std::ios::app);
+        trailing.put('\0');
+    }
+    if (read_verifier_context(context_wire_path, context_roundtrip,
+                              &context_wire_reason))
+        return 1;
+    if (!write_verifier_context(context, context_wire_path, &context_wire_reason))
+        return 1;
+    std::remove(context_wire_path.c_str());
     bool context_rejected = false;
     try {
         ModelRegistration context_registration_tampered = registration;
@@ -283,7 +334,7 @@ int main(int argc, char **argv) {
     } catch (const std::exception &) {
         context_rejected = true;
     }
-    assert(context_rejected);
+    if (!context_rejected) return 1;
 
     if (argc > 1 && std::string(argv[1]) == "--formal") {
         Graph formal_graph;

@@ -17,9 +17,7 @@ use crate::fieldutils::{integer_rep_to_felt, IntegerRep};
 use crate::tensor::{Tensor, ValTensor, ValType};
 
 use super::relation::RoundingMode;
-use super::schema::{
-    scale_exponent_to_multiplier, BoundFamily, CanonicalGat, ExactTable, REDACTED_MODEL_HASH_DOMAIN,
-};
+use super::schema::{scale_exponent_to_multiplier, BoundFamily, CanonicalGat, ExactTable};
 
 /// Input positions used by [`GatOp`].
 pub const FEATURE_INPUT: usize = 0;
@@ -100,7 +98,7 @@ impl GatOp {
                 *value = 0;
             }
         }
-        self.spec.model_binding.hash_domain = REDACTED_MODEL_HASH_DOMAIN.into();
+        self.spec.private_params_redacted = true;
     }
 
     fn unknown_or_map<FN>(

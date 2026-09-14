@@ -1,7 +1,6 @@
-use ezkl::gat_adapter::schema::REDACTED_MODEL_HASH_DOMAIN;
 use ezkl::gat_adapter::{
     evaluate_signed_division, scale_exponent_to_multiplier, CanonicalGat, CanonicalModel,
-    ExactTable, GatOp, HeadWeights, HiddenLayerSpec, RoundingMode,
+    ExactTable, GatOp, HeadWeights, HiddenLayerSpec, ModelBinding, RoundingMode,
 };
 
 #[test]
@@ -104,6 +103,11 @@ fn redaction_keeps_parameter_shape_but_removes_private_values() {
     let mut op = GatOp {
         spec: CanonicalGat {
             model,
+            model_binding: ModelBinding {
+                hash: "0x01".into(),
+                hash_domain: "ezkl-gat-model-v1".into(),
+                canonical_model_digest: "00".repeat(32),
+            },
             ..CanonicalGat::default()
         },
         rounding: RoundingMode::NearestTiesAway,
@@ -116,8 +120,6 @@ fn redaction_keeps_parameter_shape_but_removes_private_values() {
         .flattened_params()
         .iter()
         .all(|value| *value == 0));
-    assert_eq!(
-        op.spec.model_binding.hash_domain,
-        REDACTED_MODEL_HASH_DOMAIN
-    );
+    assert!(op.spec.private_params_redacted);
+    assert_eq!(op.spec.model_binding.hash_domain, "ezkl-gat-model-v1");
 }

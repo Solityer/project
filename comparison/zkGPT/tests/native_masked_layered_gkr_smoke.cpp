@@ -51,6 +51,28 @@ layeredCircuit make_circuit() {
     return circuit;
 }
 
+layeredCircuit make_ordinary_phase2_circuit() {
+    layeredCircuit circuit;
+    circuit.init(0, 2);
+    circuit.circuit[0].ty = layerType::INPUT;
+    circuit.circuit[0].size = 2;
+    circuit.circuit[0].zero_start_id = 2;
+    circuit.circuit[0].bit_length = 1;
+
+    // A zero-valued two-coordinate binary layer gives a minimal
+    // phase1/phase2 relation.  Both sides read the preceding input layer, so
+    // need_phase2 is genuinely exercised rather than inferred from FCONN.
+    circuit.circuit[1].ty = layerType::Sqr;
+    circuit.circuit[1].size = 2;
+    circuit.circuit[1].zero_start_id = 2;
+    circuit.circuit[1].bit_length = 1;
+    circuit.circuit[1].need_phase2 = true;
+    circuit.circuit[1].bin_gates.emplace_back(0, 0, 0, 1, 1);
+    circuit.circuit[1].bin_gates.emplace_back(1, 1, 1, 1, 1);
+    circuit.initSubset();
+    return circuit;
+}
+
 NativeLayeredGkrWitness make_witness() {
     NativeLayeredGkrWitness witness;
     witness.layer_values = {{Fr(3), Fr(5)}, {Fr(11), Fr(27)},
@@ -116,6 +138,25 @@ bool replace_intermediate_claim(std::vector<NativeProofMessage> &messages) {
     for (NativeProofMessage &message : messages) {
         if (message.label.find("/next-claim/unmasked/output/meta") ==
             std::string::npos)
+            continue;
+        message.payload = replacement;
+        return true;
+    }
+    return false;
+}
+
+bool replace_opening_payload(std::vector<NativeProofMessage> &messages,
+                             const std::string &target,
+                             const std::string &source) {
+    std::string replacement;
+    for (const NativeProofMessage &message : messages)
+        if (message.kind == NativeProofMessageKind::Data &&
+            message.label == source)
+            replacement = message.payload;
+    if (replacement.empty()) return false;
+    for (NativeProofMessage &message : messages) {
+        if (message.kind != NativeProofMessageKind::Data ||
+            message.label != target)
             continue;
         message.payload = replacement;
         return true;
@@ -205,6 +246,10 @@ int main() {
     std::vector<NativeProofMessage> replaced_claim = session.messages();
     assert(replace_intermediate_claim(replaced_claim));
     assert(rejects_tampered_artifact(std::move(replaced_claim)));
+    std::vector<NativeProofMessage> final_claim_tampered = session.messages();
+    assert(replace_opening_payload(final_claim_tampered, "gkr/input/claim/meta",
+                                   "gkr/output/public-claim/meta"));
+    assert(rejects_tampered_artifact(std::move(final_claim_tampered)));
 
     NativeProofSession wrong_output("masked-layered-gkr-smoke-v1", statement_fixture());
     assert(prove_masked_gkr_transcript(wrong_output, circuit, witness, output, &reason));
@@ -221,6 +266,51 @@ int main() {
         if (message.label == "gkr/layer/2/phase1/round/0/h/0/meta")
             second_commitment = message.payload;
     assert(!first_commitment.empty() && first_commitment != second_commitment);
+
+    // A separate non-FCONN layer exercises ordinary phase2/fixed-U binding;
+    // the main fixture above also covers the need_phase2=false fixed-V path.
+    const layeredCircuit ordinary_phase2_circuit = make_ordinary_phase2_circuit();
+    NativeLayeredGkrWitness ordinary_witness;
+    ordinary_witness.layer_values = {{F_ZERO, F_ZERO}, {F_ZERO, F_ZERO}};
+    NativeProofSession ordinary_phase2(
+        "masked-layered-gkr-phase2-smoke-v1", statement_fixture());
+    NativeGkrInputBinding ordinary_binding;
+    if (!prove_masked_gkr_transcript(
+            ordinary_phase2, ordinary_phase2_circuit, ordinary_witness,
+            {F_ZERO, F_ZERO}, &reason,
+            &ordinary_binding, nullptr) ||
+        !verify_masked_gkr_transcript(
+            ordinary_phase2, ordinary_phase2_circuit, {F_ZERO, F_ZERO}, {},
+            &reason, nullptr)) {
+        std::cerr << "ordinary phase2 fixture failed: " << reason << '\n';
+        return 9;
+    }
+    bool saw_phase2 = false;
+    for (const NativeProofMessage &message : ordinary_phase2.messages())
+        if (message.label == "gkr/layer/1/phase2/terminal/unmasked/fixed/0/meta")
+            saw_phase2 = true;
+    if (!saw_phase2) {
+        std::cerr << "ordinary phase2 fixture did not emit fixed binding\n";
+        return 10;
+    }
+    std::vector<NativeProofMessage> ordinary_tampered = ordinary_phase2.messages();
+    if (!replace_opening_payload(
+            ordinary_tampered,
+            "gkr/layer/1/phase2/terminal/unmasked/fixed/0/meta",
+            "gkr/layer/1/phase2/terminal/unmasked/value/0/meta")) {
+        std::cerr << "ordinary phase2 fixed binding fixture was not found\n";
+        return 11;
+    }
+    NativeProofSession ordinary_tampered_session;
+    if (NativeProofSession::from_messages(
+            ordinary_phase2.domain(), ordinary_phase2.statement(),
+            ordinary_tampered, ordinary_tampered_session, &reason) &&
+        verify_masked_gkr_transcript(
+            ordinary_tampered_session, ordinary_phase2_circuit, {F_ZERO, F_ZERO},
+            {}, &reason, nullptr)) {
+        std::cerr << "ordinary phase2 fixed binding tamper was accepted\n";
+        return 12;
+    }
 
     std::cout << "native_masked_layered_gkr_smoke: PASS\n";
     return 0;

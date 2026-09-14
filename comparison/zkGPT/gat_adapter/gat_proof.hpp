@@ -55,7 +55,8 @@ struct MatMulDescriptor {
 
 // The canonical GAT/model input keeps matrix weights in row-major order
 // [term,col].  Native FCONN MLE folding consumes the RHS with the inner
-// coordinate as the low bit, i.e. column-major [col,term].  This adapter
+// coordinate as the low bit, i.e. column-major [col,term] with a
+// next-power-of-two padded_inner stride for every column.  This adapter
 // boundary performs that representation change explicitly; it does not alter
 // the canonical input, plan encoding, model commitment, or registration.
 std::vector<Fr> pack_native_gkr_matmul_rhs(
@@ -365,6 +366,10 @@ std::string verifier_context_digest(const VerifierContext &context);
 // plan), but never model tensors, checkpoints, witness values, or prover
 // opening randomness.  Both functions reject non-canonical/truncated/
 // trailing/oversized data and recompute the statement digest on read.
+// This must be called before default-constructing a VerifierContext in a
+// standalone verifier process because the public registration type contains
+// an mcl field used only by the prover-side private state.
+void initialize_gat_field();
 bool write_verifier_context(const VerifierContext &context,
                             const std::string &path,
                             std::string *reason = nullptr);

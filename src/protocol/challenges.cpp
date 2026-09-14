@@ -1442,7 +1442,25 @@ namespace gatzk::protocol
                 absorb(transcript, prefix + "_J_qry_exp", dynamic_commitments);
                 absorb(transcript, prefix + "_R_exp", dynamic_commitments);
 
-                out[challenge("lambda_psq_h")] = transcript.challenge(challenge("lambda_psq_h"));
+                for (const auto *suffix :
+                     {
+                         "_Sum",
+                         "_Sum_edge",
+                         "_H_agg_pre_star",
+                         "_H_agg_pre_star_edge",
+                         "_widehat_v_pre_star",
+                     })
+                {
+                    absorb(
+                        transcript,
+                        prefix + suffix,
+                        dynamic_commitments);
+                }
+
+                out[challenge("lambda_psq_h")] =
+                    transcript.challenge(
+                        challenge("lambda_psq_h"));
+
                 absorb(transcript, prefix + "_T_psq", dynamic_commitments);
                 absorb(transcript, prefix + "_T_psq_edge", dynamic_commitments);
                 out[challenge("eta_t_h")] = transcript.challenge(challenge("eta_t_h"));
@@ -1653,8 +1671,28 @@ namespace gatzk::protocol
             {
                 absorb(transcript, prefix + suffix, dynamic_commitments);
             }
+
+            for (const auto *suffix :
+                 {
+                     "_Sum",
+                     "_Sum_edge",
+                     "_Y_star",
+                     "_Y_star_edge",
+                     "_widehat_y_star",
+                 })
+            {
+                absorb(
+                    transcript,
+                    prefix + suffix,
+                    dynamic_commitments);
+            }
+
             out[output_challenge_name("lambda_out", head_index)] =
-                transcript.challenge(output_challenge_name("lambda_out", head_index));
+                transcript.challenge(
+                    output_challenge_name(
+                        "lambda_out",
+                        head_index));
+
             absorb(transcript, prefix + "_T", dynamic_commitments);
             absorb(transcript, prefix + "_T_edge", dynamic_commitments);
             out[output_challenge_name("eta_t_out", head_index)] =

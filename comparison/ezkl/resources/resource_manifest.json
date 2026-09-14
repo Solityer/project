@@ -4,8 +4,8 @@
   "resource_root": "resources/canonical",
   "source_snapshot": {
     "root": "/home/pzh/project",
-    "git_commit": "af33ba4517c478039edf6d7e25ddc8a831b1611f",
-    "git_tree": "b475962e30b84e17a24ba6a2c84de733317d0153"
+    "git_commit": "4492c1df2d4badfaeff7b8accc51af9e12ef32a2",
+    "git_tree": "179176448015055181c83b86bd86f9b4e24f8112"
   },
   "files": [
     {
@@ -361,8 +361,8 @@
     },
     {
       "path": "resources/canonical/checkpoints/ogbn_arxiv_gat/manifest.json",
-      "size": 17247,
-      "sha256": "74e78c6162ac2f723e52656260427b566c14598b9bfa0823f8ecac4688e7d501",
+      "size": 17405,
+      "sha256": "db5bf2655b00a3eeaf267b32f7f63bd60686307c9da868329a9eb65016751a3f",
       "source_path": "/home/pzh/project/artifacts/checkpoints/ogbn_arxiv_gat/manifest.json",
       "source_sha256": "d64a412bb8cd565d6f54d37e5d5dd0c71fe771d7905d9890bee0dc350895d788",
       "dataset": "ogbn_arxiv",
@@ -499,14 +499,14 @@
       "size": 1389,
       "sha256": "4c933c6aa58e809596b7e15dc1f75659b810eaed91f659f1e73ab8c4ef665ad1",
       "source_path": "/home/pzh/project/configs/cora_secure.cfg",
-      "source_sha256": "478e1635ab5c7492c71daed4f1b09d1931a758b237800da10d2c329507020cb7",
+      "source_sha256": "d9502db858a2691d58eda5c296785e9fc4e8d442f8c2ba870257d05e4081093a",
       "dataset": "cora",
       "role": "canonical_secure_config"
     },
     {
       "path": "resources/canonical/configs/ogbn_arxiv_secure.cfg",
-      "size": 1270,
-      "sha256": "15e71494925e7f3365d1d01089af2d4f586291f0d694039e2a82d77daab1ddd3",
+      "size": 1416,
+      "sha256": "6fe9d1c9aafb5076b5df7bdd172204c207141151051062d9f99327cd979f9a01",
       "source_path": "/home/pzh/project/configs/ogbn_arxiv_secure.cfg",
       "source_sha256": "2474ad2e34b949401bf8c514496d32fbdf7b26f70329495472ccae39f1c2762d",
       "dataset": "ogbn_arxiv",
@@ -544,7 +544,7 @@
       "size": 8264,
       "sha256": "8c36c4beee4a1ace4e476dd3879f4db413bacb5b7a282bd87b4df4e12f7a97fd",
       "source_path": "/home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py",
-      "source_sha256": "cf7a0df0bfe541943812d89ed559f0146323da3079042f5ac01b340a16e52cc2",
+      "source_sha256": "8fd7cceb071666d079c1ce5582456d7f3ab1413c8ce59bae23ad7af6c6a34708",
       "dataset": "citeseer",
       "role": "baseline_local_integer_bound_ledger"
     },
@@ -553,7 +553,7 @@
       "size": 8279,
       "sha256": "190f624e2814ca44cf543499a3be8968e370b4b853cae9003f9936377c0bbb6b",
       "source_path": "/home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py",
-      "source_sha256": "cf7a0df0bfe541943812d89ed559f0146323da3079042f5ac01b340a16e52cc2",
+      "source_sha256": "8fd7cceb071666d079c1ce5582456d7f3ab1413c8ce59bae23ad7af6c6a34708",
       "dataset": "cora",
       "role": "baseline_local_integer_bound_ledger"
     },
@@ -562,7 +562,7 @@
       "size": 8344,
       "sha256": "357bfff850f12038e2b7b030ddb03a673c8a0d8a669b5f1878c211f4f622632d",
       "source_path": "/home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py",
-      "source_sha256": "cf7a0df0bfe541943812d89ed559f0146323da3079042f5ac01b340a16e52cc2",
+      "source_sha256": "8fd7cceb071666d079c1ce5582456d7f3ab1413c8ce59bae23ad7af6c6a34708",
       "dataset": "ppi",
       "role": "baseline_local_integer_bound_ledger"
     },
@@ -571,7 +571,7 @@
       "size": 8265,
       "sha256": "7d552f0a019dc5181a4f1169cd92f355650883f0acfc8e270298d090cf4024a0",
       "source_path": "/home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py",
-      "source_sha256": "cf7a0df0bfe541943812d89ed559f0146323da3079042f5ac01b340a16e52cc2",
+      "source_sha256": "8fd7cceb071666d079c1ce5582456d7f3ab1413c8ce59bae23ad7af6c6a34708",
       "dataset": "pubmed",
       "role": "baseline_local_integer_bound_ledger"
     },
@@ -580,7 +580,7 @@
       "size": 1755912,
       "sha256": "e86e2e7010b4cab1388dbd532178463a74541cbff4e6d9d1d6d82f24dc368aed",
       "source_path": "/home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py",
-      "source_sha256": "cf7a0df0bfe541943812d89ed559f0146323da3079042f5ac01b340a16e52cc2",
+      "source_sha256": "8fd7cceb071666d079c1ce5582456d7f3ab1413c8ce59bae23ad7af6c6a34708",
       "dataset": "citeseer",
       "role": "baseline_local_exact_static_tables"
     },
@@ -589,7 +589,7 @@
       "size": 1755872,
       "sha256": "16ece7d72633dd3b7de696815808eb4aa35146df97fb6715cec5109fa8176302",
       "source_path": "/home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py",
-      "source_sha256": "cf7a0df0bfe541943812d89ed559f0146323da3079042f5ac01b340a16e52cc2",
+      "source_sha256": "8fd7cceb071666d079c1ce5582456d7f3ab1413c8ce59bae23ad7af6c6a34708",
       "dataset": "cora",
       "role": "baseline_local_exact_static_tables"
     },
@@ -598,7 +598,7 @@
       "size": 7192770,
       "sha256": "c47401dba41a0130b9a144a9a75e1c136c800497a4ddd6efd2aaaba61ccdbdc9",
       "source_path": "/home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py",
-      "source_sha256": "cf7a0df0bfe541943812d89ed559f0146323da3079042f5ac01b340a16e52cc2",
+      "source_sha256": "8fd7cceb071666d079c1ce5582456d7f3ab1413c8ce59bae23ad7af6c6a34708",
       "dataset": "ppi",
       "role": "baseline_local_exact_static_tables"
     },
@@ -607,7 +607,7 @@
       "size": 1755892,
       "sha256": "41cb5e18e93b9064913d818cf3d0be622712d11b0b1f675263028ac27f22b8a6",
       "source_path": "/home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py",
-      "source_sha256": "cf7a0df0bfe541943812d89ed559f0146323da3079042f5ac01b340a16e52cc2",
+      "source_sha256": "8fd7cceb071666d079c1ce5582456d7f3ab1413c8ce59bae23ad7af6c6a34708",
       "dataset": "pubmed",
       "role": "baseline_local_exact_static_tables"
     }

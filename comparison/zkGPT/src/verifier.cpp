@@ -1824,15 +1824,37 @@ bool masked_matmul_witness_vectors(const NativeGkrMatmulWitness &witness,
         !masked_power_domain(inner_bits, inner_domain, reason) ||
         !masked_power_domain(col_bits, cols_domain, reason))
         return false;
-    if (witness.left.size() != shape.rows * shape.inner ||
-        witness.right.size() != shape.inner * shape.cols) {
+    const std::size_t canonical_left_size = shape.rows * shape.inner;
+    const std::size_t padded_right_size = inner_domain * cols_domain;
+    if (witness.left.size() != canonical_left_size ||
+        witness.right.size() != padded_right_size) {
         masked_set_reason(reason, "masked FCONN witness matrix dimensions are invalid");
         return false;
     }
     left.assign(rows_domain * inner_domain, F_ZERO);
     right.assign(inner_domain * cols_domain, F_ZERO);
-    std::copy(witness.left.begin(), witness.left.end(), left.begin());
-    std::copy(witness.right.begin(), witness.right.end(), right.begin());
+    // Keep the inner coordinate as the low MLE bits.  The LHS is canonical
+    // row-major, so each row receives its full padded-inner stride.  The RHS
+    // already uses native column-major blocks, and is copied block-for-block;
+    // this preserves the gap between a non-power-of-two inner dimension and
+    // the next column.
+    for (std::size_t row = 0; row < shape.rows; ++row)
+        for (std::size_t term = 0; term < shape.inner; ++term)
+            left[row * inner_domain + term] =
+                witness.left[row * shape.inner + term];
+    for (std::size_t col = 0; col < shape.cols; ++col)
+        for (std::size_t term = 0; term < shape.inner; ++term)
+            right[col * inner_domain + term] =
+                witness.right[col * inner_domain + term];
+    for (std::size_t col = 0; col < cols_domain; ++col)
+        for (std::size_t term = 0; term < inner_domain; ++term) {
+            const bool padding = col >= shape.cols || term >= shape.inner;
+            if (padding && !witness.right[col * inner_domain + term].isZero()) {
+                masked_set_reason(reason,
+                                  "masked FCONN RHS padding is not zero");
+                return false;
+            }
+        }
     return true;
 }
 
@@ -2193,6 +2215,12 @@ bool prove_masked_gkr_transcript(
                     !phase1.finish({claim_u0, claim_u1}, &phase1_result, reason))
                     throw std::runtime_error(*reason);
                 masked_u = phase1_result.terminal_values;
+                if (phase1_result.terminal_values.size() != 2 ||
+                    phase1_result.terminal_commitments.size() != 2 ||
+                    phase1_result.terminal_openings.size() != 2) {
+                    throw std::runtime_error(
+                        "masked GKR phase1 terminal binding has invalid arity");
+                }
                 NativeMaskedTerminalSpec phase2_placeholder;
                 phase2_placeholder.kind = NativeMaskedTerminalKind::Claims;
                 phase2_placeholder.has_external_binding = true;
@@ -2233,9 +2261,13 @@ bool prove_masked_gkr_transcript(
                 NativeMaskedTerminalSpec phase2_spec;
                 phase2_spec.kind = NativeMaskedTerminalKind::GkrPredicateFixedU;
                 phase2_spec.gkr_coefficients = {bin[0], bin[1], bin[2], uni[0], uni[1]};
-                phase2_spec.fixed_values = masked_u;
+                // Phase2's fixed U side is exactly phase1's public masked
+                // terminal.  Carry both representations and reject any
+                // later substitution instead of trusting a recomputed vector.
+                phase2_spec.fixed_values = phase1_result.terminal_values;
                 phase2_spec.unmasked_fixed_values = {claim_u0, claim_u1};
                 phase2_spec.fixed_openings = phase1_result.terminal_openings;
+                phase2_spec.fixed_commitments = phase1_result.terminal_commitments;
                 phase2_spec.unmasked_fixed_openings =
                     phase1_result.unmasked_terminal_openings;
                 phase2_spec.unmasked_terminal_openings = {
@@ -2549,6 +2581,8 @@ bool verify_masked_gkr_transcript(
                     basis.domain,
                     zkgpt::native_pedersen::commit(basis, F_ZERO, F_ZERO).point};
                 phase1_spec.fixed_commitments = {zero_commitment, zero_commitment};
+                phase1_spec.expected_unmasked_fixed_commitments = {
+                    zero_commitment, zero_commitment};
             }
             if (!masked_consume_scope(
                     session, phase1_label, 2, current.max_bl_u, previous_masked,
@@ -2595,6 +2629,18 @@ bool verify_masked_gkr_transcript(
                 fixed_u_spec.kind = NativeMaskedTerminalKind::GkrPredicateFixedU;
                 fixed_u_spec.gkr_coefficients = {bin[0], bin[1], bin[2], uni[0], uni[1]};
                 fixed_u_spec.fixed_values = phase1_result.terminal_values;
+                if (phase1_result.terminal_values.size() != 2 ||
+                    phase1_result.terminal_commitments.size() != 2) {
+                    masked_set_reason(reason,
+                                      "masked phase1 terminal binding has invalid arity");
+                    return false;
+                }
+                // The phase2 fixed side must consume the exact authenticated
+                // phase1 terminal commitments.  Its public values and
+                // commitments are supplied together to the native verifier.
+                fixed_u_spec.fixed_commitments = phase1_result.terminal_commitments;
+                fixed_u_spec.expected_unmasked_fixed_commitments =
+                    phase1_result.unmasked_terminal_commitments;
                 if (!masked_consume_scope(
                         session, phase2_label, 2, current.max_bl_v,
                         phase1_result.final_claim,
@@ -2671,8 +2717,12 @@ bool verify_masked_gkr_transcript(
         }
         ScalarCommitment input_claim_commitment;
         ScalarCommitment input_mask_commitment;
+        // The final input claim is the authenticated output of the last
+        // next-claim transition.  Do not accept a replacement commitment at
+        // the boundary merely because its later mask relation is valid.
         if (!masked_consume_opening(session, basis, "gkr/input/claim", cursor,
-                                    nullptr, &input_claim_commitment, reason) ||
+                                    &previous_masked_commitment,
+                                    &input_claim_commitment, reason) ||
             !masked_consume_opening(session, basis, "gkr/input/mask", cursor,
                                     nullptr, &input_mask_commitment, reason) ||
             !masked_consume_linear(

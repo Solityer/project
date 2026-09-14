@@ -26,6 +26,7 @@ from common import (
     build_binary,
     config_with_auth,
     artifact_fields,
+    formal_backend_capability,
     launch_native,
     load_json,
     local_path,
@@ -115,9 +116,27 @@ def ensure_registration(root: Path, dataset: str, backend: str,
 
 
 def run_cell(root: Path, dataset: str, backend: str) -> None:
+    capability = formal_backend_capability(backend)
     config_path, config = config_with_auth(root, dataset)
     if config.get("privacy_policy") != "model_and_trace_hidden" or config.get("privacy_profile", "masked_full") not in ("masked_full", ""):
         raise ChainError(f"{dataset} config does not declare the strict privacy boundary")
+    if not capability["supported"]:
+        # Keep an explicit machine-readable gate record for an intentionally
+        # unavailable formal backend.  No registration, CUDA evidence, or
+        # native prover process is started on this path.
+        run_relative, run_path = run_directory(root, dataset, backend, config)
+        atomic_write_json(run_path / "execution.json", {
+            "schema": "zkgpt-gat-execution-v1",
+            "dataset": dataset,
+            "backend": backend,
+            "status": "UNSUPPORTED",
+            "no_fallback": True,
+            "formal_backend_supported": False,
+            "capability_status": capability["status"],
+            "native_invoked": False,
+            "reason": capability["reason"],
+        })
+        raise ChainError(capability["reason"])
     verify_cache(root, dataset)
     verify_checkpoint(root, dataset)
     build_binary(root, backend)
@@ -143,6 +162,8 @@ def run_cell(root: Path, dataset: str, backend: str) -> None:
     result = require_result_shape(load_json(result_path, "native result"), result_path)
     if result.get("dataset") != dataset or result.get("backend") != backend:
         raise ChainError(f"native result identity mismatch for {dataset}/{backend}")
+    if result.get("capability_status") != capability["status"] or result.get("formal_backend_supported") is not True:
+        raise ChainError(f"native result violates the formal backend capability gate for {dataset}/{backend}")
     if result.get("status") != "VERIFY_OK" or result.get("verification_status") != "VERIFY_OK":
         raise ChainError(f"native result is not VERIFY_OK for {dataset}/{backend}")
     if result.get("cpu_fallback") is not False or result.get("verifier_reads_witness") is not False:

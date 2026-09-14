@@ -74,10 +74,12 @@ struct NativeGkrMatmulShape {
     std::size_t cols = 0;
 };
 
-// Prover-only witness for one native FCONN matrix relation.  The vectors are
-// canonical row-major matrices with exactly rows*inner and inner*cols
-// entries.  They are consumed while producing the transcript and are never
-// part of the independent verifier input.
+// Prover-only witness for one native FCONN matrix relation.  The LHS is
+// canonical row-major [row,term] with rows*inner entries.  The RHS has
+// already crossed the adapter boundary and is native column-major
+// [col,term], with a full next-power-of-two padded-inner stride per column.
+// They are consumed while producing the transcript and are never part of the
+// independent verifier input.
 struct NativeGkrMatmulWitness {
     NativeGkrMatmulShape shape;
     std::vector<F> left;

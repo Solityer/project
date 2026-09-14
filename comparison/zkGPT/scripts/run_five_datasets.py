@@ -14,7 +14,10 @@ from common import BACKENDS, baseline_root
 
 def main(argv: List[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--backend", choices=("all",) + BACKENDS, default="all")
+    parser.add_argument(
+        "--backend", choices=("all",) + BACKENDS, default="cpu",
+        help="formal backend (default: cpu; gpu is fail-closed unsupported)",
+    )
     args = parser.parse_args(argv)
     root = baseline_root()
     command = [sys.executable, str(root / "scripts" / "gat_zkgpt_experiment.py"),

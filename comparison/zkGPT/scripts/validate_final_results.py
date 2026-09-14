@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail-closed final validator for the complete zkGPT GAT result matrix."""
+"""Fail-closed final validator for the selected zkGPT GAT result matrix."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import argparse
 import math
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from common import (
     BACKENDS,
@@ -15,6 +15,7 @@ from common import (
     ChainError,
     atomic_write_json,
     baseline_root,
+    formal_backend_capability,
     load_json,
     local_path,
     require_result_shape,
@@ -24,6 +25,15 @@ from common import (
 
 
 EXPECTED_KEYS = {(dataset, backend) for dataset in DATASETS for backend in BACKENDS}
+
+
+def selection(raw: str, allowed: Sequence[str], label: str) -> Tuple[str, ...]:
+    if raw == "all":
+        return tuple(allowed)
+    values = tuple(item.strip() for item in raw.split(",") if item.strip())
+    if not values or len(set(values)) != len(values) or any(item not in allowed for item in values):
+        raise ChainError(f"{label} must be all or a comma-separated list of supported values")
+    return values
 
 
 def require_text(value: Mapping[str, Any], key: str, where: str) -> str:
@@ -43,10 +53,11 @@ def require_true(value: Mapping[str, Any], key: str, where: str) -> None:
         raise ChainError(f"{where} requires {key}=true")
 
 
-def validate_cell(root: Path, cell: Mapping[str, Any]) -> None:
+def validate_cell(root: Path, cell: Mapping[str, Any], expected_keys: Optional[set] = None) -> None:
     dataset = require_text(cell, "dataset", "collected cell")
     backend = require_text(cell, "backend", "collected cell")
-    if (dataset, backend) not in EXPECTED_KEYS:
+    allowed_keys = EXPECTED_KEYS if expected_keys is None else expected_keys
+    if (dataset, backend) not in allowed_keys:
         raise ChainError(f"unsupported collected cell identity: {dataset}/{backend}")
     artifact_rel = require_text(cell, "artifact_path", f"{dataset}/{backend}")
     artifact = local_path(root, artifact_rel, "collected artifact")
@@ -116,9 +127,19 @@ def validate_cell(root: Path, cell: Mapping[str, Any]) -> None:
 def main(argv: Sequence[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", default="results/collected_results.json", help="baseline-relative collected result JSON")
+    parser.add_argument(
+        "--backends", default="cpu",
+        help="formal backends represented in the collected matrix (default: cpu; gpu is unsupported)",
+    )
     args = parser.parse_args(list(argv))
     root = baseline_root()
     try:
+        selected_backends = selection(args.backends, BACKENDS, "backends")
+        expected_keys = {(dataset, backend) for dataset in DATASETS for backend in selected_backends}
+        for backend in selected_backends:
+            capability = formal_backend_capability(backend)
+            if not capability["supported"]:
+                raise ChainError(capability["reason"])
         resource_errors = verify_local_resources(root)
         if resource_errors:
             raise ChainError("resource authentication failed: " + " | ".join(resource_errors))
@@ -130,11 +151,11 @@ def main(argv: Sequence[str]) -> int:
         if not isinstance(payload, dict) or payload.get("schema") != "zkgpt-gat-collected-results-v1" or payload.get("status") != "COLLECTED":
             raise ChainError(f"unsupported collected-results schema: {input_path}")
         matrix = payload.get("matrix")
-        if not isinstance(matrix, dict) or matrix.get("datasets") != list(DATASETS) or matrix.get("backends") != list(BACKENDS) or matrix.get("cell_count") != len(EXPECTED_KEYS):
+        if not isinstance(matrix, dict) or matrix.get("datasets") != list(DATASETS) or matrix.get("backends") != list(selected_backends) or matrix.get("cell_count") != len(expected_keys):
             raise ChainError("collected matrix declaration is incomplete")
         cells = payload.get("cells")
-        if not isinstance(cells, list) or len(cells) != len(EXPECTED_KEYS):
-            raise ChainError("collected result does not contain exactly ten cells")
+        if not isinstance(cells, list) or len(cells) != len(expected_keys):
+            raise ChainError("collected result does not contain the requested formal cells")
         seen = set()
         for cell in cells:
             if not isinstance(cell, dict):
@@ -143,8 +164,8 @@ def main(argv: Sequence[str]) -> int:
             if key in seen:
                 raise ChainError(f"duplicate collected cell: {key}")
             seen.add(key)
-            validate_cell(root, cell)
-        if seen != EXPECTED_KEYS:
+            validate_cell(root, cell, expected_keys)
+        if seen != expected_keys:
             raise ChainError("collected matrix is missing a canonical dataset/backend cell")
         result = {
             "schema": "zkgpt-gat-final-validation-v1",
@@ -164,7 +185,7 @@ def main(argv: Sequence[str]) -> int:
     except (ChainError, OSError, ValueError) as exc:
         print(f"FINAL_VALIDATION_FAILED: {exc}", file=sys.stderr)
         return 2
-    print(f"FINAL_VALIDATION_OK cells={len(EXPECTED_KEYS)}")
+    print(f"FINAL_VALIDATION_OK cells={len(cells)}")
     return 0
 
 

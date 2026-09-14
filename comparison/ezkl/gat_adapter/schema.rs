@@ -14,10 +14,8 @@ use std::convert::TryFrom;
 
 /// Schema version for canonical ezkl GAT manifests.
 pub const GAT_SCHEMA_VERSION: u32 = 1;
-/// Model-binding domain used by a serialized graph whose private parameter
-/// vectors have been deliberately redacted.  The public Poseidon H(W)
-/// binding remains intact, while the graph retains only shape/topology data.
-pub const REDACTED_MODEL_HASH_DOMAIN: &str = "ezkl-gat-model-v1-redacted";
+/// Model-binding domain for the native public Hashed parameter relation.
+pub const MODEL_HASH_DOMAIN: &str = "ezkl-gat-model-v1";
 
 /// Return a collision-resistant digest for a canonical byte encoding.
 ///
@@ -1398,6 +1396,12 @@ pub struct CanonicalGat {
     pub circuit_ref: Option<CircuitRef>,
     /// Public H(W) binding for the private model closure.
     pub model_binding: ModelBinding,
+    /// Whether this serialized graph is the compile artifact with private
+    /// model values redacted.  Redaction is tracked separately from the
+    /// public model-hash domain so the native statement keeps the same
+    /// public identity before and after serialization.
+    #[serde(default)]
+    pub private_params_redacted: bool,
 }
 
 impl CanonicalGat {
@@ -1503,13 +1507,11 @@ impl CanonicalGat {
         {
             return Err("ledger identity does not match bound ledger".into());
         }
-        if self.model_binding.hash_domain != "ezkl-gat-model-v1"
-            && self.model_binding.hash_domain != REDACTED_MODEL_HASH_DOMAIN
-        {
+        if self.model_binding.hash_domain != MODEL_HASH_DOMAIN {
             return Err("unsupported model binding hash domain".into());
         }
         self.model_binding.validate()?;
-        if self.model_binding.hash_domain == REDACTED_MODEL_HASH_DOMAIN {
+        if self.private_params_redacted {
             if self
                 .model
                 .flattened_params()

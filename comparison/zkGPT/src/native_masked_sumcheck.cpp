@@ -286,6 +286,13 @@ bool external_shape(const NativeMaskedTerminalSpec &spec, const PedersenBasis &b
             if (!commitment.valid(basis, reason)) return false;
         for (const ScalarCommitment &commitment : spec.fixed_commitments)
             if (!commitment.valid(basis, reason)) return false;
+        if (spec.expected_unmasked_fixed_commitments.size() != fixed_arity) {
+            set_reason(reason, "masked unmasked fixed commitment arity mismatch");
+            return false;
+        }
+        for (const ScalarCommitment &commitment :
+             spec.expected_unmasked_fixed_commitments)
+            if (!commitment.valid(basis, reason)) return false;
     }
     return true;
 }
@@ -672,10 +679,13 @@ bool native_masked_sumcheck_verify(
             return false;
         if (!decode_field_vector(*terminal_message, arity, local.terminal_values,
                                  reason)) return false;
-        if (!check_terminal(effective, running, local.terminal_values, false, reason))
-            return false;
         if (!verify_terminal_relation(session, basis, label, effective, running,
                                       local.terminal_values, cursor, &local, reason))
+            return false;
+        // The relation is checked only after the commitment-to-public binds
+        // consumed by verify_terminal_relation.  Keep this scalar check as a
+        // redundant canonical-shape guard, never as the binding mechanism.
+        if (!check_terminal(effective, running, local.terminal_values, false, reason))
             return false;
         local.final_claim = running;
         local.transcript_end = cursor;
@@ -1125,6 +1135,24 @@ bool verify_unmasked_terminal_relation(
                                   label + "/terminal/unmasked/fixed/" +
                                       std::to_string(i), opening, reason)) return false;
         fixed_values.push_back(opening);
+    }
+    if (fixed_arity == 0) {
+        if (!spec.expected_unmasked_fixed_commitments.empty()) {
+            set_reason(reason, "unexpected unmasked fixed commitment binding");
+            return false;
+        }
+    } else {
+        if (spec.expected_unmasked_fixed_commitments.size() != fixed_arity) {
+            set_reason(reason, "missing unmasked fixed commitment binding");
+            return false;
+        }
+        for (std::size_t i = 0; i < fixed_arity; ++i) {
+            if (!equal_commitment(fixed_values[i],
+                                  spec.expected_unmasked_fixed_commitments[i])) {
+                set_reason(reason, "unmasked fixed commitment binding mismatch");
+                return false;
+            }
+        }
     }
     if (result != nullptr) {
         result->unmasked_claim_commitment = claim;
@@ -2547,6 +2575,26 @@ bool prove_terminal_relation(NativeMaskedSumcheckProverState &state,
         if (!emit_opening(*state.session, state.basis,
                           label + "/terminal/value/" + std::to_string(i),
                           terminal_openings[i], reason)) return false;
+    // /terminal/values is public transcript data.  Bind every emitted
+    // commitment to exactly that scalar before emitting any terminal
+    // relation or mask transition.
+    for (std::size_t i = 0; i < terminal_openings.size(); ++i)
+        if (!emit_linear(*state.session, state.basis,
+                         label + "/terminal/value/public-bind/" +
+                             std::to_string(i),
+                         {terminal_openings[i]}, {F_ONE}, masked_terminal[i],
+                         reason))
+            return false;
+    // Fixed-side terminals are public relation operands as well.  They must
+    // be externally supplied commitments and bound to the verifier's fixed
+    // values; a plaintext check of spec.fixed_values is insufficient.
+    for (std::size_t i = 0; i < fixed_openings.size(); ++i)
+        if (!emit_linear(*state.session, state.basis,
+                         label + "/terminal/fixed/public-bind/" +
+                             std::to_string(i),
+                         {fixed_openings[i]}, {F_ONE}, spec.fixed_values[i],
+                         reason))
+            return false;
     for (std::size_t i = 0; i < terminal_openings.size(); ++i) {
         const ScalarOpening mask = zkgpt::native_pedersen::commit_fresh(
             state.basis, terminal_openings[i].value - unmasked_terminal_openings[i].value);

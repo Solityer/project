@@ -9177,20 +9177,85 @@ namespace gatzk::protocol
                         q_tbl_exp,
                         q_qry_exp,
                         lookup_active_transition_limit(context.tables.exp.size(), n_edges, domains.edge->size));
+                stage_start = Clock::now();
+
+                auto widehat_v_pre_star =
+                    std::make_shared<std::vector<FieldElement>>(
+                        domains.edge->size,
+                        FieldElement::zero());
+
+                for (std::size_t k = 0; k < n_edges; ++k)
+                {
+                    (*widehat_v_pre_star)[k] =
+                        alpha[k] * h_star_edge[k];
+                }
+
+                add_metric(
+                    metrics != nullptr
+                        ? &metrics->hidden_softmax_chain_trace_ms
+                        : nullptr,
+                    stage_start);
+
                 add_dynamic_commitment_batch(
                     trace,
                     {
-                        column_spec(prefix + "J_tbl_exp", std::move(j_exp.table), domains.edge),
-                        column_spec(prefix + "J_qry_exp", std::move(j_exp.query), domains.edge),
-                        column_spec(prefix + "R_exp", std::move(r_exp), domains.edge),
+                        column_spec(
+                            prefix + "J_tbl_exp",
+                            std::move(j_exp.table),
+                            domains.edge),
+                        column_spec(
+                            prefix + "J_qry_exp",
+                            std::move(j_exp.query),
+                            domains.edge),
+                        column_spec(
+                            prefix + "R_exp",
+                            std::move(r_exp),
+                            domains.edge),
+                        shared_compact_column_spec(
+                            prefix + "H_agg_pre_star",
+                            compressed,
+                            h_agg_pre_star,
+                            domains.n),
+                        shared_compact_column_spec(
+                            prefix + "H_agg_pre_star_edge",
+                            compressed,
+                            h_agg_pre_star_edge,
+                            domains.edge),
+                        column_spec(
+                            prefix + "widehat_v_pre_star",
+                            widehat_v_pre_star,
+                            domains.edge),
                     },
                     context.kzg,
                     keep_trace_payloads,
                     metrics);
-                for (const auto *suffix : {"J_tbl_exp", "J_qry_exp", "R_exp"})
+
+                for (const auto *suffix :
+                     {"J_tbl_exp", "J_qry_exp", "R_exp"})
                 {
-                    const auto label = prefix + suffix;
-                    transcript.absorb_commitment(label, trace.commitments.at(label).point);
+                    const auto label =
+                        prefix + suffix;
+
+                    transcript.absorb_commitment(
+                        label,
+                        trace.commitments.at(label).point);
+                }
+
+                for (const auto *suffix :
+                     {
+                         "Sum",
+                         "Sum_edge",
+                         "H_agg_pre_star",
+                         "H_agg_pre_star_edge",
+                         "widehat_v_pre_star",
+                     })
+                {
+                    const auto label =
+                        prefix + suffix;
+
+                    transcript.absorb_commitment(
+                        label,
+                        trace.commitments.at(label).point);
                 }
 
                 stage_start = Clock::now();
@@ -9214,15 +9279,21 @@ namespace gatzk::protocol
                     });
                 add_metric(metrics != nullptr ? &metrics->state_machine_trace_ms : nullptr, stage_start);
                 // 从这里开始不再只是普通前向，而是在把 softmax 聚合链改写成 PSQ / state-machine 轨迹。
-                const auto lambda_psq = transcript.challenge(challenge("lambda_psq_h"));
-                trace.challenges[challenge("lambda_psq_h")] = lambda_psq;
+                const auto lambda_psq =
+                    transcript.challenge(
+                        challenge("lambda_psq_h"));
+
+                trace.challenges[challenge("lambda_psq_h")] =
+                    lambda_psq;
+
                 stage_start = Clock::now();
-                std::vector<FieldElement> widehat_v_pre_star(domains.edge->size, FieldElement::zero());
-                for (std::size_t k = 0; k < n_edges; ++k)
-                {
-                    widehat_v_pre_star[k] = alpha[k] * h_star_edge[k];
-                }
-                auto w_psq = build_weighted_sum(u, lambda_psq, widehat_v_pre_star, domains.edge->size);
+
+                auto w_psq =
+                    build_weighted_sum(
+                        u,
+                        lambda_psq,
+                        *widehat_v_pre_star,
+                        domains.edge->size);
                 auto t_psq = std::make_shared<std::vector<FieldElement>>(n_nodes, FieldElement::zero());
                 for (std::size_t i = 0; i < n_nodes; ++i)
                 {
@@ -9257,9 +9328,6 @@ namespace gatzk::protocol
                         shared_column_spec(prefix + "Acc_star", star_binding, star_binding->acc, domains.d),
                         column_spec(prefix + "s_max", std::move(s_max), domains.edge),
                         column_spec(prefix + "C_max", c_max, domains.edge),
-                        shared_compact_column_spec(prefix + "H_agg_pre_star", compressed, h_agg_pre_star, domains.n),
-                        shared_compact_column_spec(prefix + "H_agg_pre_star_edge", compressed, h_agg_pre_star_edge, domains.edge),
-                        column_spec(prefix + "widehat_v_pre_star", std::move(widehat_v_pre_star), domains.edge),
                         deferred_linear_column_spec(
                             prefix + "w_psq",
                             std::move(w_psq),
@@ -10558,9 +10626,11 @@ namespace gatzk::protocol
                     "output-h" + std::to_string(head_index) +
                     "-delta-consumed");
 
-                const auto lambda_out = transcript.challenge(output_challenge_name("lambda_out", head_index));
-                trace.challenges[output_challenge_name("lambda_out", head_index)] = lambda_out;
-                std::vector<FieldElement> widehat_y_star(domains.edge->size, FieldElement::zero());
+                auto widehat_y_star =
+                    std::make_shared<std::vector<FieldElement>>(
+                        domains.edge->size,
+                        FieldElement::zero());
+
                 parallel_for_ranges(
                     n_edges,
                     128,
@@ -10568,10 +10638,68 @@ namespace gatzk::protocol
                     {
                         for (std::size_t k = begin; k < end; ++k)
                         {
-                            widehat_y_star[k] = out_alpha[k] * y_prime_star_edge[k];
+                            (*widehat_y_star)[k] =
+                                out_alpha[k] *
+                                y_prime_star_edge[k];
                         }
                     });
-                auto w_out = build_weighted_sum(out_u, lambda_out, widehat_y_star, domains.edge->size);
+
+                add_dynamic_commitment_batch(
+                    trace,
+                    {
+                        shared_compact_column_spec(
+                            prefix + "Y_star",
+                            compressed,
+                            y_star,
+                            domains.n),
+                        shared_compact_column_spec(
+                            prefix + "Y_star_edge",
+                            compressed,
+                            y_star_edge,
+                            domains.edge),
+                        column_spec(
+                            prefix + "widehat_y_star",
+                            widehat_y_star,
+                            domains.edge),
+                    },
+                    context.kzg,
+                    keep_trace_payloads,
+                    metrics);
+
+                for (const auto *suffix :
+                     {
+                         "Sum",
+                         "Sum_edge",
+                         "Y_star",
+                         "Y_star_edge",
+                         "widehat_y_star",
+                     })
+                {
+                    const auto label =
+                        prefix + suffix;
+
+                    transcript.absorb_commitment(
+                        label,
+                        trace.commitments.at(label).point);
+                }
+
+                const auto lambda_out =
+                    transcript.challenge(
+                        output_challenge_name(
+                            "lambda_out",
+                            head_index));
+
+                trace.challenges[output_challenge_name(
+                    "lambda_out",
+                    head_index)] =
+                    lambda_out;
+
+                auto w_out =
+                    build_weighted_sum(
+                        out_u,
+                        lambda_out,
+                        *widehat_y_star,
+                        domains.edge->size);
                 auto t_out = std::make_shared<std::vector<FieldElement>>(n_nodes, FieldElement::zero());
                 parallel_for_ranges(
                     n_nodes,
@@ -10595,7 +10723,6 @@ namespace gatzk::protocol
                     {
                         column_spec(prefix + "s_max", std::move(out_s_max), domains.edge),
                         column_spec(prefix + "C_max", out_c_max, domains.edge),
-                        column_spec(prefix + "widehat_y_star", std::move(widehat_y_star), domains.edge),
                         deferred_linear_column_spec(
                             prefix + "w",
                             std::move(w_out),
@@ -10621,8 +10748,6 @@ namespace gatzk::protocol
                                 linear_label_term(prefix + "Y_star_edge", lambda_out),
                             }),
                         column_spec(prefix + "PSQ", psq_out, domains.edge),
-                        shared_compact_column_spec(prefix + "Y_star", compressed, y_star, domains.n),
-                        shared_compact_column_spec(prefix + "Y_star_edge", compressed, y_star_edge, domains.edge),
                     },
                     context.kzg,
                     keep_trace_payloads,

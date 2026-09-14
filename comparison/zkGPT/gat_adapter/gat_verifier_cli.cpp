@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -206,7 +207,12 @@ int main(int argc, char **argv) {
         const std::string logits_path = local_path(root, logits_rel, "public logits");
         const std::string artifact_path = local_path(root, artifact_rel, "proof artifact");
 
-        VerifierContext context;
+        zkgpt::gat::initialize_gat_field();
+        // A complete layered plan contains all gate descriptors and derived
+        // subset maps.  Keep it off the small process stack: malformed or
+        // missing input must still fail closed without a stack overflow.
+        std::unique_ptr<VerifierContext> context_storage(new VerifierContext());
+        VerifierContext &context = *context_storage;
         std::string context_reason;
         if (!zkgpt::gat::read_verifier_context(context_path, context, &context_reason)) {
             const std::string report = report_json("REJECTED", context_reason,
@@ -230,7 +236,8 @@ int main(int argc, char **argv) {
             return 1;
         }
 
-        GatProofArtifact artifact;
+        std::unique_ptr<GatProofArtifact> artifact_storage(new GatProofArtifact());
+        GatProofArtifact &artifact = *artifact_storage;
         std::string artifact_reason;
         if (!GatProofArtifact::read(artifact_path, artifact, &artifact_reason)) {
             const std::string report = report_json("REJECTED", artifact_reason,

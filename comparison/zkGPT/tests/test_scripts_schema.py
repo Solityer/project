@@ -57,11 +57,11 @@ class ProductionContractTests(unittest.TestCase):
             self.skipTest("CPU verifier target has not been built")
         with tempfile.TemporaryDirectory(prefix="verifier-negative-", dir=str(ROOT)) as name:
             directory = Path(name)
-            context = directory / "verifier_context.json"
+            context = directory / "verifier_context.bin"
             logits = directory / "public_logits.txt"
             artifact = directory / "proof.artifact"
             context.write_text(json.dumps({
-                "schema": "zkgpt-gat-verifier-context-v1",
+                "schema": "zkgpt-gat-verifier-context-v2",
                 "relation_id": "R_GAT-zkGPT",
                 "privacy_extension_profile_id": "masked_full",
                 "statement_digest": "a" * 64,

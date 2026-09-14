@@ -316,6 +316,7 @@ fn load_from_resources(
         // setup.  They are produced and bound by gat-prepare's setup phase.
         circuit_ref: None,
         model_binding,
+        private_params_redacted: false,
     };
     spec.validate_for_compile()?;
     Ok(LoadedGat {

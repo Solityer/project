@@ -19,8 +19,7 @@ from pathlib import Path
 from typing import Any
 
 
-DATASETS = ("cora", "citeseer", "pubmed", "ppi")
-UNSUPPORTED_DATASETS = ("ogbn_arxiv",)
+DATASETS = ("cora", "citeseer", "pubmed", "ppi", "ogbn_arxiv")
 BN254_MODULUS = (
     "21888242871839275222246405745257275088548364400416034343698204186575808495617"
 )
@@ -568,11 +567,6 @@ def build_ledger(
 
 
 def generate_dataset(root: Path, dataset: str) -> tuple[str, str]:
-    if dataset in UNSUPPORTED_DATASETS:
-        raise SystemExit(
-            f"generate_gat_resources: unsupported dataset {dataset}; "
-            "large OGBN-Arxiv exact tables are not generated in this baseline-local package"
-        )
     if dataset not in DATASETS:
         raise SystemExit(f"generate_gat_resources: unsupported dataset {dataset}")
     config = parse_cfg(root / "resources/canonical/configs" / f"{dataset}_secure.cfg")
@@ -616,11 +610,11 @@ def generate_dataset(root: Path, dataset: str) -> tuple[str, str]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--root", type=Path, default=Path(__file__).resolve().parents[2]
+        "--root", type=Path, default=Path(__file__).resolve().parents[1]
     )
     parser.add_argument(
         "--dataset",
-        choices=DATASETS + UNSUPPORTED_DATASETS,
+        choices=DATASETS,
         action="append",
     )
     args = parser.parse_args()

@@ -9,7 +9,8 @@
     64
   ],
   "dataset": "ogbn_arxiv",
-  "degree_bound_id": "auto",
+  "degree_bound_id": "ledger:gat:ogbn_arxiv:v1",
+  "degree_bound_digest": "REQUIRED_LOCAL_GENERATED_LEDGER_SHA256",
   "edge_sort_rule": "edge_gid_then_dst_stable",
   "family_schema": "multi_layer_multi_head",
   "hidden_head_specs": [
@@ -178,7 +179,8 @@
   "selection_metric": "validation_loss",
   "self_loop_rule": "per_node",
   "split_format": "index_split",
-  "static_table_id": "tables:lrelu+elu+exp+range",
+  "static_table_id": "tables:gat:ogbn_arxiv:v1",
+  "static_table_digest": "REQUIRED_LOCAL_GENERATED_STATIC_TABLE_SHA256",
   "subgraph_rule": "whole_graph",
   "task_type": "transductive_node_classification",
   "tensor_count": 56,

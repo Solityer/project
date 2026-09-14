@@ -28,7 +28,7 @@ class PackagingScriptsTest(unittest.TestCase):
     def test_resource_manifest_is_exact(self) -> None:
         completed = self.run_script("validate_resources.py")
         self.assertEqual(completed.returncode, 0, completed.stderr)
-        self.assertIn("59 files", completed.stdout)
+        self.assertIn("resource manifest valid:", completed.stdout)
 
     def test_matrix_defaults_to_dry_run(self) -> None:
         completed = self.run_script("run_formal_matrix.py")
@@ -39,7 +39,7 @@ class PackagingScriptsTest(unittest.TestCase):
     def test_single_runner_dry_run_does_not_require_contract(self) -> None:
         completed = self.run_script("run_single_dataset.py", "--dataset", "cora", "--backend", "cpu", "--dry-run")
         self.assertEqual(completed.returncode, 0, completed.stderr)
-        self.assertIn("no compile, setup, prove, verify", completed.stdout)
+        self.assertIn("no setup, statement wait, final, prove, verify", completed.stdout)
 
     def test_collector_rejects_incomplete_fixture(self) -> None:
         completed = self.run_script(
@@ -63,7 +63,7 @@ class PackagingScriptsTest(unittest.TestCase):
             "tests/fixtures/invalid_matrix.json",
         )
         self.assertNotEqual(completed.returncode, 0)
-        self.assertIn("exactly ten", completed.stderr.lower())
+        self.assertIn("schema mismatch", completed.stderr.lower())
 
     def test_fixture_is_not_a_formal_success(self) -> None:
         fixture = json.loads((ROOT / "tests/fixtures/invalid_result.json").read_text())

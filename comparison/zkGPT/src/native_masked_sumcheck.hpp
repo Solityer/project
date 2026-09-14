@@ -86,6 +86,10 @@ struct NativeMaskedTerminalSpec {
     // mask relation; no opening value is serialized.
     std::vector<zkgpt::native_pedersen::ScalarOpening> unmasked_terminal_openings;
     std::vector<zkgpt::native_pedersen::ScalarOpening> unmasked_fixed_openings;
+    // Verifier-only bindings for externally supplied unmasked fixed operands.
+    // The openings remain prover-private and are never serialized.
+    std::vector<zkgpt::native_pedersen::ScalarCommitment>
+        expected_unmasked_fixed_commitments;
 };
 
 struct NativeMaskedRoundBinding {

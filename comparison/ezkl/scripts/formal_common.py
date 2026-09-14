@@ -182,7 +182,7 @@ def validate_resources() -> None:
     validator = ROOT / "scripts" / "validate_resources.py"
     require_file(validator, "resource validator")
     result = subprocess.run(
-        [sys.executable, str(validator)],
+        [sys.executable, str(validator), "--require-complete"],
         cwd=ROOT,
         text=True,
         stdout=subprocess.PIPE,

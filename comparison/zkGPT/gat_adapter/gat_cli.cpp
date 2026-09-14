@@ -1,10 +1,8 @@
-#include "gat_cuda.hpp"
 #include "gat_proof.hpp"
 #include "gat_types.hpp"
 
 #include <cerrno>
 #include <chrono>
-#include <cmath>
 #include <cstdio>
 #include <fstream>
 #include <iomanip>
@@ -37,6 +35,7 @@ struct Record {
     std::string schema = "zkgpt-gat-result-v1";
     std::string dataset;
     std::string backend;
+    std::string capability_status = "FORMAL_CPU_MASKED_FULL";
     std::string status = "FAILED";
     std::string verification_status = "FAILED";
     std::string proof_scope = "full_gat";
@@ -68,6 +67,7 @@ struct Record {
     bool verifier_ok = false;
     bool verifier_reads_witness = false;
     bool cpu_fallback = false;
+    bool formal_backend_supported = true;
     bool gpu_compiled = false;
     bool gpu_device_available = false;
     bool gpu_kernel_executed = false;
@@ -373,6 +373,7 @@ void write_result(const std::string &path, const Record &record) {
     json_string(out, "schema", record.schema);
     json_string(out, "dataset", record.dataset);
     json_string(out, "backend", record.backend);
+    json_string(out, "capability_status", record.capability_status);
     json_string(out, "status", record.status);
     json_string(out, "verification_status", record.verification_status);
     json_string(out, "proof_scope", record.proof_scope);
@@ -404,6 +405,7 @@ void write_result(const std::string &path, const Record &record) {
     json_bool(out, "verifier_ok", record.verifier_ok);
     json_bool(out, "verifier_reads_witness", record.verifier_reads_witness);
     json_bool(out, "cpu_fallback", record.cpu_fallback);
+    json_bool(out, "formal_backend_supported", record.formal_backend_supported);
     json_bool(out, "gpu_compiled", record.gpu_compiled);
     json_bool(out, "gpu_device_available", record.gpu_device_available);
     json_bool(out, "gpu_kernel_executed", record.gpu_kernel_executed);
@@ -523,26 +525,6 @@ void write_verifier_context(const std::string &path,
     }
 }
 
-std::vector<Int> quantized_first_projection(const Model &model, const QuantConfig &quant) {
-    const Tensor &tensor = model.tensor("hidden/layer0/head0/seq/kernel");
-    if (tensor.shape.dims.size() != 3 || tensor.shape.dims[0] != 1) {
-        throw std::runtime_error("canonical first projection tensor has invalid shape");
-    }
-    const Int scale = quant.s_w_hidden[0].at(0);
-    std::vector<Int> values;
-    values.reserve(tensor.values.size());
-    for (double value : tensor.values) {
-        const long double scaled = static_cast<long double>(value) * scale;
-        const long double rounded = scaled >= 0 ? std::floor(scaled + 0.5L) : std::ceil(scaled - 0.5L);
-        if (rounded > static_cast<long double>(std::numeric_limits<Int>::max()) ||
-            rounded < static_cast<long double>(std::numeric_limits<Int>::min())) {
-            throw std::overflow_error("canonical projection weight does not fit int64");
-        }
-        values.push_back(static_cast<Int>(rounded));
-    }
-    return values;
-}
-
 Options parse_options(int argc, char **argv) {
     Options options;
     for (int i = 1; i < argc; ++i) {
@@ -591,6 +573,7 @@ void print_help() {
 
 int main(int argc, char **argv) {
     Record record;
+    std::string result_file;
     try {
         const Options options = parse_options(argc, argv);
         if (options.help) {
@@ -599,7 +582,18 @@ int main(int argc, char **argv) {
         }
         record.dataset = options.dataset;
         record.backend = options.backend;
-        record.native_backend = options.backend == "gpu" ? "cuda_relation_bridge" : "cpu_native_zkgpt";
+        record.native_backend = options.backend == "gpu" ? "cuda_formal_masked_full" : "cpu_native_zkgpt";
+        if (options.backend == "gpu") {
+            // The CUDA bridge is intentionally only a component-evidence
+            // implementation.  It is not a complete masked_full zkGPT
+            // prover, so a GPU request must never continue into the CPU
+            // witness/prove path.
+            record.capability_status = "UNSUPPORTED_FORMAL_MASKED_FULL_GPU";
+            record.formal_backend_supported = false;
+#if defined(ZKGPT_HAS_CUDA) && ZKGPT_HAS_CUDA
+            record.gpu_compiled = true;
+#endif
+        }
         const std::string root = without_trailing_slash(options.baseline_root);
         const std::string fallback_run_rel = "baseline-local/runs/" + options.dataset + "_secure/" + options.backend;
         std::string run_rel = fallback_run_rel;
@@ -623,6 +617,7 @@ int main(int argc, char **argv) {
             make_directory(run_dir);
         }
         record.run_dir = run_rel;
+        result_file = run_dir + "/result.json";
         const std::string registration_rel = options.registration.empty()
             ? run_rel + "/model_registration.json" : options.registration;
         const std::string com_w_secret_rel = options.com_w_secret.empty()
@@ -635,6 +630,21 @@ int main(int argc, char **argv) {
             com_w_secret_file != run_dir + "/com_W.prover.secret") {
             throw std::runtime_error(
                 "registration and com_W secret must remain in the formal run directory");
+        }
+
+        if (options.backend == "gpu" && !options.register_only) {
+            // Do not run even the partial CUDA relation bridge here.  That
+            // bridge cannot produce the complete masked_full artifact and
+            // must not be followed by CPU forward/prove work.  Emit a
+            // baseline-local structured failure so the caller can distinguish
+            // an intentionally unsupported formal backend from a failed proof.
+            record.status = "UNSUPPORTED";
+            record.verification_status = "UNSUPPORTED";
+            record.failure_reason =
+                "formal masked_full GPU path is unsupported; no CUDA evidence or CPU proof fallback is permitted";
+            write_result(result_file, record);
+            std::cerr << record.status << ": " << record.failure_reason << '\n';
+            return 2;
         }
         const std::string cache_rel = config.get("cache_root");
         const std::string bundle_rel = config.get("checkpoint_bundle");
@@ -691,25 +701,6 @@ int main(int argc, char **argv) {
         record.cache_identity = "baseline-local/data/cache/" + options.dataset + "/integrity.sha256";
         record.load_ms = elapsed_ms(load_begin, Clock::now());
 
-        if (options.backend == "gpu") {
-            const std::vector<Int> weights = quantized_first_projection(model, quant);
-            const GpuExecutionEvidence gpu = execute_gpu_matmul_aggregation(
-                features, weights, features.cols,
-                model.tensor("hidden/layer0/head0/seq/kernel").shape.dims.at(2), graph);
-            record.gpu_compiled = gpu.compiled;
-            record.gpu_device_available = gpu.device_available;
-            record.gpu_kernel_executed = gpu.kernel_executed;
-            record.gpu_kernel_invocations = gpu.kernel_invocations;
-            if (!gpu.compiled || !gpu.device_available || !gpu.kernel_executed || gpu.kernel_invocations == 0) {
-                record.status = gpu.compiled ? "FAILED" : "UNSUPPORTED";
-                record.verification_status = record.status;
-                record.failure_reason = gpu.diagnostic.empty() ? "GPU relation bridge did not execute" : gpu.diagnostic;
-                write_result(run_dir + "/result.json", record);
-                std::cerr << record.status << ": " << record.failure_reason << '\n';
-                return record.status == "UNSUPPORTED" ? 2 : 1;
-            }
-        }
-
         const auto witness_begin = Clock::now();
         const ForwardResult forward = run_forward(graph, features, model, quant);
         if (!validate_relation(graph, features, model, quant, forward)) throw std::runtime_error("canonical GAT relation validation failed");
@@ -758,7 +749,7 @@ int main(int argc, char **argv) {
             record.status = proved.status == ProveStatus::UNSUPPORTED_PRIVACY_PROFILE ? "UNSUPPORTED" : "FAILED";
             record.verification_status = record.status;
             record.failure_reason = proved.diagnostic.empty() ? "native prover did not generate a proof artifact" : proved.diagnostic;
-            write_result(run_dir + "/result.json", record);
+            write_result(result_file, record);
             std::cerr << record.status << ": " << record.failure_reason << '\n';
             return record.status == "UNSUPPORTED" ? 2 : 1;
         }
@@ -795,7 +786,7 @@ int main(int argc, char **argv) {
             record.status = "VERIFY_OK";
             record.verification_status = "VERIFY_OK";
         }
-        write_result(run_dir + "/result.json", record);
+        write_result(result_file, record);
         std::cout << record.status << " dataset=" << record.dataset << " backend=" << record.backend
                   << " result=" << record.run_dir + "/result.json" << '\n';
         return record.status == "VERIFY_OK" ? 0 : 1;
@@ -803,10 +794,15 @@ int main(int argc, char **argv) {
         record.status = record.status == "UNSUPPORTED" ? "UNSUPPORTED" : "FAILED";
         record.verification_status = record.status;
         record.failure_reason = error.what();
-        try {
-            const std::string root = without_trailing_slash(record.run_dir.empty() ? "." : ".");
-            (void)root;
-        } catch (...) {
+        if (!result_file.empty()) {
+            try {
+                // The record contains only public identities and diagnostics;
+                // the owner-only com_W secret is never read into the result.
+                write_result(result_file, record);
+            } catch (...) {
+                // Preserve the original nonzero failure even if the output
+                // directory became unavailable while handling the error.
+            }
         }
         std::cerr << record.status << ": " << record.failure_reason << '\n';
         return record.status == "UNSUPPORTED" ? 2 : 1;

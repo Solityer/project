@@ -1,27 +1,26 @@
 {
   "backends": {
     "cpu": {
-      "blocker": "cpu verifier declares masked_full unsupported",
       "capabilities": {
         "independent": true,
-        "masked_full": false,
+        "masked_full": true,
         "reads_checkpoint": false,
         "reads_witness": false,
-        "schema": "zkgpt-gat-verifier-capabilities-v1"
+        "schema": "zkgpt-gat-verifier-capabilities-v2"
       },
+      "capability_status": "FORMAL_CPU_MASKED_FULL",
+      "formal_backend_supported": true,
       "prover": "build/cpu/gat_adapter/zkgpt_gat_prover",
-      "ready": false,
+      "ready": true,
       "verifier": "build/cpu/gat_adapter/zkgpt_gat_verifier"
     }
   },
-  "blockers": [
-    "cpu verifier declares masked_full unsupported"
-  ],
+  "blockers": [],
   "formal_datasets_started": false,
-  "formal_experiment_eligible": false,
+  "formal_experiment_eligible": true,
   "no_fallback": true,
   "resources_ready": true,
   "schema": "zkgpt-gat-formal-preflight-v1",
   "source_ready": true,
-  "status": "BLOCKED"
+  "status": "READY"
 }

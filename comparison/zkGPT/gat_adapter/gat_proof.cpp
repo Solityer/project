@@ -3357,9 +3357,10 @@ void append_context_int_vector(std::string &out, const std::vector<Int> &values)
 }
 
 bool read_context_int_vector(ContextReader &reader, std::vector<Int> &values,
-                             const char *what) {
+                             const char *what,
+                             std::uint64_t limit = kContextMaxElements) {
     std::size_t count = 0;
-    if (!reader.read_count(count, what)) return false;
+    if (!reader.read_count(count, what, limit)) return false;
     values.resize(count);
     for (Int &value : values) if (!reader.read_int(value)) return false;
     return true;
@@ -3415,10 +3416,10 @@ bool read_context_quant(ContextReader &reader, QuantConfig &quant) {
         !reader.read_int(quant.s_exp)) return false;
     for (Int &value : quant.s_h) if (!reader.read_int(value)) return false;
     for (std::size_t layer = 0; layer < quant.s_w_hidden.size(); ++layer) {
-        if (!read_context_int_vector(reader, quant.s_w_hidden[layer], "hidden weight scales") ||
-            !read_context_int_vector(reader, quant.s_hprime_hidden[layer], "hidden projection scales") ||
-            !read_context_int_vector(reader, quant.s_a_src_hidden[layer], "hidden source scales") ||
-            !read_context_int_vector(reader, quant.s_a_dst_hidden[layer], "hidden destination scales")) return false;
+        if (!read_context_int_vector(reader, quant.s_w_hidden[layer], "hidden weight scales", 64) ||
+            !read_context_int_vector(reader, quant.s_hprime_hidden[layer], "hidden projection scales", 64) ||
+            !read_context_int_vector(reader, quant.s_a_src_hidden[layer], "hidden source scales", 64) ||
+            !read_context_int_vector(reader, quant.s_a_dst_hidden[layer], "hidden destination scales", 64)) return false;
     }
     for (Int &value : quant.s_agg_pre) if (!reader.read_int(value)) return false;
     for (Int &value : quant.s_agg) if (!reader.read_int(value)) return false;
@@ -3505,7 +3506,7 @@ bool read_context_tables(ContextReader &reader, StaticTables &tables) {
     const auto read_table = [&reader](std::vector<TablePoint> &table,
                                       const char *what) -> bool {
         std::size_t count = 0;
-        if (!reader.read_count(count, what)) return false;
+        if (!reader.read_count(count, what, 1ULL << 24)) return false;
         table.resize(count);
         for (TablePoint &point : table)
             if (!reader.read_int(point.x) || !reader.read_int(point.y)) return false;
@@ -3908,8 +3909,9 @@ void append_context_tensor(std::string &out, const Tensor2D &tensor) {
 bool read_context_tensor(ContextReader &reader, Tensor2D &tensor,
                          const char *what) {
     if (!reader.read_size(tensor.rows, what) || !reader.read_size(tensor.cols, what)) return false;
+    const std::size_t expected = checked_mul(tensor.rows, tensor.cols, "verifier context tensor dimensions");
     std::size_t count = 0;
-    if (!reader.read_count(count, what)) return false;
+    if (!reader.read_count(count, what) || count != expected) return false;
     tensor.values.resize(count);
     for (Int &value : tensor.values) if (!reader.read_int(value)) return false;
     return true;
@@ -3960,23 +3962,30 @@ bool context_layer_metadata_valid(const GatCircuitPlan &plan, std::string *reaso
     for (std::size_t i = 0; i < plan.circuit.circuit.size(); ++i) {
         const layer &current = plan.circuit.circuit[i];
         if (current.zero_start_id != current.size) return fail("layer zero_start_id is not canonical");
-        if (current.max_bl_u != std::max(current.bit_length_u[0], current.bit_length_u[1]))
-            return fail("layer max_bl_u is not derived canonically");
-        const i8 expected_max_v = current.need_phase2
-            ? std::max(current.bit_length_v[0], current.bit_length_v[1]) : 0;
-        if (current.max_bl_v != expected_max_v) return fail("layer max_bl_v is not derived canonically");
         if (i == 0) {
             if (!current.ori_id_u.empty() || !current.ori_id_v.empty() ||
                 !current.uni_gates.empty() || !current.bin_gates.empty())
                 return fail("input layer contains derived/gate state");
             continue;
         }
+        if (current.max_bl_u != std::max(current.bit_length_u[0], current.bit_length_u[1]))
+            return fail("layer max_bl_u is not derived canonically");
+        const i8 expected_max_v = current.need_phase2
+            ? std::max(current.bit_length_v[0], current.bit_length_v[1]) : 0;
+        if (current.max_bl_v != expected_max_v) return fail("layer max_bl_v is not derived canonically");
         if (current.size_u[0] != current.ori_id_u.size() ||
             current.size_v[0] != current.ori_id_v.size())
             return fail("layer subset sizes do not match initSubset maps");
-        if (current.bit_length_u[0] != bit_length(current.size_u[0]) ||
-            current.bit_length_v[0] != bit_length(current.size_v[0]))
-            return fail("layer subset bit lengths are not canonical");
+        if (current.bit_length_u[0] != ceilPow2BitLength(current.size_u[0]) ||
+            current.bit_length_v[0] != ceilPow2BitLength(current.size_v[0])) {
+            std::ostringstream detail;
+            detail << "layer subset bit lengths are not canonical at layer " << i
+                   << " u=" << static_cast<int>(current.bit_length_u[0]) << "/"
+                   << static_cast<int>(ceilPow2BitLength(current.size_u[0]))
+                   << " v=" << static_cast<int>(current.bit_length_v[0]) << "/"
+                   << static_cast<int>(ceilPow2BitLength(current.size_v[0]));
+            return fail(detail.str());
+        }
         for (const uniGate &gate : current.uni_gates)
             if (gate.lu == 0 && gate.u >= current.ori_id_u.size())
                 return fail("unary gate subset coordinate exceeds initSubset map");
@@ -4075,6 +4084,10 @@ bool valid_native_kind(std::uint8_t kind) {
 
 } // namespace
 
+void initialize_gat_field() {
+    ensure_field();
+}
+
 std::vector<Fr> pack_native_gkr_matmul_rhs(
     const MatMulDescriptor &descriptor,
     const std::vector<Fr> &canonical_input_layer) {
@@ -4085,8 +4098,12 @@ std::vector<Fr> pack_native_gkr_matmul_rhs(
     // different MLE layout.
     if (descriptor.rows == 0 || descriptor.inner == 0 || descriptor.cols == 0)
         throw std::invalid_argument("native GKR MatMul RHS has an empty shape");
+    const std::size_t padded_inner = next_power_of_two(descriptor.inner);
+    const std::size_t padded_cols = next_power_of_two(descriptor.cols);
     const std::size_t rhs_size = checked_mul(
-        descriptor.inner, descriptor.cols, "native GKR MatMul RHS size");
+        descriptor.inner, descriptor.cols, "canonical GKR MatMul RHS size");
+    const std::size_t native_rhs_size = checked_mul(
+        padded_inner, padded_cols, "padded native GKR MatMul RHS size");
     const std::size_t output_size = checked_mul(
         descriptor.rows, descriptor.cols, "native GKR MatMul output size");
     if (descriptor.output_coordinates != output_size)
@@ -4100,10 +4117,14 @@ std::vector<Fr> pack_native_gkr_matmul_rhs(
         throw std::invalid_argument(
             "native GKR MatMul RHS span exceeds canonical input layer");
 
-    std::vector<Fr> packed(rhs_size, Fr(0));
+    // Native FCONN treats the inner coordinate as the low bits and the
+    // column coordinate as the outer bits.  Every column therefore owns a
+    // full padded_inner block; values from the next canonical column must
+    // never slide across the inner padding gap.
+    std::vector<Fr> packed(native_rhs_size, Fr(0));
     for (std::size_t col = 0; col < descriptor.cols; ++col) {
         const std::size_t native_column_base = checked_mul(
-            col, descriptor.inner, "native GKR MatMul RHS column base");
+            col, padded_inner, "native GKR MatMul RHS column base");
         for (std::size_t term = 0; term < descriptor.inner; ++term) {
             const std::size_t canonical_relative = checked_add(
                 checked_mul(term, descriptor.cols,
@@ -4750,6 +4771,7 @@ VerifierContext make_verifier_context(const Graph &graph,
                                       const GatCircuitPlan &plan,
                                       const std::string &model_arch_id,
                                       const std::string &privacy_profile) {
+    ensure_field();
     ModelRegistration legacy;
     legacy.com_W = com_W;
     legacy.model_arch_id = model_arch_id;
@@ -4772,6 +4794,7 @@ VerifierContext make_verifier_context(const Graph &graph,
                                       const ModelRegistration &registration,
                                       const GatCircuitPlan &plan,
                                       const std::string &privacy_profile) {
+    ensure_field();
     graph.validate();
     quant.validate();
     if (!tables.authenticate()) throw std::invalid_argument("unauthenticated static tables in verifier context");
@@ -4952,6 +4975,7 @@ bool read_verifier_context(const std::string &path,
                            VerifierContext &context,
                            std::string *reason) {
     try {
+        ensure_field();
         std::string wire;
         if (!read_context_file(path, wire, reason)) return false;
         constexpr std::size_t header_size = 8 + 4 + 8;
@@ -5327,7 +5351,11 @@ ProveResult prove_gat(const GatCircuitPlan &plan, const Graph &graph,
             // conversion explicit at the adapter boundary.
             matmul.right = pack_native_gkr_matmul_rhs(
                 descriptor, circuit_witness.input_layer);
-            if (matmul.right.size() != rhs_size)
+            const std::size_t native_rhs_size = checked_mul(
+                next_power_of_two(descriptor.inner),
+                next_power_of_two(descriptor.cols),
+                "native GKR MatMul padded RHS size");
+            if (matmul.right.size() != native_rhs_size)
                 throw std::runtime_error(
                     "native GKR MatMul RHS pack returned the wrong size");
             gkr_witness.matmuls.push_back(std::move(matmul));
