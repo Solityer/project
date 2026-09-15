@@ -40,6 +40,12 @@ struct InputLayout {
     std::string selector = "00:X_pub,01:W,10:Aux,11:L_qry";
 };
 
+// Shared metadata-only sizing boundary.  Registration, the prover and the
+// compact-context verifier all derive this exact four-segment layout here;
+// the helper never evaluates the model or allocates a witness.
+InputLayout build_gat_input_layout(const Graph &graph, const Model &model,
+                                   const QuantConfig &quant);
+
 struct MatMulDescriptor {
     std::string relation_id;
     std::string family_id;
@@ -123,6 +129,34 @@ struct CanonicalModelShape {
     std::size_t hidden_dim = 0;
     std::vector<CanonicalTensorShape> tensors;
 };
+
+struct GatCapacityReport {
+    std::string schema = "zkgpt-gat-capacity-v1";
+    std::size_t num_nodes = 0;
+    std::size_t num_edges = 0;
+    std::size_t num_features = 0;
+    std::size_t num_classes = 0;
+    std::size_t graph_count = 0;
+    CanonicalModelShape model_shape;
+    InputLayout input_layout;
+    std::size_t fconn_count = 0;
+    bool explicit_matmul_gate_expansion = false;
+    std::size_t max_materialized_gate = 0;
+    std::size_t max_materialized_vector = 0;
+    std::size_t attention_relation_count = 0;
+    std::size_t division_relation_count = 0;
+    std::size_t context_recipe_bytes_bound = 0;
+    std::size_t context_payload_bytes_bound = 0;
+    bool ppi_node_ptr_boundary = false;
+    bool ppi_edge_ptr_boundary = false;
+    bool ready = false;
+    std::string reason;
+};
+
+// Metadata/capacity inspection only: no checkpoint values, forward pass,
+// witness, materialized circuit, proof or verifier are constructed.
+GatCapacityReport inspect_gat_capacity(const Graph &graph, const Model &model,
+                                       const QuantConfig &quant);
 
 // This is the complete adapter description consumed by the official
 // layered-circuit/prover path.  It intentionally carries no witness values.
@@ -361,10 +395,18 @@ struct GatProofArtifact {
 
 struct VerifierContext {
     std::string relation_id = "R_GAT-zkGPT";
+    std::string backend;
     std::string model_arch_id = "gat_l3_8x2";
     std::string privacy_extension_profile_id;
     std::string quant_cfg_id;
     std::string static_tables_id;
+    // Resource identities are public statement metadata.  They are carried
+    // in the v3 context so an independent verifier report can be joined to a
+    // result without consulting the checkpoint/cache or guessing from a
+    // path.  They never contain private model material.
+    std::string full_dataset_identity;
+    std::string checkpoint_identity;
+    std::string cache_identity;
     Graph graph;
     Tensor2D public_features;
     QuantConfig quant;

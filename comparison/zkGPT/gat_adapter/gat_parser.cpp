@@ -346,6 +346,14 @@ std::string output_name(std::size_t head, const char *kind) {
 
 } // namespace
 
+std::string sha256_file_digest(const std::string &path) {
+    // Keep one implementation for authenticated resources and native
+    // artifact telemetry.  The helper above reads the exact bytes and uses
+    // mcl's SHA-256 primitive; no shell command or digest normalization is
+    // involved.
+    return sha256_file(path);
+}
+
 std::size_t Shape::elements() const {
     std::size_t result = 1;
     for (std::size_t d : dims) {

@@ -17,9 +17,12 @@ from common import (
     config_with_auth,
     launch_native,
     load_json,
+    validate_registration_artifact,
     require_prover_secret,
     run_directory,
+    verify_cache,
     verify_checkpoint,
+    verify_local_resources,
 )
 
 
@@ -31,9 +34,16 @@ def main(argv: List[str]) -> int:
     root = baseline_root()
     try:
         config_path, config = config_with_auth(root, args.dataset)
+        resource_errors = verify_local_resources(root, (args.dataset,))
+        if resource_errors:
+            raise ChainError("resource authentication failed: " + " | ".join(resource_errors))
+        # Keep these explicit checks in the direct registration entrypoint as
+        # well as in the shared resource gate.  A caller must never be able to
+        # register against an unauthenticated cache/checkpoint or quant chain.
+        verify_cache(root, args.dataset)
+        verify_checkpoint(root, args.dataset)
         if config.get("setup_mode") != "hyrax_native_local" or config.get("setup_resource_scope") != "baseline-local":
             raise ChainError("model registration requires the baseline-local Hyrax setup declaration")
-        verify_checkpoint(root, args.dataset)
         run_relative, run_path = run_directory(root, args.dataset, args.backend, config)
         registration_relative = f"{run_relative}/model_registration.json"
         secret_relative = f"{run_relative}/com_W.prover.secret"
@@ -56,52 +66,9 @@ def main(argv: List[str]) -> int:
             raise ChainError(
                 f"native registration failed ({completed.returncode}); see {run_relative}/registration.stderr.log"
             )
-        registration = load_json(registration_path, "model registration")
-        if not isinstance(registration, dict) or registration.get("schema") != "zkgpt-gat-model-registration-v1":
-            raise ChainError(f"native registration has an unsupported schema: {registration_path}")
-        if registration.get("status") != "registered_long_lived_com_W":
-            raise ChainError(f"native registration did not produce a long-lived commitment: {registration_path}")
-        required = (
-            "dataset", "model_arch_id", "quant_cfg_id", "static_tables_id", "field_id",
-            "field_modulus", "manifest_digest", "model_digest", "bounds_digest",
-            "quant_digest", "layout_digest", "selector", "opening_policy",
-            "binding_digest", "registration_digest", "point_hex",
+        validate_registration_artifact(
+            root, args.dataset, args.backend, config, registration_path, secret_path
         )
-        for key in required:
-            if not isinstance(registration.get(key), str) or not registration[key]:
-                raise ChainError(f"native registration is missing {key}: {registration_path}")
-        if registration["dataset"] != args.dataset:
-            raise ChainError(f"native registration dataset mismatch: {registration_path}")
-        if registration["field_id"] != "BN254":
-            raise ChainError(f"native registration field is not BN254: {registration_path}")
-        if registration["selector"] != "00:X_pub,01:W,10:Aux,11:L_qry":
-            raise ChainError(f"native registration selector is not canonical: {registration_path}")
-        if registration["opening_policy"] != "same_r_three_openings_v1":
-            raise ChainError(f"native registration opening policy is not canonical: {registration_path}")
-        try:
-            n_raw = int(registration["n_raw"])
-            n_in = int(registration["n_in"])
-            logical_size = int(registration["logical_size"])
-            padded_size = int(registration["padded_size"])
-        except (KeyError, TypeError, ValueError) as exc:
-            raise ChainError(f"native registration layout/domain numbers are invalid: {registration_path}") from exc
-        if n_raw <= 0 or n_in <= 0 or padded_size != n_in:
-            raise ChainError(f"native registration does not use one shared N_in: {registration_path}")
-        segments = registration.get("input_segments")
-        if not isinstance(segments, list) or len(segments) != 4:
-            raise ChainError(f"native registration must contain exactly four input segments: {registration_path}")
-        names = ("X_pub", "W", "Aux", "L_qry")
-        for index, segment in enumerate(segments):
-            if not isinstance(segment, dict) or segment.get("name") != names[index]:
-                raise ChainError(f"native registration segment {index} is not canonical: {registration_path}")
-            try:
-                if int(segment["offset"]) != index * n_in or int(segment["padded_length"]) != n_in:
-                    raise ChainError(f"native registration segment {index} does not share N_in: {registration_path}")
-            except (KeyError, TypeError, ValueError) as exc:
-                raise ChainError(f"native registration segment {index} numbers are invalid: {registration_path}") from exc
-        if logical_size != int(segments[1].get("logical_length", -1)) or logical_size > n_in:
-            raise ChainError(f"native registration W logical size does not match layout: {registration_path}")
-        require_prover_secret(secret_path)
         raw_registration = registration_path.read_text(encoding="utf-8")
         if "blinder" in raw_registration or "padding_mask" in raw_registration:
             raise ChainError(f"public model registration contains prover-only secret material: {registration_path}")

@@ -40,6 +40,14 @@ layeredCircuit make_circuit() {
     circuit.circuit[1].zero_start_id = 2;
     circuit.circuit[1].bit_length = 1;
     circuit.circuit[1].need_phase2 = true;
+    circuit.circuit[1].native_relation_id = "masked-layered-gkr/fconn0";
+    circuit.circuit[1].native_family_id = "masked-layered-gkr/family0";
+    circuit.circuit[1].native_rows = 1;
+    circuit.circuit[1].native_inner = 2;
+    circuit.circuit[1].native_cols = 2;
+    circuit.circuit[1].native_lhs_offset = 0;
+    circuit.circuit[1].native_rhs_offset = 0;
+    circuit.circuit[1].native_output_offset = 0;
 
     circuit.circuit[2].ty = layerType::ADD_BIAS;
     circuit.circuit[2].size = 2;
@@ -79,6 +87,11 @@ NativeLayeredGkrWitness make_witness() {
                             {Fr(11), Fr(27)}};
     NativeGkrMatmulWitness matmul;
     matmul.shape = {1, 2, 2};
+    matmul.shape.relation_id = "masked-layered-gkr/fconn0";
+    matmul.shape.family_id = "masked-layered-gkr/family0";
+    matmul.shape.lhs_offset = 0;
+    matmul.shape.rhs_offset = 0;
+    matmul.shape.output_offset = 0;
     matmul.left = {Fr(3), Fr(5)};
     matmul.right = {Fr(2), Fr(1), Fr(4), Fr(3)};
     witness.matmuls.push_back(matmul);
@@ -171,7 +184,7 @@ int main() {
     const layeredCircuit circuit = make_circuit();
     const NativeLayeredGkrWitness witness = make_witness();
     const std::vector<Fr> output{Fr(11), Fr(27)};
-    const std::vector<NativeGkrMatmulShape> descriptors{{1, 2, 2}};
+    const std::vector<NativeGkrMatmulShape> descriptors{witness.matmuls.front().shape};
     std::string reason;
     NativeGkrInputBinding produced_binding;
     NativeGkrInputBinding verified_binding;
@@ -212,6 +225,19 @@ int main() {
         assert(message.payload == "with-mask-v2");
     }
     assert(saw_private_scope);
+
+    NativeGkrMatmulShape family_tampered = descriptors.front();
+    family_tampered.family_id += ".tampered";
+    NativeProofSession family_session("masked-layered-gkr-smoke-v1",
+                                      statement_fixture());
+    assert(prove_masked_gkr_transcript(family_session, circuit, witness, output,
+                                       &reason));
+    assert(!verify_masked_gkr_transcript(family_session, circuit, output,
+                                         {family_tampered}, &reason));
+    NativeGkrMatmulShape offset_tampered = descriptors.front();
+    offset_tampered.output_offset += 1;
+    assert(!verify_masked_gkr_transcript(family_session, circuit, output,
+                                         {offset_tampered}, &reason));
 
     const std::string wire = "/tmp/zkgpt-native-masked-layered-gkr.smoke";
     assert(session.write(wire, &reason));

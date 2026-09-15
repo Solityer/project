@@ -47,6 +47,12 @@ const std::uint64_t kContextMaxElements = 1ULL << 30;
 const std::uint64_t kContextMaxLayers = 1ULL << 20;
 const std::uint64_t kContextMaxDescriptors = 1ULL << 20;
 const std::uint64_t kContextMaxRecipeBytes = 64ULL << 20;
+// This is an admission bound for the still-explicit sparse/rounding relation
+// records.  It is deliberately independent from the verifier-context wire
+// limit: increasing a serialization cap must never turn an OOM-prone circuit
+// into a claimed READY run.
+const std::size_t kMaxExplicitGateEntries = 1ULL << 25;
+const std::size_t kMaxMaterializedVectorEntries = 1ULL << 27;
 const std::uint64_t kContextMaxShapeProfile = 128;
 const std::uint64_t kContextMaxShapeDimensions = 16;
 const char kNativeArtifactDomain[] = "zkgpt-native-gat-fs-v1";
@@ -370,7 +376,7 @@ std::string canonical_graph_topology_digest(const Graph &graph) {
     for (std::size_t value : graph.node_ptr) append_u64(encoded, value);
     append_u64(encoded, graph.edge_ptr.size());
     for (std::size_t value : graph.edge_ptr) append_u64(encoded, value);
-    return hash_hex(encoded);
+    return canonical_digest64(encoded);
 }
 
 const char *canonical_selector() {
@@ -889,6 +895,18 @@ InputLayout make_layout(std::size_t public_size, std::size_t model_size,
     return layout;
 }
 
+InputLayout canonical_input_layout_impl(const Graph &graph, const Model &model,
+                                        const QuantConfig &quant) {
+    model.validate_schema();
+    quant.validate();
+    const std::size_t model_size = flatten_model(model, quant).size();
+    const std::size_t public_size = checked_mul(
+        graph.num_nodes, model.input_dim(), "public input size");
+    const std::size_t aux_size = canonical_aux_size(graph, model);
+    const std::size_t query_size = canonical_query_size(graph, model);
+    return make_layout(public_size, model_size, aux_size, query_size);
+}
+
 struct AttentionCoordinates {
     std::size_t projection = 0;
     std::size_t source_score = 0;
@@ -1183,17 +1201,42 @@ void append_projection_layer(GatCircuitPlan &plan, const MatMulDescriptor &descr
     require_input_region(plan, descriptor.lhs_offset, checked_mul(descriptor.rows, descriptor.inner, "projection lhs region"), "projection lhs");
     require_input_region(plan, descriptor.rhs_offset, checked_mul(descriptor.inner, descriptor.cols, "projection rhs region"), "projection rhs");
     require_input_region(plan, descriptor.output_offset, descriptor.output_coordinates, "projection output");
-    for (std::size_t row = 0; row < descriptor.rows; ++row) {
-        for (std::size_t col = 0; col < descriptor.cols; ++col) {
-            const std::size_t output_index = checked_add(checked_mul(row, descriptor.cols, "projection output index"), col, "projection output index");
-            for (std::size_t term = 0; term < descriptor.inner; ++term) {
-                const std::size_t lhs = descriptor.lhs_offset + row * descriptor.inner + term;
-                const std::size_t rhs = descriptor.rhs_offset + term * descriptor.cols + col;
-                current.bin_gates.emplace_back(as_u32(output_index, "projection output"), as_u32(lhs, "projection lhs"), as_u32(rhs, "projection rhs"), 1, 0);
-            }
-        }
-    }
+    // Large matrix products are a first-class native zkGPT FCONN relation.
+    // Keep only the canonical descriptor on the layered circuit; expanding
+    // rows*inner*cols products into binGate entries would make Cora exceed
+    // the process address space and would duplicate the native Sumcheck.
+    current.native_relation_id = descriptor.relation_id;
+    current.native_family_id = descriptor.family_id;
+    current.native_rows = as_u32(descriptor.rows, "projection rows");
+    current.native_inner = as_u32(descriptor.inner, "projection inner");
+    current.native_cols = as_u32(descriptor.cols, "projection cols");
+    current.native_lhs_offset = descriptor.lhs_offset;
+    current.native_rhs_offset = descriptor.rhs_offset;
+    current.native_output_offset = descriptor.output_offset;
     plan.circuit.circuit.push_back(std::move(current));
+
+    // Bind the native product to its canonical Aux/output coordinates with a
+    // small linear bridge.  This is intentionally one unary previous-layer
+    // term plus one input-layer term per output coordinate, rather than a
+    // rows*inner*cols expansion.  The bridge is part of the ordinary native
+    // GKR relation and therefore cannot be replaced by descriptor metadata.
+    layer binding;
+    binding.ty = layerType::ADD_BIAS;
+    binding.size = as_u32(std::max<std::size_t>(1, descriptor.output_coordinates),
+                          "FCONN binding layer size");
+    binding.zero_start_id = binding.size;
+    binding.bit_length = bit_length(binding.size);
+    binding.need_phase2 = false;
+    for (std::size_t index = 0; index < descriptor.output_coordinates; ++index) {
+        binding.uni_gates.emplace_back(as_u32(index, "FCONN binding output"),
+                                       as_u32(index, "FCONN binding previous output"),
+                                       1, 1);
+        binding.uni_gates.emplace_back(as_u32(index, "FCONN binding output"),
+                                       as_u32(descriptor.output_offset + index,
+                                              "FCONN binding input coordinate"),
+                                       0, -1);
+    }
+    plan.circuit.circuit.push_back(std::move(binding));
 }
 
 using LinearTerm = std::pair<std::size_t, ll>;
@@ -1245,28 +1288,6 @@ std::vector<std::pair<std::size_t, std::size_t>> incoming_ranges_for_plan(
         if (range.first == graph.edges())
             throw std::invalid_argument("canonical GAT circuit has an empty destination group");
     return ranges;
-}
-
-void add_matmul_residuals(RelationLayerBuilder &builder,
-                          const std::vector<MatMulDescriptor> &matmuls) {
-    for (const MatMulDescriptor &descriptor : matmuls) {
-        for (std::size_t row = 0; row < descriptor.rows; ++row) {
-            for (std::size_t col = 0; col < descriptor.cols; ++col) {
-                const std::size_t output_index =
-                    descriptor.output_offset + row * descriptor.cols + col;
-                std::vector<LinearTerm> linear = {{output_index, -1}};
-                std::vector<ProductTerm> products;
-                products.reserve(descriptor.inner);
-                for (std::size_t term = 0; term < descriptor.inner; ++term) {
-                    products.push_back({
-                        descriptor.lhs_offset + row * descriptor.inner + term,
-                        descriptor.rhs_offset + term * descriptor.cols + col,
-                        1});
-                }
-                builder.add_residual(linear, products);
-            }
-        }
-    }
 }
 
 void add_division_residuals(RelationLayerBuilder &builder,
@@ -1443,7 +1464,6 @@ void finish_relation_layer(GatCircuitPlan &plan,
                                        as_u32(gate.u, "GAT residual lhs"),
                                        as_u32(gate.v, "GAT residual rhs"),
                                        gate.sc, gate.l);
-    plan.circuit.circuit.resize(1);
     plan.circuit.circuit.push_back(std::move(relation));
     plan.circuit.size = static_cast<u8>(plan.circuit.circuit.size());
     plan.public_output_coordinates = public_output_coordinates;
@@ -1571,10 +1591,19 @@ GatCircuitPlan build_plan_impl(const Graph &graph, const Model &model,
     quant.validate();
     if (forward != nullptr && !validate_relation(graph, forward->trace.input, model, quant, *forward)) throw std::invalid_argument("cannot build proof plan from an invalid GAT trace");
 
-    const std::size_t model_size = flatten_model(model, quant).size();
-    const std::size_t public_size = checked_mul(graph.num_nodes, model.input_dim(), "public input size");
-    const std::size_t aux_size = canonical_aux_size(graph, model);
-    const std::size_t query_size = canonical_query_size(graph, model);
+    // Never begin allocating per-edge/per-coordinate relation vectors for an
+    // instance which the native zkGPT layered implementation cannot admit.
+    // The capacity report is metadata-only and uses the same layout formulas
+    // as the producer/verifier.  Large PPI/OGBN instances therefore fail
+    // deterministically with a methodology-level reason instead of drifting
+    // into OOM or a metadata-only pseudo-proof.
+    const GatCapacityReport capacity = inspect_gat_capacity(graph, model, quant);
+    if (!capacity.ready)
+        throw std::length_error("canonical GAT capacity is not supported by native zkGPT: " + capacity.reason);
+
+    const InputLayout canonical_layout = canonical_input_layout_impl(graph, model, quant);
+    const std::size_t aux_size = canonical_layout.segments.at(2).logical_length;
+    const std::size_t query_size = canonical_layout.segments.at(3).logical_length;
     if (forward != nullptr && trace_aux_size(&forward->trace) != aux_size) {
         throw std::invalid_argument("forward trace Aux shape does not match canonical plan coordinates");
     }
@@ -1598,7 +1627,7 @@ GatCircuitPlan build_plan_impl(const Graph &graph, const Model &model,
     plan.registry = RelationRegistry::canonical();
     plan.opening_policy = "same_r_three_terminal_openings_v1";
     plan.terminal_openings = {"W@r", "Aux@r", "L_qry@r"};
-    plan.input_layout = make_layout(public_size, model_size, aux_size, query_size);
+    plan.input_layout = canonical_layout;
     const std::size_t circuit_input_size = checked_mul(plan.input_layout.n_in, 4, "four-segment input layer");
     if (circuit_input_size > std::numeric_limits<std::uint32_t>::max()) throw std::overflow_error("zkGPT input layer exceeds official u32 circuit size");
     plan.circuit.init(0, 1);
@@ -2123,7 +2152,6 @@ GatCircuitPlan build_plan_impl(const Graph &graph, const Model &model,
     for (std::size_t index = 0; index < public_output_coordinates; ++index)
         relation_builder.add_unary(coordinates.final_logits + index);
 
-    add_matmul_residuals(relation_builder, plan.matmuls);
     const auto incoming = incoming_ranges_for_plan(graph);
     for (std::size_t layer_id = 0; layer_id < 2; ++layer_id) {
         const std::size_t output_dim =
@@ -2210,8 +2238,10 @@ GatCircuitPlan build_plan_impl(const Graph &graph, const Model &model,
     // Every gate uses a canonical input-layer coordinate, so the official
     // subset preparation is safe and produces the real layered metadata.
     plan.circuit.initSubset();
-    plan.circuit_id = "R_GAT-zkGPT/" + hash_hex(plan_encoding(plan));
-    plan.plan_digest = hash_hex(plan_encoding(plan));
+    plan.plan_digest = canonical_digest64(plan_encoding(plan));
+    // The circuit identifier is derived from the exact same compact recipe;
+    // no alternate gate-array encoding is permitted at this boundary.
+    plan.circuit_id = "R_GAT-zkGPT/" + plan.plan_digest;
     plan.official_layered = true;
     plan.has_placeholder = false;
     if (plan.registry.descriptors.empty() || !plan.registry.covers_all_segments()) plan.official_layered = false;
@@ -2254,12 +2284,61 @@ bool validate_gat_circuit_plan_impl(const GatCircuitPlan &plan, std::string *rea
             return fail("final relation layer does not expose Y plus residual coordinates");
         }
         const std::size_t input_size = plan.circuit.circuit.front().size;
+        std::size_t fconn_index = 0;
         for (std::size_t layer_id = 1; layer_id < plan.circuit.circuit.size(); ++layer_id) {
             const layer &current = plan.circuit.circuit[layer_id];
             if (current.ty == layerType::PLACE_HOLDER || current.size == 0) return fail("placeholder or empty circuit layer");
+            if (current.ty == layerType::FCONN) {
+                if (fconn_index >= plan.matmuls.size() ||
+                    !current.uni_gates.empty() || !current.bin_gates.empty() ||
+                    !current.ori_id_u.empty() || !current.ori_id_v.empty() ||
+                    current.native_relation_id.empty() ||
+                    current.native_family_id.empty())
+                    return fail("FCONN layer is not a compact native MatMul layer");
+                const MatMulDescriptor &descriptor = plan.matmuls[fconn_index++];
+                if (current.native_relation_id != descriptor.relation_id ||
+                    current.native_family_id != descriptor.family_id ||
+                    current.native_rows != descriptor.rows ||
+                    current.native_inner != descriptor.inner ||
+                    current.native_cols != descriptor.cols ||
+                    current.native_lhs_offset != descriptor.lhs_offset ||
+                    current.native_rhs_offset != descriptor.rhs_offset ||
+                    current.native_output_offset != descriptor.output_offset ||
+                    current.size != descriptor.output_coordinates)
+                    return fail("FCONN layer metadata does not match canonical MatMul order");
+                continue;
+            }
+            const layer &previous = plan.circuit.circuit[layer_id - 1];
+            if (previous.ty == layerType::FCONN) {
+                if (current.size != previous.size || !current.bin_gates.empty() ||
+                    current.uni_gates.size() !=
+                        checked_mul(static_cast<std::size_t>(current.size), 2,
+                                    "FCONN binding gate count"))
+                    return fail("FCONN output binding layer shape is invalid");
+                const MatMulDescriptor *descriptor = nullptr;
+                for (const MatMulDescriptor &candidate : plan.matmuls)
+                    if (candidate.relation_id == previous.native_relation_id) {
+                        descriptor = &candidate;
+                        break;
+                    }
+                if (descriptor == nullptr) return fail("FCONN binding has no descriptor");
+                for (std::size_t index = 0; index < current.size; ++index) {
+                    const uniGate &previous_gate = current.uni_gates[index * 2];
+                    const uniGate &input_gate = current.uni_gates[index * 2 + 1];
+                    if (previous_gate.g != index || previous_gate.u != index ||
+                        previous_gate.lu != 1 || previous_gate.sc != 1 ||
+                        input_gate.g != index || input_gate.lu != 0 ||
+                        input_gate.sc != -1 || input_gate.u >= current.ori_id_u.size() ||
+                        current.ori_id_u[input_gate.u] != descriptor->output_offset + index)
+                        return fail("FCONN output binding coordinate is not canonical");
+                }
+                continue;
+            }
             for (const uniGate &gate : current.uni_gates) {
-                if (gate.g >= current.size || gate.u >= input_size) return fail("unary gate coordinate is out of bounds");
-                if (gate.lu != 0) return fail("canonical GAT relation unexpectedly reads a non-input unary layer");
+                if (gate.g >= current.size ||
+                    (gate.lu == 0 ? gate.u >= input_size
+                                  : (gate.lu != 1 || gate.u >= previous.size)))
+                    return fail("unary gate coordinate is out of bounds");
             }
             for (const binGate &gate : current.bin_gates) {
                 if (gate.g >= current.size || gate.u >= input_size || gate.v >= input_size) return fail("binary gate coordinate is out of bounds");
@@ -2267,6 +2346,8 @@ bool validate_gat_circuit_plan_impl(const GatCircuitPlan &plan, std::string *rea
             }
             if (current.uni_gates.empty() && current.bin_gates.empty()) return fail("empty canonical circuit layer");
         }
+        if (fconn_index != plan.matmuls.size())
+            return fail("canonical MatMul descriptor count does not match FCONN layers");
         const auto require_span = [input_size](std::size_t offset, std::size_t length) {
             return offset <= input_size && length <= input_size - offset;
         };
@@ -2356,7 +2437,7 @@ bool validate_gat_circuit_plan_impl(const GatCircuitPlan &plan, std::string *rea
                 checkpoint.coordinate_offset - segment->offset > segment->logical_length - checkpoint.coordinates ||
                 checkpoint.coordinate_offset + checkpoint.coordinates > segment->offset + segment->logical_length) return fail("checkpoint exceeds its canonical segment");
         }
-        const std::string digest = hash_hex(plan_encoding(plan));
+        const std::string digest = canonical_digest64(plan_encoding(plan));
         if (plan.plan_digest != digest || plan.circuit_id != "R_GAT-zkGPT/" + digest) return fail("plan digest does not bind canonical descriptors and wiring");
         return true;
     } catch (const std::exception &error) {
@@ -3045,11 +3126,51 @@ bool evaluate_layered_values(const GatCircuitPlan &plan,
         values.clear();
         values.resize(plan.circuit.circuit.size());
         values[0] = input;
+        std::size_t next_matmul = 0;
         for (std::size_t layer_id = 1;
              layer_id < plan.circuit.circuit.size(); ++layer_id) {
             const layer &current = plan.circuit.circuit[layer_id];
             const layer &previous = plan.circuit.circuit[layer_id - 1];
             std::vector<Fr> output(current.size, Fr(0));
+            if (current.ty == layerType::FCONN) {
+                if (next_matmul >= plan.matmuls.size())
+                    return fail("FCONN layer has no canonical MatMul descriptor");
+                const MatMulDescriptor &descriptor = plan.matmuls[next_matmul++];
+                if (current.native_relation_id != descriptor.relation_id ||
+                    current.native_family_id != descriptor.family_id ||
+                    current.native_rows != descriptor.rows ||
+                    current.native_inner != descriptor.inner ||
+                    current.native_cols != descriptor.cols ||
+                    current.native_lhs_offset != descriptor.lhs_offset ||
+                    current.native_rhs_offset != descriptor.rhs_offset ||
+                    current.native_output_offset != descriptor.output_offset ||
+                    descriptor.output_coordinates != output.size())
+                    return fail("FCONN layer metadata does not match canonical MatMul descriptor");
+                const std::size_t lhs_count = checked_mul(
+                    descriptor.rows, descriptor.inner, "FCONN lhs evaluation");
+                const std::size_t rhs_count = checked_mul(
+                    descriptor.inner, descriptor.cols, "FCONN rhs evaluation");
+                if (descriptor.lhs_offset > input.size() ||
+                    lhs_count > input.size() - descriptor.lhs_offset ||
+                    descriptor.rhs_offset > input.size() ||
+                    rhs_count > input.size() - descriptor.rhs_offset)
+                    return fail("FCONN input span exceeds canonical input layer");
+                for (std::size_t row = 0; row < descriptor.rows; ++row) {
+                    for (std::size_t col = 0; col < descriptor.cols; ++col) {
+                        Fr value = Fr(0);
+                        for (std::size_t term = 0; term < descriptor.inner; ++term) {
+                            const std::size_t lhs = descriptor.lhs_offset +
+                                row * descriptor.inner + term;
+                            const std::size_t rhs = descriptor.rhs_offset +
+                                term * descriptor.cols + col;
+                            value += input[lhs] * input[rhs];
+                        }
+                        output[row * descriptor.cols + col] = value;
+                    }
+                }
+                values[layer_id] = std::move(output);
+                continue;
+            }
             for (const uniGate &gate : current.uni_gates) {
                 if (gate.g >= output.size()) return fail("unary gate output is out of bounds");
                 const Fr source = gate.lu == 0
@@ -3072,6 +3193,8 @@ bool evaluate_layered_values(const GatCircuitPlan &plan,
             values[layer_id] = std::move(output);
             (void)previous;
         }
+        if (next_matmul != plan.matmuls.size())
+            return fail("canonical MatMul descriptor has no FCONN layer");
         return true;
     } catch (const std::exception &error) {
         return fail(error.what());
@@ -3082,10 +3205,14 @@ std::string context_encoding(const VerifierContext &context) {
     std::string encoded;
     append_string(encoded, "zkgpt-gat-verifier-context-v3");
     append_string(encoded, context.relation_id);
+    append_string(encoded, context.backend);
     append_string(encoded, context.model_arch_id);
     append_string(encoded, context.privacy_extension_profile_id);
     append_string(encoded, context.quant_cfg_id);
     append_string(encoded, context.static_tables_id);
+    append_string(encoded, context.full_dataset_identity);
+    append_string(encoded, context.checkpoint_identity);
+    append_string(encoded, context.cache_identity);
     append_registration_encoding(encoded, context.registration);
     append_string(encoded, commitment_encoding(context.com_W));
     // The digest binds the complete compact public recipe, not merely a plan
@@ -4345,6 +4472,7 @@ bool context_layer_metadata_valid(const GatCircuitPlan &plan, std::string *reaso
         return false;
     };
     if (plan.circuit.circuit.size() != plan.circuit.size) return fail("layered circuit size field mismatch");
+    std::size_t fconn_index = 0;
     for (std::size_t i = 0; i < plan.circuit.circuit.size(); ++i) {
         const layer &current = plan.circuit.circuit[i];
         if (current.zero_start_id != current.size) return fail("layer zero_start_id is not canonical");
@@ -4353,6 +4481,50 @@ bool context_layer_metadata_valid(const GatCircuitPlan &plan, std::string *reaso
                 !current.uni_gates.empty() || !current.bin_gates.empty())
                 return fail("input layer contains derived/gate state");
             continue;
+        }
+        if (current.ty == layerType::FCONN) {
+            if (fconn_index >= plan.matmuls.size() ||
+                !current.uni_gates.empty() || !current.bin_gates.empty() ||
+                !current.ori_id_u.empty() || !current.ori_id_v.empty() ||
+                current.native_relation_id.empty() || current.native_family_id.empty())
+                return fail("FCONN layer metadata is not compact/canonical");
+            const MatMulDescriptor &descriptor = plan.matmuls[fconn_index++];
+            if (current.native_relation_id != descriptor.relation_id ||
+                current.native_family_id != descriptor.family_id ||
+                current.native_rows != descriptor.rows ||
+                current.native_inner != descriptor.inner ||
+                current.native_cols != descriptor.cols ||
+                current.native_lhs_offset != descriptor.lhs_offset ||
+                current.native_rhs_offset != descriptor.rhs_offset ||
+                current.native_output_offset != descriptor.output_offset ||
+                current.size != descriptor.output_coordinates)
+                return fail("FCONN layer does not match compact MatMul descriptor");
+            continue;
+        }
+        if (i > 0 && plan.circuit.circuit[i - 1].ty == layerType::FCONN) {
+            const layer &previous = plan.circuit.circuit[i - 1];
+            if (current.size != previous.size || !current.bin_gates.empty() ||
+                current.uni_gates.size() !=
+                    checked_mul(static_cast<std::size_t>(current.size), 2,
+                                "FCONN binding metadata gate count"))
+                return fail("FCONN binding metadata shape is invalid");
+            const MatMulDescriptor *descriptor = nullptr;
+            for (const MatMulDescriptor &candidate : plan.matmuls)
+                if (candidate.relation_id == previous.native_relation_id) {
+                    descriptor = &candidate;
+                    break;
+                }
+            if (descriptor == nullptr) return fail("FCONN binding metadata lacks descriptor");
+            for (std::size_t index = 0; index < current.size; ++index) {
+                const uniGate &previous_gate = current.uni_gates[index * 2];
+                const uniGate &input_gate = current.uni_gates[index * 2 + 1];
+                if (previous_gate.g != index || previous_gate.u != index ||
+                    previous_gate.lu != 1 || previous_gate.sc != 1 ||
+                    input_gate.g != index || input_gate.lu != 0 ||
+                    input_gate.sc != -1 || input_gate.u >= current.ori_id_u.size() ||
+                    current.ori_id_u[input_gate.u] != descriptor->output_offset + index)
+                    return fail("FCONN binding metadata coordinate is not canonical");
+            }
         }
         if (current.max_bl_u != std::max(current.bit_length_u[0], current.bit_length_u[1]))
             return fail("layer max_bl_u is not derived canonically");
@@ -4382,6 +4554,7 @@ bool context_layer_metadata_valid(const GatCircuitPlan &plan, std::string *reaso
                 return fail("binary rhs subset coordinate exceeds initSubset map");
         }
     }
+    if (fconn_index != plan.matmuls.size()) return fail("FCONN layer/MatMul descriptor count mismatch");
     return true;
 }
 
@@ -4420,7 +4593,9 @@ bool validate_verifier_context_object(const VerifierContext &context,
             context.com_W.padded_size != context.registration.com_W.padded_size ||
             context.com_W.point_hex != context.registration.com_W.point_hex)
             return fail("context com_W is inconsistent with model registration");
-        if (context.relation_id != "R_GAT-zkGPT" || context.model_arch_id != context.registration.model_arch_id ||
+        if (context.relation_id != "R_GAT-zkGPT" ||
+            (context.backend != "cpu" && context.backend != "gpu") ||
+            context.model_arch_id != context.registration.model_arch_id ||
             context.quant_cfg_id != context.quant.quant_cfg_id ||
             context.static_tables_id != context.tables.table_id ||
             context.privacy_extension_profile_id != "masked_full" ||
@@ -4479,6 +4654,140 @@ bool valid_native_kind(std::uint8_t kind) {
 }
 
 } // namespace
+
+// The field's textual representation is variable width.  All new public
+// statement identities therefore pass through one boundary which pads the
+// digest to exactly 64 lowercase hexadecimal characters.  This function is
+// intentionally a byte-hasher: callers must never use it to silently repair
+// an untrusted digest read from a wire.
+std::string canonical_digest64(const std::string &bytes) {
+    return fixed_digest(hash_hex(bytes));
+}
+
+InputLayout build_gat_input_layout(const Graph &graph, const Model &model,
+                                   const QuantConfig &quant) {
+    graph.validate();
+    return canonical_input_layout_impl(graph, model, quant);
+}
+
+GatCapacityReport inspect_gat_capacity(const Graph &graph, const Model &model,
+                                       const QuantConfig &quant) {
+    GatCapacityReport report;
+    report.num_nodes = graph.num_nodes;
+    report.num_edges = graph.edges();
+    report.num_features = graph.num_features;
+    report.num_classes = graph.num_classes;
+    report.graph_count = graph.graph_count;
+    report.ppi_node_ptr_boundary = graph.node_ptr.size() == graph.graph_count + 1;
+    report.ppi_edge_ptr_boundary = graph.edge_ptr.size() == graph.graph_count + 1;
+    report.explicit_matmul_gate_expansion = false;
+    try {
+        graph.validate();
+        model.validate_schema();
+        quant.validate();
+        report.model_shape = canonical_model_shape(model);
+        report.input_layout = canonical_input_layout_impl(graph, model, quant);
+        const std::size_t nodes = graph.num_nodes;
+        const std::size_t edges = graph.edges();
+        const std::size_t h0 = model.tensor(
+            hidden_tensor_name(0, 0, "seq/kernel")).shape.dims.at(2);
+        const std::size_t h1 = model.tensor(
+            hidden_tensor_name(1, 0, "seq/kernel")).shape.dims.at(2);
+        const std::size_t classes = model.classes();
+        const auto mul = [](std::size_t a, std::size_t b, const char *what) {
+            return checked_mul(a, b, what);
+        };
+        const auto add = [](std::size_t a, std::size_t b, const char *what) {
+            return checked_add(a, b, what);
+        };
+        const auto attention_relation = [&](std::size_t dim) {
+            // add_attention_residuals: edge score/group/lookup relations plus
+            // node/group and per-coordinate sparse products.
+            std::size_t result = mul(14, edges, "capacity attention edge relations");
+            result = add(result, mul(3, nodes, "capacity attention node relations"), "capacity attention relations");
+            result = add(result, mul(edges, dim, "capacity attention edge products"), "capacity attention relations");
+            result = add(result, mul(mul(26, nodes, "capacity attention recovery"), dim, "capacity attention coordinate relations"), "capacity attention relations");
+            return result;
+        };
+        const auto stage_gates = [&](std::size_t dim) {
+            // score layer (3E), softmax layer (5E+3N), and aggregation layer
+            // (E*dim+5N*dim); all are real explicit gate records.
+            std::size_t result = mul(8, edges, "capacity score/softmax stages");
+            result = add(result, mul(3, nodes, "capacity softmax stages"), "capacity stage gates");
+            result = add(result, mul(edges, dim, "capacity aggregation stages"), "capacity stage gates");
+            return add(result, mul(5, mul(nodes, dim, "capacity aggregation coordinates"), "capacity aggregation stages"), "capacity stage gates");
+        };
+        const auto concat_gates = [&](std::size_t dim) {
+            return mul(2, mul(nodes, mul(dim, 8, "capacity concat width"), "capacity concat coordinates"), "capacity concat gates");
+        };
+        std::size_t explicit_gates = 0;
+        for (std::size_t dim : {h0, h1}) {
+            explicit_gates = add(explicit_gates, mul(8, stage_gates(dim), "capacity hidden stages"), "capacity explicit gates");
+            explicit_gates = add(explicit_gates, mul(8, attention_relation(dim), "capacity hidden sparse relations"), "capacity explicit gates");
+            explicit_gates = add(explicit_gates, concat_gates(dim), "capacity concat gates");
+        }
+        explicit_gates = add(explicit_gates, mul(2, stage_gates(classes), "capacity output stages"), "capacity explicit gates");
+        // Output heads have the same sparse arithmetic plus recovery, output
+        // alignment, bias and logits equations (the latter are bounded by
+        // 25 gates per output coordinate).
+        const std::size_t output_coordinates = mul(nodes, classes, "capacity output coordinates");
+        std::size_t output_head = attention_relation(classes);
+        output_head = add(output_head, mul(20, output_coordinates, "capacity output SignedRoundDiv"), "capacity output relations");
+        output_head = add(output_head, mul(25, output_coordinates, "capacity output equations"), "capacity output relations");
+        explicit_gates = add(explicit_gates, mul(2, output_head, "capacity output relations"), "capacity explicit gates");
+        explicit_gates = add(explicit_gates, mul(24, output_coordinates, "capacity final output wiring"), "capacity explicit gates");
+        const std::size_t fconn_output_coordinates = add(
+            mul(8, mul(nodes, add(h0, 2, "capacity hidden FCONN width"),
+                        "capacity hidden FCONN outputs"), "capacity hidden FCONN outputs"),
+            add(mul(8, mul(nodes, add(h1, 2, "capacity hidden FCONN width"),
+                            "capacity hidden FCONN outputs"), "capacity FCONN outputs"),
+                mul(2, mul(nodes, add(classes, 2, "capacity output FCONN width"),
+                            "capacity output FCONN outputs"), "capacity FCONN outputs"),
+                "capacity FCONN outputs"),
+            "capacity FCONN outputs");
+        // Each native FCONN has a two-unary-gate output bridge, not a
+        // per-product expansion.  Count it in the admission bound.
+        explicit_gates = add(explicit_gates, mul(2, fconn_output_coordinates,
+                                                  "capacity FCONN output bridges"),
+                             "capacity explicit gates");
+        report.max_materialized_gate = explicit_gates;
+        report.max_materialized_vector = mul(4, report.input_layout.n_in, "capacity four-segment input vector");
+        report.fconn_count = (2 * 8 + 2) * 3;
+        report.attention_relation_count = 2 * 8 + 2;
+        report.division_relation_count = add(
+            mul(16, mul(nodes, h0, "capacity hidden division count"), "capacity hidden division count"),
+            add(mul(16, mul(nodes, h1, "capacity hidden division count"), "capacity hidden division count"),
+                mul(5, output_coordinates, "capacity output division count"),
+                "capacity division count"),
+            "capacity division count");
+        report.context_recipe_bytes_bound = 4ULL << 20;
+        report.context_payload_bytes_bound = add(
+            mul(64, edges, "capacity context graph bytes"),
+            add(mul(16, mul(nodes, graph.num_features, "capacity context features"), "capacity context feature bytes"),
+                mul(16, output_coordinates, "capacity context logits"),
+                "capacity context payload bound"),
+            "capacity context payload bound");
+        const bool physical_input_ok = report.max_materialized_vector <= kMaxMaterializedVectorEntries;
+        const bool explicit_ok = report.max_materialized_gate <= kMaxExplicitGateEntries;
+        const bool pointer_ok = report.ppi_node_ptr_boundary && report.ppi_edge_ptr_boundary;
+        report.ready = physical_input_ok && explicit_ok && pointer_ok &&
+                       report.input_layout.n_in <= std::numeric_limits<std::uint32_t>::max() / 4;
+        if (!pointer_ok)
+            report.reason = "graph batch node_ptr/edge_ptr boundary is not canonical";
+        else if (!physical_input_ok)
+            report.reason = "canonical four-segment input materialization exceeds bounded native domain; segmented virtual input is not implemented by zkGPT native GKR";
+        else if (!explicit_ok)
+            report.reason = "canonical sparse/rounding relations exceed bounded explicit layered-gate capacity; native SparseGKR materializer is not implemented by zkGPT";
+        else if (report.input_layout.n_in > std::numeric_limits<std::uint32_t>::max() / 4)
+            report.reason = "four-segment input layer exceeds the native u32 circuit coordinate domain";
+        else
+            report.reason = "bounded native CPU materialization is available";
+    } catch (const std::exception &error) {
+        report.ready = false;
+        report.reason = error.what();
+    }
+    return report;
+}
 
 void initialize_gat_field() {
     ensure_field();
@@ -5232,15 +5541,27 @@ VerifierContext make_verifier_context(const Graph &graph,
     context.com_W = registration.com_W;
     context.registration = registration;
     context.plan = plan;
+    // The native adapter currently exposes CPU formal proving.  Callers that
+    // have an explicit backend identity (the CLI) overwrite this field before
+    // serializing the context; synthetic callers get a deterministic CPU
+    // identity instead of an unbound report tuple.
+    context.backend = "cpu";
     context.model_arch_id = registration.model_arch_id;
     context.privacy_extension_profile_id = privacy_profile;
     context.quant_cfg_id = quant.quant_cfg_id;
     context.static_tables_id = tables.table_id;
+    if (!registration.dataset.empty()) {
+        context.full_dataset_identity = "canonical:" + registration.dataset;
+        context.checkpoint_identity = "baseline-local/checkpoints/" +
+            registration.dataset + "_gat/integrity.sha256";
+        context.cache_identity = "baseline-local/data/cache/" +
+            registration.dataset + "/integrity.sha256";
+    }
     return context;
 }
 
 std::string verifier_context_digest(const VerifierContext &context) {
-    return fixed_digest(hash_hex(context_encoding(context)));
+    return canonical_digest64(context_encoding(context));
 }
 
 namespace {
@@ -5249,10 +5570,14 @@ std::string serialize_verifier_context_payload(const VerifierContext &context) {
     std::string payload;
     append_string(payload, "zkgpt-gat-verifier-context-v3");
     append_string(payload, context.relation_id);
+    append_string(payload, context.backend);
     append_string(payload, context.model_arch_id);
     append_string(payload, context.privacy_extension_profile_id);
     append_string(payload, context.quant_cfg_id);
     append_string(payload, context.static_tables_id);
+    append_string(payload, context.full_dataset_identity);
+    append_string(payload, context.checkpoint_identity);
+    append_string(payload, context.cache_identity);
     append_context_graph(payload, context.graph);
     append_context_tensor(payload, context.public_features);
     append_context_tensor(payload, context.public_logits);
@@ -5400,10 +5725,14 @@ bool read_verifier_context(const std::string &path,
         std::string schema;
         if (!reader.read_string(schema, "context schema") || schema != "zkgpt-gat-verifier-context-v3" ||
             !reader.read_string(parsed.relation_id, "context relation") ||
+            !reader.read_string(parsed.backend, "context backend") ||
             !reader.read_string(parsed.model_arch_id, "context model architecture") ||
             !reader.read_string(parsed.privacy_extension_profile_id, "context privacy profile") ||
             !reader.read_string(parsed.quant_cfg_id, "context quant id") ||
             !reader.read_string(parsed.static_tables_id, "context table id") ||
+            !reader.read_string(parsed.full_dataset_identity, "context dataset identity") ||
+            !reader.read_string(parsed.checkpoint_identity, "context checkpoint identity") ||
+            !reader.read_string(parsed.cache_identity, "context cache identity") ||
             !read_context_graph(reader, parsed.graph) ||
             !read_context_tensor(reader, parsed.public_features, "public feature tensor") ||
             !read_context_tensor(reader, parsed.public_logits, "public logits tensor") ||
@@ -5445,6 +5774,7 @@ bool read_verifier_context(const std::string &path,
                 return false;
             }
             if (parsed.relation_id != "R_GAT-zkGPT" ||
+                (parsed.backend != "cpu" && parsed.backend != "gpu") ||
                 parsed.model_arch_id != parsed.registration.model_arch_id ||
                 parsed.quant_cfg_id != parsed.quant.quant_cfg_id ||
                 parsed.static_tables_id != parsed.tables.table_id ||
@@ -5528,10 +5858,12 @@ NativeProofStatement make_native_proof_statement(
     append_string(resource_material, context.plan.plan_digest);
 
     NativeProofStatement statement;
-    statement.verifier_context_digest = fixed_digest(verifier_context_digest(context));
+    statement.verifier_context_digest = verifier_context_digest(context);
     statement.field_id = "bn254-fr-v1";
-    statement.plan_digest = normalize_digest(context.plan.plan_digest);
-    statement.resources_digest = fixed_digest(hash_hex(resource_material));
+    if (!is_lower_hex_digest(context.plan.plan_digest))
+        throw std::invalid_argument("native statement plan digest is not canonical");
+    statement.plan_digest = context.plan.plan_digest;
+    statement.resources_digest = canonical_digest64(resource_material);
     statement.tables_digest = normalize_digest(context.tables.digest);
     statement.com_w_digest = fixed_digest(hash_hex(commitment_encoding(context.com_W)));
     statement.aux_digest = fixed_digest(hash_hex(commitment_encoding(com_aux)));
@@ -5788,7 +6120,14 @@ ProveResult prove_gat(const GatCircuitPlan &plan, const Graph &graph,
         gkr_witness.matmuls.reserve(plan.matmuls.size());
         for (const MatMulDescriptor &descriptor : plan.matmuls) {
             NativeGkrMatmulWitness matmul;
-            matmul.shape = {descriptor.rows, descriptor.inner, descriptor.cols};
+            matmul.shape.rows = descriptor.rows;
+            matmul.shape.inner = descriptor.inner;
+            matmul.shape.cols = descriptor.cols;
+            matmul.shape.relation_id = descriptor.relation_id;
+            matmul.shape.family_id = descriptor.family_id;
+            matmul.shape.lhs_offset = descriptor.lhs_offset;
+            matmul.shape.rhs_offset = descriptor.rhs_offset;
+            matmul.shape.output_offset = descriptor.output_offset;
             const std::size_t lhs_size = checked_mul(
                 descriptor.rows, descriptor.inner,
                 "native GKR MatMul LHS size");
@@ -6132,8 +6471,18 @@ bool verify_gat(const VerifierContext &context, const GatProofArtifact &artifact
 
         std::vector<NativeGkrMatmulShape> matmuls;
         matmuls.reserve(context.plan.matmuls.size());
-        for (const MatMulDescriptor &descriptor : context.plan.matmuls)
-            matmuls.push_back({descriptor.rows, descriptor.inner, descriptor.cols});
+        for (const MatMulDescriptor &descriptor : context.plan.matmuls) {
+            NativeGkrMatmulShape shape;
+            shape.rows = descriptor.rows;
+            shape.inner = descriptor.inner;
+            shape.cols = descriptor.cols;
+            shape.relation_id = descriptor.relation_id;
+            shape.family_id = descriptor.family_id;
+            shape.lhs_offset = descriptor.lhs_offset;
+            shape.rhs_offset = descriptor.rhs_offset;
+            shape.output_offset = descriptor.output_offset;
+            matmuls.push_back(std::move(shape));
+        }
 
         std::size_t gkr_start = session.messages().size();
         for (std::size_t index = 0; index < session.messages().size(); ++index) {

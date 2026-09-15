@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Execute one or more strict zkGPT GAT formal cells.
+"""Run strict native zkGPT GAT formal cells.
 
-The script is orchestration only: the C++ adapter produces the proof and the
-separate C++ verifier consumes the serialized public context, public logits and
-artifact.  Any missing capability, failed child, fallback, or malformed
-artifact aborts a cell and never becomes a successful result.
+The native prover and the separate native verifier are the only components
+allowed to produce/accept a proof.  This launcher adds freshness, resource,
+identity and path checks around that chain; it never turns a partial artifact
+or a metadata-only result into success.
 """
 
 from __future__ import annotations
@@ -14,28 +14,45 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Sequence, Tuple
 
 from common import (
     BACKENDS,
     DATASETS,
+    EXECUTION_SCHEMA,
+    PREFLIGHT_SCHEMA,
+    REPORT_SCHEMA,
     ChainError,
+    artifact_fields,
+    assert_fresh_files,
     atomic_write_json,
     atomic_write_text,
     baseline_root,
+    binary_fingerprint,
     build_binary,
+    cleanup_run_outputs,
     config_with_auth,
-    artifact_fields,
+    cross_check_identity,
+    file_fingerprint,
     formal_backend_capability,
-    launch_native,
+    FORMAL_BACKENDS,
     load_json,
     local_path,
+    new_run_nonce,
+    relative_path,
+    require_bool,
+    require_circuit_id,
+    require_fixed_digest,
+    require_manifest,
     require_prover_secret,
     require_result_shape,
+    require_string,
+    require_timing,
+    resource_identity,
     run_directory,
+    sha256_file,
+    validate_registration_artifact,
     verifier_binary,
-    verify_cache,
-    verify_checkpoint,
 )
 
 
@@ -46,13 +63,6 @@ def selection(raw: str, allowed: Sequence[str], label: str) -> Tuple[str, ...]:
     if not values or len(set(values)) != len(values) or any(item not in allowed for item in values):
         raise ChainError(f"{label} must be all or a comma-separated list of supported values")
     return values
-
-
-def relative_path(root: Path, path: Path, description: str) -> str:
-    try:
-        return str(path.relative_to(root))
-    except ValueError as exc:
-        raise ChainError(f"{description} is outside baseline root: {path}") from exc
 
 
 def require_run_file(root: Path, run_path: Path, relative: Any, description: str) -> Tuple[str, Path]:
@@ -66,177 +76,304 @@ def require_run_file(root: Path, run_path: Path, relative: Any, description: str
     return relative, path
 
 
-def require_manifest(root: Path, name: str, expected_schema: str) -> Mapping[str, Any]:
-    path = root / "results" / name
-    payload = load_json(path, name)
-    if not isinstance(payload, dict) or payload.get("schema") != expected_schema:
-        raise ChainError(f"unsupported {name} schema: {path}")
-    if payload.get("status") not in ("AUTHENTICATED", "READY"):
-        raise ChainError(f"{name} is not successful: {path}")
-    return payload
+def _result_identity(result: Mapping[str, Any], path: Path) -> Dict[str, Any]:
+    identity: Dict[str, Any] = {}
+    for key in ("statement_digest", "plan_digest", "proof_digest",
+                "registration_digest", "registration_binding_digest",
+                "registration_layout_digest", "com_W_point"):
+        identity[key] = require_fixed_digest(result.get(key), key, path)
+    identity["circuit_id"] = require_circuit_id(result.get("circuit_id"), path)
+    for key in ("full_dataset_identity", "checkpoint_identity", "cache_identity"):
+        identity[key] = require_string(result, key, path)
+    return identity
 
 
-def ensure_registration(root: Path, dataset: str, backend: str,
-                        run_relative: str,
-                        run_path: Path) -> Tuple[str, str]:
-    """Create one registration/secret pair automatically, never copy secrets."""
+def _resource_result_identity(result: Mapping[str, Any], resource: Mapping[str, Any], path: Path) -> None:
+    expected = {
+        "full_dataset_identity": resource["full_dataset_identity"],
+        "checkpoint_identity": resource["checkpoint_identity"],
+        "cache_identity": resource["cache_identity"],
+    }
+    for key, value in expected.items():
+        if result.get(key) != value:
+            raise ChainError(f"{path} resource identity mismatch for {key}")
+    for key in ("config_sha256", "quantization_sha256", "cache_manifest_sha256",
+                "checkpoint_manifest_sha256", "checkpoint_manifest_entry_sha256"):
+        if key in result:
+            require_fixed_digest(result[key], key, path)
+            expected_key = key
+            if result[key] != resource[expected_key]:
+                raise ChainError(f"{path} resource identity mismatch for {key}")
 
-    registration_relative = f"{run_relative}/model_registration.json"
-    secret_relative = f"{run_relative}/com_W.prover.secret"
+
+def _validate_report(
+    report: Mapping[str, Any],
+    result: Mapping[str, Any],
+    dataset: str,
+    backend: str,
+    resource: Mapping[str, Any],
+    paths: Mapping[str, str],
+    artifact_digest: str,
+    artifact_size: int,
+    report_path: Path,
+) -> None:
+    if report.get("schema") != REPORT_SCHEMA:
+        raise ChainError(f"unsupported independent verifier report schema: {report_path}")
+    if report.get("status") != "VERIFY_OK" or report.get("independent") is not True or report.get("masked_full") is not True:
+        raise ChainError(f"independent verifier did not return VERIFY_OK: {report_path}")
+    if report.get("dataset") != dataset or report.get("backend") != backend:
+        raise ChainError(f"independent verifier dataset/backend mismatch: {report_path}")
+    require_bool(report, "verifier_reads_witness", False, report_path)
+    require_bool(report, "verifier_reads_checkpoint", False, report_path)
+    for key in ("statement_digest", "plan_digest", "proof_digest",
+                "registration_digest", "registration_binding_digest",
+                "registration_layout_digest", "com_W_point"):
+        require_fixed_digest(report.get(key), key, report_path)
+        if report[key] != result[key]:
+            raise ChainError(f"independent verifier {key} mismatch: {report_path}")
+    require_circuit_id(report.get("circuit_id"), report_path)
+    if report["circuit_id"] != result["circuit_id"]:
+        raise ChainError(f"independent verifier circuit_id mismatch: {report_path}")
+    for key in ("full_dataset_identity", "checkpoint_identity", "cache_identity"):
+        require_string(report, key, report_path)
+        if report[key] != resource[key] or report[key] != result[key]:
+            raise ChainError(f"independent verifier {key} mismatch: {report_path}")
+    if report.get("artifact_path") != paths["artifact"] or report.get("verifier_context_path") != paths["context"] or report.get("public_logits_path") != paths["logits"]:
+        raise ChainError(f"independent verifier input path mismatch: {report_path}")
+    if report.get("artifact_sha256") != artifact_digest or report.get("artifact_size_bytes") != artifact_size:
+        raise ChainError(f"independent verifier artifact identity mismatch: {report_path}")
+    if report.get("proof_digest") != result["proof_digest"]:
+        raise ChainError(f"independent verifier proof digest mismatch: {report_path}")
+
+
+def ensure_registration(
+    root: Path,
+    dataset: str,
+    backend: str,
+    run_relative: str,
+    run_path: Path,
+    config: Mapping[str, str],
+) -> Tuple[str, str, Dict[str, Any]]:
+    """Reuse or create one identity-checked long-lived model registration."""
+
     registration_path = run_path / "model_registration.json"
     secret_path = run_path / "com_W.prover.secret"
     registration_exists = registration_path.exists()
     secret_exists = secret_path.exists()
     if registration_exists != secret_exists:
-        raise ChainError(
-            f"incomplete model registration pair for {dataset}/{backend}; "
-            "both registration and prover secret are required"
-        )
+        raise ChainError(f"incomplete model registration pair for {dataset}/{backend}")
     if not registration_exists:
-        command = [
-            sys.executable,
-            str(root / "scripts" / "register_model.py"),
-            "--dataset", dataset,
-            "--backend", backend,
-        ]
-        registered = subprocess.run(
-            command, cwd=str(root), text=True, capture_output=True, check=False,
-        )
-        atomic_write_text(run_path / "runner-registration.stdout.log", registered.stdout)
-        atomic_write_text(run_path / "runner-registration.stderr.log", registered.stderr)
+        command = [sys.executable, str(root / "scripts" / "register_model.py"),
+                   "--dataset", dataset, "--backend", backend]
+        registered = subprocess.run(command, cwd=str(root), text=True,
+                                    capture_output=True, check=False)
+        atomic_write_text(run_path / "runner-registration.stdout.log", registered.stdout, root)
+        atomic_write_text(run_path / "runner-registration.stderr.log", registered.stderr, root)
         if registered.returncode != 0:
-            raise ChainError(
-                f"automatic model registration failed ({registered.returncode}); "
-                f"see {run_relative}/runner-registration.stderr.log"
-            )
-    if not registration_path.is_file():
-        raise ChainError(f"automatic registration did not produce {registration_path}")
-    require_prover_secret(secret_path)
-    return registration_relative, secret_relative
+            raise ChainError(f"automatic model registration failed ({registered.returncode}); see {run_relative}/runner-registration.stderr.log")
+    if not registration_path.is_file() or not secret_path.is_file():
+        raise ChainError(f"automatic registration did not produce a complete pair: {run_path}")
+    registration = validate_registration_artifact(
+        root, dataset, backend, config, registration_path, secret_path
+    )
+    return (
+        relative_path(root, registration_path, "model registration"),
+        relative_path(root, secret_path, "prover secret"),
+        registration,
+    )
 
 
-def run_cell(root: Path, dataset: str, backend: str) -> None:
+def _enrich_result(
+    root: Path,
+    result: Dict[str, Any],
+    result_path: Path,
+    resource: Mapping[str, Any],
+    registration: Mapping[str, Any],
+    artifact: Path,
+    run_nonce: str,
+    run_started_ns: int,
+    resource_manifest_digest: str,
+) -> Dict[str, Any]:
+    artifact_fp = file_fingerprint(artifact, "proof artifact")
+    result["artifact_sha256"] = artifact_fp["sha256"]
+    result["artifact_size_bytes"] = artifact_fp["size_bytes"]
+    result["artifact_mtime_ns"] = artifact_fp["mtime_ns"]
+    result["run_nonce"] = run_nonce
+    result["run_started_unix_ns"] = run_started_ns
+    result["resource_manifest_sha256"] = resource_manifest_digest
+    for key in ("config_sha256", "quantization_sha256", "cache_manifest_sha256",
+                "checkpoint_manifest_sha256", "checkpoint_manifest_entry_sha256"):
+        result[key] = resource[key]
+    result["registration_backend"] = result.get("registration_backend", "path-bound:" + result["backend"])
+    result["registration_schema"] = registration["schema"]
+    result["native_result_fingerprint"] = file_fingerprint(result_path, "native result")
+    result["run_dir"] = str(result_path.parent.relative_to(root))
+    result["registration_path"] = result.get("registration_path", str((result_path.parent / "model_registration.json").relative_to(root)))
+    result["prover_secret_path"] = result.get("prover_secret_path", str((result_path.parent / "com_W.prover.secret").relative_to(root)))
+    return result
+
+
+def run_cell(root: Path, dataset: str, backend: str, preflight: Mapping[str, Any], resource_manifest_digest: str) -> None:
     capability = formal_backend_capability(backend)
+    if not capability["supported"] or backend not in FORMAL_BACKENDS:
+        raise ChainError(capability["reason"])
     config_path, config = config_with_auth(root, dataset)
     if config.get("privacy_policy") != "model_and_trace_hidden" or config.get("privacy_profile", "masked_full") not in ("masked_full", ""):
         raise ChainError(f"{dataset} config does not declare the strict privacy boundary")
-    if not capability["supported"]:
-        # Keep an explicit machine-readable gate record for an intentionally
-        # unavailable formal backend.  No registration, CUDA evidence, or
-        # native prover process is started on this path.
-        run_relative, run_path = run_directory(root, dataset, backend, config)
-        atomic_write_json(run_path / "execution.json", {
-            "schema": "zkgpt-gat-execution-v1",
-            "dataset": dataset,
-            "backend": backend,
-            "status": "UNSUPPORTED",
-            "no_fallback": True,
-            "formal_backend_supported": False,
-            "capability_status": capability["status"],
-            "native_invoked": False,
-            "reason": capability["reason"],
-        })
-        raise ChainError(capability["reason"])
-    verify_cache(root, dataset)
-    verify_checkpoint(root, dataset)
-    build_binary(root, backend)
-    verifier_binary(root, backend)
+    resource = resource_identity(root, dataset)
     run_relative, run_path = run_directory(root, dataset, backend, config)
+    cleanup_run_outputs(root, run_path)
+    run_started_ns = time.time_ns()
+    run_nonce = new_run_nonce()
+    prover = build_binary(root, backend)
+    verifier = verifier_binary(root, backend)
+    prover_fp = binary_fingerprint(prover, "prover executable")
+    verifier_fp = binary_fingerprint(verifier, "verifier executable")
     config_relative = relative_path(root, config_path, "dataset config")
-    registration_relative, secret_relative = ensure_registration(
-        root, dataset, backend, run_relative, run_path)
-
+    registration_relative, secret_relative, registration = ensure_registration(
+        root, dataset, backend, run_relative, run_path, config
+    )
     prover_start = time.perf_counter()
-    completed = launch_native(
-        root, dataset, backend, config_relative, operation="prove",
-        registration_path_value=registration_relative,
-        com_w_secret_path_value=secret_relative,
+    completed = subprocess.run(
+        [str(prover), "--dataset", dataset, "--backend", backend,
+         "--baseline-root", str(root), "--config", config_relative,
+         "--registration", registration_relative, "--com-w-secret", secret_relative],
+        cwd=str(root), text=True, capture_output=True, check=False,
     )
     prover_wall_ms = (time.perf_counter() - prover_start) * 1000.0
-    atomic_write_text(run_path / "prover.stdout.log", completed.stdout)
-    atomic_write_text(run_path / "prover.stderr.log", completed.stderr)
+    atomic_write_text(run_path / "prover.stdout.log", completed.stdout, root)
+    atomic_write_text(run_path / "prover.stderr.log", completed.stderr, root)
+    result_path = run_path / "result.json"
     if completed.returncode != 0:
         raise ChainError(f"native prover failed with {completed.returncode}; see {run_relative}/prover.stderr.log")
-
-    result_path = run_path / "result.json"
     result = require_result_shape(load_json(result_path, "native result"), result_path)
-    if result.get("dataset") != dataset or result.get("backend") != backend:
-        raise ChainError(f"native result identity mismatch for {dataset}/{backend}")
-    if result.get("capability_status") != capability["status"] or result.get("formal_backend_supported") is not True:
-        raise ChainError(f"native result violates the formal backend capability gate for {dataset}/{backend}")
-    if result.get("status") != "VERIFY_OK" or result.get("verification_status") != "VERIFY_OK":
-        raise ChainError(f"native result is not VERIFY_OK for {dataset}/{backend}")
-    if result.get("cpu_fallback") is not False or result.get("verifier_reads_witness") is not False:
-        raise ChainError(f"native result violates no-fallback/witness isolation for {dataset}/{backend}")
-    artifact_relative, _ = artifact_fields(root, result, run_path)
-    context_relative, _ = require_run_file(root, run_path, result.get("verifier_context_path"), "verifier context")
-    logits_relative, _ = require_run_file(root, run_path, result.get("public_logits_path"), "public logits")
-    report_relative = f"{run_relative}/verifier_report.json"
-    verifier = verifier_binary(root, backend)
+    if result.get("dataset") != dataset or result.get("backend") != backend or result.get("status") != "VERIFY_OK" or result.get("verification_status") != "VERIFY_OK":
+        raise ChainError(f"native result is not a matching VERIFY_OK cell: {result_path}")
+    require_bool(result, "proof_generated", True, result_path)
+    require_bool(result, "verifier_called", True, result_path)
+    require_bool(result, "verifier_ok", True, result_path)
+    require_bool(result, "verifier_reads_witness", False, result_path)
+    require_bool(result, "cpu_fallback", False, result_path)
+    identity = _result_identity(result, result_path)
+    _resource_result_identity(result, resource, result_path)
+    timing = require_timing(result, result_path)
+    artifact, declared_artifact_digest = artifact_fields(root, result, run_path)
+    artifact_fp = file_fingerprint(artifact, "proof artifact")
+    if declared_artifact_digest and declared_artifact_digest != artifact_fp["sha256"]:
+        raise ChainError(f"native artifact digest mismatch: {artifact}")
+    context_rel, context_path = require_run_file(root, run_path, result.get("verifier_context_path"), "verifier context")
+    logits_rel, logits_path = require_run_file(root, run_path, result.get("public_logits_path"), "public logits")
+    statement_rel, statement_path = require_run_file(root, run_path, result.get("statement_path"), "public statement")
+    assert_fresh_files((result_path, context_path, logits_path, statement_path, artifact), run_started_ns)
+    report_rel = f"{run_relative}/verifier_report.json"
     verifier_start = time.perf_counter()
-    verifier_args = [
-        str(verifier),
-        "--baseline-root", str(root),
-        "--verifier-context", context_relative,
-        "--public-logits", logits_relative,
-        "--artifact", artifact_relative,
-        "--report", report_relative,
-    ]
     verified = subprocess.run(
-        verifier_args, cwd=str(root), text=True, capture_output=True, check=False
+        [str(verifier), "--baseline-root", str(root), "--verifier-context", context_rel,
+         "--public-logits", logits_rel, "--artifact", relative_path(root, artifact, "proof artifact"),
+        "--report", report_rel], cwd=str(root), text=True, capture_output=True, check=False,
     )
     verifier_wall_ms = (time.perf_counter() - verifier_start) * 1000.0
-    atomic_write_text(run_path / "verifier.stdout.log", verified.stdout)
-    atomic_write_text(run_path / "verifier.stderr.log", verified.stderr)
-    if verified.returncode != 0:
-        raise ChainError(f"independent verifier rejected the cell ({verified.returncode}); see {run_relative}/verifier_report.json")
+    atomic_write_text(run_path / "verifier.stdout.log", verified.stdout, root)
+    atomic_write_text(run_path / "verifier.stderr.log", verified.stderr, root)
     report_path = run_path / "verifier_report.json"
+    if verified.returncode != 0:
+        raise ChainError(f"independent verifier rejected the cell ({verified.returncode}); see {report_rel}")
     report = load_json(report_path, "independent verifier report")
-    if not isinstance(report, dict) or report.get("schema") != "zkgpt-gat-independent-verifier-v2":
-        raise ChainError(f"unsupported independent verifier report schema: {report_path}")
-    if report.get("status") != "VERIFY_OK" or report.get("independent") is not True:
-        raise ChainError(f"independent verifier did not return VERIFY_OK for {dataset}/{backend}")
-    if report.get("verifier_reads_witness") is not False or report.get("verifier_reads_checkpoint") is not False:
-        raise ChainError(f"independent verifier violates public-only boundary for {dataset}/{backend}")
-    atomic_write_json(run_path / "execution.json", {
-        "schema": "zkgpt-gat-execution-v1",
-        "dataset": dataset,
-        "backend": backend,
-        "status": "VERIFY_OK",
-        "no_fallback": True,
-        "prover_wall_ms": prover_wall_ms,
-        "verifier_wall_ms": verifier_wall_ms,
-        "prover_returncode": completed.returncode,
-        "verifier_returncode": verified.returncode,
+    if not isinstance(report, dict):
+        raise ChainError(f"independent verifier report is not an object: {report_path}")
+    paths = {"artifact": relative_path(root, artifact, "proof artifact"),
+             "context": context_rel, "logits": logits_rel, "statement": statement_rel}
+    _validate_report(report, result, dataset, backend, resource, paths,
+                     artifact_fp["sha256"], artifact_fp["size_bytes"], report_path)
+    assert_fresh_files((report_path, run_path / "prover.stdout.log",
+                        run_path / "prover.stderr.log", run_path / "verifier.stdout.log",
+                        run_path / "verifier.stderr.log"), run_started_ns)
+    result = _enrich_result(root, result, result_path, resource, registration,
+                            artifact, run_nonce, run_started_ns, resource_manifest_digest)
+    atomic_write_json(result_path, result, root)
+    execution = {
+        "schema": EXECUTION_SCHEMA, "dataset": dataset, "backend": backend,
+        "status": "VERIFY_OK", "no_fallback": True, "native_backend": result["native_backend"],
+        "run_nonce": run_nonce, "run_started_unix_ns": run_started_ns,
         "result_path": relative_path(root, result_path, "native result"),
-        "verifier_report_path": report_relative,
-    })
+        "verifier_report_path": report_rel, "statement_path": statement_rel,
+        "verifier_context_path": context_rel, "public_logits_path": logits_rel,
+        "registration_path": registration_relative,
+        "prover_secret_path": secret_relative,
+        "artifact_path": paths["artifact"], "artifact_sha256": artifact_fp["sha256"],
+        "artifact_size_bytes": artifact_fp["size_bytes"],
+        "artifact_mtime_ns": artifact_fp["mtime_ns"],
+        "statement_digest": identity["statement_digest"], "plan_digest": identity["plan_digest"],
+        "circuit_id": identity["circuit_id"], "proof_digest": identity["proof_digest"],
+        "registration_digest": identity["registration_digest"],
+        "registration_binding_digest": identity["registration_binding_digest"],
+        "registration_layout_digest": identity["registration_layout_digest"],
+        "com_W_point": identity["com_W_point"],
+        "full_dataset_identity": resource["full_dataset_identity"],
+        "checkpoint_identity": resource["checkpoint_identity"], "cache_identity": resource["cache_identity"],
+        "config_sha256": resource["config_sha256"], "quantization_sha256": resource["quantization_sha256"],
+        "cache_manifest_sha256": resource["cache_manifest_sha256"],
+        "checkpoint_manifest_sha256": resource["checkpoint_manifest_sha256"],
+        "checkpoint_manifest_entry_sha256": resource["checkpoint_manifest_entry_sha256"],
+        "resource_manifest_sha256": resource_manifest_digest,
+        "prover_binary": {"path": relative_path(root, prover, "prover executable"), **prover_fp},
+        "verifier_binary": {"path": relative_path(root, verifier, "verifier executable"), **verifier_fp},
+        "timing_ms": timing,
+        "prover_wall_ms": prover_wall_ms, "verifier_wall_ms": verifier_wall_ms,
+        "verifier_reads_witness": False, "verifier_reads_checkpoint": False,
+    }
+    execution["file_fingerprints"] = {
+        "result": file_fingerprint(result_path, "native result"),
+        "statement": file_fingerprint(statement_path, "public statement"),
+        "verifier_context": file_fingerprint(context_path, "verifier context"),
+        "public_logits": file_fingerprint(logits_path, "public logits"),
+        "proof_artifact": artifact_fp,
+        "verifier_report": file_fingerprint(report_path, "verifier report"),
+    }
+    atomic_write_json(run_path / "execution.json", execution, root)
     print(f"VERIFY_OK dataset={dataset} backend={backend} result={run_relative}/result.json")
+
+
+def validate_preflight_binding(root: Path, preflight: Mapping[str, Any], resource_manifest_digest: str, backend: str) -> None:
+    if preflight.get("schema") != PREFLIGHT_SCHEMA or preflight.get("status") != "READY" or preflight.get("formal_experiment_eligible") is not True:
+        raise ChainError("formal preflight is not eligible; no proving was started")
+    if preflight.get("resource_manifest_sha256") != resource_manifest_digest:
+        raise ChainError("formal preflight resource manifest is stale")
+    entry = preflight.get("backends", {}).get(backend)
+    if not isinstance(entry, dict) or entry.get("ready") is not True:
+        raise ChainError(f"formal preflight has no ready {backend} backend")
+    prover = build_binary(root, backend)
+    verifier = verifier_binary(root, backend)
+    if entry.get("prover_fingerprint", {}).get("sha256") != sha256_file(prover) or entry.get("verifier_fingerprint", {}).get("sha256") != sha256_file(verifier):
+        raise ChainError("formal preflight binary fingerprint is stale")
+    capacities = preflight.get("capacity", {})
+    if set(capacities) != set(DATASETS) or any(not isinstance(capacities[d], dict) or capacities[d].get("status") != "READY" for d in DATASETS):
+        raise ChainError("formal preflight capacity matrix is incomplete")
 
 
 def main(argv: Sequence[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--datasets", default="all", help="all or comma-separated canonical datasets")
-    parser.add_argument("--backends", default="all", help="all or comma-separated cpu/gpu backends")
-    parser.add_argument("--continue-on-failure", action="store_true", help="record all failures before returning nonzero")
+    parser.add_argument("--datasets", default="all")
+    parser.add_argument("--backends", default="all")
+    parser.add_argument("--continue-on-failure", action="store_true")
     args = parser.parse_args(list(argv))
     root = baseline_root()
     try:
         datasets = selection(args.datasets, DATASETS, "datasets")
         backends = selection(args.backends, BACKENDS, "backends")
         require_manifest(root, "resource_manifest.json", "zkgpt-gat-resource-manifest-v1")
-        preflight = require_manifest(root, "formal_preflight.json", "zkgpt-gat-formal-preflight-v1")
-        if preflight.get("formal_experiment_eligible") is not True:
-            raise ChainError("formal preflight is not eligible; no proving was started")
+        resource_manifest_digest = sha256_file(root / "results" / "resource_manifest.json")
+        preflight = require_manifest(root, "formal_preflight.json", PREFLIGHT_SCHEMA)
+        for backend in backends:
+            validate_preflight_binding(root, preflight, resource_manifest_digest, backend)
     except ChainError as exc:
         print(f"EXPERIMENT_BLOCKED: {exc}", file=sys.stderr)
         return 2
-
     failures: List[str] = []
     for dataset in datasets:
         for backend in backends:
             try:
-                run_cell(root, dataset, backend)
+                run_cell(root, dataset, backend, preflight, resource_manifest_digest)
             except (ChainError, OSError, ValueError) as exc:
                 message = f"{dataset}/{backend}: {exc}"
                 failures.append(message)

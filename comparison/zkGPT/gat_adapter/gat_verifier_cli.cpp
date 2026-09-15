@@ -157,19 +157,79 @@ void write_report(const std::string &path, const std::string &json) {
 std::string report_json(const std::string &status, const std::string &reason,
                         const std::string &statement_digest,
                         const std::string &context, const std::string &logits,
-                        const std::string &artifact) {
+                        const std::string &artifact,
+                        const std::string &artifact_fs,
+                        const VerifierContext *public_context = nullptr,
+                        const GatProofArtifact *proof_artifact = nullptr) {
+    const std::string dataset = public_context == nullptr
+        ? std::string() : public_context->registration.dataset;
+    const std::string backend = public_context == nullptr
+        ? std::string() : public_context->backend;
+    const std::string plan_digest = public_context == nullptr
+        ? std::string() : public_context->plan.plan_digest;
+    const std::string circuit_id = public_context == nullptr
+        ? std::string() : public_context->plan.circuit_id;
+    const std::string registration_digest = public_context == nullptr
+        ? std::string() : public_context->registration.registration_digest;
+    const std::string registration_binding_digest = public_context == nullptr
+        ? std::string() : public_context->registration.binding_digest;
+    const std::string registration_layout_digest = public_context == nullptr
+        ? std::string() : public_context->registration.layout_digest;
+    const std::string com_w_point = public_context == nullptr
+        ? std::string() : public_context->registration.com_W.point_hex;
+    const std::string full_dataset_identity = public_context == nullptr
+        ? std::string() : public_context->full_dataset_identity;
+    const std::string checkpoint_identity = public_context == nullptr
+        ? std::string() : public_context->checkpoint_identity;
+    const std::string cache_identity = public_context == nullptr
+        ? std::string() : public_context->cache_identity;
+    const std::string proof_digest = proof_artifact == nullptr
+        ? std::string() : zkgpt::gat::canonical_digest64(proof_artifact->transcript_digest);
+    std::string artifact_sha256;
+    std::uint64_t artifact_size_bytes = 0;
+    if (proof_artifact != nullptr) {
+        try {
+            struct stat info {};
+            if (::stat(artifact_fs.c_str(), &info) == 0 && info.st_size >= 0) {
+                artifact_size_bytes = static_cast<std::uint64_t>(info.st_size);
+                artifact_sha256 = zkgpt::gat::sha256_file_digest(artifact_fs);
+            }
+        } catch (...) {
+            artifact_sha256.clear();
+            artifact_size_bytes = 0;
+        }
+    }
+    const std::size_t slash = context.find_last_of("/\\");
+    const std::string statement = slash == std::string::npos
+        ? "public_statement.json"
+        : context.substr(0, slash + 1) + "public_statement.json";
     std::ostringstream out;
     out << "{\n"
-        << "  \"schema\": \"zkgpt-gat-independent-verifier-v2\",\n"
+        << "  \"schema\": \"zkgpt-gat-independent-verifier-v3\",\n"
         << "  \"status\": \"" << json_escape(status) << "\",\n"
         << "  \"independent\": true,\n"
         << "  \"masked_full\": true,\n"
         << "  \"verifier_reads_witness\": false,\n"
         << "  \"verifier_reads_checkpoint\": false,\n"
+        << "  \"dataset\": \"" << json_escape(dataset) << "\",\n"
+        << "  \"backend\": \"" << json_escape(backend) << "\",\n"
         << "  \"statement_digest\": \"" << json_escape(statement_digest) << "\",\n"
+        << "  \"plan_digest\": \"" << json_escape(plan_digest) << "\",\n"
+        << "  \"circuit_id\": \"" << json_escape(circuit_id) << "\",\n"
+        << "  \"proof_digest\": \"" << json_escape(proof_digest) << "\",\n"
+        << "  \"registration_digest\": \"" << json_escape(registration_digest) << "\",\n"
+        << "  \"registration_binding_digest\": \"" << json_escape(registration_binding_digest) << "\",\n"
+        << "  \"registration_layout_digest\": \"" << json_escape(registration_layout_digest) << "\",\n"
+        << "  \"com_W_point\": \"" << json_escape(com_w_point) << "\",\n"
+        << "  \"full_dataset_identity\": \"" << json_escape(full_dataset_identity) << "\",\n"
+        << "  \"checkpoint_identity\": \"" << json_escape(checkpoint_identity) << "\",\n"
+        << "  \"cache_identity\": \"" << json_escape(cache_identity) << "\",\n"
+        << "  \"statement_path\": \"" << json_escape(statement) << "\",\n"
         << "  \"verifier_context_path\": \"" << json_escape(context) << "\",\n"
         << "  \"public_logits_path\": \"" << json_escape(logits) << "\",\n"
         << "  \"artifact_path\": \"" << json_escape(artifact) << "\",\n"
+        << "  \"artifact_sha256\": \"" << json_escape(artifact_sha256) << "\",\n"
+        << "  \"artifact_size_bytes\": " << artifact_size_bytes << ",\n"
         << "  \"reason\": \"" << json_escape(reason) << "\"\n"
         << "}\n";
     return out.str();
@@ -216,7 +276,8 @@ int main(int argc, char **argv) {
         std::string context_reason;
         if (!zkgpt::gat::read_verifier_context(context_path, context, &context_reason)) {
             const std::string report = report_json("REJECTED", context_reason,
-                                                    "", context_rel, logits_rel, artifact_rel);
+                                                    "", context_rel, logits_rel,
+                                                    artifact_rel, artifact_path);
             write_report(options.report, report);
             std::cout << report;
             return 1;
@@ -230,7 +291,8 @@ int main(int argc, char **argv) {
             external_logits.values != context.public_logits.values) {
             const std::string report = report_json(
                 "REJECTED", "separately supplied public logits do not match v3 context",
-                statement_digest, context_rel, logits_rel, artifact_rel);
+                statement_digest, context_rel, logits_rel, artifact_rel,
+                artifact_path, &context, nullptr);
             write_report(options.report, report);
             std::cout << report;
             return 1;
@@ -242,7 +304,8 @@ int main(int argc, char **argv) {
         if (!GatProofArtifact::read(artifact_path, artifact, &artifact_reason)) {
             const std::string report = report_json("REJECTED", artifact_reason,
                                                     statement_digest, context_rel,
-                                                    logits_rel, artifact_rel);
+                                                    logits_rel, artifact_rel,
+                                                    artifact_path, &context, nullptr);
             write_report(options.report, report);
             std::cout << report;
             return 1;
@@ -251,13 +314,15 @@ int main(int argc, char **argv) {
         if (!zkgpt::gat::verify_gat(context, artifact, &verify_reason)) {
             const std::string report = report_json(
                 "REJECTED", verify_reason.empty() ? "verify_gat rejected proof" : verify_reason,
-                statement_digest, context_rel, logits_rel, artifact_rel);
+                statement_digest, context_rel, logits_rel, artifact_rel,
+                artifact_path, &context, &artifact);
             write_report(options.report, report);
             std::cout << report;
             return 1;
         }
         const std::string report = report_json("VERIFY_OK", "", statement_digest,
-                                               context_rel, logits_rel, artifact_rel);
+                                               context_rel, logits_rel, artifact_rel,
+                                               artifact_path, &context, &artifact);
         write_report(options.report, report);
         std::cout << "VERIFY_OK\n";
         return 0;

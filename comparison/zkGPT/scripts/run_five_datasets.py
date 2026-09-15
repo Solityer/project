@@ -9,13 +9,13 @@ import sys
 from pathlib import Path
 from typing import List
 
-from common import BACKENDS, baseline_root
+from common import FORMAL_BACKENDS, baseline_root
 
 
 def main(argv: List[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--backend", choices=("all",) + BACKENDS, default="cpu",
+        "--backend", choices=("all",) + FORMAL_BACKENDS, default="cpu",
         help="formal backend (default: cpu; gpu is fail-closed unsupported)",
     )
     args = parser.parse_args(argv)

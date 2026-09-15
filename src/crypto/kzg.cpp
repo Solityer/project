@@ -7820,7 +7820,7 @@ namespace gatzk::crypto
         // exactly the same immutable semantic evaluation vector. Elect one
         // representative before any worker is launched; aliases are committed
         // only after that representative has populated the semantic cache.
-        struct SemanticRepresentative
+        struct SemanticRepresentativeKey
         {
             const algebra::
                 RootOfUnityDomain
@@ -7832,12 +7832,68 @@ namespace gatzk::crypto
             const std::vector<FieldElement>
                 *values = nullptr;
 
-            std::size_t index = 0;
+            bool operator==(
+                const SemanticRepresentativeKey &)
+                const = default;
         };
 
-        std::vector<
-            SemanticRepresentative>
-            semantic_representatives;
+        struct SemanticRepresentativeKeyHash
+        {
+            std::size_t operator()(
+                const SemanticRepresentativeKey
+                    &key) const noexcept
+            {
+                const auto mix =
+                    [](std::size_t seed,
+                       std::size_t value)
+                {
+                    seed ^=
+                        value +
+                        std::size_t{
+                            0x9e3779b97f4a7c15ULL} +
+                        (seed << 6U) +
+                        (seed >> 2U);
+
+                    return seed;
+                };
+
+                const std::hash<
+                    const void *>
+                    pointer_hash;
+
+                std::size_t hash =
+                    pointer_hash(
+                        static_cast<const void *>(
+                            key.domain));
+
+                hash =
+                    mix(
+                        hash,
+                        pointer_hash(
+                            static_cast<
+                                const void *>(
+                                key.lagrange_srs)));
+
+                hash =
+                    mix(
+                        hash,
+                        pointer_hash(
+                            static_cast<
+                                const void *>(
+                                key.values)));
+
+                return hash;
+            }
+        };
+
+        std::unordered_map<
+            SemanticRepresentativeKey,
+            std::size_t,
+            SemanticRepresentativeKeyHash>
+            semantic_representative_by_identity;
+
+        semantic_representative_by_identity.reserve(
+            object_count);
 
         std::vector<std::size_t>
             semantic_alias_of(
@@ -7874,53 +7930,29 @@ namespace gatzk::crypto
                         *polynomial,
                         key.pk);
 
-                const auto *values =
-                    polynomial
-                        ->shared_data
-                        .get();
+                const SemanticRepresentativeKey
+                    representative_key{
+                        .domain =
+                            polynomial->domain
+                                .get(),
+                        .lagrange_srs =
+                            lagrange_srs,
+                        .values =
+                            polynomial
+                                ->shared_data
+                                .get(),
+                };
 
-                const auto found =
-                    std::find_if(
-                        semantic_representatives
-                            .begin(),
-                        semantic_representatives
-                            .end(),
-                        [&](const auto &candidate)
-                        {
-                            return candidate.domain ==
-                                       polynomial
-                                           ->domain
-                                           .get() &&
-                                   candidate
-                                           .lagrange_srs ==
-                                       lagrange_srs &&
-                                   candidate.values ==
-                                       values;
-                        });
+                const auto [found, inserted] =
+                    semantic_representative_by_identity
+                        .emplace(
+                            representative_key,
+                            index);
 
-                if (found ==
-                    semantic_representatives
-                        .end())
-                {
-                    semantic_representatives
-                        .push_back(
-                            SemanticRepresentative{
-                                .domain =
-                                    polynomial
-                                        ->domain
-                                        .get(),
-                                .lagrange_srs =
-                                    lagrange_srs,
-                                .values =
-                                    values,
-                                .index =
-                                    index,
-                            });
-                }
-                else
+                if (!inserted)
                 {
                     semantic_alias_of[index] =
-                        found->index;
+                        found->second;
                 }
             }
         }
@@ -9036,8 +9068,8 @@ namespace gatzk::crypto
                             << commitments[index].name
                             << ':'
                             << (commitments[index]
-                                        .opening_polynomial !=
-                                    nullptr
+                                            .opening_polynomial !=
+                                        nullptr
                                     ? "resident"
                                     : "streamed");
                     }

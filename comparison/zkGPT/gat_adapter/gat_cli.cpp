@@ -29,6 +29,7 @@ struct Options {
     std::string com_w_secret;
     bool help = false;
     bool register_only = false;
+    bool capacity_only = false;
 };
 
 struct Record {
@@ -53,11 +54,14 @@ struct Record {
     std::string public_logits_path;
     std::string verifier_context_path;
     std::string registration_path;
+    std::string prover_secret_path;
     std::string registration_digest;
     std::string registration_binding_digest;
     std::string registration_layout_digest;
     std::string artifact_path;
+    std::string verifier_report_path;
     std::string proof_digest;
+    std::string artifact_sha256;
     std::string full_dataset_identity;
     std::string checkpoint_identity;
     std::string cache_identity;
@@ -66,6 +70,7 @@ struct Record {
     bool verifier_called = false;
     bool verifier_ok = false;
     bool verifier_reads_witness = false;
+    bool verifier_reads_checkpoint = false;
     bool cpu_fallback = false;
     bool formal_backend_supported = true;
     bool gpu_compiled = false;
@@ -74,6 +79,7 @@ struct Record {
     std::uint64_t gpu_kernel_invocations = 0;
     std::uint64_t proof_message_bytes = 0;
     std::uint64_t proof_size_bytes = 0;
+    std::uint64_t artifact_size_bytes = 0;
     double load_ms = 0.0;
     double registration_ms = 0.0;
     double witness_ms = 0.0;
@@ -395,15 +401,19 @@ void write_result(const std::string &path, const Record &record) {
     json_string(out, "public_logits_path", record.public_logits_path);
     json_string(out, "verifier_context_path", record.verifier_context_path);
     json_string(out, "registration_path", record.registration_path);
+    json_string(out, "prover_secret_path", record.prover_secret_path);
     json_string(out, "registration_digest", record.registration_digest);
     json_string(out, "registration_binding_digest", record.registration_binding_digest);
     json_string(out, "registration_layout_digest", record.registration_layout_digest);
     json_string(out, "artifact_path", record.artifact_path);
+    json_string(out, "verifier_report_path", record.verifier_report_path);
+    json_string(out, "artifact_sha256", record.artifact_sha256);
     json_string(out, "com_W_point", record.com_w_point);
     json_bool(out, "proof_generated", record.proof_generated);
     json_bool(out, "verifier_called", record.verifier_called);
     json_bool(out, "verifier_ok", record.verifier_ok);
     json_bool(out, "verifier_reads_witness", record.verifier_reads_witness);
+    json_bool(out, "verifier_reads_checkpoint", record.verifier_reads_checkpoint);
     json_bool(out, "cpu_fallback", record.cpu_fallback);
     json_bool(out, "formal_backend_supported", record.formal_backend_supported);
     json_bool(out, "gpu_compiled", record.gpu_compiled);
@@ -412,6 +422,7 @@ void write_result(const std::string &path, const Record &record) {
     out << "  \"gpu_kernel_invocations\": " << record.gpu_kernel_invocations << ",\n";
     out << "  \"proof_message_bytes\": " << record.proof_message_bytes << ",\n";
     out << "  \"proof_size_bytes\": " << record.proof_size_bytes << ",\n";
+    out << "  \"artifact_size_bytes\": " << record.artifact_size_bytes << ",\n";
     out << "  \"timing_ms\": {\n";
     out << "    \"load\": " << std::fixed << std::setprecision(3) << record.load_ms << ",\n";
     out << "    \"registration\": " << record.registration_ms << ",\n";
@@ -444,6 +455,13 @@ void write_registration(const std::string &path, const ModelRegistration &regist
     json_string(out, "schema", "zkgpt-gat-model-registration-v1");
     json_string(out, "dataset", dataset);
     json_string(out, "status", registration.status);
+    // Audit flags make it explicit that this artifact was built from
+    // authenticated metadata/layout sizing only.  They are additive to the
+    // v1 registration wire and are ignored by the strict legacy reader.
+    json_bool(out, "registration_only", true);
+    json_bool(out, "forward_executed", false);
+    json_bool(out, "plan_materialized", false);
+    json_string(out, "layout_source", "canonical_metadata");
     json_string(out, "model_arch_id", registration.model_arch_id);
     json_string(out, "quant_cfg_id", registration.quant_cfg_id);
     json_string(out, "static_tables_id", registration.static_tables_id);
@@ -479,6 +497,51 @@ void write_registration(const std::string &path, const ModelRegistration &regist
     out << "}\n";
     (void)root;
     write_text(path, out.str());
+}
+
+void write_capacity_report(const GatCapacityReport &report,
+                           const std::string &dataset,
+                           const std::string &backend,
+                           const std::string &quant_cfg_id,
+                           const std::string &cache_identity,
+                           const std::string &checkpoint_identity) {
+    std::ostringstream out;
+    out << "{\n";
+    json_string(out, "schema", report.schema);
+    json_string(out, "dataset", dataset);
+    json_string(out, "backend", backend);
+    json_string(out, "quant_cfg_id", quant_cfg_id);
+    json_string(out, "cache_identity", cache_identity);
+    json_string(out, "checkpoint_identity", checkpoint_identity);
+    out << "  \"num_nodes\": " << report.num_nodes << ",\n";
+    out << "  \"num_edges\": " << report.num_edges << ",\n";
+    out << "  \"num_features\": " << report.num_features << ",\n";
+    out << "  \"num_classes\": " << report.num_classes << ",\n";
+    out << "  \"graph_count\": " << report.graph_count << ",\n";
+    json_string(out, "model_arch_id", report.model_shape.model_arch_id);
+    out << "  \"model_layers\": " << report.model_shape.layers << ",\n";
+    out << "  \"model_output_heads\": " << report.model_shape.output_heads << ",\n";
+    out << "  \"model_classes\": " << report.model_shape.classes << ",\n";
+    out << "  \"model_input_dim\": " << report.model_shape.input_dim << ",\n";
+    out << "  \"model_hidden_dim\": " << report.model_shape.hidden_dim << ",\n";
+    out << "  \"n_raw\": " << report.input_layout.n_raw << ",\n";
+    out << "  \"n_in\": " << report.input_layout.n_in << ",\n";
+    out << "  \"fconn_count\": " << report.fconn_count << ",\n";
+    json_bool(out, "explicit_matmul_gate_expansion",
+              report.explicit_matmul_gate_expansion);
+    out << "  \"max_materialized_gate\": " << report.max_materialized_gate << ",\n";
+    out << "  \"max_materialized_vector\": " << report.max_materialized_vector << ",\n";
+    out << "  \"attention_relation_count\": " << report.attention_relation_count << ",\n";
+    out << "  \"division_relation_count\": " << report.division_relation_count << ",\n";
+    out << "  \"context_recipe_bytes_bound\": " << report.context_recipe_bytes_bound << ",\n";
+    out << "  \"context_payload_bytes_bound\": " << report.context_payload_bytes_bound << ",\n";
+    json_bool(out, "ppi_node_ptr_boundary", report.ppi_node_ptr_boundary);
+    json_bool(out, "ppi_edge_ptr_boundary", report.ppi_edge_ptr_boundary);
+    json_bool(out, "ready", report.ready);
+    json_string(out, "status", report.ready ? "READY" : "BLOCKED");
+    json_string(out, "reason", report.reason, false);
+    out << "}\n";
+    std::cout << out.str();
 }
 
 void write_public_statement(const std::string &path, const Record &record,
@@ -545,6 +608,8 @@ Options parse_options(int argc, char **argv) {
             options.com_w_secret = argv[++i];
         } else if (arg == "--register-only") {
             options.register_only = true;
+        } else if (arg == "--capacity-only") {
+            options.capacity_only = true;
         } else {
             throw std::runtime_error("unknown or incomplete argument: " + arg);
         }
@@ -565,6 +630,7 @@ void print_help() {
                  "--backend <cpu|gpu> [--baseline-root <zkGPT-root>] [--config <baseline-relative.cfg>] "
                  "[--registration <baseline-relative.json>] [--com-w-secret <baseline-relative.secret>]\n"
                  "       gat_cli ... --register-only\n"
+                 "       gat_cli --capacity-only --dataset <...> --backend cpu [--baseline-root <zkGPT-root>] [--config <...>]\n"
                  "The normal command emits one baseline-local run record and exits nonzero on FAILED or UNSUPPORTED.\n"
                  "--register-only writes the long-lived public model registration and its prover-only 0600 secret.\n";
 }
@@ -655,6 +721,29 @@ int main(int argc, char **argv) {
         const QuantConfig quant = QuantConfig::load(quant_path);
         if (quant.quant_cfg_id != config.get("quant_cfg_id")) throw std::runtime_error("quantization config identity mismatch");
 
+        if (options.capacity_only) {
+            if (options.backend != "cpu") {
+                write_capacity_report(GatCapacityReport{}, options.dataset,
+                                      options.backend,
+                                      quant.quant_cfg_id,
+                                      rel_display(root, cache_dir + "/integrity.sha256"),
+                                      rel_display(root, bundle_dir + "/integrity.sha256"));
+                return 1;
+            }
+            // Capacity mode authenticates and consumes only graph/checkpoint
+            // metadata.  No public features, labels, tensor values, forward
+            // trace, layered circuit, witness, proof or verifier is built.
+            const Graph graph = load_graph(cache_dir, config);
+            const Model shape_model = Model::load_shape_only(bundle_dir);
+            shape_model.validate_identity(config);
+            const GatCapacityReport report = inspect_gat_capacity(graph, shape_model, quant);
+            write_capacity_report(report, options.dataset, options.backend,
+                                  quant.quant_cfg_id,
+                                  rel_display(root, cache_dir + "/integrity.sha256"),
+                                  rel_display(root, bundle_dir + "/integrity.sha256"));
+            return report.ready ? 0 : 1;
+        }
+
         if (options.register_only) {
             if (path_exists(registration_file) || path_exists(com_w_secret_file)) {
                 throw std::runtime_error(
@@ -662,12 +751,16 @@ int main(int argc, char **argv) {
             }
             const auto registration_begin = Clock::now();
             const Graph graph = load_graph(cache_dir, config);
-            const Tensor2D features = load_features(cache_dir, config, quant, graph);
+            const Model shape_model = Model::load_shape_only(bundle_dir);
+            shape_model.validate_identity(config);
+            const InputLayout layout = build_gat_input_layout(graph, shape_model, quant);
+            // The commitment still binds the authenticated private tensor
+            // values, but registration itself never runs a forward pass or
+            // materializes a proof circuit.  The shared metadata layout above
+            // is reused verbatim for the commitment sizing.
             const Model model = Model::load(bundle_dir);
             model.validate_identity(config);
-            const ForwardResult forward = run_forward(graph, features, model, quant);
-            const GatCircuitPlan plan = build_gat_circuit_plan(graph, model, quant, forward);
-            const ModelRegistration registration = register_model(model, quant, plan.input_layout, model.manifest.model_arch_id);
+            const ModelRegistration registration = register_model(model, quant, layout, model.manifest.model_arch_id);
             record.registration_ms = elapsed_ms(registration_begin, Clock::now());
             record.com_w_point = registration.com_W.point_hex;
             record.registration_digest = registration.registration_digest;
@@ -727,10 +820,18 @@ int main(int argc, char **argv) {
         record.registration_binding_digest = registration.binding_digest;
         record.registration_layout_digest = registration.layout_digest;
         record.registration_path = run_rel + "/model_registration.json";
+        record.prover_secret_path = run_rel + "/com_W.prover.secret";
 
-        const VerifierContext context = make_verifier_context(
+        VerifierContext context = make_verifier_context(
             graph, features, quant, tables, forward.logits, registration,
             plan, record.privacy_profile);
+        // These identities are part of the v3 public context, so the
+        // independent verifier can report the same tuple without opening
+        // the checkpoint/cache or trusting a path-derived dataset name.
+        context.backend = options.backend;
+        context.full_dataset_identity = record.full_dataset_identity;
+        context.checkpoint_identity = record.checkpoint_identity;
+        context.cache_identity = record.cache_identity;
         record.statement_digest = verifier_context_digest(context);
         record.circuit_id = plan.circuit_id;
         record.plan_digest = plan.plan_digest;
@@ -763,7 +864,7 @@ int main(int argc, char **argv) {
         record.serialize_ms = elapsed_ms(serialize_begin, Clock::now());
         record.artifact_path = run_rel + "/proof.artifact";
         record.proof_generated = true;
-        record.proof_digest = artifact.transcript_digest;
+        record.proof_digest = canonical_digest64(artifact.transcript_digest);
         for (const ProofSection *section : {&artifact.Pi_Lasso, &artifact.Pi_MatMul, &artifact.Pi_GKR, &artifact.Pi_combine, &artifact.Pi_open}) {
             for (const TranscriptMessage &message : section->messages) {
                 record.proof_message_bytes += static_cast<std::uint64_t>(message.label.size() + message.payload.size());
@@ -772,6 +873,9 @@ int main(int argc, char **argv) {
         struct stat artifact_stat;
         if (::stat(artifact_file.c_str(), &artifact_stat) != 0 || artifact_stat.st_size < 0) throw std::runtime_error("cannot stat proof artifact");
         record.proof_size_bytes = static_cast<std::uint64_t>(artifact_stat.st_size);
+        record.artifact_size_bytes = record.proof_size_bytes;
+        record.artifact_sha256 = sha256_file_digest(artifact_file);
+        record.verifier_report_path = run_rel + "/verifier_report.json";
 
         const auto verify_begin = Clock::now();
         std::string verify_reason;

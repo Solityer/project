@@ -24,10 +24,10 @@ namespace gatzk::protocol
         crypto::Commitment commitment;
         algebra::FieldElement value = algebra::FieldElement::zero();
 
-        // Execution-only caches. These bytes are never absorbed into the
-        // transcript, serialized into the proof, or used as protocol identity.
+        // Execution-only canonical commitment bytes. They are never absorbed
+        // into the transcript, serialized into the proof, or used as protocol
+        // identity.
         std::string execution_commitment_key;
-        std::string execution_order_key;
     };
 
     struct StandardPointGroup

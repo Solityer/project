@@ -125,6 +125,11 @@ int main() {
                             {Fr(140), Fr(320), Fr(320), Fr(770)}};
     NativeGkrMatmulWitness matmul;
     matmul.shape = {2, 3, 2};
+    matmul.shape.relation_id = native_descriptor.relation_id;
+    matmul.shape.family_id = native_descriptor.family_id;
+    matmul.shape.lhs_offset = native_descriptor.lhs_offset;
+    matmul.shape.rhs_offset = native_descriptor.rhs_offset;
+    matmul.shape.output_offset = native_descriptor.output_offset;
     matmul.left = {Fr(1), Fr(2), Fr(3), Fr(4), Fr(5), Fr(6)};
     matmul.right = native_right;
     witness.matmuls.push_back(matmul);
@@ -142,6 +147,14 @@ int main() {
     circuit.circuit[2].uni_gates.clear();
     for (u32 index = 0; index < 4; ++index)
         circuit.circuit[2].uni_gates.emplace_back(index, index, 1, 1);
+    circuit.circuit[1].native_relation_id = native_descriptor.relation_id;
+    circuit.circuit[1].native_family_id = native_descriptor.family_id;
+    circuit.circuit[1].native_rows = native_descriptor.rows;
+    circuit.circuit[1].native_inner = native_descriptor.inner;
+    circuit.circuit[1].native_cols = native_descriptor.cols;
+    circuit.circuit[1].native_lhs_offset = native_descriptor.lhs_offset;
+    circuit.circuit[1].native_rhs_offset = native_descriptor.rhs_offset;
+    circuit.circuit[1].native_output_offset = native_descriptor.output_offset;
     circuit.initSubset();
     const std::vector<Fr> output{Fr(140), Fr(320), Fr(320), Fr(770)};
     std::string reason;
@@ -155,7 +168,28 @@ int main() {
     }
     assert(prover_result.has_unmasked_input_claim_opening);
     assert(verify_masked_gkr_transcript(session, circuit, output,
-                                        {{2, 3, 2}}, &reason));
+                                        {matmul.shape}, &reason));
+
+    NativeGkrMatmulShape relation_tampered = matmul.shape;
+    relation_tampered.relation_id += ".tampered";
+    assert(!verify_masked_gkr_transcript(session, circuit, output,
+                                         {relation_tampered}, &reason));
+    NativeGkrMatmulShape family_tampered = matmul.shape;
+    family_tampered.family_id += ".tampered";
+    assert(!verify_masked_gkr_transcript(session, circuit, output,
+                                         {family_tampered}, &reason));
+    NativeGkrMatmulShape offset_tampered = matmul.shape;
+    offset_tampered.rhs_offset += 1;
+    assert(!verify_masked_gkr_transcript(session, circuit, output,
+                                         {offset_tampered}, &reason));
+    NativeGkrMatmulShape output_tampered = matmul.shape;
+    output_tampered.output_offset += 1;
+    assert(!verify_masked_gkr_transcript(session, circuit, output,
+                                         {output_tampered}, &reason));
+    NativeGkrMatmulShape dims_tampered = matmul.shape;
+    dims_tampered.inner += 1;
+    assert(!verify_masked_gkr_transcript(session, circuit, output,
+                                         {dims_tampered}, &reason));
 
     NativeLayeredGkrWitness tampered = witness;
     tampered.matmuls.front().right.at(1) += Fr(1);

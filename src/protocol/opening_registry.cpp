@@ -2,8 +2,10 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <cstdint>
 #include <stdexcept>
+#include <string_view>
 #include <tuple>
 #include <unordered_set>
 
@@ -42,36 +44,187 @@ namespace gatzk::protocol
                 encoded.size());
         }
 
-        std::string claim_order_key(
-            const StandardOpeningClaim &claim,
-            const std::string &commitment_key)
+        int compare_decimal_length_prefix(
+            std::size_t lhs,
+            std::size_t rhs)
         {
-            std::string key;
+            std::array<char, 32>
+                lhs_bytes{};
 
-            const auto append =
-                [&](const std::string &value)
+            std::array<char, 32>
+                rhs_bytes{};
+
+            const auto lhs_result =
+                std::to_chars(
+                    lhs_bytes.data(),
+                    lhs_bytes.data() +
+                        lhs_bytes.size(),
+                    lhs);
+
+            const auto rhs_result =
+                std::to_chars(
+                    rhs_bytes.data(),
+                    rhs_bytes.data() +
+                        rhs_bytes.size(),
+                    rhs);
+
+            if (lhs_result.ec !=
+                    std::errc{} ||
+                rhs_result.ec !=
+                    std::errc{})
             {
-                key.append(
-                    std::to_string(value.size()));
-                key.push_back(':');
-                key.append(value);
-                key.push_back('|');
+                throw std::runtime_error(
+                    "standard opening claim length encoding failed");
+            }
+
+            const std::string_view
+                lhs_view(
+                    lhs_bytes.data(),
+                    static_cast<std::size_t>(
+                        lhs_result.ptr -
+                        lhs_bytes.data()));
+
+            const std::string_view
+                rhs_view(
+                    rhs_bytes.data(),
+                    static_cast<std::size_t>(
+                        rhs_result.ptr -
+                        rhs_bytes.data()));
+
+            const auto result =
+                lhs_view.compare(
+                    rhs_view);
+
+            return result < 0
+                       ? -1
+                   : result > 0
+                       ? 1
+                       : 0;
+        }
+
+        int compare_encoded_text_component(
+            const std::string &lhs,
+            const std::string &rhs)
+        {
+            const auto length_result =
+                compare_decimal_length_prefix(
+                    lhs.size(),
+                    rhs.size());
+
+            if (length_result != 0)
+            {
+                return length_result;
+            }
+
+            const auto value_result =
+                lhs.compare(rhs);
+
+            return value_result < 0
+                       ? -1
+                   : value_result > 0
+                       ? 1
+                       : 0;
+        }
+
+        bool canonical_claim_less(
+            const StandardOpeningClaim &lhs,
+            const StandardOpeningClaim &rhs)
+        {
+            const auto compare_text =
+                [](const std::string &left,
+                   const std::string &right)
+            {
+                return compare_encoded_text_component(
+                    left,
+                    right);
             };
 
-            append(claim.claim_id);
-            append(claim.object_id);
-            append(claim.commitment_reference);
+            int result =
+                compare_text(
+                    lhs.claim_id,
+                    rhs.claim_id);
 
-            key.append(commitment_key);
-            key.push_back('|');
+            if (result != 0)
+            {
+                return result < 0;
+            }
 
-            append(claim.evaluation_kind);
-            append(claim.claim_role);
-            append(claim.visibility_tag);
-            append(claim.value_type);
-            append(claim.value_reference_id);
+            result =
+                compare_text(
+                    lhs.object_id,
+                    rhs.object_id);
 
-            return key;
+            if (result != 0)
+            {
+                return result < 0;
+            }
+
+            result =
+                compare_text(
+                    lhs.commitment_reference,
+                    rhs.commitment_reference);
+
+            if (result != 0)
+            {
+                return result < 0;
+            }
+
+            result =
+                lhs.execution_commitment_key
+                    .compare(
+                        rhs.execution_commitment_key);
+
+            if (result != 0)
+            {
+                return result < 0;
+            }
+
+            result =
+                compare_text(
+                    lhs.evaluation_kind,
+                    rhs.evaluation_kind);
+
+            if (result != 0)
+            {
+                return result < 0;
+            }
+
+            result =
+                compare_text(
+                    lhs.claim_role,
+                    rhs.claim_role);
+
+            if (result != 0)
+            {
+                return result < 0;
+            }
+
+            result =
+                compare_text(
+                    lhs.visibility_tag,
+                    rhs.visibility_tag);
+
+            if (result != 0)
+            {
+                return result < 0;
+            }
+
+            result =
+                compare_text(
+                    lhs.value_type,
+                    rhs.value_type);
+
+            if (result != 0)
+            {
+                return result < 0;
+            }
+
+            result =
+                compare_text(
+                    lhs.value_reference_id,
+                    rhs.value_reference_id);
+
+            return result < 0;
         }
 
         void require_claim_shape(const StandardOpeningClaim &claim)
@@ -402,11 +555,6 @@ namespace gatzk::protocol
 
         claim->execution_commitment_key =
             identity_it->second.serialized_key;
-
-        claim->execution_order_key =
-            claim_order_key(
-                *claim,
-                claim->execution_commitment_key);
     }
 
     void StandardPointGroupRegistry::add_domain_claim(
@@ -533,10 +681,12 @@ namespace gatzk::protocol
             throw std::runtime_error(
                 "conflicting values for the same commitment-point opening claim");
         }
-        if (claim.execution_order_key <
-            duplicate.execution_order_key)
+        if (canonical_claim_less(
+                claim,
+                duplicate))
         {
-            duplicate = std::move(claim);
+            duplicate =
+                std::move(claim);
         }
     }
 
@@ -613,7 +763,9 @@ namespace gatzk::protocol
                     group.claims.end(),
                     [](const StandardOpeningClaim &claim)
                     {
-                        return claim.execution_order_key.empty() || claim.execution_commitment_key.empty();
+                        return claim
+                            .execution_commitment_key
+                            .empty();
                     }))
             {
                 throw std::runtime_error(
@@ -623,12 +775,7 @@ namespace gatzk::protocol
             std::sort(
                 group.claims.begin(),
                 group.claims.end(),
-                [](const StandardOpeningClaim &lhs,
-                   const StandardOpeningClaim &rhs)
-                {
-                    return lhs.execution_order_key <
-                           rhs.execution_order_key;
-                });
+                canonical_claim_less);
             group.group_id = point_group_id(group.owner_block, group.point);
         }
         std::sort(
@@ -685,7 +832,9 @@ namespace gatzk::protocol
                 group.claims.end(),
                 [](const StandardOpeningClaim &claim)
                 {
-                    return claim.execution_order_key.empty();
+                    return claim
+                        .execution_commitment_key
+                        .empty();
                 }))
         {
             throw std::runtime_error(
@@ -695,12 +844,7 @@ namespace gatzk::protocol
         if (!std::is_sorted(
                 group.claims.begin(),
                 group.claims.end(),
-                [](const StandardOpeningClaim &lhs,
-                   const StandardOpeningClaim &rhs)
-                {
-                    return lhs.execution_order_key <
-                           rhs.execution_order_key;
-                }))
+                canonical_claim_less))
         {
             throw std::runtime_error(
                 "point-group claims are not in canonical tuple order");

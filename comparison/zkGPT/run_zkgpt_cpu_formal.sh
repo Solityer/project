@@ -56,25 +56,8 @@ run_step() {
 }
 
 echo
-echo "===== archive existing CPU runs ====="
-
-for dataset in cora citeseer pubmed ppi ogbn_arxiv; do
-    run_dir="$ROOT/baseline-local/runs/${dataset}_secure/cpu"
-
-    if [ -d "$run_dir" ]; then
-        archive_dir="${run_dir}_previous_${STAMP}"
-        echo "archive: $run_dir"
-        echo "      -> $archive_dir"
-
-        mv "$run_dir" "$archive_dir"
-
-        rc=$?
-        if [ "$rc" -ne 0 ]; then
-            echo "FAILED: could not archive $run_dir"
-            exit "$rc"
-        fi
-    fi
-done
+echo "===== per-cell stale-output cleanup ====="
+echo "cleanup is performed by gat_zkgpt_experiment.py with the run-directory allowlist"
 
 echo
 echo "===== formal execution ====="

@@ -7401,6 +7401,11 @@ namespace gatzk::protocol
                     std::size_t host_leaf_fallback = 0;
                     std::size_t host_leaf_materialization_required = 0;
                     std::size_t flattened_source_count = 0;
+
+                    std::size_t full_resident_static_map = 0;
+                    std::size_t static_resident_labels = 0;
+                    std::size_t direct_eval_batch_calls = 0;
+                    std::size_t direct_eval_batch_leaves = 0;
                 } linear_telemetry;
 
                 if (!leaf_exact_ntt_supported)
@@ -7983,6 +7988,311 @@ namespace gatzk::protocol
                         }
                     };
 
+                    // When the complete dependency closure fits in the
+                    // admitted cache, bind every logical leaf to one immutable
+                    // slot before any term kernel executes. This is purely an
+                    // execution schedule: labels, polynomials, blinders and
+                    // term order are unchanged.
+                    std::vector<std::string>
+                        full_resident_labels;
+
+                    std::unordered_set<std::string>
+                        full_resident_seen;
+
+                    full_resident_labels.reserve(
+                        executor->cache_slot_count());
+
+                    full_resident_seen.reserve(
+                        executor->cache_slot_count());
+
+                    for (const auto &labels :
+                         term_labels)
+                    {
+                        for (const auto &label :
+                             labels)
+                        {
+                            append_required_closure(
+                                label,
+                                &full_resident_labels,
+                                &full_resident_seen);
+                        }
+                    }
+
+                    const bool
+                        use_full_resident_static_map =
+                            !full_resident_labels.empty() &&
+                            full_resident_labels.size() <=
+                                executor->cache_slot_count();
+
+                    if (use_full_resident_static_map)
+                    {
+                        linear_telemetry
+                            .full_resident_static_map = 1;
+
+                        linear_telemetry
+                            .static_resident_labels =
+                            full_resident_labels.size();
+
+                        std::unordered_map<
+                            std::string,
+                            std::size_t>
+                            static_slot_by_label;
+
+                        static_slot_by_label.reserve(
+                            full_resident_labels.size());
+
+                        for (std::size_t slot = 0;
+                             slot <
+                             full_resident_labels.size();
+                             ++slot)
+                        {
+                            const auto [_, inserted] =
+                                static_slot_by_label.emplace(
+                                    full_resident_labels[slot],
+                                    slot);
+
+                            if (!inserted)
+                            {
+                                throw std::runtime_error(
+                                    "CUDA t_edge full-resident plan contains a duplicate label");
+                            }
+                        }
+
+                        // Fill the complete immutable access map immediately.
+                        // Program accesses which are not referenced by any
+                        // term may remain invalid; no kernel can read them.
+                        for (std::size_t access = 0;
+                             access <
+                             program.accesses.size();
+                             ++access)
+                        {
+                            const auto found =
+                                static_slot_by_label.find(
+                                    program.accesses[access]
+                                        .label);
+
+                            if (found !=
+                                static_slot_by_label.end())
+                            {
+                                access_slots[access] =
+                                    static_cast<
+                                        std::uint32_t>(
+                                        found->second);
+                            }
+                        }
+
+                        std::vector<
+                            CudaTEdgeEvaluationLeafRequest>
+                            evaluation_requests;
+
+                        std::vector<
+                            std::pair<
+                                std::string,
+                                std::size_t>>
+                            evaluation_bindings;
+
+                        evaluation_requests.reserve(
+                            full_resident_labels.size());
+
+                        evaluation_bindings.reserve(
+                            full_resident_labels.size());
+
+                        // Collect every independent registered evaluation leaf
+                        // first. Their backing vectors and blinders live in
+                        // TraceArtifacts / ProtocolContext for the complete
+                        // materializer lifetime, so request pointers remain
+                        // valid while the bounded worker team executes.
+                        for (const auto &label :
+                             full_resident_labels)
+                        {
+                            if (label ==
+                                "__t_edge_boundary_l0")
+                            {
+                                continue;
+                            }
+
+                            if (t_edge_derived_linear_descriptor(
+                                    label)
+                                    .has_value())
+                            {
+                                continue;
+                            }
+
+                            const auto *polynomial =
+                                lookup_polynomial(
+                                    label);
+
+                            if (polynomial == nullptr ||
+                                polynomial->basis !=
+                                    algebra::
+                                        PolynomialBasis::
+                                            Evaluation ||
+                                polynomial->domain ==
+                                    nullptr ||
+                                polynomial->domain->size !=
+                                    domain_->size ||
+                                polynomial->domain->omega !=
+                                    domain_->omega)
+                            {
+                                continue;
+                            }
+
+                            const auto slot_it =
+                                static_slot_by_label.find(
+                                    label);
+
+                            if (slot_it ==
+                                static_slot_by_label.end())
+                            {
+                                throw std::runtime_error(
+                                    "CUDA t_edge static evaluation leaf lacks a slot");
+                            }
+
+                            const auto &values =
+                                polynomial->values();
+
+                            const auto &blinder =
+                                polynomial
+                                    ->zero_domain_blinder;
+
+                            evaluation_requests.push_back(
+                                CudaTEdgeEvaluationLeafRequest{
+                                    .slot =
+                                        slot_it->second,
+                                    .values =
+                                        values.empty()
+                                            ? nullptr
+                                            : FieldElement::
+                                                  native_array_data(
+                                                      values.data()),
+                                    .value_count =
+                                        values.size(),
+                                    .zero_domain_blinder =
+                                        blinder.empty()
+                                            ? nullptr
+                                            : FieldElement::
+                                                  native_array_data(
+                                                      blinder.data()),
+                                    .blinder_count =
+                                        blinder.size(),
+                                });
+
+                            evaluation_bindings.push_back(
+                                {
+                                    label,
+                                    slot_it->second,
+                                });
+                        }
+
+                        if (!evaluation_requests.empty())
+                        {
+                            if (!executor->materialize_evaluation_leaf_batch(
+                                    evaluation_requests))
+                            {
+                                throw std::runtime_error(
+                                    "CUDA t_edge full-resident evaluation leaf batch was not admitted");
+                            }
+
+                            ++linear_telemetry
+                                  .direct_eval_batch_calls;
+
+                            linear_telemetry
+                                .direct_eval_batch_leaves +=
+                                evaluation_requests
+                                    .size();
+
+                            for (const auto &[label, slot] :
+                                 evaluation_bindings)
+                            {
+                                if (!slot_labels[slot]
+                                         .empty())
+                                {
+                                    throw std::runtime_error(
+                                        "CUDA t_edge static evaluation slot was unexpectedly occupied");
+                                }
+
+                                slot_labels[slot] =
+                                    label;
+
+                                bind_label_mapping(
+                                    label,
+                                    slot);
+                            }
+                        }
+
+                        // Resolve everything not covered by the direct
+                        // evaluation batch exactly once. This includes:
+                        //   * coefficient leaves
+                        //   * spilled evaluation leaves
+                        //   * resident-linear derived leaves
+                        //   * formally unsupported derived leaves using the
+                        //     existing canonical host fallback
+                        //   * the boundary polynomial
+                        //
+                        // No slot is evicted in this path.
+                        for (const auto &label :
+                             full_resident_labels)
+                        {
+                            if (resident_slot_by_label
+                                    .contains(label))
+                            {
+                                continue;
+                            }
+
+                            const auto slot_it =
+                                static_slot_by_label.find(
+                                    label);
+
+                            if (slot_it ==
+                                static_slot_by_label.end())
+                            {
+                                throw std::runtime_error(
+                                    "CUDA t_edge static leaf lacks a slot");
+                            }
+
+                            const auto slot =
+                                slot_it->second;
+
+                            if (!slot_labels[slot]
+                                     .empty())
+                            {
+                                throw std::runtime_error(
+                                    "CUDA t_edge static leaf slot collision");
+                            }
+
+                            materialize_label(
+                                label,
+                                slot,
+                                full_resident_labels);
+
+                            slot_labels[slot] =
+                                label;
+
+                            bind_label_mapping(
+                                label,
+                                slot);
+                        }
+
+                        if (resident_slot_by_label.size() <
+                            full_resident_labels.size())
+                        {
+                            throw std::runtime_error(
+                                "CUDA t_edge full-resident materialization left an unbound dependency");
+                        }
+
+                        progress_note(
+                            "prove:quotient:t_edge:"
+                            "cuda_static_resident:"
+                            "labels=" +
+                            std::to_string(
+                                full_resident_labels
+                                    .size()) +
+                            ":direct_eval_batch_leaves=" +
+                            std::to_string(
+                                linear_telemetry
+                                    .direct_eval_batch_leaves));
+                    }
+
                     for (std::size_t term_index = 0;
                          term_index <
                          program.terms.size();)
@@ -8341,6 +8651,18 @@ namespace gatzk::protocol
                         ":flattened_source_count=" +
                         std::to_string(
                             linear_telemetry.flattened_source_count) +
+                        ":full_resident_static_map=" +
+                        std::to_string(
+                            linear_telemetry.full_resident_static_map) +
+                        ":static_resident_labels=" +
+                        std::to_string(
+                            linear_telemetry.static_resident_labels) +
+                        ":direct_eval_batch_calls=" +
+                        std::to_string(
+                            linear_telemetry.direct_eval_batch_calls) +
+                        ":direct_eval_batch_leaves=" +
+                        std::to_string(
+                            linear_telemetry.direct_eval_batch_leaves) +
                         ":term_batches=" +
                         std::to_string(
                             term_batch_count) +

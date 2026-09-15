@@ -169,6 +169,12 @@ Tensor2D load_features(const std::string &cache_dir, const CanonicalConfig &conf
 std::vector<Int> load_labels(const std::string &cache_dir, const Graph &graph);
 Graph load_graph(const std::string &cache_dir, const CanonicalConfig &config);
 
+// Authenticated-file digest helper shared by native result/report writers.
+// It is the ordinary SHA-256 of the exact file bytes, rendered as fixed
+// lowercase hexadecimal; callers must not use it to repair an untrusted
+// digest read from a wire.
+std::string sha256_file_digest(const std::string &path);
+
 enum class RoundingMode { TOWARD_ZERO, NEAREST_TIES_AWAY };
 
 struct DivisionWitness {

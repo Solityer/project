@@ -3,13 +3,16 @@
 #include <cuda_runtime.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <future>
 #include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <type_traits>
 #include <vector>
 
@@ -1605,6 +1608,213 @@ namespace gatzk::protocol
                 return true;
             }
 
+            bool materialize_evaluation_leaf_batch(
+                const std::vector<
+                    CudaTEdgeEvaluationLeafRequest>
+                    &requests)
+                override
+            {
+                if (requests.empty())
+                {
+                    return true;
+                }
+
+                std::vector<std::uint8_t>
+                    seen(
+                        cache_slot_count_,
+                        0);
+
+                for (const auto &request :
+                     requests)
+                {
+                    if (request.slot >=
+                            cache_slot_count_ ||
+                        seen[request.slot] != 0)
+                    {
+                        throw std::runtime_error(
+                            "CUDA t_edge evaluation leaf batch contains an invalid or duplicate slot");
+                    }
+
+                    if (request.value_count != 0 &&
+                        request.values == nullptr)
+                    {
+                        throw std::runtime_error(
+                            "CUDA t_edge evaluation leaf batch contains null values");
+                    }
+
+                    if (request.blinder_count != 0 &&
+                        request.zero_domain_blinder ==
+                            nullptr)
+                    {
+                        throw std::runtime_error(
+                            "CUDA t_edge evaluation leaf batch contains a null blinder");
+                    }
+
+                    if (host_leaf_bound_[request.slot] != 0)
+                    {
+                        throw std::runtime_error(
+                            "CUDA t_edge evaluation leaf batch target slot is already bound");
+                    }
+
+                    seen[request.slot] = 1;
+                }
+
+                const auto hardware_workers =
+                    std::max<std::size_t>(
+                        1,
+                        std::thread::
+                            hardware_concurrency());
+
+                std::size_t worker_count =
+                    std::min<std::size_t>(
+                        {
+                            requests.size(),
+                            hardware_workers,
+                            std::size_t{8},
+                        });
+
+                // Each exact leaf transform owns a thread-local CUDA NTT
+                // workspace. Keep concurrent temporary transform storage
+                // bounded independently of the resident leaf cache.
+                constexpr std::size_t
+                    kMaximumConcurrentLeafWorkspaceBytes =
+                        std::size_t{512} << 20;
+
+                if (target_size_ >
+                    std::numeric_limits<
+                        std::size_t>::max() /
+                        sizeof(GpuFr))
+                {
+                    worker_count = 1;
+                }
+                else
+                {
+                    const auto leaf_bytes =
+                        target_size_ *
+                        sizeof(GpuFr);
+
+                    const auto workspace_bytes =
+                        leaf_bytes >
+                                std::numeric_limits<
+                                    std::size_t>::max() /
+                                    2
+                            ? std::numeric_limits<
+                                  std::size_t>::max()
+                            : leaf_bytes * 2;
+
+                    const auto memory_worker_count =
+                        workspace_bytes == 0 ||
+                                workspace_bytes >
+                                    kMaximumConcurrentLeafWorkspaceBytes
+                            ? std::size_t{1}
+                            : std::max<std::size_t>(
+                                  1,
+                                  kMaximumConcurrentLeafWorkspaceBytes /
+                                      workspace_bytes);
+
+                    worker_count =
+                        std::min(
+                            worker_count,
+                            memory_worker_count);
+                }
+
+                worker_count =
+                    std::max<std::size_t>(
+                        1,
+                        worker_count);
+
+                int executor_device = -1;
+
+                auto status =
+                    cudaGetDevice(
+                        &executor_device);
+
+                if (status != cudaSuccess)
+                {
+                    throw_cuda_t_edge_error(
+                        "evaluation leaf batch device lookup",
+                        status);
+                }
+
+                std::atomic<std::size_t>
+                    next{0};
+
+                std::atomic<bool>
+                    declined{false};
+
+                std::vector<
+                    std::future<void>>
+                    futures;
+
+                futures.reserve(
+                    worker_count);
+
+                for (std::size_t worker = 0;
+                     worker < worker_count;
+                     ++worker)
+                {
+                    futures.push_back(
+                        std::async(
+                            std::launch::async,
+                            [&, executor_device]()
+                            {
+                                const auto
+                                    device_status =
+                                        cudaSetDevice(
+                                            executor_device);
+
+                                if (device_status !=
+                                    cudaSuccess)
+                                {
+                                    throw_cuda_t_edge_error(
+                                        "evaluation leaf batch device selection",
+                                        device_status);
+                                }
+
+                                while (!declined.load(
+                                    std::memory_order_acquire))
+                                {
+                                    const auto index =
+                                        next.fetch_add(
+                                            1,
+                                            std::memory_order_relaxed);
+
+                                    if (index >=
+                                        requests.size())
+                                    {
+                                        break;
+                                    }
+
+                                    const auto &request =
+                                        requests[index];
+
+                                    if (!materialize_evaluation_leaf(
+                                            request.slot,
+                                            request.values,
+                                            request.value_count,
+                                            request.zero_domain_blinder,
+                                            request.blinder_count))
+                                    {
+                                        declined.store(
+                                            true,
+                                            std::memory_order_release);
+
+                                        break;
+                                    }
+                                }
+                            }));
+                }
+
+                for (auto &future :
+                     futures)
+                {
+                    future.get();
+                }
+
+                return !declined.load(
+                    std::memory_order_acquire);
+            }
+
             bool materialize_coefficient_leaf(
                 std::size_t slot,
                 const mcl::Fr *coefficients,
@@ -2196,22 +2406,42 @@ namespace gatzk::protocol
                     }
                 }
 
-                auto status =
-                    cudaMemcpyAsync(
-                        device_access_slots_,
-                        access_slots.data(),
-                        checked_bytes(
-                            access_slots.size(),
-                            sizeof(std::uint32_t),
-                            "access slots"),
-                        cudaMemcpyHostToDevice,
-                        0);
+                const auto access_slot_bytes =
+                    checked_bytes(
+                        access_slots.size(),
+                        sizeof(std::uint32_t),
+                        "access slots");
 
-                if (status != cudaSuccess)
+                auto status =
+                    cudaSuccess;
+
+                if (!access_slots_uploaded_ ||
+                    host_access_slots_cache_ !=
+                        access_slots)
                 {
-                    throw_cuda_t_edge_error(
-                        "access-slot upload",
-                        status);
+                    status =
+                        cudaMemcpyAsync(
+                            device_access_slots_,
+                            access_slots.data(),
+                            access_slot_bytes,
+                            cudaMemcpyHostToDevice,
+                            0);
+
+                    if (status != cudaSuccess)
+                    {
+                        throw_cuda_t_edge_error(
+                            "access-slot upload",
+                            status);
+                    }
+
+                    algebra::record_cuda_h2d(
+                        access_slot_bytes);
+
+                    host_access_slots_cache_ =
+                        access_slots;
+
+                    access_slots_uploaded_ =
+                        true;
                 }
 
                 constexpr unsigned
@@ -2818,6 +3048,12 @@ namespace gatzk::protocol
                 device_access_slots_ =
                     nullptr;
 
+                host_access_slots_cache_
+                    .clear();
+
+                access_slots_uploaded_ =
+                    false;
+
                 program_ = nullptr;
             }
 
@@ -2953,13 +3189,13 @@ namespace gatzk::protocol
             std::vector<std::uint8_t>
                 host_leaf_split_layout_;
 
-            std::vector<bool>
+            std::vector<std::uint8_t>
                 host_leaf_bound_;
 
             std::vector<std::size_t>
                 host_leaf_uploaded_prefix_;
 
-            std::vector<bool>
+            std::vector<std::uint8_t>
                 host_leaf_requires_default_wait_;
 
             std::uint8_t
@@ -3041,6 +3277,12 @@ namespace gatzk::protocol
             std::uint32_t
                 *device_access_slots_ =
                     nullptr;
+
+            std::vector<std::uint32_t>
+                host_access_slots_cache_;
+
+            bool access_slots_uploaded_ =
+                false;
 
             const TEdgeBoundProgram
                 *program_ = nullptr;
@@ -3385,7 +3627,7 @@ namespace gatzk::protocol
                 &host_slot_bytes) ||
             !checked_count_bytes(
                 cache_slot_count,
-                sizeof(bool),
+                sizeof(std::uint8_t),
                 &host_bound_bytes) ||
             !checked_count_bytes(
                 cache_slot_count,

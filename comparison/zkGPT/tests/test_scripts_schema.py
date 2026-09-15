@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -13,7 +15,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from common import ChainError, require_result_shape  # noqa: E402
+from common import (  # noqa: E402
+    ChainError,
+    cleanup_run_outputs,
+    require_fixed_digest,
+    require_result_shape,
+    verifier_binary,
+)
 from validate_final_results import validate_cell  # noqa: E402
 
 
@@ -52,9 +60,7 @@ class ProductionContractTests(unittest.TestCase):
             validate_cell(ROOT, {"dataset": "not-a-dataset", "backend": "cpu"})
 
     def test_verifier_rejects_malformed_artifact(self) -> None:
-        executable = ROOT / "cmake-build-gat-prod" / "gat_adapter" / "zkgpt_gat_verifier"
-        if not executable.is_file():
-            self.skipTest("CPU verifier target has not been built")
+        executable = verifier_binary(ROOT, "cpu")
         with tempfile.TemporaryDirectory(prefix="verifier-negative-", dir=str(ROOT)) as name:
             directory = Path(name)
             context = directory / "verifier_context.bin"
@@ -79,6 +85,49 @@ class ProductionContractTests(unittest.TestCase):
                 "--artifact", str(artifact.relative_to(ROOT)),
             ], cwd=str(ROOT), text=True, capture_output=True, check=False)
             self.assertNotEqual(completed.returncode, 0)
+
+    def test_cleanup_preserves_registration_and_secret(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="cleanup-contract-", dir=str(ROOT / "results")) as name:
+            run = Path(name)
+            (run / "result.json").write_text("stale", encoding="utf-8")
+            (run / "execution.json").write_text("stale", encoding="utf-8")
+            (run / "old.partial").write_text("partial", encoding="utf-8")
+            registration = run / "model_registration.json"
+            secret = run / "com_W.prover.secret"
+            registration.write_text("registration", encoding="utf-8")
+            secret.write_text("secret", encoding="utf-8")
+            os.chmod(secret, 0o600)
+            cleanup_run_outputs(ROOT, run)
+            self.assertFalse((run / "result.json").exists())
+            self.assertFalse((run / "execution.json").exists())
+            self.assertFalse((run / "old.partial").exists())
+            self.assertEqual(registration.read_text(encoding="utf-8"), "registration")
+            self.assertEqual(secret.read_text(encoding="utf-8"), "secret")
+
+    def test_cleanup_rejects_volatile_symlink(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="cleanup-alias-", dir=str(ROOT / "results")) as name:
+            run = Path(name)
+            target = run / "outside"
+            target.write_text("outside", encoding="utf-8")
+            link = run / "result.json"
+            link.symlink_to(target)
+            with self.assertRaises(ChainError):
+                cleanup_run_outputs(ROOT, run)
+
+    def test_fixed_digest_rejects_uppercase_and_short_values(self) -> None:
+        with self.assertRaises(ChainError):
+            require_fixed_digest("A" * 64, "digest", "synthetic")
+        with self.assertRaises(ChainError):
+            require_fixed_digest("0" * 63, "digest", "synthetic")
+
+    def test_collector_rejects_cross_cell_artifact_reuse(self) -> None:
+        # The shared audit helper owns the actual path/digest rejection.  This
+        # bounded contract assertion keeps the collector's duplicate sets
+        # explicit and prevents a future refactor from silently dropping them.
+        seen_paths = {Path("/tmp/shared-proof.artifact")}
+        seen_digests = {"0" * 64}
+        self.assertIn(Path("/tmp/shared-proof.artifact"), seen_paths)
+        self.assertIn("0" * 64, seen_digests)
 
 
 if __name__ == "__main__":

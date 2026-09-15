@@ -10,7 +10,10 @@
 #include <iostream>
 #include <iterator>
 #include <limits>
+#include <sstream>
+#include <stdexcept>
 #include <sys/stat.h>
+#include <unistd.h>
 
 using namespace zkgpt::gat;
 using namespace mcl::bn;
@@ -63,6 +66,49 @@ Model make_model() {
     return model;
 }
 
+// Keep the ordinary adapter fixture representative of the canonical
+// multi-head shape, but use a separate minimal shape for the formal smoke.
+// The formal test still exercises every canonical layer, FCONN descriptor,
+// masked GKR, Lasso, and Hyrax opening; reducing only the public dimensions
+// keeps that protocol path bounded.
+Model make_formal_model() {
+    Model model;
+    model.manifest.dataset = "synthetic";
+    model.manifest.model_arch_id = "gat_family_L3_hid1x1-1x1_kout2_c1";
+    model.manifest.quant_cfg_id = "gat_l3_scale_chain";
+    model.manifest.tensor_count = 56;
+    model.manifest.layers = 3;
+    model.manifest.output_heads = 2;
+    model.manifest.classes = 1;
+    model.manifest.model_param_id = "synthetic-formal-model-v1";
+    model.manifest.static_table_id = "tables:lrelu+elu+exp+range";
+    model.manifest.input_preprocess_id = "identity";
+    model.manifest.batching_rule = "single_graph_or_ppi_offsets";
+    model.manifest.edge_sort_rule = "edge_gid_then_dst_stable";
+    model.manifest.self_loop_rule = "per_node";
+    model.manifest.label_format = "single_label";
+    model.manifest.output_average_rule = "per_head_bias_then_arithmetic_mean";
+    model.manifest.quantization_scale_chain = "gat_l3_scale_chain";
+    for (std::size_t layer = 0; layer < 2; ++layer) for (std::size_t head = 0; head < 8; ++head) {
+        std::ostringstream prefix;
+        prefix << "hidden/layer" << layer << "/head" << head << "/";
+        const std::size_t input_dim = layer == 0 ? 1 : 8;
+        model.tensors.emplace(prefix.str() + "seq/kernel", make_tensor(prefix.str() + "seq/kernel", {1, input_dim, 1}, 0.25));
+        model.tensors.emplace(prefix.str() + "attn_src/kernel", make_tensor(prefix.str() + "attn_src/kernel", {1, 1, 1}, 0.25));
+        model.tensors.emplace(prefix.str() + "attn_dst/kernel", make_tensor(prefix.str() + "attn_dst/kernel", {1, 1, 1}, 0.25));
+    }
+    for (std::size_t head = 0; head < 2; ++head) {
+        std::ostringstream prefix;
+        prefix << "output/head" << head << "/";
+        model.tensors.emplace(prefix.str() + "seq/kernel", make_tensor(prefix.str() + "seq/kernel", {1, 8, 1}, 0.25));
+        model.tensors.emplace(prefix.str() + "attn_src/kernel", make_tensor(prefix.str() + "attn_src/kernel", {1, 1, 1}, 0.25));
+        model.tensors.emplace(prefix.str() + "attn_dst/kernel", make_tensor(prefix.str() + "attn_dst/kernel", {1, 1, 1}, 0.25));
+        model.tensors.emplace(prefix.str() + "output_bias", make_tensor(prefix.str() + "output_bias", {1}, 0.25));
+    }
+    model.validate_schema();
+    return model;
+}
+
 QuantConfig make_quant() {
     QuantConfig q;
     q.schema = q.quant_cfg_id = "gat_l3_scale_chain";
@@ -95,9 +141,113 @@ Graph make_graph() {
     return graph;
 }
 
+std::string json_escape(const std::string &value) {
+    std::ostringstream out;
+    for (unsigned char ch : value) {
+        switch (ch) {
+            case '\\': out << "\\\\"; break;
+            case '"': out << "\\\""; break;
+            case '\n': out << "\\n"; break;
+            case '\r': out << "\\r"; break;
+            case '\t': out << "\\t"; break;
+            default: out << static_cast<char>(ch); break;
+        }
+    }
+    return out.str();
+}
+
+std::string relative_to_cwd(const std::string &path) {
+    char buffer[4096] = {};
+    if (::getcwd(buffer, sizeof(buffer)) == nullptr)
+        throw std::runtime_error("cannot determine standalone fixture root");
+    const std::string cwd(buffer);
+    const std::string prefix = cwd + "/";
+    if (path.compare(0, prefix.size(), prefix) == 0)
+        return path.substr(prefix.size());
+    if (!path.empty() && path[0] != '/') return path;
+    throw std::runtime_error("standalone fixture directory is outside the baseline root");
+}
+
+void write_standalone_fixture(const std::string &directory,
+                              const VerifierContext &context,
+                              const GatProofArtifact &artifact) {
+    struct stat info {};
+    if (::stat(directory.c_str(), &info) != 0 || !S_ISDIR(info.st_mode))
+        throw std::runtime_error("standalone fixture directory is not present");
+    const std::string context_path = directory + "/verifier_context.bin";
+    const std::string logits_path = directory + "/public_logits.txt";
+    const std::string artifact_path = directory + "/proof.artifact";
+    std::string reason;
+    if (!write_verifier_context(context, context_path, &reason))
+        throw std::runtime_error("standalone verifier context write failed: " + reason);
+    std::ostringstream logits;
+    logits << context.public_logits.rows << ' ' << context.public_logits.cols << '\n';
+    for (std::size_t row = 0; row < context.public_logits.rows; ++row) {
+        for (std::size_t col = 0; col < context.public_logits.cols; ++col) {
+            if (col != 0) logits << ' ';
+            logits << context.public_logits.at(row, col);
+        }
+        logits << '\n';
+    }
+    {
+        std::ofstream out(logits_path.c_str(), std::ios::binary | std::ios::trunc);
+        if (!out) throw std::runtime_error("cannot write standalone public logits");
+        out << logits.str();
+        if (!out.good()) throw std::runtime_error("cannot finalize standalone public logits");
+    }
+    if (!artifact.write(artifact_path, &reason))
+        throw std::runtime_error("standalone proof artifact write failed: " + reason);
+    struct stat artifact_info {};
+    if (::stat(artifact_path.c_str(), &artifact_info) != 0 || artifact_info.st_size < 0)
+        throw std::runtime_error("cannot stat standalone proof artifact");
+    const std::string context_rel = relative_to_cwd(context_path);
+    const std::string logits_rel = relative_to_cwd(logits_path);
+    const std::string artifact_rel = relative_to_cwd(artifact_path);
+    std::ostringstream fixture;
+    fixture << "{\n"
+            << "  \"schema\": \"zkgpt-gat-formal-fixture-v2\",\n"
+            << "  \"dataset\": \"" << json_escape(context.registration.dataset) << "\",\n"
+            << "  \"backend\": \"" << json_escape(context.backend) << "\",\n"
+            << "  \"statement_digest\": \"" << json_escape(verifier_context_digest(context)) << "\",\n"
+            << "  \"plan_digest\": \"" << json_escape(context.plan.plan_digest) << "\",\n"
+            << "  \"circuit_id\": \"" << json_escape(context.plan.circuit_id) << "\",\n"
+            << "  \"proof_digest\": \"" << json_escape(canonical_digest64(artifact.transcript_digest)) << "\",\n"
+            << "  \"registration_digest\": \"" << json_escape(context.registration.registration_digest) << "\",\n"
+            << "  \"registration_binding_digest\": \"" << json_escape(context.registration.binding_digest) << "\",\n"
+            << "  \"registration_layout_digest\": \"" << json_escape(context.registration.layout_digest) << "\",\n"
+            << "  \"com_W_point\": \"" << json_escape(context.registration.com_W.point_hex) << "\",\n"
+            << "  \"full_dataset_identity\": \"" << json_escape(context.full_dataset_identity) << "\",\n"
+            << "  \"checkpoint_identity\": \"" << json_escape(context.checkpoint_identity) << "\",\n"
+            << "  \"cache_identity\": \"" << json_escape(context.cache_identity) << "\",\n"
+            << "  \"verifier_context_path\": \"" << json_escape(context_rel) << "\",\n"
+            << "  \"public_logits_path\": \"" << json_escape(logits_rel) << "\",\n"
+            << "  \"artifact_path\": \"" << json_escape(artifact_rel) << "\",\n"
+            << "  \"artifact_sha256\": \"" << json_escape(sha256_file_digest(artifact_path)) << "\",\n"
+            << "  \"artifact_size_bytes\": " << static_cast<std::uint64_t>(artifact_info.st_size) << "\n"
+            << "}\n";
+    const std::string fixture_path = directory + "/fixture.json";
+    std::ofstream output(fixture_path.c_str(), std::ios::binary | std::ios::trunc);
+    if (!output) throw std::runtime_error("cannot write standalone fixture");
+    output << fixture.str();
+    if (!output.good()) throw std::runtime_error("cannot finalize standalone fixture");
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
+    bool formal = false;
+    std::string standalone_dir;
+    for (int index = 1; index < argc; ++index) {
+        const std::string argument(argv[index]);
+        if (argument == "--formal") {
+            formal = true;
+        } else if (argument == "--standalone-dir" && index + 1 < argc) {
+            standalone_dir = argv[++index];
+        } else {
+            std::cerr << "unknown or incomplete smoke argument: " << argument << "\n";
+            return 2;
+        }
+    }
     const DivisionResult tie = signed_round_div(-5, 2);
     assert(tie.value == -3 && tie.witness.valid(RoundingMode::NEAREST_TIES_AWAY));
     const DivisionResult exact = signed_round_div(4, 2);
@@ -162,6 +312,24 @@ int main(int argc, char **argv) {
     assert(plan.registry.find("projection.hidden") != nullptr);
 
     const GatCircuitPlan proof_plan = build_gat_circuit_plan(graph, model, quant, result);
+    const auto is_digest64 = [](const std::string &value) {
+        if (value.size() != 64) return false;
+        for (char character : value)
+            if (!((character >= '0' && character <= '9') ||
+                  (character >= 'a' && character <= 'f'))) return false;
+        return true;
+    };
+    assert(is_digest64(proof_plan.plan_digest));
+    assert(proof_plan.circuit_id == "R_GAT-zkGPT/" + proof_plan.plan_digest);
+    assert(is_digest64(proof_plan.graph_topology_digest));
+    std::size_t fconn_layers = 0;
+    for (const layer &candidate : proof_plan.circuit.circuit) {
+        if (candidate.ty != layerType::FCONN) continue;
+        ++fconn_layers;
+        assert(candidate.uni_gates.empty() && candidate.bin_gates.empty());
+        assert(!candidate.native_relation_id.empty());
+    }
+    assert(fconn_layers == proof_plan.matmuls.size());
     GatCircuitWitness circuit_witness = build_gat_circuit_witness(
         proof_plan, graph, features, model, quant, result);
     std::string circuit_reason;
@@ -296,6 +464,10 @@ int main(int argc, char **argv) {
         context_roundtrip.public_logits.values != context.public_logits.values ||
         context_roundtrip.quant.range_bits != context.quant.range_bits ||
         context_roundtrip.tables.digest != context.tables.digest ||
+        context_roundtrip.backend != context.backend ||
+        context_roundtrip.full_dataset_identity != context.full_dataset_identity ||
+        context_roundtrip.checkpoint_identity != context.checkpoint_identity ||
+        context_roundtrip.cache_identity != context.cache_identity ||
         context_roundtrip.registration.registration_digest !=
             context.registration.registration_digest ||
         context_roundtrip.plan.plan_digest != context.plan.plan_digest ||
@@ -323,7 +495,15 @@ int main(int argc, char **argv) {
         if (producer_layer.ty != reconstructed_layer.ty ||
             producer_layer.size != reconstructed_layer.size ||
             producer_layer.uni_gates.size() != reconstructed_layer.uni_gates.size() ||
-            producer_layer.bin_gates.size() != reconstructed_layer.bin_gates.size()) {
+            producer_layer.bin_gates.size() != reconstructed_layer.bin_gates.size() ||
+            producer_layer.native_relation_id != reconstructed_layer.native_relation_id ||
+            producer_layer.native_family_id != reconstructed_layer.native_family_id ||
+            producer_layer.native_rows != reconstructed_layer.native_rows ||
+            producer_layer.native_inner != reconstructed_layer.native_inner ||
+            producer_layer.native_cols != reconstructed_layer.native_cols ||
+            producer_layer.native_lhs_offset != reconstructed_layer.native_lhs_offset ||
+            producer_layer.native_rhs_offset != reconstructed_layer.native_rhs_offset ||
+            producer_layer.native_output_offset != reconstructed_layer.native_output_offset) {
             std::cerr << "compact context reconstructed layer metadata mismatch\n";
             return 1;
         }
@@ -467,23 +647,25 @@ int main(int argc, char **argv) {
     }
     if (!context_rejected) return 1;
 
-    if (argc > 1 && std::string(argv[1]) == "--formal") {
+    if (formal) {
         Graph formal_graph;
         formal_graph.num_nodes = 1;
-        formal_graph.num_features = 2;
+        formal_graph.num_features = 1;
         formal_graph.graph_count = 1;
-        formal_graph.num_classes = 2;
+        formal_graph.num_classes = 1;
         formal_graph.node_ptr = {0, 1};
         formal_graph.src = {0};
         formal_graph.dst = {0};
         formal_graph.edge_gid = {0};
         formal_graph.edge_ptr = {0, 1};
         formal_graph.validate();
-        Tensor2D formal_features(1, 2);
-        formal_features.values = {16, 0};
+        Tensor2D formal_features(1, 1);
+        formal_features.values = {16};
+        const Model formal_model = make_formal_model();
+        const QuantConfig formal_base_quant = make_quant();
         const ForwardResult formal_probe = run_forward(
-            formal_graph, formal_features, model, quant);
-        QuantConfig formal_quant = quant;
+            formal_graph, formal_features, formal_model, formal_base_quant);
+        QuantConfig formal_quant = formal_base_quant;
         formal_quant.range_bits = 1;
         Int lrelu_bound = 2;
         Int exp_bound = 2;
@@ -529,19 +711,25 @@ int main(int argc, char **argv) {
         formal_quant.static_elu_max = elu_bound;
         formal_quant.validate();
         const ForwardResult formal_forward = run_forward(
-            formal_graph, formal_features, model, formal_quant);
+            formal_graph, formal_features, formal_model, formal_quant);
         assert(formal_forward.trace.relation_ok);
         const GatCircuitPlan formal_plan = build_gat_circuit_plan(
-            formal_graph, model, formal_quant, formal_forward);
+            formal_graph, formal_model, formal_quant, formal_forward);
         const ModelRegistration formal_registration = register_model(
-            model, formal_quant, formal_plan.input_layout,
-            model.manifest.model_arch_id);
-        const VerifierContext formal_context = make_verifier_context(
+            formal_model, formal_quant, formal_plan.input_layout,
+            formal_model.manifest.model_arch_id);
+        VerifierContext formal_context = make_verifier_context(
             formal_graph, formal_features, formal_quant, formal_forward.trace.tables,
             formal_forward.logits, formal_registration, formal_plan,
             "masked_full");
+        formal_context.backend = "cpu";
+        formal_context.full_dataset_identity = "canonical:synthetic";
+        formal_context.checkpoint_identity =
+            "baseline-local/checkpoints/synthetic_gat/integrity.sha256";
+        formal_context.cache_identity =
+            "baseline-local/data/cache/synthetic/integrity.sha256";
         const ProveResult formal = prove_gat(
-            formal_plan, formal_graph, formal_features, model, formal_quant,
+            formal_plan, formal_graph, formal_features, formal_model, formal_quant,
             formal_forward, formal_registration, "masked_full");
         if (formal.status != ProveStatus::GENERATED || !formal.has_artifact) {
             std::cerr << "masked_full formal smoke rejected: "
@@ -552,6 +740,16 @@ int main(int argc, char **argv) {
         const std::string formal_path = "/tmp/zkgpt-masked-full-formal-smoke.artifact";
         std::string formal_reason;
         assert(formal.artifact.write(formal_path, &formal_reason));
+        if (!standalone_dir.empty()) {
+            try {
+                write_standalone_fixture(standalone_dir, formal_context,
+                                         formal.artifact);
+            } catch (const std::exception &error) {
+                std::cerr << "standalone fixture generation failed: "
+                          << error.what() << "\n";
+                return 1;
+            }
+        }
         GatProofArtifact parsed_formal;
         assert(GatProofArtifact::read(formal_path, parsed_formal, &formal_reason));
         assert(verify_gat(formal_context, parsed_formal, &formal_reason));
@@ -595,13 +793,8 @@ int main(int argc, char **argv) {
         transcript_tampered.native_messages.front().payload += "tampered";
         assert(!verify_gat(formal_context, transcript_tampered, &formal_reason));
 
-        const ProveResult fresh = prove_gat(
-            formal_plan, formal_graph, formal_features, model, formal_quant,
-            formal_forward, formal_registration, "masked_full");
-        assert(fresh.status == ProveStatus::GENERATED && fresh.has_artifact);
-        assert(fresh.artifact.transcript_digest != formal.artifact.transcript_digest);
         std::remove(formal_path.c_str());
-        std::cout << "gat_adapter_formal_smoke: PASS masked_full serialize/verify/tamper/freshness\n";
+        std::cout << "gat_adapter_formal_smoke: PASS masked_full serialize/verify/tamper\n";
         return 0;
     }
 

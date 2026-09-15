@@ -36,6 +36,15 @@ namespace gatzk::protocol
         std::size_t blinder_count = 0;
     };
 
+    struct CudaTEdgeEvaluationLeafRequest
+    {
+        std::size_t slot = 0;
+        const mcl::Fr *values = nullptr;
+        std::size_t value_count = 0;
+        const mcl::Fr *zero_domain_blinder = nullptr;
+        std::size_t blinder_count = 0;
+    };
+
     class CudaTEdgeExecutor
     {
     public:
@@ -52,6 +61,10 @@ namespace gatzk::protocol
             std::size_t value_count,
             const mcl::Fr *zero_domain_blinder,
             std::size_t blinder_count) = 0;
+
+        virtual bool materialize_evaluation_leaf_batch(
+            const std::vector<CudaTEdgeEvaluationLeafRequest>
+                &requests) = 0;
 
         virtual bool materialize_coefficient_leaf(
             std::size_t slot,

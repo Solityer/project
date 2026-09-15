@@ -5,6 +5,13 @@
 #include "global_var.hpp"
 #include "native_protocol.hpp"
 #include <utils.hpp>
+
+// Formal FCONN layers carry an adapter-local descriptor identity.  The
+// helper is defined with the other masked-GKR utilities below and is also
+// used by the legacy transcript replay path above it.
+static bool masked_fconn_shape_matches(const layer &current,
+                                       const NativeGkrMatmulShape &shape,
+                                       std::string *reason);
 #include <circuit.h>
 #include <iostream>
 #include <sstream>
@@ -186,6 +193,38 @@ bool gkr_scope_message(const std::string &label) {
 } // namespace
 
 
+
+static bool masked_fconn_shape_matches(const layer &current,
+                                       const NativeGkrMatmulShape &shape,
+                                       std::string *reason) {
+    if (shape.rows == 0 || shape.inner == 0 || shape.cols == 0 ||
+        shape.rows > std::numeric_limits<std::size_t>::max() / shape.cols ||
+        shape.rows * shape.cols != current.size) {
+        if (reason != nullptr) *reason = "masked FCONN descriptor dimensions do not match layer";
+        return false;
+    }
+    const bool layer_annotated = !current.native_relation_id.empty() ||
+                                 !current.native_family_id.empty() ||
+                                 current.native_rows != 0 ||
+                                 current.native_inner != 0 ||
+                                 current.native_cols != 0 ||
+                                 current.native_lhs_offset != 0 ||
+                                 current.native_rhs_offset != 0 ||
+                                 current.native_output_offset != 0;
+    if (!layer_annotated) return true;
+    if (current.native_relation_id.empty() || current.native_family_id.empty() ||
+        current.native_rows != shape.rows || current.native_inner != shape.inner ||
+        current.native_cols != shape.cols ||
+        current.native_relation_id != shape.relation_id ||
+        current.native_family_id != shape.family_id ||
+        current.native_lhs_offset != shape.lhs_offset ||
+        current.native_rhs_offset != shape.rhs_offset ||
+        current.native_output_offset != shape.output_offset) {
+        if (reason != nullptr) *reason = "masked FCONN descriptor identity does not match layer";
+        return false;
+    }
+    return true;
+}
 
 verifier::verifier(prover *pr, const layeredCircuit &cir):
     p(pr), C(cir) 
@@ -1027,11 +1066,7 @@ bool verify_gkr_transcript(const NativeProofSession &session,
                     return false;
                 }
                 const NativeGkrMatmulShape shape = matmuls[--next_matmul];
-                if (shape.rows == 0 || shape.inner == 0 || shape.cols == 0 ||
-                    shape.rows * shape.cols != current.size) {
-                    if (reason != nullptr) *reason = "public FCONN descriptor does not match circuit";
-                    return false;
-                }
+                if (!masked_fconn_shape_matches(current, shape, reason)) return false;
                 const int n = ceilPow2BitLength(static_cast<u32>(shape.rows));
                 const int m = ceilPow2BitLength(static_cast<u32>(shape.inner));
                 const int k = ceilPow2BitLength(static_cast<u32>(shape.cols));
@@ -1975,6 +2010,26 @@ bool masked_validate_circuit(const layeredCircuit &circuit,
             masked_set_reason(reason, "masked GKR layer dimensions are invalid");
             return false;
         }
+        if (current.ty == layerType::FCONN) {
+            const bool annotated = !current.native_relation_id.empty() ||
+                                    !current.native_family_id.empty() ||
+                                    current.native_rows != 0 ||
+                                    current.native_inner != 0 ||
+                                    current.native_cols != 0 ||
+                                    current.native_lhs_offset != 0 ||
+                                    current.native_rhs_offset != 0 ||
+                                    current.native_output_offset != 0;
+            if (!current.uni_gates.empty() || !current.bin_gates.empty() ||
+                !current.ori_id_u.empty() || !current.ori_id_v.empty() ||
+                (annotated && (current.native_relation_id.empty() ||
+                               current.native_family_id.empty() ||
+                               current.native_rows == 0 ||
+                               current.native_inner == 0 ||
+                               current.native_cols == 0))) {
+                masked_set_reason(reason, "masked FCONN layer is not a canonical native relation");
+                return false;
+            }
+        }
     }
     return true;
 }
@@ -2073,10 +2128,8 @@ bool prove_masked_gkr_transcript(
                     throw std::runtime_error(*reason);
                 }
                 const NativeGkrMatmulWitness &matmul = witness.matmuls[--next_matmul];
-                if (matmul.shape.rows * matmul.shape.cols != current.size) {
-                    masked_set_reason(reason, "masked GKR FCONN output shape mismatch");
+                if (!masked_fconn_shape_matches(current, matmul.shape, reason))
                     throw std::runtime_error(*reason);
-                }
                 std::size_t rows_domain = 0, inner_domain = 0, cols_domain = 0;
                 std::vector<F> left, right;
                 if (!masked_matmul_witness_vectors(matmul, rows_domain, inner_domain,
@@ -2476,9 +2529,7 @@ bool verify_masked_gkr_transcript(
                     return false;
                 }
                 const NativeGkrMatmulShape &shape = matmuls[--next_matmul];
-                if (shape.rows == 0 || shape.inner == 0 || shape.cols == 0 ||
-                    shape.rows * shape.cols != current.size)
-                    return false;
+                if (!masked_fconn_shape_matches(current, shape, reason)) return false;
                 const std::size_t n = ceilPow2BitLength(
                     static_cast<std::uint32_t>(shape.rows));
                 const std::size_t m = ceilPow2BitLength(
