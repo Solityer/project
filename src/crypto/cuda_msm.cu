@@ -1807,6 +1807,13 @@ namespace gatzk::crypto
                 static_cast<int>(
                     batch_size);
 
+            // Every batch member uses the same immutable SRS base vector.
+            // ICICLE must therefore reuse the single points array for all
+            // scalar batches instead of interpreting device_points as
+            // batch_size consecutive point arrays.
+            config.are_points_shared_in_batch =
+                true;
+
             config.are_points_on_device =
                 true;
 
@@ -2208,6 +2215,14 @@ namespace gatzk::crypto
                 config.points_size =
                     static_cast<int>(
                         current_count);
+
+                // All batch members share this SRS slice:
+                //
+                //     device_points[offset : offset + current_count]
+                //
+                // Scalar vectors are batch-major, but points are not.
+                config.are_points_shared_in_batch =
+                    true;
 
                 config.are_points_on_device =
                     true;
