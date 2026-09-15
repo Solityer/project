@@ -21,6 +21,11 @@
 namespace zkgpt {
 namespace gat {
 
+// Hashes canonical bytes to exactly 64 lowercase hexadecimal characters.
+// Callers must pass bytes, not an already encoded digest; wire readers use
+// strict validation and never normalize an attacker-supplied digest.
+std::string canonical_digest64(const std::string &bytes);
+
 struct InputSegment {
     std::string name;
     std::size_t offset = 0;

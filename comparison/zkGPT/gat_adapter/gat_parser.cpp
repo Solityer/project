@@ -896,6 +896,78 @@ Model Model::load(const std::string &bundle_dir) {
     return model;
 }
 
+Model Model::load_shape_only(const std::string &bundle_dir) {
+    // Authenticate the complete checkpoint bundle before consuming any
+    // metadata.  This routine intentionally never stores tensor payloads;
+    // it only parses their canonical headers and skips the authenticated
+    // scalar stream.  Capacity/registration callers therefore cannot
+    // accidentally construct a private witness or run a forward pass.
+    Model model;
+    verify_checkpoint_auth(bundle_dir);
+    const std::string manifest_path = bundle_dir + "/manifest.json";
+    model.manifest.source_path = manifest_path;
+    require_file(manifest_path);
+    std::ifstream manifest_in(manifest_path.c_str());
+    const std::string manifest_text((std::istreambuf_iterator<char>(manifest_in)),
+                                    std::istreambuf_iterator<char>());
+    model.manifest.dataset = manifest_string(manifest_text, "dataset");
+    model.manifest.model_arch_id = manifest_string(manifest_text, "model_arch_id");
+    model.manifest.quant_cfg_id = manifest_string(manifest_text, "quant_cfg_id");
+    model.manifest.model_param_id = manifest_required_string(manifest_text, "model_param_id");
+    model.manifest.static_table_id = manifest_required_string(manifest_text, "static_table_id");
+    model.manifest.input_preprocess_id = manifest_required_string(manifest_text, "input_preprocess_id");
+    model.manifest.batching_rule = manifest_required_string(manifest_text, "batching_rule");
+    model.manifest.edge_sort_rule = manifest_required_string(manifest_text, "edge_sort_rule");
+    model.manifest.self_loop_rule = manifest_required_string(manifest_text, "self_loop_rule");
+    model.manifest.label_format = manifest_required_string(manifest_text, "label_format");
+    model.manifest.output_average_rule = manifest_required_string(manifest_text, "output_average_rule");
+    model.manifest.quantization_scale_chain = manifest_required_string(manifest_text, "quantization_scale_chain");
+    model.manifest.tensor_count = manifest_number(manifest_text, "tensor_count");
+    model.manifest.layers = manifest_number(manifest_text, "L");
+    model.manifest.output_heads = manifest_number(manifest_text, "K_out");
+    model.manifest.classes = manifest_number(manifest_text, "C");
+
+    const std::string tensor_path = bundle_dir + "/tensors.txt";
+    require_file(tensor_path);
+    std::ifstream in(tensor_path.c_str());
+    std::string line;
+    while (std::getline(in, line)) {
+        line = trim(line);
+        if (line.empty()) continue;
+        std::istringstream header(line);
+        std::string tag, name;
+        std::size_t rank = 0;
+        if (!(header >> tag >> name >> rank) || tag != "TENSOR" || name.empty())
+            throw std::runtime_error("malformed tensor header in " + tensor_path);
+        Tensor tensor;
+        tensor.name = name;
+        tensor.shape.dims.resize(rank);
+        std::size_t count = 1;
+        for (std::size_t i = 0; i < rank; ++i) {
+            if (!(header >> tensor.shape.dims[i]) || tensor.shape.dims[i] == 0 ||
+                count > std::numeric_limits<std::size_t>::max() / tensor.shape.dims[i])
+                throw std::runtime_error("tensor rank/shape mismatch: " + name);
+            count *= tensor.shape.dims[i];
+        }
+        std::size_t declared_count = 0;
+        if (!(header >> declared_count) || declared_count != count)
+            throw std::runtime_error("tensor count mismatch: " + name);
+        // Do not retain private values.  The whole file was authenticated
+        // above, and schema validation below only needs a shape-sized zero
+        // vector to exercise the canonical rank/dimension checks.
+        tensor.values.assign(count, 0.0);
+        if (!model.tensors.emplace(name, std::move(tensor)).second)
+            throw std::runtime_error("duplicate tensor: " + name);
+        double ignored = 0.0;
+        for (std::size_t i = 0; i < count; ++i)
+            if (!(in >> ignored)) throw std::runtime_error("truncated tensor payload: " + name);
+    }
+    std::string trailing;
+    if (in >> trailing) throw std::runtime_error("trailing tensor payload in " + tensor_path);
+    model.validate_schema();
+    return model;
+}
+
 const Tensor &Model::tensor(const std::string &name) const {
     const auto it = tensors.find(name);
     if (it == tensors.end()) throw std::runtime_error("canonical tensor missing: " + name);

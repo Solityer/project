@@ -6,6 +6,7 @@
 
 #include <unordered_set>
 #include <iostream>
+#include <string>
 #include "global_var.hpp"
 #include "hyrax.hpp"
 using std::cerr;
@@ -54,8 +55,19 @@ public:
     std::vector<uniGate> uni_gates;
 	std::vector<binGate> bin_gates;
 
-	vector<u32> ori_id_u, ori_id_v;
+    vector<u32> ori_id_u, ori_id_v;
     i8 fft_bit_length;
+
+    // Native FCONN metadata.  A FCONN layer is intentionally represented by
+    // its public descriptor rather than by one binary gate for every scalar
+    // product.  The adapter materializer fills these fields and the native
+    // masked GKR walk checks them against its prover witness.  They are
+    // derived in-memory state and are never a replacement for the native
+    // MatMul Sumcheck relation.
+    std::string native_relation_id;
+    std::string native_family_id;
+    u32 native_rows{}, native_inner{}, native_cols{};
+    u64 native_lhs_offset{}, native_rhs_offset{}, native_output_offset{};
 
     // iFFT or avg pooling.
     //F scale;

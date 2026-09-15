@@ -72,6 +72,14 @@ struct NativeGkrMatmulShape {
     std::size_t rows = 0;
     std::size_t inner = 0;
     std::size_t cols = 0;
+    // The adapter's canonical descriptor identity.  Empty values preserve
+    // the upstream synthetic API, but formal GAT contexts populate every
+    // field and the native walk compares them to the FCONN layer metadata.
+    std::string relation_id;
+    std::string family_id;
+    std::size_t lhs_offset = 0;
+    std::size_t rhs_offset = 0;
+    std::size_t output_offset = 0;
 };
 
 // Prover-only witness for one native FCONN matrix relation.  The LHS is

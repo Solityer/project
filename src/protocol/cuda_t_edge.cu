@@ -1336,16 +1336,21 @@ namespace gatzk::protocol
                 for (const auto &term :
                      program.terms)
                 {
+                    CudaTEdgeCompiledTerm
+                        compiled_term;
+
+                    compiled_term.instruction_begin =
+                        term.instruction_begin;
+
+                    compiled_term.instruction_end =
+                        term.instruction_end;
+
+                    compiled_term.alpha_scale =
+                        gpu_field(
+                            term.alpha_scale);
+
                     compiled_terms.push_back(
-                        CudaTEdgeCompiledTerm{
-                            .instruction_begin =
-                                term.instruction_begin,
-                            .instruction_end =
-                                term.instruction_end,
-                            .alpha_scale =
-                                gpu_field(
-                                    term.alpha_scale),
-                        });
+                        compiled_term);
                 }
 
                 try

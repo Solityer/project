@@ -152,6 +152,10 @@ struct Model {
     std::map<std::string, Tensor> tensors;
 
     static Model load(const std::string &bundle_dir);
+    // Loads and authenticates only manifest/tensor-shape metadata.  Tensor
+    // values are not retained, making this suitable for metadata-only
+    // capacity checks and registration layout construction.
+    static Model load_shape_only(const std::string &bundle_dir);
     const Tensor &tensor(const std::string &name) const;
     void validate_schema() const;
     void validate_identity(const CanonicalConfig &config) const;
