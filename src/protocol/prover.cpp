@@ -6564,25 +6564,47 @@ namespace gatzk::protocol
                 }
             }
 
-            static std::size_t
-            cuda_t_edge_leaf_cache_slot_count(
-                const TEdgeBoundProgram &program)
+            struct CudaTEdgeLeafCacheBounds
+            {
+                std::size_t minimum = 0;
+                std::size_t desired = 0;
+            };
+
+            CudaTEdgeLeafCacheBounds
+            cuda_t_edge_leaf_cache_bounds(
+                const TEdgeBoundProgram &program) const
             {
                 constexpr std::size_t
                     kBaselineLeafCacheSlots = 8;
 
-                std::size_t slot_count =
+                std::size_t minimum =
                     kBaselineLeafCacheSlots;
 
+                std::unordered_set<std::string>
+                    desired_labels;
+
+                desired_labels.reserve(
+                    program.accesses.size() * 2 +
+                    kBaselineLeafCacheSlots);
+
+                for (const auto &access :
+                     program.accesses)
+                {
+                    desired_labels.insert(
+                        access.label);
+                }
+
+                // Preserve the exact old correctness lower bound:
+                // every term must be able to keep all of its distinct
+                // direct accesses resident simultaneously.
                 for (const auto &term :
                      program.terms)
                 {
-                    std::vector<std::string>
-                        labels;
+                    std::unordered_set<std::string>
+                        term_labels;
 
-                    labels.reserve(
-                        term.required_accesses
-                            .size());
+                    term_labels.reserve(
+                        term.required_accesses.size());
 
                     for (const auto access_index :
                          term.required_accesses)
@@ -6595,31 +6617,66 @@ namespace gatzk::protocol
                                 "access index overflow");
                         }
 
-                        const auto &label =
-                            program
-                                .accesses[access_index]
-                                .label;
-
-                        if (std::find(
-                                labels.begin(),
-                                labels.end(),
-                                label) ==
-                            labels.end())
-                        {
-                            labels.push_back(
-                                label);
-                        }
+                        term_labels.insert(
+                            program.accesses[access_index]
+                                .label);
                     }
 
-                    slot_count =
+                    minimum =
                         std::max(
-                            slot_count,
-                            labels.size());
+                            minimum,
+                            term_labels.size());
                 }
 
-                return slot_count;
-            }
+                // Derived linear leaves can require registered source leaves
+                // that are not themselves direct program accesses. Include
+                // those execution-only dependencies in the desired resident
+                // working set so capacity does not force needless rematerialization.
+                for (const auto &access :
+                     program.accesses)
+                {
+                    const auto descriptor =
+                        t_edge_derived_linear_descriptor(
+                            access.label);
 
+                    if (!descriptor.has_value())
+                    {
+                        continue;
+                    }
+
+                    const auto flattened =
+                        flatten_t_edge_descriptor_sources(
+                            *descriptor);
+
+                    const auto *sources =
+                        &descriptor->sources;
+
+                    if (flattened.status ==
+                        TEdgeDerivedLinearFlattenStatus::
+                            Success)
+                    {
+                        sources =
+                            &flattened.sources;
+                    }
+
+                    for (const auto &source :
+                         *sources)
+                    {
+                        if (!source.scale.is_zero())
+                        {
+                            desired_labels.insert(
+                                source.label);
+                        }
+                    }
+                }
+
+                return CudaTEdgeLeafCacheBounds{
+                    .minimum = minimum,
+                    .desired = std::max(
+                        minimum,
+                        desired_labels.size()),
+                };
+            }
             CudaTEdgeExecutorAdmissionShape
             cuda_t_edge_executor_admission_shape(
                 const TEdgeBoundProgram &program) const
@@ -6772,8 +6829,8 @@ namespace gatzk::protocol
             }
 
             bool should_use_cuda_t_edge_engine()
-                const
             {
+                cuda_t_edge_selected_cache_slots_ = 0;
                 if (label_ != "t_edge" ||
                     !util::route2_options()
                          .cuda_field_hotspots ||
@@ -6809,19 +6866,87 @@ namespace gatzk::protocol
                             .external_evaluations,
                         *edge_evaluation_plan_);
 
-                const auto cache_slot_count =
-                    cuda_t_edge_leaf_cache_slot_count(
+                const auto cache_bounds =
+                    cuda_t_edge_leaf_cache_bounds(
                         program);
 
                 const auto admission_shape =
                     cuda_t_edge_executor_admission_shape(
                         program);
 
+                // Preserve the previous route-selection semantics:
+                // if the old correctness minimum cannot be admitted,
+                // do not force the CUDA resident route.
                 if (!cuda_t_edge_executor_can_admit(
                         target_size_,
-                        cache_slot_count,
+                        cache_bounds.minimum,
                         leaf_exact_ntt_supported,
                         admission_shape))
+                {
+                    progress_note(
+                        "prove:quotient:t_edge:"
+                        "cuda_executor:admission_rejected:"
+                        "target_size=" +
+                        std::to_string(
+                            target_size_) +
+                        ":minimum_slots=" +
+                        std::to_string(
+                            cache_bounds.minimum));
+
+                    return false;
+                }
+
+                // Admission cost is monotonic in cache_slot_count:
+                // all slot-dependent executor allocations are linear in the
+                // slot count. Select the largest safe resident working set.
+                std::size_t low =
+                    cache_bounds.minimum;
+
+                std::size_t high =
+                    cache_bounds.desired;
+
+                while (low < high)
+                {
+                    const auto middle =
+                        low +
+                        (high - low + 1) /
+                            2;
+
+                    if (cuda_t_edge_executor_can_admit(
+                            target_size_,
+                            middle,
+                            leaf_exact_ntt_supported,
+                            admission_shape))
+                    {
+                        low = middle;
+                    }
+                    else
+                    {
+                        high = middle - 1;
+                    }
+                }
+
+                cuda_t_edge_selected_cache_slots_ =
+                    low;
+
+                progress_note(
+                    "prove:quotient:t_edge:"
+                    "cuda_leaf_cache:"
+                    "minimum_slots=" +
+                    std::to_string(
+                        cache_bounds.minimum) +
+                    ":desired_slots=" +
+                    std::to_string(
+                        cache_bounds.desired) +
+                    ":selected_slots=" +
+                    std::to_string(
+                        cuda_t_edge_selected_cache_slots_) +
+                    ":full_resident=" +
+                    std::to_string(
+                        cuda_t_edge_selected_cache_slots_ ==
+                                cache_bounds.desired
+                            ? 1
+                            : 0));
                 {
                     progress_note(
                         "prove:quotient:t_edge:"
@@ -6883,8 +7008,14 @@ namespace gatzk::protocol
                         *edge_evaluation_plan_);
 
                 const auto leaf_cache_slots =
-                    cuda_t_edge_leaf_cache_slot_count(
-                        program);
+                    cuda_t_edge_selected_cache_slots_;
+
+                if (leaf_cache_slots == 0)
+                {
+                    throw std::runtime_error(
+                        "CUDA t_edge route is missing "
+                        "its admitted leaf-cache capacity");
+                }
 
                 const bool leaf_exact_ntt_supported =
                     cuda_t_edge_leaf_exact_ntt_supported(
@@ -11682,6 +11813,8 @@ namespace gatzk::protocol
                     CudaResidentCoefficientBuffer>
                 cuda_t_edge_resident_coefficients_;
 
+            std::size_t
+                cuda_t_edge_selected_cache_slots_ = 0;
             std::size_t target_size_ = 0;
             std::size_t rotation_step_ = 0;
             FieldElement shift_;

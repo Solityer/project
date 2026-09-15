@@ -9,6 +9,9 @@
 #include <type_traits>
 #include <unordered_map>
 #include <vector>
+#include <future>
+#include <thread>
+#include <limits>
 
 #include "gatzk/protocol/challenges.hpp"
 #include "gatzk/protocol/schema.hpp"
@@ -4387,6 +4390,194 @@ namespace gatzk::protocol
                 context.local.num_classes);
         }
 
+        std::optional<
+            std::vector<FieldElement>>
+            public_source_weights;
+
+        const auto evaluate_public_source_fold =
+            [&](const auto &spec,
+                const FieldElement &lambda)
+            -> FieldElement
+        {
+            if (!public_source_weights.has_value())
+            {
+                if (context.domains.n == nullptr)
+                {
+                    throw std::runtime_error(
+                        "t_N public-source fold is missing N domain");
+                }
+
+                public_source_weights.emplace(
+                    context.domains.n
+                        ->barycentric_weights(z));
+            }
+
+            const auto &weights =
+                *public_source_weights;
+
+            if (spec.source_rows >
+                    context.local.features.size() ||
+                spec.source_rows >
+                    weights.size())
+            {
+                throw std::runtime_error(
+                    "t_N public-source fold row shape mismatch");
+            }
+
+            if (spec.source_rows == 0)
+            {
+                return FieldElement::zero();
+            }
+
+            const auto fold_range =
+                [&](std::size_t begin,
+                    std::size_t end)
+                -> FieldElement
+            {
+                auto partial =
+                    FieldElement::zero();
+
+                for (std::size_t row = begin;
+                     row < end;
+                     ++row)
+                {
+                    const auto &feature_row =
+                        context.local.features[row];
+
+                    if (feature_row.size() <
+                        spec.width)
+                    {
+                        throw std::runtime_error(
+                            "t_N public-source fold width mismatch");
+                    }
+
+                    auto row_fold =
+                        FieldElement::zero();
+
+                    for (std::size_t column = 0;
+                         column < spec.width;
+                         ++column)
+                    {
+                        row_fold =
+                            row_fold * lambda +
+                            feature_row[column];
+                    }
+
+                    partial +=
+                        weights[row] *
+                        row_fold;
+                }
+
+                return partial;
+            };
+
+            constexpr std::size_t
+                kMinimumParallelOperations =
+                    std::size_t{1} << 18;
+
+            constexpr std::size_t
+                kMinimumRowsPerWorker = 64;
+
+            const auto hardware_workers =
+                std::max<std::size_t>(
+                    1,
+                    static_cast<std::size_t>(
+                        std::thread::
+                            hardware_concurrency()));
+
+            const auto operations_row_threshold =
+                spec.width == 0
+                    ? std::numeric_limits<
+                          std::size_t>::max()
+                    : kMinimumParallelOperations /
+                              spec.width +
+                          (kMinimumParallelOperations %
+                                       spec.width !=
+                                   0
+                               ? 1
+                               : 0);
+
+            const bool use_parallel =
+                hardware_workers > 1 && spec.source_rows >=
+                                            operations_row_threshold;
+
+            if (!use_parallel)
+            {
+                return fold_range(
+                    0,
+                    spec.source_rows);
+            }
+
+            const auto row_worker_cap =
+                1 +
+                (spec.source_rows - 1) /
+                    kMinimumRowsPerWorker;
+
+            const auto worker_count =
+                std::min(
+                    hardware_workers,
+                    row_worker_cap);
+
+            if (worker_count <= 1)
+            {
+                return fold_range(
+                    0,
+                    spec.source_rows);
+            }
+
+            const auto chunk_size =
+                (spec.source_rows +
+                 worker_count - 1) /
+                worker_count;
+
+            std::vector<
+                std::future<FieldElement>>
+                futures;
+
+            futures.reserve(
+                worker_count - 1);
+
+            for (std::size_t worker = 0;
+                 worker + 1 < worker_count;
+                 ++worker)
+            {
+                const auto begin =
+                    worker * chunk_size;
+
+                const auto end =
+                    std::min(
+                        spec.source_rows,
+                        begin + chunk_size);
+
+                futures.emplace_back(
+                    std::async(
+                        std::launch::async,
+                        fold_range,
+                        begin,
+                        end));
+            }
+
+            const auto caller_begin =
+                (worker_count - 1) *
+                chunk_size;
+
+            const auto caller_partial =
+                fold_range(
+                    caller_begin,
+                    spec.source_rows);
+
+            auto total =
+                FieldElement::zero();
+
+            for (auto &future : futures)
+            {
+                total += future.get();
+            }
+
+            total += caller_partial;
+            return total;
+        };
+
         for (const auto &planned :
              plan.matrix_fold_plans)
         {
@@ -4415,36 +4606,10 @@ namespace gatzk::protocol
                 }
                 else
                 {
-                    const auto public_weights =
-                        context.domains.n
-                            ->barycentric_weights(
-                                z);
-
-                    for (std::size_t row = 0;
-                         row <
-                         spec.source_rows;
-                         ++row)
-                    {
-                        auto row_fold =
-                            FieldElement::zero();
-
-                        for (std::size_t column = 0;
-                             column <
-                             spec.width;
-                             ++column)
-                        {
-                            row_fold =
-                                row_fold *
-                                    lambda +
-                                context.local.features
-                                    .at(row)
-                                    .at(column);
-                        }
-
-                        expected_source_fold +=
-                            public_weights[row] *
-                            row_fold;
-                    }
+                    expected_source_fold =
+                        evaluate_public_source_fold(
+                            spec,
+                            lambda);
                 }
             }
             else

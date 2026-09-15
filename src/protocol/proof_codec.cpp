@@ -13,6 +13,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
+#include <cstring>
 
 #include "gatzk/crypto/curve.hpp"
 #include "gatzk/protocol/challenges.hpp"
@@ -29,15 +30,44 @@ namespace gatzk::protocol
         constexpr std::uint64_t kMaxContainerItems = 1ULL << 24;
         constexpr std::uint64_t kMaxStringBytes = 1ULL << 20;
 
-        crypto::G1Point decode_canonical_g1(
-            const std::vector<std::uint8_t> &encoded)
+        struct EncodedG1View
         {
-            auto point = crypto::deserialize_g1(encoded);
-            if (crypto::serialize(point) != encoded)
+            const std::uint8_t *data = nullptr;
+            std::size_t size = 0;
+        };
+
+        crypto::G1Point decode_canonical_g1(
+            const EncodedG1View encoded)
+        {
+            if (encoded.data == nullptr || encoded.size == 0 || encoded.size > 256)
+            {
+                throw std::runtime_error(
+                    "proof parser invalid G1 length");
+            }
+
+            auto point =
+                crypto::deserialize_g1(
+                    encoded.data,
+                    encoded.size);
+
+            std::array<std::uint8_t, 256>
+                canonical{};
+
+            const auto written =
+                crypto::serialize(
+                    point,
+                    canonical.data(),
+                    canonical.size());
+
+            if (written != encoded.size || std::memcmp(
+                                               canonical.data(),
+                                               encoded.data,
+                                               encoded.size) != 0)
             {
                 throw std::runtime_error(
                     "proof parser rejected non-canonical G1 encoding");
             }
+
             return point;
         }
 
@@ -70,11 +100,22 @@ namespace gatzk::protocol
                 raw(encoded.data(), encoded.size());
             }
 
-            void point(const crypto::G1Point &point)
+            void point(
+                const crypto::G1Point &point)
             {
-                const auto encoded = crypto::serialize(point);
-                u64(encoded.size());
-                raw(encoded.data(), encoded.size());
+                std::array<std::uint8_t, 256>
+                    encoded{};
+
+                const auto written =
+                    crypto::serialize(
+                        point,
+                        encoded.data(),
+                        encoded.size());
+
+                u64(written);
+                raw(
+                    encoded.data(),
+                    written);
             }
 
             void block(const std::string &tag, Writer payload)
@@ -158,16 +199,26 @@ namespace gatzk::protocol
                 return value;
             }
 
-            std::vector<std::uint8_t> point_encoding()
+            EncodedG1View point_encoding()
             {
                 const auto length = u64();
+
                 if (length == 0 || length > 256 || length > remaining())
                 {
-                    throw std::runtime_error("proof parser invalid G1 length");
+                    throw std::runtime_error(
+                        "proof parser invalid G1 length");
                 }
-                std::vector<std::uint8_t> encoded(
-                    data_ + offset_, data_ + offset_ + static_cast<std::ptrdiff_t>(length));
-                offset_ += static_cast<std::size_t>(length);
+
+                const auto encoded_size =
+                    static_cast<std::size_t>(
+                        length);
+
+                const EncodedG1View encoded{
+                    .data = data_ + offset_,
+                    .size = encoded_size,
+                };
+
+                offset_ += encoded_size;
                 return encoded;
             }
 
@@ -217,7 +268,7 @@ namespace gatzk::protocol
         };
 
         std::vector<crypto::G1Point> decode_canonical_g1_batch(
-            const std::vector<std::vector<std::uint8_t>> &encodings)
+            const std::vector<EncodedG1View> &encodings)
         {
             std::vector<crypto::G1Point> points(encodings.size());
             const auto hardware_workers = std::max<unsigned>(
@@ -301,7 +352,7 @@ namespace gatzk::protocol
             std::string group_id;
             std::string owner_block;
             algebra::FieldElement point = algebra::FieldElement::zero();
-            std::vector<std::uint8_t> witness_encoding;
+            EncodedG1View witness_encoding;
         };
 
         EncodedPointGroupOpening read_encoded_point_group_opening(
@@ -318,7 +369,7 @@ namespace gatzk::protocol
         std::vector<PointGroupOpening> decode_point_group_openings(
             std::vector<EncodedPointGroupOpening> encoded)
         {
-            std::vector<std::vector<std::uint8_t>> encodings;
+            std::vector<EncodedG1View> encodings;
             encodings.reserve(encoded.size());
             for (const auto &opening : encoded)
                 encodings.push_back(opening.witness_encoding);
@@ -573,9 +624,9 @@ namespace gatzk::protocol
 
         void require_exact_pi_bind_shape(
             const ProtocolContext &context,
-            const Proof &proof)
+            const Proof &proof,
+            const std::vector<BindingRelationMeta> &expected_meta)
         {
-            const auto expected_meta = build_binding_relation_metadata(context);
             if (proof.pi_bind.subproofs.size() != expected_meta.size())
                 throw std::runtime_error(
                     "proof parser Pi_bind instance subproof count mismatch");
@@ -1976,7 +2027,10 @@ namespace gatzk::protocol
         if (proof.route_references != expected_route_references)
             throw std::runtime_error(
                 "proof parser S_route reference registry mismatch");
-        require_exact_pi_bind_shape(context, proof);
+        require_exact_pi_bind_shape(
+            context,
+            proof,
+            expected_binding_metadata);
         return proof;
     }
 

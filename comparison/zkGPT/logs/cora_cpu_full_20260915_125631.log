@@ -1,0 +1,2 @@
+nohup: 忽略输入
+CELL_FAILED: cora/cpu: native prover failed with 1; see baseline-local/runs/cora_secure/cpu/prover.stderr.log
