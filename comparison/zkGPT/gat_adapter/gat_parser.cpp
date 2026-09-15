@@ -576,7 +576,9 @@ void Graph::validate() const {
 
 Graph load_graph(const std::string &cache_dir) {
     verify_cache_auth(cache_dir);
-    const CanonicalConfig meta = CanonicalConfig::load(cache_dir + "/meta.cfg");
+    CanonicalConfig meta;
+    meta.source_path = cache_dir + "/meta.cfg";
+    meta.values = read_key_values(meta.source_path);
     Graph graph;
     graph.num_nodes = static_cast<std::size_t>(meta.get_int("num_nodes"));
     graph.num_features = static_cast<std::size_t>(meta.get_int("num_features"));

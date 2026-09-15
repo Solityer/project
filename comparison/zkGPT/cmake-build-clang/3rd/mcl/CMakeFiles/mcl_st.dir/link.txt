@@ -1,2 +1,0 @@
-/usr/bin/ar qc ../../lib/libmcl.a CMakeFiles/mcl_st.dir/src/fp.cpp.o bint64.o base64.o
-/usr/bin/ranlib ../../lib/libmcl.a
