@@ -48,6 +48,12 @@ namespace gatzk::protocol
             std::uint32_t operand = 0;
         };
 
+        struct CudaTEdgeCompiledTerm
+        {
+            std::size_t instruction_begin = 0;
+            std::size_t instruction_end = 0;
+            GpuFr alpha_scale{};
+        };
         std::vector<
             CudaTEdgeCompiledInstruction>
         compile_t_edge_execution_plan(
@@ -428,11 +434,13 @@ namespace gatzk::protocol
 
         template <std::size_t RegisterCount>
         __global__ void
-        t_edge_term_kernel(
+        t_edge_term_batch_kernel(
             const CudaTEdgeCompiledInstruction
                 *instructions,
-            std::size_t instruction_begin,
-            std::size_t instruction_end,
+            const CudaTEdgeCompiledTerm
+                *terms,
+            std::size_t term_begin,
+            std::size_t term_end,
             const GpuFr *constants,
             GpuFr *const *leaf_slots,
             const std::uint8_t *leaf_split_layout,
@@ -440,7 +448,6 @@ namespace gatzk::protocol
             const std::uint8_t *access_rotated,
             std::size_t rotation_step,
             std::size_t target_size,
-            GpuFr alpha_scale,
             GpuFr *quotient)
         {
             const auto point =
@@ -454,135 +461,154 @@ namespace gatzk::protocol
                 return;
             }
 
-            TEdgeRegisterFile<
-                RegisterCount>
-                registers;
+            auto accumulated =
+                quotient[point];
 
-            for (std::size_t index =
-                     instruction_begin;
-                 index < instruction_end;
-                 ++index)
+            // Terms are deliberately evaluated in their original canonical
+            // order.  The only change versus the previous executor is that
+            // the intermediate quotient value stays in a register until the
+            // end of this batch instead of being written to global memory
+            // after every term.
+            for (std::size_t term_index =
+                     term_begin;
+                 term_index < term_end;
+                 ++term_index)
             {
-                const auto instruction =
-                    instructions[index];
+                const auto term =
+                    terms[term_index];
 
-                switch (instruction.opcode)
+                TEdgeRegisterFile<
+                    RegisterCount>
+                    registers;
+
+                for (std::size_t index =
+                         term.instruction_begin;
+                     index <
+                     term.instruction_end;
+                     ++index)
                 {
-                case TEdgeProgramOpcode::
-                    LoadAccess:
-                {
-                    const auto access =
-                        instruction.operand;
+                    const auto instruction =
+                        instructions[index];
 
-                    const auto slot =
-                        access_slots[access];
-
-                    const auto logical_index =
-                        access_rotated[access] != 0
-                            ? (point +
-                               rotation_step) &
-                                  (target_size - 1U)
-                            : point;
-
-                    std::size_t physical_index =
-                        logical_index;
-
-                    if (leaf_split_layout[slot] != 0)
+                    switch (instruction.opcode)
                     {
-                        const auto half_size =
-                            target_size / 2;
+                    case TEdgeProgramOpcode::
+                        LoadAccess:
+                    {
+                        const auto access =
+                            instruction.operand;
 
-                        physical_index =
-                            logical_index / 2 +
-                            ((logical_index & 1U) != 0U
-                                 ? half_size
-                                 : 0);
+                        const auto slot =
+                            access_slots[access];
+
+                        const auto logical_index =
+                            access_rotated[access] != 0
+                                ? (point +
+                                   rotation_step) &
+                                      (target_size -
+                                       1U)
+                                : point;
+
+                        std::size_t physical_index =
+                            logical_index;
+
+                        if (leaf_split_layout[slot] != 0)
+                        {
+                            const auto half_size =
+                                target_size / 2;
+
+                            physical_index =
+                                logical_index / 2 +
+                                ((logical_index &
+                                  1U) != 0U
+                                     ? half_size
+                                     : 0);
+                        }
+
+                        registers.store(
+                            instruction.dst,
+                            leaf_slots[slot]
+                                      [physical_index]);
+
+                        break;
                     }
 
-                    registers.store(
-                        instruction.dst,
-                        leaf_slots[slot]
-                                  [physical_index]);
+                    case TEdgeProgramOpcode::
+                        LoadConstant:
+                    {
+                        registers.store(
+                            instruction.dst,
+                            constants[instruction
+                                          .operand]);
+                        break;
+                    }
 
-                    break;
+                    case TEdgeProgramOpcode::Add:
+                    {
+                        registers.store(
+                            instruction.dst,
+                            algebra::gpu::fr_add(
+                                registers.load(
+                                    instruction.lhs),
+                                registers.load(
+                                    instruction.rhs)));
+                        break;
+                    }
+
+                    case TEdgeProgramOpcode::
+                        Subtract:
+                    {
+                        registers.store(
+                            instruction.dst,
+                            algebra::gpu::fr_sub(
+                                registers.load(
+                                    instruction.lhs),
+                                registers.load(
+                                    instruction.rhs)));
+                        break;
+                    }
+
+                    case TEdgeProgramOpcode::
+                        Multiply:
+                    {
+                        registers.store(
+                            instruction.dst,
+                            algebra::gpu::fr_mul(
+                                registers.load(
+                                    instruction.lhs),
+                                registers.load(
+                                    instruction.rhs)));
+                        break;
+                    }
+
+                    case TEdgeProgramOpcode::
+                        Negate:
+                    {
+                        registers.store(
+                            instruction.dst,
+                            algebra::gpu::fr_sub(
+                                algebra::gpu::
+                                    fr_zero(),
+                                registers.load(
+                                    instruction.lhs)));
+                        break;
+                    }
+                    }
                 }
 
-                case TEdgeProgramOpcode::
-                    LoadConstant:
-                {
-                    registers.store(
-                        instruction.dst,
-                        constants[instruction.operand]);
+                const auto contribution =
+                    algebra::gpu::fr_mul(
+                        registers.load(0),
+                        term.alpha_scale);
 
-                    break;
-                }
-
-                case TEdgeProgramOpcode::Add:
-                {
-                    registers.store(
-                        instruction.dst,
-                        algebra::gpu::fr_add(
-                            registers.load(
-                                instruction.lhs),
-                            registers.load(
-                                instruction.rhs)));
-
-                    break;
-                }
-
-                case TEdgeProgramOpcode::
-                    Subtract:
-                {
-                    registers.store(
-                        instruction.dst,
-                        algebra::gpu::fr_sub(
-                            registers.load(
-                                instruction.lhs),
-                            registers.load(
-                                instruction.rhs)));
-
-                    break;
-                }
-
-                case TEdgeProgramOpcode::
-                    Multiply:
-                {
-                    registers.store(
-                        instruction.dst,
-                        algebra::gpu::fr_mul(
-                            registers.load(
-                                instruction.lhs),
-                            registers.load(
-                                instruction.rhs)));
-
-                    break;
-                }
-
-                case TEdgeProgramOpcode::
-                    Negate:
-                {
-                    registers.store(
-                        instruction.dst,
-                        algebra::gpu::fr_sub(
-                            algebra::gpu::
-                                fr_zero(),
-                            registers.load(
-                                instruction.lhs)));
-
-                    break;
-                }
-                }
+                accumulated =
+                    algebra::gpu::fr_add(
+                        accumulated,
+                        contribution);
             }
 
-            const auto contribution =
-                algebra::gpu::fr_mul(
-                    registers.load(0),
-                    alpha_scale);
-
             quotient[point] =
-                algebra::gpu::fr_add(
-                    quotient[point],
-                    contribution);
+                accumulated;
         }
 
         __device__ __forceinline__ GpuFr
@@ -852,22 +878,60 @@ namespace gatzk::protocol
                         cache_slot_count_,
                         nullptr);
 
-                    for (auto &slot :
-                         device_leaf_slots_)
+                    device_leaf_arenas_.clear();
+
+                    // Thousands of independent cudaMalloc calls cause heavy
+                    // allocator/VM overhead and fragmentation.  Use bounded
+                    // arenas instead of one enormous allocation so large UMA
+                    // workloads remain robust.
+                    constexpr std::size_t
+                        kLeafArenaSlotCount = 128;
+
+                    for (std::size_t base_slot = 0;
+                         base_slot <
+                         cache_slot_count_;
+                         base_slot +=
+                         kLeafArenaSlotCount)
                     {
+                        const auto arena_slots =
+                            std::min<std::size_t>(
+                                kLeafArenaSlotCount,
+                                cache_slot_count_ -
+                                    base_slot);
+
+                        GpuFr *arena = nullptr;
+
                         auto status =
                             cudaMalloc(
                                 reinterpret_cast<
                                     void **>(
-                                    &slot),
-                                leaf_bytes);
+                                    &arena),
+                                checked_bytes(
+                                    arena_slots,
+                                    leaf_bytes,
+                                    "leaf arena"));
 
                         if (status !=
                             cudaSuccess)
                         {
                             throw_cuda_t_edge_error(
-                                "leaf allocation",
+                                "leaf arena allocation",
                                 status);
+                        }
+
+                        device_leaf_arenas_
+                            .push_back(
+                                arena);
+
+                        for (std::size_t local = 0;
+                             local < arena_slots;
+                             ++local)
+                        {
+                            device_leaf_slots_[base_slot +
+                                               local] =
+                                arena +
+                                local *
+                                    target_size_;
                         }
                     }
 
@@ -1242,6 +1306,27 @@ namespace gatzk::protocol
                 const auto compiled_program =
                     compile_t_edge_execution_plan(
                         program);
+                std::vector<
+                    CudaTEdgeCompiledTerm>
+                    compiled_terms;
+
+                compiled_terms.reserve(
+                    program.terms.size());
+
+                for (const auto &term :
+                     program.terms)
+                {
+                    compiled_terms.push_back(
+                        CudaTEdgeCompiledTerm{
+                            .instruction_begin =
+                                term.instruction_begin,
+                            .instruction_end =
+                                term.instruction_end,
+                            .alpha_scale =
+                                gpu_field(
+                                    term.alpha_scale),
+                        });
+                }
 
                 try
                 {

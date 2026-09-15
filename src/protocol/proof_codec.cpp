@@ -184,17 +184,26 @@ namespace gatzk::protocol
             {
                 constexpr std::size_t kScalarBytes = 32;
                 require(kScalarBytes);
-                const auto *begin = data_ + offset_;
-                auto value = algebra::FieldElement::from_little_endian_mod(begin, kScalarBytes);
-                std::array<std::uint8_t, kScalarBytes> canonical{};
-                value.write_little_endian(canonical.data(), canonical.size());
-                for (std::size_t i = 0; i < canonical.size(); ++i)
+
+                const auto *begin =
+                    data_ + offset_;
+
+                algebra::FieldElement value;
+
+                try
                 {
-                    if (canonical[i] != begin[i])
-                    {
-                        throw std::runtime_error("proof parser rejected non-canonical field encoding");
-                    }
+                    value =
+                        algebra::FieldElement::
+                            from_canonical_little_endian(
+                                begin,
+                                kScalarBytes);
                 }
+                catch (...)
+                {
+                    throw std::runtime_error(
+                        "proof parser rejected non-canonical field encoding");
+                }
+
                 offset_ += kScalarBytes;
                 return value;
             }
@@ -270,39 +279,53 @@ namespace gatzk::protocol
         std::vector<crypto::G1Point> decode_canonical_g1_batch(
             const std::vector<EncodedG1View> &encodings)
         {
-            std::vector<crypto::G1Point> points(encodings.size());
-            const auto hardware_workers = std::max<unsigned>(
-                1, std::thread::hardware_concurrency());
-            const auto worker_count = encodings.size() >= 8
-                                          ? std::min<std::size_t>(hardware_workers, encodings.size())
-                                          : 1;
-            const auto decode_range = [&](std::size_t begin, std::size_t end)
+            std::vector<crypto::G1Point>
+                points(encodings.size());
+
+            if (encodings.empty())
             {
-                for (std::size_t i = begin; i < end; ++i)
-                {
-                    points[i] = decode_canonical_g1(encodings[i]);
-                }
-            };
-            if (worker_count == 1)
-            {
-                decode_range(0, encodings.size());
                 return points;
             }
+
+            const auto hardware_workers =
+                std::max<std::size_t>(
+                    1,
+                    std::thread::hardware_concurrency());
+
+            const auto worker_count =
+                encodings.size() >= 2
+                    ? std::min<std::size_t>(
+                          hardware_workers,
+                          encodings.size())
+                    : std::size_t{1};
+
             const auto chunk_size =
-                (encodings.size() + worker_count - 1) / worker_count;
-            std::vector<std::future<void>> futures;
-            futures.reserve(worker_count);
-            for (std::size_t worker = 0; worker < worker_count; ++worker)
-            {
-                const auto begin = worker * chunk_size;
-                const auto end = std::min(encodings.size(), begin + chunk_size);
-                if (begin >= end)
-                    break;
-                futures.push_back(std::async(
-                    std::launch::async, decode_range, begin, end));
-            }
-            for (auto &future : futures)
-                future.get();
+                (encodings.size() +
+                 worker_count - 1) /
+                worker_count;
+
+            crypto::g1_parallel_msm_batch_workers(
+                worker_count,
+                [&](std::size_t worker)
+                {
+                    const auto begin =
+                        worker * chunk_size;
+
+                    const auto end =
+                        std::min(
+                            encodings.size(),
+                            begin + chunk_size);
+
+                    for (std::size_t index = begin;
+                         index < end;
+                         ++index)
+                    {
+                        points[index] =
+                            decode_canonical_g1(
+                                encodings[index]);
+                    }
+                });
+
             return points;
         }
 

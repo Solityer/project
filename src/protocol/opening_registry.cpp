@@ -74,25 +74,6 @@ namespace gatzk::protocol
             return key;
         }
 
-        void refresh_claim_execution_keys(
-            StandardOpeningClaim *claim)
-        {
-            if (claim == nullptr)
-            {
-                throw std::runtime_error(
-                    "standard opening claim execution cache is null");
-            }
-
-            claim->execution_commitment_key =
-                commitment_point_key(
-                    claim->commitment.point);
-
-            claim->execution_order_key =
-                claim_order_key(
-                    *claim,
-                    claim->execution_commitment_key);
-        }
-
         void require_claim_shape(const StandardOpeningClaim &claim)
         {
             for (const auto *field : {
@@ -184,45 +165,93 @@ namespace gatzk::protocol
         const DomainOpeningBundle &bundle,
         const std::vector<crypto::Commitment> &commitments)
     {
-        if (bundle.points.empty() || bundle.values.size() != commitments.size() || bundle.value_kinds.size() != commitments.size())
+        if (bundle.points.empty() ||
+            bundle.values.size() != commitments.size() ||
+            bundle.value_kinds.size() != commitments.size())
         {
             throw std::runtime_error(
                 "invalid domain bundle for standard point-group registry");
         }
+
+        // Validate the complete canonical object order before mutating the
+        // registry.
         for (std::size_t object_index = 0;
-             object_index < commitments.size(); ++object_index)
+             object_index < commitments.size();
+             ++object_index)
         {
-            if (bundle.values[object_index].first != commitments[object_index].name || bundle.values[object_index].second.size() != bundle.points.size())
+            if (bundle.values[object_index].first !=
+                    commitments[object_index].name ||
+                bundle.values[object_index].second.size() !=
+                    bundle.points.size())
             {
                 throw std::runtime_error(
                     "domain bundle commitment/value order mismatch");
             }
-            const auto &object_id = bundle.values[object_index].first;
-            const auto claim_role = object_id.rfind("t_", 0) == 0
-                                        ? "quotient"
-                                    : object_id.rfind("R_t_", 0) == 0
-                                        ? "quotient_blinder"
-                                        : "domain_polynomial";
-            for (std::size_t point_index = 0;
-                 point_index < bundle.points.size(); ++point_index)
+        }
+
+        // Point-major insertion keeps thousands of claims for one canonical
+        // point contiguous.  finalize() still performs the exact canonical
+        // tuple sort, so protocol ordering is unchanged.
+        for (std::size_t point_index = 0;
+             point_index < bundle.points.size();
+             ++point_index)
+        {
+            bool capacity_reserved = false;
+
+            for (std::size_t object_index = 0;
+                 object_index < commitments.size();
+                 ++object_index)
             {
-                const auto suffix = domain + ":" + object_id + ":" + std::to_string(point_index);
+                const auto &object_id =
+                    bundle.values[object_index]
+                        .first;
+
+                const auto claim_role =
+                    object_id.rfind("t_", 0) == 0
+                        ? "quotient"
+                    : object_id.rfind(
+                          "R_t_", 0) == 0
+                        ? "quotient_blinder"
+                        : "domain_polynomial";
+
+                const auto suffix =
+                    domain + ":" +
+                    object_id + ":" +
+                    std::to_string(
+                        point_index);
+
                 registry.add_domain_claim(
                     domain,
                     bundle.points[point_index],
                     make_standard_opening_claim(
-                        "claim:domain:" + suffix,
+                        "claim:domain:" +
+                            suffix,
                         object_id,
                         "domain_evaluation",
                         claim_role,
-                        bundle.value_kinds[object_index],
-                        "Eval_dom:" + suffix,
-                        commitments[object_index],
-                        bundle.values[object_index].second[point_index]));
+                        bundle.value_kinds[
+                            object_index],
+                        "Eval_dom:" +
+                            suffix,
+                        commitments[
+                            object_index],
+                        bundle.values[
+                            object_index]
+                            .second[
+                                point_index]));
+
+                if (!capacity_reserved)
+                {
+                    registry.reserve_claim_capacity(
+                        bundle.points[
+                            point_index],
+                        commitments.size());
+
+                    capacity_reserved = true;
+                }
             }
         }
     }
-
     void add_external_claims(
         StandardPointGroupRegistry &registry,
         const std::vector<std::pair<crypto::Commitment,
@@ -276,6 +305,58 @@ namespace gatzk::protocol
                     value));
         }
     }
+        void StandardPointGroupRegistry::
+        refresh_claim_execution_keys(
+            StandardOpeningClaim *claim)
+    {
+        if (claim == nullptr)
+        {
+            throw std::runtime_error(
+                "standard opening claim execution cache is null");
+        }
+
+        auto identity_it =
+            commitment_execution_identity_by_reference_
+                .find(
+                    claim->commitment_reference);
+
+        if (identity_it ==
+            commitment_execution_identity_by_reference_
+                .end())
+        {
+            CommitmentExecutionIdentity identity{
+                .point =
+                    claim->commitment.point,
+                .serialized_key =
+                    commitment_point_key(
+                        claim->commitment.point),
+            };
+
+            identity_it =
+                commitment_execution_identity_by_reference_
+                    .emplace(
+                        claim->commitment_reference,
+                        std::move(identity))
+                    .first;
+        }
+        else if (!(identity_it->second.point ==
+                   claim->commitment.point))
+        {
+            // The reference/name is protocol-visible.  Reusing it for a
+            // different G1 point must fail closed rather than allowing an
+            // execution cache to hide inconsistent commitment material.
+            throw std::runtime_error(
+                "standard opening commitment reference resolves to multiple G1 points");
+        }
+
+        claim->execution_commitment_key =
+            identity_it->second.serialized_key;
+
+        claim->execution_order_key =
+            claim_order_key(
+                *claim,
+                claim->execution_commitment_key);
+    }
 
     void StandardPointGroupRegistry::add_domain_claim(
         const std::string &domain,
@@ -309,25 +390,57 @@ namespace gatzk::protocol
         require_claim_shape(claim);
         refresh_claim_execution_keys(&claim);
 
-        const auto point_key =
-            point_lookup_key(point);
-        auto group_position = group_index_by_point_.find(point_key);
         std::size_t group_index = 0;
-        if (group_position == group_index_by_point_.end())
+
+        if (last_group_valid_ &&
+            last_group_point_ == point)
         {
-            group_index = groups_.size();
-            groups_.push_back(StandardPointGroup{
-                .group_id = point_group_id(requested_owner, point),
-                .owner_block = requested_owner,
-                .point = point,
-                .claims = {},
-            });
-            group_index_by_point_.emplace(point_key, group_index);
-            claim_index_by_commitment_.emplace_back();
+            group_index =
+                last_group_index_;
         }
         else
         {
-            group_index = group_position->second;
+            const auto point_key =
+                point_lookup_key(point);
+
+            auto group_position =
+                group_index_by_point_.find(
+                    point_key);
+
+            if (group_position ==
+                group_index_by_point_.end())
+            {
+                group_index =
+                    groups_.size();
+
+                groups_.push_back(
+                    StandardPointGroup{
+                        .group_id =
+                            point_group_id(
+                                requested_owner,
+                                point),
+                        .owner_block =
+                            requested_owner,
+                        .point = point,
+                        .claims = {},
+                    });
+
+                group_index_by_point_.emplace(
+                    point_key,
+                    group_index);
+
+                claim_index_by_commitment_
+                    .emplace_back();
+            }
+            else
+            {
+                group_index =
+                    group_position->second;
+            }
+
+            last_group_valid_ = true;
+            last_group_point_ = point;
+            last_group_index_ = group_index;
         }
         auto &group = groups_.at(group_index);
         if (requested_owner.rfind("Open_dom:", 0) == 0)
@@ -374,6 +487,58 @@ namespace gatzk::protocol
         {
             duplicate = std::move(claim);
         }
+    }
+
+        void StandardPointGroupRegistry::
+        reserve_claim_capacity(
+            const algebra::FieldElement &point,
+            std::size_t expected_claim_count)
+    {
+        if (finalized_)
+        {
+            throw std::runtime_error(
+                "standard point-group registry cannot reserve after finalization");
+        }
+
+        std::size_t group_index = 0;
+
+        if (last_group_valid_ &&
+            last_group_point_ == point)
+        {
+            group_index =
+                last_group_index_;
+        }
+        else
+        {
+            const auto point_key =
+                point_lookup_key(point);
+
+            const auto it =
+                group_index_by_point_.find(
+                    point_key);
+
+            if (it ==
+                group_index_by_point_.end())
+            {
+                throw std::runtime_error(
+                    "standard point-group capacity reservation requires an existing group");
+            }
+
+            group_index = it->second;
+
+            last_group_valid_ = true;
+            last_group_point_ = point;
+            last_group_index_ = group_index;
+        }
+
+        groups_.at(group_index)
+            .claims.reserve(
+                expected_claim_count);
+
+        claim_index_by_commitment_
+            .at(group_index)
+            .reserve(
+                expected_claim_count);
     }
 
     void StandardPointGroupRegistry::finalize()

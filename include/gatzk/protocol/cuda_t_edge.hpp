@@ -81,9 +81,20 @@ namespace gatzk::protocol
             const mcl::Fr *values,
             std::size_t count) = 0;
 
+        virtual void accumulate_term_range(
+            std::size_t term_begin,
+            std::size_t term_end,
+            const std::vector<std::uint32_t> &access_slots) = 0;
+
         virtual void accumulate_term(
             std::size_t term_index,
-            const std::vector<std::uint32_t> &access_slots) = 0;
+            const std::vector<std::uint32_t> &access_slots)
+        {
+            accumulate_term_range(
+                term_index,
+                term_index + 1,
+                access_slots);
+        }
 
         virtual void release_leaf(
             std::size_t slot) = 0;
@@ -128,6 +139,7 @@ namespace gatzk::protocol
     {
         std::size_t domain_size = 0;
         std::size_t instruction_count = 0;
+        std::size_t term_count = 0;
         std::size_t constant_count = 0;
         std::size_t access_count = 0;
         std::size_t max_linear_source_count = 0;

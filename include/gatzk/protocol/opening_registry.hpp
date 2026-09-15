@@ -51,11 +51,26 @@ namespace gatzk::protocol
         void add_external_claim(
             const algebra::FieldElement &point,
             StandardOpeningClaim claim);
+        // Execution-only capacity hint. It changes neither claim identity nor
+        // canonical ordering.
+        void reserve_claim_capacity(
+            const algebra::FieldElement &point,
+            std::size_t expected_claim_count);
         void finalize();
 
         const std::vector<StandardPointGroup> &groups() const;
         const StandardPointGroup &group_at(
             const algebra::FieldElement &point) const;
+
+    private:
+        struct CommitmentExecutionIdentity
+        {
+            crypto::G1Point point;
+            std::string serialized_key;
+        };
+
+        void refresh_claim_execution_keys(
+            StandardOpeningClaim *claim);
 
     private:
         void add_claim(
@@ -65,6 +80,15 @@ namespace gatzk::protocol
 
         std::vector<StandardPointGroup> groups_;
         std::unordered_map<std::string, std::size_t> group_index_by_point_;
+        std::unordered_map<
+            std::string,
+            CommitmentExecutionIdentity>
+            commitment_execution_identity_by_reference_;
+
+        bool last_group_valid_ = false;
+        algebra::FieldElement last_group_point_ =
+            algebra::FieldElement::zero();
+        std::size_t last_group_index_ = 0;
         std::vector<std::unordered_map<std::string, std::size_t>>
             claim_index_by_commitment_;
         bool finalized_ = false;

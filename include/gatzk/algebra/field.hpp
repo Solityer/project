@@ -13,17 +13,14 @@
 #include <string>
 #include <vector>
 
-
-
 namespace gatzk::algebra
 {
     // 确保 mcl 的曲线与标量域初始化只做一次，避免静态对象构造顺序干扰 formal 主线。
     inline void ensure_mcl_field_ready()
     {
         static std::once_flag once;
-        std::call_once(once, []() {
-            mcl::bn::initPairing(mcl::BLS12_381);
-        });
+        std::call_once(once, []()
+                       { mcl::bn::initPairing(mcl::BLS12_381); });
     }
 
     // Fr 域元素包装。formal 主线中的挑战、系数、查表值与 witness 标量都通过它传递。
@@ -34,7 +31,7 @@ namespace gatzk::algebra
         {
             ensure_mcl_field_ready();
             // 将内部的mcl::Fr对象清零，表示域元素 0
-            value_.clear(); 
+            value_.clear();
         }
 
         explicit FieldElement(std::uint64_t raw)
@@ -62,7 +59,7 @@ namespace gatzk::algebra
             return FieldElement(1);
         }
         // 从原生mcl::Fr类型创建域元素
-        static FieldElement from_native(const mcl::Fr& value)
+        static FieldElement from_native(const mcl::Fr &value)
         {
             FieldElement out;
             out.value_ = value;
@@ -78,10 +75,44 @@ namespace gatzk::algebra
         }
 
         // 从小端字节序的字节数组构造域元素
-        static FieldElement from_little_endian_mod(const std::uint8_t* bytes, std::size_t size)
+        static FieldElement from_little_endian_mod(const std::uint8_t *bytes, std::size_t size)
         {
             FieldElement out;
             out.value_.setLittleEndianMod(bytes, size);
+            return out;
+        }
+
+        // Parse an already-canonical little-endian field encoding.
+        //
+        // Unlike from_little_endian_mod(), this path does not reduce modulo p.
+        // It is intended only for authenticated/canonical wire formats where
+        // encodings >= p must be rejected.
+        static FieldElement from_canonical_little_endian(
+            const std::uint8_t *bytes,
+            std::size_t size)
+        {
+            if (bytes == nullptr || size == 0)
+            {
+                throw std::runtime_error(
+                    "canonical field decoder received empty input");
+            }
+
+            ensure_mcl_field_ready();
+
+            FieldElement out;
+            bool valid = false;
+
+            out.value_.setArray(
+                &valid,
+                bytes,
+                size);
+
+            if (!valid)
+            {
+                throw std::runtime_error(
+                    "non-canonical little-endian field encoding");
+            }
+
             return out;
         }
 
@@ -118,51 +149,51 @@ namespace gatzk::algebra
             value_.clear();
         }
 
-        FieldElement operator+(const FieldElement& other) const
+        FieldElement operator+(const FieldElement &other) const
         {
             FieldElement out(UninitializedTag{});
             mcl::Fr::add(out.value_, value_, other.value_);
             return out;
         }
 
-        FieldElement operator-(const FieldElement& other) const
+        FieldElement operator-(const FieldElement &other) const
         {
             FieldElement out(UninitializedTag{});
             mcl::Fr::sub(out.value_, value_, other.value_);
             return out;
         }
 
-        FieldElement operator*(const FieldElement& other) const
+        FieldElement operator*(const FieldElement &other) const
         {
             FieldElement out(UninitializedTag{});
             mcl::Fr::mul(out.value_, value_, other.value_);
             return out;
         }
 
-        FieldElement operator/(const FieldElement& other) const
+        FieldElement operator/(const FieldElement &other) const
         {
             return *this * other.inv();
         }
 
-        FieldElement& operator+=(const FieldElement& other)
+        FieldElement &operator+=(const FieldElement &other)
         {
             mcl::Fr::add(value_, value_, other.value_);
             return *this;
         }
 
-        FieldElement& operator-=(const FieldElement& other)
+        FieldElement &operator-=(const FieldElement &other)
         {
             mcl::Fr::sub(value_, value_, other.value_);
             return *this;
         }
 
-        FieldElement& operator*=(const FieldElement& other)
+        FieldElement &operator*=(const FieldElement &other)
         {
             mcl::Fr::mul(value_, value_, other.value_);
             return *this;
         }
 
-        bool operator==(const FieldElement& other) const
+        bool operator==(const FieldElement &other) const
         {
             return value_ == other.value_;
         }
@@ -193,27 +224,27 @@ namespace gatzk::algebra
             return value_.getStr(10);
         }
 
-        const mcl::Fr& native() const
+        const mcl::Fr &native() const
         {
             return value_;
         }
 
-        static const mcl::Fr* native_array_data(const FieldElement* values)
+        static const mcl::Fr *native_array_data(const FieldElement *values)
         {
             static_assert(sizeof(FieldElement) == sizeof(mcl::Fr), "FieldElement must wrap exactly one mcl::Fr");
             static_assert(alignof(FieldElement) == alignof(mcl::Fr), "FieldElement and mcl::Fr alignment must match");
-            return reinterpret_cast<const mcl::Fr*>(values);
+            return reinterpret_cast<const mcl::Fr *>(values);
         }
 
-        static mcl::Fr* mutable_native_array_data(FieldElement* values)
+        static mcl::Fr *mutable_native_array_data(FieldElement *values)
         {
             static_assert(sizeof(FieldElement) == sizeof(mcl::Fr), "FieldElement must wrap exactly one mcl::Fr");
             static_assert(alignof(FieldElement) == alignof(mcl::Fr), "FieldElement and mcl::Fr alignment must match");
-            return reinterpret_cast<mcl::Fr*>(values);
+            return reinterpret_cast<mcl::Fr *>(values);
         }
 
         // 将域元素以小端字节序写入字节缓冲区，返回实际写入的字节数
-        std::size_t write_little_endian(std::uint8_t* bytes, std::size_t size) const
+        std::size_t write_little_endian(std::uint8_t *bytes, std::size_t size) const
         {
             if (bytes == nullptr)
             {
@@ -229,27 +260,29 @@ namespace gatzk::algebra
         // immediately and completely overwritten by mcl; clearing it and
         // rechecking the global once flag on every scalar operation is pure
         // hot-path work.
-        struct UninitializedTag {};
+        struct UninitializedTag
+        {
+        };
         explicit FieldElement(UninitializedTag) noexcept {}
 
         mcl::Fr value_;
     };
 
     // 一元负号运算符重载（非成员函数）：返回域元素的相反数
-    inline FieldElement operator-(const FieldElement& value)
+    inline FieldElement operator-(const FieldElement &value)
     {
         // 零减去 value 得到相反数
         return FieldElement::zero() - value;
     }
 
-    inline std::ostream& operator<<(std::ostream& stream, const FieldElement& value)
+    inline std::ostream &operator<<(std::ostream &stream, const FieldElement &value)
     {
         stream << value.to_string();
         return stream;
     }
 
     // 批量求逆是 lookup、route 与 barycentric 权重构造的热点基础操作。
-    inline std::vector<FieldElement> batch_invert(const std::vector<FieldElement>& values)
+    inline std::vector<FieldElement> batch_invert(const std::vector<FieldElement> &values)
     {
         std::vector<FieldElement> out(values.size(), FieldElement::zero());
         if (values.empty())
@@ -287,7 +320,7 @@ namespace gatzk::algebra
     // vector.  The prefix products are still required, but the input storage
     // can be overwritten during the reverse pass once its original element
     // has been consumed.
-    inline void batch_invert_in_place(std::vector<FieldElement>* values)
+    inline void batch_invert_in_place(std::vector<FieldElement> *values)
     {
         if (values == nullptr || values->empty())
         {
