@@ -1807,13 +1807,10 @@ namespace gatzk::crypto
                 static_cast<int>(
                     batch_size);
 
-            // Every batch member uses the same immutable SRS base vector.
-            // ICICLE must therefore reuse the single points array for all
-            // scalar batches instead of interpreting device_points as
-            // batch_size consecutive point arrays.
-            config.are_points_shared_in_batch =
-                true;
-
+            // ICICLE v2.8 represents a shared-base batch by keeping
+            // points_size equal to one MSM width while batch_size is greater
+            // than one.  device_points therefore contains exactly one
+            // immutable SRS prefix shared by all scalar vectors.
             config.are_points_on_device =
                 true;
 
@@ -1822,14 +1819,6 @@ namespace gatzk::crypto
 
             config.are_results_on_device =
                 false;
-
-            if (batch_size > 1 &&
-                !config.are_points_shared_in_batch)
-            {
-                throw std::runtime_error(
-                    "same-SRS CUDA resident MSM batch requires shared "
-                    "points semantics");
-            }
 
             cudaError_t status =
                 cudaSuccess;
@@ -2218,19 +2207,14 @@ namespace gatzk::crypto
 
                 auto config =
                     msm::default_msm_config();
-
                 config.points_size =
                     static_cast<int>(
                         current_count);
 
-                // All batch members share this SRS slice:
-                //
-                //     device_points[offset : offset + current_count]
-                //
-                // Scalar vectors are batch-major, but points are not.
-                config.are_points_shared_in_batch =
-                    true;
-
+                // The cached device slice contains one SRS chunk.  ICICLE
+                // v2.8 interprets points_size == current_count as one shared
+                // base set even when the scalar batch_size is greater than
+                // one.
                 config.are_points_on_device =
                     true;
 
@@ -2239,14 +2223,6 @@ namespace gatzk::crypto
 
                 config.are_results_on_device =
                     false;
-
-                if (batch_size > 1 &&
-                    !config.are_points_shared_in_batch)
-                {
-                    throw std::runtime_error(
-                        "same-SRS CUDA cached-base MSM batch requires shared "
-                        "points semantics");
-                }
 
                 cudaError_t status =
                     cudaSuccess;
@@ -2993,12 +2969,9 @@ namespace gatzk::crypto
                     static_cast<int>(
                         batch_size);
 
-                // Every scalar batch uses the same uploaded SRS chunk.
-                // The point buffer contains one base vector, not one
-                // independent point vector per batch member.
-                config.are_points_shared_in_batch =
-                    true;
-
+                // One SRS chunk is uploaded for the whole scalar batch.
+                // In ICICLE v2.8, points_size == current_count together with
+                // batch_size > 1 is the canonical shared-base batch layout.
                 config.are_points_on_device =
                     true;
 
@@ -3013,14 +2986,6 @@ namespace gatzk::crypto
 
                 config.are_results_on_device =
                     false;
-
-                if (batch_size > 1 &&
-                    !config.are_points_shared_in_batch)
-                {
-                    throw std::runtime_error(
-                        "same-SRS CUDA streamed MSM batch requires shared "
-                        "points semantics");
-                }
 
                 std::vector<
                     bls12_381::projective_t>
