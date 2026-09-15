@@ -8845,11 +8845,221 @@ namespace gatzk::crypto
             if (!(reference_folded_commitment ==
                   reference_material_commitment))
             {
+                constexpr std::size_t
+                    kMaximumReportedMismatches = 8;
+
+                std::vector<std::size_t>
+                    mismatch_indices;
+
+                bool isolation_truncated = false;
+                bool interaction_only_mismatch = false;
+
+                const auto subset_matches =
+                    [&](std::size_t begin,
+                        std::size_t end)
+                {
+                    if (begin >= end ||
+                        end > commitments.size())
+                    {
+                        throw std::runtime_error(
+                            "KZG fold diagnostic received invalid "
+                            "commitment subset");
+                    }
+
+                    std::vector<Commitment>
+                        subset_commitments(
+                            commitments.begin() +
+                                static_cast<std::ptrdiff_t>(begin),
+                            commitments.begin() +
+                                static_cast<std::ptrdiff_t>(end));
+
+                    std::vector<
+                        std::vector<FieldElement>>
+                        subset_value_columns;
+
+                    subset_value_columns.reserve(
+                        end - begin);
+
+                    std::vector<FieldElement>
+                        subset_powers;
+
+                    subset_powers.reserve(
+                        end - begin);
+
+                    for (std::size_t index = begin;
+                         index < end;
+                         ++index)
+                    {
+                        subset_value_columns.push_back(
+                            {claimed_values[index]});
+
+                        subset_powers.push_back(
+                            powers[index]);
+                    }
+
+                    const auto subset_plan =
+                        opening_resolver == nullptr
+                            ? build_folded_opening_plan(
+                                  subset_commitments,
+                                  subset_value_columns,
+                                  subset_powers,
+                                  std::vector<FieldElement>{
+                                      point},
+                                  field_worker_cap,
+                                  false)
+                            : build_streamed_folded_opening_plan(
+                                  subset_commitments,
+                                  subset_value_columns,
+                                  subset_powers,
+                                  std::vector<FieldElement>{
+                                      point},
+                                  field_worker_cap,
+                                  false,
+                                  *opening_resolver,
+                                  semantic_source_resolver,
+                                  nullptr,
+                                  nullptr);
+
+                    const auto subset_commitment =
+                        reference_folded_commitment_points(
+                            subset_commitments,
+                            subset_powers);
+
+                    const auto subset_material =
+                        reference_folded_opening_plan_commitment(
+                            subset_plan,
+                            key.pk);
+
+                    return subset_commitment ==
+                           subset_material;
+                };
+
+                std::function<void(
+                    std::size_t,
+                    std::size_t)>
+                    isolate_mismatches;
+
+                isolate_mismatches =
+                    [&](std::size_t begin,
+                        std::size_t end)
+                {
+                    if (mismatch_indices.size() >=
+                        kMaximumReportedMismatches)
+                    {
+                        isolation_truncated = true;
+                        return;
+                    }
+
+                    if (begin >= end)
+                    {
+                        return;
+                    }
+
+                    if (end - begin == 1)
+                    {
+                        mismatch_indices.push_back(
+                            begin);
+                        return;
+                    }
+
+                    const auto middle =
+                        begin +
+                        (end - begin) / 2;
+
+                    const bool left_matches =
+                        subset_matches(
+                            begin,
+                            middle);
+
+                    const bool right_matches =
+                        subset_matches(
+                            middle,
+                            end);
+
+                    if (!left_matches)
+                    {
+                        isolate_mismatches(
+                            begin,
+                            middle);
+                    }
+
+                    if (!right_matches &&
+                        mismatch_indices.size() <
+                            kMaximumReportedMismatches)
+                    {
+                        isolate_mismatches(
+                            middle,
+                            end);
+                    }
+
+                    if (left_matches &&
+                        right_matches)
+                    {
+                        interaction_only_mismatch =
+                            true;
+                    }
+                };
+
+                isolate_mismatches(
+                    0,
+                    commitments.size());
+
+                std::ostringstream diagnostic;
+
+                diagnostic
+                    << "KZG fold diagnostic: "
+                    << "commitment_material_mismatch"
+                    << ";claims="
+                    << commitments.size();
+
+                if (!mismatch_indices.empty())
+                {
+                    diagnostic
+                        << ";individual_mismatches=";
+
+                    for (std::size_t position = 0;
+                         position <
+                         mismatch_indices.size();
+                         ++position)
+                    {
+                        if (position != 0)
+                        {
+                            diagnostic << ',';
+                        }
+
+                        const auto index =
+                            mismatch_indices[position];
+
+                        diagnostic
+                            << index
+                            << ':'
+                            << commitments[index].name
+                            << ':'
+                            << (commitments[index]
+                                        .opening_polynomial !=
+                                    nullptr
+                                    ? "resident"
+                                    : "streamed");
+                    }
+                }
+                else
+                {
+                    diagnostic
+                        << ";individual_mismatches=none";
+                }
+
+                diagnostic
+                    << ";interaction_only="
+                    << (interaction_only_mismatch
+                            ? "true"
+                            : "false")
+                    << ";truncated="
+                    << (isolation_truncated
+                            ? "true"
+                            : "false");
+
                 throw std::runtime_error(
-                    "KZG fold diagnostic: "
-                    "commitment_material_mismatch; claims=" +
-                    std::to_string(
-                        commitments.size()));
+                    diagnostic.str());
             }
 
             diagnostic_folded_commitment =
