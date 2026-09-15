@@ -1650,7 +1650,8 @@ namespace gatzk::protocol
                             "CUDA t_edge evaluation leaf batch contains a null blinder");
                     }
 
-                    if (host_leaf_bound_[request.slot] != 0)
+                    if (host_leaf_bound_[
+                            request.slot] != 0)
                     {
                         throw std::runtime_error(
                             "CUDA t_edge evaluation leaf batch target slot is already bound");
@@ -3627,7 +3628,7 @@ namespace gatzk::protocol
                 &host_slot_bytes) ||
             !checked_count_bytes(
                 cache_slot_count,
-                sizeof(std::uint8_t),
+                sizeof(bool),
                 &host_bound_bytes) ||
             !checked_count_bytes(
                 cache_slot_count,

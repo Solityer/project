@@ -564,28 +564,29 @@ void Graph::validate() const {
     for (std::size_t g = 0; g < graph_count; ++g) {
         if (node_ptr[g] >= node_ptr[g + 1] || edge_ptr[g] >= edge_ptr[g + 1]) throw std::runtime_error("graph boundary must be strictly increasing");
     }
+    // The endpoint checks below establish that every destination belongs to
+    // exactly one graph/node range.  Record incoming and self-loop
+    // existence while scanning the edges so the final requirement checks are
+    // O(num_nodes + num_edges), rather than rescanning every graph's edges
+    // once for every node (which is O(V*E) for large single-graph datasets).
+    std::vector<unsigned char> node_edge_flags(num_nodes, 0);
     for (std::size_t e = 0; e < edges(); ++e) {
         if (edge_gid[e] < 0 || static_cast<std::size_t>(edge_gid[e]) >= graph_count) throw std::runtime_error("edge graph id out of range");
         const std::size_t g = static_cast<std::size_t>(edge_gid[e]);
         if (e < edge_ptr[g] || e >= edge_ptr[g + 1]) throw std::runtime_error("edge graph ranges are not contiguous");
         if (src[e] < static_cast<Int>(node_ptr[g]) || src[e] >= static_cast<Int>(node_ptr[g + 1]) || dst[e] < static_cast<Int>(node_ptr[g]) || dst[e] >= static_cast<Int>(node_ptr[g + 1])) throw std::runtime_error("edge endpoint crosses graph boundary");
         if (e > 0 && (edge_gid[e - 1] > edge_gid[e] || (edge_gid[e - 1] == edge_gid[e] && dst[e - 1] > dst[e]))) throw std::runtime_error("edges are not canonical stable-sorted");
+        const std::size_t destination = static_cast<std::size_t>(dst[e]);
+        node_edge_flags[destination] |= 1u;
+        if (src[e] == dst[e]) node_edge_flags[destination] |= 2u;
     }
     // Self-loops are part of the canonical graph statement.  The loader must
     // reject a cache missing one instead of silently changing the topology.
-    for (std::size_t g = 0; g < graph_count; ++g) {
-        const std::size_t first = edge_ptr[g], last = edge_ptr[g + 1];
-        for (std::size_t node = node_ptr[g]; node < node_ptr[g + 1]; ++node) {
-            bool incoming = false;
-            bool self_loop = false;
-            for (std::size_t e = first; e < last; ++e) {
-                if (static_cast<std::size_t>(dst[e]) != node) continue;
-                incoming = true;
-                if (static_cast<std::size_t>(src[e]) == node) self_loop = true;
-            }
-            if (!incoming) throw std::runtime_error("canonical graph node has no incoming edge");
-            if (!self_loop) throw std::runtime_error("canonical graph is missing a required self-loop");
-        }
+    for (std::size_t node = 0; node < num_nodes; ++node) {
+        if ((node_edge_flags[node] & 1u) == 0)
+            throw std::runtime_error("canonical graph node has no incoming edge");
+        if ((node_edge_flags[node] & 2u) == 0)
+            throw std::runtime_error("canonical graph is missing a required self-loop");
     }
 }
 
