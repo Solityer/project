@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Collect the ten baseline-local ezkl result cells fail-closed.
+"""Collect baseline-local ezkl result cells fail-closed.
 
 Collection is an audit step, not an assertion of readiness.  Missing cells,
 missing artifacts, unverified native instances, stale identities, or CPU/GPU
@@ -132,6 +132,13 @@ def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument("--runs-root", default="runs/formal")
     result.add_argument("--output", default="results/formal_matrix.json")
+    result.add_argument(
+        "--backends",
+        nargs="+",
+        choices=BACKENDS,
+        default=list(BACKENDS),
+        help="backend axis to collect; default requires the strict CPU/GPU matrix",
+    )
     return result
 
 
@@ -331,6 +338,8 @@ def validate_gpu_evidence_from_result(result: dict[str, Any]) -> None:
 
 
 def check_pair_consistency(cells: list[dict[str, Any]]) -> None:
+    if {cell["backend"] for cell in cells} != set(BACKENDS):
+        return
     by_dataset = {(cell["dataset"], cell["backend"]): cell for cell in cells}
     for dataset in DATASETS:
         cpu = by_dataset[(dataset, "cpu")]
@@ -341,6 +350,9 @@ def check_pair_consistency(cells: list[dict[str, Any]]) -> None:
 
 
 def main(args: argparse.Namespace) -> int:
+    selected_backends = tuple(args.backends)
+    if len(set(selected_backends)) != len(selected_backends):
+        abort("--backends must not contain duplicates")
     runs_root = local_path(args.runs_root, "runs-root")
     output = local_path(args.output, "collector output")
     reject_forbidden_path(output, "collector output")
@@ -348,12 +360,12 @@ def main(args: argparse.Namespace) -> int:
         abort(f"collector output must not be a symlink: {output}")
     cells: list[dict[str, Any]] = []
     for dataset in DATASETS:
-        for backend in BACKENDS:
+        for backend in selected_backends:
             result_path = runs_root / dataset / backend / "result.json"
             reject_forbidden_path(result_path, f"{dataset}/{backend} result")
             cells.append(validate_cell(result_path))
-    if len(cells) != len(DATASETS) * len(BACKENDS):
-        abort("collector did not obtain exactly ten cells")
+    if len(cells) != len(DATASETS) * len(selected_backends):
+        abort("collector did not obtain the requested dataset/backend cells")
     check_pair_consistency(cells)
     output.parent.mkdir(parents=True, exist_ok=True)
     document = {
@@ -362,16 +374,19 @@ def main(args: argparse.Namespace) -> int:
         "collection_status": "COLLECTED_PENDING_FINAL_VALIDATION",
         "relation_id": CANONICAL_RELATION,
         "datasets": list(DATASETS),
-        "backends": list(BACKENDS),
+        "backends": list(selected_backends),
         "cell_count": len(cells),
         "source_tree_sha256": source_tree_hash(),
         "resource_manifest_sha256": resource_manifest_hash(),
-        "pair_consistency_checked": True,
+        "pair_consistency_checked": set(selected_backends) == set(BACKENDS),
         "collected_at_utc": datetime.now(timezone.utc).isoformat(),
         "cells": cells,
     }
     output.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n")
-    print(f"collected {len(cells)} verified result cells into {output.relative_to(ROOT)}; final validation remains required")
+    print(
+        f"collected {len(cells)} verified result cells ({', '.join(selected_backends)}) into "
+        f"{output.relative_to(ROOT)}; final validation remains required"
+    )
     return 0
 
 
