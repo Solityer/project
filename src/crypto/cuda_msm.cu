@@ -1823,12 +1823,19 @@ namespace gatzk::crypto
             config.are_results_on_device =
                 false;
 
+            if (batch_size > 1 &&
+                !config.are_points_shared_in_batch)
+            {
+                throw std::runtime_error(
+                    "same-SRS CUDA resident MSM batch requires shared "
+                    "points semantics");
+            }
+
             cudaError_t status =
                 cudaSuccess;
 
             auto &scalar_staging =
                 reusable_scalar_staging();
-
             bls12_381::scalar_t
                 *batched_scalars =
                     nullptr;
@@ -2232,6 +2239,14 @@ namespace gatzk::crypto
 
                 config.are_results_on_device =
                     false;
+
+                if (batch_size > 1 &&
+                    !config.are_points_shared_in_batch)
+                {
+                    throw std::runtime_error(
+                        "same-SRS CUDA cached-base MSM batch requires shared "
+                        "points semantics");
+                }
 
                 cudaError_t status =
                     cudaSuccess;
@@ -2978,11 +2993,18 @@ namespace gatzk::crypto
                     static_cast<int>(
                         batch_size);
 
+                // Every scalar batch uses the same uploaded SRS chunk.
+                // The point buffer contains one base vector, not one
+                // independent point vector per batch member.
+                config.are_points_shared_in_batch =
+                    true;
+
                 config.are_points_on_device =
                     true;
 
                 config.are_points_montgomery_form =
                     false;
+
                 config.are_scalars_on_device =
                     false;
 
@@ -2992,11 +3014,18 @@ namespace gatzk::crypto
                 config.are_results_on_device =
                     false;
 
+                if (batch_size > 1 &&
+                    !config.are_points_shared_in_batch)
+                {
+                    throw std::runtime_error(
+                        "same-SRS CUDA streamed MSM batch requires shared "
+                        "points semantics");
+                }
+
                 std::vector<
                     bls12_381::projective_t>
                     results(
                         batch_size);
-
                 const auto status =
                     bls12_381_msm_cuda(
                         buffers
