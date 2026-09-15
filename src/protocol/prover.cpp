@@ -6896,14 +6896,59 @@ namespace gatzk::protocol
                     return false;
                 }
 
+                // Bound the adaptive resident leaf cache separately from the
+                // executor's global admission budget. The global admission
+                // gate protects correctness and OOM safety, while this bound
+                // prevents the leaf cache itself from consuming most of the
+                // available UMA/host memory.
+                std::size_t cache_slot_upper =
+                    cache_bounds.desired;
+
+                const auto memory =
+                    util::cached_effective_memory_snapshot();
+
+                if (memory.effective_available_known &&
+                    target_size_ != 0 &&
+                    target_size_ <=
+                        std::numeric_limits<std::size_t>::max() /
+                            sizeof(mcl::Fr))
+                {
+                    const auto bytes_per_slot =
+                        target_size_ *
+                        sizeof(mcl::Fr);
+
+                    constexpr std::size_t
+                        kMaximumAdaptiveLeafCacheBytes =
+                            std::size_t{16} << 30;
+
+                    const auto adaptive_cache_budget =
+                        std::min(
+                            kMaximumAdaptiveLeafCacheBytes,
+                            memory.effective_available_bytes / 4);
+
+                    const auto budget_slot_count =
+                        bytes_per_slot == 0
+                            ? cache_bounds.minimum
+                            : adaptive_cache_budget /
+                                  bytes_per_slot;
+
+                    cache_slot_upper =
+                        std::max(
+                            cache_bounds.minimum,
+                            std::min(
+                                cache_bounds.desired,
+                                budget_slot_count));
+                }
+
                 // Admission cost is monotonic in cache_slot_count:
                 // all slot-dependent executor allocations are linear in the
-                // slot count. Select the largest safe resident working set.
+                // slot count. Search only within the execution-cache budget;
+                // the existing admission gate remains authoritative.
                 std::size_t low =
                     cache_bounds.minimum;
 
                 std::size_t high =
-                    cache_bounds.desired;
+                    cache_slot_upper;
 
                 while (low < high)
                 {
@@ -6938,6 +6983,9 @@ namespace gatzk::protocol
                     ":desired_slots=" +
                     std::to_string(
                         cache_bounds.desired) +
+                    ":budget_cap_slots=" +
+                    std::to_string(
+                        cache_slot_upper) +
                     ":selected_slots=" +
                     std::to_string(
                         cuda_t_edge_selected_cache_slots_) +
@@ -6947,20 +6995,6 @@ namespace gatzk::protocol
                                 cache_bounds.desired
                             ? 1
                             : 0));
-                {
-                    progress_note(
-                        "prove:quotient:t_edge:"
-                        "cuda_executor:admission_rejected:"
-                        "target_size=" +
-                        std::to_string(target_size_) +
-                        ":domain=" +
-                        (domain_ == nullptr
-                             ? std::string("unknown")
-                             : domain_->name));
-
-                    return false;
-                }
-
                 return true;
             }
 

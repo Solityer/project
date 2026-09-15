@@ -414,7 +414,7 @@ namespace gatzk::protocol
         {
             const auto count = reader.count("commitments");
             std::vector<std::string> names;
-            std::vector<std::vector<std::uint8_t>> encodings;
+            std::vector<EncodedG1View> encodings;
             names.reserve(count);
             encodings.reserve(count);
             for (std::size_t i = 0; i < count; ++i)
