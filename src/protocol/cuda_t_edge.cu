@@ -1650,8 +1650,7 @@ namespace gatzk::protocol
                             "CUDA t_edge evaluation leaf batch contains a null blinder");
                     }
 
-                    if (host_leaf_bound_[
-                            request.slot] != 0)
+                    if (host_leaf_bound_[request.slot] != 0)
                     {
                         throw std::runtime_error(
                             "CUDA t_edge evaluation leaf batch target slot is already bound");
@@ -1811,6 +1810,27 @@ namespace gatzk::protocol
                 {
                     future.get();
                 }
+
+                // The direct evaluation leaves are independent and remain
+                // fully concurrent across the bounded worker streams.
+                //
+                // Establish one explicit device-wide completion boundary
+                // before any derived leaf or quotient term consumes those
+                // resident buffers.  This also makes the correctness of the
+                // batch independent of CUDA legacy/per-thread default-stream
+                // compilation semantics.
+                status =
+                    cudaDeviceSynchronize();
+
+                if (status != cudaSuccess)
+                {
+                    throw_cuda_t_edge_error(
+                        "evaluation leaf batch completion",
+                        status);
+                }
+
+                algebra::
+                    record_cuda_stream_sync();
 
                 return !declined.load(
                     std::memory_order_acquire);
@@ -3628,7 +3648,7 @@ namespace gatzk::protocol
                 &host_slot_bytes) ||
             !checked_count_bytes(
                 cache_slot_count,
-                sizeof(bool),
+                sizeof(std::uint8_t),
                 &host_bound_bytes) ||
             !checked_count_bytes(
                 cache_slot_count,

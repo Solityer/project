@@ -1537,15 +1537,24 @@ namespace gatzk::algebra
                 return false;
             }
 
-            auto ctx =
-                device_context::
-                    get_default_device_context();
+            // DeviceContext::stream is a reference.  Do not obtain a
+            // context from get_default_device_context() and then assign
+            // through ctx.stream here: that reference aliases ICICLE's
+            // process-global static default_stream and therefore races when
+            // independent CUDA NTT workers execute concurrently.
+            //
+            // Bind the context reference to per-call storage instead.  The
+            // storage lives for the complete synchronous host-side NTT
+            // submission and each worker therefore keeps its own CUDA stream.
+            cudaStream_t context_stream =
+                stream;
 
-            ctx.device_id =
-                static_cast<std::size_t>(
-                    device);
-
-            ctx.stream = stream;
+            device_context::DeviceContext
+                ctx{
+                    context_stream,
+                    static_cast<std::size_t>(
+                        device),
+                    cudaMemPool_t{}};
 
             ensure_cuda_ntt_domain(
                 device,
@@ -1554,7 +1563,6 @@ namespace gatzk::algebra
             auto config =
                 ntt::default_ntt_config<
                     IcicleScalar>(ctx);
-
             config.batch_size =
                 static_cast<int>(
                     batch_size);
@@ -4178,15 +4186,18 @@ namespace gatzk::algebra
                         "domain release pre-synchronization",
                         status);
                 }
+                // Keep release-domain stream storage local for the same
+                // reason as the execution context above: DeviceContext
+                // stores its stream by reference.
+                cudaStream_t release_stream =
+                    nullptr;
 
-                auto ctx =
-                    device_context::
-                        get_default_device_context();
-
-                ctx.device_id =
-                    device_index;
-
-                ctx.stream = nullptr;
+                device_context::DeviceContext
+                    ctx{
+                        release_stream,
+                        static_cast<std::size_t>(
+                            device_index),
+                        cudaMemPool_t{}};
 
                 status =
                     bls12_381_release_domain(
