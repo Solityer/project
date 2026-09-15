@@ -84,7 +84,8 @@ namespace gatzk::algebra
             std::size_t target_size,
             int device,
             const CudaNttWorkspace &workspace,
-            std::size_t caller_buffer_bytes = 0);
+            std::size_t caller_buffer_bytes = 0,
+            std::size_t batch_count = 1);
 
         static_assert(
             sizeof(IcicleScalar) == sizeof(mcl::Fr),
@@ -824,11 +825,13 @@ namespace gatzk::algebra
             std::size_t target_size,
             int device,
             const CudaNttWorkspace &workspace,
-            std::size_t caller_buffer_bytes)
+            std::size_t caller_buffer_bytes,
+            std::size_t batch_count)
         {
             if (target_size < 2 ||
                 (target_size & (target_size - 1U)) != 0U ||
-                target_size > kMaximumCudaCosetTargetSize)
+                target_size > kMaximumCudaCosetTargetSize ||
+                batch_count == 0)
             {
                 return false;
             }
@@ -838,7 +841,9 @@ namespace gatzk::algebra
             try
             {
                 one_buffer_bytes =
-                    checked_ntt_bytes(target_size, 1);
+                    checked_ntt_bytes(
+                        target_size,
+                        batch_count);
                 icicle_domain_bytes =
                     checked_ntt_bytes(
                         kMaximumCudaNttSize + 1,
@@ -1131,6 +1136,195 @@ namespace gatzk::algebra
                         odd_shift);
             }
         }
+
+        __global__ void
+        prepare_coset_lanes_batch_kernel(
+            const GpuFr *coefficients,
+            std::size_t source_domain_size,
+            const GpuFr *blinders,
+            std::size_t blinder_stride,
+            const std::size_t *blinder_counts,
+            std::size_t batch_count,
+            std::size_t chunks_per_vector,
+            GpuFr shift,
+            GpuFr odd_shift,
+            GpuFr *output,
+            std::size_t target_size)
+        {
+            const auto flat_chunk =
+                static_cast<std::size_t>(
+                    blockIdx.x) *
+                    blockDim.x +
+                threadIdx.x;
+
+            if (chunks_per_vector == 0)
+            {
+                return;
+            }
+
+            const auto vector_index =
+                flat_chunk /
+                chunks_per_vector;
+
+            if (vector_index >=
+                batch_count)
+            {
+                return;
+            }
+
+            const auto local_chunk =
+                flat_chunk %
+                chunks_per_vector;
+
+            const auto begin =
+                local_chunk *
+                kCosetPowerChunkElements;
+
+            const auto blinder_count =
+                blinder_counts[vector_index];
+
+            const auto active_count =
+                source_domain_size +
+                blinder_count;
+
+            if (begin >= active_count)
+            {
+                return;
+            }
+
+            const auto end =
+                min(
+                    active_count,
+                    begin +
+                        kCosetPowerChunkElements);
+
+            const auto coefficient_base =
+                vector_index *
+                source_domain_size;
+
+            const auto blinder_base =
+                vector_index *
+                blinder_stride;
+
+            const auto output_base =
+                vector_index *
+                target_size;
+
+            const auto half_size =
+                target_size / 2;
+
+            auto even_power =
+                fr_pow_u64(
+                    shift,
+                    begin);
+
+            auto odd_power =
+                fr_pow_u64(
+                    odd_shift,
+                    begin);
+
+            for (std::size_t index = begin;
+                 index < end;
+                 ++index)
+            {
+                auto coefficient =
+                    index <
+                            source_domain_size
+                        ? coefficients[coefficient_base +
+                                       index]
+                        : algebra::gpu::
+                              fr_zero();
+
+                if (index <
+                    blinder_count)
+                {
+                    coefficient =
+                        algebra::gpu::fr_sub(
+                            coefficient,
+                            blinders[blinder_base +
+                                     index]);
+                }
+
+                if (index >=
+                    source_domain_size)
+                {
+                    const auto
+                        blinder_index =
+                            index -
+                            source_domain_size;
+
+                    if (blinder_index <
+                        blinder_count)
+                    {
+                        coefficient =
+                            algebra::gpu::fr_add(
+                                coefficient,
+                                blinders[blinder_base +
+                                         blinder_index]);
+                    }
+                }
+
+                output[output_base +
+                       index] =
+                    algebra::gpu::fr_mul(
+                        coefficient,
+                        even_power);
+
+                output[output_base +
+                       half_size +
+                       index] =
+                    algebra::gpu::fr_mul(
+                        coefficient,
+                        odd_power);
+
+                even_power =
+                    algebra::gpu::fr_mul(
+                        even_power,
+                        shift);
+
+                odd_power =
+                    algebra::gpu::fr_mul(
+                        odd_power,
+                        odd_shift);
+            }
+        }
+
+        __global__ void
+        scatter_coset_batch_kernel(
+            const GpuFr *input,
+            GpuFr *const *outputs,
+            std::size_t target_size,
+            std::size_t batch_count)
+        {
+            const auto flat_index =
+                static_cast<std::size_t>(
+                    blockIdx.x) *
+                    blockDim.x +
+                threadIdx.x;
+
+            const auto total_count =
+                target_size *
+                batch_count;
+
+            if (flat_index >=
+                total_count)
+            {
+                return;
+            }
+
+            const auto vector_index =
+                flat_index /
+                target_size;
+
+            const auto local_index =
+                flat_index %
+                target_size;
+
+            outputs[vector_index]
+                   [local_index] =
+                       input[flat_index];
+        }
+
         __global__ void
         split_even_odd_kernel(
             const GpuFr *input,
@@ -1626,8 +1820,7 @@ namespace gatzk::algebra
                 size < 2 ||
                 (size & (size - 1U)) != 0U ||
                 size > kMaximumCudaStagedNttSize ||
-                batch_size == 0 ||
-                batch_size > 2)
+                batch_size == 0)
             {
                 return false;
             }
@@ -1644,6 +1837,15 @@ namespace gatzk::algebra
                     direction,
                     device,
                     stream);
+            }
+
+            // The staged 2^25/2^26 path still uses the explicit two-lane
+            // residue decomposition.  Keep its existing audited batch bound;
+            // larger direct batches are handled only by the native ICICLE
+            // path above.
+            if (batch_size > 2)
+            {
+                return false;
             }
 
             if (scratch_a == nullptr ||
@@ -2571,6 +2773,1070 @@ namespace gatzk::algebra
         record_cuda_stream_sync();
 
         return true;
+    }
+
+    bool cuda_coset_evaluations_to_device_exact_batch(
+        const CudaCosetEvaluationBatchRequest *requests,
+        std::size_t request_count,
+        std::size_t domain_size,
+        const FieldElement &shift,
+        std::size_t target_size,
+        bool make_default_stream_wait)
+    {
+        if (requests == nullptr ||
+            request_count < 2 ||
+            domain_size == 0 ||
+            target_size < 2 ||
+            (domain_size &
+             (domain_size - 1U)) != 0U ||
+            (target_size &
+             (target_size - 1U)) != 0U)
+        {
+            return false;
+        }
+
+        const auto half_size =
+            target_size / 2;
+
+        // True multi-leaf batching uses ICICLE's native contiguous batch
+        // layout.  The separately audited staged 2^25/2^26 transform keeps
+        // the original single-leaf route.
+        if (domain_size >
+                kMaximumCudaNttSize ||
+            half_size >
+                kMaximumCudaNttSize ||
+            target_size >
+                kMaximumCudaCosetTargetSize)
+        {
+            return false;
+        }
+
+        std::size_t maximum_blinder_count =
+            0;
+
+        for (std::size_t index = 0;
+             index < request_count;
+             ++index)
+        {
+            const auto &request =
+                requests[index];
+
+            if (request.device_output ==
+                    nullptr ||
+                request.value_count >
+                    domain_size)
+            {
+                return false;
+            }
+
+            if (request.value_count != 0 &&
+                request.values == nullptr)
+            {
+                throw std::runtime_error(
+                    "CUDA batched coset evaluation received null values");
+            }
+
+            if (request.blinder_count != 0 &&
+                request.zero_domain_blinder ==
+                    nullptr)
+            {
+                throw std::runtime_error(
+                    "CUDA batched coset evaluation received null blinder");
+            }
+
+            if (domain_size >
+                std::numeric_limits<
+                    std::size_t>::max() -
+                    request.blinder_count)
+            {
+                return false;
+            }
+
+            if (domain_size +
+                    request.blinder_count >
+                half_size)
+            {
+                return false;
+            }
+
+            maximum_blinder_count =
+                std::max(
+                    maximum_blinder_count,
+                    request.blinder_count);
+        }
+
+        int device = 0;
+
+        auto status =
+            cudaGetDevice(
+                &device);
+
+        if (status != cudaSuccess)
+        {
+            throw_cuda_ntt_error(
+                "batched coset device lookup",
+                status);
+        }
+
+        auto &workspace =
+            cuda_ntt_workspace();
+
+        const auto one_target_bytes =
+            checked_ntt_bytes(
+                target_size,
+                1);
+
+        if (one_target_bytes >
+            std::numeric_limits<
+                std::size_t>::max() /
+                2)
+        {
+            return false;
+        }
+
+        const auto
+            per_request_workspace_bytes =
+                2 *
+                one_target_bytes;
+
+        constexpr std::size_t
+            kMaximumDirectCosetBatchSize =
+                32;
+
+        constexpr std::size_t
+            kMaximumBatchWorkspaceBytes =
+                std::size_t{512} << 20;
+
+        if (per_request_workspace_bytes ==
+                0 ||
+            per_request_workspace_bytes >
+                kMaximumBatchWorkspaceBytes)
+        {
+            return false;
+        }
+
+        auto batch_limit =
+            std::min<std::size_t>(
+                {
+                    request_count,
+                    kMaximumDirectCosetBatchSize,
+                    std::max<std::size_t>(
+                        1,
+                        kMaximumBatchWorkspaceBytes /
+                            per_request_workspace_bytes),
+                });
+
+        if (batch_limit < 2)
+        {
+            return false;
+        }
+
+        const auto staging_bytes_for_batch =
+            [&](std::size_t batch_size)
+        {
+            std::size_t total =
+                checked_ntt_bytes(
+                    domain_size,
+                    batch_size);
+
+            const auto add =
+                [&](std::size_t bytes)
+            {
+                if (bytes >
+                    std::numeric_limits<
+                        std::size_t>::max() -
+                        total)
+                {
+                    throw std::overflow_error(
+                        "CUDA batched coset staging byte-size overflow");
+                }
+
+                total += bytes;
+            };
+
+            if (maximum_blinder_count != 0)
+            {
+                add(
+                    checked_ntt_bytes(
+                        maximum_blinder_count,
+                        batch_size));
+            }
+
+            if (batch_size >
+                std::numeric_limits<
+                    std::size_t>::max() /
+                    sizeof(std::size_t))
+            {
+                throw std::overflow_error(
+                    "CUDA batched coset count staging overflow");
+            }
+
+            add(
+                batch_size *
+                sizeof(std::size_t));
+
+            if (batch_size >
+                std::numeric_limits<
+                    std::size_t>::max() /
+                    sizeof(GpuFr *))
+            {
+                throw std::overflow_error(
+                    "CUDA batched coset target staging overflow");
+            }
+
+            add(
+                batch_size *
+                sizeof(GpuFr *));
+
+            return total;
+        };
+
+        while (batch_limit >= 2)
+        {
+            std::size_t caller_bytes = 0;
+
+            try
+            {
+                caller_bytes =
+                    staging_bytes_for_batch(
+                        batch_limit);
+            }
+            catch (...)
+            {
+                return false;
+            }
+
+            if (admit_large_coset_workspace(
+                    target_size,
+                    device,
+                    workspace,
+                    caller_bytes,
+                    batch_limit))
+            {
+                break;
+            }
+
+            batch_limit /= 2;
+        }
+
+        if (batch_limit < 2)
+        {
+            return false;
+        }
+
+        const auto maximum_workspace_bytes =
+            checked_ntt_bytes(
+                target_size,
+                batch_limit);
+
+        if (!workspace.ensure(
+                maximum_workspace_bytes,
+                device))
+        {
+            return false;
+        }
+
+        const auto stream =
+            workspace.stream;
+
+        const auto maximum_values_bytes =
+            checked_ntt_bytes(
+                domain_size,
+                batch_limit);
+
+        const auto maximum_blinder_bytes =
+            maximum_blinder_count == 0
+                ? std::size_t{0}
+                : checked_ntt_bytes(
+                      maximum_blinder_count,
+                      batch_limit);
+
+        const auto count_bytes =
+            batch_limit *
+            sizeof(std::size_t);
+
+        const auto target_pointer_bytes =
+            batch_limit *
+            sizeof(GpuFr *);
+
+        mcl::Fr *host_values =
+            nullptr;
+
+        mcl::Fr *host_blinders =
+            nullptr;
+
+        std::size_t *host_blinder_counts =
+            nullptr;
+
+        GpuFr **host_targets =
+            nullptr;
+
+        std::size_t *device_blinder_counts =
+            nullptr;
+
+        GpuFr **device_targets =
+            nullptr;
+
+        cudaEvent_t staging_event =
+            nullptr;
+
+        bool staging_event_pending =
+            false;
+
+        const auto release_host_staging =
+            [&]() noexcept
+        {
+            if (host_values != nullptr)
+            {
+                (void)cudaFreeHost(
+                    host_values);
+
+                host_values = nullptr;
+            }
+
+            if (host_blinders != nullptr)
+            {
+                (void)cudaFreeHost(
+                    host_blinders);
+
+                host_blinders = nullptr;
+            }
+
+            if (host_blinder_counts !=
+                nullptr)
+            {
+                (void)cudaFreeHost(
+                    host_blinder_counts);
+
+                host_blinder_counts =
+                    nullptr;
+            }
+
+            if (host_targets != nullptr)
+            {
+                (void)cudaFreeHost(
+                    host_targets);
+
+                host_targets = nullptr;
+            }
+        };
+
+        const auto allocate_pinned =
+            [&](void **pointer,
+                std::size_t bytes,
+                const char *operation)
+        {
+            if (bytes == 0)
+            {
+                return true;
+            }
+
+            const auto allocation_status =
+                cudaMallocHost(
+                    pointer,
+                    bytes);
+
+            if (allocation_status ==
+                cudaErrorMemoryAllocation)
+            {
+                (void)cudaGetLastError();
+
+                *pointer = nullptr;
+
+                return false;
+            }
+
+            if (allocation_status !=
+                cudaSuccess)
+            {
+                throw_cuda_ntt_error(
+                    operation,
+                    allocation_status);
+            }
+
+            return true;
+        };
+
+        try
+        {
+            if (!allocate_pinned(
+                    reinterpret_cast<void **>(
+                        &host_values),
+                    maximum_values_bytes,
+                    "batched coset value staging allocation") ||
+                !allocate_pinned(
+                    reinterpret_cast<void **>(
+                        &host_blinders),
+                    maximum_blinder_bytes,
+                    "batched coset blinder staging allocation") ||
+                !allocate_pinned(
+                    reinterpret_cast<void **>(
+                        &host_blinder_counts),
+                    count_bytes,
+                    "batched coset count staging allocation") ||
+                !allocate_pinned(
+                    reinterpret_cast<void **>(
+                        &host_targets),
+                    target_pointer_bytes,
+                    "batched coset target staging allocation"))
+            {
+                release_host_staging();
+
+                return false;
+            }
+
+            status =
+                cudaMallocAsync(
+                    reinterpret_cast<void **>(
+                        &device_blinder_counts),
+                    count_bytes,
+                    stream);
+
+            if (status ==
+                cudaErrorMemoryAllocation)
+            {
+                (void)cudaGetLastError();
+
+                release_host_staging();
+
+                return false;
+            }
+
+            if (status != cudaSuccess)
+            {
+                throw_cuda_ntt_error(
+                    "batched coset count allocation",
+                    status);
+            }
+
+            status =
+                cudaMallocAsync(
+                    reinterpret_cast<void **>(
+                        &device_targets),
+                    target_pointer_bytes,
+                    stream);
+
+            if (status ==
+                cudaErrorMemoryAllocation)
+            {
+                (void)cudaGetLastError();
+
+                (void)cudaFreeAsync(
+                    device_blinder_counts,
+                    stream);
+
+                device_blinder_counts =
+                    nullptr;
+
+                (void)cudaStreamSynchronize(
+                    stream);
+
+                release_host_staging();
+
+                return false;
+            }
+
+            if (status != cudaSuccess)
+            {
+                throw_cuda_ntt_error(
+                    "batched coset target allocation",
+                    status);
+            }
+
+            status =
+                cudaEventCreateWithFlags(
+                    &staging_event,
+                    cudaEventDisableTiming);
+
+            if (status != cudaSuccess)
+            {
+                throw_cuda_ntt_error(
+                    "batched coset staging event creation",
+                    status);
+            }
+
+            const auto root =
+                FieldElement::
+                    root_of_unity(
+                        target_size);
+
+            const auto odd_shift =
+                shift *
+                root;
+
+            const auto maximum_active_count =
+                domain_size +
+                maximum_blinder_count;
+
+            const auto chunks_per_vector =
+                (maximum_active_count +
+                 kCosetPowerChunkElements -
+                 1) /
+                kCosetPowerChunkElements;
+
+            constexpr unsigned
+                kBlockSize = 256;
+
+            std::size_t offset = 0;
+
+            while (offset <
+                   request_count)
+            {
+                if (staging_event_pending)
+                {
+                    status =
+                        cudaEventSynchronize(
+                            staging_event);
+
+                    if (status !=
+                        cudaSuccess)
+                    {
+                        throw_cuda_ntt_error(
+                            "batched coset staging reuse",
+                            status);
+                    }
+
+                    staging_event_pending =
+                        false;
+                }
+
+                const auto batch_size =
+                    std::min(
+                        batch_limit,
+                        request_count -
+                            offset);
+
+                const auto values_bytes =
+                    checked_ntt_bytes(
+                        domain_size,
+                        batch_size);
+
+                const auto blinder_bytes =
+                    maximum_blinder_count ==
+                            0
+                        ? std::size_t{0}
+                        : checked_ntt_bytes(
+                              maximum_blinder_count,
+                              batch_size);
+
+                const auto
+                    batch_count_bytes =
+                        batch_size *
+                        sizeof(std::size_t);
+
+                const auto
+                    batch_target_bytes =
+                        batch_size *
+                        sizeof(GpuFr *);
+
+                const auto
+                    batch_workspace_bytes =
+                        checked_ntt_bytes(
+                            target_size,
+                            batch_size);
+
+                std::memset(
+                    host_values,
+                    0,
+                    values_bytes);
+
+                if (blinder_bytes != 0)
+                {
+                    std::memset(
+                        host_blinders,
+                        0,
+                        blinder_bytes);
+                }
+
+                for (std::size_t batch = 0;
+                     batch < batch_size;
+                     ++batch)
+                {
+                    const auto &request =
+                        requests[offset +
+                                 batch];
+
+                    if (request.value_count != 0)
+                    {
+                        std::memcpy(
+                            host_values +
+                                batch *
+                                    domain_size,
+                            request.values,
+                            checked_ntt_bytes(
+                                request.value_count,
+                                1));
+                    }
+
+                    if (request.blinder_count !=
+                        0)
+                    {
+                        std::memcpy(
+                            host_blinders +
+                                batch *
+                                    maximum_blinder_count,
+                            request
+                                .zero_domain_blinder,
+                            checked_ntt_bytes(
+                                request
+                                    .blinder_count,
+                                1));
+                    }
+
+                    host_blinder_counts[batch] =
+                        request
+                            .blinder_count;
+
+                    host_targets[batch] =
+                        reinterpret_cast<
+                            GpuFr *>(
+                            request
+                                .device_output);
+                }
+
+                status =
+                    cudaMemcpyAsync(
+                        workspace.input,
+                        host_values,
+                        values_bytes,
+                        cudaMemcpyHostToDevice,
+                        stream);
+
+                if (status !=
+                    cudaSuccess)
+                {
+                    throw_cuda_ntt_error(
+                        "batched coset value upload",
+                        status);
+                }
+
+                record_cuda_h2d(
+                    values_bytes);
+
+                if (blinder_bytes != 0)
+                {
+                    status =
+                        cudaMemcpyAsync(
+                            workspace.output +
+                                batch_size *
+                                    domain_size,
+                            host_blinders,
+                            blinder_bytes,
+                            cudaMemcpyHostToDevice,
+                            stream);
+
+                    if (status !=
+                        cudaSuccess)
+                    {
+                        throw_cuda_ntt_error(
+                            "batched coset blinder upload",
+                            status);
+                    }
+
+                    record_cuda_h2d(
+                        blinder_bytes);
+                }
+
+                status =
+                    cudaMemcpyAsync(
+                        device_blinder_counts,
+                        host_blinder_counts,
+                        batch_count_bytes,
+                        cudaMemcpyHostToDevice,
+                        stream);
+
+                if (status !=
+                    cudaSuccess)
+                {
+                    throw_cuda_ntt_error(
+                        "batched coset count upload",
+                        status);
+                }
+
+                record_cuda_h2d(
+                    batch_count_bytes);
+
+                status =
+                    cudaMemcpyAsync(
+                        device_targets,
+                        host_targets,
+                        batch_target_bytes,
+                        cudaMemcpyHostToDevice,
+                        stream);
+
+                if (status !=
+                    cudaSuccess)
+                {
+                    throw_cuda_ntt_error(
+                        "batched coset target upload",
+                        status);
+                }
+
+                record_cuda_h2d(
+                    batch_target_bytes);
+
+                status =
+                    cudaEventRecord(
+                        staging_event,
+                        stream);
+
+                if (status !=
+                    cudaSuccess)
+                {
+                    throw_cuda_ntt_error(
+                        "batched coset staging event",
+                        status);
+                }
+
+                staging_event_pending =
+                    true;
+
+                if (!run_bounded_ntt_device(
+                        reinterpret_cast<
+                            const mcl::Fr *>(
+                            workspace.input),
+                        reinterpret_cast<
+                            mcl::Fr *>(
+                            workspace.output),
+                        domain_size,
+                        batch_size,
+                        ntt::NTTDir::kInverse,
+                        device,
+                        stream,
+                        reinterpret_cast<
+                            mcl::Fr *>(
+                            workspace.output),
+                        reinterpret_cast<
+                            mcl::Fr *>(
+                            workspace.input)))
+                {
+                    throw std::runtime_error(
+                        "CUDA direct coset batch inverse NTT unexpectedly declined");
+                }
+
+                status =
+                    cudaMemsetAsync(
+                        workspace.input,
+                        0,
+                        batch_workspace_bytes,
+                        stream);
+
+                if (status !=
+                    cudaSuccess)
+                {
+                    throw_cuda_ntt_error(
+                        "batched coset lane clear",
+                        status);
+                }
+
+                if (batch_size >
+                    std::numeric_limits<
+                        std::size_t>::max() /
+                        chunks_per_vector)
+                {
+                    throw std::runtime_error(
+                        "CUDA batched coset lane grid overflow");
+                }
+
+                const auto total_chunks =
+                    batch_size *
+                    chunks_per_vector;
+
+                const auto
+                    lane_block_count_size =
+                        (total_chunks +
+                         kBlockSize - 1) /
+                        kBlockSize;
+
+                if (lane_block_count_size >
+                    std::numeric_limits<
+                        unsigned>::max())
+                {
+                    throw std::runtime_error(
+                        "CUDA batched coset lane grid exceeds CUDA grid range");
+                }
+
+                const auto
+                    lane_block_count =
+                        static_cast<unsigned>(
+                            lane_block_count_size);
+
+                if (lane_block_count != 0)
+                {
+                    prepare_coset_lanes_batch_kernel<<<
+                        lane_block_count,
+                        kBlockSize,
+                        0,
+                        stream>>>(
+                        reinterpret_cast<
+                            const GpuFr *>(
+                            workspace.output),
+                        domain_size,
+                        reinterpret_cast<
+                            const GpuFr *>(
+                            workspace.output +
+                            batch_size *
+                                domain_size),
+                        maximum_blinder_count,
+                        device_blinder_counts,
+                        batch_size,
+                        chunks_per_vector,
+                        gpu_field(
+                            shift),
+                        gpu_field(
+                            odd_shift),
+                        reinterpret_cast<
+                            GpuFr *>(
+                            workspace.input),
+                        target_size);
+
+                    status =
+                        cudaGetLastError();
+
+                    if (status !=
+                        cudaSuccess)
+                    {
+                        throw_cuda_ntt_error(
+                            "batched coset lane preparation",
+                            status);
+                    }
+
+                    record_cuda_kernel_invocations(
+                        1);
+                }
+
+                if (batch_size >
+                    std::numeric_limits<
+                        std::size_t>::max() /
+                        2)
+                {
+                    throw std::runtime_error(
+                        "CUDA batched coset forward batch overflow");
+                }
+
+                if (!run_bounded_ntt_device(
+                        reinterpret_cast<
+                            const mcl::Fr *>(
+                            workspace.input),
+                        reinterpret_cast<
+                            mcl::Fr *>(
+                            workspace.output),
+                        half_size,
+                        batch_size * 2,
+                        ntt::NTTDir::kForward,
+                        device,
+                        stream,
+                        reinterpret_cast<
+                            mcl::Fr *>(
+                            workspace.output),
+                        reinterpret_cast<
+                            mcl::Fr *>(
+                            workspace.input)))
+                {
+                    throw std::runtime_error(
+                        "CUDA direct coset batch forward NTT unexpectedly declined");
+                }
+
+                if (batch_size >
+                    std::numeric_limits<
+                        std::size_t>::max() /
+                        target_size)
+                {
+                    throw std::runtime_error(
+                        "CUDA batched coset scatter size overflow");
+                }
+
+                const auto total_elements =
+                    batch_size *
+                    target_size;
+
+                const auto
+                    scatter_block_count_size =
+                        (total_elements +
+                         kBlockSize - 1) /
+                        kBlockSize;
+
+                if (scatter_block_count_size >
+                    std::numeric_limits<
+                        unsigned>::max())
+                {
+                    throw std::runtime_error(
+                        "CUDA batched coset scatter grid exceeds CUDA grid range");
+                }
+
+                const auto
+                    scatter_block_count =
+                        static_cast<unsigned>(
+                            scatter_block_count_size);
+
+                if (scatter_block_count != 0)
+                {
+                    scatter_coset_batch_kernel<<<
+                        scatter_block_count,
+                        kBlockSize,
+                        0,
+                        stream>>>(
+                        reinterpret_cast<
+                            const GpuFr *>(
+                            workspace.output),
+                        device_targets,
+                        target_size,
+                        batch_size);
+
+                    status =
+                        cudaGetLastError();
+
+                    if (status !=
+                        cudaSuccess)
+                    {
+                        throw_cuda_ntt_error(
+                            "batched coset scatter",
+                            status);
+                    }
+
+                    record_cuda_kernel_invocations(
+                        1);
+                }
+
+                offset +=
+                    batch_size;
+            }
+
+            if (staging_event_pending)
+            {
+                status =
+                    cudaEventSynchronize(
+                        staging_event);
+
+                if (status !=
+                    cudaSuccess)
+                {
+                    throw_cuda_ntt_error(
+                        "batched coset final staging completion",
+                        status);
+                }
+
+                staging_event_pending =
+                    false;
+            }
+
+            status =
+                cudaEventDestroy(
+                    staging_event);
+
+            if (status !=
+                cudaSuccess)
+            {
+                staging_event =
+                    nullptr;
+
+                throw_cuda_ntt_error(
+                    "batched coset staging event destruction",
+                    status);
+            }
+
+            staging_event =
+                nullptr;
+
+            release_host_staging();
+
+            status =
+                cudaFreeAsync(
+                    device_blinder_counts,
+                    stream);
+
+            if (status !=
+                cudaSuccess)
+            {
+                throw_cuda_ntt_error(
+                    "batched coset count release",
+                    status);
+            }
+
+            device_blinder_counts =
+                nullptr;
+
+            status =
+                cudaFreeAsync(
+                    device_targets,
+                    stream);
+
+            if (status !=
+                cudaSuccess)
+            {
+                throw_cuda_ntt_error(
+                    "batched coset target release",
+                    status);
+            }
+
+            device_targets =
+                nullptr;
+
+            if (make_default_stream_wait)
+            {
+                enqueue_default_stream_wait(
+                    stream,
+                    "batched coset default-stream dependency");
+
+                return true;
+            }
+
+            status =
+                cudaStreamSynchronize(
+                    stream);
+
+            if (status !=
+                cudaSuccess)
+            {
+                throw_cuda_ntt_error(
+                    "batched coset synchronization",
+                    status);
+            }
+
+            record_cuda_stream_sync();
+
+            return true;
+        }
+        catch (...)
+        {
+            if (stream != nullptr)
+            {
+                (void)cudaStreamSynchronize(
+                    stream);
+            }
+
+            if (device_blinder_counts !=
+                nullptr)
+            {
+                (void)cudaFree(
+                    device_blinder_counts);
+
+                device_blinder_counts =
+                    nullptr;
+            }
+
+            if (device_targets != nullptr)
+            {
+                (void)cudaFree(
+                    device_targets);
+
+                device_targets =
+                    nullptr;
+            }
+
+            if (staging_event != nullptr)
+            {
+                (void)cudaEventDestroy(
+                    staging_event);
+
+                staging_event =
+                    nullptr;
+            }
+
+            release_host_staging();
+
+            throw;
+        }
     }
 
     bool cuda_coset_coefficients_to_device_exact(

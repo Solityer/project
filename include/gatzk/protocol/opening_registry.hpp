@@ -1,5 +1,6 @@
 #pragma once
 
+#include <limits>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -24,10 +25,16 @@ namespace gatzk::protocol
         crypto::Commitment commitment;
         algebra::FieldElement value = algebra::FieldElement::zero();
 
-        // Execution-only canonical commitment bytes. They are never absorbed
-        // into the transcript, serialized into the proof, or used as protocol
-        // identity.
-        std::string execution_commitment_key;
+        // Execution-only precomputed first canonical text-length component.
+        // It avoids rebuilding the decimal length prefix inside every sort
+        // comparison and is never absorbed into the transcript.
+        std::string canonical_claim_id_length_prefix;
+
+        // Registry-local interned identity of the canonical commitment point.
+        // It replaces per-claim copies of serialized G1 bytes while retaining
+        // exact cross-reference point deduplication semantics.
+        std::size_t execution_commitment_identity =
+            std::numeric_limits<std::size_t>::max();
     };
 
     struct StandardPointGroup
@@ -56,6 +63,14 @@ namespace gatzk::protocol
         void reserve_claim_capacity(
             const algebra::FieldElement &point,
             std::size_t expected_claim_count);
+
+        // Precompute execution-only commitment identities in one bounded
+        // parallel wave.  Protocol-visible commitment references and points
+        // remain unchanged.
+        void prepare_commitment_execution_identities(
+            const std::vector<crypto::Commitment>
+                &commitments);
+
         void finalize();
 
         const std::vector<StandardPointGroup> &groups() const;
@@ -66,7 +81,10 @@ namespace gatzk::protocol
         struct CommitmentExecutionIdentity
         {
             crypto::G1Point point;
-            std::string serialized_key;
+
+            std::size_t identity =
+                std::numeric_limits<
+                    std::size_t>::max();
         };
 
         void refresh_claim_execution_keys(
@@ -85,12 +103,26 @@ namespace gatzk::protocol
             CommitmentExecutionIdentity>
             commitment_execution_identity_by_reference_;
 
+        std::unordered_map<
+            std::string,
+            std::size_t>
+            commitment_execution_identity_by_point_;
+
+        std::size_t
+            next_commitment_execution_identity_ =
+                0;
+
         bool last_group_valid_ = false;
         algebra::FieldElement last_group_point_ =
             algebra::FieldElement::zero();
         std::size_t last_group_index_ = 0;
-        std::vector<std::unordered_map<std::string, std::size_t>>
+
+        std::vector<
+            std::unordered_map<
+                std::size_t,
+                std::size_t>>
             claim_index_by_commitment_;
+
         bool finalized_ = false;
     };
 

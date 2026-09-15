@@ -1624,6 +1624,9 @@ namespace gatzk::protocol
                         cache_slot_count_,
                         0);
 
+                bool batch_dependency_clear =
+                    true;
+
                 for (const auto &request :
                      requests)
                 {
@@ -1656,9 +1659,138 @@ namespace gatzk::protocol
                             "CUDA t_edge evaluation leaf batch target slot is already bound");
                     }
 
+                    if (host_leaf_requires_default_wait_[request.slot])
+                    {
+                        batch_dependency_clear =
+                            false;
+                    }
+
                     seen[request.slot] = 1;
                 }
 
+                int executor_device = -1;
+
+                auto status =
+                    cudaGetDevice(
+                        &executor_device);
+
+                if (status != cudaSuccess)
+                {
+                    throw_cuda_t_edge_error(
+                        "evaluation leaf batch device lookup",
+                        status);
+                }
+
+                if (batch_dependency_clear &&
+                    requests.size() >= 2)
+                {
+                    std::vector<
+                        algebra::
+                            CudaCosetEvaluationBatchRequest>
+                        batch_requests;
+
+                    batch_requests.reserve(
+                        requests.size());
+
+                    for (const auto &request :
+                         requests)
+                    {
+                        batch_requests.push_back(
+                            algebra::
+                                CudaCosetEvaluationBatchRequest{
+                                    .values =
+                                        request.values,
+                                    .value_count =
+                                        request.value_count,
+                                    .zero_domain_blinder =
+                                        request.zero_domain_blinder,
+                                    .blinder_count =
+                                        request.blinder_count,
+                                    .device_output =
+                                        reinterpret_cast<
+                                            mcl::Fr *>(
+                                            device_leaf_slots_[request.slot]),
+                                });
+                    }
+
+                    if (algebra::
+                            cuda_coset_evaluations_to_device_exact_batch(
+                                batch_requests.data(),
+                                batch_requests.size(),
+                                domain_size_,
+                                shift_,
+                                target_size_,
+                                true))
+                    {
+                        for (const auto &request :
+                             requests)
+                        {
+                            host_leaf_requires_default_wait_[request.slot] =
+                                false;
+
+                            host_leaf_split_layout_[request.slot] =
+                                1;
+
+                            host_leaf_bound_[request.slot] =
+                                true;
+
+                            host_leaf_uploaded_prefix_[request.slot] =
+                                target_size_;
+                        }
+
+                        const auto layout_bytes =
+                            checked_bytes(
+                                cache_slot_count_,
+                                sizeof(std::uint8_t),
+                                "batched leaf layout");
+
+                        status =
+                            cudaMemcpyAsync(
+                                device_leaf_split_layout_,
+                                host_leaf_split_layout_
+                                    .data(),
+                                layout_bytes,
+                                cudaMemcpyHostToDevice,
+                                nullptr);
+
+                        if (status !=
+                            cudaSuccess)
+                        {
+                            throw_cuda_t_edge_error(
+                                "batched leaf-layout upload",
+                                status);
+                        }
+
+                        algebra::record_cuda_h2d(
+                            layout_bytes);
+
+                        // Preserve the explicit correctness boundary that was
+                        // added after the per-thread/default-stream bug.  The
+                        // execution strategy changes, but consumers still
+                        // observe one completed resident-leaf set.
+                        status =
+                            cudaDeviceSynchronize();
+
+                        if (status !=
+                            cudaSuccess)
+                        {
+                            throw_cuda_t_edge_error(
+                                "evaluation leaf batch completion",
+                                status);
+                        }
+
+                        algebra::
+                            record_cuda_stream_sync();
+
+                        return true;
+                    }
+                }
+
+                // The native batch route is intentionally optional for
+                // staged transforms or resource-pressure cases.  Preserve the
+                // already validated bounded multi-worker implementation as
+                // the exact fallback rather than falling back to a different
+                // mathematical path.
                 const auto hardware_workers =
                     std::max<std::size_t>(
                         1,
@@ -1673,9 +1805,6 @@ namespace gatzk::protocol
                             std::size_t{8},
                         });
 
-                // Each exact leaf transform owns a thread-local CUDA NTT
-                // workspace. Keep concurrent temporary transform storage
-                // bounded independently of the resident leaf cache.
                 constexpr std::size_t
                     kMaximumConcurrentLeafWorkspaceBytes =
                         std::size_t{512} << 20;
@@ -1722,19 +1851,6 @@ namespace gatzk::protocol
                     std::max<std::size_t>(
                         1,
                         worker_count);
-
-                int executor_device = -1;
-
-                auto status =
-                    cudaGetDevice(
-                        &executor_device);
-
-                if (status != cudaSuccess)
-                {
-                    throw_cuda_t_edge_error(
-                        "evaluation leaf batch device lookup",
-                        status);
-                }
 
                 std::atomic<std::size_t>
                     next{0};
@@ -1811,14 +1927,6 @@ namespace gatzk::protocol
                     future.get();
                 }
 
-                // The direct evaluation leaves are independent and remain
-                // fully concurrent across the bounded worker streams.
-                //
-                // Establish one explicit device-wide completion boundary
-                // before any derived leaf or quotient term consumes those
-                // resident buffers.  This also makes the correctness of the
-                // batch independent of CUDA legacy/per-thread default-stream
-                // compilation semantics.
                 status =
                     cudaDeviceSynchronize();
 

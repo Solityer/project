@@ -1333,6 +1333,19 @@ namespace gatzk::crypto
             }
         }
 
+        // A same-SRS batch window is an explicit request to coalesce several
+        // immutable-base MSMs.  Admit the 2^12+ shape even when the resident
+        // base cache is still cold: the batch coordinator owns the single
+        // base upload and seeds residency for the whole wave.
+        if (stable_srs_bases &&
+            current_cuda_msm_batch_window() !=
+                nullptr &&
+            count >=
+                (std::size_t{1} << 12))
+        {
+            return true;
+        }
+
         if (resident)
         {
             return count >=
@@ -1743,16 +1756,23 @@ namespace gatzk::crypto
                 return out;
             }
 
-            // A large immutable-SRS MSM should retain the original stable
-            // base vector on CUDA.  The CPU single/grouped/sparse routes below
-            // can destroy SRS residency by constructing temporary point
-            // vectors and can spend substantial ARM time reducing G1 points
-            // before the GPU is allowed to run.
+            // Preserve immutable SRS bases before any sparse/grouped path
+            // constructs temporary base vectors.  Large single MSMs keep the
+            // existing threshold.  Smaller 2^12+ objects take this route only
+            // while an explicit same-SRS batch window is active, so isolated
+            // small MSMs retain the existing CPU heuristics.
+            const bool coalesced_same_srs_request =
+                current_cuda_msm_batch_window() !=
+                    nullptr &&
+                count >=
+                    (std::size_t{1} << 12);
+
             if (stable_srs_bases &&
                 util::route2_options()
                     .cuda_field_hotspots &&
-                count >=
-                    (std::size_t{1} << 14))
+                (count >=
+                     (std::size_t{1} << 14) ||
+                 coalesced_same_srs_request))
             {
                 if (profile != nullptr)
                 {

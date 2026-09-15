@@ -287,44 +287,105 @@ namespace gatzk::protocol
                 return points;
             }
 
+            // G1 wire decoding is CPU work and must not create a CUDA MSM
+            // coordination window.  Use coarse bounded ranges so small proof
+            // groups stay serial while large commitment blocks amortize
+            // worker creation.
+            constexpr std::size_t
+                kMinimumPointsPerWorker = 32;
+
+            constexpr std::size_t
+                kMaximumDecodeWorkers = 16;
+
             const auto hardware_workers =
                 std::max<std::size_t>(
                     1,
-                    std::thread::hardware_concurrency());
+                    std::thread::
+                        hardware_concurrency());
+
+            const auto size_workers =
+                std::max<std::size_t>(
+                    1,
+                    (encodings.size() +
+                     kMinimumPointsPerWorker -
+                     1) /
+                        kMinimumPointsPerWorker);
 
             const auto worker_count =
-                encodings.size() >= 2
-                    ? std::min<std::size_t>(
-                          hardware_workers,
-                          encodings.size())
-                    : std::size_t{1};
+                std::min<std::size_t>(
+                    {
+                        hardware_workers,
+                        kMaximumDecodeWorkers,
+                        size_workers,
+                    });
+
+            const auto decode_range =
+                [&](std::size_t begin,
+                    std::size_t end)
+            {
+                for (std::size_t index = begin;
+                     index < end;
+                     ++index)
+                {
+                    points[index] =
+                        decode_canonical_g1(
+                            encodings[index]);
+                }
+            };
+
+            if (worker_count <= 1)
+            {
+                decode_range(
+                    0,
+                    encodings.size());
+
+                return points;
+            }
 
             const auto chunk_size =
                 (encodings.size() +
                  worker_count - 1) /
                 worker_count;
 
-            crypto::g1_parallel_msm_batch_workers(
-                worker_count,
-                [&](std::size_t worker)
+            std::vector<
+                std::future<void>>
+                futures;
+
+            futures.reserve(
+                worker_count);
+
+            for (std::size_t worker = 0;
+                 worker < worker_count;
+                 ++worker)
+            {
+                const auto begin =
+                    worker *
+                    chunk_size;
+
+                const auto end =
+                    std::min(
+                        encodings.size(),
+                        begin +
+                            chunk_size);
+
+                if (begin >= end)
                 {
-                    const auto begin =
-                        worker * chunk_size;
+                    break;
+                }
 
-                    const auto end =
-                        std::min(
-                            encodings.size(),
-                            begin + chunk_size);
+                futures.push_back(
+                    std::async(
+                        std::launch::async,
+                        decode_range,
+                        begin,
+                        end));
+            }
 
-                    for (std::size_t index = begin;
-                         index < end;
-                         ++index)
-                    {
-                        points[index] =
-                            decode_canonical_g1(
-                                encodings[index]);
-                    }
-                });
+            for (auto &future :
+                 futures)
+            {
+                future.get();
+            }
 
             return points;
         }
@@ -433,29 +494,106 @@ namespace gatzk::protocol
             }
         }
 
-        std::vector<std::pair<std::string, crypto::Commitment>> read_named_commitments(Reader &reader)
+        struct EncodedNamedCommitments
         {
-            const auto count = reader.count("commitments");
             std::vector<std::string> names;
             std::vector<EncodedG1View> encodings;
-            names.reserve(count);
-            encodings.reserve(count);
-            for (std::size_t i = 0; i < count; ++i)
+        };
+
+        EncodedNamedCommitments
+        read_encoded_named_commitments(
+            Reader &reader)
+        {
+            const auto count =
+                reader.count(
+                    "commitments");
+
+            EncodedNamedCommitments
+                encoded;
+
+            encoded.names.reserve(
+                count);
+
+            encoded.encodings.reserve(
+                count);
+
+            for (std::size_t i = 0;
+                 i < count;
+                 ++i)
             {
-                names.push_back(reader.string());
-                encodings.push_back(reader.point_encoding());
+                encoded.names.push_back(
+                    reader.string());
+
+                encoded.encodings.push_back(
+                    reader.point_encoding());
             }
-            auto points = decode_canonical_g1_batch(encodings);
-            std::vector<std::pair<std::string, crypto::Commitment>> out;
-            out.reserve(count);
-            for (std::size_t i = 0; i < count; ++i)
+
+            return encoded;
+        }
+
+        std::vector<
+            std::pair<
+                std::string,
+                crypto::Commitment>>
+        decode_named_commitments(
+            EncodedNamedCommitments encoded)
+        {
+            if (encoded.names.size() !=
+                encoded.encodings.size())
             {
-                crypto::Commitment commitment;
-                commitment.name = names[i];
-                commitment.point = std::move(points[i]);
-                out.push_back({std::move(names[i]), std::move(commitment)});
+                throw std::runtime_error(
+                    "proof parser encoded commitment shape mismatch");
             }
+
+            auto points =
+                decode_canonical_g1_batch(
+                    encoded.encodings);
+
+            std::vector<
+                std::pair<
+                    std::string,
+                    crypto::Commitment>>
+                out;
+
+            out.reserve(
+                encoded.names.size());
+
+            for (std::size_t i = 0;
+                 i < encoded.names.size();
+                 ++i)
+            {
+                crypto::Commitment
+                    commitment;
+
+                commitment.name =
+                    encoded.names[i];
+
+                commitment.point =
+                    std::move(
+                        points[i]);
+
+                out.push_back(
+                    {
+                        std::move(
+                            encoded.names[i]),
+                        std::move(
+                            commitment),
+                    });
+            }
+
             return out;
+        }
+
+        std::vector<
+            std::pair<
+                std::string,
+                crypto::Commitment>>
+        read_named_commitments(
+            Reader &reader)
+        {
+            return decode_named_commitments(
+                read_encoded_named_commitments(
+                    reader));
         }
 
         void write_optional_index(Writer &writer, const std::optional<std::size_t> &value)
@@ -1817,42 +1955,293 @@ namespace gatzk::protocol
                 throw std::runtime_error(
                     "proof parser Pi_bind RelationMeta does not match instance schema");
 
-            const auto model_count = pi_bind.count("Pi_bind model reblinds");
-            subproof.model_reblinds.reserve(model_count);
-            for (std::size_t i = 0; i < model_count; ++i)
+            const auto model_count =
+                pi_bind.count(
+                    "Pi_bind model reblinds");
+
+            subproof.model_reblinds.resize(
+                model_count);
+
+            std::vector<EncodedG1View>
+                model_reblind_encodings;
+
+            model_reblind_encodings.reserve(
+                model_count * 2);
+
+            for (std::size_t i = 0;
+                 i < model_count;
+                 ++i)
             {
-                ModelReblindProof reblind;
-                reblind.object_id = pi_bind.string();
-                reblind.domain = pi_bind.string();
-                reblind.vk_model_anchor.object_id = pi_bind.string();
-                reblind.proof_local_commitment.name = pi_bind.string();
-                reblind.proof_local_commitment.point = pi_bind.point();
-                reblind.blinder_commitment.name = pi_bind.string();
-                reblind.blinder_commitment.point = pi_bind.point();
-                subproof.model_reblinds.push_back(std::move(reblind));
+                auto &reblind =
+                    subproof
+                        .model_reblinds[i];
+
+                reblind.object_id =
+                    pi_bind.string();
+
+                reblind.domain =
+                    pi_bind.string();
+
+                reblind
+                    .vk_model_anchor
+                    .object_id =
+                    pi_bind.string();
+
+                reblind
+                    .proof_local_commitment
+                    .name =
+                    pi_bind.string();
+
+                model_reblind_encodings
+                    .push_back(
+                        pi_bind
+                            .point_encoding());
+
+                reblind
+                    .blinder_commitment
+                    .name =
+                    pi_bind.string();
+
+                model_reblind_encodings
+                    .push_back(
+                        pi_bind
+                            .point_encoding());
             }
-            const auto view_reference_count = pi_bind.count("Pi_bind Com_view references");
-            subproof.view_references.reserve(view_reference_count);
-            for (std::size_t i = 0; i < view_reference_count; ++i)
-                subproof.view_references.push_back({pi_bind.string()});
+
+            const auto view_reference_count =
+                pi_bind.count(
+                    "Pi_bind Com_view references");
+
+            subproof.view_references.reserve(
+                view_reference_count);
+
+            for (std::size_t i = 0;
+                 i < view_reference_count;
+                 ++i)
             {
-                std::unordered_set<std::string> references;
-                for (const auto &reference : subproof.view_references)
-                    if (reference.object_id.empty() || !references.insert(reference.object_id).second)
+                subproof
+                    .view_references
+                    .push_back(
+                        {pi_bind.string()});
+            }
+
+            {
+                std::unordered_set<
+                    std::string>
+                    references;
+
+                for (const auto &reference :
+                     subproof.view_references)
+                {
+                    if (reference
+                            .object_id
+                            .empty() ||
+                        !references
+                             .insert(
+                                 reference
+                                     .object_id)
+                             .second)
+                    {
                         throw std::runtime_error(
                             "proof parser duplicate/empty Pi_bind Com_view reference");
+                    }
+                }
             }
-            auto read_group = [&](auto &group, const char *label)
+
+            auto encoded_view_commitments =
+                read_encoded_named_commitments(
+                    pi_bind);
+
+            auto encoded_view_logup_commitments =
+                read_encoded_named_commitments(
+                    pi_bind);
+
+            auto encoded_aggregation_commitments =
+                read_encoded_named_commitments(
+                    pi_bind);
+
+            auto encoded_basis_commitments =
+                read_encoded_named_commitments(
+                    pi_bind);
+
+            auto encoded_crpc_commitments =
+                read_encoded_named_commitments(
+                    pi_bind);
+
+            auto encoded_relation_commitments =
+                read_encoded_named_commitments(
+                    pi_bind);
+
+            std::vector<EncodedG1View>
+                subproof_g1_encodings;
+
+            const auto total_group_points =
+                encoded_view_commitments
+                    .encodings.size() +
+                encoded_view_logup_commitments
+                    .encodings.size() +
+                encoded_aggregation_commitments
+                    .encodings.size() +
+                encoded_basis_commitments
+                    .encodings.size() +
+                encoded_crpc_commitments
+                    .encodings.size() +
+                encoded_relation_commitments
+                    .encodings.size();
+
+            subproof_g1_encodings.reserve(
+                model_reblind_encodings.size() +
+                total_group_points);
+
+            subproof_g1_encodings.insert(
+                subproof_g1_encodings.end(),
+                model_reblind_encodings.begin(),
+                model_reblind_encodings.end());
+
+            const auto append_group_encodings =
+                [&](const EncodedNamedCommitments
+                        &encoded)
             {
-                group = read_named_commitments(pi_bind);
-                require_unique_names(group, label);
+                subproof_g1_encodings.insert(
+                    subproof_g1_encodings.end(),
+                    encoded.encodings.begin(),
+                    encoded.encodings.end());
             };
-            read_group(subproof.view_commitments, "Pi_bind Com_view");
-            read_group(subproof.view_logup_commitments, "Pi_bind Com_viewLogUp");
-            read_group(subproof.aggregation_commitments, "Pi_bind Com_agg");
-            read_group(subproof.basis_commitments, "Pi_bind Com_basis");
-            read_group(subproof.crpc_commitments, "Pi_bind Com_CRPC");
-            read_group(subproof.relation_commitments, "Pi_bind Com_rel");
+
+            append_group_encodings(
+                encoded_view_commitments);
+
+            append_group_encodings(
+                encoded_view_logup_commitments);
+
+            append_group_encodings(
+                encoded_aggregation_commitments);
+
+            append_group_encodings(
+                encoded_basis_commitments);
+
+            append_group_encodings(
+                encoded_crpc_commitments);
+
+            append_group_encodings(
+                encoded_relation_commitments);
+
+            auto decoded_subproof_points =
+                decode_canonical_g1_batch(
+                    subproof_g1_encodings);
+
+            std::size_t decoded_position =
+                0;
+
+            for (auto &reblind :
+                 subproof.model_reblinds)
+            {
+                if (decoded_position + 2 >
+                    decoded_subproof_points.size())
+                {
+                    throw std::runtime_error(
+                        "proof parser model-reblind G1 decode underflow");
+                }
+
+                reblind
+                    .proof_local_commitment
+                    .point =
+                    std::move(
+                        decoded_subproof_points[decoded_position++]);
+
+                reblind
+                    .blinder_commitment
+                    .point =
+                    std::move(
+                        decoded_subproof_points[decoded_position++]);
+            }
+
+            const auto decode_group =
+                [&](auto &group,
+                    EncodedNamedCommitments
+                        &encoded,
+                    const char *label)
+            {
+                if (encoded.names.size() !=
+                        encoded.encodings.size() ||
+                    decoded_position +
+                            encoded.names.size() >
+                        decoded_subproof_points
+                            .size())
+                {
+                    throw std::runtime_error(
+                        std::string(
+                            "proof parser Pi_bind G1 decode shape mismatch: ") +
+                        label);
+                }
+
+                group.reserve(
+                    encoded.names.size());
+
+                for (std::size_t i = 0;
+                     i < encoded.names.size();
+                     ++i)
+                {
+                    crypto::Commitment
+                        commitment;
+
+                    commitment.name =
+                        encoded.names[i];
+
+                    commitment.point =
+                        std::move(
+                            decoded_subproof_points[decoded_position++]);
+
+                    group.push_back(
+                        {
+                            std::move(
+                                encoded.names[i]),
+                            std::move(
+                                commitment),
+                        });
+                }
+
+                require_unique_names(
+                    group,
+                    label);
+            };
+
+            decode_group(
+                subproof.view_commitments,
+                encoded_view_commitments,
+                "Pi_bind Com_view");
+
+            decode_group(
+                subproof.view_logup_commitments,
+                encoded_view_logup_commitments,
+                "Pi_bind Com_viewLogUp");
+
+            decode_group(
+                subproof.aggregation_commitments,
+                encoded_aggregation_commitments,
+                "Pi_bind Com_agg");
+
+            decode_group(
+                subproof.basis_commitments,
+                encoded_basis_commitments,
+                "Pi_bind Com_basis");
+
+            decode_group(
+                subproof.crpc_commitments,
+                encoded_crpc_commitments,
+                "Pi_bind Com_CRPC");
+
+            decode_group(
+                subproof.relation_commitments,
+                encoded_relation_commitments,
+                "Pi_bind Com_rel");
+
+            if (decoded_position !=
+                decoded_subproof_points.size())
+            {
+                throw std::runtime_error(
+                    "proof parser Pi_bind G1 decode left unconsumed points");
+            }
 
             const auto evaluation_count = pi_bind.count("Pi_bind evaluations");
             subproof.evaluations.reserve(evaluation_count);

@@ -16656,14 +16656,23 @@ namespace gatzk::protocol
                               outer_worker_limit,
                               memory_worker_cap));
 
-            const auto base_inner_worker_count =
-                worker_count > 1
-                    ? std::max<std::size_t>(
-                          1,
-                          hardware_workers /
-                              worker_count)
-                    : std::size_t{0};
+            // One CPU budget is shared by all concurrently opened groups.
+            // Previously each large domain group could independently request
+            // up to 16 inner workers on top of the outer group parallelism,
+            // producing substantial nested oversubscription.
+            const auto per_group_inner_worker_budget =
+                std::max<std::size_t>(
+                    1,
+                    static_cast<std::size_t>(
+                        hardware_workers) /
+                        std::max<std::size_t>(
+                            1,
+                            worker_count));
 
+            const auto base_inner_worker_count =
+                std::min<std::size_t>(
+                    16,
+                    per_group_inner_worker_budget);
             if (memory_admission.overflow ||
                 !memory_admission.memory_known ||
                 memory_admission.maximum_parallel_groups <= 1)
@@ -16699,16 +16708,14 @@ namespace gatzk::protocol
                             commitments.push_back(claim.commitment);
                             values.push_back(claim.value);
                         }
+                        // The outer scheduler already parallelizes independent
+                        // groups.  Never let one group reacquire the whole
+                        // machine merely because its work estimate is large.
+                        // Large and small groups use the same globally bounded
+                        // per-group cap; KZG still decides internally how much
+                        // of that cap is useful.
                         const auto inner_worker_count =
-                            worker_count > 1 &&
-                                    !external_phase &&
-                                    estimated_work(
-                                        group_index) >=
-                                        (1ULL << 18)
-                                ? std::min<std::size_t>(
-                                      16,
-                                      hardware_workers)
-                                : base_inner_worker_count;
+                            base_inner_worker_count;
 
                         const crypto::
                             PointGroupOpeningExecutionOptions
@@ -17042,10 +17049,17 @@ namespace gatzk::protocol
                     std::thread::
                         hardware_concurrency());
 
+            // open_point_group_pair_shared_stream() drives two independent
+            // opening constructions.  Split one global CPU budget between
+            // them instead of granting both the full 16-worker allowance.
             const auto inner_worker_count =
                 std::min<std::size_t>(
                     16,
-                    hardware_workers);
+                    std::max<std::size_t>(
+                        1,
+                        static_cast<std::size_t>(
+                            hardware_workers) /
+                            2));
 
             const std::array<
                 crypto::

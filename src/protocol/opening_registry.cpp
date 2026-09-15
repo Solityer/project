@@ -4,8 +4,11 @@
 #include <array>
 #include <charconv>
 #include <cstdint>
+#include <future>
+#include <limits>
 #include <stdexcept>
 #include <string_view>
+#include <thread>
 #include <tuple>
 #include <unordered_set>
 
@@ -42,6 +45,31 @@ namespace gatzk::protocol
             return std::string(
                 reinterpret_cast<const char *>(encoded.data()),
                 encoded.size());
+        }
+
+        std::string decimal_length_prefix(
+            std::size_t value)
+        {
+            std::array<char, 32>
+                bytes{};
+
+            const auto result =
+                std::to_chars(
+                    bytes.data(),
+                    bytes.data() +
+                        bytes.size(),
+                    value);
+
+            if (result.ec !=
+                std::errc{})
+            {
+                throw std::runtime_error(
+                    "standard opening claim length encoding failed");
+            }
+
+            return std::string(
+                bytes.data(),
+                result.ptr);
         }
 
         int compare_decimal_length_prefix(
@@ -140,8 +168,19 @@ namespace gatzk::protocol
             };
 
             int result =
-                compare_text(
-                    lhs.claim_id,
+                lhs
+                    .canonical_claim_id_length_prefix
+                    .compare(
+                        rhs
+                            .canonical_claim_id_length_prefix);
+
+            if (result != 0)
+            {
+                return result < 0;
+            }
+
+            result =
+                lhs.claim_id.compare(
                     rhs.claim_id);
 
             if (result != 0)
@@ -169,16 +208,10 @@ namespace gatzk::protocol
                 return result < 0;
             }
 
-            result =
-                lhs.execution_commitment_key
-                    .compare(
-                        rhs.execution_commitment_key);
-
-            if (result != 0)
-            {
-                return result < 0;
-            }
-
+            // For a valid registry state, one commitment_reference is bound to
+            // exactly one G1 point.  Therefore execution identity cannot break
+            // a tie after commitment_reference and never contributed new
+            // protocol-visible ordering information.
             result =
                 compare_text(
                     lhs.evaluation_kind,
@@ -295,20 +328,50 @@ namespace gatzk::protocol
         crypto::Commitment commitment,
         const algebra::FieldElement &value)
     {
-        const auto commitment_reference = commitment.name;
+        const auto commitment_reference =
+            commitment.name;
+
+        auto claim_id_length_prefix =
+            decimal_length_prefix(
+                claim_id.size());
+
         return StandardOpeningClaim{
-            .claim_id = std::move(claim_id),
-            .object_id = std::move(object_id),
-            .commitment_reference = commitment_reference,
-            .evaluation_kind = std::move(evaluation_kind),
-            .claim_role = std::move(claim_role),
-            .visibility_tag = visibility == PayloadValueKind::PublicValue
-                                  ? "public"
-                                  : "masked_private",
-            .value_type = "field_element",
-            .value_reference_id = std::move(value_reference_id),
-            .commitment = std::move(commitment),
-            .value = value,
+            .claim_id =
+                std::move(
+                    claim_id),
+            .object_id =
+                std::move(
+                    object_id),
+            .commitment_reference =
+                commitment_reference,
+            .evaluation_kind =
+                std::move(
+                    evaluation_kind),
+            .claim_role =
+                std::move(
+                    claim_role),
+            .visibility_tag =
+                visibility ==
+                        PayloadValueKind::
+                            PublicValue
+                    ? "public"
+                    : "masked_private",
+            .value_type =
+                "field_element",
+            .value_reference_id =
+                std::move(
+                    value_reference_id),
+            .commitment =
+                std::move(
+                    commitment),
+            .value =
+                value,
+            .canonical_claim_id_length_prefix =
+                std::move(
+                    claim_id_length_prefix),
+            .execution_commitment_identity =
+                std::numeric_limits<
+                    std::size_t>::max(),
         };
     }
 
@@ -341,6 +404,13 @@ namespace gatzk::protocol
                     "domain bundle commitment/value order mismatch");
             }
         }
+
+        // Commitment-point serialization is independent across canonical
+        // objects.  Prepare these execution-only identities once before the
+        // two point-major claim passes instead of serializing them lazily
+        // during claim insertion.
+        registry.prepare_commitment_execution_identities(
+            commitments);
 
         // Point-major insertion keeps thousands of claims for one canonical
         // point contiguous.  finalize() still performs the exact canonical
@@ -510,6 +580,236 @@ namespace gatzk::protocol
         }
     }
     void StandardPointGroupRegistry::
+        prepare_commitment_execution_identities(
+            const std::vector<
+                crypto::Commitment>
+                &commitments)
+    {
+        if (finalized_)
+        {
+            throw std::runtime_error(
+                "standard point-group registry cannot prepare identities after finalization");
+        }
+
+        std::vector<std::size_t>
+            missing_indices;
+
+        missing_indices.reserve(
+            commitments.size());
+
+        for (std::size_t index = 0;
+             index < commitments.size();
+             ++index)
+        {
+            const auto &commitment =
+                commitments[index];
+
+            const auto existing =
+                commitment_execution_identity_by_reference_
+                    .find(
+                        commitment.name);
+
+            if (existing ==
+                commitment_execution_identity_by_reference_
+                    .end())
+            {
+                missing_indices.push_back(
+                    index);
+
+                continue;
+            }
+
+            if (!(existing->second.point ==
+                  commitment.point))
+            {
+                throw std::runtime_error(
+                    "standard opening commitment reference resolves to multiple G1 points");
+            }
+        }
+
+        if (missing_indices.empty())
+        {
+            return;
+        }
+
+        std::vector<std::string>
+            serialized_keys(
+                missing_indices.size());
+
+        constexpr std::size_t
+            kMinimumIdentitiesPerWorker =
+                32;
+
+        constexpr std::size_t
+            kMaximumIdentityWorkers =
+                16;
+
+        const auto hardware_workers =
+            std::max<std::size_t>(
+                1,
+                std::thread::
+                    hardware_concurrency());
+
+        const auto size_workers =
+            std::max<std::size_t>(
+                1,
+                (missing_indices.size() +
+                 kMinimumIdentitiesPerWorker -
+                 1) /
+                    kMinimumIdentitiesPerWorker);
+
+        const auto worker_count =
+            std::min<std::size_t>(
+                {
+                    hardware_workers,
+                    kMaximumIdentityWorkers,
+                    size_workers,
+                });
+
+        const auto serialize_range =
+            [&](std::size_t begin,
+                std::size_t end)
+        {
+            for (std::size_t local = begin;
+                 local < end;
+                 ++local)
+            {
+                serialized_keys[local] =
+                    commitment_point_key(
+                        commitments[missing_indices[local]]
+                            .point);
+            }
+        };
+
+        if (worker_count <= 1)
+        {
+            serialize_range(
+                0,
+                missing_indices.size());
+        }
+        else
+        {
+            const auto chunk_size =
+                (missing_indices.size() +
+                 worker_count - 1) /
+                worker_count;
+
+            std::vector<
+                std::future<void>>
+                futures;
+
+            futures.reserve(
+                worker_count);
+
+            for (std::size_t worker = 0;
+                 worker < worker_count;
+                 ++worker)
+            {
+                const auto begin =
+                    worker *
+                    chunk_size;
+
+                const auto end =
+                    std::min(
+                        missing_indices.size(),
+                        begin +
+                            chunk_size);
+
+                if (begin >= end)
+                {
+                    break;
+                }
+
+                futures.push_back(
+                    std::async(
+                        std::launch::async,
+                        serialize_range,
+                        begin,
+                        end));
+            }
+
+            for (auto &future :
+                 futures)
+            {
+                future.get();
+            }
+        }
+
+        for (std::size_t local = 0;
+             local < missing_indices.size();
+             ++local)
+        {
+            const auto &commitment =
+                commitments[missing_indices[local]];
+
+            const auto existing =
+                commitment_execution_identity_by_reference_
+                    .find(
+                        commitment.name);
+
+            if (existing !=
+                commitment_execution_identity_by_reference_
+                    .end())
+            {
+                if (!(existing->second.point ==
+                      commitment.point))
+                {
+                    throw std::runtime_error(
+                        "standard opening commitment reference resolves to multiple G1 points");
+                }
+
+                continue;
+            }
+
+            auto point_identity =
+                commitment_execution_identity_by_point_
+                    .find(
+                        serialized_keys[local]);
+
+            std::size_t identity = 0;
+
+            if (point_identity ==
+                commitment_execution_identity_by_point_
+                    .end())
+            {
+                if (next_commitment_execution_identity_ ==
+                    std::numeric_limits<
+                        std::size_t>::max())
+                {
+                    throw std::runtime_error(
+                        "standard opening commitment execution identity exhausted");
+                }
+
+                identity =
+                    next_commitment_execution_identity_++;
+
+                point_identity =
+                    commitment_execution_identity_by_point_
+                        .emplace(
+                            std::move(
+                                serialized_keys[local]),
+                            identity)
+                        .first;
+            }
+            else
+            {
+                identity =
+                    point_identity->second;
+            }
+
+            commitment_execution_identity_by_reference_
+                .emplace(
+                    commitment.name,
+                    CommitmentExecutionIdentity{
+                        .point =
+                            commitment.point,
+                        .identity =
+                            identity,
+                    });
+        }
+    }
+
+    void StandardPointGroupRegistry::
         refresh_claim_execution_keys(
             StandardOpeningClaim *claim)
     {
@@ -528,33 +828,67 @@ namespace gatzk::protocol
             commitment_execution_identity_by_reference_
                 .end())
         {
-            CommitmentExecutionIdentity identity{
-                .point =
-                    claim->commitment.point,
-                .serialized_key =
-                    commitment_point_key(
-                        claim->commitment.point),
-            };
+            auto serialized_key =
+                commitment_point_key(
+                    claim->commitment.point);
+
+            auto point_identity =
+                commitment_execution_identity_by_point_
+                    .find(
+                        serialized_key);
+
+            std::size_t identity = 0;
+
+            if (point_identity ==
+                commitment_execution_identity_by_point_
+                    .end())
+            {
+                if (next_commitment_execution_identity_ ==
+                    std::numeric_limits<
+                        std::size_t>::max())
+                {
+                    throw std::runtime_error(
+                        "standard opening commitment execution identity exhausted");
+                }
+
+                identity =
+                    next_commitment_execution_identity_++;
+
+                point_identity =
+                    commitment_execution_identity_by_point_
+                        .emplace(
+                            std::move(
+                                serialized_key),
+                            identity)
+                        .first;
+            }
+            else
+            {
+                identity =
+                    point_identity->second;
+            }
 
             identity_it =
                 commitment_execution_identity_by_reference_
                     .emplace(
                         claim->commitment_reference,
-                        std::move(identity))
+                        CommitmentExecutionIdentity{
+                            .point =
+                                claim->commitment.point,
+                            .identity =
+                                identity,
+                        })
                     .first;
         }
         else if (!(identity_it->second.point ==
                    claim->commitment.point))
         {
-            // The reference/name is protocol-visible.  Reusing it for a
-            // different G1 point must fail closed rather than allowing an
-            // execution cache to hide inconsistent commitment material.
             throw std::runtime_error(
                 "standard opening commitment reference resolves to multiple G1 points");
         }
 
-        claim->execution_commitment_key =
-            identity_it->second.serialized_key;
+        claim->execution_commitment_identity =
+            identity_it->second.identity;
     }
 
     void StandardPointGroupRegistry::add_domain_claim(
@@ -663,14 +997,38 @@ namespace gatzk::protocol
             }
         }
 
-        auto &claim_positions = claim_index_by_commitment_.at(group_index);
-        const auto &commitment_key =
-            claim.execution_commitment_key;
-        const auto duplicate_position = claim_positions.find(commitment_key);
-        if (duplicate_position == claim_positions.end())
+        auto &claim_positions =
+            claim_index_by_commitment_
+                .at(
+                    group_index);
+
+        const auto commitment_identity =
+            claim
+                .execution_commitment_identity;
+
+        if (commitment_identity ==
+            std::numeric_limits<
+                std::size_t>::max())
         {
-            claim_positions.emplace(commitment_key, group.claims.size());
-            group.claims.push_back(std::move(claim));
+            throw std::runtime_error(
+                "standard opening claim execution identity is missing");
+        }
+
+        const auto duplicate_position =
+            claim_positions.find(
+                commitment_identity);
+
+        if (duplicate_position ==
+            claim_positions.end())
+        {
+            claim_positions.emplace(
+                commitment_identity,
+                group.claims.size());
+
+            group.claims.push_back(
+                std::move(
+                    claim));
+
             return;
         }
         auto &duplicate = group.claims.at(duplicate_position->second);
@@ -764,14 +1122,17 @@ namespace gatzk::protocol
                     [](const StandardOpeningClaim &claim)
                     {
                         return claim
-                            .execution_commitment_key
-                            .empty();
+                                       .execution_commitment_identity ==
+                                   std::numeric_limits<
+                                       std::size_t>::max() ||
+                               claim
+                                   .canonical_claim_id_length_prefix
+                                   .empty();
                     }))
             {
                 throw std::runtime_error(
                     "standard opening claim is missing execution cache");
             }
-
             std::sort(
                 group.claims.begin(),
                 group.claims.end(),
@@ -784,8 +1145,17 @@ namespace gatzk::protocol
             canonical_group_less);
 
         group_index_by_point_.clear();
+
         claim_index_by_commitment_.clear();
-        commitment_execution_identity_by_reference_.clear();
+
+        commitment_execution_identity_by_reference_
+            .clear();
+
+        commitment_execution_identity_by_point_
+            .clear();
+
+        next_commitment_execution_identity_ =
+            0;
 
         last_group_valid_ = false;
         last_group_index_ = 0;
@@ -833,8 +1203,12 @@ namespace gatzk::protocol
                 [](const StandardOpeningClaim &claim)
                 {
                     return claim
-                        .execution_commitment_key
-                        .empty();
+                                   .execution_commitment_identity ==
+                               std::numeric_limits<
+                                   std::size_t>::max() ||
+                           claim
+                               .canonical_claim_id_length_prefix
+                               .empty();
                 }))
         {
             throw std::runtime_error(
