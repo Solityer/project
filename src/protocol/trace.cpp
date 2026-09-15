@@ -7720,70 +7720,78 @@ namespace gatzk::protocol
 
             auto commit_signed_division = [&](
                                               const std::string &division_prefix,
-                                              const SignedRoundDivWitness &division,
+                                              const std::shared_ptr<const SignedRoundDivWitness> &division_owner,
                                               const std::string &selector_label)
             {
+                if (division_owner == nullptr)
+                {
+                    throw std::runtime_error(
+                        "SignedRoundDiv commitment is missing its witness owner");
+                }
+
+                const auto &division = *division_owner;
+
                 add_dynamic_commitment_batch(
                     trace,
                     {
                         shared_column_spec(
                             division_prefix + "Active",
-                            forward_artifacts,
+                            division_owner,
                             division.active,
                             domains.edge),
                         shared_column_spec(
                             division_prefix + "X",
-                            forward_artifacts,
+                            division_owner,
                             division.x,
                             domains.edge),
                         shared_column_spec(
                             division_prefix + "D",
-                            forward_artifacts,
+                            division_owner,
                             division.d,
                             domains.edge),
                         shared_column_spec(
                             division_prefix + "Y",
-                            forward_artifacts,
+                            division_owner,
                             division.y,
                             domains.edge),
                         shared_column_spec(
                             division_prefix + "Sigma",
-                            forward_artifacts,
+                            division_owner,
                             division.sigma,
                             domains.edge),
                         shared_column_spec(
                             division_prefix + "Zero",
-                            forward_artifacts,
+                            division_owner,
                             division.z,
                             domains.edge),
                         shared_column_spec(
                             division_prefix + "A",
-                            forward_artifacts,
+                            division_owner,
                             division.a,
                             domains.edge),
                         shared_column_spec(
                             division_prefix + "A_inv",
-                            forward_artifacts,
+                            division_owner,
                             division.a_inv,
                             domains.edge),
                         shared_column_spec(
                             division_prefix + "D_inv",
-                            forward_artifacts,
+                            division_owner,
                             division.d_inv,
                             domains.edge),
                         shared_column_spec(
                             division_prefix + "Q",
-                            forward_artifacts,
+                            division_owner,
                             division.q,
                             domains.edge),
                         shared_column_spec(
                             division_prefix + "R",
-                            forward_artifacts,
+                            division_owner,
                             division.r,
                             domains.edge),
                         shared_column_spec(
                             division_prefix + "Delta",
-                            forward_artifacts,
+                            division_owner,
                             division.delta,
                             domains.edge),
                     },
@@ -8043,7 +8051,7 @@ namespace gatzk::protocol
                         first_round_specs.push_back(
                             shared_column_spec(
                                 limb_label,
-                                forward_artifacts,
+                                division_owner,
                                 limb_column,
                                 domains.edge));
 
@@ -8056,7 +8064,7 @@ namespace gatzk::protocol
                         first_round_specs.push_back(
                             shared_column_spec(
                                 query_label,
-                                forward_artifacts,
+                                division_owner,
                                 limb_column,
                                 domains.edge));
 
@@ -9754,17 +9762,19 @@ namespace gatzk::protocol
                     context.kzg,
                     keep_trace_payloads,
                     metrics);
-                auto div = build_signed_round_div_witness(
-                    quantized.aggregate_numerators_scaled,
-                    quantized.aggregate_denominators,
-                    quantized.aggregate_numerators_scaled.size(),
-                    context.config.range_bits,
-                    "hidden aggregate ELU input");
+                auto div =
+                    std::make_shared<const SignedRoundDivWitness>(
+                        build_signed_round_div_witness(
+                            quantized.aggregate_numerators_scaled,
+                            quantized.aggregate_denominators,
+                            quantized.aggregate_numerators_scaled.size(),
+                            context.config.range_bits,
+                            "hidden aggregate ELU input"));
                 commit_signed_division(
                     prefix + "Div_",
                     div,
                     hidden_q_nd_h_selector_label(layer_index));
-                div = SignedRoundDivWitness{};
+                div.reset();
                 forward_artifacts->release_hidden_aggregate_round_div_vectors(
                     layer_index,
                     local_head_index);
@@ -11103,12 +11113,14 @@ namespace gatzk::protocol
                     context.kzg,
                     keep_trace_payloads,
                     metrics);
-                auto div = build_signed_round_div_witness(
-                    quantized.aggregate_numerators_scaled,
-                    quantized.aggregate_denominators,
-                    quantized.aggregate_numerators_scaled.size(),
-                    context.config.range_bits,
-                    "output aggregate");
+                auto div =
+                    std::make_shared<const SignedRoundDivWitness>(
+                        build_signed_round_div_witness(
+                            quantized.aggregate_numerators_scaled,
+                            quantized.aggregate_denominators,
+                            quantized.aggregate_numerators_scaled.size(),
+                            context.config.range_bits,
+                            "output aggregate"));
                 std::vector<FieldElement> output_sum_flat(
                     domains.edge->size,
                     FieldElement::zero());
@@ -11151,7 +11163,7 @@ namespace gatzk::protocol
                     prefix + "Div_",
                     div,
                     "P_Q_div_out" + std::to_string(head_index));
-                div = SignedRoundDivWitness{};
+                div.reset();
                 forward_artifacts->release_output_aggregate_round_div_vectors(head_index);
                 forward_artifacts->report_live_bytes(
                     "output-h" + std::to_string(head_index) +
@@ -11324,22 +11336,24 @@ namespace gatzk::protocol
                 forward_artifacts
                     ->output_y_lin_average;
 
-            auto average_div = build_signed_round_div_witness(
-                forward_artifacts->output_average_numerators,
-                forward_artifacts->output_average_denominators,
-                forward_artifacts->output_average_numerators.size(),
-                context.config.range_bits,
-                "final output head average");
+            auto average_div =
+                std::make_shared<const SignedRoundDivWitness>(
+                    build_signed_round_div_witness(
+                        forward_artifacts->output_average_numerators,
+                        forward_artifacts->output_average_denominators,
+                        forward_artifacts->output_average_numerators.size(),
+                        context.config.range_bits,
+                        "final output head average"));
 
             const auto &y_average =
                 forward_artifacts
                     ->output_y_average;
 
-            // Run the independent consistency check: average_div.y is the
+            // Run the independent consistency check: average_div->y is the
             // signed-division witness, while output_y_average was independently
             // produced by the quantized forward path.
             require_flat_row_major_matches_matrix(
-                average_div.y,
+                average_div->y,
                 y_average,
                 n_nodes,
                 n_classes,
@@ -11354,7 +11368,7 @@ namespace gatzk::protocol
                 keep_trace_payloads,
                 metrics);
             commit_signed_division("P_avg_Div_", average_div, "P_Q_div_avg");
-            average_div = SignedRoundDivWitness{};
+            average_div.reset();
             forward_artifacts->release_output_average_round_div_vectors();
             forward_artifacts->report_live_bytes("output-average-round-div-committed");
 
