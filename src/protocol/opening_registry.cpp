@@ -229,22 +229,17 @@ namespace gatzk::protocol
                         object_id,
                         "domain_evaluation",
                         claim_role,
-                        bundle.value_kinds[
-                            object_index],
+                        bundle.value_kinds[object_index],
                         "Eval_dom:" +
                             suffix,
-                        commitments[
-                            object_index],
-                        bundle.values[
-                            object_index]
-                            .second[
-                                point_index]));
+                        commitments[object_index],
+                        bundle.values[object_index]
+                            .second[point_index]));
 
                 if (!capacity_reserved)
                 {
                     registry.reserve_claim_capacity(
-                        bundle.points[
-                            point_index],
+                        bundle.points[point_index],
                         commitments.size());
 
                     capacity_reserved = true;
@@ -259,53 +254,109 @@ namespace gatzk::protocol
         const std::vector<algebra::FieldElement> &points,
         const std::vector<PayloadValueKind> &eval_ext_kinds)
     {
-        if (commitments_and_values.size() != points.size() || eval_ext_kinds.size() > commitments_and_values.size())
+        if (commitments_and_values.size() != points.size() ||
+            eval_ext_kinds.size() > commitments_and_values.size())
         {
             throw std::runtime_error(
                 "invalid external claims for standard point-group registry");
         }
-        for (std::size_t i = 0; i < commitments_and_values.size(); ++i)
+
+        std::unordered_map<
+            std::string,
+            std::string>
+            point_text_cache;
+
+        point_text_cache.reserve(
+            points.size());
+
+        for (std::size_t i = 0;
+             i < commitments_and_values.size();
+             ++i)
         {
-            const auto &[commitment, value] = commitments_and_values[i];
-            const bool is_eval_ext = i < eval_ext_kinds.size();
-            const bool is_public_output = commitment.name == "P_Y";
+            const auto &[commitment, value] =
+                commitments_and_values[i];
+
+            const bool is_eval_ext =
+                i < eval_ext_kinds.size();
+
+            const bool is_public_output =
+                commitment.name == "P_Y";
+
             const bool is_public_relation =
-                commitment.name.find("relation_virtual") != std::string::npos || commitment.name.ends_with("_m_can");
-            const auto kind = is_eval_ext
-                                  ? eval_ext_kinds[i]
-                                  : (is_public_output || is_public_relation
-                                         ? PayloadValueKind::PublicValue
-                                         : PayloadValueKind::MaskedPrivateValue);
-            const auto evaluation_kind = is_eval_ext
-                                             ? "external_evaluation"
-                                         : is_public_output
-                                             ? "verifier_reconstructed_public_output"
-                                             : "binding_evaluation";
-            const auto claim_role = is_public_output
-                                        ? "public_output"
-                                    : is_public_relation
-                                        ? "binding_relation"
-                                    : is_eval_ext
-                                        ? "ordinary_external"
-                                        : "binding_shift";
-            const auto point_text = points[i].to_string();
-            const auto identity = commitment.name + ":" + point_text;
+                commitment.name.find(
+                    "relation_virtual") !=
+                    std::string::npos ||
+                commitment.name.ends_with(
+                    "_m_can");
+
+            const auto kind =
+                is_eval_ext
+                    ? eval_ext_kinds[i]
+                    : (is_public_output ||
+                               is_public_relation
+                           ? PayloadValueKind::
+                                 PublicValue
+                           : PayloadValueKind::
+                                 MaskedPrivateValue);
+
+            const auto evaluation_kind =
+                is_eval_ext
+                    ? "external_evaluation"
+                : is_public_output
+                    ? "verifier_reconstructed_public_output"
+                    : "binding_evaluation";
+
+            const auto claim_role =
+                is_public_output
+                    ? "public_output"
+                : is_public_relation
+                    ? "binding_relation"
+                : is_eval_ext
+                    ? "ordinary_external"
+                    : "binding_shift";
+
+            const auto point_key =
+                point_lookup_key(
+                    points[i]);
+
+            auto [point_it, inserted] =
+                point_text_cache.try_emplace(
+                    point_key);
+
+            if (inserted)
+            {
+                point_it->second =
+                    points[i].to_string();
+            }
+
+            const auto &point_text =
+                point_it->second;
+
+            const auto identity =
+                commitment.name +
+                ":" +
+                point_text;
+
             registry.add_external_claim(
                 points[i],
                 make_standard_opening_claim(
-                    "claim:external:" + identity,
+                    "claim:external:" +
+                        identity,
                     commitment.name,
                     evaluation_kind,
                     claim_role,
                     kind,
-                    (is_eval_ext ? "Eval_ext:" : is_public_output ? "M_pub:public_logits:"
-                                                                  : "Eval_bind:") +
+                    (is_eval_ext
+                         ? "Eval_ext:"
+                     : is_public_output
+                         ? "M_pub:public_logits:"
+                         : "Eval_bind:") +
                         identity,
                     commitment,
                     value));
         }
     }
-        void StandardPointGroupRegistry::
+    void StandardPointGroupRegistry::
         refresh_claim_execution_keys(
             StandardOpeningClaim *claim)
     {
@@ -489,7 +540,7 @@ namespace gatzk::protocol
         }
     }
 
-        void StandardPointGroupRegistry::
+    void StandardPointGroupRegistry::
         reserve_claim_capacity(
             const algebra::FieldElement &point,
             std::size_t expected_claim_count)
@@ -580,9 +631,18 @@ namespace gatzk::protocol
                 });
             group.group_id = point_group_id(group.owner_block, group.point);
         }
-        std::sort(groups_.begin(), groups_.end(), canonical_group_less);
+        std::sort(
+            groups_.begin(),
+            groups_.end(),
+            canonical_group_less);
+
         group_index_by_point_.clear();
         claim_index_by_commitment_.clear();
+        commitment_execution_identity_by_reference_.clear();
+
+        last_group_valid_ = false;
+        last_group_index_ = 0;
+
         finalized_ = true;
     }
 

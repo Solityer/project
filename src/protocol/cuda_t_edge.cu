@@ -10,6 +10,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #include "gatzk/algebra/cuda_ntt_device.hpp"
@@ -880,18 +881,37 @@ namespace gatzk::protocol
 
                     device_leaf_arenas_.clear();
 
-                    // Thousands of independent cudaMalloc calls cause heavy
-                    // allocator/VM overhead and fragmentation.  Use bounded
-                    // arenas instead of one enormous allocation so large UMA
-                    // workloads remain robust.
+                    // Slot 0 must remain a standalone allocation because
+                    // finalize_coefficients() transfers ownership of this
+                    // buffer to the returned resident coefficient object.
+                    auto dedicated_status =
+                        cudaMalloc(
+                            reinterpret_cast<void **>(
+                                &device_leaf_slots_.front()),
+                            leaf_bytes);
+
+                    if (dedicated_status !=
+                        cudaSuccess)
+                    {
+                        throw_cuda_t_edge_error(
+                            "dedicated leaf allocation",
+                            dedicated_status);
+                    }
+
                     constexpr std::size_t
                         kLeafArenaSlotCount = 128;
 
-                    for (std::size_t base_slot = 0;
+                    if (cache_slot_count_ > 1)
+                    {
+                        device_leaf_arenas_.reserve(
+                            (cache_slot_count_ - 1 +
+                             kLeafArenaSlotCount - 1) /
+                            kLeafArenaSlotCount);
+                    }
+
+                    for (std::size_t base_slot = 1;
                          base_slot <
-                         cache_slot_count_;
-                         base_slot +=
-                         kLeafArenaSlotCount)
+                         cache_slot_count_;)
                     {
                         const auto arena_slots =
                             std::min<std::size_t>(
@@ -901,38 +921,38 @@ namespace gatzk::protocol
 
                         GpuFr *arena = nullptr;
 
-                        auto status =
+                        const auto arena_status =
                             cudaMalloc(
-                                reinterpret_cast<
-                                    void **>(
+                                reinterpret_cast<void **>(
                                     &arena),
                                 checked_bytes(
                                     arena_slots,
                                     leaf_bytes,
                                     "leaf arena"));
 
-                        if (status !=
+                        if (arena_status !=
                             cudaSuccess)
                         {
                             throw_cuda_t_edge_error(
                                 "leaf arena allocation",
-                                status);
+                                arena_status);
                         }
 
                         device_leaf_arenas_
-                            .push_back(
-                                arena);
+                            .push_back(arena);
 
                         for (std::size_t local = 0;
                              local < arena_slots;
                              ++local)
                         {
-                            device_leaf_slots_[base_slot +
-                                               local] =
+                            device_leaf_slots_[base_slot + local] =
                                 arena +
                                 local *
                                     target_size_;
                         }
+
+                        base_slot +=
+                            arena_slots;
                     }
 
                     auto status =
@@ -1363,6 +1383,41 @@ namespace gatzk::protocol
                     {
                         throw_cuda_t_edge_error(
                             "instruction upload",
+                            status);
+                    }
+
+                    status =
+                        cudaMalloc(
+                            reinterpret_cast<void **>(
+                                &device_terms_),
+                            checked_bytes(
+                                compiled_terms.size(),
+                                sizeof(
+                                    CudaTEdgeCompiledTerm),
+                                "compiled terms"));
+
+                    if (status != cudaSuccess)
+                    {
+                        throw_cuda_t_edge_error(
+                            "compiled term allocation",
+                            status);
+                    }
+
+                    status =
+                        cudaMemcpy(
+                            device_terms_,
+                            compiled_terms.data(),
+                            checked_bytes(
+                                compiled_terms.size(),
+                                sizeof(
+                                    CudaTEdgeCompiledTerm),
+                                "compiled terms"),
+                            cudaMemcpyHostToDevice);
+
+                    if (status != cudaSuccess)
+                    {
+                        throw_cuda_t_edge_error(
+                            "compiled term upload",
                             status);
                     }
 
@@ -2084,41 +2139,55 @@ namespace gatzk::protocol
                     target_size_;
             }
 
-            void accumulate_term(
-                std::size_t term_index,
+            void accumulate_term_range(
+                std::size_t term_begin,
+                std::size_t term_end,
                 const std::vector<
                     std::uint32_t>
                     &access_slots)
                 override
             {
                 if (program_ == nullptr ||
-                    term_index >=
+                    device_terms_ == nullptr ||
+                    term_begin >= term_end ||
+                    term_end >
                         program_->terms.size() ||
                     access_slots.size() !=
                         program_->accesses.size())
                 {
                     throw std::runtime_error(
-                        "invalid CUDA t_edge "
-                        "term invocation");
+                        "invalid CUDA t_edge term-range invocation");
                 }
 
-                const auto &term =
-                    program_->terms[term_index];
+                std::size_t maximum_stack_depth = 0;
 
-                for (const auto access :
-                     term.required_accesses)
+                for (std::size_t term_index =
+                         term_begin;
+                     term_index < term_end;
+                     ++term_index)
                 {
-                    if (access >=
-                            access_slots.size() ||
-                        access_slots[access] ==
-                            kInvalidLeafSlot ||
-                        access_slots[access] >=
-                            cache_slot_count_ ||
-                        !host_leaf_bound_[access_slots[access]])
+                    const auto &term =
+                        program_->terms[term_index];
+
+                    maximum_stack_depth =
+                        std::max(
+                            maximum_stack_depth,
+                            term.maximum_stack_depth);
+
+                    for (const auto access :
+                         term.required_accesses)
                     {
-                        throw std::runtime_error(
-                            "CUDA t_edge term has "
-                            "an unbound leaf");
+                        if (access >=
+                                access_slots.size() ||
+                            access_slots[access] ==
+                                kInvalidLeafSlot ||
+                            access_slots[access] >=
+                                cache_slot_count_ ||
+                            !host_leaf_bound_[access_slots[access]])
+                        {
+                            throw std::runtime_error(
+                                "CUDA t_edge term batch has an unbound leaf");
+                        }
                     }
                 }
 
@@ -2153,23 +2222,25 @@ namespace gatzk::protocol
                         unsigned>::max())
                 {
                     throw std::runtime_error(
-                        "CUDA t_edge grid "
-                        "overflow");
+                        "CUDA t_edge grid overflow");
                 }
 
-                const auto alpha_scale =
-                    gpu_field(
-                        term.alpha_scale);
+                const auto launch =
+                    [&](auto register_count)
+                {
+                    constexpr std::size_t
+                        RegisterCount =
+                            decltype(register_count)::value;
 
-                if (term.maximum_stack_depth <= 4)
-                {
-                    t_edge_term_kernel<4><<<
+                    t_edge_term_batch_kernel<
+                        RegisterCount><<<
                         static_cast<unsigned>(
                             block_count_size),
                         kBlockSize>>>(
                         device_instructions_,
-                        term.instruction_begin,
-                        term.instruction_end,
+                        device_terms_,
+                        term_begin,
+                        term_end,
                         device_constants_,
                         device_leaf_table_,
                         device_leaf_split_layout_,
@@ -2177,88 +2248,43 @@ namespace gatzk::protocol
                         device_access_rotated_,
                         rotation_step_,
                         target_size_,
-                        alpha_scale,
                         device_quotient_);
+                };
+
+                if (maximum_stack_depth <= 4)
+                {
+                    launch(
+                        std::integral_constant<
+                            std::size_t,
+                            4>{});
                 }
-                else if (
-                    term.maximum_stack_depth <= 8)
+                else if (maximum_stack_depth <= 8)
                 {
-                    t_edge_term_kernel<8><<<
-                        static_cast<unsigned>(
-                            block_count_size),
-                        kBlockSize>>>(
-                        device_instructions_,
-                        term.instruction_begin,
-                        term.instruction_end,
-                        device_constants_,
-                        device_leaf_table_,
-                        device_leaf_split_layout_,
-                        device_access_slots_,
-                        device_access_rotated_,
-                        rotation_step_,
-                        target_size_,
-                        alpha_scale,
-                        device_quotient_);
+                    launch(
+                        std::integral_constant<
+                            std::size_t,
+                            8>{});
                 }
-                else if (
-                    term.maximum_stack_depth <= 16)
+                else if (maximum_stack_depth <= 16)
                 {
-                    t_edge_term_kernel<16><<<
-                        static_cast<unsigned>(
-                            block_count_size),
-                        kBlockSize>>>(
-                        device_instructions_,
-                        term.instruction_begin,
-                        term.instruction_end,
-                        device_constants_,
-                        device_leaf_table_,
-                        device_leaf_split_layout_,
-                        device_access_slots_,
-                        device_access_rotated_,
-                        rotation_step_,
-                        target_size_,
-                        alpha_scale,
-                        device_quotient_);
+                    launch(
+                        std::integral_constant<
+                            std::size_t,
+                            16>{});
                 }
-                else if (
-                    term.maximum_stack_depth <= 32)
+                else if (maximum_stack_depth <= 32)
                 {
-                    t_edge_term_kernel<32><<<
-                        static_cast<unsigned>(
-                            block_count_size),
-                        kBlockSize>>>(
-                        device_instructions_,
-                        term.instruction_begin,
-                        term.instruction_end,
-                        device_constants_,
-                        device_leaf_table_,
-                        device_leaf_split_layout_,
-                        device_access_slots_,
-                        device_access_rotated_,
-                        rotation_step_,
-                        target_size_,
-                        alpha_scale,
-                        device_quotient_);
+                    launch(
+                        std::integral_constant<
+                            std::size_t,
+                            32>{});
                 }
                 else
                 {
-                    t_edge_term_kernel<
-                        kMaximumProgramStackDepth><<<
-                        static_cast<unsigned>(
-                            block_count_size),
-                        kBlockSize>>>(
-                        device_instructions_,
-                        term.instruction_begin,
-                        term.instruction_end,
-                        device_constants_,
-                        device_leaf_table_,
-                        device_leaf_split_layout_,
-                        device_access_slots_,
-                        device_access_rotated_,
-                        rotation_step_,
-                        target_size_,
-                        alpha_scale,
-                        device_quotient_);
+                    launch(
+                        std::integral_constant<
+                            std::size_t,
+                            kMaximumProgramStackDepth>{});
                 }
 
                 status =
@@ -2267,7 +2293,7 @@ namespace gatzk::protocol
                 if (status != cudaSuccess)
                 {
                     throw_cuda_t_edge_error(
-                        "term kernel launch",
+                        "term-batch kernel launch",
                         status);
                 }
 
@@ -2275,10 +2301,17 @@ namespace gatzk::protocol
                     record_cuda_kernel_invocations(
                         1);
 
-                for (const auto access :
-                     term.required_accesses)
+                for (std::size_t term_index =
+                         term_begin;
+                     term_index < term_end;
+                     ++term_index)
                 {
-                    host_leaf_requires_default_wait_[access_slots[access]] = true;
+                    for (const auto access :
+                         program_->terms[term_index]
+                             .required_accesses)
+                    {
+                        host_leaf_requires_default_wait_[access_slots[access]] = true;
+                    }
                 }
             }
 
@@ -2737,6 +2770,13 @@ namespace gatzk::protocol
                         device_instructions_);
                 }
 
+                if (device_terms_ !=
+                    nullptr)
+                {
+                    (void)cudaFree(
+                        device_terms_);
+                }
+
                 if (device_constants_ !=
                     nullptr)
                 {
@@ -2761,6 +2801,9 @@ namespace gatzk::protocol
                 device_instructions_ =
                     nullptr;
 
+                device_terms_ =
+                    nullptr;
+
                 device_constants_ =
                     nullptr;
 
@@ -2778,15 +2821,29 @@ namespace gatzk::protocol
                 release_program_noexcept();
                 release_linear_buffers_noexcept();
 
-                for (auto *slot :
-                     device_leaf_slots_)
+                if (!device_leaf_slots_.empty() &&
+                    device_leaf_slots_.front() !=
+                        nullptr)
                 {
-                    if (slot != nullptr)
+                    // Slot 0 is the only standalone leaf allocation.  It can
+                    // be null after finalize_coefficients() transfers its
+                    // ownership to the resident coefficient buffer.
+                    (void)cudaFree(
+                        device_leaf_slots_
+                            .front());
+                }
+
+                for (auto *arena :
+                     device_leaf_arenas_)
+                {
+                    if (arena != nullptr)
                     {
-                        (void)cudaFree(slot);
+                        (void)cudaFree(
+                            arena);
                     }
                 }
 
+                device_leaf_arenas_.clear();
                 device_leaf_slots_.clear();
 
                 if (device_leaf_table_ !=
@@ -2882,6 +2939,9 @@ namespace gatzk::protocol
             std::vector<GpuFr *>
                 device_leaf_slots_;
 
+            std::vector<GpuFr *>
+                device_leaf_arenas_;
+
             GpuFr **device_leaf_table_ =
                 nullptr;
 
@@ -2948,6 +3008,10 @@ namespace gatzk::protocol
 
             CudaTEdgeCompiledInstruction
                 *device_instructions_ =
+                    nullptr;
+
+            CudaTEdgeCompiledTerm
+                *device_terms_ =
                     nullptr;
 
             GpuFr *device_constants_ =
@@ -3205,13 +3269,21 @@ namespace gatzk::protocol
         };
 
         std::size_t instruction_bytes = 0;
+        std::size_t term_bytes = 0;
         std::size_t constant_bytes = 0;
         std::size_t access_rotation_bytes = 0;
         std::size_t access_slot_bytes = 0;
+
         if (!checked_count_bytes(
                 shape.instruction_count,
-                sizeof(CudaTEdgeCompiledInstruction),
+                sizeof(
+                    CudaTEdgeCompiledInstruction),
                 &instruction_bytes) ||
+            !checked_count_bytes(
+                shape.term_count,
+                sizeof(
+                    CudaTEdgeCompiledTerm),
+                &term_bytes) ||
             !checked_count_bytes(
                 shape.constant_count,
                 sizeof(GpuFr),
@@ -3274,6 +3346,7 @@ namespace gatzk::protocol
             !add_device(leaf_bytes) ||
             !add_device(cycle_count) ||
             !add_device(instruction_bytes) ||
+            !add_device(term_bytes) ||
             !add_device(constant_bytes) ||
             !add_device(access_rotation_bytes) ||
             !add_device(access_slot_bytes) ||

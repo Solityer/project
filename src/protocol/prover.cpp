@@ -6692,6 +6692,8 @@ namespace gatzk::protocol
                     .domain_size = domain_->size,
                     .instruction_count =
                         program.instructions.size(),
+                    .term_count =
+                        program.terms.size(),
                     .constant_count =
                         program.constants.size(),
                     .access_count =
@@ -6919,7 +6921,7 @@ namespace gatzk::protocol
 
                     constexpr std::size_t
                         kMaximumAdaptiveLeafCacheBytes =
-                            std::size_t{16} << 30;
+                            std::size_t{32} << 30;
 
                     const auto adaptive_cache_budget =
                         std::min(
@@ -7180,6 +7182,33 @@ namespace gatzk::protocol
                     }
                 }
 
+                std::unordered_map<
+                    std::string,
+                    std::vector<std::size_t>>
+                    access_indices_by_label;
+
+                access_indices_by_label.reserve(
+                    program.accesses.size());
+
+                for (std::size_t access = 0;
+                     access <
+                     program.accesses.size();
+                     ++access)
+                {
+                    access_indices_by_label[program.accesses[access]
+                                                .label]
+                        .push_back(
+                            access);
+                }
+
+                std::unordered_map<
+                    std::string,
+                    std::size_t>
+                    resident_slot_by_label;
+
+                resident_slot_by_label.reserve(
+                    executor->cache_slot_count());
+
                 constexpr std::size_t
                     kUploadChunkElements =
                         std::size_t{1} << 20;
@@ -7191,23 +7220,26 @@ namespace gatzk::protocol
                             kUploadChunkElements));
 
                 const auto clear_label_mapping =
-                    [&](const std::string
-                            &label)
+                    [&](const std::string &label)
                 {
-                    for (std::size_t access = 0;
-                         access <
-                         program.accesses
-                             .size();
-                         ++access)
+                    resident_slot_by_label.erase(
+                        label);
+
+                    const auto it =
+                        access_indices_by_label.find(
+                            label);
+
+                    if (it ==
+                        access_indices_by_label.end())
                     {
-                        if (program
-                                .accesses[access]
-                                .label ==
-                            label)
-                        {
-                            access_slots[access] =
-                                invalid_slot;
-                        }
+                        return;
+                    }
+
+                    for (const auto access :
+                         it->second)
+                    {
+                        access_slots[access] =
+                            invalid_slot;
                     }
                 };
 
@@ -7215,22 +7247,35 @@ namespace gatzk::protocol
                     [&](const std::string &label,
                         std::size_t slot)
                 {
-                    for (std::size_t access = 0;
-                         access <
-                         program.accesses
-                             .size();
-                         ++access)
+                    if (slot >=
+                        slot_labels.size())
                     {
-                        if (program
-                                .accesses[access]
-                                .label ==
-                            label)
-                        {
-                            access_slots[access] =
-                                static_cast<
-                                    std::uint32_t>(
-                                    slot);
-                        }
+                        throw std::runtime_error(
+                            "CUDA t_edge label binding slot overflow");
+                    }
+
+                    resident_slot_by_label
+                        .insert_or_assign(
+                            label,
+                            slot);
+
+                    const auto it =
+                        access_indices_by_label.find(
+                            label);
+
+                    if (it ==
+                        access_indices_by_label.end())
+                    {
+                        return;
+                    }
+
+                    for (const auto access :
+                         it->second)
+                    {
+                        access_slots[access] =
+                            static_cast<
+                                std::uint32_t>(
+                                slot);
                     }
                 };
 
@@ -7473,18 +7518,20 @@ namespace gatzk::protocol
                     {
                         std::size_t source_slot =
                             slot_labels.size();
-                        for (std::size_t slot = 0;
-                             slot < slot_labels.size();
-                             ++slot)
+
+                        const auto resident_it =
+                            resident_slot_by_label.find(
+                                source.label);
+
+                        if (resident_it !=
+                            resident_slot_by_label.end())
                         {
-                            if (slot_labels[slot] ==
-                                source.label)
-                            {
-                                source_slot = slot;
-                                break;
-                            }
+                            source_slot =
+                                resident_it->second;
                         }
-                        if (source_slot < slot_labels.size())
+
+                        if (source_slot <
+                            slot_labels.size())
                         {
                             source_slots_by_label.emplace(
                                 source.label,
@@ -7576,8 +7623,14 @@ namespace gatzk::protocol
                         {
                             clear_label_mapping(
                                 slot_labels[source_slot]);
-                            executor->release_leaf(source_slot);
+
+                            executor->release_leaf(
+                                source_slot);
+
+                            slot_labels[source_slot]
+                                .clear();
                         }
+
                         if (!try_materialize_direct_gpu_leaf(
                                 source_label,
                                 source_slot))
@@ -7835,44 +7888,206 @@ namespace gatzk::protocol
 
                 try
                 {
+                    constexpr std::size_t
+                        kMaximumTermsPerBatch = 32;
+
+                    std::size_t term_batch_count = 0;
+                    std::size_t batched_term_count = 0;
+                    std::size_t maximum_terms_in_batch = 0;
+
+                    const auto register_bucket =
+                        [](std::size_t depth)
+                    {
+                        if (depth <= 4)
+                        {
+                            return std::size_t{4};
+                        }
+
+                        if (depth <= 8)
+                        {
+                            return std::size_t{8};
+                        }
+
+                        if (depth <= 16)
+                        {
+                            return std::size_t{16};
+                        }
+
+                        if (depth <= 32)
+                        {
+                            return std::size_t{32};
+                        }
+
+                        return static_cast<std::size_t>(
+                            kMaximumProgramStackDepth);
+                    };
+
+                    const auto append_required_closure =
+                        [&](const std::string &label,
+                            std::vector<std::string>
+                                *ordered,
+                            std::unordered_set<
+                                std::string> *seen)
+                    {
+                        if (ordered == nullptr ||
+                            seen == nullptr)
+                        {
+                            throw std::runtime_error(
+                                "CUDA t_edge batch dependency collector received null storage");
+                        }
+
+                        if (seen->insert(label).second)
+                        {
+                            ordered->push_back(label);
+                        }
+
+                        const auto descriptor =
+                            t_edge_derived_linear_descriptor(
+                                label);
+
+                        if (!descriptor.has_value())
+                        {
+                            return;
+                        }
+
+                        const auto flattened =
+                            flatten_t_edge_descriptor_sources(
+                                *descriptor);
+
+                        const auto *sources =
+                            &descriptor->sources;
+
+                        if (flattened.status ==
+                            TEdgeDerivedLinearFlattenStatus::
+                                Success)
+                        {
+                            sources =
+                                &flattened.sources;
+                        }
+
+                        for (const auto &source :
+                             *sources)
+                        {
+                            if (source.scale.is_zero())
+                            {
+                                continue;
+                            }
+
+                            if (seen->insert(
+                                        source.label)
+                                    .second)
+                            {
+                                ordered->push_back(
+                                    source.label);
+                            }
+                        }
+                    };
+
                     for (std::size_t term_index = 0;
                          term_index <
-                         program.terms.size();
-                         ++term_index)
+                         program.terms.size();)
                     {
-                        const auto &required =
-                            term_labels[term_index];
+                        const auto batch_bucket =
+                            register_bucket(
+                                program.terms[term_index]
+                                    .maximum_stack_depth);
 
-                        for (const auto &label :
-                             required)
+                        std::vector<std::string>
+                            batch_required;
+
+                        std::unordered_set<
+                            std::string>
+                            batch_required_set;
+
+                        std::size_t batch_end =
+                            term_index;
+
+                        while (batch_end <
+                                   program.terms.size() &&
+                               batch_end -
+                                       term_index <
+                                   kMaximumTermsPerBatch &&
+                               register_bucket(
+                                   program.terms[batch_end]
+                                       .maximum_stack_depth) ==
+                                   batch_bucket)
                         {
-                            std::size_t
-                                existing_slot =
-                                    slot_labels
-                                        .size();
+                            std::vector<std::string>
+                                candidate_required;
 
-                            for (std::size_t slot = 0;
-                                 slot <
-                                 slot_labels
-                                     .size();
-                                 ++slot)
+                            std::unordered_set<
+                                std::string>
+                                candidate_seen;
+
+                            for (const auto &label :
+                                 term_labels[batch_end])
                             {
-                                if (slot_labels[slot] ==
-                                    label)
-                                {
-                                    existing_slot =
-                                        slot;
+                                append_required_closure(
+                                    label,
+                                    &candidate_required,
+                                    &candidate_seen);
+                            }
 
-                                    break;
+                            std::size_t
+                                additional_labels = 0;
+
+                            for (const auto &label :
+                                 candidate_required)
+                            {
+                                if (!batch_required_set
+                                         .contains(
+                                             label))
+                                {
+                                    ++additional_labels;
                                 }
                             }
 
-                            if (existing_slot <
-                                slot_labels.size())
+                            if (batch_required_set
+                                        .size() +
+                                    additional_labels >
+                                executor
+                                    ->cache_slot_count())
+                            {
+                                break;
+                            }
+
+                            for (const auto &label :
+                                 candidate_required)
+                            {
+                                if (batch_required_set
+                                        .insert(label)
+                                        .second)
+                                {
+                                    batch_required
+                                        .push_back(
+                                            label);
+                                }
+                            }
+
+                            ++batch_end;
+                        }
+
+                        if (batch_end ==
+                            term_index)
+                        {
+                            throw std::runtime_error(
+                                "CUDA t_edge failed to construct a non-empty term batch");
+                        }
+
+                        for (const auto &label :
+                             batch_required)
+                        {
+                            const auto existing =
+                                resident_slot_by_label
+                                    .find(label);
+
+                            if (existing !=
+                                resident_slot_by_label
+                                    .end())
                             {
                                 bind_label_mapping(
                                     label,
-                                    existing_slot);
+                                    existing->second);
 
                                 continue;
                             }
@@ -7882,8 +8097,7 @@ namespace gatzk::protocol
 
                             for (std::size_t slot = 0;
                                  slot <
-                                 slot_labels
-                                     .size();
+                                 slot_labels.size();
                                  ++slot)
                             {
                                 if (slot_labels[slot]
@@ -7891,7 +8105,6 @@ namespace gatzk::protocol
                                 {
                                     selected_slot =
                                         slot;
-
                                     break;
                                 }
                             }
@@ -7904,21 +8117,15 @@ namespace gatzk::protocol
 
                                 for (std::size_t slot = 0;
                                      slot <
-                                     slot_labels
-                                         .size();
+                                     slot_labels.size();
                                      ++slot)
                                 {
-                                    const auto
-                                        &candidate =
-                                            slot_labels[slot];
+                                    const auto &candidate =
+                                        slot_labels[slot];
 
-                                    if (std::find(
-                                            required
-                                                .begin(),
-                                            required
-                                                .end(),
-                                            candidate) !=
-                                        required.end())
+                                    if (batch_required_set
+                                            .contains(
+                                                candidate))
                                     {
                                         continue;
                                     }
@@ -7942,8 +8149,7 @@ namespace gatzk::protocol
 
                                         const auto cursor =
                                             cursor_it ==
-                                                    leaf_use_cursors
-                                                        .end()
+                                                    leaf_use_cursors.end()
                                                 ? std::size_t{0}
                                                 : cursor_it
                                                       ->second;
@@ -7953,13 +8159,13 @@ namespace gatzk::protocol
                                                 .size())
                                         {
                                             candidate_next_use =
-                                                use_it->second[cursor];
+                                                use_it
+                                                    ->second[cursor];
                                         }
                                     }
 
                                     if (selected_slot ==
-                                            slot_labels
-                                                .size() ||
+                                            slot_labels.size() ||
                                         candidate_next_use >
                                             selected_next_use)
                                     {
@@ -7976,9 +8182,7 @@ namespace gatzk::protocol
                                 slot_labels.size())
                             {
                                 throw std::runtime_error(
-                                    "CUDA t_edge "
-                                    "leaf cache cannot "
-                                    "evict a slot");
+                                    "CUDA t_edge batch leaf cache cannot evict a slot");
                             }
 
                             if (!slot_labels[selected_slot]
@@ -7989,12 +8193,15 @@ namespace gatzk::protocol
 
                                 executor->release_leaf(
                                     selected_slot);
+
+                                slot_labels[selected_slot]
+                                    .clear();
                             }
 
                             materialize_label(
                                 label,
                                 selected_slot,
-                                required);
+                                batch_required);
 
                             slot_labels[selected_slot] =
                                 label;
@@ -8004,55 +8211,75 @@ namespace gatzk::protocol
                                 selected_slot);
                         }
 
-                        executor->accumulate_term(
+                        executor->accumulate_term_range(
                             term_index,
+                            batch_end,
                             access_slots);
 
-                        for (const auto &label :
-                             required)
+                        ++term_batch_count;
+
+                        const auto current_batch_size =
+                            batch_end -
+                            term_index;
+
+                        batched_term_count +=
+                            current_batch_size;
+
+                        maximum_terms_in_batch =
+                            std::max(
+                                maximum_terms_in_batch,
+                                current_batch_size);
+
+                        for (std::size_t executed_term =
+                                 term_index;
+                             executed_term <
+                             batch_end;
+                             ++executed_term)
                         {
-                            auto found =
-                                remaining_uses
-                                    .find(label);
-
-                            if (found !=
-                                    remaining_uses
-                                        .end() &&
-                                found->second != 0)
+                            for (const auto &label :
+                                 term_labels[executed_term])
                             {
-                                --found->second;
+                                auto found =
+                                    remaining_uses.find(
+                                        label);
+
+                                if (found !=
+                                        remaining_uses.end() &&
+                                    found->second != 0)
+                                {
+                                    --found->second;
+                                }
+
+                                const auto use_it =
+                                    leaf_use_terms.find(
+                                        label);
+
+                                if (use_it ==
+                                    leaf_use_terms.end())
+                                {
+                                    throw std::runtime_error(
+                                        "CUDA t_edge leaf use schedule is missing a required label");
+                                }
+
+                                auto &cursor =
+                                    leaf_use_cursors[label];
+
+                                if (cursor >=
+                                        use_it->second
+                                            .size() ||
+                                    use_it->second[cursor] !=
+                                        executed_term)
+                                {
+                                    throw std::runtime_error(
+                                        "CUDA t_edge leaf use schedule is out of sync");
+                                }
+
+                                ++cursor;
                             }
-
-                            const auto use_it =
-                                leaf_use_terms.find(
-                                    label);
-
-                            if (use_it ==
-                                leaf_use_terms.end())
-                            {
-                                throw std::runtime_error(
-                                    "CUDA t_edge leaf "
-                                    "use schedule is missing "
-                                    "a required label");
-                            }
-
-                            auto &cursor =
-                                leaf_use_cursors[label];
-
-                            if (cursor >=
-                                    use_it->second
-                                        .size() ||
-                                use_it->second[cursor] !=
-                                    term_index)
-                            {
-                                throw std::runtime_error(
-                                    "CUDA t_edge leaf "
-                                    "use schedule is out "
-                                    "of sync");
-                            }
-
-                            ++cursor;
                         }
+
+                        term_index =
+                            batch_end;
                     }
 
                     std::vector<FieldElement>
@@ -8114,6 +8341,15 @@ namespace gatzk::protocol
                         ":flattened_source_count=" +
                         std::to_string(
                             linear_telemetry.flattened_source_count) +
+                        ":term_batches=" +
+                        std::to_string(
+                            term_batch_count) +
+                        ":batched_terms=" +
+                        std::to_string(
+                            batched_term_count) +
+                        ":max_terms_per_batch=" +
+                        std::to_string(
+                            maximum_terms_in_batch) +
                         ":kernel_invocations=" +
                         std::to_string(
                             delta(
@@ -8302,10 +8538,11 @@ namespace gatzk::protocol
                                      row < end;
                                      ++row)
                                 {
+                                    const auto &feature_row =
+                                        context_.local.features[row];
+
                                     if (spec.width >
-                                        context_.local.features
-                                            .at(row)
-                                            .size())
+                                        feature_row.size())
                                     {
                                         throw std::runtime_error(
                                             "t_N public-source fold width exceeds public feature width: " +
@@ -8323,9 +8560,7 @@ namespace gatzk::protocol
                                         row_fold =
                                             row_fold *
                                                 lambda +
-                                            context_.local.features
-                                                .at(row)
-                                                .at(column);
+                                            feature_row[column];
                                     }
 
                                     expected_evaluations[row] =
