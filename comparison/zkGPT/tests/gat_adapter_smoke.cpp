@@ -8,7 +8,9 @@
 #include <fstream>
 #include <functional>
 #include <iostream>
+#include <iterator>
 #include <limits>
+#include <sys/stat.h>
 
 using namespace zkgpt::gat;
 using namespace mcl::bn;
@@ -274,7 +276,7 @@ int main(int argc, char **argv) {
         graph, features, quant, result.trace.tables, result.logits, registration,
         proof_plan, "masked_full");
     if (verifier_context_digest(context).empty()) return 1;
-    const std::string context_wire_path = "/tmp/zkgpt-verifier-context-v2-smoke.bin";
+    const std::string context_wire_path = "/tmp/zkgpt-verifier-context-v3-smoke.bin";
     std::string context_wire_reason;
     if (!write_verifier_context(context, context_wire_path, &context_wire_reason)) {
         std::cerr << "context write failed: " << context_wire_reason << "\n";
@@ -297,21 +299,118 @@ int main(int argc, char **argv) {
         context_roundtrip.registration.registration_digest !=
             context.registration.registration_digest ||
         context_roundtrip.plan.plan_digest != context.plan.plan_digest ||
-        context_roundtrip.plan.circuit.circuit.back().bin_gates.size() !=
+            context_roundtrip.plan.circuit.circuit.back().bin_gates.size() !=
             context.plan.circuit.circuit.back().bin_gates.size()) {
         std::cerr << "context roundtrip mismatch\n";
         return 1;
     }
-    GatCircuitPlan plan_gate_tampered = context_roundtrip.plan;
-    bool gate_tampered = false;
-    if (!plan_gate_tampered.circuit.circuit.back().uni_gates.empty()) {
-        plan_gate_tampered.circuit.circuit.back().uni_gates.front().sc += 1;
-        gate_tampered = true;
-    } else if (!plan_gate_tampered.circuit.circuit.back().bin_gates.empty()) {
-        plan_gate_tampered.circuit.circuit.back().bin_gates.front().sc += 1;
-        gate_tampered = true;
+    const std::size_t recipe_bytes = compact_plan_recipe_bytes(proof_plan);
+    const std::size_t payload_bytes = verifier_context_payload_bytes(context);
+    struct stat context_stat {};
+    if (::stat(context_wire_path.c_str(), &context_stat) != 0 || context_stat.st_size < 0 ||
+        static_cast<std::size_t>(context_stat.st_size) != payload_bytes + 20 ||
+        recipe_bytes >= (1ULL << 20) || payload_bytes >= (64ULL << 20)) {
+        std::cerr << "compact context exceeds bounded synthetic size\n";
+        return 1;
     }
-    if (!gate_tampered) return 1;
+    std::cout << "gat_adapter_smoke: compact_recipe_bytes=" << recipe_bytes
+              << " v3_payload_bytes=" << payload_bytes
+              << " v3_wire_bytes=" << context_stat.st_size
+              << " recipe_cap=67108864 wire_cap=2147483648\n";
+    for (std::size_t layer_id = 0; layer_id < proof_plan.circuit.circuit.size(); ++layer_id) {
+        const layer &producer_layer = proof_plan.circuit.circuit[layer_id];
+        const layer &reconstructed_layer = context_roundtrip.plan.circuit.circuit.at(layer_id);
+        if (producer_layer.ty != reconstructed_layer.ty ||
+            producer_layer.size != reconstructed_layer.size ||
+            producer_layer.uni_gates.size() != reconstructed_layer.uni_gates.size() ||
+            producer_layer.bin_gates.size() != reconstructed_layer.bin_gates.size()) {
+            std::cerr << "compact context reconstructed layer metadata mismatch\n";
+            return 1;
+        }
+        for (std::size_t i = 0; i < producer_layer.uni_gates.size(); ++i) {
+            const uniGate &a = producer_layer.uni_gates[i];
+            const uniGate &b = reconstructed_layer.uni_gates[i];
+            if (a.g != b.g || a.u != b.u || a.lu != b.lu || a.sc != b.sc) return 1;
+        }
+        for (std::size_t i = 0; i < producer_layer.bin_gates.size(); ++i) {
+            const binGate &a = producer_layer.bin_gates[i];
+            const binGate &b = reconstructed_layer.bin_gates[i];
+            if (a.g != b.g || a.u != b.u || a.v != b.v || a.l != b.l || a.sc != b.sc) return 1;
+        }
+    }
+    const auto expect_plan_reject = [&](const char *label,
+                                        const std::function<void(GatCircuitPlan &)> &mutate) {
+        GatCircuitPlan tampered = context_roundtrip.plan;
+        mutate(tampered);
+        if (validate_gat_circuit_plan(tampered, &context_wire_reason)) {
+            std::cerr << "compact plan tamper unexpectedly accepted: " << label << "\n";
+            return false;
+        }
+        return true;
+    };
+    assert(expect_plan_reject("MatMul rows", [](GatCircuitPlan &tampered) {
+        tampered.matmuls.at(0).rows += 1;
+    }));
+    assert(expect_plan_reject("MatMul inner", [](GatCircuitPlan &tampered) {
+        tampered.matmuls.at(0).inner += 1;
+    }));
+    assert(expect_plan_reject("MatMul cols", [](GatCircuitPlan &tampered) {
+        tampered.matmuls.at(0).cols += 1;
+    }));
+    assert(expect_plan_reject("offset", [](GatCircuitPlan &tampered) {
+        tampered.matmuls.at(0).lhs_offset += 1;
+    }));
+    assert(expect_plan_reject("Sparse GKR", [](GatCircuitPlan &tampered) {
+        tampered.sparse_gkr.at(0).edge_count += 1;
+    }));
+    assert(expect_plan_reject("Lasso", [](GatCircuitPlan &tampered) {
+        tampered.lasso.at(0).query_offset += 1;
+    }));
+    assert(expect_plan_reject("model architecture", [](GatCircuitPlan &tampered) {
+        tampered.model_arch_id += ".tampered";
+    }));
+    assert(expect_plan_reject("model shape", [](GatCircuitPlan &tampered) {
+        tampered.model_shape.input_dim += 1;
+    }));
+    assert(expect_plan_reject("opening policy", [](GatCircuitPlan &tampered) {
+        tampered.opening_policy = "independent_r_openings";
+    }));
+    const auto expect_context_reject = [&](const char *label,
+                                           const std::function<void(VerifierContext &)> &mutate) {
+        VerifierContext tampered = context;
+        mutate(tampered);
+        if (verifier_context_digest(tampered) == verifier_context_digest(context)) {
+            std::cerr << "context tamper did not change canonical digest: " << label << "\n";
+            return false;
+        }
+        const std::string path = std::string("/tmp/zkgpt-context-tamper-") + label;
+        std::remove(path.c_str());
+        std::string reject_reason;
+        const bool accepted = write_verifier_context(tampered, path, &reject_reason);
+        std::remove(path.c_str());
+        if (accepted) {
+            std::cerr << "context tamper unexpectedly accepted: " << label << "\n";
+            return false;
+        }
+        return true;
+    };
+    assert(expect_context_reject("graph-src", [](VerifierContext &tampered) {
+        tampered.graph.src.at(0) += 1;
+    }));
+    assert(expect_context_reject("graph-dst", [](VerifierContext &tampered) {
+        tampered.graph.dst.at(0) += 1;
+    }));
+    assert(expect_context_reject("registration-layout", [](VerifierContext &tampered) {
+        tampered.registration.layout_digest[0] =
+            tampered.registration.layout_digest[0] == '0' ? '1' : '0';
+    }));
+    assert(expect_context_reject("registration", [](VerifierContext &tampered) {
+        tampered.registration.registration_digest[0] =
+            tampered.registration.registration_digest[0] == '0' ? '1' : '0';
+    }));
+    GatCircuitPlan plan_gate_tampered = context_roundtrip.plan;
+    if (plan_gate_tampered.matmuls.empty()) return 1;
+    plan_gate_tampered.matmuls.front().rows += 1;
     if (validate_gat_circuit_plan(plan_gate_tampered, &context_wire_reason))
         return 1;
     {
@@ -323,6 +422,38 @@ int main(int argc, char **argv) {
         return 1;
     if (!write_verifier_context(context, context_wire_path, &context_wire_reason))
         return 1;
+    std::ifstream context_input(context_wire_path, std::ios::binary);
+    const std::string context_wire(
+        (std::istreambuf_iterator<char>(context_input)), std::istreambuf_iterator<char>());
+    if (context_wire.size() < 21) return 1;
+    {
+        std::ofstream truncated(context_wire_path,
+                                std::ios::binary | std::ios::trunc);
+        truncated.write(context_wire.data(),
+                        static_cast<std::streamsize>(context_wire.size() - 1));
+    }
+    if (read_verifier_context(context_wire_path, context_roundtrip,
+                              &context_wire_reason))
+        return 1;
+    if (!write_verifier_context(context, context_wire_path, &context_wire_reason))
+        return 1;
+    const std::string old_context_wire_path =
+        "/tmp/zkgpt-verifier-context-v2-malformed-smoke.bin";
+    {
+        std::ofstream old_context(old_context_wire_path,
+                                  std::ios::binary | std::ios::trunc);
+        const std::uint32_t old_version = 2;
+        const std::uint64_t old_payload_size = (2ULL << 30) + 1;
+        old_context.write("ZKGPTVC2", 8);
+        old_context.write(reinterpret_cast<const char *>(&old_version),
+                          sizeof(old_version));
+        old_context.write(reinterpret_cast<const char *>(&old_payload_size),
+                          sizeof(old_payload_size));
+    }
+    if (read_verifier_context(old_context_wire_path, context_roundtrip,
+                              &context_wire_reason))
+        return 1;
+    std::remove(old_context_wire_path.c_str());
     std::remove(context_wire_path.c_str());
     bool context_rejected = false;
     try {

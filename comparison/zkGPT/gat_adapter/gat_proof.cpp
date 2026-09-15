@@ -39,15 +39,18 @@ std::once_flag field_once;
 const std::size_t kArtifactMaxString = 1ULL << 26;
 const std::size_t kArtifactMaxMessages = 1ULL << 20;
 const std::uint64_t kArtifactMaxWireBytes = 1ULL << 30;
-// A verifier context contains public graph/features and the complete
-// canonical circuit plan.  Keep a finite wire/memory budget while allowing
-// the largest supported public instances to be serialized.
+// A verifier context contains public graph/features and the compact canonical
+// circuit recipe.  Keep a finite wire/memory budget while allowing the
+// largest supported public instances to be serialized.
 const std::uint64_t kContextMaxWireBytes = 2ULL << 30;
 const std::uint64_t kContextMaxElements = 1ULL << 30;
 const std::uint64_t kContextMaxLayers = 1ULL << 20;
 const std::uint64_t kContextMaxDescriptors = 1ULL << 20;
+const std::uint64_t kContextMaxRecipeBytes = 64ULL << 20;
+const std::uint64_t kContextMaxShapeProfile = 128;
+const std::uint64_t kContextMaxShapeDimensions = 16;
 const char kNativeArtifactDomain[] = "zkgpt-native-gat-fs-v1";
-const char kVerifierContextMagic[] = "ZKGPTVC2";
+const char kVerifierContextMagic[] = "ZKGPTVC3";
 
 // Defined with the transcript bridge below; the production prover uses the
 // same lossless section projection after all protocol scopes have completed.
@@ -62,6 +65,21 @@ std::size_t core_log2(std::size_t value);
 const NativeProofMessage *core_find_message(
     const NativeProofSession &session, NativeProofMessageKind kind,
     const std::string &label, std::string *reason);
+bool is_lower_hex_digest(const std::string &value);
+
+std::string plan_encoding(const GatCircuitPlan &plan);
+std::string canonical_graph_topology_digest(const Graph &graph);
+CanonicalModelShape canonical_model_shape(const Model &model);
+Model make_shape_only_model(const CanonicalModelShape &shape);
+void append_int_vector(std::string &out, const std::vector<Int> &values);
+bool read_compact_plan_recipe(class ContextReader &reader,
+                              GatCircuitPlan &plan);
+bool materialize_compact_plan(const Graph &graph, const QuantConfig &quant,
+                              const GatCircuitPlan &recipe,
+                              GatCircuitPlan &materialized,
+                              std::string *reason);
+bool context_layer_metadata_valid(const GatCircuitPlan &plan,
+                                  std::string *reason);
 
 void ensure_field() {
     std::call_once(field_once, []() { mcl::bn::initPairing(mcl::BN254); });
@@ -225,6 +243,134 @@ std::vector<Int> flatten_model(const Model &model, const QuantConfig &quant) {
         append_tensor(model.tensor(output_tensor_name(head, "output_bias")), quant.s_b_output[head]);
     }
     return result;
+}
+
+std::vector<std::string> canonical_model_tensor_names() {
+    std::vector<std::string> names;
+    names.reserve(56);
+    for (std::size_t layer = 0; layer < 2; ++layer) {
+        for (std::size_t head = 0; head < 8; ++head) {
+            names.push_back(hidden_tensor_name(layer, head, "seq/kernel"));
+            names.push_back(hidden_tensor_name(layer, head, "attn_src/kernel"));
+            names.push_back(hidden_tensor_name(layer, head, "attn_dst/kernel"));
+        }
+    }
+    for (std::size_t head = 0; head < 2; ++head) {
+        names.push_back(output_tensor_name(head, "seq/kernel"));
+        names.push_back(output_tensor_name(head, "attn_src/kernel"));
+        names.push_back(output_tensor_name(head, "attn_dst/kernel"));
+        names.push_back(output_tensor_name(head, "output_bias"));
+    }
+    return names;
+}
+
+CanonicalModelShape canonical_model_shape(const Model &model) {
+    model.validate_schema();
+    CanonicalModelShape result;
+    result.model_arch_id = model.manifest.model_arch_id;
+    result.tensor_count = model.tensors.size();
+    result.layers = model.manifest.layers;
+    result.output_heads = model.manifest.output_heads;
+    result.classes = model.classes();
+    result.input_dim = model.input_dim();
+    result.hidden_dim = model.hidden_dim();
+    const std::vector<std::string> names = canonical_model_tensor_names();
+    result.tensors.reserve(names.size());
+    for (const std::string &name : names)
+        result.tensors.push_back({name, model.tensor(name).shape});
+    return result;
+}
+
+Model make_shape_only_model(const CanonicalModelShape &shape) {
+    Model model;
+    model.manifest.dataset = "verifier-reconstructed";
+    model.manifest.model_arch_id = shape.model_arch_id;
+    model.manifest.quant_cfg_id = "gat_l3_scale_chain";
+    model.manifest.tensor_count = shape.tensor_count;
+    model.manifest.layers = shape.layers;
+    model.manifest.output_heads = shape.output_heads;
+    model.manifest.classes = shape.classes;
+    model.manifest.model_param_id = "public-shape-only";
+    model.manifest.static_table_id = "tables:lrelu+elu+exp+range";
+    model.manifest.input_preprocess_id = "canonical_public_features";
+    model.manifest.batching_rule = "single_graph_or_ppi_offsets";
+    model.manifest.edge_sort_rule = "edge_gid_then_dst_stable";
+    model.manifest.self_loop_rule = "per_node";
+    model.manifest.label_format = "single_label";
+    model.manifest.output_average_rule = "per_head_bias_then_arithmetic_mean";
+    model.manifest.quantization_scale_chain = "gat_l3_scale_chain";
+    for (const CanonicalTensorShape &entry : shape.tensors) {
+        Tensor tensor;
+        tensor.name = entry.name;
+        tensor.shape = entry.shape;
+        tensor.values.assign(tensor.shape.elements(), 0.0);
+        model.tensors.emplace(tensor.name, std::move(tensor));
+    }
+    model.validate_schema();
+    return model;
+}
+
+bool canonical_model_shape_valid(const CanonicalModelShape &shape,
+                                 std::string *reason = nullptr) {
+    const auto fail = [reason](const std::string &message) {
+        if (reason != nullptr) *reason = message;
+        return false;
+    };
+    try {
+        if (shape.model_arch_id.empty() || shape.tensor_count != 56 ||
+            shape.layers != 3 || shape.output_heads != 2 ||
+            shape.classes == 0 || shape.input_dim == 0 || shape.hidden_dim == 0 ||
+            shape.tensors.size() != shape.tensor_count) {
+            return fail("canonical model shape profile header is invalid");
+        }
+        const std::vector<std::string> names = canonical_model_tensor_names();
+        if (names.size() != shape.tensors.size())
+            return fail("canonical model shape profile count is invalid");
+        std::size_t total_elements = 0;
+        for (std::size_t i = 0; i < shape.tensors.size(); ++i) {
+            const CanonicalTensorShape &entry = shape.tensors[i];
+            if (entry.name != names[i] || entry.shape.dims.empty() ||
+                entry.shape.dims.size() > kContextMaxShapeDimensions) {
+                return fail("canonical model shape tensor identity is invalid");
+            }
+            const std::size_t elements = entry.shape.elements();
+            if (elements == 0 || elements > (1ULL << 26) ||
+                total_elements > (1ULL << 28) - elements) {
+                return fail("canonical model shape tensor bounds are invalid");
+            }
+            total_elements += elements;
+        }
+        // The shape-only Model::validate_schema call below performs the
+        // complete per-family rank and dimension relation checks.  Keeping
+        // this preflight bounded prevents a hostile wire from allocating its
+        // zero-valued shape model before those checks run.
+        const Model shape_model = make_shape_only_model(shape);
+        if (shape_model.input_dim() != shape.input_dim ||
+            shape_model.hidden_dim() != shape.hidden_dim ||
+            shape_model.classes() != shape.classes) {
+            return fail("canonical model shape summary does not match tensor profile");
+        }
+        return true;
+    } catch (const std::exception &error) {
+        return fail(error.what());
+    }
+}
+
+std::string canonical_graph_topology_digest(const Graph &graph) {
+    std::string encoded;
+    append_string(encoded, "zkgpt-gat-canonical-graph-topology-v1");
+    append_u64(encoded, graph.num_nodes);
+    append_u64(encoded, graph.num_features);
+    append_u64(encoded, graph.graph_count);
+    append_u64(encoded, graph.num_classes);
+    append_int_vector(encoded, graph.src);
+    append_int_vector(encoded, graph.dst);
+    append_int_vector(encoded, graph.edge_gid);
+    append_u64(encoded, graph.node_ptr.size());
+    for (std::size_t value : graph.node_ptr) append_u64(encoded, value);
+    append_u64(encoded, graph.edge_ptr.size());
+    for (std::size_t value : graph.edge_ptr) append_u64(encoded, value);
+    return hash_hex(encoded);
 }
 
 const char *canonical_selector() {
@@ -1306,6 +1452,29 @@ void finish_relation_layer(GatCircuitPlan &plan,
 
 std::string plan_encoding(const GatCircuitPlan &plan) {
     std::string encoded;
+    append_string(encoded, plan.recipe_schema);
+    append_string(encoded, plan.model_arch_id);
+    append_string(encoded, plan.model_shape.model_arch_id);
+    append_u64(encoded, plan.model_shape.tensor_count);
+    append_u64(encoded, plan.model_shape.layers);
+    append_u64(encoded, plan.model_shape.output_heads);
+    append_u64(encoded, plan.model_shape.classes);
+    append_u64(encoded, plan.model_shape.input_dim);
+    append_u64(encoded, plan.model_shape.hidden_dim);
+    append_u64(encoded, plan.model_shape.tensors.size());
+    for (const CanonicalTensorShape &tensor : plan.model_shape.tensors) {
+        append_string(encoded, tensor.name);
+        append_shape(encoded, tensor.shape);
+    }
+    append_u64(encoded, plan.graph_num_nodes);
+    append_u64(encoded, plan.graph_num_features);
+    append_u64(encoded, plan.graph_count);
+    append_u64(encoded, plan.graph_num_classes);
+    append_u64(encoded, plan.graph_edge_count);
+    append_string(encoded, plan.graph_topology_digest);
+    append_string(encoded, plan.quant_cfg_id);
+    append_string(encoded, plan.quant_digest);
+    append_string(encoded, plan.static_tables_id);
     append_string(encoded, plan.registry.registry_id);
     append_u64(encoded, static_cast<std::uint64_t>(plan.registry.descriptors.size()));
     for (const RelationDescriptor &descriptor : plan.registry.descriptors) {
@@ -1324,6 +1493,7 @@ std::string plan_encoding(const GatCircuitPlan &plan) {
     for (const std::string &opening : plan.terminal_openings) append_string(encoded, opening);
     append_u64(encoded, plan.input_layout.n_raw);
     append_u64(encoded, plan.input_layout.n_in);
+    append_u64(encoded, plan.input_layout.segments.size());
     for (const InputSegment &segment : plan.input_layout.segments) {
         append_string(encoded, segment.name);
         append_u64(encoded, segment.offset);
@@ -1388,27 +1558,6 @@ std::string plan_encoding(const GatCircuitPlan &plan) {
     }
     append_u64(encoded, static_cast<std::uint64_t>(plan.native_api.size()));
     for (const std::string &api : plan.native_api) append_string(encoded, api);
-    append_u64(encoded, static_cast<std::uint64_t>(plan.circuit.circuit.size()));
-    append_u64(encoded, static_cast<std::uint64_t>(plan.circuit.size));
-    for (const layer &current : plan.circuit.circuit) {
-        append_u32(encoded, static_cast<std::uint32_t>(current.ty));
-        append_u64(encoded, current.size);
-        append_u64(encoded, current.uni_gates.size());
-        append_u64(encoded, current.bin_gates.size());
-        for (const uniGate &gate : current.uni_gates) {
-            append_u32(encoded, gate.g);
-            append_u32(encoded, gate.u);
-            append_u32(encoded, gate.lu);
-            append_int(encoded, gate.sc);
-        }
-        for (const binGate &gate : current.bin_gates) {
-            append_u32(encoded, gate.g);
-            append_u32(encoded, gate.u);
-            append_u32(encoded, gate.v);
-            append_u32(encoded, gate.l);
-            append_int(encoded, gate.sc);
-        }
-    }
     return encoded;
 }
 
@@ -1434,6 +1583,18 @@ GatCircuitPlan build_plan_impl(const Graph &graph, const Model &model,
     }
 
     GatCircuitPlan plan;
+    plan.recipe_schema = "canonical_plan_recipe_v1";
+    plan.model_arch_id = model.manifest.model_arch_id;
+    plan.model_shape = canonical_model_shape(model);
+    plan.graph_num_nodes = graph.num_nodes;
+    plan.graph_num_features = graph.num_features;
+    plan.graph_count = graph.graph_count;
+    plan.graph_num_classes = graph.num_classes;
+    plan.graph_edge_count = graph.edges();
+    plan.graph_topology_digest = canonical_graph_topology_digest(graph);
+    plan.quant_cfg_id = quant.quant_cfg_id;
+    plan.quant_digest = canonical_quant_digest(quant);
+    plan.static_tables_id = StaticTables::build(quant).table_id;
     plan.registry = RelationRegistry::canonical();
     plan.opening_policy = "same_r_three_terminal_openings_v1";
     plan.terminal_openings = {"W@r", "Aux@r", "L_qry@r"};
@@ -2066,6 +2227,17 @@ bool validate_gat_circuit_plan_impl(const GatCircuitPlan &plan, std::string *rea
     };
     try {
         if (!plan.official_layered || plan.has_placeholder) return fail("plan is not an official layered circuit");
+        if (plan.recipe_schema != "canonical_plan_recipe_v1" ||
+            plan.model_arch_id.empty() || plan.model_arch_id != plan.model_shape.model_arch_id ||
+            !canonical_model_shape_valid(plan.model_shape, reason) ||
+            plan.graph_num_nodes == 0 || plan.graph_num_features == 0 ||
+            plan.graph_count == 0 || plan.graph_num_classes == 0 ||
+            plan.graph_edge_count == 0 ||
+            !is_lower_hex_digest(plan.graph_topology_digest) ||
+            plan.quant_cfg_id.empty() || plan.quant_digest.empty() ||
+            plan.static_tables_id.empty()) {
+            return fail("compact canonical plan recipe identity is invalid");
+        }
         if (plan.registry.descriptors.empty() || !plan.registry.covers_all_segments()) return fail("relation registry does not cover the canonical relations");
         if (!canonical_layout_valid(plan.input_layout)) return fail("input layout is not the canonical four-segment layout");
         if (plan.opening_policy != "same_r_three_terminal_openings_v1" ||
@@ -2908,7 +3080,7 @@ bool evaluate_layered_values(const GatCircuitPlan &plan,
 
 std::string context_encoding(const VerifierContext &context) {
     std::string encoded;
-    append_string(encoded, "zkgpt-gat-verifier-context-v2");
+    append_string(encoded, "zkgpt-gat-verifier-context-v3");
     append_string(encoded, context.relation_id);
     append_string(encoded, context.model_arch_id);
     append_string(encoded, context.privacy_extension_profile_id);
@@ -2916,11 +3088,12 @@ std::string context_encoding(const VerifierContext &context) {
     append_string(encoded, context.static_tables_id);
     append_registration_encoding(encoded, context.registration);
     append_string(encoded, commitment_encoding(context.com_W));
-    // The digest must bind the complete public plan, not merely the plan
-    // digest string supplied by a caller.  plan_encoding itself includes the
-    // registry, all descriptors and every layered gate.
+    // The digest binds the complete compact public recipe, not merely a plan
+    // digest string supplied by a caller.  Materialized gates, subset maps,
+    // interval metadata and initSubset state are deterministic derived data
+    // and are reconstructed from this exact recipe by both sides.
     append_string(encoded, plan_encoding(context.plan));
-    append_string(encoded, "public-graph-v2");
+    append_string(encoded, "public-graph-v3");
     append_u64(encoded, context.graph.num_nodes);
     append_u64(encoded, context.graph.num_features);
     append_u64(encoded, context.graph.graph_count);
@@ -2935,12 +3108,12 @@ std::string context_encoding(const VerifierContext &context) {
     for (std::size_t value : context.graph.node_ptr) append_u64(encoded, value);
     append_u64(encoded, static_cast<std::uint64_t>(context.graph.edge_ptr.size()));
     for (std::size_t value : context.graph.edge_ptr) append_u64(encoded, value);
-    append_string(encoded, "public-features-v2");
+    append_string(encoded, "public-features-v3");
     append_u64(encoded, context.public_features.rows);
     append_u64(encoded, context.public_features.cols);
     append_u64(encoded, static_cast<std::uint64_t>(context.public_features.values.size()));
     for (Int value : context.public_features.values) append_int(encoded, value);
-    append_string(encoded, "public-logits-v2");
+    append_string(encoded, "public-logits-v3");
     append_u64(encoded, context.public_logits.rows);
     append_u64(encoded, context.public_logits.cols);
     append_u64(encoded, static_cast<std::uint64_t>(context.public_logits.values.size()));
@@ -3199,6 +3372,8 @@ public:
         return position_ <= end_ ? end_ - position_ : 0;
     }
 
+    void fail_external(const std::string &message) { fail(message); }
+
     bool read_u8(std::uint8_t &value) {
         if (!take(1)) return false;
         value = static_cast<std::uint8_t>(static_cast<unsigned char>(wire_[position_++]));
@@ -3297,6 +3472,18 @@ public:
             fail(std::string("NUL in canonical string ") + what);
             return false;
         }
+        return true;
+    }
+
+    bool read_blob(std::string &value, const char *what,
+                   std::uint64_t limit = kContextMaxRecipeBytes) {
+        std::uint64_t raw = 0;
+        if (!read_u64(raw) || raw > limit || raw > remaining()) {
+            fail(std::string("invalid or oversized blob for ") + what);
+            return false;
+        }
+        value.assign(wire_.data() + position_, static_cast<std::size_t>(raw));
+        position_ += static_cast<std::size_t>(raw);
         return true;
     }
 
@@ -3574,6 +3761,7 @@ bool read_context_registration(ContextReader &reader,
     return true;
 }
 
+#if 0
 void append_context_plan(std::string &out, const GatCircuitPlan &plan) {
     append_string(out, plan.registry.registry_id);
     append_u64(out, static_cast<std::uint64_t>(plan.registry.descriptors.size()));
@@ -3865,6 +4053,204 @@ bool read_context_plan(ContextReader &reader, GatCircuitPlan &plan) {
     }
     return true;
 }
+#endif
+
+bool materialize_compact_plan(const Graph &graph, const QuantConfig &quant,
+                              const GatCircuitPlan &recipe,
+                              GatCircuitPlan &materialized,
+                              std::string *reason) {
+    const auto fail = [reason](const std::string &message) {
+        if (reason != nullptr) *reason = message;
+        return false;
+    };
+    try {
+        if (!canonical_model_shape_valid(recipe.model_shape, reason)) return false;
+        if (recipe.model_arch_id != recipe.model_shape.model_arch_id ||
+            recipe.graph_num_nodes != graph.num_nodes ||
+            recipe.graph_num_features != graph.num_features ||
+            recipe.graph_count != graph.graph_count ||
+            recipe.graph_num_classes != graph.num_classes ||
+            recipe.graph_edge_count != graph.edges() ||
+            recipe.graph_topology_digest != canonical_graph_topology_digest(graph) ||
+            recipe.quant_cfg_id != quant.quant_cfg_id ||
+            recipe.quant_digest != canonical_quant_digest(quant) ||
+            recipe.static_tables_id != StaticTables::build(quant).table_id) {
+            return fail("compact plan recipe does not match authenticated public graph or quantization");
+        }
+        // This is the one and only materializer used by the producer and by
+        // the independent verifier.  The reconstructed Model contains only
+        // public tensor shapes and zero-length-independent placeholders; no
+        // checkpoint or private model values are read here.
+        const Model shape_model = make_shape_only_model(recipe.model_shape);
+        GatCircuitPlan generated = build_plan_impl(graph, shape_model, quant, nullptr);
+        if (plan_encoding(generated) != plan_encoding(recipe)) {
+            return fail("compact plan recipe is not canonical for the shared materializer");
+        }
+        // build_plan_impl calls initSubset() and validate_gat_circuit_plan_impl
+        // before returning.  Keep the explicit public validation here as the
+        // verifier boundary requirement and reject any future materializer
+        // regression fail-closed.
+        std::string validation_reason;
+        if (!validate_gat_circuit_plan_impl(generated, &validation_reason) ||
+            !context_layer_metadata_valid(generated, &validation_reason)) {
+            return fail(validation_reason.empty() ? "materialized compact plan failed validation" : validation_reason);
+        }
+        materialized = std::move(generated);
+        return true;
+    } catch (const std::exception &error) {
+        return fail(error.what());
+    }
+}
+
+void append_context_plan(std::string &out, const GatCircuitPlan &plan) {
+    // The recipe is already a length-delimited canonical binary structure.
+    // Keeping one copy here makes the exact bytes used for plan_digest and
+    // the v3 wire identical, while avoiding any gate-array materialization.
+    append_string(out, plan_encoding(plan));
+}
+
+bool read_compact_plan_recipe(ContextReader &reader, GatCircuitPlan &plan) {
+    if (!reader.read_string(plan.recipe_schema, "plan recipe schema") ||
+        plan.recipe_schema != "canonical_plan_recipe_v1" ||
+        !reader.read_string(plan.model_arch_id, "plan model architecture") ||
+        !reader.read_string(plan.model_shape.model_arch_id, "model shape architecture") ||
+        !reader.read_size(plan.model_shape.tensor_count, "model shape tensor count") ||
+        !reader.read_size(plan.model_shape.layers, "model shape layer count") ||
+        !reader.read_size(plan.model_shape.output_heads, "model shape output head count") ||
+        !reader.read_size(plan.model_shape.classes, "model shape class count") ||
+        !reader.read_size(plan.model_shape.input_dim, "model shape input dimension") ||
+        !reader.read_size(plan.model_shape.hidden_dim, "model shape hidden dimension")) return false;
+    std::size_t count = 0;
+    if (!reader.read_count(count, "model shape tensor profile", kContextMaxShapeProfile)) return false;
+    plan.model_shape.tensors.resize(count);
+    for (CanonicalTensorShape &tensor : plan.model_shape.tensors) {
+        if (!reader.read_string(tensor.name, "model shape tensor name")) return false;
+        std::size_t dims = 0;
+        if (!reader.read_count(dims, "model shape dimensions", kContextMaxShapeDimensions)) return false;
+        tensor.shape.dims.resize(dims);
+        for (std::size_t &dimension : tensor.shape.dims)
+            if (!reader.read_size(dimension, "model shape dimension")) return false;
+    }
+    if (!reader.read_size(plan.graph_num_nodes, "plan graph node count") ||
+        !reader.read_size(plan.graph_num_features, "plan graph feature count") ||
+        !reader.read_size(plan.graph_count, "plan graph count") ||
+        !reader.read_size(plan.graph_num_classes, "plan graph class count") ||
+        !reader.read_size(plan.graph_edge_count, "plan graph edge count") ||
+        !reader.read_string(plan.graph_topology_digest, "plan graph topology digest") ||
+        !reader.read_string(plan.quant_cfg_id, "plan quantization id") ||
+        !reader.read_string(plan.quant_digest, "plan quantization digest") ||
+        !reader.read_string(plan.static_tables_id, "plan static tables id") ||
+        !reader.read_string(plan.registry.registry_id, "registry id")) return false;
+    if (!reader.read_count(count, "registry descriptors", kContextMaxDescriptors)) return false;
+    plan.registry.descriptors.resize(count);
+    for (RelationDescriptor &descriptor : plan.registry.descriptors) {
+        if (!reader.read_string(descriptor.id, "relation id") ||
+            !reader.read_string(descriptor.primitive, "relation primitive") ||
+            !reader.read_string(descriptor.segment, "relation segment") ||
+            !reader.read_string(descriptor.relation, "relation description") ||
+            !reader.read_string(descriptor.public_claim, "relation public claim") ||
+            !reader.read_string(descriptor.witness, "relation witness")) return false;
+    }
+    if (!reader.read_string(plan.input_layout.selector, "layout selector") ||
+        !reader.read_string(plan.opening_policy, "plan opening policy") ||
+        !reader.read_size(plan.public_output_coordinates, "public output coordinates") ||
+        !reader.read_size(plan.residual_coordinates, "residual coordinates") ||
+        !reader.read_count(count, "terminal openings", 16)) return false;
+    plan.terminal_openings.resize(count);
+    for (std::string &opening : plan.terminal_openings)
+        if (!reader.read_string(opening, "terminal opening")) return false;
+    if (!reader.read_size(plan.input_layout.n_raw, "layout raw size") ||
+        !reader.read_size(plan.input_layout.n_in, "layout padded size") ||
+        !reader.read_count(count, "layout segments", 8)) return false;
+    plan.input_layout.segments.resize(count);
+    for (InputSegment &segment : plan.input_layout.segments)
+        if (!read_context_segment(reader, segment)) return false;
+    if (!reader.read_count(count, "MatMul descriptors", kContextMaxDescriptors)) return false;
+    plan.matmuls.resize(count);
+    for (MatMulDescriptor &descriptor : plan.matmuls) {
+        if (!reader.read_string(descriptor.relation_id, "MatMul relation") ||
+            !reader.read_string(descriptor.family_id, "MatMul family") ||
+            !reader.read_string(descriptor.lhs, "MatMul lhs") ||
+            !reader.read_string(descriptor.rhs, "MatMul rhs") ||
+            !reader.read_string(descriptor.output, "MatMul output") ||
+            !reader.read_size(descriptor.rows, "MatMul rows") ||
+            !reader.read_size(descriptor.inner, "MatMul inner") ||
+            !reader.read_size(descriptor.cols, "MatMul cols") ||
+            !reader.read_size(descriptor.output_coordinates, "MatMul output coordinates") ||
+            !reader.read_size(descriptor.lhs_offset, "MatMul lhs offset") ||
+            !reader.read_size(descriptor.rhs_offset, "MatMul rhs offset") ||
+            !reader.read_size(descriptor.output_offset, "MatMul output offset") ||
+            !reader.read_string(descriptor.coordinate_rule, "MatMul coordinate rule") ||
+            !reader.read_string(descriptor.scale_rule, "MatMul scale rule") ||
+            !reader.read_string(descriptor.native_path, "MatMul native path")) return false;
+    }
+    if (!reader.read_count(count, "sparse GKR descriptors", kContextMaxDescriptors)) return false;
+    plan.sparse_gkr.resize(count);
+    for (SparseGkrDescriptor &descriptor : plan.sparse_gkr) {
+        if (!reader.read_string(descriptor.relation_id, "sparse relation") ||
+            !reader.read_string(descriptor.family_id, "sparse family") ||
+            !reader.read_size(descriptor.edge_count, "sparse edge count") ||
+            !reader.read_size(descriptor.value_width, "sparse value width") ||
+            !reader.read_size(descriptor.input_offset, "sparse input offset") ||
+            !reader.read_size(descriptor.source_offset, "sparse source offset") ||
+            !reader.read_size(descriptor.destination_offset, "sparse destination offset") ||
+            !reader.read_size(descriptor.output_offset, "sparse output offset") ||
+            !reader.read_string(descriptor.coordinate_rule, "sparse coordinate rule") ||
+            !reader.read_string(descriptor.group_rule, "sparse group rule") ||
+            !reader.read_count(count, "sparse constraints", kContextMaxDescriptors)) return false;
+        descriptor.constraints.resize(count);
+        for (std::string &constraint : descriptor.constraints)
+            if (!reader.read_string(constraint, "sparse constraint")) return false;
+    }
+    if (!reader.read_count(count, "Lasso descriptors", kContextMaxDescriptors)) return false;
+    plan.lasso.resize(count);
+    for (LassoFamilyDescriptor &descriptor : plan.lasso) {
+        if (!reader.read_string(descriptor.relation_id, "Lasso relation") ||
+            !reader.read_string(descriptor.family_id, "Lasso family") ||
+            !reader.read_string(descriptor.table_id, "Lasso table") ||
+            !reader.read_size(descriptor.real_queries, "Lasso real query count") ||
+            !reader.read_size(descriptor.padded_queries, "Lasso padded query count") ||
+            !reader.read_size(descriptor.table_domain, "Lasso table domain") ||
+            !reader.read_int(descriptor.padding_value) ||
+            !reader.read_size(descriptor.query_offset, "Lasso query offset") ||
+            !reader.read_string(descriptor.incidence_rule, "Lasso incidence rule") ||
+            !reader.read_string(descriptor.challenge_policy, "Lasso challenge policy") ||
+            !reader.read_string(descriptor.query_encoding, "Lasso query encoding")) return false;
+    }
+    if (!reader.read_count(count, "checkpoint descriptors", kContextMaxDescriptors)) return false;
+    plan.checkpoints.resize(count);
+    for (CheckpointDescriptor &checkpoint : plan.checkpoints) {
+        if (!reader.read_string(checkpoint.id, "checkpoint id") ||
+            !reader.read_string(checkpoint.relation_id, "checkpoint relation") ||
+            !reader.read_string(checkpoint.segment, "checkpoint segment") ||
+            !reader.read_size(checkpoint.coordinates, "checkpoint coordinates") ||
+            !reader.read_size(checkpoint.coordinate_offset, "checkpoint offset") ||
+            !reader.read_string(checkpoint.coordinate_rule, "checkpoint coordinate rule")) return false;
+    }
+    if (!reader.read_count(count, "native API entries", kContextMaxDescriptors)) return false;
+    plan.native_api.resize(count);
+    for (std::string &api : plan.native_api)
+        if (!reader.read_string(api, "native API entry")) return false;
+    // circuit_id, plan_digest, layer arrays, ori_id maps, gate arrays,
+    // intervals, and initSubset metadata are deliberately absent from v3.
+    plan.circuit = layeredCircuit();
+    plan.official_layered = false;
+    plan.has_placeholder = false;
+    return true;
+}
+
+bool read_context_plan(ContextReader &reader, GatCircuitPlan &plan) {
+    std::string recipe;
+    if (!reader.read_blob(recipe, "compact plan recipe", kContextMaxRecipeBytes)) return false;
+    ContextReader recipe_reader(recipe, 0, recipe.size());
+    if (!read_compact_plan_recipe(recipe_reader, plan) || !recipe_reader.at_end()) {
+        reader.fail_external(recipe_reader.error().empty()
+                                 ? "malformed compact plan recipe"
+                                 : recipe_reader.error());
+        return false;
+    }
+    return true;
+}
 
 void append_context_graph(std::string &out, const Graph &graph) {
     append_u64(out, graph.num_nodes);
@@ -4038,7 +4424,17 @@ bool validate_verifier_context_object(const VerifierContext &context,
             context.quant_cfg_id != context.quant.quant_cfg_id ||
             context.static_tables_id != context.tables.table_id ||
             context.privacy_extension_profile_id != "masked_full" ||
-            context.tables.quant_cfg_id != context.quant.quant_cfg_id)
+            context.tables.quant_cfg_id != context.quant.quant_cfg_id ||
+            context.plan.model_arch_id != context.registration.model_arch_id ||
+            context.plan.graph_num_nodes != context.graph.num_nodes ||
+            context.plan.graph_num_features != context.graph.num_features ||
+            context.plan.graph_count != context.graph.graph_count ||
+            context.plan.graph_num_classes != context.graph.num_classes ||
+            context.plan.graph_edge_count != context.graph.edges() ||
+            context.plan.graph_topology_digest != canonical_graph_topology_digest(context.graph) ||
+            context.plan.quant_cfg_id != context.quant.quant_cfg_id ||
+            context.plan.quant_digest != canonical_quant_digest(context.quant) ||
+            context.plan.static_tables_id != context.tables.table_id)
             return fail("verifier context identity is not canonical");
         return true;
     } catch (const std::exception &error) {
@@ -4851,7 +5247,7 @@ namespace {
 
 std::string serialize_verifier_context_payload(const VerifierContext &context) {
     std::string payload;
-    append_string(payload, "zkgpt-gat-verifier-context-v2");
+    append_string(payload, "zkgpt-gat-verifier-context-v3");
     append_string(payload, context.relation_id);
     append_string(payload, context.model_arch_id);
     append_string(payload, context.privacy_extension_profile_id);
@@ -4926,6 +5322,14 @@ bool read_header_u64(const std::string &wire, std::size_t offset,
 
 } // namespace
 
+std::size_t compact_plan_recipe_bytes(const GatCircuitPlan &plan) {
+    return plan_encoding(plan).size();
+}
+
+std::size_t verifier_context_payload_bytes(const VerifierContext &context) {
+    return serialize_verifier_context_payload(context).size();
+}
+
 bool write_verifier_context(const VerifierContext &context,
                             const std::string &path,
                             std::string *reason) {
@@ -4948,7 +5352,7 @@ bool write_verifier_context(const VerifierContext &context,
             return false;
         }
         output.write(kVerifierContextMagic, 8);
-        write_u32(output, 2);
+        write_u32(output, 3);
         write_u64(output, static_cast<std::uint64_t>(payload.size()));
         if (!payload.empty()) output.write(payload.data(), static_cast<std::streamsize>(payload.size()));
         output.flush();
@@ -4986,7 +5390,7 @@ bool read_verifier_context(const std::string &path,
         std::uint32_t version = 0;
         std::uint64_t payload_size = 0;
         if (!read_header_u32(wire, 8, version) || !read_header_u64(wire, 12, payload_size) ||
-            version != 2 || payload_size != wire.size() - header_size ||
+            version != 3 || payload_size != wire.size() - header_size ||
             payload_size > kContextMaxWireBytes) {
             set_reason(reason, "unsupported, oversized, or non-canonical verifier context header");
             return false;
@@ -4994,7 +5398,7 @@ bool read_verifier_context(const std::string &path,
         ContextReader reader(wire, header_size, wire.size());
         VerifierContext parsed;
         std::string schema;
-        if (!reader.read_string(schema, "context schema") || schema != "zkgpt-gat-verifier-context-v2" ||
+        if (!reader.read_string(schema, "context schema") || schema != "zkgpt-gat-verifier-context-v3" ||
             !reader.read_string(parsed.relation_id, "context relation") ||
             !reader.read_string(parsed.model_arch_id, "context model architecture") ||
             !reader.read_string(parsed.privacy_extension_profile_id, "context privacy profile") ||
@@ -5018,6 +5422,71 @@ bool read_verifier_context(const std::string &path,
             set_reason(reason, reader.error().empty() ? "verifier context has trailing or unknown bytes" : reader.error());
             return false;
         }
+        // Validate the public inputs, identities, and compact recipe before
+        // allocating the derived layered circuit.  The full object validator
+        // runs again after materialization and additionally checks every
+        // derived gate/subset invariant.
+        try {
+            parsed.graph.validate();
+            parsed.quant.validate();
+            const StaticTables canonical_tables = StaticTables::build(parsed.quant);
+            if (!static_tables_equal(parsed.tables, canonical_tables) ||
+                !parsed.tables.authenticate()) {
+                set_reason(reason, "verifier context static tables are not canonical");
+                return false;
+            }
+            if (!registration_wire_valid(parsed.registration) ||
+                parsed.com_W.scheme != parsed.registration.com_W.scheme ||
+                parsed.com_W.basis_id != parsed.registration.com_W.basis_id ||
+                parsed.com_W.logical_size != parsed.registration.com_W.logical_size ||
+                parsed.com_W.padded_size != parsed.registration.com_W.padded_size ||
+                parsed.com_W.point_hex != parsed.registration.com_W.point_hex) {
+                set_reason(reason, "verifier context registration or com_W binding is invalid");
+                return false;
+            }
+            if (parsed.relation_id != "R_GAT-zkGPT" ||
+                parsed.model_arch_id != parsed.registration.model_arch_id ||
+                parsed.quant_cfg_id != parsed.quant.quant_cfg_id ||
+                parsed.static_tables_id != parsed.tables.table_id ||
+                parsed.privacy_extension_profile_id != "masked_full" ||
+                parsed.tables.quant_cfg_id != parsed.quant.quant_cfg_id) {
+                set_reason(reason, "verifier context public identity is not canonical");
+                return false;
+            }
+            std::string compact_reason;
+            if (!canonical_model_shape_valid(parsed.plan.model_shape,
+                                             &compact_reason) ||
+                parsed.plan.recipe_schema != "canonical_plan_recipe_v1" ||
+                parsed.plan.model_arch_id != parsed.registration.model_arch_id ||
+                parsed.plan.graph_num_nodes != parsed.graph.num_nodes ||
+                parsed.plan.graph_num_features != parsed.graph.num_features ||
+                parsed.plan.graph_count != parsed.graph.graph_count ||
+                parsed.plan.graph_num_classes != parsed.graph.num_classes ||
+                parsed.plan.graph_edge_count != parsed.graph.edges() ||
+                parsed.plan.graph_topology_digest != canonical_graph_topology_digest(parsed.graph) ||
+                parsed.plan.quant_cfg_id != parsed.quant.quant_cfg_id ||
+                parsed.plan.quant_digest != canonical_quant_digest(parsed.quant) ||
+                parsed.plan.static_tables_id != parsed.tables.table_id) {
+                set_reason(reason, compact_reason.empty()
+                                     ? "compact plan recipe identity is not canonical"
+                                     : compact_reason);
+                return false;
+            }
+        } catch (const std::exception &error) {
+            set_reason(reason, error.what());
+            return false;
+        }
+        GatCircuitPlan compact_recipe = std::move(parsed.plan);
+        GatCircuitPlan materialized_plan;
+        std::string materialize_reason;
+        if (!materialize_compact_plan(parsed.graph, parsed.quant, compact_recipe,
+                                      materialized_plan, &materialize_reason)) {
+            set_reason(reason, materialize_reason.empty()
+                                 ? "compact plan materialization failed"
+                                 : materialize_reason);
+            return false;
+        }
+        parsed.plan = std::move(materialized_plan);
         std::string validation_reason;
         if (!validate_verifier_context_object(parsed, &validation_reason)) {
             set_reason(reason, validation_reason);

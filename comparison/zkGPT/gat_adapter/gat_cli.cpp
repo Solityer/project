@@ -520,7 +520,7 @@ void write_verifier_context(const std::string &path,
                             const VerifierContext &context) {
     std::string reason;
     if (!zkgpt::gat::write_verifier_context(context, path, &reason)) {
-        throw std::runtime_error("cannot write verifier context v2: " +
+        throw std::runtime_error("cannot write verifier context v3: " +
                                  (reason.empty() ? std::string("unknown error") : reason));
     }
 }

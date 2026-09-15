@@ -100,9 +100,43 @@ struct CheckpointDescriptor {
     std::string coordinate_rule = "canonical_row_major";
 };
 
+// Public model architecture metadata used by the compact verifier-context
+// recipe.  It contains tensor names and shapes only; tensor values are never
+// part of a verifier context and remain bound exclusively by com_W.
+struct CanonicalTensorShape {
+    std::string name;
+    Shape shape;
+};
+
+struct CanonicalModelShape {
+    std::string model_arch_id;
+    std::size_t tensor_count = 0;
+    std::size_t layers = 0;
+    std::size_t output_heads = 0;
+    std::size_t classes = 0;
+    std::size_t input_dim = 0;
+    std::size_t hidden_dim = 0;
+    std::vector<CanonicalTensorShape> tensors;
+};
+
 // This is the complete adapter description consumed by the official
 // layered-circuit/prover path.  It intentionally carries no witness values.
 struct GatCircuitPlan {
+    // canonical_plan_recipe_v1 is the sole public recipe representation.  A
+    // materialized layeredCircuit is derived from it and is never serialized
+    // in a verifier context.
+    std::string recipe_schema = "canonical_plan_recipe_v1";
+    std::string model_arch_id;
+    CanonicalModelShape model_shape;
+    std::size_t graph_num_nodes = 0;
+    std::size_t graph_num_features = 0;
+    std::size_t graph_count = 0;
+    std::size_t graph_num_classes = 0;
+    std::size_t graph_edge_count = 0;
+    std::string graph_topology_digest;
+    std::string quant_cfg_id;
+    std::string quant_digest;
+    std::string static_tables_id;
     layeredCircuit circuit;
     RelationRegistry registry;
     InputLayout input_layout;
@@ -360,11 +394,18 @@ VerifierContext make_verifier_context(const Graph &graph,
 // CLI cannot accidentally invent a second statement encoding.
 std::string verifier_context_digest(const VerifierContext &context);
 
+// Bounded observability for adapter-local tests and result telemetry.  These
+// report the compact recipe and v3 payload sizes; neither function serializes
+// materialized gate arrays.
+std::size_t compact_plan_recipe_bytes(const GatCircuitPlan &plan);
+std::size_t verifier_context_payload_bytes(const VerifierContext &context);
+
 // Strict baseline-local public verifier context wire.  The wire contains the
 // complete public statement (graph/features/Y, quantization/static tables,
-// model-registration commitment identity, and the full canonical circuit
-// plan), but never model tensors, checkpoints, witness values, or prover
-// opening randomness.  Both functions reject non-canonical/truncated/
+// model-registration commitment identity, and the structured compact
+// canonical circuit recipe), but never model tensors, checkpoints, witness
+// values, materialized gate arrays, or prover opening randomness.  Both
+// functions reject non-canonical/truncated/
 // trailing/oversized data and recompute the statement digest on read.
 // This must be called before default-constructing a VerifierContext in a
 // standalone verifier process because the public registration type contains

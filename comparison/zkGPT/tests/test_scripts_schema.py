@@ -61,7 +61,7 @@ class ProductionContractTests(unittest.TestCase):
             logits = directory / "public_logits.txt"
             artifact = directory / "proof.artifact"
             context.write_text(json.dumps({
-                "schema": "zkgpt-gat-verifier-context-v2",
+                "schema": "zkgpt-gat-verifier-context-v3",
                 "relation_id": "R_GAT-zkGPT",
                 "privacy_extension_profile_id": "masked_full",
                 "statement_digest": "a" * 64,
